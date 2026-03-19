@@ -1,0 +1,5 @@
+{
+  "qwen3.5-flash": "qwen3.5-flash",
+  "qwen3.5*": "qwen3.5-base",
+  "*": "default"
+}

@@ -1,6 +1,6 @@
 {
   "http": {
-    "listen_addr": ":8080",
+    "listen_addr": "127.0.0.1:8080",
     "request_timeout": {
       "pre_check": "3s",
       "post_action": "3s",
@@ -9,14 +9,20 @@
     "shutdown_timeout": "10s"
   },
   "llm": {
-    "provider": "aliyun_dashscope",
-    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+    "provider": "openai",
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-f5a81dcd8c5c48379732766de9a69cdd",
     "model": "qwen3.5-flash",
-	"api_key":"sk-f5a81dcd8c5c48379732766de9a69cdd"
+    "organization": "",
+    "project": ""
   },
   "embedding": {
-    "provider": "mock",
-    "model": "mock-embedding-v1"
+    "provider": "openai",
+    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+    "api_key": "sk-f5a81dcd8c5c48379732766de9a69cdd",
+    "model": "text-embedding-v4",
+    "organization": "",
+    "project": ""
   },
   "vector": {
     "provider": "memory",
