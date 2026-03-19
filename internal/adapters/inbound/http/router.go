@@ -2,46 +2,73 @@ package httpapi
 
 import (
 	"log"
-	nethttp "net/http"
+	"net/http"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
-	"github.com/openvulcan/vmm/internal/core/ports"
-	"github.com/openvulcan/vmm/internal/core/services"
+	"github.com/openvulcan/vmm/internal/app/usecase"
+	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
 type Dependencies struct {
-	IDs               ports.IDGenerator
-	PreCheck          *services.PreCheckService
-	PostAction        *services.PostActionService
-	SeedMemory        *services.SeedMemoryService
+	IDs               interface{ NewID(prefix string) string }
+	PreCheck          usecase.PreCheckExecutor
+	PostAction        usecase.PostActionExecutor
+	SeedMemory        usecase.SeedMemoryExecutor
 	Logger            *log.Logger
 	PreCheckTimeout   time.Duration
 	PostActionTimeout time.Duration
 	SeedMemoryTimeout time.Duration
 	EnableSeedRoute   bool
-	ExtraMiddlewares  []gin.HandlerFunc
+	ExtraMiddlewares  []Middleware
 }
 
-func NewRouter(deps Dependencies) *gin.Engine {
-	engine := gin.New()
-	engine.Use(RecoveryMiddleware(deps.Logger), TraceIDMiddleware(deps.IDs), RequestLoggerMiddleware(deps.Logger))
-	if len(deps.ExtraMiddlewares) > 0 { engine.Use(deps.ExtraMiddlewares...) }
-
+func NewRouter(deps Dependencies) http.Handler {
 	handler := NewHandler(deps.PreCheck, deps.PostAction, deps.SeedMemory, deps.PreCheckTimeout, deps.PostActionTimeout, deps.SeedMemoryTimeout, deps.Logger)
-
-	engine.GET("/healthz", handler.Healthz)
-	v1 := engine.Group("/v1")
-	chat := v1.Group("/chat")
-	chat.POST("/pre-check", handler.PreCheck)
-	chat.POST("/post-action", handler.PostAction)
+	mux := http.NewServeMux()
+	mux.Handle("/healthz", methodHandler(http.MethodGet, http.HandlerFunc(handler.Healthz)))
+	mux.Handle("/v1/chat/pre-check", methodHandler(http.MethodPost, http.HandlerFunc(handler.PreCheck)))
+	mux.Handle("/v1/chat/post-action", methodHandler(http.MethodPost, http.HandlerFunc(handler.PostAction)))
 	if deps.EnableSeedRoute && deps.SeedMemory != nil {
-		admin := v1.Group("/admin")
-		admin.POST("/seed-memory", handler.SeedMemory)
+		mux.Handle("/v1/admin/seed-memory", methodHandler(http.MethodPost, http.HandlerFunc(handler.SeedMemory)))
 	}
-	engine.NoRoute(func(c *gin.Context) {
-		c.AbortWithStatusJSON(nethttp.StatusNotFound, Envelope{Code: nethttp.StatusNotFound, Msg: "not found", TraceID: traceIDFromContext(c)})
+	mux.Handle("/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(w, http.StatusNotFound, Envelope{Code: http.StatusNotFound, Msg: "not found", TraceID: traceIDFromContext(r)})
+	}))
+
+	middlewares := []Middleware{
+		RecoveryMiddleware(deps.Logger),
+		TraceIDMiddleware(deps.IDs),
+		RequestLoggerMiddleware(deps.Logger),
+	}
+	middlewares = append(middlewares, deps.ExtraMiddlewares...)
+	return chain(mux, middlewares...)
+}
+
+func methodHandler(method string, next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != method {
+			w.Header().Set("Allow", method)
+			writeJSON(w, http.StatusMethodNotAllowed, Envelope{Code: http.StatusMethodNotAllowed, Msg: "method not allowed", TraceID: traceIDFromContext(r)})
+			return
+		}
+		next.ServeHTTP(w, r)
 	})
-	return engine
+}
+
+func chain(next http.Handler, middlewares ...Middleware) http.Handler {
+	wrapped := next
+	for i := len(middlewares) - 1; i >= 0; i-- {
+		if middlewares[i] == nil {
+			continue
+		}
+		wrapped = middlewares[i](wrapped)
+	}
+	return wrapped
+}
+
+func traceIDFromContext(r *http.Request) string {
+	if r == nil {
+		return ""
+	}
+	return trace.IDFromContext(r.Context())
 }

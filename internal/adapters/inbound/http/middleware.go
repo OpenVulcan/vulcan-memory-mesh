@@ -2,95 +2,102 @@ package httpapi
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"log"
-	nethttp "net/http"
+	"net/http"
 	"strings"
 	"time"
 
-	"github.com/gin-gonic/gin"
-
-	"github.com/openvulcan/vmm/internal/core/ports"
+	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
-const traceIDKey = "trace_id"
+type Middleware func(http.Handler) http.Handler
 
-func TraceIDMiddleware(ids ports.IDGenerator) gin.HandlerFunc {
-	return func(c *gin.Context) {
-		traceID := c.GetHeader("X-Trace-ID")
-		if traceID == "" { traceID = ids.NewID("trc") }
-		ctx := trace.WithTraceID(c.Request.Context(), traceID)
-		c.Request = c.Request.WithContext(ctx)
-		c.Set(traceIDKey, traceID)
-		c.Header("X-Trace-ID", traceID)
-		c.Next()
-	}
+type contextKey string
+
+const (
+	traceIDHeader         = "X-Trace-ID"
+	requestBodyContextKey = contextKey("request_body")
+)
+
+type statusRecorder struct {
+	http.ResponseWriter
+	status int
 }
 
-func RecoveryMiddleware(logger *log.Logger) gin.HandlerFunc {
-	if logger == nil { logger = log.Default() }
-	return func(c *gin.Context) {
-		defer func() {
-			if rec := recover(); rec != nil {
-				logger.Printf("panic recovered trace_id=%s err=%v", traceIDFromContext(c), rec)
-				c.AbortWithStatusJSON(nethttp.StatusInternalServerError, Envelope{Code: nethttp.StatusInternalServerError, Msg: "internal server error", TraceID: traceIDFromContext(c)})
+func (r *statusRecorder) WriteHeader(status int) {
+	r.status = status
+	r.ResponseWriter.WriteHeader(status)
+}
+
+func TraceIDMiddleware(ids appports.IDGenerator) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			traceID := strings.TrimSpace(r.Header.Get(traceIDHeader))
+			if traceID == "" && ids != nil {
+				traceID = ids.NewID("trc")
 			}
-		}()
-		c.Next()
+			ctx := trace.WithTraceID(r.Context(), traceID)
+			if traceID != "" {
+				w.Header().Set(traceIDHeader, traceID)
+			}
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
 	}
 }
 
-func RequestLoggerMiddleware(logger *log.Logger) gin.HandlerFunc {
-	if logger == nil { logger = log.Default() }
-	return func(c *gin.Context) {
-		start := time.Now()
-		requestBody := captureRequestBody(c)
-		c.Next()
-		if strings.EqualFold(c.Request.Method, nethttp.MethodPost) && requestBody != "" {
-			logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s request_body=%s", traceIDFromContext(c), c.Request.Method, c.FullPath(), c.Writer.Status(), time.Since(start), c.ClientIP(), requestBody)
-			return
-		}
-		logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s", traceIDFromContext(c), c.Request.Method, c.FullPath(), c.Writer.Status(), time.Since(start), c.ClientIP())
+func RecoveryMiddleware(logger *log.Logger) Middleware {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if rec := recover(); rec != nil {
+					logger.Printf("panic recovered trace_id=%s err=%v", trace.IDFromContext(r.Context()), rec)
+					writeJSON(w, http.StatusInternalServerError, Envelope{Code: http.StatusInternalServerError, Msg: "internal server error", TraceID: trace.IDFromContext(r.Context())})
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
 	}
 }
 
-func AuthPlaceholderMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if token := c.GetHeader("Authorization"); token != "" { c.Set("auth_token", token) }
-		c.Next()
+func RequestLoggerMiddleware(logger *log.Logger) Middleware {
+	if logger == nil {
+		logger = log.Default()
+	}
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			body, req := captureRequestBody(r)
+			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
+			next.ServeHTTP(rec, req)
+			if strings.EqualFold(req.Method, http.MethodPost) && body != "" {
+				logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s request_body=%s", trace.IDFromContext(req.Context()), req.Method, req.URL.Path, rec.status, time.Since(start), clientIP(req), body)
+				return
+			}
+			logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s", trace.IDFromContext(req.Context()), req.Method, req.URL.Path, rec.status, time.Since(start), clientIP(req))
+		})
 	}
 }
 
-func TenantPlaceholderMiddleware() gin.HandlerFunc {
-	return func(c *gin.Context) {
-		if tenantID := c.GetHeader("X-Tenant-ID"); tenantID != "" { c.Set("tenant_id", tenantID) }
-		c.Next()
+func captureRequestBody(r *http.Request) (string, *http.Request) {
+	if r == nil || r.Body == nil || !strings.EqualFold(r.Method, http.MethodPost) {
+		return "", r
 	}
-}
-
-func traceIDFromContext(c *gin.Context) string {
-	if v, ok := c.Get(traceIDKey); ok {
-		if traceID, ok := v.(string); ok { return traceID }
-	}
-	return trace.IDFromContext(c.Request.Context())
-}
-
-func captureRequestBody(c *gin.Context) string {
-	if c == nil || c.Request == nil || c.Request.Body == nil {
-		return ""
-	}
-	if !strings.EqualFold(c.Request.Method, nethttp.MethodPost) {
-		return ""
-	}
-	raw, err := io.ReadAll(c.Request.Body)
+	raw, err := io.ReadAll(r.Body)
 	if err != nil {
-		c.Request.Body = io.NopCloser(bytes.NewReader(nil))
-		return "<read_body_error>"
+		r.Body = io.NopCloser(bytes.NewReader(nil))
+		return "<read_body_error>", r
 	}
-	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
-	return compactBody(raw)
+	r.Body = io.NopCloser(bytes.NewReader(raw))
+	body := compactBody(raw)
+	ctx := context.WithValue(r.Context(), requestBodyContextKey, body)
+	return body, r.WithContext(ctx)
 }
 
 func compactBody(raw []byte) string {
@@ -103,4 +110,15 @@ func compactBody(raw []byte) string {
 		return buf.String()
 	}
 	return trimmed
+}
+
+func clientIP(r *http.Request) string {
+	if xff := strings.TrimSpace(r.Header.Get("X-Forwarded-For")); xff != "" {
+		parts := strings.Split(xff, ",")
+		return strings.TrimSpace(parts[0])
+	}
+	if rip := strings.TrimSpace(r.Header.Get("X-Real-IP")); rip != "" {
+		return rip
+	}
+	return r.RemoteAddr
 }

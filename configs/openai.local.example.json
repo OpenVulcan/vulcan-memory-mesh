@@ -1,6 +1,6 @@
 {
   "http": {
-    "listen_addr": ":8080",
+    "listen_addr": "127.0.0.1:8080",
     "request_timeout": {
       "pre_check": "3s",
       "post_action": "3s",
@@ -10,32 +10,34 @@
   },
   "llm": {
     "provider": "openai",
-    "endpoint": "https://api.openai.com/v1",
-    "api_key": "<OPENAI_API_KEY>",
-    "model": "<OPENAI_CHAT_MODEL>",
-    "organization": "",
-    "project": ""
+    "endpoint": "${OPENAI_BASE_URL}",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "${OPENAI_MODEL}",
+    "organization": "${OPENAI_ORGANIZATION}",
+    "project": "${OPENAI_PROJECT}"
   },
   "embedding": {
     "provider": "openai",
-    "endpoint": "https://api.openai.com/v1",
-    "api_key": "<OPENAI_API_KEY>",
-    "model": "<OPENAI_EMBEDDING_MODEL>",
-    "organization": "",
-    "project": ""
+    "endpoint": "${OPENAI_BASE_URL}",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "${OPENAI_EMBEDDING_MODEL}",
+    "dimension": 1024,
+    "organization": "${OPENAI_ORGANIZATION}",
+    "project": "${OPENAI_PROJECT}"
   },
   "vector": {
-    "provider": "memory",
-    "namespace": "local",
-    "collection": "vmm_memories"
+    "provider": "memory"
   },
   "relational": {
     "provider": "memory"
   },
   "precheck": {
     "intent_timeout": "2s",
-    "top_k": 5,
-    "similarity_threshold": 0.4
+    "top_k": 5
+  },
+  "memory_pipeline": {
+    "max_search_keywords": 5,
+    "min_similarity_score": 0.75
   },
   "admin": {
     "seed_enabled": true

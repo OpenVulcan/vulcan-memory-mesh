@@ -3,20 +3,20 @@ package httpapi
 import (
 	"context"
 	"errors"
-	nethttp "net/http"
+	"net/http"
 
-	"github.com/openvulcan/vmm/internal/core/domain"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
 func mapStatus(err error) (int, string) {
 	switch {
 	case err == nil:
-		return nethttp.StatusOK, "ok"
-	case domain.IsValidationError(err):
-		return nethttp.StatusBadRequest, err.Error()
-	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, domain.ErrTimeout):
-		return nethttp.StatusGatewayTimeout, "request timeout"
+		return http.StatusOK, "ok"
+	case logicdomain.IsValidationError(err):
+		return http.StatusBadRequest, err.Error()
+	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, logicdomain.ErrTimeout):
+		return http.StatusGatewayTimeout, "request timeout"
 	default:
-		return nethttp.StatusInternalServerError, err.Error()
+		return http.StatusInternalServerError, err.Error()
 	}
 }

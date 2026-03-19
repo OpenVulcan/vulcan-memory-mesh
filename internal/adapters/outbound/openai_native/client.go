@@ -1,61 +1,43 @@
 package openai_native
 
 import (
-	"context"
 	"net/http"
 	"strings"
+	"time"
 
-	openai "github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
-
-	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
 type Client struct {
-	sdk           openai.Client
-	endpoint      string
-	compatibleAPI bool
+	sdkClient      *openai.Client
+	compatibleMode bool
 }
 
 func NewClient(endpoint, apiKey, organization, project string, httpClient *http.Client) *Client {
-	opts := make([]option.RequestOption, 0, 5)
-	if strings.TrimSpace(apiKey) != "" {
-		opts = append(opts, option.WithAPIKey(strings.TrimSpace(apiKey)))
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 20 * time.Second}
 	}
-	if strings.TrimSpace(endpoint) != "" {
-		opts = append(opts, option.WithBaseURL(strings.TrimSpace(endpoint)))
+	trimmed := strings.TrimRight(strings.TrimSpace(endpoint), "/")
+	opts := []option.RequestOption{option.WithHTTPClient(httpClient)}
+	if trimmed != "" {
+		opts = append(opts, option.WithBaseURL(trimmed))
 	}
-	if strings.TrimSpace(organization) != "" {
-		opts = append(opts, option.WithOrganization(strings.TrimSpace(organization)))
+	if key := strings.TrimSpace(apiKey); key != "" {
+		opts = append(opts, option.WithAPIKey(key))
+		apiKey = key
 	}
-	if strings.TrimSpace(project) != "" {
-		opts = append(opts, option.WithProject(strings.TrimSpace(project)))
+	if org := strings.TrimSpace(organization); org != "" {
+		opts = append(opts, option.WithOrganization(org))
+		organization = org
 	}
-	if httpClient != nil {
-		opts = append(opts, option.WithHTTPClient(httpClient))
+	if proj := strings.TrimSpace(project); proj != "" {
+		opts = append(opts, option.WithProject(proj))
+		project = proj
 	}
-	trimmedEndpoint := strings.TrimSpace(endpoint)
+	sdkClient := openai.NewClient(opts...)
 	return &Client{
-		sdk:           openai.NewClient(opts...),
-		endpoint:      trimmedEndpoint,
-		compatibleAPI: strings.Contains(strings.ToLower(trimmedEndpoint), "compatible-mode"),
+		sdkClient:      &sdkClient,
+		compatibleMode: strings.Contains(strings.ToLower(trimmed), "compatible-mode"),
 	}
-}
-
-func (c *Client) requestOptions(ctx context.Context) []option.RequestOption {
-	if c == nil {
-		return nil
-	}
-	traceID := strings.TrimSpace(trace.IDFromContext(ctx))
-	if traceID == "" {
-		return nil
-	}
-	return []option.RequestOption{
-		option.WithHeader("X-Trace-ID", traceID),
-		option.WithHeader("X-Client-Request-Id", traceID),
-	}
-}
-
-func (c *Client) shouldDisableThinking() bool {
-	return c != nil && c.compatibleAPI
 }

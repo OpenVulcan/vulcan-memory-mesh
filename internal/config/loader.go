@@ -18,9 +18,11 @@ var RequiredScenes = []string{
 }
 
 type PromptLayout struct {
-	SystemDir     string
-	UserDir       string
-	AppConfigPath string
+	SystemDir          string
+	UserDir            string
+	SystemConfigPath   string
+	OverrideConfigPath string
+	AppConfigPath      string
 }
 
 type RouteMap map[string]string
@@ -55,16 +57,39 @@ func ResolvePromptLayout(executablePath, cwd, configArg, mode string) (PromptLay
 		return PromptLayout{}, err
 	}
 
-	appConfigPath := explicitConfigPath
-	if appConfigPath == "" {
-		appConfigPath = filepath.Join(systemDir, defaultAppConfigName(mode))
+	systemConfigPath := filepath.Join(systemDir, defaultAppConfigName(mode))
+	overrideConfigPath := resolveOverrideConfigPath(userDir, explicitConfigPath, mode)
+	appConfigPath := systemConfigPath
+	if strings.TrimSpace(overrideConfigPath) != "" {
+		appConfigPath = overrideConfigPath
 	}
 
 	return PromptLayout{
-		SystemDir:     systemDir,
-		UserDir:       userDir,
-		AppConfigPath: appConfigPath,
+		SystemDir:          systemDir,
+		UserDir:            userDir,
+		SystemConfigPath:   systemConfigPath,
+		OverrideConfigPath: overrideConfigPath,
+		AppConfigPath:      appConfigPath,
 	}, nil
+}
+
+func (l PromptLayout) ConfigPaths() []string {
+	paths := make([]string, 0, 2)
+	addPath := func(path string) {
+		if strings.TrimSpace(path) == "" {
+			return
+		}
+		cleaned := filepath.Clean(path)
+		for _, existing := range paths {
+			if existing == cleaned {
+				return
+			}
+		}
+		paths = append(paths, cleaned)
+	}
+	addPath(l.SystemConfigPath)
+	addPath(l.OverrideConfigPath)
+	return paths
 }
 
 func resolveSystemDir(executablePath, cwd string) (string, error) {
@@ -116,9 +141,9 @@ func resolveUserDir(cwd, configArg string) (string, string, error) {
 	case statErr == nil && info.IsDir():
 		return path, "", nil
 	case statErr == nil && !info.IsDir():
-		return defaultUserDirWithConfig(path)
+		return userDirWithConfig(path), path, nil
 	case errors.Is(statErr, os.ErrNotExist) && configLooksLikeFile(path):
-		return defaultUserDirWithConfig(path)
+		return userDirWithConfig(path), path, nil
 	case statErr == nil:
 		return path, "", nil
 	case errors.Is(statErr, os.ErrNotExist):
@@ -136,12 +161,8 @@ func defaultUserDir() (string, string, error) {
 	return filepath.Join(home, ".vmm"), "", nil
 }
 
-func defaultUserDirWithConfig(configPath string) (string, string, error) {
-	userDir, _, err := defaultUserDir()
-	if err != nil {
-		return "", "", err
-	}
-	return userDir, configPath, nil
+func userDirWithConfig(configPath string) string {
+	return filepath.Dir(filepath.Clean(configPath))
 }
 
 func normalizePath(cwd, raw string) (string, error) {
@@ -193,10 +214,23 @@ func looksLikeGoRunExecutable(path string) bool {
 }
 
 func defaultAppConfigName(mode string) string {
-	if strings.EqualFold(mode, "saas") {
-		return "saas.json"
-	}
+	_ = mode
 	return "local.json"
+}
+
+func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string {
+	if strings.TrimSpace(explicitConfigPath) != "" {
+		return filepath.Clean(explicitConfigPath)
+	}
+	if strings.TrimSpace(userDir) == "" {
+		return ""
+	}
+	candidate := filepath.Join(userDir, defaultAppConfigName(mode))
+	info, err := os.Stat(candidate)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	return candidate
 }
 
 func hasSystemPromptBase(systemDir string) bool {

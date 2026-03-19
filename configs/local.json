@@ -10,32 +10,34 @@
   },
   "llm": {
     "provider": "openai",
-    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "api_key": "sk-f5a81dcd8c5c48379732766de9a69cdd",
-    "model": "qwen3.5-flash",
-    "organization": "",
-    "project": ""
+    "endpoint": "${OPENAI_BASE_URL}",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "${OPENAI_MODEL}",
+    "organization": "${OPENAI_ORGANIZATION}",
+    "project": "${OPENAI_PROJECT}"
   },
   "embedding": {
     "provider": "openai",
-    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
-    "api_key": "sk-f5a81dcd8c5c48379732766de9a69cdd",
-    "model": "text-embedding-v4",
-    "organization": "",
-    "project": ""
+    "endpoint": "${OPENAI_BASE_URL}",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "${OPENAI_EMBEDDING_MODEL}",
+    "dimension": 1024,
+    "organization": "${OPENAI_ORGANIZATION}",
+    "project": "${OPENAI_PROJECT}"
   },
   "vector": {
-    "provider": "memory",
-    "namespace": "local",
-    "collection": "vmm_memories"
+    "provider": "memory"
   },
   "relational": {
     "provider": "memory"
   },
   "precheck": {
     "intent_timeout": "2s",
-    "top_k": 5,
-    "similarity_threshold": 0.4
+    "top_k": 5
+  },
+  "memory_pipeline": {
+    "max_search_keywords": 5,
+    "min_similarity_score": 0.75
   },
   "admin": {
     "seed_enabled": true

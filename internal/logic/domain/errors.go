@@ -25,3 +25,16 @@ func (e ValidationError) Error() string {
 func (e ValidationError) Unwrap() error { return ErrValidation }
 
 func IsValidationError(err error) bool { return errors.Is(err, ErrValidation) }
+
+type InvalidLLMOutputError struct {
+	Scene   string
+	Message string
+	Raw     string
+}
+
+func (e InvalidLLMOutputError) Error() string {
+	if e.Scene == "" {
+		return "invalid llm output: " + e.Message
+	}
+	return fmt.Sprintf("invalid llm output for %s: %s", e.Scene, e.Message)
+}
