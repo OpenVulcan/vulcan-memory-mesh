@@ -1,3 +1,5 @@
+// handlers_test.go implements the inbound HTTP adapter layer.
+// handlers_test.go 用于实现入站 HTTP 适配层。
 package httpapi
 
 import (
@@ -19,16 +21,26 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/xid"
 )
 
+// stubPromptSource is a test double that returns deterministic prompt content to handler tests.
+// stubPromptSource 用于作为测试替身，为 handler 测试返回确定性的提示词内容。
 type stubPromptSource struct{}
 
+// GetPrompt executes the GetPrompt logic.
+// GetPrompt 用于执行 GetPrompt 逻辑。
 func (stubPromptSource) GetPrompt(scene, modelName string) (string, error) {
 	return scene + ":" + modelName, nil
 }
 
+// float64Ptr executes the float64Ptr logic.
+// float64Ptr 用于执行 float64Ptr 逻辑。
 func float64Ptr(v float64) *float64 { return &v }
 
+// newTestRouter creates a TestRouter instance.
+// newTestRouter 用于创建 TestRouter 实例。
 func newTestRouter() http.Handler { return newTestRouterWithLogger(nil) }
 
+// newTestRouterWithLogger creates a TestRouterWithLogger instance.
+// newTestRouterWithLogger 用于创建 TestRouterWithLogger 实例。
 func newTestRouterWithLogger(logger *log.Logger) http.Handler {
 	ids := xid.NewGenerator()
 	llm := memory_mock.NewLLMClient()
@@ -65,6 +77,8 @@ func newTestRouterWithLogger(logger *log.Logger) http.Handler {
 	})
 }
 
+// TestPreCheckRejectsNonTextHistoryContent verifies the TestPreCheckRejectsNonTextHistoryContent behavior.
+// TestPreCheckRejectsNonTextHistoryContent 用于验证 TestPreCheckRejectsNonTextHistoryContent 行为。
 func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
 	router := newTestRouter()
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"user","content":{"type":"text"}}],"current_content":"hi","is_first_turn":true}`
@@ -77,6 +91,8 @@ func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
 	}
 }
 
+// TestSeedThenPreCheckRoundTrip verifies the TestSeedThenPreCheckRoundTrip behavior.
+// TestSeedThenPreCheckRoundTrip 用于验证 TestSeedThenPreCheckRoundTrip 行为。
 func TestSeedThenPreCheckRoundTrip(t *testing.T) {
 	router := newTestRouter()
 
@@ -110,6 +126,8 @@ func TestSeedThenPreCheckRoundTrip(t *testing.T) {
 	}
 }
 
+// TestPostActionNormalizesRawMessages verifies the TestPostActionNormalizesRawMessages behavior.
+// TestPostActionNormalizesRawMessages 用于验证 TestPostActionNormalizesRawMessages 行为。
 func TestPostActionNormalizesRawMessages(t *testing.T) {
 	ids := xid.NewGenerator()
 	logger := log.New(&bytes.Buffer{}, "", 0)
@@ -139,6 +157,8 @@ func TestPostActionNormalizesRawMessages(t *testing.T) {
 	}
 }
 
+// TestPostRequestLogsFullBody verifies the TestPostRequestLogsFullBody behavior.
+// TestPostRequestLogsFullBody 用于验证 TestPostRequestLogsFullBody 行为。
 func TestPostRequestLogsFullBody(t *testing.T) {
 	var logBuf bytes.Buffer
 	router := newTestRouterWithLogger(log.New(&logBuf, "", 0))
@@ -168,6 +188,8 @@ func TestPostRequestLogsFullBody(t *testing.T) {
 	}
 }
 
+// TestNotFoundCarriesTraceID verifies the TestNotFoundCarriesTraceID behavior.
+// TestNotFoundCarriesTraceID 用于验证 TestNotFoundCarriesTraceID 行为。
 func TestNotFoundCarriesTraceID(t *testing.T) {
 	router := newTestRouter()
 	req := httptest.NewRequest(http.MethodGet, "/not-found", nil)
@@ -189,6 +211,8 @@ func TestNotFoundCarriesTraceID(t *testing.T) {
 	}
 }
 
+// TestWithTimeoutPreservesTraceIDInUseCaseContext verifies the TestWithTimeoutPreservesTraceIDInUseCaseContext behavior.
+// TestWithTimeoutPreservesTraceIDInUseCaseContext 用于验证 TestWithTimeoutPreservesTraceIDInUseCaseContext 行为。
 func TestWithTimeoutPreservesTraceIDInUseCaseContext(t *testing.T) {
 	called := false
 	pre := preCheckFunc(func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
@@ -213,12 +237,18 @@ func TestWithTimeoutPreservesTraceIDInUseCaseContext(t *testing.T) {
 	}
 }
 
+// preCheckFunc adapts a plain function into the PreCheckExecutor interface for focused handler tests.
+// preCheckFunc 用于把普通函数适配成 PreCheckExecutor 接口，便于聚焦 handler 测试。
 type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error)
 
+// Execute executes the Execute logic.
+// Execute 用于执行 Execute 逻辑。
 func (f preCheckFunc) Execute(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
 	return f(ctx, cmd)
 }
 
+// traceFromContext executes the traceFromContext logic.
+// traceFromContext 用于执行 traceFromContext 逻辑。
 func traceFromContext(ctx context.Context) string {
 	return trace.IDFromContext(ctx)
 }

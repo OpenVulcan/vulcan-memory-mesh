@@ -1,3 +1,5 @@
+// router.go implements the inbound HTTP adapter layer.
+// router.go 用于实现入站 HTTP 适配层。
 package httpapi
 
 import (
@@ -9,6 +11,8 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
+// Dependencies collects everything the HTTP router needs to wire routes and middleware.
+// Dependencies 用于收集 HTTP 路由装配所需的全部依赖和中间件配置。
 type Dependencies struct {
 	IDs               interface{ NewID(prefix string) string }
 	PreCheck          usecase.PreCheckExecutor
@@ -22,6 +26,8 @@ type Dependencies struct {
 	ExtraMiddlewares  []Middleware
 }
 
+// NewRouter creates a Router instance.
+// NewRouter 用于创建 Router 实例。
 func NewRouter(deps Dependencies) http.Handler {
 	handler := NewHandler(deps.PreCheck, deps.PostAction, deps.SeedMemory, deps.PreCheckTimeout, deps.PostActionTimeout, deps.SeedMemoryTimeout, deps.Logger)
 	mux := http.NewServeMux()
@@ -44,6 +50,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	return chain(mux, middlewares...)
 }
 
+// methodHandler executes the methodHandler logic.
+// methodHandler 用于执行 methodHandler 逻辑。
 func methodHandler(method string, next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != method {
@@ -55,6 +63,8 @@ func methodHandler(method string, next http.Handler) http.Handler {
 	})
 }
 
+// chain executes the chain logic.
+// chain 用于执行 chain 逻辑。
 func chain(next http.Handler, middlewares ...Middleware) http.Handler {
 	wrapped := next
 	for i := len(middlewares) - 1; i >= 0; i-- {
@@ -66,6 +76,8 @@ func chain(next http.Handler, middlewares ...Middleware) http.Handler {
 	return wrapped
 }
 
+// traceIDFromContext executes the traceIDFromContext logic.
+// traceIDFromContext 用于执行 traceIDFromContext 逻辑。
 func traceIDFromContext(r *http.Request) string {
 	if r == nil {
 		return ""

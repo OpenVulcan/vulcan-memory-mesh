@@ -1,3 +1,5 @@
+// loader_test.go implements configuration and prompt loading.
+// loader_test.go 用于实现配置与提示词加载。
 package config
 
 import (
@@ -7,6 +9,8 @@ import (
 	"testing"
 )
 
+// TestResolvePromptLayoutDefaultsToHomeVMM verifies the TestResolvePromptLayoutDefaultsToHomeVMM behavior.
+// TestResolvePromptLayoutDefaultsToHomeVMM 用于验证 TestResolvePromptLayoutDefaultsToHomeVMM 行为。
 func TestResolvePromptLayoutDefaultsToHomeVMM(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -37,6 +41,8 @@ func TestResolvePromptLayoutDefaultsToHomeVMM(t *testing.T) {
 	}
 }
 
+// TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary verifies the TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary behavior.
+// TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary 用于验证 TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary 行为。
 func TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary(t *testing.T) {
 	root := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(root, "output", "configs", "prompts", "default"), "output-default")
@@ -54,6 +60,8 @@ func TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary(t *testing.T) {
 	}
 }
 
+// TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun verifies the TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun behavior.
+// TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun 用于验证 TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun 行为。
 func TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun(t *testing.T) {
 	root := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "project-default")
@@ -68,6 +76,8 @@ func TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun(t *testing.T) {
 	}
 }
 
+// TestResolvePromptLayoutAcceptsExplicitUserDir verifies the TestResolvePromptLayoutAcceptsExplicitUserDir behavior.
+// TestResolvePromptLayoutAcceptsExplicitUserDir 用于验证 TestResolvePromptLayoutAcceptsExplicitUserDir 行为。
 func TestResolvePromptLayoutAcceptsExplicitUserDir(t *testing.T) {
 	root := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "system-default")
@@ -96,6 +106,8 @@ func TestResolvePromptLayoutAcceptsExplicitUserDir(t *testing.T) {
 	}
 }
 
+// TestResolvePromptLayoutSupportsLegacyConfigFilePath verifies the TestResolvePromptLayoutSupportsLegacyConfigFilePath behavior.
+// TestResolvePromptLayoutSupportsLegacyConfigFilePath 用于验证 TestResolvePromptLayoutSupportsLegacyConfigFilePath 行为。
 func TestResolvePromptLayoutSupportsLegacyConfigFilePath(t *testing.T) {
 	root := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "system-default")
@@ -124,6 +136,8 @@ func TestResolvePromptLayoutSupportsLegacyConfigFilePath(t *testing.T) {
 	}
 }
 
+// TestResolvePromptLayoutUsesUserLocalJSONAsOverrideWhenPresent verifies the TestResolvePromptLayoutUsesUserLocalJSONAsOverrideWhenPresent behavior.
+// TestResolvePromptLayoutUsesUserLocalJSONAsOverrideWhenPresent 用于验证 TestResolvePromptLayoutUsesUserLocalJSONAsOverrideWhenPresent 行为。
 func TestResolvePromptLayoutUsesUserLocalJSONAsOverrideWhenPresent(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -152,6 +166,8 @@ func TestResolvePromptLayoutUsesUserLocalJSONAsOverrideWhenPresent(t *testing.T)
 	}
 }
 
+// TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound verifies the TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound behavior.
+// TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound 用于验证 TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound 行为。
 func TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound(t *testing.T) {
 	_, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "bin", "vmm-local.exe"), t.TempDir(), "", "local")
 	if err == nil {
@@ -159,6 +175,8 @@ func TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound(t *testing.T) {
 	}
 }
 
+// TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs verifies the TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs behavior.
+// TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs 用于验证 TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs 行为。
 func TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs(t *testing.T) {
 	root := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "project-default")

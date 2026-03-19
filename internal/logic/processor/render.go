@@ -1,3 +1,5 @@
+// render.go implements reusable business processors.
+// render.go 用于实现可复用的业务处理器。
 package processor
 
 import (
@@ -7,6 +9,8 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
+// renderIntentUserPrompt renders the target output.
+// renderIntentUserPrompt 用于渲染目标输出。
 func renderIntentUserPrompt(history []logicdomain.HistorySnippet, current string, maxKeywords int) string {
 	var b strings.Builder
 	b.WriteString("请结合最近对话和当前输入，输出 JSON。\n")
@@ -27,6 +31,8 @@ func renderIntentUserPrompt(history []logicdomain.HistorySnippet, current string
 	return b.String()
 }
 
+// renderContextSummary renders the target output.
+// renderContextSummary 用于渲染目标输出。
 func renderContextSummary(items []logicdomain.ContextItem) string {
 	if len(items) == 0 {
 		return ""

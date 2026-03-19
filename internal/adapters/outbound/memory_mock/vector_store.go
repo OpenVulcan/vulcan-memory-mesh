@@ -1,3 +1,5 @@
+// vector_store.go implements the in-memory mock outbound adapters.
+// vector_store.go 用于实现内存版 mock 出站适配器。
 package memory_mock
 
 import (
@@ -10,14 +12,21 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
+// VectorStore is the in-memory vector adapter used for local recall, seeding, and deterministic tests.
+// VectorStore 用于作为本地召回、灌库和确定性测试中的内存向量适配器。
 type VectorStore struct {
 	mu      sync.RWMutex
 	records map[string]logicdomain.MemoryRecord
 }
 
+// NewVectorStore creates a VectorStore instance.
+// NewVectorStore 用于创建 VectorStore 实例。
 func NewVectorStore() *VectorStore {
 	return &VectorStore{records: map[string]logicdomain.MemoryRecord{}}
 }
+
+// Upsert executes the Upsert logic.
+// Upsert 用于执行 Upsert 逻辑。
 func (s *VectorStore) Upsert(ctx context.Context, record logicdomain.MemoryRecord) error {
 	select {
 	case <-ctx.Done():
@@ -32,6 +41,9 @@ func (s *VectorStore) Upsert(ctx context.Context, record logicdomain.MemoryRecor
 	s.records[record.ID] = record
 	return nil
 }
+
+// Search executes the Search logic.
+// Search 用于执行 Search 逻辑。
 func (s *VectorStore) Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
 	select {
 	case <-ctx.Done():
@@ -57,12 +69,18 @@ func (s *VectorStore) Search(ctx context.Context, vector []float32, topK int, fi
 	}
 	return hits, nil
 }
+
+// matchFilter executes the matchFilter logic.
+// matchFilter 用于执行 matchFilter 逻辑。
 func matchFilter(record, target logicdomain.SearchFilter) bool {
 	userOK := record.UserID == target.UserID || record.UserID == "" || record.UserID == "0"
 	projectOK := target.ProjectID == "" || record.ProjectID == target.ProjectID
 	spaceOK := target.SpaceID == "" || record.SpaceID == "" || record.SpaceID == target.SpaceID
 	return userOK && projectOK && spaceOK
 }
+
+// Shutdown executes the Shutdown logic.
+// Shutdown 用于执行 Shutdown 逻辑。
 func (s *VectorStore) Shutdown(ctx context.Context) error {
 	select {
 	case <-ctx.Done():

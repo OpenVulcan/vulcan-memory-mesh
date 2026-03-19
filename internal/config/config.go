@@ -1,3 +1,5 @@
+// config.go implements configuration and prompt loading.
+// config.go 用于实现配置与提示词加载。
 package config
 
 import (
@@ -13,8 +15,12 @@ import (
 	"github.com/joho/godotenv"
 )
 
+// Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
+// Duration 用于包装 time.Duration，让配置文件既能接受时长字符串，也能接受毫秒数。
 type Duration struct{ time.Duration }
 
+// UnmarshalJSON executes the UnmarshalJSON logic.
+// UnmarshalJSON 用于执行 UnmarshalJSON 逻辑。
 func (d *Duration) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -39,8 +45,12 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
+// MarshalJSON executes the MarshalJSON logic.
+// MarshalJSON 用于执行 MarshalJSON 逻辑。
 func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()) }
 
+// Config is the root runtime configuration loaded before the local application starts.
+// Config 用于表示本地应用启动前加载的根配置对象。
 type Config struct {
 	HTTP           HTTPConfig           `json:"http"`
 	LLM            LLMConfig            `json:"llm"`
@@ -52,18 +62,24 @@ type Config struct {
 	Admin          AdminConfig          `json:"admin"`
 }
 
+// HTTPConfig holds listener and timeout settings for the inbound HTTP server.
+// HTTPConfig 用于保存入站 HTTP 服务的监听地址和超时配置。
 type HTTPConfig struct {
 	ListenAddr      string             `json:"listen_addr"`
 	RequestTimeout  HTTPRequestTimeout `json:"request_timeout"`
 	ShutdownTimeout Duration           `json:"shutdown_timeout"`
 }
 
+// HTTPRequestTimeout groups per-route timeout settings used by the HTTP handlers.
+// HTTPRequestTimeout 用于收集各条 HTTP 路由使用的超时配置。
 type HTTPRequestTimeout struct {
 	PreCheck   Duration `json:"pre_check"`
 	PostAction Duration `json:"post_action"`
 	SeedMemory Duration `json:"seed_memory"`
 }
 
+// LLMConfig holds the provider and model settings used for intent extraction and other LLM tasks.
+// LLMConfig 用于保存意图提取等 LLM 任务使用的 provider 和模型配置。
 type LLMConfig struct {
 	Provider     string `json:"provider"`
 	Endpoint     string `json:"endpoint,omitempty"`
@@ -73,6 +89,8 @@ type LLMConfig struct {
 	Project      string `json:"project,omitempty"`
 }
 
+// EmbeddingConfig holds the provider and model settings used when generating recall vectors.
+// EmbeddingConfig 用于保存生成召回向量时使用的 provider 和模型配置。
 type EmbeddingConfig struct {
 	Provider     string `json:"provider"`
 	Endpoint     string `json:"endpoint,omitempty"`
@@ -83,30 +101,42 @@ type EmbeddingConfig struct {
 	Project      string `json:"project,omitempty"`
 }
 
+// VectorConfig selects the vector backend used by recall and seed-memory flows.
+// VectorConfig 用于选择记忆召回和 seed-memory 流程使用的向量后端。
 type VectorConfig struct {
 	Provider string `json:"provider"`
 }
 
+// RelationalConfig selects the relational backend used by post-action persistence.
+// RelationalConfig 用于选择 post-action 持久化流程使用的关系后端。
 type RelationalConfig struct {
 	Provider string `json:"provider"`
 	DSN      string `json:"dsn,omitempty"`
 }
 
+// PreCheckConfig controls timeout and recall window settings for the pre-check workflow.
+// PreCheckConfig 用于控制 pre-check 工作流的超时和召回窗口配置。
 type PreCheckConfig struct {
 	IntentTimeout       Duration `json:"intent_timeout"`
 	TopK                int      `json:"top_k"`
 	SimilarityThreshold float64  `json:"similarity_threshold,omitempty"`
 }
 
+// MemoryPipelineConfig controls keyword fan-out and similarity filtering in the memory recall pipeline.
+// MemoryPipelineConfig 用于控制记忆召回流水线中的关键词扇出和相似度过滤。
 type MemoryPipelineConfig struct {
 	MaxSearchKeywords  int      `json:"max_search_keywords"`
 	MinSimilarityScore *float64 `json:"min_similarity_score,omitempty"`
 }
 
+// AdminConfig controls whether local admin-only routes such as seed-memory are exposed.
+// AdminConfig 用于控制本地管理员专用路由如 seed-memory 是否暴露。
 type AdminConfig struct {
 	SeedEnabled bool `json:"seed_enabled"`
 }
 
+// DefaultLocal executes the DefaultLocal logic.
+// DefaultLocal 用于执行 DefaultLocal 逻辑。
 func DefaultLocal() Config {
 	return Config{
 		HTTP: HTTPConfig{
@@ -124,16 +154,25 @@ func DefaultLocal() Config {
 	}
 }
 
+// Load loads related data.
+// Load 用于加载相关数据。
 func Load(path string, fallback Config) (Config, error) {
 	return LoadPaths([]string{path}, fallback)
 }
 
+// LoadPaths loads related data.
+// LoadPaths 用于加载相关数据。
 func LoadPaths(paths []string, fallback Config) (Config, error) {
+	// Normalize the configured paths and preload layered .env files.
+	// 规范化配置路径并预加载分层的 .env 文件。
 	cfg := fallback
 	normalizedPaths := normalizeConfigPaths(paths)
 	if err := loadDotEnv(normalizedPaths); err != nil {
 		return Config{}, err
 	}
+
+	// Read configuration layers in order so later files override earlier ones.
+	// 按顺序读取配置层，让后面的文件覆盖前面的值。
 	for _, path := range normalizedPaths {
 		body, err := os.ReadFile(path)
 		if err != nil {
@@ -144,6 +183,9 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
 	}
+
+	// Apply environment overrides and then finalize normalization plus validation.
+	// 应用环境变量覆盖，然后完成归一化与校验。
 	applyEnvOverrides(&cfg)
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
@@ -152,6 +194,8 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	return cfg, nil
 }
 
+// normalizeConfigPaths executes the normalizeConfigPaths logic.
+// normalizeConfigPaths 用于执行 normalizeConfigPaths 逻辑。
 func normalizeConfigPaths(paths []string) []string {
 	normalized := make([]string, 0, len(paths))
 	for _, raw := range paths {
@@ -174,7 +218,11 @@ func normalizeConfigPaths(paths []string) []string {
 	return normalized
 }
 
+// loadDotEnv loads related data.
+// loadDotEnv 用于加载相关数据。
 func loadDotEnv(configPaths []string) error {
+	// Merge .env files according to the resolved config search order.
+	// 按解析后的配置搜索顺序合并 .env 文件。
 	mergedEnv := map[string]string{}
 	for _, configPath := range configPaths {
 		for _, candidate := range dotEnvCandidates(configPath) {
@@ -190,6 +238,9 @@ func loadDotEnv(configPaths []string) error {
 			}
 		}
 	}
+
+	// Materialize merged values only when the process environment has not provided them.
+	// 仅当进程环境未显式提供值时，才落入合并后的 .env 变量。
 	for key, value := range mergedEnv {
 		if _, exists := os.LookupEnv(key); exists {
 			continue
@@ -201,6 +252,8 @@ func loadDotEnv(configPaths []string) error {
 	return nil
 }
 
+// dotEnvCandidates executes the dotEnvCandidates logic.
+// dotEnvCandidates 用于执行 dotEnvCandidates 逻辑。
 func dotEnvCandidates(configPath string) []string {
 	candidates := make([]string, 0, 2)
 	seen := map[string]struct{}{}
@@ -227,9 +280,15 @@ func dotEnvCandidates(configPath string) []string {
 	return candidates
 }
 
+// float64Ptr executes the float64Ptr logic.
+// float64Ptr 用于执行 float64Ptr 逻辑。
 func float64Ptr(v float64) *float64 { return &v }
 
+// Normalize executes the Normalize logic.
+// Normalize 用于执行 Normalize 逻辑。
 func (c *Config) Normalize() {
+	// Backfill safe defaults for HTTP timeouts and shutdown behavior.
+	// 为 HTTP 超时和关闭行为补齐安全默认值。
 	if c.HTTP.RequestTimeout.PreCheck.Duration <= 0 {
 		c.HTTP.RequestTimeout.PreCheck = Duration{3 * time.Second}
 	}
@@ -248,6 +307,9 @@ func (c *Config) Normalize() {
 	if c.PreCheck.TopK <= 0 {
 		c.PreCheck.TopK = 5
 	}
+
+	// Clamp memory pipeline knobs to keep recall fan-out predictable.
+	// 对记忆流水线参数做钳制，保持召回扇出可控。
 	if c.MemoryPipeline.MaxSearchKeywords <= 0 {
 		c.MemoryPipeline.MaxSearchKeywords = 5
 	}
@@ -264,12 +326,19 @@ func (c *Config) Normalize() {
 	if c.Embedding.Dimension <= 0 && strings.EqualFold(c.Embedding.Provider, "mock") {
 		c.Embedding.Dimension = 64
 	}
+
+	// Default the relational backend to memory for the local OSS runtime.
+	// 为本地 OSS 运行时将关系后端默认归一到内存实现。
 	if strings.TrimSpace(c.Relational.Provider) == "" {
 		c.Relational.Provider = "memory"
 	}
 }
 
+// Validate validates the input value.
+// Validate 用于校验输入值。
 func (c Config) Validate() error {
+	// Verify the minimum runtime contract before the application starts.
+	// 在应用启动前验证最小运行时契约。
 	if strings.TrimSpace(c.HTTP.ListenAddr) == "" {
 		return errors.New("http.listen_addr is required")
 	}
@@ -291,7 +360,11 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// applyEnvOverrides applies the target settings.
+// applyEnvOverrides 用于应用目标设置。
 func applyEnvOverrides(cfg *Config) {
+	// Reapply explicit process-level overrides after file-based expansion.
+	// 在文件占位符展开之后，再次应用进程级显式覆盖。
 	setString := func(k string, target *string) {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			*target = v

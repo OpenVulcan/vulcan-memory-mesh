@@ -1,3 +1,5 @@
+// manager_test.go implements configuration and prompt loading.
+// manager_test.go 用于实现配置与提示词加载。
 package config
 
 import (
@@ -7,6 +9,8 @@ import (
 	"testing"
 )
 
+// TestNewPromptManagerFailsWhenSystemDefaultIsIncomplete verifies the TestNewPromptManagerFailsWhenSystemDefaultIsIncomplete behavior.
+// TestNewPromptManagerFailsWhenSystemDefaultIsIncomplete 用于验证 TestNewPromptManagerFailsWhenSystemDefaultIsIncomplete 行为。
 func TestNewPromptManagerFailsWhenSystemDefaultIsIncomplete(t *testing.T) {
 	systemDir := t.TempDir()
 	userDir := t.TempDir()
@@ -22,6 +26,8 @@ func TestNewPromptManagerFailsWhenSystemDefaultIsIncomplete(t *testing.T) {
 	}
 }
 
+// TestNewPromptManagerFailsWhenSystemRouteFolderIsIncomplete verifies the TestNewPromptManagerFailsWhenSystemRouteFolderIsIncomplete behavior.
+// TestNewPromptManagerFailsWhenSystemRouteFolderIsIncomplete 用于验证 TestNewPromptManagerFailsWhenSystemRouteFolderIsIncomplete 行为。
 func TestNewPromptManagerFailsWhenSystemRouteFolderIsIncomplete(t *testing.T) {
 	systemDir := t.TempDir()
 	userDir := t.TempDir()
@@ -41,6 +47,8 @@ func TestNewPromptManagerFailsWhenSystemRouteFolderIsIncomplete(t *testing.T) {
 	}
 }
 
+// TestNewPromptManagerFailsWhenUserOverrideFolderIsIncomplete verifies the TestNewPromptManagerFailsWhenUserOverrideFolderIsIncomplete behavior.
+// TestNewPromptManagerFailsWhenUserOverrideFolderIsIncomplete 用于验证 TestNewPromptManagerFailsWhenUserOverrideFolderIsIncomplete 行为。
 func TestNewPromptManagerFailsWhenUserOverrideFolderIsIncomplete(t *testing.T) {
 	systemDir := t.TempDir()
 	userDir := t.TempDir()
@@ -62,6 +70,8 @@ func TestNewPromptManagerFailsWhenUserOverrideFolderIsIncomplete(t *testing.T) {
 	}
 }
 
+// TestNewPromptManagerFailsWhenWildcardRouteDoesNotPointToDefault verifies the TestNewPromptManagerFailsWhenWildcardRouteDoesNotPointToDefault behavior.
+// TestNewPromptManagerFailsWhenWildcardRouteDoesNotPointToDefault 用于验证 TestNewPromptManagerFailsWhenWildcardRouteDoesNotPointToDefault 行为。
 func TestNewPromptManagerFailsWhenWildcardRouteDoesNotPointToDefault(t *testing.T) {
 	systemDir := t.TempDir()
 	userDir := t.TempDir()
@@ -80,6 +90,8 @@ func TestNewPromptManagerFailsWhenWildcardRouteDoesNotPointToDefault(t *testing.
 	}
 }
 
+// TestPromptManagerUsesLongestPrefixAndUserPriority verifies the TestPromptManagerUsesLongestPrefixAndUserPriority behavior.
+// TestPromptManagerUsesLongestPrefixAndUserPriority 用于验证 TestPromptManagerUsesLongestPrefixAndUserPriority 行为。
 func TestPromptManagerUsesLongestPrefixAndUserPriority(t *testing.T) {
 	systemDir := t.TempDir()
 	userDir := t.TempDir()
@@ -130,6 +142,8 @@ func TestPromptManagerUsesLongestPrefixAndUserPriority(t *testing.T) {
 	}
 }
 
+// TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome verifies the TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome behavior.
+// TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome 用于验证 TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome 行为。
 func TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
@@ -162,6 +176,8 @@ func TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome(t *testing.T) {
 	}
 }
 
+// writeRequiredScenes executes the writeRequiredScenes logic.
+// writeRequiredScenes 用于执行 writeRequiredScenes 逻辑。
 func writeRequiredScenes(t *testing.T, dir, prefix string) {
 	t.Helper()
 	for _, scene := range RequiredScenes {
@@ -169,6 +185,8 @@ func writeRequiredScenes(t *testing.T, dir, prefix string) {
 	}
 }
 
+// writeScene executes the writeScene logic.
+// writeScene 用于执行 writeScene 逻辑。
 func writeScene(t *testing.T, dir, name, body string) {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o755); err != nil {
@@ -179,6 +197,8 @@ func writeScene(t *testing.T, dir, name, body string) {
 	}
 }
 
+// writeRoutes executes the writeRoutes logic.
+// writeRoutes 用于执行 writeRoutes 逻辑。
 func writeRoutes(t *testing.T, path string, routes RouteMap) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {

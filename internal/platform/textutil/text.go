@@ -1,3 +1,5 @@
+// text.go implements shared platform helpers.
+// text.go 用于实现共享平台辅助能力。
 package textutil
 
 import (
@@ -6,6 +8,8 @@ import (
 	"strings"
 )
 
+// Variables hold reusable regex helpers for whitespace cleanup, tokenization, and thought-tag stripping.
+// Variables 用于保存空白清理、分词和思维标签剥离所需的正则辅助工具。
 var (
 	thoughtPatterns = []*regexp.Regexp{
 		regexp.MustCompile(`(?is)<think>.*?</think>`),
@@ -18,6 +22,8 @@ var (
 	tokenPattern = regexp.MustCompile(`[\p{Han}]+|[a-zA-Z0-9_\-\.]+`)
 )
 
+// NormalizeWhitespace executes the NormalizeWhitespace logic.
+// NormalizeWhitespace 用于执行 NormalizeWhitespace 逻辑。
 func NormalizeWhitespace(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -26,6 +32,8 @@ func NormalizeWhitespace(s string) string {
 	return strings.TrimSpace(spacePattern.ReplaceAllString(s, " "))
 }
 
+// StripThoughtTags strips the target content.
+// StripThoughtTags 用于剥离目标内容。
 func StripThoughtTags(s string) string {
 	out := s
 	for _, re := range thoughtPatterns {
@@ -34,6 +42,8 @@ func StripThoughtTags(s string) string {
 	return NormalizeWhitespace(out)
 }
 
+// Tokenize executes the Tokenize logic.
+// Tokenize 用于执行 Tokenize 逻辑。
 func Tokenize(s string) []string {
 	out := make([]string, 0)
 	for _, token := range tokenPattern.FindAllString(strings.ToLower(NormalizeWhitespace(s)), -1) {
@@ -44,6 +54,8 @@ func Tokenize(s string) []string {
 	return out
 }
 
+// ExtractTextFromAny extracts the target data.
+// ExtractTextFromAny 用于提取目标数据。
 func ExtractTextFromAny(v any) string {
 	switch tv := v.(type) {
 	case nil:
@@ -75,6 +87,8 @@ func ExtractTextFromAny(v any) string {
 	}
 }
 
+// ExtractTextFromRawJSON extracts the target data.
+// ExtractTextFromRawJSON 用于提取目标数据。
 func ExtractTextFromRawJSON(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""

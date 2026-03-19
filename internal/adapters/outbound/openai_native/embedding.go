@@ -1,3 +1,5 @@
+// embedding.go implements the OpenAI-compatible outbound adapters.
+// embedding.go 用于实现 OpenAI 兼容的出站适配器。
 package openai_native
 
 import (
@@ -9,16 +11,25 @@ import (
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
+// EmbeddingClient adapts the internal embedding port onto the official OpenAI embeddings SDK.
+// EmbeddingClient 用于把内部 embedding 端口适配到官方 OpenAI Embeddings SDK。
 type EmbeddingClient struct {
 	client    *Client
 	model     string
 	dimension int
 }
 
+// NewEmbeddingClient creates a EmbeddingClient instance.
+// NewEmbeddingClient 用于创建 EmbeddingClient 实例。
 func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, organization, project string) *EmbeddingClient {
 	return &EmbeddingClient{client: NewClient(endpoint, apiKey, organization, project, nil), model: strings.TrimSpace(model), dimension: dimension}
 }
+
+// Embed executes the Embed logic.
+// Embed 用于执行 Embed 逻辑。
 func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+	// Sanitize the input batch and apply adapter-level request guards first.
+	// 先清洗输入批次，并应用适配器级别的请求防线。
 	if c == nil || c.client == nil || c.client.sdkClient == nil {
 		return appports.EmbeddingResponse{}, fmt.Errorf("openai native client is nil")
 	}
@@ -41,6 +52,9 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	if model == "" {
 		return appports.EmbeddingResponse{}, fmt.Errorf("openai native embedding model is required")
 	}
+
+	// Build the SDK request from the internal embedding contract.
+	// 根据内部 embedding 契约组装 SDK 请求。
 	dimension := req.Dimension
 	if dimension <= 0 {
 		dimension = c.dimension
@@ -57,6 +71,9 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	if err != nil {
 		return appports.EmbeddingResponse{}, err
 	}
+
+	// Convert the SDK response vectors into the internal float32 representation.
+	// 将 SDK 返回的向量结果转换为内部使用的 float32 结构。
 	if resp == nil || len(resp.Data) == 0 {
 		return appports.EmbeddingResponse{}, fmt.Errorf("openai native embedding empty response")
 	}
@@ -71,6 +88,8 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	return appports.EmbeddingResponse{Vectors: vectors}, nil
 }
 
+// mapEmbeddingInput maps values into the target shape.
+// mapEmbeddingInput 用于将值映射到目标结构。
 func mapEmbeddingInput(texts []string) openai.EmbeddingNewParamsInputUnion {
 	if len(texts) == 1 {
 		return openai.EmbeddingNewParamsInputUnion{OfString: openai.String(texts[0])}
@@ -78,7 +97,11 @@ func mapEmbeddingInput(texts []string) openai.EmbeddingNewParamsInputUnion {
 	return openai.EmbeddingNewParamsInputUnion{OfArrayOfStrings: texts}
 }
 
+// applyEmbeddingHints applies the target settings.
+// applyEmbeddingHints 用于应用目标设置。
 func applyEmbeddingHints(params *openai.EmbeddingNewParams, hints map[string]any) {
+	// Map a safe subset of provider hints onto the official SDK request fields.
+	// 将安全子集的 provider hints 映射到官方 SDK 请求字段。
 	if params == nil {
 		return
 	}

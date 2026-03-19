@@ -1,3 +1,5 @@
+// config_test.go implements configuration and prompt loading.
+// config_test.go 用于实现配置与提示词加载。
 package config
 
 import (
@@ -6,6 +8,8 @@ import (
 	"testing"
 )
 
+// TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp verifies the TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp behavior.
+// TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp 用于验证 TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp 行为。
 func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
 	cfg := DefaultLocal()
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
@@ -32,6 +36,8 @@ func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
 	}
 }
 
+// TestLoadExpandsEnvPlaceholdersFromDotEnv verifies the TestLoadExpandsEnvPlaceholdersFromDotEnv behavior.
+// TestLoadExpandsEnvPlaceholdersFromDotEnv 用于验证 TestLoadExpandsEnvPlaceholdersFromDotEnv 行为。
 func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
 	const key = "TEST_CONFIG_API_KEY"
 	restoreEnv(t, key)
@@ -68,6 +74,8 @@ func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
 	}
 }
 
+// TestLoadIgnoresMissingDotEnvAndUsesProcessEnv verifies the TestLoadIgnoresMissingDotEnvAndUsesProcessEnv behavior.
+// TestLoadIgnoresMissingDotEnvAndUsesProcessEnv 用于验证 TestLoadIgnoresMissingDotEnvAndUsesProcessEnv 行为。
 func TestLoadIgnoresMissingDotEnvAndUsesProcessEnv(t *testing.T) {
 	const key = "TEST_CONFIG_ENV_ONLY"
 	t.Setenv(key, "from-process-env")
@@ -101,6 +109,8 @@ func TestLoadIgnoresMissingDotEnvAndUsesProcessEnv(t *testing.T) {
 	}
 }
 
+// TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority verifies the TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority behavior.
+// TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority 用于验证 TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority 行为。
 func TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority(t *testing.T) {
 	const key = "TEST_LOAD_PATHS_KEY"
 	restoreEnv(t, key)
@@ -156,6 +166,8 @@ func TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority(t *testing.
 	}
 }
 
+// TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride verifies the TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride behavior.
+// TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride 用于验证 TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride 行为。
 func TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride(t *testing.T) {
 	const key = "TEST_LOAD_PATHS_EXPLICIT_FILE_KEY"
 	restoreEnv(t, key)
@@ -207,6 +219,8 @@ func TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride(t *testing.T) {
 	}
 }
 
+// restoreEnv executes the restoreEnv logic.
+// restoreEnv 用于执行 restoreEnv 逻辑。
 func restoreEnv(t *testing.T, key string) {
 	t.Helper()
 	value, existed := os.LookupEnv(key)

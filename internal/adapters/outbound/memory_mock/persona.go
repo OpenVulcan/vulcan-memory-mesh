@@ -1,3 +1,5 @@
+// persona.go implements the in-memory mock outbound adapters.
+// persona.go 用于实现内存版 mock 出站适配器。
 package memory_mock
 
 import (
@@ -6,9 +8,16 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
+// PersonaProvider is the local mock persona adapter used to inject fixed persona data during development.
+// PersonaProvider 用于作为本地 mock 画像适配器，在开发阶段注入固定画像数据。
 type PersonaProvider struct{}
 
+// NewPersonaProvider creates a PersonaProvider instance.
+// NewPersonaProvider 用于创建 PersonaProvider 实例。
 func NewPersonaProvider() *PersonaProvider { return &PersonaProvider{} }
+
+// Load loads related data.
+// Load 用于加载相关数据。
 func (p *PersonaProvider) Load(ctx context.Context, session logicdomain.SessionRef) (logicdomain.PersonaContext, error) {
 	select {
 	case <-ctx.Done():

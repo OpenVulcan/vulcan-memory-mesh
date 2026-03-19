@@ -1,3 +1,5 @@
+// llm_test.go implements the OpenAI-compatible outbound adapters.
+// llm_test.go 用于实现 OpenAI 兼容的出站适配器。
 package openai_native
 
 import (
@@ -12,6 +14,8 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
+// TestLLMClientGenerateMapsRequestToSDK verifies the TestLLMClientGenerateMapsRequestToSDK behavior.
+// TestLLMClientGenerateMapsRequestToSDK 用于验证 TestLLMClientGenerateMapsRequestToSDK 行为。
 func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 	var gotHeaders http.Header
 	var gotBody map[string]any

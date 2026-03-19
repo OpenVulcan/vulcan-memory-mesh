@@ -1,3 +1,5 @@
+// vector_store_test.go implements the in-memory mock outbound adapters.
+// vector_store_test.go 用于实现内存版 mock 出站适配器。
 package memory_mock
 
 import (
@@ -8,6 +10,8 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
+// TestVectorStoreSearchOrdersBySimilarity verifies the TestVectorStoreSearchOrdersBySimilarity behavior.
+// TestVectorStoreSearchOrdersBySimilarity 用于验证 TestVectorStoreSearchOrdersBySimilarity 行为。
 func TestVectorStoreSearchOrdersBySimilarity(t *testing.T) {
 	embed := NewEmbeddingClient(16)
 	store := NewVectorStore()

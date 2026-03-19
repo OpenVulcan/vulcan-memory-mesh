@@ -1,3 +1,5 @@
+// app.go implements the application composition root.
+// app.go 用于实现应用组合根。
 package app
 
 import (
@@ -20,6 +22,8 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/xid"
 )
 
+// Application holds the fully wired local runtime, including the HTTP server and shutdown hooks.
+// Application 用于持有完整装配后的本地运行时，包括 HTTP 服务和关闭钩子。
 type Application struct {
 	Config    config.Config
 	Logger    *log.Logger
@@ -28,13 +32,22 @@ type Application struct {
 	Shutdowns []appports.Shutdowner
 }
 
+// NewLocal creates a Local instance.
+// NewLocal 用于创建 Local 实例。
 func NewLocal(cfg config.Config, prompts appports.PromptSource) (*Application, error) {
 	return newApplication(cfg, prompts)
 }
 
+// newApplication creates a Application instance.
+// newApplication 用于创建 Application 实例。
 func newApplication(cfg config.Config, prompts appports.PromptSource) (*Application, error) {
+	// Initialize shared runtime utilities such as logging and ID generation.
+	// 初始化日志和 ID 生成器等共享运行时能力。
 	logger := log.New(os.Stdout, "[vmm] ", log.LstdFlags|log.Lmicroseconds|log.LUTC)
 	ids := xid.NewGenerator()
+
+	// Build outbound dependencies from the active configuration.
+	// 根据当前配置构建出站依赖。
 	llm, err := buildLLM(cfg)
 	if err != nil {
 		return nil, err
@@ -52,10 +65,16 @@ func newApplication(cfg config.Config, prompts appports.PromptSource) (*Applicat
 		return nil, err
 	}
 	persona := buildPersona()
+
+	// Compose use cases on top of processors and outbound ports.
+	// 在处理器和出站端口之上装配用例层。
 	pre := usecase.NewPreCheckUseCase(processor.NewIntentExtractor(llm, prompts, cfg.LLM.Model, cfg.MemoryPipeline.MaxSearchKeywords), processor.NewContextAssembler(prompts, cfg.LLM.Model), embedding, vector, persona, logger, cfg.PreCheck.IntentTimeout.Duration, cfg.PreCheck.TopK, cfg.MemoryPipeline.MaxSearchKeywords, cfg.MemoryPipeline.MinSimilarityScore, cfg.Embedding.Model, cfg.Embedding.Dimension)
 	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), relational, logger)
 	seed := usecase.NewSeedMemoryUseCase(embedding, vector, ids, logger, cfg.Embedding.Model, cfg.Embedding.Dimension)
 	enableSeed := cfg.Admin.SeedEnabled
+
+	// Wire HTTP handlers and shutdown dependencies into the application container.
+	// 将 HTTP 处理器和关闭依赖接入应用容器。
 	deps := httpapi.Dependencies{IDs: ids, PreCheck: pre, PostAction: post, SeedMemory: seed, Logger: logger, PreCheckTimeout: cfg.HTTP.RequestTimeout.PreCheck.Duration, PostActionTimeout: cfg.HTTP.RequestTimeout.PostAction.Duration, SeedMemoryTimeout: cfg.HTTP.RequestTimeout.SeedMemory.Duration, EnableSeedRoute: enableSeed}
 	handler := httpapi.NewRouter(deps)
 	shutdowns := []appports.Shutdowner{}
@@ -69,7 +88,11 @@ func newApplication(cfg config.Config, prompts appports.PromptSource) (*Applicat
 	return &Application{Config: cfg, Logger: logger, Handler: handler, Server: server, Shutdowns: shutdowns}, nil
 }
 
+// Run executes the Run logic.
+// Run 用于执行 Run 逻辑。
 func (a *Application) Run(ctx context.Context) error {
+	// Start the HTTP server asynchronously so shutdown signals can be observed.
+	// 异步启动 HTTP 服务，以便同时监听关闭信号。
 	errCh := make(chan error, 1)
 	go func() {
 		a.Logger.Printf("http server listening on %s", a.Server.Addr)
@@ -82,6 +105,9 @@ func (a *Application) Run(ctx context.Context) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
+
+	// Coordinate graceful shutdown across context cancellation, OS signals, and server failures.
+	// 在上下文取消、系统信号和服务异常之间协调优雅停机。
 	select {
 	case <-ctx.Done():
 		return a.Shutdown(context.Background())
@@ -92,12 +118,20 @@ func (a *Application) Run(ctx context.Context) error {
 		return err
 	}
 }
+
+// Shutdown executes the Shutdown logic.
+// Shutdown 用于执行 Shutdown 逻辑。
 func (a *Application) Shutdown(ctx context.Context) error {
+	// Stop accepting new HTTP requests before tearing down downstream resources.
+	// 先停止接收新的 HTTP 请求，再销毁下游资源。
 	shutdownCtx, cancel := context.WithTimeout(ctx, a.Config.HTTP.ShutdownTimeout.Duration)
 	defer cancel()
 	if err := a.Server.Shutdown(shutdownCtx); err != nil {
 		return fmt.Errorf("shutdown http server: %w", err)
 	}
+
+	// Release dependencies in reverse order to match the construction sequence.
+	// 按构建的逆序释放依赖，保证关闭顺序稳定。
 	for i := len(a.Shutdowns) - 1; i >= 0; i-- {
 		if err := a.Shutdowns[i].Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown dependency[%d]: %w", i, err)
@@ -106,7 +140,11 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	return nil
 }
 
+// buildLLM builds the target dependency.
+// buildLLM 用于构建目标依赖。
 func buildLLM(cfg config.Config) (appports.LLMClient, error) {
+	// Select the LLM adapter according to the configured provider.
+	// 根据配置的 provider 选择对应的 LLM 适配器。
 	switch strings.ToLower(cfg.LLM.Provider) {
 	case "mock", "memory", "memory_mock":
 		return memory_mock.NewLLMClient(), nil
@@ -116,7 +154,12 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
 	}
 }
+
+// buildEmbedding builds the target dependency.
+// buildEmbedding 用于构建目标依赖。
 func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
+	// Select the embedding adapter according to the configured provider.
+	// 根据配置的 provider 选择对应的 embedding 适配器。
 	switch strings.ToLower(cfg.Embedding.Provider) {
 	case "mock", "memory", "memory_mock":
 		return memory_mock.NewEmbeddingClient(cfg.Embedding.Dimension), nil
@@ -126,7 +169,12 @@ func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
 	}
 }
+
+// buildVector builds the target dependency.
+// buildVector 用于构建目标依赖。
 func buildVector(cfg config.Config) (appports.VectorStore, error) {
+	// Select the vector store adapter according to the configured provider.
+	// 根据配置的 provider 选择对应的向量存储适配器。
 	switch strings.ToLower(cfg.Vector.Provider) {
 	case "memory", "mock", "memory_mock":
 		return memory_mock.NewVectorStore(), nil
@@ -134,7 +182,12 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 		return nil, fmt.Errorf("unsupported vector provider: %s", cfg.Vector.Provider)
 	}
 }
+
+// buildRelational builds the target dependency.
+// buildRelational 用于构建目标依赖。
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
+	// Select the relational store adapter according to the configured provider.
+	// 根据配置的 provider 选择对应的关系存储适配器。
 	switch strings.ToLower(cfg.Relational.Provider) {
 	case "", "memory", "mock", "memory_mock":
 		return memory_mock.NewRelationalStore(), nil
@@ -142,6 +195,11 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 		return nil, fmt.Errorf("unsupported relational provider: %s", cfg.Relational.Provider)
 	}
 }
+
+// buildPersona builds the target dependency.
+// buildPersona 用于构建目标依赖。
 func buildPersona() appports.ContextPersonaProvider {
+	// Use the local persona provider for the OSS local runtime.
+	// 在 OSS 本地运行时中使用本地画像提供器。
 	return memory_mock.NewPersonaProvider()
 }

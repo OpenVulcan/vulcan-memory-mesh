@@ -1,3 +1,5 @@
+// embedding_test.go implements the OpenAI-compatible outbound adapters.
+// embedding_test.go 用于实现 OpenAI 兼容的出站适配器。
 package openai_native
 
 import (
@@ -11,6 +13,8 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
+// TestEmbeddingClientRejectsTooManyTexts verifies the TestEmbeddingClientRejectsTooManyTexts behavior.
+// TestEmbeddingClientRejectsTooManyTexts 用于验证 TestEmbeddingClientRejectsTooManyTexts 行为。
 func TestEmbeddingClientRejectsTooManyTexts(t *testing.T) {
 	client := NewEmbeddingClient("http://example.com", "key", "text-embedding-3-large", 1024, "", "")
 	texts := make([]string, 11)
@@ -23,6 +27,8 @@ func TestEmbeddingClientRejectsTooManyTexts(t *testing.T) {
 	}
 }
 
+// TestEmbeddingClientPassesDimension verifies the TestEmbeddingClientPassesDimension behavior.
+// TestEmbeddingClientPassesDimension 用于验证 TestEmbeddingClientPassesDimension 行为。
 func TestEmbeddingClientPassesDimension(t *testing.T) {
 	var got map[string]any
 	var gotHeaders http.Header

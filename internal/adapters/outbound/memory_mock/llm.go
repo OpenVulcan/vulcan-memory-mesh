@@ -1,3 +1,5 @@
+// llm.go implements the in-memory mock outbound adapters.
+// llm.go 用于实现内存版 mock 出站适配器。
 package memory_mock
 
 import (
@@ -11,14 +13,20 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/textutil"
 )
 
+// LLMClient is the in-memory LLM adapter used to simulate deterministic model behavior in local tests.
+// LLMClient 用于作为内存版 LLM 适配器，在本地测试中模拟确定性的模型行为。
 type LLMClient struct {
 	Delay      time.Duration
 	ForceError error
 	Override   func(req appports.LLMRequest) string
 }
 
+// NewLLMClient creates a LLMClient instance.
+// NewLLMClient 用于创建 LLMClient 实例。
 func NewLLMClient() *LLMClient { return &LLMClient{} }
 
+// Generate executes the Generate logic.
+// Generate 用于执行 Generate 逻辑。
 func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
 	if c.Delay > 0 {
 		timer := time.NewTimer(c.Delay)
@@ -51,6 +59,8 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	return appports.LLMResponse{Content: strings.TrimSpace(req.UserPrompt)}, nil
 }
 
+// synthesizeIntent executes the synthesizeIntent logic.
+// synthesizeIntent 用于执行 synthesizeIntent 逻辑。
 func synthesizeIntent(text string) ([]string, bool) {
 	lowered := strings.ToLower(strings.TrimSpace(text))
 	if containsAny(lowered, "无需记忆", "不用查记忆", "need_memory=false") {
@@ -94,6 +104,9 @@ func synthesizeIntent(text string) ([]string, bool) {
 	}
 	return out, true
 }
+
+// marshalStringArray executes the marshalStringArray logic.
+// marshalStringArray 用于执行 marshalStringArray 逻辑。
 func marshalStringArray(items []string) string {
 	if len(items) == 0 {
 		return "[]"
@@ -104,6 +117,9 @@ func marshalStringArray(items []string) string {
 	}
 	return "[" + strings.Join(parts, ",") + "]"
 }
+
+// containsAny checks whether any candidate matches.
+// containsAny 用于检查是否存在匹配项。
 func containsAny(s string, terms ...string) bool {
 	for _, term := range terms {
 		if strings.Contains(s, strings.ToLower(term)) {

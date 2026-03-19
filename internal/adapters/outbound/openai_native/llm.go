@@ -1,3 +1,5 @@
+// llm.go implements the OpenAI-compatible outbound adapters.
+// llm.go 用于实现 OpenAI 兼容的出站适配器。
 package openai_native
 
 import (
@@ -13,15 +15,24 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
+// LLMClient adapts the internal generation port onto the official OpenAI chat completions SDK.
+// LLMClient 用于把内部生成端口适配到官方 OpenAI Chat Completions SDK。
 type LLMClient struct {
 	client *Client
 	model  string
 }
 
+// NewLLMClient creates a LLMClient instance.
+// NewLLMClient 用于创建 LLMClient 实例。
 func NewLLMClient(endpoint, apiKey, model, organization, project string) *LLMClient {
 	return &LLMClient{client: NewClient(endpoint, apiKey, organization, project, nil), model: strings.TrimSpace(model)}
 }
+
+// Generate executes the Generate logic.
+// Generate 用于执行 Generate 逻辑。
 func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
+	// Resolve the target model and translate the internal request into SDK params.
+	// 解析目标模型，并将内部请求翻译成 SDK 参数。
 	if c == nil || c.client == nil || c.client.sdkClient == nil {
 		return appports.LLMResponse{}, fmt.Errorf("openai native client is nil")
 	}
@@ -40,6 +51,9 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 		params.ResponseFormat = *responseFormat
 	}
 	applyProviderHints(&params, req.ProviderHints, c.client.compatibleMode)
+
+	// Execute the provider call and reject structurally empty results.
+	// 执行模型调用，并拒绝结构上为空的返回结果。
 	resp, err := c.client.sdkClient.Chat.Completions.New(ctx, params, requestOptionsFromContext(ctx)...)
 	if err != nil {
 		return appports.LLMResponse{}, err
@@ -51,6 +65,9 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	if strings.TrimSpace(content) == "" {
 		return appports.LLMResponse{}, fmt.Errorf("openai native chat completion empty content")
 	}
+
+	// Convert the SDK usage shape into the internal response contract.
+	// 将 SDK 的 usage 结构转换为内部响应契约。
 	return appports.LLMResponse{
 		Content: content,
 		Usage: logicdomain.LLMUsage{
@@ -61,6 +78,8 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	}, nil
 }
 
+// buildChatMessages builds the target dependency.
+// buildChatMessages 用于构建目标依赖。
 func buildChatMessages(systemPrompt, userPrompt string) []openai.ChatCompletionMessageParamUnion {
 	messages := make([]openai.ChatCompletionMessageParamUnion, 0, 2)
 	if prompt := strings.TrimSpace(systemPrompt); prompt != "" {
@@ -72,6 +91,8 @@ func buildChatMessages(systemPrompt, userPrompt string) []openai.ChatCompletionM
 	return messages
 }
 
+// mapResponseFormat maps values into the target shape.
+// mapResponseFormat 用于将值映射到目标结构。
 func mapResponseFormat(format appports.LLMResponseFormat) *openai.ChatCompletionNewParamsResponseFormatUnion {
 	switch format {
 	case appports.LLMResponseFormatJSON:
@@ -86,7 +107,11 @@ func mapResponseFormat(format appports.LLMResponseFormat) *openai.ChatCompletion
 	}
 }
 
+// applyProviderHints applies the target settings.
+// applyProviderHints 用于应用目标设置。
 func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string]any, compatibleMode bool) {
+	// Apply portable hint fields and keep compatibility-only fields in extra payload.
+	// 应用可移植的 hint 字段，并把兼容模式专属字段放入扩展载荷。
 	if params == nil {
 		return
 	}
@@ -184,7 +209,11 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 	}
 }
 
+// requestOptionsFromContext executes the requestOptionsFromContext logic.
+// requestOptionsFromContext 用于执行 requestOptionsFromContext 逻辑。
 func requestOptionsFromContext(ctx context.Context) []option.RequestOption {
+	// Forward trace identifiers to the provider for cross-system request correlation.
+	// 将 trace 标识透传给模型提供方，便于跨系统请求关联。
 	traceID := strings.TrimSpace(trace.IDFromContext(ctx))
 	if traceID == "" {
 		return nil
@@ -195,6 +224,8 @@ func requestOptionsFromContext(ctx context.Context) []option.RequestOption {
 	}
 }
 
+// floatHint executes the floatHint logic.
+// floatHint 用于执行 floatHint 逻辑。
 func floatHint(value any) (float64, bool) {
 	switch tv := value.(type) {
 	case float64:
@@ -212,6 +243,8 @@ func floatHint(value any) (float64, bool) {
 	}
 }
 
+// intHint executes the intHint logic.
+// intHint 用于执行 intHint 逻辑。
 func intHint(value any) (int64, bool) {
 	switch tv := value.(type) {
 	case int:
@@ -229,11 +262,15 @@ func intHint(value any) (int64, bool) {
 	}
 }
 
+// boolHint executes the boolHint logic.
+// boolHint 用于执行 boolHint 逻辑。
 func boolHint(value any) (bool, bool) {
 	tv, ok := value.(bool)
 	return tv, ok
 }
 
+// stringHint executes the stringHint logic.
+// stringHint 用于执行 stringHint 逻辑。
 func stringHint(value any) (string, bool) {
 	tv, ok := value.(string)
 	if !ok {
@@ -246,6 +283,8 @@ func stringHint(value any) (string, bool) {
 	return tv, true
 }
 
+// stopHint executes the stopHint logic.
+// stopHint 用于执行 stopHint 逻辑。
 func stopHint(value any) (openai.ChatCompletionNewParamsStopUnion, bool) {
 	switch tv := value.(type) {
 	case string:
