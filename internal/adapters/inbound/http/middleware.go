@@ -6,13 +6,14 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
@@ -67,9 +68,9 @@ func TraceIDMiddleware(ids appports.IDGenerator) Middleware {
 
 // RecoveryMiddleware executes the RecoveryMiddleware logic.
 // RecoveryMiddleware 用于执行 RecoveryMiddleware 逻辑。
-func RecoveryMiddleware(logger *log.Logger) Middleware {
+func RecoveryMiddleware(logger *logx.Logger) Middleware {
 	if logger == nil {
-		logger = log.Default()
+		logger = logx.Default()
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -77,8 +78,8 @@ func RecoveryMiddleware(logger *log.Logger) Middleware {
 			// 将未预期的 panic 转成携带 trace 上下文的稳定 500 响应。
 			defer func() {
 				if rec := recover(); rec != nil {
-					logger.Printf("panic recovered trace_id=%s err=%v", trace.IDFromContext(r.Context()), rec)
-					writeJSON(w, http.StatusInternalServerError, Envelope{Code: http.StatusInternalServerError, Msg: "internal server error", TraceID: trace.IDFromContext(r.Context())})
+					logger.Error("panic recovered", "trace_id", trace.IDFromContext(r.Context()), "err", rec)
+					writeErrorDescriptor(w, trace.IDFromContext(r.Context()), errInternal)
 				}
 			}()
 			next.ServeHTTP(w, r)
@@ -86,46 +87,91 @@ func RecoveryMiddleware(logger *log.Logger) Middleware {
 	}
 }
 
+// BodyCaptureMiddleware enforces request-body limits and preserves compact POST payloads for later logging.
+// BodyCaptureMiddleware 用于执行请求包体限制，并为后续日志保留压缩后的 POST 载荷。
+func BodyCaptureMiddleware(maxBytes int64) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			// Limit and replay request bodies once so downstream code can decode safely.
+			// 先限制并回放请求体，确保下游可以安全解码。
+			body, req, err := captureRequestBody(w, r, maxBytes)
+			if err != nil {
+				writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeError(err))
+				return
+			}
+			if body != "" {
+				ctx := context.WithValue(req.Context(), requestBodyContextKey, body)
+				req = req.WithContext(ctx)
+			}
+			next.ServeHTTP(w, req)
+		})
+	}
+}
+
 // RequestLoggerMiddleware executes the RequestLoggerMiddleware logic.
 // RequestLoggerMiddleware 用于执行 RequestLoggerMiddleware 逻辑。
-func RequestLoggerMiddleware(logger *log.Logger) Middleware {
+func RequestLoggerMiddleware(logger *logx.Logger, logRequestBodies bool) Middleware {
 	if logger == nil {
-		logger = log.Default()
+		logger = logx.Default()
 	}
 	return func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			// Capture request metadata and optionally compact the POST body for diagnostics.
-			// 采集请求元信息，并在需要时压缩 POST 请求体用于诊断。
+			// Capture request metadata and optionally include a compact POST body for diagnostics.
+			// 采集请求元信息，并按配置决定是否输出压缩后的 POST 请求体用于诊断。
 			start := time.Now()
-			body, req := captureRequestBody(r)
 			rec := &statusRecorder{ResponseWriter: w, status: http.StatusOK}
-			next.ServeHTTP(rec, req)
-			if strings.EqualFold(req.Method, http.MethodPost) && body != "" {
-				logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s request_body=%s", trace.IDFromContext(req.Context()), req.Method, req.URL.Path, rec.status, time.Since(start), clientIP(req), body)
-				return
+			next.ServeHTTP(rec, r)
+			args := []any{
+				"trace_id", trace.IDFromContext(r.Context()),
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", rec.status,
+				"latency", time.Since(start).String(),
+				"client_ip", clientIP(r),
 			}
-			logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s", trace.IDFromContext(req.Context()), req.Method, req.URL.Path, rec.status, time.Since(start), clientIP(req))
+			if logRequestBodies && strings.EqualFold(r.Method, http.MethodPost) {
+				if body, _ := r.Context().Value(requestBodyContextKey).(string); body != "" {
+					args = append(args, "request_body", body)
+				}
+			}
+			logger.Info("http request", args...)
 		})
 	}
 }
 
 // captureRequestBody executes the captureRequestBody logic.
 // captureRequestBody 用于执行 captureRequestBody 逻辑。
-func captureRequestBody(r *http.Request) (string, *http.Request) {
+func captureRequestBody(w http.ResponseWriter, r *http.Request, maxBytes int64) (string, *http.Request, error) {
 	// Read the request body once and reattach it so downstream handlers can read it again.
 	// 读取一次请求体并重新挂回去，确保下游处理器仍可继续读取。
-	if r == nil || r.Body == nil || !strings.EqualFold(r.Method, http.MethodPost) {
-		return "", r
+	if r == nil || r.Body == nil || !methodCarriesBody(r.Method) {
+		return "", r, nil
+	}
+	if maxBytes > 0 {
+		r.Body = http.MaxBytesReader(w, r.Body, maxBytes)
 	}
 	raw, err := io.ReadAll(r.Body)
 	if err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			return "", r, maxErr
+		}
 		r.Body = io.NopCloser(bytes.NewReader(nil))
-		return "<read_body_error>", r
+		return "", r, err
 	}
 	r.Body = io.NopCloser(bytes.NewReader(raw))
-	body := compactBody(raw)
-	ctx := context.WithValue(r.Context(), requestBodyContextKey, body)
-	return body, r.WithContext(ctx)
+	return compactBody(raw), r, nil
+}
+
+// methodCarriesBody reports whether one HTTP method should participate in body capture and limiting.
+// methodCarriesBody 用于判断某个 HTTP 方法是否需要参与包体捕获和限制。
+func methodCarriesBody(method string) bool {
+	switch strings.ToUpper(strings.TrimSpace(method)) {
+	case http.MethodPost, http.MethodPut, http.MethodPatch:
+		return true
+	default:
+		return false
+	}
 }
 
 // compactBody executes the compactBody logic.

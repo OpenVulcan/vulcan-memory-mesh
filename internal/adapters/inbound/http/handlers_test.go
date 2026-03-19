@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"log"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -17,6 +16,7 @@ import (
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/logic/processor"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 	"github.com/openvulcan/vmm/internal/platform/xid"
 )
@@ -41,7 +41,7 @@ func newTestRouter() http.Handler { return newTestRouterWithLogger(nil) }
 
 // newTestRouterWithLogger creates a TestRouterWithLogger instance.
 // newTestRouterWithLogger 用于创建 TestRouterWithLogger 实例。
-func newTestRouterWithLogger(logger *log.Logger) http.Handler {
+func newTestRouterWithLogger(logger *logx.Logger) http.Handler {
 	ids := xid.NewGenerator()
 	llm := memory_mock.NewLLMClient()
 	embed := memory_mock.NewEmbeddingClient(64)
@@ -65,15 +65,17 @@ func newTestRouterWithLogger(logger *log.Logger) http.Handler {
 	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger)
 	seed := usecase.NewSeedMemoryUseCase(embed, vector, ids, logger, "mock-embedding", 64)
 	return NewRouter(Dependencies{
-		IDs:               ids,
-		PreCheck:          pre,
-		PostAction:        post,
-		SeedMemory:        seed,
-		Logger:            logger,
-		PreCheckTimeout:   3 * time.Second,
-		PostActionTimeout: 3 * time.Second,
-		SeedMemoryTimeout: 3 * time.Second,
-		EnableSeedRoute:   true,
+		IDs:                 ids,
+		PreCheck:            pre,
+		PostAction:          post,
+		SeedMemory:          seed,
+		Logger:              logger,
+		PreCheckTimeout:     3 * time.Second,
+		PostActionTimeout:   3 * time.Second,
+		SeedMemoryTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+		LogRequestBodies:    true,
+		EnableSeedRoute:     true,
 	})
 }
 
@@ -88,6 +90,13 @@ func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
 	router.ServeHTTP(rec, req)
 	if rec.Code != http.StatusBadRequest {
 		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.ErrorID != "HTTP_INVALID_JSON" {
+		t.Fatalf("error id = %q", env.ErrorID)
 	}
 }
 
@@ -130,15 +139,16 @@ func TestSeedThenPreCheckRoundTrip(t *testing.T) {
 // TestPostActionNormalizesRawMessages 用于验证 TestPostActionNormalizesRawMessages 行为。
 func TestPostActionNormalizesRawMessages(t *testing.T) {
 	ids := xid.NewGenerator()
-	logger := log.New(&bytes.Buffer{}, "", 0)
+	logger := logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"})
 	rel := memory_mock.NewRelationalStore()
 	router := NewRouter(Dependencies{
-		IDs:               ids,
-		PreCheck:          nil,
-		PostAction:        usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger),
-		SeedMemory:        nil,
-		Logger:            logger,
-		PostActionTimeout: 3 * time.Second,
+		IDs:                 ids,
+		PreCheck:            nil,
+		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger),
+		SeedMemory:          nil,
+		Logger:              logger,
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
 	})
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","raw_messages_snapshot":[{"role":"user","content":"你好"},{"role":"assistant","content":[{"text":"<think>hidden</think>已收到"}]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/post-action", bytes.NewBufferString(body))
@@ -161,7 +171,7 @@ func TestPostActionNormalizesRawMessages(t *testing.T) {
 // TestPostRequestLogsFullBody 用于验证 TestPostRequestLogsFullBody 行为。
 func TestPostRequestLogsFullBody(t *testing.T) {
 	var logBuf bytes.Buffer
-	router := newTestRouterWithLogger(log.New(&logBuf, "", 0))
+	router := newTestRouterWithLogger(logx.New(&logBuf, logx.Config{Level: "info", Format: "text"}))
 	body := `{
 		"session_id":"sess_123",
 		"user_id":"usr_8899",
@@ -183,8 +193,54 @@ func TestPostRequestLogsFullBody(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, `request_body={"session_id":"sess_123","user_id":"usr_8899","team_id":"team_001","space_id":"space_001","project_id":"proj_abc","is_first_turn":true,"current_content":"如果是高并发场景，它还撑得住吗？","history_content":[{"role":"user","content":"我们后端用什么框架？"},{"role":"assistant","content":"采用 Go 语言和标准库实现。"}]}`) {
+	if !strings.Contains(logOutput, `request_body="{\"session_id\":\"sess_123\",\"user_id\":\"usr_8899\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_abc\",\"is_first_turn\":true,\"current_content\":\"如果是高并发场景，它还撑得住吗？\",\"history_content\":[{\"role\":\"user\",\"content\":\"我们后端用什么框架？\"},{\"role\":\"assistant\",\"content\":\"采用 Go 语言和标准库实现。\"}]}"`) {
 		t.Fatalf("expected request body in logs, got %s", logOutput)
+	}
+}
+
+// TestRequestTooLargeReturnsCatalogedError verifies the TestRequestTooLargeReturnsCatalogedError behavior.
+// TestRequestTooLargeReturnsCatalogedError 用于验证 TestRequestTooLargeReturnsCatalogedError 行为。
+func TestRequestTooLargeReturnsCatalogedError(t *testing.T) {
+	router := newTestRouter()
+	oversized := strings.Repeat("x", (1<<20)+128)
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[],"current_content":"` + oversized + `","is_first_turn":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf("expected 413, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.ErrorID != "HTTP_REQUEST_TOO_LARGE" {
+		t.Fatalf("error id = %q", env.ErrorID)
+	}
+}
+
+// TestValidationErrorsReturnCatalogedError verifies the TestValidationErrorsReturnCatalogedError behavior.
+// TestValidationErrorsReturnCatalogedError 用于验证 TestValidationErrorsReturnCatalogedError 行为。
+func TestValidationErrorsReturnCatalogedError(t *testing.T) {
+	router := newTestRouter()
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"bad","content":"hello"}],"current_content":"hi","is_first_turn":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.ErrorID != "HTTP_VALIDATION_FAILED" {
+		t.Fatalf("error id = %q", env.ErrorID)
+	}
+	if env.ErrorCategory != "validation" {
+		t.Fatalf("error category = %q", env.ErrorCategory)
 	}
 }
 
@@ -222,7 +278,7 @@ func TestWithTimeoutPreservesTraceIDInUseCaseContext(t *testing.T) {
 		}
 		return usecase.PreCheckResult{ShouldInject: false, ContextText: "", ContextItems: []logicdomain.ContextItem{}}, nil
 	})
-	router := NewRouter(Dependencies{IDs: xid.NewGenerator(), PreCheck: pre, Logger: log.New(&bytes.Buffer{}, "", 0), PreCheckTimeout: time.Second})
+	router := NewRouter(Dependencies{IDs: xid.NewGenerator(), PreCheck: pre, Logger: logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}), PreCheckTimeout: time.Second, MaxRequestBodyBytes: 1 << 20})
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[],"current_content":"hi","is_first_turn":false}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")

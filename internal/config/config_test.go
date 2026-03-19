@@ -15,9 +15,13 @@ func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
 	cfg.PreCheck.SimilarityThreshold = 0.82
+	cfg.HTTP.MaxRequestBodyBytes = 0
 	cfg.Normalize()
 	if cfg.MemoryPipeline.MaxSearchKeywords != 5 {
 		t.Fatalf("max search keywords = %d", cfg.MemoryPipeline.MaxSearchKeywords)
+	}
+	if cfg.HTTP.MaxRequestBodyBytes != 1<<20 {
+		t.Fatalf("max request body bytes = %d", cfg.HTTP.MaxRequestBodyBytes)
 	}
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity = %v", cfg.MemoryPipeline.MinSimilarityScore)
@@ -33,6 +37,24 @@ func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
 	cfg.Normalize()
 	if cfg.MemoryPipeline.MaxSearchKeywords != 10 {
 		t.Fatalf("max search keywords after clamp = %d", cfg.MemoryPipeline.MaxSearchKeywords)
+	}
+}
+
+// TestConfigValidateRequiresTLSFiles verifies the TestConfigValidateRequiresTLSFiles behavior.
+// TestConfigValidateRequiresTLSFiles 用于验证 TestConfigValidateRequiresTLSFiles 行为。
+func TestConfigValidateRequiresTLSFiles(t *testing.T) {
+	cfg := DefaultLocal()
+	cfg.HTTP.TLS.Enabled = true
+	cfg.HTTP.TLS.CertFile = ""
+	cfg.HTTP.TLS.KeyFile = "server.key"
+	if err := cfg.Validate(); err == nil || err.Error() != "http.tls.cert_file is required when tls is enabled" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+
+	cfg.HTTP.TLS.CertFile = "server.crt"
+	cfg.HTTP.TLS.KeyFile = ""
+	if err := cfg.Validate(); err == nil || err.Error() != "http.tls.key_file is required when tls is enabled" {
+		t.Fatalf("unexpected validate error: %v", err)
 	}
 }
 

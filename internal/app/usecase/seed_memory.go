@@ -5,12 +5,12 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
@@ -38,16 +38,16 @@ type SeedMemoryUseCase struct {
 	embedding      appports.EmbeddingClient
 	vector         appports.VectorStore
 	ids            appports.IDGenerator
-	logger         *log.Logger
+	logger         *logx.Logger
 	embedModel     string
 	embedDimension int
 }
 
 // NewSeedMemoryUseCase creates a SeedMemoryUseCase instance.
 // NewSeedMemoryUseCase 用于创建 SeedMemoryUseCase 实例。
-func NewSeedMemoryUseCase(embedding appports.EmbeddingClient, vector appports.VectorStore, ids appports.IDGenerator, logger *log.Logger, embedModel string, embedDimension int) *SeedMemoryUseCase {
+func NewSeedMemoryUseCase(embedding appports.EmbeddingClient, vector appports.VectorStore, ids appports.IDGenerator, logger *logx.Logger, embedModel string, embedDimension int) *SeedMemoryUseCase {
 	if logger == nil {
-		logger = log.Default()
+		logger = logx.Default()
 	}
 	return &SeedMemoryUseCase{embedding: embedding, vector: vector, ids: ids, logger: logger, embedModel: embedModel, embedDimension: embedDimension}
 }

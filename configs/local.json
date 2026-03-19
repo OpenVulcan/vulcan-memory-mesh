@@ -1,12 +1,23 @@
 {
   "http": {
     "listen_addr": "127.0.0.1:8080",
+    "max_request_body_bytes": 1048576,
     "request_timeout": {
       "pre_check": "3s",
       "post_action": "3s",
       "seed_memory": "3s"
     },
-    "shutdown_timeout": "10s"
+    "shutdown_timeout": "10s",
+    "tls": {
+      "enabled": false,
+      "cert_file": "",
+      "key_file": ""
+    }
+  },
+  "logging": {
+    "level": "info",
+    "format": "text",
+    "log_request_bodies": true
   },
   "llm": {
     "provider": "openai",

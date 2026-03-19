@@ -53,6 +53,7 @@ func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()
 // Config 用于表示本地应用启动前加载的根配置对象。
 type Config struct {
 	HTTP           HTTPConfig           `json:"http"`
+	Logging        LoggingConfig        `json:"logging"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
 	Vector         VectorConfig         `json:"vector"`
@@ -65,9 +66,11 @@ type Config struct {
 // HTTPConfig holds listener and timeout settings for the inbound HTTP server.
 // HTTPConfig 用于保存入站 HTTP 服务的监听地址和超时配置。
 type HTTPConfig struct {
-	ListenAddr      string             `json:"listen_addr"`
-	RequestTimeout  HTTPRequestTimeout `json:"request_timeout"`
-	ShutdownTimeout Duration           `json:"shutdown_timeout"`
+	ListenAddr          string             `json:"listen_addr"`
+	MaxRequestBodyBytes int64              `json:"max_request_body_bytes"`
+	RequestTimeout      HTTPRequestTimeout `json:"request_timeout"`
+	ShutdownTimeout     Duration           `json:"shutdown_timeout"`
+	TLS                 HTTPTLSConfig      `json:"tls"`
 }
 
 // HTTPRequestTimeout groups per-route timeout settings used by the HTTP handlers.
@@ -76,6 +79,22 @@ type HTTPRequestTimeout struct {
 	PreCheck   Duration `json:"pre_check"`
 	PostAction Duration `json:"post_action"`
 	SeedMemory Duration `json:"seed_memory"`
+}
+
+// HTTPTLSConfig holds the optional certificate paths used when the local server must speak HTTPS directly.
+// HTTPTLSConfig 用于保存本地服务直接启用 HTTPS 时使用的可选证书路径。
+type HTTPTLSConfig struct {
+	Enabled  bool   `json:"enabled"`
+	CertFile string `json:"cert_file,omitempty"`
+	KeyFile  string `json:"key_file,omitempty"`
+}
+
+// LoggingConfig holds the structured logging knobs shared by the local runtime.
+// LoggingConfig 用于保存本地运行时共享的结构化日志配置项。
+type LoggingConfig struct {
+	Level            string `json:"level"`
+	Format           string `json:"format"`
+	LogRequestBodies bool   `json:"log_request_bodies"`
 }
 
 // LLMConfig holds the provider and model settings used for intent extraction and other LLM tasks.
@@ -140,10 +159,13 @@ type AdminConfig struct {
 func DefaultLocal() Config {
 	return Config{
 		HTTP: HTTPConfig{
-			ListenAddr:      ":8080",
-			RequestTimeout:  HTTPRequestTimeout{PreCheck: Duration{3 * time.Second}, PostAction: Duration{3 * time.Second}, SeedMemory: Duration{3 * time.Second}},
-			ShutdownTimeout: Duration{10 * time.Second},
+			ListenAddr:          ":8080",
+			MaxRequestBodyBytes: 1 << 20,
+			RequestTimeout:      HTTPRequestTimeout{PreCheck: Duration{3 * time.Second}, PostAction: Duration{3 * time.Second}, SeedMemory: Duration{3 * time.Second}},
+			ShutdownTimeout:     Duration{10 * time.Second},
+			TLS:                 HTTPTLSConfig{},
 		},
+		Logging:        LoggingConfig{Level: "info", Format: "text", LogRequestBodies: true},
 		LLM:            LLMConfig{Provider: "mock", Model: "mock-intent-fast"},
 		Embedding:      EmbeddingConfig{Provider: "mock", Model: "mock-embedding-v1", Dimension: 64},
 		Vector:         VectorConfig{Provider: "memory"},
@@ -292,6 +314,9 @@ func (c *Config) Normalize() {
 	if c.HTTP.RequestTimeout.PreCheck.Duration <= 0 {
 		c.HTTP.RequestTimeout.PreCheck = Duration{3 * time.Second}
 	}
+	if c.HTTP.MaxRequestBodyBytes <= 0 {
+		c.HTTP.MaxRequestBodyBytes = 1 << 20
+	}
 	if c.HTTP.RequestTimeout.PostAction.Duration <= 0 {
 		c.HTTP.RequestTimeout.PostAction = Duration{3 * time.Second}
 	}
@@ -326,6 +351,12 @@ func (c *Config) Normalize() {
 	if c.Embedding.Dimension <= 0 && strings.EqualFold(c.Embedding.Provider, "mock") {
 		c.Embedding.Dimension = 64
 	}
+	if strings.TrimSpace(c.Logging.Level) == "" {
+		c.Logging.Level = "info"
+	}
+	if strings.TrimSpace(c.Logging.Format) == "" {
+		c.Logging.Format = "text"
+	}
 
 	// Default the relational backend to memory for the local OSS runtime.
 	// 为本地 OSS 运行时将关系后端默认归一到内存实现。
@@ -341,6 +372,22 @@ func (c Config) Validate() error {
 	// 在应用启动前验证最小运行时契约。
 	if strings.TrimSpace(c.HTTP.ListenAddr) == "" {
 		return errors.New("http.listen_addr is required")
+	}
+	if c.HTTP.MaxRequestBodyBytes <= 0 {
+		return errors.New("http.max_request_body_bytes must be > 0")
+	}
+	if c.HTTP.TLS.Enabled {
+		if strings.TrimSpace(c.HTTP.TLS.CertFile) == "" {
+			return errors.New("http.tls.cert_file is required when tls is enabled")
+		}
+		if strings.TrimSpace(c.HTTP.TLS.KeyFile) == "" {
+			return errors.New("http.tls.key_file is required when tls is enabled")
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Logging.Format)) {
+	case "text", "json":
+	default:
+		return errors.New("logging.format must be either text or json")
 	}
 	if c.PreCheck.TopK <= 0 {
 		return errors.New("precheck.top_k must be > 0")
@@ -407,10 +454,17 @@ func applyEnvOverrides(cfg *Config) {
 	}
 
 	setString("VMM_HTTP_LISTEN_ADDR", &cfg.HTTP.ListenAddr)
+	setInt64("VMM_HTTP_MAX_REQUEST_BODY_BYTES", &cfg.HTTP.MaxRequestBodyBytes)
 	setDuration("VMM_HTTP_PRECHECK_TIMEOUT", &cfg.HTTP.RequestTimeout.PreCheck)
 	setDuration("VMM_HTTP_POSTACTION_TIMEOUT", &cfg.HTTP.RequestTimeout.PostAction)
 	setDuration("VMM_HTTP_SEED_TIMEOUT", &cfg.HTTP.RequestTimeout.SeedMemory)
 	setDuration("VMM_HTTP_SHUTDOWN_TIMEOUT", &cfg.HTTP.ShutdownTimeout)
+	setBool("VMM_HTTP_TLS_ENABLED", &cfg.HTTP.TLS.Enabled)
+	setString("VMM_HTTP_TLS_CERT_FILE", &cfg.HTTP.TLS.CertFile)
+	setString("VMM_HTTP_TLS_KEY_FILE", &cfg.HTTP.TLS.KeyFile)
+	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
+	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
+	setBool("VMM_LOG_REQUEST_BODIES", &cfg.Logging.LogRequestBodies)
 	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)
 	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
 	setString("VMM_LLM_API_KEY", &cfg.LLM.APIKey)
@@ -433,4 +487,14 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
 	setBool("VMM_ADMIN_SEED_ENABLED", &cfg.Admin.SeedEnabled)
+}
+
+// setInt64 converts one environment variable into a 64-bit integer override.
+// setInt64 用于把单个环境变量转换成 64 位整数覆盖项。
+func setInt64(k string, target *int64) {
+	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+			*target = n
+		}
+	}
 }

@@ -10,10 +10,12 @@ import (
 // Envelope is the shared HTTP response wrapper returned by every public endpoint.
 // Envelope 用于表示所有公开接口统一返回的 HTTP 响应包。
 type Envelope struct {
-	Code    int    `json:"code"`
-	Msg     string `json:"msg"`
-	Data    any    `json:"data,omitempty"`
-	TraceID string `json:"trace_id"`
+	Code          int    `json:"code"`
+	Msg           string `json:"msg"`
+	ErrorID       string `json:"error_id,omitempty"`
+	ErrorCategory string `json:"error_category,omitempty"`
+	Data          any    `json:"data,omitempty"`
+	TraceID       string `json:"trace_id"`
 }
 
 // writeJSON executes the writeJSON logic.

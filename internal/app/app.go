@@ -5,7 +5,6 @@ package app
 import (
 	"context"
 	"fmt"
-	"log"
 	"net/http"
 	"os"
 	"os/signal"
@@ -19,6 +18,7 @@ import (
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/logic/processor"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/xid"
 )
 
@@ -26,7 +26,7 @@ import (
 // Application 用于持有完整装配后的本地运行时，包括 HTTP 服务和关闭钩子。
 type Application struct {
 	Config    config.Config
-	Logger    *log.Logger
+	Logger    *logx.Logger
 	Handler   http.Handler
 	Server    *http.Server
 	Shutdowns []appports.Shutdowner
@@ -43,7 +43,7 @@ func NewLocal(cfg config.Config, prompts appports.PromptSource) (*Application, e
 func newApplication(cfg config.Config, prompts appports.PromptSource) (*Application, error) {
 	// Initialize shared runtime utilities such as logging and ID generation.
 	// 初始化日志和 ID 生成器等共享运行时能力。
-	logger := log.New(os.Stdout, "[vmm] ", log.LstdFlags|log.Lmicroseconds|log.LUTC)
+	logger := logx.New(os.Stdout, logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format})
 	ids := xid.NewGenerator()
 
 	// Build outbound dependencies from the active configuration.
@@ -75,7 +75,19 @@ func newApplication(cfg config.Config, prompts appports.PromptSource) (*Applicat
 
 	// Wire HTTP handlers and shutdown dependencies into the application container.
 	// 将 HTTP 处理器和关闭依赖接入应用容器。
-	deps := httpapi.Dependencies{IDs: ids, PreCheck: pre, PostAction: post, SeedMemory: seed, Logger: logger, PreCheckTimeout: cfg.HTTP.RequestTimeout.PreCheck.Duration, PostActionTimeout: cfg.HTTP.RequestTimeout.PostAction.Duration, SeedMemoryTimeout: cfg.HTTP.RequestTimeout.SeedMemory.Duration, EnableSeedRoute: enableSeed}
+	deps := httpapi.Dependencies{
+		IDs:                 ids,
+		PreCheck:            pre,
+		PostAction:          post,
+		SeedMemory:          seed,
+		Logger:              logger,
+		PreCheckTimeout:     cfg.HTTP.RequestTimeout.PreCheck.Duration,
+		PostActionTimeout:   cfg.HTTP.RequestTimeout.PostAction.Duration,
+		SeedMemoryTimeout:   cfg.HTTP.RequestTimeout.SeedMemory.Duration,
+		MaxRequestBodyBytes: cfg.HTTP.MaxRequestBodyBytes,
+		LogRequestBodies:    cfg.Logging.LogRequestBodies,
+		EnableSeedRoute:     enableSeed,
+	}
 	handler := httpapi.NewRouter(deps)
 	shutdowns := []appports.Shutdowner{}
 	if relational != nil {
@@ -95,8 +107,17 @@ func (a *Application) Run(ctx context.Context) error {
 	// 异步启动 HTTP 服务，以便同时监听关闭信号。
 	errCh := make(chan error, 1)
 	go func() {
-		a.Logger.Printf("http server listening on %s", a.Server.Addr)
-		if err := a.Server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		protocol := "http"
+		var err error
+		if a.Config.HTTP.TLS.Enabled {
+			protocol = "https"
+			a.Logger.Info("http server listening", "protocol", protocol, "addr", a.Server.Addr, "tls_cert_file", a.Config.HTTP.TLS.CertFile)
+			err = a.Server.ListenAndServeTLS(a.Config.HTTP.TLS.CertFile, a.Config.HTTP.TLS.KeyFile)
+		} else {
+			a.Logger.Info("http server listening", "protocol", protocol, "addr", a.Server.Addr)
+			err = a.Server.ListenAndServe()
+		}
+		if err != nil && err != http.ErrServerClosed {
 			errCh <- err
 			return
 		}
@@ -112,7 +133,7 @@ func (a *Application) Run(ctx context.Context) error {
 	case <-ctx.Done():
 		return a.Shutdown(context.Background())
 	case sig := <-sigCh:
-		a.Logger.Printf("received signal=%s, starting graceful shutdown", sig.String())
+		a.Logger.Info("received shutdown signal", "signal", sig.String())
 		return a.Shutdown(context.Background())
 	case err := <-errCh:
 		return err

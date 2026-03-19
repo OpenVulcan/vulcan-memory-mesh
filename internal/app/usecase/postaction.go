@@ -5,12 +5,12 @@ package usecase
 import (
 	"context"
 	"fmt"
-	"log"
 	"strings"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/logic/processor"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
@@ -39,14 +39,14 @@ type PostActionExecutor interface {
 type PostActionUseCase struct {
 	normalizer *processor.MessageNormalizer
 	store      appports.RelationalStore
-	logger     *log.Logger
+	logger     *logx.Logger
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance.
 // NewPostActionUseCase 用于创建 PostActionUseCase 实例。
-func NewPostActionUseCase(normalizer *processor.MessageNormalizer, store appports.RelationalStore, logger *log.Logger) *PostActionUseCase {
+func NewPostActionUseCase(normalizer *processor.MessageNormalizer, store appports.RelationalStore, logger *logx.Logger) *PostActionUseCase {
 	if logger == nil {
-		logger = log.Default()
+		logger = logx.Default()
 	}
 	return &PostActionUseCase{normalizer: normalizer, store: store, logger: logger}
 }

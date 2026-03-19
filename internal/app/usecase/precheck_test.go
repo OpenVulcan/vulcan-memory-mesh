@@ -5,7 +5,6 @@ package usecase
 import (
 	"context"
 	"errors"
-	"log"
 	"testing"
 	"time"
 
@@ -129,7 +128,7 @@ func newUseCaseForTest(t *testing.T, llm appports.LLMClient, embedding appports.
 		embedding,
 		vector,
 		persona,
-		log.Default(),
+		nil,
 		time.Second,
 		5,
 		maxKeywords,

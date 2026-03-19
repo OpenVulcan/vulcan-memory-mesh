@@ -6,18 +6,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"log"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/go-playground/validator/v10"
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
-// Handler groups HTTP-facing use cases and timeout settings for the inbound adapter.
-// Handler 用于聚合入站 HTTP 适配层依赖的用例和超时配置。
+// Handler groups HTTP-facing use cases, validation, and timeout settings for the inbound adapter.
+// Handler 用于聚合入站 HTTP 适配层依赖的用例、校验器和超时配置。
 type Handler struct {
 	preCheck    usecase.PreCheckExecutor
 	postAction  usecase.PostActionExecutor
@@ -25,37 +26,61 @@ type Handler struct {
 	preTimeout  time.Duration
 	postTimeout time.Duration
 	seedTimeout time.Duration
-	logger      *log.Logger
+	logger      *logx.Logger
+	validate    *validator.Validate
 }
 
 // NewHandler creates a Handler instance.
 // NewHandler 用于创建 Handler 实例。
-func NewHandler(preCheck usecase.PreCheckExecutor, postAction usecase.PostActionExecutor, seedMemory usecase.SeedMemoryExecutor, preTimeout, postTimeout, seedTimeout time.Duration, logger *log.Logger) *Handler {
+func NewHandler(preCheck usecase.PreCheckExecutor, postAction usecase.PostActionExecutor, seedMemory usecase.SeedMemoryExecutor, preTimeout, postTimeout, seedTimeout time.Duration, logger *logx.Logger, validate *validator.Validate) *Handler {
 	if logger == nil {
-		logger = log.Default()
+		logger = logx.Default()
 	}
-	return &Handler{preCheck: preCheck, postAction: postAction, seedMemory: seedMemory, preTimeout: preTimeout, postTimeout: postTimeout, seedTimeout: seedTimeout, logger: logger}
+	if validate == nil {
+		validate = newValidator()
+	}
+	return &Handler{
+		preCheck:    preCheck,
+		postAction:  postAction,
+		seedMemory:  seedMemory,
+		preTimeout:  preTimeout,
+		postTimeout: postTimeout,
+		seedTimeout: seedTimeout,
+		logger:      logger,
+		validate:    validate,
+	}
 }
 
 // Healthz executes the Healthz logic.
 // Healthz 用于执行 Healthz 逻辑。
 func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, http.StatusOK, Envelope{Code: http.StatusOK, Msg: "ok", Data: map[string]string{"status": "ok"}, TraceID: trace.IDFromContext(r.Context())})
+	writeJSON(w, http.StatusOK, Envelope{
+		Code:    http.StatusOK,
+		Msg:     "ok",
+		Data:    map[string]string{"status": "ok"},
+		TraceID: trace.IDFromContext(r.Context()),
+	})
 }
 
 // PreCheck executes the PreCheck logic.
 // PreCheck 用于执行 PreCheck 逻辑。
 func (h *Handler) PreCheck(w http.ResponseWriter, r *http.Request) {
-	// Bind and normalize the transport request before entering the use case layer.
-	// 在进入用例层之前，先绑定并归一化传输层请求。
+	// Bind, sanitize, and validate the transport request before entering the use case layer.
+	// 在进入用例层之前，先完成绑定、清洗和传输层校验。
 	var req PreCheckRequestDTO
 	if err := decodeJSON(r, &req); err != nil {
-		h.writeError(w, r, logicdomain.ValidationError{Field: "request", Message: err.Error()})
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeDecodeError(err))
 		return
 	}
+	normalizePreCheckRequest(&req)
 	if req.HistoryContent == nil {
 		req.HistoryContent = []HistorySnippetDTO{}
 	}
+	if err := validateStruct(h.validate, req); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+
 	ctx, cancel := withTimeout(r.Context(), h.preTimeout)
 	defer cancel()
 	ctx = trace.WithTraceID(ctx, trace.IDFromContext(r.Context()))
@@ -81,24 +106,41 @@ func (h *Handler) PreCheck(w http.ResponseWriter, r *http.Request) {
 	// 将用例结果转换回适合传输层输出的响应 DTO。
 	items := make([]ContextItemDTO, 0, len(resp.ContextItems))
 	for _, item := range resp.ContextItems {
-		items = append(items, ContextItemDTO{Kind: item.Kind, Title: item.Title, Text: item.Text, Source: item.Source, Score: item.Score})
+		items = append(items, ContextItemDTO{
+			Kind:   item.Kind,
+			Title:  item.Title,
+			Text:   item.Text,
+			Source: item.Source,
+			Score:  item.Score,
+		})
 	}
-	writeJSON(w, http.StatusOK, Envelope{Code: http.StatusOK, Msg: "ok", Data: PreCheckResponseDTO{ShouldInject: resp.ShouldInject, ContextText: resp.ContextText, ContextItems: items, Degraded: resp.Degraded}, TraceID: trace.IDFromContext(r.Context())})
+	writeJSON(w, http.StatusOK, Envelope{
+		Code:    http.StatusOK,
+		Msg:     "ok",
+		Data:    PreCheckResponseDTO{ShouldInject: resp.ShouldInject, ContextText: resp.ContextText, ContextItems: items, Degraded: resp.Degraded},
+		TraceID: trace.IDFromContext(r.Context()),
+	})
 }
 
 // PostAction executes the PostAction logic.
 // PostAction 用于执行 PostAction 逻辑。
 func (h *Handler) PostAction(w http.ResponseWriter, r *http.Request) {
-	// Bind the raw snapshot request and preserve an empty array shape for downstream logic.
-	// 绑定原始快照请求，并为下游逻辑保留空数组形态。
+	// Bind, sanitize, and validate the raw snapshot request before the persistence flow starts.
+	// 在持久化流程开始前，先完成原始快照请求的绑定、清洗和校验。
 	var req PostActionRequestDTO
 	if err := decodeJSON(r, &req); err != nil {
-		h.writeError(w, r, logicdomain.ValidationError{Field: "request", Message: err.Error()})
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeDecodeError(err))
 		return
 	}
+	normalizePostActionRequest(&req)
 	if req.RawMessagesSnapshot == nil {
 		req.RawMessagesSnapshot = []RawMessageDTO{}
 	}
+	if err := validateStruct(h.validate, req); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+
 	ctx, cancel := withTimeout(r.Context(), h.postTimeout)
 	defer cancel()
 	ctx = trace.WithTraceID(ctx, trace.IDFromContext(r.Context()))
@@ -117,7 +159,12 @@ func (h *Handler) PostAction(w http.ResponseWriter, r *http.Request) {
 		h.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, Envelope{Code: http.StatusOK, Msg: "ok", Data: PostActionResponseDTO{Accepted: resp.Accepted}, TraceID: trace.IDFromContext(r.Context())})
+	writeJSON(w, http.StatusOK, Envelope{
+		Code:    http.StatusOK,
+		Msg:     "ok",
+		Data:    PostActionResponseDTO{Accepted: resp.Accepted},
+		TraceID: trace.IDFromContext(r.Context()),
+	})
 }
 
 // SeedMemory executes the SeedMemory logic.
@@ -126,26 +173,43 @@ func (h *Handler) SeedMemory(w http.ResponseWriter, r *http.Request) {
 	// Reject the request immediately when the seed route is intentionally disabled.
 	// 当 seed 路由被显式关闭时，立即拒绝请求。
 	if h.seedMemory == nil {
-		h.writeError(w, r, logicdomain.ValidationError{Field: "route", Message: "seed-memory is disabled"})
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), errRouteDisabled)
 		return
 	}
+
 	var req SeedMemoryRequestDTO
 	if err := decodeJSON(r, &req); err != nil {
-		h.writeError(w, r, logicdomain.ValidationError{Field: "request", Message: err.Error()})
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeDecodeError(err))
 		return
 	}
+	normalizeSeedMemoryRequest(&req)
+	if err := validateStruct(h.validate, req); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+
 	ctx, cancel := withTimeout(r.Context(), h.seedTimeout)
 	defer cancel()
 	ctx = trace.WithTraceID(ctx, trace.IDFromContext(r.Context()))
 
 	// Forward the seed request into the use case and return the resulting record ID.
 	// 将灌库请求下发到用例层，并返回生成的记录 ID。
-	resp, err := h.seedMemory.Execute(ctx, usecase.SeedMemoryCommand{UserID: req.UserID, ProjectID: req.ProjectID, MemoryText: req.MemoryText, SpaceID: req.SpaceID})
+	resp, err := h.seedMemory.Execute(ctx, usecase.SeedMemoryCommand{
+		UserID:     req.UserID,
+		ProjectID:  req.ProjectID,
+		MemoryText: req.MemoryText,
+		SpaceID:    req.SpaceID,
+	})
 	if err != nil {
 		h.writeError(w, r, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, Envelope{Code: http.StatusOK, Msg: "ok", Data: SeedMemoryResponseDTO{Accepted: resp.Accepted, MemoryID: resp.MemoryID}, TraceID: trace.IDFromContext(r.Context())})
+	writeJSON(w, http.StatusOK, Envelope{
+		Code:    http.StatusOK,
+		Msg:     "ok",
+		Data:    SeedMemoryResponseDTO{Accepted: resp.Accepted, MemoryID: resp.MemoryID},
+		TraceID: trace.IDFromContext(r.Context()),
+	})
 }
 
 // decodeJSON executes the decodeJSON logic.
@@ -192,7 +256,12 @@ func toRawMessagesDomain(items []RawMessageDTO) []logicdomain.RawMessage {
 		if len(item.Content) == 0 {
 			content = ""
 		}
-		out = append(out, logicdomain.RawMessage{Role: item.Role, Content: content, ToolCalls: toolCalls, Meta: item.Meta})
+		out = append(out, logicdomain.RawMessage{
+			Role:      item.Role,
+			Content:   content,
+			ToolCalls: toolCalls,
+			Meta:      item.Meta,
+		})
 	}
 	return out
 }
@@ -213,8 +282,7 @@ func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, c
 func (h *Handler) writeError(w http.ResponseWriter, r *http.Request, err error) {
 	// Convert domain/use-case errors into a stable HTTP envelope.
 	// 将领域层和用例层错误映射成稳定的 HTTP 响应包。
-	status, msg := mapStatus(err)
-	writeJSON(w, status, Envelope{Code: status, Msg: sanitizeErrorMessage(msg), TraceID: trace.IDFromContext(r.Context())})
+	writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeError(err))
 }
 
 // sanitizeErrorMessage executes the sanitizeErrorMessage logic.

@@ -6,7 +6,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log"
 	"sort"
 	"strings"
 	"sync"
@@ -15,6 +14,7 @@ import (
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/logic/processor"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
@@ -50,7 +50,7 @@ type PreCheckUseCase struct {
 	embedding         appports.EmbeddingClient
 	vector            appports.VectorStore
 	persona           appports.ContextPersonaProvider
-	logger            *log.Logger
+	logger            *logx.Logger
 	intentTimeout     time.Duration
 	topK              int
 	maxSearchKeywords int
@@ -61,9 +61,9 @@ type PreCheckUseCase struct {
 
 // NewPreCheckUseCase creates a PreCheckUseCase instance.
 // NewPreCheckUseCase 用于创建 PreCheckUseCase 实例。
-func NewPreCheckUseCase(intentExtractor *processor.IntentExtractor, contextAssembler *processor.ContextAssembler, embedding appports.EmbeddingClient, vector appports.VectorStore, persona appports.ContextPersonaProvider, logger *log.Logger, intentTimeout time.Duration, topK, maxSearchKeywords int, minSimilarity *float64, embedModel string, embedDimension int) *PreCheckUseCase {
+func NewPreCheckUseCase(intentExtractor *processor.IntentExtractor, contextAssembler *processor.ContextAssembler, embedding appports.EmbeddingClient, vector appports.VectorStore, persona appports.ContextPersonaProvider, logger *logx.Logger, intentTimeout time.Duration, topK, maxSearchKeywords int, minSimilarity *float64, embedModel string, embedDimension int) *PreCheckUseCase {
 	if logger == nil {
-		logger = log.Default()
+		logger = logx.Default()
 	}
 	if intentTimeout <= 0 {
 		intentTimeout = 2 * time.Second
@@ -125,7 +125,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		defer mu.Unlock()
 		if err != nil {
 			degraded = true
-			u.logger.Printf("trace_id=%s persona degraded: %v", traceID, err)
+			u.logger.Warn("persona degraded", "trace_id", traceID, "err", err)
 			return
 		}
 		personaCtx = res
@@ -187,9 +187,9 @@ func (u *PreCheckUseCase) resolveSearchTerms(question string, intent logicdomain
 	// 当意图提取超时或输出异常时，回退为直接使用原始问题。
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
-			u.logger.Printf("llm timeout fallback to raw question")
+			u.logger.Warn("llm timeout fallback to raw question")
 		} else {
-			u.logger.Printf("llm degraded: %v", err)
+			u.logger.Warn("llm degraded", "err", err)
 		}
 		return []string{question}, true, true
 	}
