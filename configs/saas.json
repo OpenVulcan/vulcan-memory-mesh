@@ -1,0 +1,39 @@
+{
+  "http": {
+    "listen_addr": ":8081",
+    "request_timeout": {
+      "pre_check": "3s",
+      "post_action": "3s",
+      "seed_memory": "3s"
+    },
+    "shutdown_timeout": "10s"
+  },
+  "llm": {
+    "provider": "aliyun_dashscope",
+    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+    "model": "qwen-turbo"
+  },
+  "embedding": {
+    "provider": "aliyun_dashscope",
+    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding",
+    "model": "text-embedding-v3"
+  },
+  "vector": {
+    "provider": "aliyun_dashvector",
+    "endpoint": "https://api.dashvector.aliyun.com/v1",
+    "namespace": "prod",
+    "collection": "vmm_memories"
+  },
+  "relational": {
+    "provider": "postgres",
+    "dsn": "postgres://user:pass@127.0.0.1:5432/vmm?sslmode=disable"
+  },
+  "precheck": {
+    "intent_timeout": "2s",
+    "top_k": 5,
+    "similarity_threshold": 0.4
+  },
+  "admin": {
+    "seed_enabled": false
+  }
+}

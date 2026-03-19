@@ -1,0 +1,37 @@
+{
+  "http": {
+    "listen_addr": ":8080",
+    "request_timeout": {
+      "pre_check": "3s",
+      "post_action": "3s",
+      "seed_memory": "3s"
+    },
+    "shutdown_timeout": "10s"
+  },
+  "llm": {
+    "provider": "aliyun_dashscope",
+    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/aigc/text-generation/generation",
+    "model": "qwen3.5-flash",
+	"api_key":"sk-f5a81dcd8c5c48379732766de9a69cdd"
+  },
+  "embedding": {
+    "provider": "mock",
+    "model": "mock-embedding-v1"
+  },
+  "vector": {
+    "provider": "memory",
+    "namespace": "local",
+    "collection": "vmm_memories"
+  },
+  "relational": {
+    "provider": "memory"
+  },
+  "precheck": {
+    "intent_timeout": "2s",
+    "top_k": 5,
+    "similarity_threshold": 0.4
+  },
+  "admin": {
+    "seed_enabled": true
+  }
+}
