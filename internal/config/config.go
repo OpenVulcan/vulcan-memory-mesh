@@ -61,17 +61,21 @@ type HTTPRequestTimeout struct {
 }
 
 type LLMConfig struct {
-	Provider string `json:"provider"`
-	Endpoint string `json:"endpoint,omitempty"`
-	APIKey   string `json:"api_key,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Provider     string `json:"provider"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Organization string `json:"organization,omitempty"`
+	Project      string `json:"project,omitempty"`
 }
 
 type EmbeddingConfig struct {
-	Provider string `json:"provider"`
-	Endpoint string `json:"endpoint,omitempty"`
-	APIKey   string `json:"api_key,omitempty"`
-	Model    string `json:"model,omitempty"`
+	Provider     string `json:"provider"`
+	Endpoint     string `json:"endpoint,omitempty"`
+	APIKey       string `json:"api_key,omitempty"`
+	Model        string `json:"model,omitempty"`
+	Organization string `json:"organization,omitempty"`
+	Project      string `json:"project,omitempty"`
 }
 
 type VectorConfig struct {
@@ -176,10 +180,14 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
 	setString("VMM_LLM_API_KEY", &cfg.LLM.APIKey)
 	setString("VMM_LLM_MODEL", &cfg.LLM.Model)
+	setString("VMM_LLM_ORGANIZATION", &cfg.LLM.Organization)
+	setString("VMM_LLM_PROJECT", &cfg.LLM.Project)
 	setString("VMM_EMBED_PROVIDER", &cfg.Embedding.Provider)
 	setString("VMM_EMBED_ENDPOINT", &cfg.Embedding.Endpoint)
 	setString("VMM_EMBED_API_KEY", &cfg.Embedding.APIKey)
 	setString("VMM_EMBED_MODEL", &cfg.Embedding.Model)
+	setString("VMM_EMBED_ORGANIZATION", &cfg.Embedding.Organization)
+	setString("VMM_EMBED_PROJECT", &cfg.Embedding.Project)
 	setString("VMM_VECTOR_PROVIDER", &cfg.Vector.Provider)
 	setString("VMM_VECTOR_ENDPOINT", &cfg.Vector.Endpoint)
 	setString("VMM_VECTOR_API_KEY", &cfg.Vector.APIKey)

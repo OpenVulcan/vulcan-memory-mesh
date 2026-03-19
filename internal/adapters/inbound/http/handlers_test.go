@@ -3,8 +3,10 @@ package httpapi
 import (
 	"bytes"
 	"encoding/json"
+	"log"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -15,6 +17,10 @@ import (
 )
 
 func newTestRouter() http.Handler {
+	return newTestRouterWithLogger(nil)
+}
+
+func newTestRouterWithLogger(logger *log.Logger) http.Handler {
 	ids := xid.NewGenerator()
 	llm := memory_mock.NewLLMClient()
 	embed := memory_mock.NewEmbeddingClient(64)
@@ -24,7 +30,7 @@ func newTestRouter() http.Handler {
 	post := services.NewPostActionService(rel, nil)
 	seed := services.NewSeedMemoryService(embed, vector, ids, nil)
 	return NewRouter(Dependencies{
-		IDs: ids, PreCheck: pre, PostAction: post, SeedMemory: seed,
+		IDs: ids, PreCheck: pre, PostAction: post, SeedMemory: seed, Logger: logger,
 		PreCheckTimeout: 3*time.Second, PostActionTimeout: 3*time.Second, SeedMemoryTimeout: 3*time.Second,
 		EnableSeedRoute: true,
 	})
@@ -60,4 +66,33 @@ func TestSeedThenPreCheckRoundTrip(t *testing.T) {
 	router.ServeHTTP(preRec, preReq)
 	if preRec.Code != http.StatusOK { t.Fatalf("pre-check expected 200, got %d body=%s", preRec.Code, preRec.Body.String()) }
 	if !bytes.Contains(preRec.Body.Bytes(), []byte("FastAPI")) { t.Fatalf("expected FastAPI in response body=%s", preRec.Body.String()) }
+}
+
+func TestPostRequestLogsFullBody(t *testing.T) {
+	var logBuf bytes.Buffer
+	router := newTestRouterWithLogger(log.New(&logBuf, "", 0))
+	body := `{
+		"session_id":"sess_123",
+		"user_id":"usr_8899",
+		"team_id":"team_001",
+		"space_id":"space_001",
+		"project_id":"proj_abc",
+		"is_first_turn":true,
+		"current_content":"如果是高并发场景，它还撑得住吗？",
+		"history_content":[
+			{"role":"user","content":"我们后端用什么框架？"},
+			{"role":"assistant","content":"采用 Go 语言和 Gin 框架。"}
+		]
+	}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `request_body={"session_id":"sess_123","user_id":"usr_8899","team_id":"team_001","space_id":"space_001","project_id":"proj_abc","is_first_turn":true,"current_content":"如果是高并发场景，它还撑得住吗？","history_content":[{"role":"user","content":"我们后端用什么框架？"},{"role":"assistant","content":"采用 Go 语言和 Gin 框架。"}]}`) {
+		t.Fatalf("expected request body in logs, got %s", logOutput)
+	}
 }

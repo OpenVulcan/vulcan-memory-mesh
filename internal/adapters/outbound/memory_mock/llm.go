@@ -38,6 +38,9 @@ func (c *LLMClient) ExtractIntent(ctx context.Context, history []domain.HistoryS
 	for _, item := range history { combined = append(combined, item.Content) }
 	combined = append(combined, current)
 	tokens := textutil.Tokenize(strings.Join(combined, " "))
+	if containsAny(text, "框架", "framework") && containsAny(text, "后端", "backend", "api", "服务") {
+		return "fastapi backend framework", nil
+	}
 	expansions := make([]string, 0)
 	if containsAny(text, "框架", "framework") { expansions = append(expansions, "fastapi", "gin", "spring", "django", "express") }
 	if containsAny(text, "后端", "backend", "api", "服务") { expansions = append(expansions, "backend", "service", "api") }

@@ -1,8 +1,12 @@
 package httpapi
 
 import (
+	"bytes"
+	"encoding/json"
+	"io"
 	"log"
 	nethttp "net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -42,7 +46,12 @@ func RequestLoggerMiddleware(logger *log.Logger) gin.HandlerFunc {
 	if logger == nil { logger = log.Default() }
 	return func(c *gin.Context) {
 		start := time.Now()
+		requestBody := captureRequestBody(c)
 		c.Next()
+		if strings.EqualFold(c.Request.Method, nethttp.MethodPost) && requestBody != "" {
+			logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s request_body=%s", traceIDFromContext(c), c.Request.Method, c.FullPath(), c.Writer.Status(), time.Since(start), c.ClientIP(), requestBody)
+			return
+		}
 		logger.Printf("trace_id=%s method=%s path=%s status=%d latency=%s client_ip=%s", traceIDFromContext(c), c.Request.Method, c.FullPath(), c.Writer.Status(), time.Since(start), c.ClientIP())
 	}
 }
@@ -66,4 +75,32 @@ func traceIDFromContext(c *gin.Context) string {
 		if traceID, ok := v.(string); ok { return traceID }
 	}
 	return trace.IDFromContext(c.Request.Context())
+}
+
+func captureRequestBody(c *gin.Context) string {
+	if c == nil || c.Request == nil || c.Request.Body == nil {
+		return ""
+	}
+	if !strings.EqualFold(c.Request.Method, nethttp.MethodPost) {
+		return ""
+	}
+	raw, err := io.ReadAll(c.Request.Body)
+	if err != nil {
+		c.Request.Body = io.NopCloser(bytes.NewReader(nil))
+		return "<read_body_error>"
+	}
+	c.Request.Body = io.NopCloser(bytes.NewReader(raw))
+	return compactBody(raw)
+}
+
+func compactBody(raw []byte) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" {
+		return ""
+	}
+	var buf bytes.Buffer
+	if err := json.Compact(&buf, []byte(trimmed)); err == nil {
+		return buf.String()
+	}
+	return trimmed
 }

@@ -1,0 +1,43 @@
+{
+  "http": {
+    "listen_addr": ":8080",
+    "request_timeout": {
+      "pre_check": "3s",
+      "post_action": "3s",
+      "seed_memory": "3s"
+    },
+    "shutdown_timeout": "10s"
+  },
+  "llm": {
+    "provider": "openai",
+    "endpoint": "https://api.openai.com/v1",
+    "api_key": "<OPENAI_API_KEY>",
+    "model": "<OPENAI_CHAT_MODEL>",
+    "organization": "",
+    "project": ""
+  },
+  "embedding": {
+    "provider": "openai",
+    "endpoint": "https://api.openai.com/v1",
+    "api_key": "<OPENAI_API_KEY>",
+    "model": "<OPENAI_EMBEDDING_MODEL>",
+    "organization": "",
+    "project": ""
+  },
+  "vector": {
+    "provider": "memory",
+    "namespace": "local",
+    "collection": "vmm_memories"
+  },
+  "relational": {
+    "provider": "memory"
+  },
+  "precheck": {
+    "intent_timeout": "2s",
+    "top_k": 5,
+    "similarity_threshold": 0.4
+  },
+  "admin": {
+    "seed_enabled": true
+  }
+}

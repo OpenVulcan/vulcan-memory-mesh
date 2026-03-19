@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"strconv"
 	"sort"
 	"strings"
 	"sync"
@@ -129,7 +130,10 @@ func (s *PreCheckService) retrieveRelevantMemories(ctx context.Context, req doma
 func (s *PreCheckService) extractIntentWithFallback(ctx context.Context, history []domain.HistorySnippet, current string) (string, bool, error) {
 	raw := strings.TrimSpace(current)
 	if raw == "" { return "", false, nil }
-	if s.llm == nil { return raw, true, nil }
+	if s.llm == nil {
+		s.logger.Printf("trace_id=%s llm unavailable fallback raw=%q", trace.IDFromContext(ctx), raw)
+		return raw, true, nil
+	}
 
 	llmCtx, cancel := context.WithTimeout(ctx, s.intentTimeout)
 	defer cancel()
@@ -142,10 +146,13 @@ func (s *PreCheckService) extractIntentWithFallback(ctx context.Context, history
 		s.logger.Printf("trace_id=%s llm degraded: %v", trace.IDFromContext(ctx), err)
 		return raw, true, nil
 	}
-	if strings.TrimSpace(out) == "" {
+	out = strings.TrimSpace(out)
+	if out == "" {
+		s.logger.Printf("trace_id=%s llm empty output fallback raw=%q", trace.IDFromContext(ctx), raw)
 		return raw, true, nil
 	}
-	return strings.TrimSpace(out), false, nil
+	s.logger.Printf("trace_id=%s llm output=%s", trace.IDFromContext(ctx), strconv.Quote(out))
+	return out, false, nil
 }
 
 func recentDialogue(history []domain.HistorySnippet, rounds int) []domain.HistorySnippet {

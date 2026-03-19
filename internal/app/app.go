@@ -17,6 +17,7 @@ import (
 	"github.com/openvulcan/vmm/internal/adapters/outbound/aliyun_dashscope"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/aliyun_dashvector"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/postgres_store"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/core/ports"
@@ -126,6 +127,8 @@ func buildLLM(cfg config.Config) (ports.LLMClient, error) {
 		return memory_mock.NewLLMClient(), nil
 	case "aliyun_dashscope":
 		return aliyun_dashscope.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model), nil
+	case "openai", "openai_go", "openai_native":
+		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project), nil
 	default:
 		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
 	}
@@ -137,6 +140,8 @@ func buildEmbedding(cfg config.Config) (ports.EmbeddingClient, error) {
 		return memory_mock.NewEmbeddingClient(64), nil
 	case "aliyun_dashscope":
 		return aliyun_dashscope.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model), nil
+	case "openai", "openai_go", "openai_native":
+		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Organization, cfg.Embedding.Project), nil
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
 	}
