@@ -95,6 +95,15 @@ type MemoryHit struct {
 	Metadata map[string]string
 }
 
+// ArchivedMemory represents one scrubbed chat message persisted by the local /chat archive flow.
+// ArchivedMemory 用于表示由本地 /chat 归档流程持久化的一条已脱敏消息。
+type ArchivedMemory struct {
+	ID        string
+	SessionID string
+	Content   string
+	CreatedAt time.Time
+}
+
 // ContextItem represents one final context fragment returned to plugins after assembly.
 // ContextItem 用于表示上下文组装完成后返回给插件的一条最终上下文片段。
 type ContextItem struct {

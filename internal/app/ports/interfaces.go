@@ -51,10 +51,23 @@ type RelationalStore interface {
 	Shutdowner
 }
 
+// MemoryArchiveStore is the port used by the /chat archive flow to persist scrubbed messages without storing raw PII.
+// MemoryArchiveStore 用于让 /chat 归档流程在不保存原始敏感信息的前提下持久化已脱敏消息。
+type MemoryArchiveStore interface {
+	SaveMemory(ctx context.Context, record logicdomain.ArchivedMemory) error
+	Shutdowner
+}
+
 // ContextPersonaProvider is the port used by pre-check flows to load stable persona and project context.
 // ContextPersonaProvider 用于给 pre-check 流程加载稳定的画像和项目上下文。
 type ContextPersonaProvider interface {
 	Load(ctx context.Context, session logicdomain.SessionRef) (logicdomain.PersonaContext, error)
+}
+
+// TextScrubber is the utility port used by chat archive flows to scrub PII according to the active language rules.
+// TextScrubber 用于让聊天归档流程根据当前语言规则执行 PII 脱敏。
+type TextScrubber interface {
+	Scrub(text string, lang string) string
 }
 
 // IDGenerator is the utility port used to create stable IDs for traces and seeded memories.
