@@ -1,0 +1,11 @@
+{
+  "language": "zh-CN",
+  "version": "1.1.0",
+  "rules": [
+    { "name": "Mobile", "pattern": "1[3-9]\\d{9}", "replacement": "[MOBILE_MASKED]" },
+    { "name": "ID_Card", "pattern": "\\b\\d{17}[\\dXx]\\b", "replacement": "[ID_MASKED]" },
+    { "name": "OpenAI_Key", "pattern": "sk-[A-Za-z0-9]{20,}", "replacement": "[SK_MASKED]" },
+    { "name": "Bearer_Token", "pattern": "Bearer\\s+([A-Za-z0-9._+=-]{10,})", "replacement": "Bearer [TOKEN_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}
