@@ -79,6 +79,16 @@ func newTestRouterWithLogger(logger *logx.Logger) http.Handler {
 	})
 }
 
+// testChatUseCase adapts a plain function into the ChatExecutor interface for focused HTTP tests.
+// testChatUseCase 用于把普通函数适配成 ChatExecutor 接口，便于聚焦 HTTP 测试。
+type testChatUseCase func(ctx context.Context, cmd usecase.ChatCommand) (usecase.ChatResult, error)
+
+// Execute executes the Execute logic.
+// Execute 用于执行 Execute 逻辑。
+func (f testChatUseCase) Execute(ctx context.Context, cmd usecase.ChatCommand) (usecase.ChatResult, error) {
+	return f(ctx, cmd)
+}
+
 // TestPreCheckRejectsNonTextHistoryContent verifies the TestPreCheckRejectsNonTextHistoryContent behavior.
 // TestPreCheckRejectsNonTextHistoryContent 用于验证 TestPreCheckRejectsNonTextHistoryContent 行为。
 func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
@@ -290,6 +300,53 @@ func TestWithTimeoutPreservesTraceIDInUseCaseContext(t *testing.T) {
 	}
 	if rec.Code != http.StatusOK {
 		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+// TestChatRouteScrubsAndReturnsSanitizedText verifies the TestChatRouteScrubsAndReturnsSanitizedText behavior.
+// TestChatRouteScrubsAndReturnsSanitizedText 用于验证 TestChatRouteScrubsAndReturnsSanitizedText 行为。
+func TestChatRouteScrubsAndReturnsSanitizedText(t *testing.T) {
+	chat := testChatUseCase(func(ctx context.Context, cmd usecase.ChatCommand) (usecase.ChatResult, error) {
+		if cmd.Language != "zh-CN" {
+			t.Fatalf("language = %q", cmd.Language)
+		}
+		return usecase.ChatResult{
+			SessionID: cmd.SessionID,
+			Message:   "你好，我的电话是 [MOBILE_MASKED]",
+			Language:  cmd.Language,
+			TraceID:   trace.IDFromContext(ctx),
+		}, nil
+	})
+	router := NewRouter(Dependencies{
+		IDs:                 xid.NewGenerator(),
+		Chat:                chat,
+		Logger:              logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}),
+		ChatTimeout:         time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"test_001","message":"你好，我的电话是 13800138000"}`
+	req := httptest.NewRequest(http.MethodPost, "/chat", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	dataBytes, err := json.Marshal(env.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp ChatResponseDTO
+	if err := json.Unmarshal(dataBytes, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.Message != "你好，我的电话是 [MOBILE_MASKED]" {
+		t.Fatalf("response message = %q", resp.Message)
 	}
 }
 

@@ -129,7 +129,7 @@ func RequestLoggerMiddleware(logger *logx.Logger, logRequestBodies bool) Middlew
 				"latency", time.Since(start).String(),
 				"client_ip", clientIP(r),
 			}
-			if logRequestBodies && strings.EqualFold(r.Method, http.MethodPost) {
+			if logRequestBodies && strings.EqualFold(r.Method, http.MethodPost) && r.URL.Path != "/chat" {
 				if body, _ := r.Context().Value(requestBodyContextKey).(string); body != "" {
 					args = append(args, "request_body", body)
 				}

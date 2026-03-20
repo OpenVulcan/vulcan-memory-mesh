@@ -3,6 +3,7 @@
     "listen_addr": "127.0.0.1:8080",
     "max_request_body_bytes": 1048576,
     "request_timeout": {
+      "chat": "3s",
       "pre_check": "3s",
       "post_action": "3s",
       "seed_memory": "3s"
@@ -17,7 +18,15 @@
   "logging": {
     "level": "info",
     "format": "text",
-    "log_request_bodies": true
+    "log_request_bodies": false
+  },
+  "pii": {
+    "rules_dir": "../configs/pii_rules",
+    "default_language": "zh-CN"
+  },
+  "archive": {
+    "provider": "sqlite",
+    "path": "../data/vmm.db"
   },
   "llm": {
     "provider": "openai",

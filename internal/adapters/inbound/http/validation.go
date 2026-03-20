@@ -67,6 +67,16 @@ func normalizeSeedMemoryRequest(req *SeedMemoryRequestDTO) {
 	req.SpaceID = strings.TrimSpace(req.SpaceID)
 }
 
+// normalizeChatRequest trims the /chat transport payload before validation and use-case mapping.
+// normalizeChatRequest 用于在校验和映射到用例前清理 /chat 传输层载荷。
+func normalizeChatRequest(req *ChatRequestDTO) {
+	if req == nil {
+		return
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.Message = strings.TrimSpace(req.Message)
+}
+
 // ValidatePreCheck validates the pre-check DTO before it is mapped into a use-case command.
 // ValidatePreCheck 用于在映射到用例命令前校验 pre-check DTO。
 func (v *RequestValidator) ValidatePreCheck(req PreCheckRequestDTO) error {
@@ -126,6 +136,18 @@ func (v *RequestValidator) ValidateSeedMemory(req SeedMemoryRequestDTO) error {
 		return err
 	}
 	if err := requireString("memory_text", req.MemoryText, 16000); err != nil {
+		return err
+	}
+	return nil
+}
+
+// ValidateChat validates the /chat DTO before PII scrubbing and persistence.
+// ValidateChat 用于在 PII 脱敏和持久化之前校验 /chat DTO。
+func (v *RequestValidator) ValidateChat(req ChatRequestDTO) error {
+	if err := requireString("session_id", req.SessionID, 128); err != nil {
+		return err
+	}
+	if err := requireString("message", req.Message, 16000); err != nil {
 		return err
 	}
 	return nil

@@ -60,6 +60,13 @@ type SeedMemoryRequestDTO struct {
 	SpaceID    string `json:"space_id,omitempty"`
 }
 
+// ChatRequestDTO binds the lightweight /chat archive request before it enters the scrub-and-store use case.
+// ChatRequestDTO 用于绑定轻量 /chat 归档请求，再进入脱敏与存储用例。
+type ChatRequestDTO struct {
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+}
+
 // ContextItemDTO serializes one assembled context item returned by the pre-check flow.
 // ContextItemDTO 用于序列化 pre-check 流程返回的单条上下文项。
 type ContextItemDTO struct {
@@ -90,4 +97,12 @@ type PostActionResponseDTO struct {
 type SeedMemoryResponseDTO struct {
 	Accepted bool   `json:"accepted"`
 	MemoryID string `json:"memory_id"`
+}
+
+// ChatResponseDTO returns the scrubbed message that was persisted for the local archive flow.
+// ChatResponseDTO 用于返回已持久化到本地归档中的脱敏消息。
+type ChatResponseDTO struct {
+	SessionID string `json:"session_id"`
+	Message   string `json:"message"`
+	Language  string `json:"language"`
 }

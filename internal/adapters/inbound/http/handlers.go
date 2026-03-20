@@ -19,9 +19,11 @@ import (
 // Handler groups HTTP-facing use cases, validation, and timeout settings for the inbound adapter.
 // Handler 用于聚合入站 HTTP 适配层依赖的用例、校验器和超时配置。
 type Handler struct {
+	chat        usecase.ChatExecutor
 	preCheck    usecase.PreCheckExecutor
 	postAction  usecase.PostActionExecutor
 	seedMemory  usecase.SeedMemoryExecutor
+	chatTimeout time.Duration
 	preTimeout  time.Duration
 	postTimeout time.Duration
 	seedTimeout time.Duration
@@ -31,7 +33,7 @@ type Handler struct {
 
 // NewHandler creates a Handler instance.
 // NewHandler 用于创建 Handler 实例。
-func NewHandler(preCheck usecase.PreCheckExecutor, postAction usecase.PostActionExecutor, seedMemory usecase.SeedMemoryExecutor, preTimeout, postTimeout, seedTimeout time.Duration, logger *logx.Logger, validate *RequestValidator) *Handler {
+func NewHandler(chat usecase.ChatExecutor, preCheck usecase.PreCheckExecutor, postAction usecase.PostActionExecutor, seedMemory usecase.SeedMemoryExecutor, chatTimeout, preTimeout, postTimeout, seedTimeout time.Duration, logger *logx.Logger, validate *RequestValidator) *Handler {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -39,9 +41,11 @@ func NewHandler(preCheck usecase.PreCheckExecutor, postAction usecase.PostAction
 		validate = NewRequestValidator()
 	}
 	return &Handler{
+		chat:        chat,
 		preCheck:    preCheck,
 		postAction:  postAction,
 		seedMemory:  seedMemory,
+		chatTimeout: chatTimeout,
 		preTimeout:  preTimeout,
 		postTimeout: postTimeout,
 		seedTimeout: seedTimeout,
@@ -57,6 +61,50 @@ func (h *Handler) Healthz(w http.ResponseWriter, r *http.Request) {
 		Code:    http.StatusOK,
 		Msg:     "ok",
 		Data:    map[string]string{"status": "ok"},
+		TraceID: trace.IDFromContext(r.Context()),
+	})
+}
+
+// Chat executes the Chat logic.
+// Chat 用于执行 Chat 逻辑。
+func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
+	// Bind, sanitize, and validate the /chat payload before scrubbing and persistence.
+	// 在执行脱敏和持久化之前，先绑定、清洗并校验 /chat 载荷。
+	if h.chat == nil {
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), errRouteDisabled)
+		return
+	}
+	var req ChatRequestDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeDecodeError(err))
+		return
+	}
+	normalizeChatRequest(&req)
+	if err := h.validate.ValidateChat(req); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+
+	ctx, cancel := withTimeout(r.Context(), h.chatTimeout)
+	defer cancel()
+	ctx = trace.WithTraceID(ctx, trace.IDFromContext(r.Context()))
+	language := preferredLanguage(r.Header.Get("Accept-Language"))
+
+	// Execute the chat archive use case and return the scrubbed message payload.
+	// 执行聊天归档用例，并返回脱敏后的消息载荷。
+	resp, err := h.chat.Execute(ctx, usecase.ChatCommand{
+		SessionID: req.SessionID,
+		Message:   req.Message,
+		Language:  language,
+	})
+	if err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, Envelope{
+		Code:    http.StatusOK,
+		Msg:     "ok",
+		Data:    ChatResponseDTO{SessionID: resp.SessionID, Message: resp.Message, Language: resp.Language},
 		TraceID: trace.IDFromContext(r.Context()),
 	})
 }
@@ -292,4 +340,17 @@ func sanitizeErrorMessage(msg string) string {
 		return "internal server error"
 	}
 	return msg
+}
+
+// preferredLanguage extracts the strongest language tag from Accept-Language.
+// preferredLanguage 用于从 Accept-Language 中提取优先级最高的语言标签。
+func preferredLanguage(header string) string {
+	header = strings.TrimSpace(header)
+	if header == "" {
+		return ""
+	}
+	first := strings.Split(header, ",")[0]
+	first = strings.TrimSpace(first)
+	first = strings.Split(first, ";")[0]
+	return first
 }

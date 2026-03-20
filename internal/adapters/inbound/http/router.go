@@ -15,11 +15,13 @@ import (
 // Dependencies 用于收集 HTTP 路由装配所需的全部依赖和中间件配置。
 type Dependencies struct {
 	IDs                 interface{ NewID(prefix string) string }
+	Chat                usecase.ChatExecutor
 	PreCheck            usecase.PreCheckExecutor
 	PostAction          usecase.PostActionExecutor
 	SeedMemory          usecase.SeedMemoryExecutor
 	Logger              *logx.Logger
 	Validator           *RequestValidator
+	ChatTimeout         time.Duration
 	PreCheckTimeout     time.Duration
 	PostActionTimeout   time.Duration
 	SeedMemoryTimeout   time.Duration
@@ -32,9 +34,12 @@ type Dependencies struct {
 // NewRouter creates a Router instance.
 // NewRouter 用于创建 Router 实例。
 func NewRouter(deps Dependencies) http.Handler {
-	handler := NewHandler(deps.PreCheck, deps.PostAction, deps.SeedMemory, deps.PreCheckTimeout, deps.PostActionTimeout, deps.SeedMemoryTimeout, deps.Logger, deps.Validator)
+	handler := NewHandler(deps.Chat, deps.PreCheck, deps.PostAction, deps.SeedMemory, deps.ChatTimeout, deps.PreCheckTimeout, deps.PostActionTimeout, deps.SeedMemoryTimeout, deps.Logger, deps.Validator)
 	mux := http.NewServeMux()
 	mux.Handle("/healthz", methodHandler(http.MethodGet, http.HandlerFunc(handler.Healthz)))
+	if deps.Chat != nil {
+		mux.Handle("/chat", methodHandler(http.MethodPost, http.HandlerFunc(handler.Chat)))
+	}
 	mux.Handle("/v1/chat/pre-check", methodHandler(http.MethodPost, http.HandlerFunc(handler.PreCheck)))
 	mux.Handle("/v1/chat/post-action", methodHandler(http.MethodPost, http.HandlerFunc(handler.PostAction)))
 	if deps.EnableSeedRoute && deps.SeedMemory != nil {

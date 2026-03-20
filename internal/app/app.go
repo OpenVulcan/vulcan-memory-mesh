@@ -8,17 +8,20 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"syscall"
 
 	httpapi "github.com/openvulcan/vmm/internal/adapters/inbound/http"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/sqlite"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/logic/processor"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/pii"
 	"github.com/openvulcan/vmm/internal/platform/xid"
 )
 
@@ -64,10 +67,19 @@ func newApplication(cfg config.Config, prompts appports.PromptSource) (*Applicat
 	if err != nil {
 		return nil, err
 	}
+	archiveStore, err := buildArchiveStore(cfg)
+	if err != nil {
+		return nil, err
+	}
+	scrubber, err := buildScrubber(cfg)
+	if err != nil {
+		return nil, err
+	}
 	persona := buildPersona()
 
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
+	chat := usecase.NewChatUseCase(scrubber, archiveStore, ids, logger)
 	pre := usecase.NewPreCheckUseCase(processor.NewIntentExtractor(llm, prompts, cfg.LLM.Model, cfg.MemoryPipeline.MaxSearchKeywords), processor.NewContextAssembler(prompts, cfg.LLM.Model), embedding, vector, persona, logger, cfg.PreCheck.IntentTimeout.Duration, cfg.PreCheck.TopK, cfg.MemoryPipeline.MaxSearchKeywords, cfg.MemoryPipeline.MinSimilarityScore, cfg.Embedding.Model, cfg.Embedding.Dimension)
 	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), relational, logger)
 	seed := usecase.NewSeedMemoryUseCase(embedding, vector, ids, logger, cfg.Embedding.Model, cfg.Embedding.Dimension)
@@ -77,10 +89,12 @@ func newApplication(cfg config.Config, prompts appports.PromptSource) (*Applicat
 	// 将 HTTP 处理器和关闭依赖接入应用容器。
 	deps := httpapi.Dependencies{
 		IDs:                 ids,
+		Chat:                chat,
 		PreCheck:            pre,
 		PostAction:          post,
 		SeedMemory:          seed,
 		Logger:              logger,
+		ChatTimeout:         cfg.HTTP.RequestTimeout.Chat.Duration,
 		PreCheckTimeout:     cfg.HTTP.RequestTimeout.PreCheck.Duration,
 		PostActionTimeout:   cfg.HTTP.RequestTimeout.PostAction.Duration,
 		SeedMemoryTimeout:   cfg.HTTP.RequestTimeout.SeedMemory.Duration,
@@ -90,6 +104,9 @@ func newApplication(cfg config.Config, prompts appports.PromptSource) (*Applicat
 	}
 	handler := httpapi.NewRouter(deps)
 	shutdowns := []appports.Shutdowner{}
+	if archiveStore != nil {
+		shutdowns = append(shutdowns, archiveStore)
+	}
 	if relational != nil {
 		shutdowns = append(shutdowns, relational)
 	}
@@ -217,10 +234,44 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	}
 }
 
+// buildArchiveStore builds the archive store used by the /chat scrub-and-store flow.
+// buildArchiveStore 用于构建 /chat 脱敏归档流程使用的存储后端。
+func buildArchiveStore(cfg config.Config) (appports.MemoryArchiveStore, error) {
+	switch strings.ToLower(cfg.Archive.Provider) {
+	case "sqlite":
+		return sqlite.NewStore(resolveRuntimePath(cfg.Archive.Path))
+	default:
+		return nil, fmt.Errorf("unsupported archive provider: %s", cfg.Archive.Provider)
+	}
+}
+
 // buildPersona builds the target dependency.
 // buildPersona 用于构建目标依赖。
 func buildPersona() appports.ContextPersonaProvider {
 	// Use the local persona provider for the OSS local runtime.
 	// 在 OSS 本地运行时中使用本地画像提供器。
 	return memory_mock.NewPersonaProvider()
+}
+
+// buildScrubber builds the multi-language scrubber used by the local chat archive route.
+// buildScrubber 用于构建本地聊天归档路由使用的多语言脱敏器。
+func buildScrubber(cfg config.Config) (appports.TextScrubber, error) {
+	return pii.NewEngine(resolveRuntimePath(cfg.PII.RulesDir), cfg.PII.DefaultLanguage)
+}
+
+// resolveRuntimePath resolves one relative runtime path against the executable directory.
+// resolveRuntimePath 用于把运行时相对路径解析到可执行文件所在目录。
+func resolveRuntimePath(path string) string {
+	if strings.TrimSpace(path) == "" {
+		return path
+	}
+	if filepath.IsAbs(path) {
+		return path
+	}
+	exePath, err := os.Executable()
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	exeDir := filepath.Dir(exePath)
+	return filepath.Clean(filepath.Join(exeDir, path))
 }
