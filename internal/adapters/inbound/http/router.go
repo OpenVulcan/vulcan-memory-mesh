@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"time"
 
-	"github.com/go-playground/validator/v10"
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
@@ -20,7 +19,7 @@ type Dependencies struct {
 	PostAction          usecase.PostActionExecutor
 	SeedMemory          usecase.SeedMemoryExecutor
 	Logger              *logx.Logger
-	Validator           *validator.Validate
+	Validator           *RequestValidator
 	PreCheckTimeout     time.Duration
 	PostActionTimeout   time.Duration
 	SeedMemoryTimeout   time.Duration

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/go-playground/validator/v10"
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
@@ -27,17 +26,17 @@ type Handler struct {
 	postTimeout time.Duration
 	seedTimeout time.Duration
 	logger      *logx.Logger
-	validate    *validator.Validate
+	validate    *RequestValidator
 }
 
 // NewHandler creates a Handler instance.
 // NewHandler 用于创建 Handler 实例。
-func NewHandler(preCheck usecase.PreCheckExecutor, postAction usecase.PostActionExecutor, seedMemory usecase.SeedMemoryExecutor, preTimeout, postTimeout, seedTimeout time.Duration, logger *logx.Logger, validate *validator.Validate) *Handler {
+func NewHandler(preCheck usecase.PreCheckExecutor, postAction usecase.PostActionExecutor, seedMemory usecase.SeedMemoryExecutor, preTimeout, postTimeout, seedTimeout time.Duration, logger *logx.Logger, validate *RequestValidator) *Handler {
 	if logger == nil {
 		logger = logx.Default()
 	}
 	if validate == nil {
-		validate = newValidator()
+		validate = NewRequestValidator()
 	}
 	return &Handler{
 		preCheck:    preCheck,
@@ -76,7 +75,7 @@ func (h *Handler) PreCheck(w http.ResponseWriter, r *http.Request) {
 	if req.HistoryContent == nil {
 		req.HistoryContent = []HistorySnippetDTO{}
 	}
-	if err := validateStruct(h.validate, req); err != nil {
+	if err := h.validate.ValidatePreCheck(req); err != nil {
 		h.writeError(w, r, err)
 		return
 	}
@@ -136,7 +135,7 @@ func (h *Handler) PostAction(w http.ResponseWriter, r *http.Request) {
 	if req.RawMessagesSnapshot == nil {
 		req.RawMessagesSnapshot = []RawMessageDTO{}
 	}
-	if err := validateStruct(h.validate, req); err != nil {
+	if err := h.validate.ValidatePostAction(req); err != nil {
 		h.writeError(w, r, err)
 		return
 	}
@@ -183,7 +182,7 @@ func (h *Handler) SeedMemory(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalizeSeedMemoryRequest(&req)
-	if err := validateStruct(h.validate, req); err != nil {
+	if err := h.validate.ValidateSeedMemory(req); err != nil {
 		h.writeError(w, r, err)
 		return
 	}

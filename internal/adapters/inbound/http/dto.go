@@ -7,8 +7,8 @@ import "encoding/json"
 // HistorySnippetDTO carries one text-only history message from the pre-check request body.
 // HistorySnippetDTO 用于承载 pre-check 请求体中的单条纯文本历史消息。
 type HistorySnippetDTO struct {
-	Role    string `json:"role" validate:"required,oneof=user assistant"`
-	Content string `json:"content" validate:"required,max=16000"`
+	Role    string `json:"role"`
+	Content string `json:"content"`
 }
 
 // ToolCallDTO captures tool call metadata before the HTTP layer maps snapshots into domain messages.
@@ -21,7 +21,7 @@ type ToolCallDTO struct {
 // RawMessageDTO accepts raw post-action message payloads so downstream normalizers can decide how to parse content.
 // RawMessageDTO 用于接收 post-action 的原始消息载荷，供下游 normalizer 决定如何解析内容。
 type RawMessageDTO struct {
-	Role      string          `json:"role" validate:"required,oneof=user assistant system tool"`
+	Role      string          `json:"role"`
 	Content   json.RawMessage `json:"content"`
 	ToolCalls []ToolCallDTO   `json:"tool_calls,omitempty"`
 	Meta      map[string]any  `json:"meta,omitempty"`
@@ -30,33 +30,33 @@ type RawMessageDTO struct {
 // PreCheckRequestDTO binds the /v1/chat/pre-check request body before it is converted into a use case command.
 // PreCheckRequestDTO 用于绑定 /v1/chat/pre-check 请求体，再转换成用例命令。
 type PreCheckRequestDTO struct {
-	SessionID      string              `json:"session_id" validate:"required,max=128"`
-	UserID         string              `json:"user_id" validate:"required,max=128"`
-	TeamID         string              `json:"team_id" validate:"required,max=128"`
+	SessionID      string              `json:"session_id"`
+	UserID         string              `json:"user_id"`
+	TeamID         string              `json:"team_id"`
 	SpaceID        string              `json:"space_id,omitempty"`
-	ProjectID      string              `json:"project_id" validate:"required,max=128"`
-	HistoryContent []HistorySnippetDTO `json:"history_content" validate:"dive"`
-	CurrentContent string              `json:"current_content" validate:"max=16000"`
+	ProjectID      string              `json:"project_id"`
+	HistoryContent []HistorySnippetDTO `json:"history_content"`
+	CurrentContent string              `json:"current_content"`
 	IsFirstTurn    bool                `json:"is_first_turn"`
 }
 
 // PostActionRequestDTO binds the /v1/chat/post-action request body before normalization and persistence.
 // PostActionRequestDTO 用于绑定 /v1/chat/post-action 请求体，再进入清洗和持久化流程。
 type PostActionRequestDTO struct {
-	SessionID           string          `json:"session_id" validate:"required,max=128"`
-	UserID              string          `json:"user_id" validate:"required,max=128"`
-	TeamID              string          `json:"team_id" validate:"required,max=128"`
+	SessionID           string          `json:"session_id"`
+	UserID              string          `json:"user_id"`
+	TeamID              string          `json:"team_id"`
 	SpaceID             string          `json:"space_id,omitempty"`
-	ProjectID           string          `json:"project_id" validate:"required,max=128"`
-	RawMessagesSnapshot []RawMessageDTO `json:"raw_messages_snapshot" validate:"dive"`
+	ProjectID           string          `json:"project_id"`
+	RawMessagesSnapshot []RawMessageDTO `json:"raw_messages_snapshot"`
 }
 
 // SeedMemoryRequestDTO binds the admin seed-memory request used to preload local vector memory.
 // SeedMemoryRequestDTO 用于绑定管理员 seed-memory 请求，以便预热本地向量记忆。
 type SeedMemoryRequestDTO struct {
-	UserID     string `json:"user_id" validate:"required,max=128"`
-	ProjectID  string `json:"project_id" validate:"required,max=128"`
-	MemoryText string `json:"memory_text" validate:"required,max=16000"`
+	UserID     string `json:"user_id"`
+	ProjectID  string `json:"project_id"`
+	MemoryText string `json:"memory_text"`
 	SpaceID    string `json:"space_id,omitempty"`
 }
 
