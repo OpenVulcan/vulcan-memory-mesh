@@ -31,6 +31,24 @@ type PromptLayout struct {
 	AppConfigPath      string
 }
 
+// SystemPIIRulesDir returns the built-in pii_rules directory that ships with the executable.
+// SystemPIIRulesDir 用于返回随可执行文件一起分发的内置 pii_rules 目录。
+func (l PromptLayout) SystemPIIRulesDir() string {
+	if strings.TrimSpace(l.SystemDir) == "" {
+		return ""
+	}
+	return filepath.Join(l.SystemDir, "pii_rules")
+}
+
+// UserPIIRulesDir returns the override pii_rules directory from ~/.vmm or the -config bundle root.
+// UserPIIRulesDir 用于返回来自 ~/.vmm 或 -config 覆盖根目录的 pii_rules 目录。
+func (l PromptLayout) UserPIIRulesDir() string {
+	if strings.TrimSpace(l.UserDir) == "" {
+		return ""
+	}
+	return filepath.Join(l.UserDir, "pii_rules")
+}
+
 // RouteMap maps model prefixes to prompt folders after route files are loaded from disk.
 // RouteMap 用于表示从磁盘路由文件加载后的“模型前缀到提示词目录”映射。
 type RouteMap map[string]string

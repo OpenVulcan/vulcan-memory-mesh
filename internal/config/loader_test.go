@@ -166,6 +166,21 @@ func TestResolvePromptLayoutUsesUserLocalJSONAsOverrideWhenPresent(t *testing.T)
 	}
 }
 
+// TestPromptLayoutExposesFixedPIIRuleDirs verifies the TestPromptLayoutExposesFixedPIIRuleDirs behavior.
+// TestPromptLayoutExposesFixedPIIRuleDirs 用于验证 TestPromptLayoutExposesFixedPIIRuleDirs 行为。
+func TestPromptLayoutExposesFixedPIIRuleDirs(t *testing.T) {
+	layout := PromptLayout{
+		SystemDir: filepath.Join("D:", "workspace", "configs"),
+		UserDir:   filepath.Join("C:", "Users", "tester", ".vmm"),
+	}
+	if got, want := layout.SystemPIIRulesDir(), filepath.Join(layout.SystemDir, "pii_rules"); got != want {
+		t.Fatalf("system pii_rules dir = %q, want %q", got, want)
+	}
+	if got, want := layout.UserPIIRulesDir(), filepath.Join(layout.UserDir, "pii_rules"); got != want {
+		t.Fatalf("user pii_rules dir = %q, want %q", got, want)
+	}
+}
+
 // TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound verifies the TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound behavior.
 // TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound 用于验证 TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound 行为。
 func TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound(t *testing.T) {

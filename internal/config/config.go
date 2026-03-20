@@ -100,10 +100,9 @@ type LoggingConfig struct {
 	LogRequestBodies bool   `json:"log_request_bodies"`
 }
 
-// PIIConfig holds the rule directory and default language used by the PII scrubber.
-// PIIConfig 用于保存 PII 脱敏器使用的规则目录和默认语言。
+// PIIConfig holds the default language used by the fixed pii_rules layout.
+// PIIConfig 用于保存固定 pii_rules 目录布局所使用的默认语言。
 type PIIConfig struct {
-	RulesDir        string `json:"rules_dir"`
 	DefaultLanguage string `json:"default_language"`
 }
 
@@ -183,7 +182,7 @@ func DefaultLocal() Config {
 			TLS:                 HTTPTLSConfig{},
 		},
 		Logging:        LoggingConfig{Level: "info", Format: "text", LogRequestBodies: false},
-		PII:            PIIConfig{RulesDir: "../configs/pii_rules", DefaultLanguage: "zh-CN"},
+		PII:            PIIConfig{DefaultLanguage: "zh-CN"},
 		Archive:        ArchiveConfig{Provider: "sqlite", Path: "../data/vmm.db"},
 		LLM:            LLMConfig{Provider: "mock", Model: "mock-intent-fast"},
 		Embedding:      EmbeddingConfig{Provider: "mock", Model: "mock-embedding-v1", Dimension: 64},
@@ -379,9 +378,6 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Logging.Format) == "" {
 		c.Logging.Format = "text"
 	}
-	if strings.TrimSpace(c.PII.RulesDir) == "" {
-		c.PII.RulesDir = "../configs/pii_rules"
-	}
 	if strings.TrimSpace(c.PII.DefaultLanguage) == "" {
 		c.PII.DefaultLanguage = "zh-CN"
 	}
@@ -406,9 +402,6 @@ func (c Config) Validate() error {
 	// 在应用启动前验证最小运行时契约。
 	if strings.TrimSpace(c.HTTP.ListenAddr) == "" {
 		return errors.New("http.listen_addr is required")
-	}
-	if strings.TrimSpace(c.PII.RulesDir) == "" {
-		return errors.New("pii.rules_dir is required")
 	}
 	if strings.TrimSpace(c.PII.DefaultLanguage) == "" {
 		return errors.New("pii.default_language is required")
@@ -517,7 +510,6 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
 	setBool("VMM_LOG_REQUEST_BODIES", &cfg.Logging.LogRequestBodies)
-	setString("VMM_PII_RULES_DIR", &cfg.PII.RulesDir)
 	setString("VMM_PII_DEFAULT_LANGUAGE", &cfg.PII.DefaultLanguage)
 	setString("VMM_ARCHIVE_PROVIDER", &cfg.Archive.Provider)
 	setString("VMM_ARCHIVE_PATH", &cfg.Archive.Path)

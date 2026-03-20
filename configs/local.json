@@ -21,7 +21,6 @@
     "log_request_bodies": false
   },
   "pii": {
-    "rules_dir": "../configs/pii_rules",
     "default_language": "zh-CN"
   },
   "archive": {

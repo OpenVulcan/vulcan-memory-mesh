@@ -55,14 +55,14 @@ type Engine struct {
 	languages   map[string]languageRules
 }
 
-// NewEngine loads and compiles every rule file under the target directory.
-// NewEngine 用于加载并编译目标目录下的所有规则文件。
-func NewEngine(dir string, defaultLang string) (*Engine, error) {
+// NewEngine loads system pii_rules first and then applies the optional user override directory.
+// NewEngine 用于先加载系统 pii_rules，再叠加可选的用户覆盖目录。
+func NewEngine(systemDir, userDir, defaultLang string) (*Engine, error) {
 	engine := &Engine{
 		defaultLang: normalizeLanguage(defaultLang),
 		languages:   map[string]languageRules{},
 	}
-	if err := engine.LoadDir(dir); err != nil {
+	if err := engine.LoadDirs(systemDir, userDir); err != nil {
 		return nil, err
 	}
 	if engine.defaultLang == "" {
@@ -72,7 +72,7 @@ func NewEngine(dir string, defaultLang string) (*Engine, error) {
 		}
 	}
 	if engine.defaultLang == "" {
-		return nil, fmt.Errorf("no pii rules loaded from %s", dir)
+		return nil, fmt.Errorf("no pii rules loaded from system=%s user=%s", systemDir, userDir)
 	}
 	if _, ok := engine.languages[engine.defaultLang]; !ok {
 		return nil, fmt.Errorf("default pii language %q not found", engine.defaultLang)
@@ -80,26 +80,12 @@ func NewEngine(dir string, defaultLang string) (*Engine, error) {
 	return engine, nil
 }
 
-// LoadDir rescans one rule directory and swaps the in-memory rule map atomically.
-// LoadDir 用于重新扫描规则目录，并以原子方式替换内存中的规则映射。
-func (e *Engine) LoadDir(dir string) error {
-	if strings.TrimSpace(dir) == "" {
-		return fmt.Errorf("pii rules dir is required")
-	}
-	matches, err := filepath.Glob(filepath.Join(dir, "*.json"))
+// LoadDirs rescans the fixed system/user pii_rules directories and swaps the rule map atomically.
+// LoadDirs 用于重新扫描固定的系统/用户 pii_rules 目录，并原子替换规则映射。
+func (e *Engine) LoadDirs(systemDir, userDir string) error {
+	loaded, err := loadRuleDirs(systemDir, userDir)
 	if err != nil {
-		return fmt.Errorf("scan pii rules: %w", err)
-	}
-	if len(matches) == 0 {
-		return fmt.Errorf("no pii rule files found in %s", dir)
-	}
-	loaded := make(map[string]languageRules, len(matches))
-	for _, path := range matches {
-		rules, err := loadRuleFile(path)
-		if err != nil {
-			return err
-		}
-		loaded[rules.language] = rules
+		return err
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -187,6 +173,65 @@ func loadRuleFile(path string) (languageRules, error) {
 		rules:    compiled,
 		excludes: excludes,
 	}, nil
+}
+
+// loadRuleDirs loads the built-in pii_rules directory first and then applies user overrides by language.
+// loadRuleDirs 用于先加载内置 pii_rules 目录，再按语言标签叠加用户覆盖规则。
+func loadRuleDirs(systemDir, userDir string) (map[string]languageRules, error) {
+	systemDir = strings.TrimSpace(systemDir)
+	if systemDir == "" {
+		return nil, fmt.Errorf("system pii rules dir is required")
+	}
+
+	systemRules, err := loadRuleDir(systemDir, true)
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(userDir) == "" {
+		return systemRules, nil
+	}
+
+	userRules, err := loadRuleDir(userDir, false)
+	if err != nil {
+		return nil, err
+	}
+	for lang, rules := range userRules {
+		systemRules[lang] = rules
+	}
+	return systemRules, nil
+}
+
+// loadRuleDir loads and compiles one rule directory, optionally requiring at least one JSON file.
+// loadRuleDir 用于加载并编译单个规则目录，并可选要求目录中至少存在一个 JSON 文件。
+func loadRuleDir(dir string, required bool) (map[string]languageRules, error) {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		if required {
+			return nil, fmt.Errorf("pii rules dir is required")
+		}
+		return map[string]languageRules{}, nil
+	}
+
+	matches, err := filepath.Glob(filepath.Join(dir, "*.json"))
+	if err != nil {
+		return nil, fmt.Errorf("scan pii rules in %s: %w", dir, err)
+	}
+	if len(matches) == 0 {
+		if required {
+			return nil, fmt.Errorf("no pii rule files found in %s", dir)
+		}
+		return map[string]languageRules{}, nil
+	}
+
+	loaded := make(map[string]languageRules, len(matches))
+	for _, path := range matches {
+		rules, err := loadRuleFile(path)
+		if err != nil {
+			return nil, err
+		}
+		loaded[rules.language] = rules
+	}
+	return loaded, nil
 }
 
 // normalizeLanguage normalizes Accept-Language style inputs into one map key.

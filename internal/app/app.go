@@ -37,13 +37,13 @@ type Application struct {
 
 // NewLocal creates a Local instance.
 // NewLocal 用于创建 Local 实例。
-func NewLocal(cfg config.Config, prompts appports.PromptSource) (*Application, error) {
-	return newApplication(cfg, prompts)
+func NewLocal(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
+	return newApplication(cfg, prompts, layout)
 }
 
 // newApplication creates a Application instance.
 // newApplication 用于创建 Application 实例。
-func newApplication(cfg config.Config, prompts appports.PromptSource) (*Application, error) {
+func newApplication(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
 	// Initialize shared runtime utilities such as logging and ID generation.
 	// 初始化日志和 ID 生成器等共享运行时能力。
 	logger := logx.New(os.Stdout, logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format})
@@ -71,7 +71,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource) (*Applicat
 	if err != nil {
 		return nil, err
 	}
-	scrubber, err := buildScrubber(cfg)
+	scrubber, err := buildScrubber(cfg, layout)
 	if err != nil {
 		return nil, err
 	}
@@ -255,8 +255,8 @@ func buildPersona() appports.ContextPersonaProvider {
 
 // buildScrubber builds the multi-language scrubber used by the local chat archive route.
 // buildScrubber 用于构建本地聊天归档路由使用的多语言脱敏器。
-func buildScrubber(cfg config.Config) (appports.TextScrubber, error) {
-	return pii.NewEngine(resolveRuntimePath(cfg.PII.RulesDir), cfg.PII.DefaultLanguage)
+func buildScrubber(cfg config.Config, layout config.PromptLayout) (appports.TextScrubber, error) {
+	return pii.NewEngine(layout.SystemPIIRulesDir(), layout.UserPIIRulesDir(), cfg.PII.DefaultLanguage)
 }
 
 // resolveRuntimePath resolves one relative runtime path against the executable directory.
