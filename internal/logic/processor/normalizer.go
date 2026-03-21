@@ -23,8 +23,8 @@ func NewMessageNormalizer() *MessageNormalizer { return &MessageNormalizer{} }
 func (n *MessageNormalizer) Normalize(messages []logicdomain.RawMessage) []logicdomain.NormalizedTurn {
 	type cleaned struct{ role, text string }
 
-	// Filter unsupported roles and strip thought tags before pairing turns.
-	// 在组装对话轮次之前，先过滤不支持的角色并移除思维标签。
+	// Filter unsupported roles and trust the inbound layer to provide already-sanitized text payloads.
+	// 在组装对话轮次之前先过滤不支持的角色，并信任入站层已经完成文本清洗。
 	filtered := make([]cleaned, 0, len(messages))
 	for _, msg := range messages {
 		role := strings.ToLower(strings.TrimSpace(msg.Role))
@@ -34,7 +34,7 @@ func (n *MessageNormalizer) Normalize(messages []logicdomain.RawMessage) []logic
 		if len(msg.ToolCalls) > 0 {
 			continue
 		}
-		text := textutil.StripThoughtTags(textutil.ExtractTextFromAny(msg.Content))
+		text := textutil.NormalizeWhitespace(textutil.ExtractTextFromAny(msg.Content))
 		if text == "" {
 			continue
 		}

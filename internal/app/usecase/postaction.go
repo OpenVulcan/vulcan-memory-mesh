@@ -54,6 +54,11 @@ func NewPostActionUseCase(normalizer *processor.MessageNormalizer, store appport
 // Execute executes the Execute logic.
 // Execute 用于执行 Execute 逻辑。
 func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error) {
+	cmd.UserID = defaultScopeValue(cmd.UserID)
+	cmd.TeamID = defaultScopeValue(cmd.TeamID)
+	cmd.SpaceID = defaultScopeValue(cmd.SpaceID)
+	cmd.ProjectID = defaultScopeValue(cmd.ProjectID)
+
 	// Validate the incoming snapshot before touching the relational store.
 	// 在访问关系存储之前先校验输入快照。
 	if err := validatePostAction(cmd); err != nil {
@@ -88,17 +93,17 @@ func validatePostAction(cmd PostActionCommand) error {
 	if strings.TrimSpace(cmd.SessionID) == "" {
 		return logicdomain.ValidationError{Field: "session_id", Message: "is required"}
 	}
-	if strings.TrimSpace(cmd.UserID) == "" {
-		return logicdomain.ValidationError{Field: "user_id", Message: "is required"}
-	}
-	if strings.TrimSpace(cmd.TeamID) == "" {
-		return logicdomain.ValidationError{Field: "team_id", Message: "is required"}
-	}
-	if strings.TrimSpace(cmd.ProjectID) == "" {
-		return logicdomain.ValidationError{Field: "project_id", Message: "is required"}
-	}
 	if cmd.RawMessagesSnapshot == nil {
 		return logicdomain.ValidationError{Field: "raw_messages_snapshot", Message: "is required"}
 	}
 	return nil
+}
+
+// defaultScopeValue fills one blank scope field with the local default namespace.
+// defaultScopeValue 用于把单个空范围字段补成默认命名空间值。
+func defaultScopeValue(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "default"
+	}
+	return strings.TrimSpace(value)
 }

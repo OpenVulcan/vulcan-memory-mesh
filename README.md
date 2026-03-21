@@ -53,9 +53,12 @@ scripts/
 ### post-action
 
 - 单次线性清洗
+- 严格模式下只接受标准 user/assistant 文本快照，额外内容直接报错
+- 兼容模式下会自动修剪 `system/tool`、`tool_calls` 和非文本内容块
+- 会在入口侧清理 `<think>` 标签、base64 媒体数据、Markdown/HTML 图片与附件链接
+- 缺失的 `user/team/space/project` 会自动补成 `default`
 - 丢弃 `tool/system`
 - 丢弃带 `tool_calls` 的节点
-- 清除 `<think>...</think>` 等思维链标签
 - 仅保留用户问题与 AI 最终回复，并压缩成 `[]NormalizedTurn`
 
 ### seed-memory
@@ -79,6 +82,19 @@ go run ./cmd/vmm-local/main.go -config configs/openai.local.example.json
 ```
 
 `llm.provider` 与 `embedding.provider` 可配置为 `openai`、`openai_go` 或 `openai_native`。如果你需要显式透传组织或项目头，可以使用 `organization` 和 `project` 字段；任何 OpenAI-compatible endpoint 都可以直接通过 `endpoint` 接入。
+
+### post-action 入口模式
+
+`post_action.input_mode` 当前支持：
+
+- `compat`
+  - 默认模式
+  - 自动修剪 `system/tool`
+  - 自动丢弃 `tool_calls`
+  - 对内容数组只保留 `type=text` 的文本块
+- `strict`
+  - 遇到非标准 user/assistant 快照直接返回校验错误
+  - 适合插件已经保证只上传标准问答文本的环境
 
 ## 测试
 

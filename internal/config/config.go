@@ -60,6 +60,7 @@ type Config struct {
 	Embedding      EmbeddingConfig      `json:"embedding"`
 	Vector         VectorConfig         `json:"vector"`
 	Relational     RelationalConfig     `json:"relational"`
+	PostAction     PostActionConfig     `json:"post_action"`
 	PreCheck       PreCheckConfig       `json:"precheck"`
 	MemoryPipeline MemoryPipelineConfig `json:"memory_pipeline"`
 	Admin          AdminConfig          `json:"admin"`
@@ -149,6 +150,12 @@ type RelationalConfig struct {
 	DSN      string `json:"dsn,omitempty"`
 }
 
+// PostActionConfig controls how strictly the inbound snapshot is validated before normalization.
+// PostActionConfig 用于控制在进入标准化流程前，对入站快照执行多严格的校验。
+type PostActionConfig struct {
+	InputMode string `json:"input_mode"`
+}
+
 // PreCheckConfig controls timeout and recall window settings for the pre-check workflow.
 // PreCheckConfig 用于控制 pre-check 工作流的超时和召回窗口配置。
 type PreCheckConfig struct {
@@ -188,6 +195,7 @@ func DefaultLocal() Config {
 		Embedding:      EmbeddingConfig{Provider: "mock", Model: "mock-embedding-v1", Dimension: 64},
 		Vector:         VectorConfig{Provider: "memory"},
 		Relational:     RelationalConfig{Provider: "memory"},
+		PostAction:     PostActionConfig{InputMode: "compat"},
 		PreCheck:       PreCheckConfig{IntentTimeout: Duration{2 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
 		Admin:          AdminConfig{SeedEnabled: true},
@@ -387,6 +395,10 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Archive.Path) == "" {
 		c.Archive.Path = "../data/vmm.db"
 	}
+	c.PostAction.InputMode = strings.ToLower(strings.TrimSpace(c.PostAction.InputMode))
+	if c.PostAction.InputMode == "" {
+		c.PostAction.InputMode = "compat"
+	}
 
 	// Default the relational backend to memory for the local OSS runtime.
 	// 为本地 OSS 运行时将关系后端默认归一到内存实现。
@@ -447,6 +459,11 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.LLM.Provider) == "" || strings.TrimSpace(c.Embedding.Provider) == "" || strings.TrimSpace(c.Vector.Provider) == "" || strings.TrimSpace(c.Relational.Provider) == "" {
 		return errors.New("provider fields are required")
+	}
+	switch c.PostAction.InputMode {
+	case "strict", "compat":
+	default:
+		return errors.New("post_action.input_mode must be either strict or compat")
 	}
 	return nil
 }
@@ -529,6 +546,7 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_VECTOR_PROVIDER", &cfg.Vector.Provider)
 	setString("VMM_RELATIONAL_PROVIDER", &cfg.Relational.Provider)
 	setString("VMM_RELATIONAL_DSN", &cfg.Relational.DSN)
+	setString("VMM_POSTACTION_INPUT_MODE", &cfg.PostAction.InputMode)
 	setDuration("VMM_PRECHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
 	setInt("VMM_PRECHECK_TOPK", &cfg.PreCheck.TopK)
 	setFloat("VMM_PRECHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)

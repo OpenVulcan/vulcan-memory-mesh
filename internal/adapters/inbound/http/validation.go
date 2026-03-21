@@ -3,19 +3,35 @@
 package httpapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/textutil"
+)
+
+const (
+	postActionInputModeCompat = "compat"
+	postActionInputModeStrict = "strict"
+	defaultScopeValue         = "default"
 )
 
 // RequestValidator performs lightweight transport validation without pulling in a heavy generic library.
 // RequestValidator 用于在不引入重型通用库的情况下执行轻量传输层校验。
-type RequestValidator struct{}
+type RequestValidator struct {
+	postActionInputMode string
+}
 
 // NewRequestValidator creates the transport validator shared by HTTP handlers.
 // NewRequestValidator 用于创建 HTTP 处理器共享的传输层校验器。
-func NewRequestValidator() *RequestValidator { return &RequestValidator{} }
+func NewRequestValidator(postActionInputMode string) *RequestValidator {
+	mode := strings.ToLower(strings.TrimSpace(postActionInputMode))
+	if mode != postActionInputModeStrict {
+		mode = postActionInputModeCompat
+	}
+	return &RequestValidator{postActionInputMode: mode}
+}
 
 // normalizePreCheckRequest trims transport strings before validation and use-case mapping.
 // normalizePreCheckRequest 用于在校验和映射到用例前清理 pre-check 传输层字符串。
@@ -28,10 +44,10 @@ func normalizePreCheckRequest(req *PreCheckRequestDTO) {
 	req.TeamID = strings.TrimSpace(req.TeamID)
 	req.SpaceID = strings.TrimSpace(req.SpaceID)
 	req.ProjectID = strings.TrimSpace(req.ProjectID)
-	req.CurrentContent = strings.TrimSpace(req.CurrentContent)
+	req.CurrentContent = textutil.CleanConversationText(req.CurrentContent)
 	for i := range req.HistoryContent {
 		req.HistoryContent[i].Role = strings.ToLower(strings.TrimSpace(req.HistoryContent[i].Role))
-		req.HistoryContent[i].Content = strings.TrimSpace(req.HistoryContent[i].Content)
+		req.HistoryContent[i].Content = textutil.CleanConversationText(req.HistoryContent[i].Content)
 	}
 }
 
@@ -42,16 +58,12 @@ func normalizePostActionRequest(req *PostActionRequestDTO) {
 		return
 	}
 	req.SessionID = strings.TrimSpace(req.SessionID)
-	req.UserID = strings.TrimSpace(req.UserID)
-	req.TeamID = strings.TrimSpace(req.TeamID)
-	req.SpaceID = strings.TrimSpace(req.SpaceID)
-	req.ProjectID = strings.TrimSpace(req.ProjectID)
+	req.UserID = defaultScope(strings.TrimSpace(req.UserID))
+	req.TeamID = defaultScope(strings.TrimSpace(req.TeamID))
+	req.SpaceID = defaultScope(strings.TrimSpace(req.SpaceID))
+	req.ProjectID = defaultScope(strings.TrimSpace(req.ProjectID))
 	for i := range req.RawMessagesSnapshot {
 		req.RawMessagesSnapshot[i].Role = strings.ToLower(strings.TrimSpace(req.RawMessagesSnapshot[i].Role))
-		for j := range req.RawMessagesSnapshot[i].ToolCalls {
-			req.RawMessagesSnapshot[i].ToolCalls[j].ID = strings.TrimSpace(req.RawMessagesSnapshot[i].ToolCalls[j].ID)
-			req.RawMessagesSnapshot[i].ToolCalls[j].Type = strings.TrimSpace(req.RawMessagesSnapshot[i].ToolCalls[j].Type)
-		}
 	}
 }
 
@@ -118,11 +130,30 @@ func (v *RequestValidator) ValidatePostAction(req PostActionRequestDTO) error {
 	if err := requireString("project_id", req.ProjectID, 128); err != nil {
 		return err
 	}
-	for idx, item := range req.RawMessagesSnapshot {
-		if err := validateRawMessage(idx, item); err != nil {
-			return err
-		}
+	if err := maxString("space_id", req.SpaceID, 128); err != nil {
+		return err
 	}
+	return nil
+}
+
+// PreparePostAction normalizes scope defaults and sanitizes the raw snapshot according to the configured input mode.
+// PreparePostAction 用于按配置的输入模式规范化范围字段默认值，并清洗原始快照。
+func (v *RequestValidator) PreparePostAction(req *PostActionRequestDTO) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "post_action", Message: "is required"}
+	}
+	normalizePostActionRequest(req)
+	if req.RawMessagesSnapshot == nil {
+		req.RawMessagesSnapshot = []RawMessageDTO{}
+	}
+	if err := v.ValidatePostAction(*req); err != nil {
+		return err
+	}
+	sanitized, err := v.sanitizePostActionSnapshot(req.RawMessagesSnapshot)
+	if err != nil {
+		return err
+	}
+	req.RawMessagesSnapshot = sanitized
 	return nil
 }
 
@@ -166,23 +197,167 @@ func validateHistorySnippet(index int, item HistorySnippetDTO) error {
 	return nil
 }
 
-// validateRawMessage validates one raw post-action message before the normalizer inspects its content.
-// validateRawMessage 用于在 normalizer 检查内容前校验一条 post-action 原始消息。
-func validateRawMessage(index int, item RawMessageDTO) error {
-	fieldPrefix := fmt.Sprintf("raw_messages_snapshot[%d]", index)
-	if err := requireOneOf(fieldPrefix+".role", item.Role, "user", "assistant", "system", "tool"); err != nil {
-		return err
-	}
-	for toolIndex, toolCall := range item.ToolCalls {
-		toolPrefix := fmt.Sprintf("%s.tool_calls[%d]", fieldPrefix, toolIndex)
-		if err := maxString(toolPrefix+".id", toolCall.ID, 128); err != nil {
-			return err
+// sanitizePostActionSnapshot validates or trims one raw snapshot according to the configured compatibility mode.
+// sanitizePostActionSnapshot 用于按照当前兼容模式校验或裁剪原始快照。
+func (v *RequestValidator) sanitizePostActionSnapshot(items []RawMessageDTO) ([]RawMessageDTO, error) {
+	sanitized := make([]RawMessageDTO, 0, len(items))
+	for idx, item := range items {
+		fieldPrefix := fmt.Sprintf("raw_messages_snapshot[%d]", idx)
+		role := strings.ToLower(strings.TrimSpace(item.Role))
+		switch role {
+		case "system", "tool":
+			continue
+		case "user", "assistant":
+		default:
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, logicdomain.ValidationError{Field: fieldPrefix + ".role", Message: "must be one of [user assistant system tool]"}
+			}
+			continue
 		}
-		if err := maxString(toolPrefix+".type", toolCall.Type, 64); err != nil {
-			return err
+		if len(item.ToolCalls) > 0 {
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, logicdomain.ValidationError{Field: fieldPrefix + ".tool_calls", Message: "must be empty for user or assistant messages"}
+			}
+			continue
 		}
+		content, keep, err := v.sanitizePostActionContent(item.Content, fieldPrefix+".content")
+		if err != nil {
+			return nil, err
+		}
+		if !keep {
+			continue
+		}
+		sanitized = append(sanitized, RawMessageDTO{Role: role, Content: content})
 	}
-	return nil
+	return sanitized, nil
+}
+
+// sanitizePostActionContent normalizes one user/assistant content payload into a pure text JSON string.
+// sanitizePostActionContent 用于把一条 user/assistant content 载荷规范化为纯文本 JSON 字符串。
+func (v *RequestValidator) sanitizePostActionContent(raw json.RawMessage, field string) (json.RawMessage, bool, error) {
+	if len(raw) == 0 {
+		if v.postActionInputMode == postActionInputModeStrict {
+			return nil, false, logicdomain.ValidationError{Field: field, Message: "must contain a text string or text blocks"}
+		}
+		return nil, false, nil
+	}
+	var text string
+	if err := json.Unmarshal(raw, &text); err == nil {
+		text = textutil.CleanConversationText(text)
+		if text == "" {
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, false, logicdomain.ValidationError{Field: field, Message: "must contain non-empty text"}
+			}
+			return nil, false, nil
+		}
+		return marshalTextContent(text)
+	}
+
+	var blocks []any
+	if err := json.Unmarshal(raw, &blocks); err == nil {
+		parts, err := v.extractTextBlocks(blocks, field)
+		if err != nil {
+			return nil, false, err
+		}
+		if len(parts) == 0 {
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, false, logicdomain.ValidationError{Field: field, Message: "must contain at least one text block"}
+			}
+			return nil, false, nil
+		}
+		return marshalTextContent(strings.Join(parts, " "))
+	}
+
+	var obj map[string]any
+	if err := json.Unmarshal(raw, &obj); err == nil {
+		if v.postActionInputMode == postActionInputModeStrict {
+			return nil, false, logicdomain.ValidationError{Field: field, Message: "must be either a string or an array of text blocks"}
+		}
+		part, ok := compatTextBlock(obj)
+		if !ok {
+			return nil, false, nil
+		}
+		return marshalTextContent(part)
+	}
+
+	if v.postActionInputMode == postActionInputModeStrict {
+		return nil, false, logicdomain.ValidationError{Field: field, Message: "must be valid json content"}
+	}
+	return nil, false, nil
+}
+
+// extractTextBlocks enforces text-only content arrays in strict mode and trims incompatible items in compat mode.
+// extractTextBlocks 用于在严格模式下强制要求数组仅包含文本块，并在兼容模式下裁剪不兼容项。
+func (v *RequestValidator) extractTextBlocks(blocks []any, field string) ([]string, error) {
+	parts := make([]string, 0, len(blocks))
+	for idx, block := range blocks {
+		blockField := fmt.Sprintf("%s[%d]", field, idx)
+		obj, ok := block.(map[string]any)
+		if !ok {
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, logicdomain.ValidationError{Field: blockField, Message: "must be an object with type=text"}
+			}
+			continue
+		}
+		typeValue, _ := obj["type"].(string)
+		typeValue = strings.ToLower(strings.TrimSpace(typeValue))
+		if typeValue != "text" {
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, logicdomain.ValidationError{Field: blockField + ".type", Message: "must be text"}
+			}
+			continue
+		}
+		textValue, ok := obj["text"].(string)
+		if !ok {
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, logicdomain.ValidationError{Field: blockField + ".text", Message: "must be a string"}
+			}
+			continue
+		}
+		textValue = textutil.CleanConversationText(textValue)
+		if textValue == "" {
+			if v.postActionInputMode == postActionInputModeStrict {
+				return nil, logicdomain.ValidationError{Field: blockField + ".text", Message: "must contain non-empty text"}
+			}
+			continue
+		}
+		parts = append(parts, textValue)
+	}
+	return parts, nil
+}
+
+// compatTextBlock extracts one text block from a non-standard object payload for compatibility mode.
+// compatTextBlock 用于在兼容模式下从非标准对象载荷中提取一条文本块。
+func compatTextBlock(obj map[string]any) (string, bool) {
+	typeValue, _ := obj["type"].(string)
+	if strings.ToLower(strings.TrimSpace(typeValue)) != "text" {
+		return "", false
+	}
+	textValue, _ := obj["text"].(string)
+	textValue = textutil.CleanConversationText(textValue)
+	if textValue == "" {
+		return "", false
+	}
+	return textValue, true
+}
+
+// marshalTextContent converts one normalized text payload back into JSON string form for downstream domain mapping.
+// marshalTextContent 用于把规范化后的文本载荷重新编码为 JSON 字符串，供后续领域映射使用。
+func marshalTextContent(text string) (json.RawMessage, bool, error) {
+	raw, err := json.Marshal(text)
+	if err != nil {
+		return nil, false, logicdomain.ValidationError{Field: "content", Message: "failed to encode normalized text"}
+	}
+	return json.RawMessage(raw), true, nil
+}
+
+// defaultScope fills empty scope identifiers with the stable local default value.
+// defaultScope 用于把空的范围标识补成稳定的本地默认值。
+func defaultScope(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return defaultScopeValue
+	}
+	return value
 }
 
 // requireString enforces one non-empty bounded string field.

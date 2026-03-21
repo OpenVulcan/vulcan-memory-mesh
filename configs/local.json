@@ -50,6 +50,9 @@
   "relational": {
     "provider": "memory"
   },
+  "post_action": {
+    "input_mode": "compat"
+  },
   "precheck": {
     "intent_timeout": "2s",
     "top_k": 5

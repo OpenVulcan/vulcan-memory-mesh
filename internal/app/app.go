@@ -94,6 +94,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		PostAction:          post,
 		SeedMemory:          seed,
 		Logger:              logger,
+		Validator:           httpapi.NewRequestValidator(cfg.PostAction.InputMode),
 		ChatTimeout:         cfg.HTTP.RequestTimeout.Chat.Duration,
 		PreCheckTimeout:     cfg.HTTP.RequestTimeout.PreCheck.Duration,
 		PostActionTimeout:   cfg.HTTP.RequestTimeout.PostAction.Duration,

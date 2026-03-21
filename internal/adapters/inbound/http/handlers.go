@@ -38,7 +38,7 @@ func NewHandler(chat usecase.ChatExecutor, preCheck usecase.PreCheckExecutor, po
 		logger = logx.Default()
 	}
 	if validate == nil {
-		validate = NewRequestValidator()
+		validate = NewRequestValidator("")
 	}
 	return &Handler{
 		chat:        chat,
@@ -179,11 +179,7 @@ func (h *Handler) PostAction(w http.ResponseWriter, r *http.Request) {
 		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeDecodeError(err))
 		return
 	}
-	normalizePostActionRequest(&req)
-	if req.RawMessagesSnapshot == nil {
-		req.RawMessagesSnapshot = []RawMessageDTO{}
-	}
-	if err := h.validate.ValidatePostAction(req); err != nil {
+	if err := h.validate.PreparePostAction(&req); err != nil {
 		h.writeError(w, r, err)
 		return
 	}

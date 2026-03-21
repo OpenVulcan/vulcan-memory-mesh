@@ -58,6 +58,27 @@ func TestConfigValidateRequiresTLSFiles(t *testing.T) {
 	}
 }
 
+// TestConfigNormalizeDefaultsPostActionInputMode verifies the TestConfigNormalizeDefaultsPostActionInputMode behavior.
+// TestConfigNormalizeDefaultsPostActionInputMode 用于验证 TestConfigNormalizeDefaultsPostActionInputMode 行为。
+func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
+	cfg := DefaultLocal()
+	cfg.PostAction.InputMode = ""
+	cfg.Normalize()
+	if cfg.PostAction.InputMode != "compat" {
+		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
+	}
+}
+
+// TestConfigValidateRejectsUnknownPostActionMode verifies the TestConfigValidateRejectsUnknownPostActionMode behavior.
+// TestConfigValidateRejectsUnknownPostActionMode 用于验证 TestConfigValidateRejectsUnknownPostActionMode 行为。
+func TestConfigValidateRejectsUnknownPostActionMode(t *testing.T) {
+	cfg := DefaultLocal()
+	cfg.PostAction.InputMode = "broken"
+	if err := cfg.Validate(); err == nil || err.Error() != "post_action.input_mode must be either strict or compat" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+}
+
 // TestLoadExpandsEnvPlaceholdersFromDotEnv verifies the TestLoadExpandsEnvPlaceholdersFromDotEnv behavior.
 // TestLoadExpandsEnvPlaceholdersFromDotEnv 用于验证 TestLoadExpandsEnvPlaceholdersFromDotEnv 行为。
 func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {

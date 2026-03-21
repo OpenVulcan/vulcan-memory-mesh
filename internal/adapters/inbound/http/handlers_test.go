@@ -160,7 +160,7 @@ func TestPostActionNormalizesRawMessages(t *testing.T) {
 		PostActionTimeout:   3 * time.Second,
 		MaxRequestBodyBytes: 1 << 20,
 	})
-	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","raw_messages_snapshot":[{"role":"user","content":"你好"},{"role":"assistant","content":[{"text":"<think>hidden</think>已收到"}]}]}`
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","raw_messages_snapshot":[{"role":"user","content":"你好"},{"role":"assistant","content":[{"type":"text","text":"<think>hidden</think>已收到"}]}]}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/post-action", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -174,6 +174,119 @@ func TestPostActionNormalizesRawMessages(t *testing.T) {
 	}
 	if turns[0].AssistantReply != "已收到" {
 		t.Fatalf("assistant reply = %q", turns[0].AssistantReply)
+	}
+}
+
+// TestPostActionCompatModeTrimsUnsupportedPayloads verifies the TestPostActionCompatModeTrimsUnsupportedPayloads behavior.
+// TestPostActionCompatModeTrimsUnsupportedPayloads 用于验证 TestPostActionCompatModeTrimsUnsupportedPayloads 行为。
+func TestPostActionCompatModeTrimsUnsupportedPayloads(t *testing.T) {
+	ids := xid.NewGenerator()
+	logger := logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"})
+	rel := memory_mock.NewRelationalStore()
+	router := NewRouter(Dependencies{
+		IDs:                 ids,
+		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger),
+		Logger:              logger,
+		Validator:           NewRequestValidator("compat"),
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","raw_messages_snapshot":[{"role":"system","content":"drop-me"},{"role":"user","content":[{"type":"text","text":"你好"},{"type":"image_url","image_url":{"url":"https://example.com"}}]},{"role":"assistant","content":"<think>hidden</think>已收到 ![这是一只猫](https://cdn.example.com/cat.jpg) ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)"},{"role":"assistant","tool_calls":[{"id":"tool-1","type":"function"}],"content":"tooling"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/post-action", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	turns := rel.Turns("s1")
+	if len(turns) != 1 {
+		t.Fatalf("expected 1 turn, got %d", len(turns))
+	}
+	if turns[0].UserMessage != "你好" {
+		t.Fatalf("user message = %q", turns[0].UserMessage)
+	}
+	if turns[0].AssistantReply != "已收到 [图片: 这是一只猫] [图片已过滤]" {
+		t.Fatalf("assistant reply = %q", turns[0].AssistantReply)
+	}
+	meta, ok := rel.Session("s1")
+	if !ok {
+		t.Fatal("expected session metadata to be written")
+	}
+	if meta.Session.UserID != "default" || meta.Session.TeamID != "default" || meta.Session.ProjectID != "default" || meta.Session.SpaceID != "default" {
+		t.Fatalf("unexpected default scope session=%+v", meta.Session)
+	}
+}
+
+// TestPreCheckSanitizesFlattenedMediaArtifacts verifies the TestPreCheckSanitizesFlattenedMediaArtifacts behavior.
+// TestPreCheckSanitizesFlattenedMediaArtifacts 用于验证 TestPreCheckSanitizesFlattenedMediaArtifacts 行为。
+func TestPreCheckSanitizesFlattenedMediaArtifacts(t *testing.T) {
+	called := false
+	pre := preCheckFunc(func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+		called = true
+		if got := cmd.CurrentContent; got != "请参考 [图片: 架构图] [图片已过滤]" {
+			t.Fatalf("current content = %q", got)
+		}
+		if len(cmd.HistoryContent) != 2 {
+			t.Fatalf("history len = %d", len(cmd.HistoryContent))
+		}
+		if got := cmd.HistoryContent[1].Content; got != "请看这里 [图片: 截图] [压缩包: logs]" {
+			t.Fatalf("assistant history content = %q", got)
+		}
+		return usecase.PreCheckResult{ShouldInject: false, ContextText: "", ContextItems: []logicdomain.ContextItem{}}, nil
+	})
+	router := NewRouter(Dependencies{
+		IDs:                 xid.NewGenerator(),
+		PreCheck:            pre,
+		Logger:              logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}),
+		Validator:           NewRequestValidator("compat"),
+		PreCheckTimeout:     time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"user","content":"帮我看一下"},{"role":"assistant","content":"请看这里 ![截图](https://cdn.example.com/shot.png) [logs](https://cdn.example.com/logs.zip)"}],"current_content":"请参考 ![架构图](https://cdn.example.com/arch.png) ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)","is_first_turn":false}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if !called {
+		t.Fatal("usecase was not called")
+	}
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+}
+
+// TestPostActionStrictModeRejectsNonTextContent verifies the TestPostActionStrictModeRejectsNonTextContent behavior.
+// TestPostActionStrictModeRejectsNonTextContent 用于验证 TestPostActionStrictModeRejectsNonTextContent 行为。
+func TestPostActionStrictModeRejectsNonTextContent(t *testing.T) {
+	ids := xid.NewGenerator()
+	logger := logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"})
+	rel := memory_mock.NewRelationalStore()
+	router := NewRouter(Dependencies{
+		IDs:                 ids,
+		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger),
+		Logger:              logger,
+		Validator:           NewRequestValidator("strict"),
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","raw_messages_snapshot":[{"role":"user","content":[{"type":"text","text":"你好"},{"type":"image_url","image_url":{"url":"https://example.com"}}]},{"role":"assistant","content":"收到"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/post-action", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.ErrorID != "HTTP_VALIDATION_FAILED" {
+		t.Fatalf("error id = %q", env.ErrorID)
+	}
+	if !strings.Contains(env.Msg, "raw_messages_snapshot[0].content[1].type") {
+		t.Fatalf("expected field path in message, got %q", env.Msg)
 	}
 }
 
