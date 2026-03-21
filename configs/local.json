@@ -23,6 +23,12 @@
   "pii": {
     "default_language": "zh-CN"
   },
+  "noise": {
+    "enabled": true,
+    "default_language": "zh-CN",
+    "semantic_enabled": true,
+    "semantic_threshold": 0.88
+  },
   "archive": {
     "provider": "sqlite",
     "path": "../data/vmm.db"

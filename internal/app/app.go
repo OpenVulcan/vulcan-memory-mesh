@@ -75,13 +75,17 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
+	noiseGate, err := buildNoiseGate(cfg, layout, embedding, logger)
+	if err != nil {
+		return nil, err
+	}
 	persona := buildPersona()
 
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
 	chat := usecase.NewChatUseCase(scrubber, archiveStore, ids, logger)
 	pre := usecase.NewPreCheckUseCase(processor.NewIntentExtractor(llm, prompts, cfg.LLM.Model, cfg.MemoryPipeline.MaxSearchKeywords), processor.NewContextAssembler(prompts, cfg.LLM.Model), embedding, vector, persona, logger, cfg.PreCheck.IntentTimeout.Duration, cfg.PreCheck.TopK, cfg.MemoryPipeline.MaxSearchKeywords, cfg.MemoryPipeline.MinSimilarityScore, cfg.Embedding.Model, cfg.Embedding.Dimension)
-	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), relational, logger)
+	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), noiseGate, relational, logger)
 	seed := usecase.NewSeedMemoryUseCase(embedding, vector, ids, logger, cfg.Embedding.Model, cfg.Embedding.Dimension)
 	enableSeed := cfg.Admin.SeedEnabled
 
@@ -258,6 +262,21 @@ func buildPersona() appports.ContextPersonaProvider {
 // buildScrubber 用于构建本地聊天归档路由使用的多语言脱敏器。
 func buildScrubber(cfg config.Config, layout config.PromptLayout) (appports.TextScrubber, error) {
 	return pii.NewEngine(layout.SystemPIIRulesDir(), layout.UserPIIRulesDir(), cfg.PII.DefaultLanguage)
+}
+
+// buildNoiseGate builds the pre-persistence admission gate that blocks noisy turns from entering long-term memory.
+// buildNoiseGate 用于构建写库前阻断噪声轮次进入长期记忆的准入门控器。
+func buildNoiseGate(cfg config.Config, layout config.PromptLayout, embedding appports.EmbeddingClient, logger *logx.Logger) (*processor.NoiseGate, error) {
+	return processor.NewNoiseGate(context.Background(), embedding, logger, processor.NoiseGateConfig{
+		SystemDir:         layout.SystemNoiseRulesDir(),
+		UserDir:           layout.UserNoiseRulesDir(),
+		DefaultLanguage:   cfg.Noise.DefaultLanguage,
+		Enabled:           cfg.Noise.Enabled,
+		SemanticEnabled:   cfg.Noise.SemanticEnabled,
+		SemanticThreshold: cfg.Noise.SemanticThreshold,
+		Model:             cfg.Embedding.Model,
+		Dimension:         cfg.Embedding.Dimension,
+	})
 }
 
 // resolveRuntimePath resolves one relative runtime path against the executable directory.

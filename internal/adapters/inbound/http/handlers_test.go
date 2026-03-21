@@ -62,7 +62,7 @@ func newTestRouterWithLogger(logger *logx.Logger) http.Handler {
 		"mock-embedding",
 		64,
 	)
-	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger)
+	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), nil, rel, logger)
 	seed := usecase.NewSeedMemoryUseCase(embed, vector, ids, logger, "mock-embedding", 64)
 	return NewRouter(Dependencies{
 		IDs:                 ids,
@@ -154,7 +154,7 @@ func TestPostActionNormalizesRawMessages(t *testing.T) {
 	router := NewRouter(Dependencies{
 		IDs:                 ids,
 		PreCheck:            nil,
-		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger),
+		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), nil, rel, logger),
 		SeedMemory:          nil,
 		Logger:              logger,
 		PostActionTimeout:   3 * time.Second,
@@ -185,7 +185,7 @@ func TestPostActionCompatModeTrimsUnsupportedPayloads(t *testing.T) {
 	rel := memory_mock.NewRelationalStore()
 	router := NewRouter(Dependencies{
 		IDs:                 ids,
-		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger),
+		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), nil, rel, logger),
 		Logger:              logger,
 		Validator:           NewRequestValidator("compat"),
 		PostActionTimeout:   3 * time.Second,
@@ -264,7 +264,7 @@ func TestPostActionStrictModeRejectsNonTextContent(t *testing.T) {
 	rel := memory_mock.NewRelationalStore()
 	router := NewRouter(Dependencies{
 		IDs:                 ids,
-		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), rel, logger),
+		PostAction:          usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), nil, rel, logger),
 		Logger:              logger,
 		Validator:           NewRequestValidator("strict"),
 		PostActionTimeout:   3 * time.Second,

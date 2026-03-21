@@ -38,17 +38,18 @@ type PostActionExecutor interface {
 // PostActionUseCase 用于在对话轮次结束后编排消息清洗和关系存储持久化。
 type PostActionUseCase struct {
 	normalizer *processor.MessageNormalizer
+	noiseGate  *processor.NoiseGate
 	store      appports.RelationalStore
 	logger     *logx.Logger
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance.
 // NewPostActionUseCase 用于创建 PostActionUseCase 实例。
-func NewPostActionUseCase(normalizer *processor.MessageNormalizer, store appports.RelationalStore, logger *logx.Logger) *PostActionUseCase {
+func NewPostActionUseCase(normalizer *processor.MessageNormalizer, noiseGate *processor.NoiseGate, store appports.RelationalStore, logger *logx.Logger) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
-	return &PostActionUseCase{normalizer: normalizer, store: store, logger: logger}
+	return &PostActionUseCase{normalizer: normalizer, noiseGate: noiseGate, store: store, logger: logger}
 }
 
 // Execute executes the Execute logic.
@@ -69,6 +70,10 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 	// Normalize the raw messages and short-circuit empty results.
 	// 规范化原始消息，并对空结果做短路返回。
 	turns := u.normalizer.Normalize(cmd.RawMessagesSnapshot)
+	if len(turns) == 0 {
+		return PostActionResult{Accepted: true, TraceID: traceID}, nil
+	}
+	turns, _ = u.noiseGate.FilterTurns(ctx, turns)
 	if len(turns) == 0 {
 		return PostActionResult{Accepted: true, TraceID: traceID}, nil
 	}

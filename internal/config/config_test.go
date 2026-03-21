@@ -63,9 +63,17 @@ func TestConfigValidateRequiresTLSFiles(t *testing.T) {
 func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
 	cfg := DefaultLocal()
 	cfg.PostAction.InputMode = ""
+	cfg.Noise.DefaultLanguage = ""
+	cfg.Noise.SemanticThreshold = 0
 	cfg.Normalize()
 	if cfg.PostAction.InputMode != "compat" {
 		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
+	}
+	if cfg.Noise.DefaultLanguage != cfg.PII.DefaultLanguage {
+		t.Fatalf("noise default language = %q", cfg.Noise.DefaultLanguage)
+	}
+	if cfg.Noise.SemanticThreshold != 0.88 {
+		t.Fatalf("noise semantic threshold = %v", cfg.Noise.SemanticThreshold)
 	}
 }
 
@@ -75,6 +83,16 @@ func TestConfigValidateRejectsUnknownPostActionMode(t *testing.T) {
 	cfg := DefaultLocal()
 	cfg.PostAction.InputMode = "broken"
 	if err := cfg.Validate(); err == nil || err.Error() != "post_action.input_mode must be either strict or compat" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsNoiseThresholdOutsideRange verifies the TestConfigValidateRejectsNoiseThresholdOutsideRange behavior.
+// TestConfigValidateRejectsNoiseThresholdOutsideRange 用于验证 TestConfigValidateRejectsNoiseThresholdOutsideRange 行为。
+func TestConfigValidateRejectsNoiseThresholdOutsideRange(t *testing.T) {
+	cfg := DefaultLocal()
+	cfg.Noise.SemanticThreshold = 1.5
+	if err := cfg.Validate(); err == nil || err.Error() != "noise.semantic_threshold must be in [0,1]" {
 		t.Fatalf("unexpected validate error: %v", err)
 	}
 }

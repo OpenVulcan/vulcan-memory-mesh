@@ -16,6 +16,18 @@
 2. 在 VMM 内部再次过滤潜在脏数据
 3. 最终只持久化可接受的、可解释的用户问答文本
 
+另外，`post-action` 在标准化完成后还会进入一层“记忆准入噪声门（Noise Gate）”。
+
+这层不会再修改文本内容，而是判断这一轮问答是否值得进入长期记忆。例如：
+
+- “你还记得吗”“我之前说过什么来着”这类元问题
+- “我不记得”“没有相关记忆”这类拒答
+- `fresh session`、`query -> none` 这类样板或诊断残留
+
+如果你要详细了解它的规则结构和配置方式，请参考：
+
+- [docs/noise-gate-guide_CN.md](./noise-gate-guide_CN.md)
+
 ## 路由
 
 ```http
@@ -137,6 +149,14 @@ Content-Type: application/json
   - 可选值：
     - `compat`
     - `strict`
+- `noise.enabled`
+  - 是否启用写库前噪声准入门
+- `noise.default_language`
+  - `post-action` 当前用于噪声判定的默认语言
+- `noise.semantic_enabled`
+  - 是否启用语义相似度判定
+- `noise.semantic_threshold`
+  - 默认语义阈值，类别可在规则文件中单独覆盖
 
 ## 两种输入模式
 

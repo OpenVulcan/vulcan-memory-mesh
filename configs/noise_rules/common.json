@@ -1,0 +1,79 @@
+{
+  "language": "common",
+  "version": "1.0.0",
+  "categories": [
+    {
+      "name": "denial_response",
+      "targets": ["assistant"],
+      "threshold": 0.9,
+      "patterns": [
+        "i don'?t have (any )?(information|data|memory|record)",
+        "i'?m not sure about",
+        "i don'?t recall",
+        "i don'?t remember",
+        "it looks like i don'?t",
+        "i wasn'?t able to find",
+        "no (relevant )?memories found",
+        "i don'?t have access to"
+      ],
+      "phrases": [
+        "I don't remember that.",
+        "I don't have any information about that.",
+        "No relevant memories found.",
+        "I wasn't able to find anything relevant."
+      ]
+    },
+    {
+      "name": "meta_question",
+      "targets": ["user"],
+      "threshold": 0.89,
+      "patterns": [
+        "\\bdo you (remember|recall|know about)\\b",
+        "\\bcan you (remember|recall)\\b",
+        "\\bdid i (tell|mention|say|share)\\b",
+        "\\bhave i (told|mentioned|said)\\b",
+        "\\bwhat did i (tell|say|mention)\\b",
+        "if you know.+only reply",
+        "if you don't know.+only reply\\s*none",
+        "only reply\\s*none"
+      ],
+      "phrases": [
+        "Do you remember what I told you before?",
+        "Can you recall what I mentioned last time?",
+        "Have I told you this already?",
+        "Only reply none if you do not know."
+      ]
+    },
+    {
+      "name": "boilerplate",
+      "targets": ["user", "assistant"],
+      "threshold": 0.92,
+      "patterns": [
+        "^(hi|hello|hey|good morning|good evening|greetings)",
+        "^fresh session",
+        "^new session",
+        "^HEARTBEAT"
+      ],
+      "phrases": [
+        "fresh session",
+        "new session",
+        "heartbeat"
+      ]
+    },
+    {
+      "name": "diagnostic_artifact",
+      "targets": ["user", "assistant"],
+      "threshold": 0.9,
+      "patterns": [
+        "\\bquery\\s*->\\s*(none|no explicit solution|unknown|not found)\\b",
+        "\\buser asked for\\b.*\\b(none|no explicit solution|unknown|not found)\\b",
+        "\\bno explicit solution\\b"
+      ],
+      "phrases": [
+        "query -> none",
+        "user asked for none",
+        "no explicit solution"
+      ]
+    }
+  ]
+}

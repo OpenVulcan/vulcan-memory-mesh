@@ -55,6 +55,7 @@ type Config struct {
 	HTTP           HTTPConfig           `json:"http"`
 	Logging        LoggingConfig        `json:"logging"`
 	PII            PIIConfig            `json:"pii"`
+	Noise          NoiseConfig          `json:"noise"`
 	Archive        ArchiveConfig        `json:"archive"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
@@ -105,6 +106,15 @@ type LoggingConfig struct {
 // PIIConfig 用于保存固定 pii_rules 目录布局所使用的默认语言。
 type PIIConfig struct {
 	DefaultLanguage string `json:"default_language"`
+}
+
+// NoiseConfig holds the memory-admission filter settings used to reject noisy user/assistant turns before persistence.
+// NoiseConfig 用于保存写库前拒绝噪声用户/助手轮次的记忆准入过滤配置。
+type NoiseConfig struct {
+	Enabled           bool    `json:"enabled"`
+	DefaultLanguage   string  `json:"default_language"`
+	SemanticEnabled   bool    `json:"semantic_enabled"`
+	SemanticThreshold float64 `json:"semantic_threshold"`
 }
 
 // ArchiveConfig selects the persistence backend used by the scrubbed /chat archive flow.
@@ -190,6 +200,7 @@ func DefaultLocal() Config {
 		},
 		Logging:        LoggingConfig{Level: "info", Format: "text", LogRequestBodies: false},
 		PII:            PIIConfig{DefaultLanguage: "zh-CN"},
+		Noise:          NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		Archive:        ArchiveConfig{Provider: "sqlite", Path: "../data/vmm.db"},
 		LLM:            LLMConfig{Provider: "mock", Model: "mock-intent-fast"},
 		Embedding:      EmbeddingConfig{Provider: "mock", Model: "mock-embedding-v1", Dimension: 64},
@@ -389,6 +400,12 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.PII.DefaultLanguage) == "" {
 		c.PII.DefaultLanguage = "zh-CN"
 	}
+	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
+		c.Noise.DefaultLanguage = c.PII.DefaultLanguage
+	}
+	if c.Noise.SemanticThreshold <= 0 {
+		c.Noise.SemanticThreshold = 0.88
+	}
 	if strings.TrimSpace(c.Archive.Provider) == "" {
 		c.Archive.Provider = "sqlite"
 	}
@@ -417,6 +434,9 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.PII.DefaultLanguage) == "" {
 		return errors.New("pii.default_language is required")
+	}
+	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
+		return errors.New("noise.default_language is required")
 	}
 	if strings.TrimSpace(c.Archive.Provider) == "" {
 		return errors.New("archive.provider is required")
@@ -456,6 +476,9 @@ func (c Config) Validate() error {
 	}
 	if *c.MemoryPipeline.MinSimilarityScore < 0 || *c.MemoryPipeline.MinSimilarityScore > 1 {
 		return errors.New("memory_pipeline.min_similarity_score must be in [0,1]")
+	}
+	if c.Noise.SemanticThreshold < 0 || c.Noise.SemanticThreshold > 1 {
+		return errors.New("noise.semantic_threshold must be in [0,1]")
 	}
 	if strings.TrimSpace(c.LLM.Provider) == "" || strings.TrimSpace(c.Embedding.Provider) == "" || strings.TrimSpace(c.Vector.Provider) == "" || strings.TrimSpace(c.Relational.Provider) == "" {
 		return errors.New("provider fields are required")
@@ -528,6 +551,10 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
 	setBool("VMM_LOG_REQUEST_BODIES", &cfg.Logging.LogRequestBodies)
 	setString("VMM_PII_DEFAULT_LANGUAGE", &cfg.PII.DefaultLanguage)
+	setBool("VMM_NOISE_ENABLED", &cfg.Noise.Enabled)
+	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
+	setBool("VMM_NOISE_SEMANTIC_ENABLED", &cfg.Noise.SemanticEnabled)
+	setFloat("VMM_NOISE_SEMANTIC_THRESHOLD", &cfg.Noise.SemanticThreshold)
 	setString("VMM_ARCHIVE_PROVIDER", &cfg.Archive.Provider)
 	setString("VMM_ARCHIVE_PATH", &cfg.Archive.Path)
 	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)

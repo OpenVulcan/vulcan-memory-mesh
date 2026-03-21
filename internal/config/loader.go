@@ -31,6 +31,24 @@ type PromptLayout struct {
 	AppConfigPath      string
 }
 
+// SystemNoiseRulesDir returns the built-in noise_rules directory that ships with the executable.
+// SystemNoiseRulesDir 用于返回随可执行文件一起分发的内置 noise_rules 目录。
+func (l PromptLayout) SystemNoiseRulesDir() string {
+	if strings.TrimSpace(l.SystemDir) == "" {
+		return ""
+	}
+	return filepath.Join(l.SystemDir, "noise_rules")
+}
+
+// UserNoiseRulesDir returns the override noise_rules directory from ~/.vmm or the -config bundle root.
+// UserNoiseRulesDir 用于返回来自 ~/.vmm 或 -config 覆盖根目录的 noise_rules 目录。
+func (l PromptLayout) UserNoiseRulesDir() string {
+	if strings.TrimSpace(l.UserDir) == "" {
+		return ""
+	}
+	return filepath.Join(l.UserDir, "noise_rules")
+}
+
 // SystemPIIRulesDir returns the built-in pii_rules directory that ships with the executable.
 // SystemPIIRulesDir 用于返回随可执行文件一起分发的内置 pii_rules 目录。
 func (l PromptLayout) SystemPIIRulesDir() string {

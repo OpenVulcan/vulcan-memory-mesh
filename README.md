@@ -2,6 +2,11 @@
 
 VulcanMemoryMesh 当前聚焦本地开源版本：插件在主模型调用前通过 `pre-check` 获取可注入上下文，在对话结束后通过 `post-action` 写入本地关系存储；联调环境可使用 `seed-memory` 预热向量库。
 
+## 文档导航
+
+- [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
+- [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
+
 ## 目录
 
 ```text
@@ -57,6 +62,7 @@ scripts/
 - 兼容模式下会自动修剪 `system/tool`、`tool_calls` 和非文本内容块
 - 会在入口侧清理 `<think>` 标签、base64 媒体数据、Markdown/HTML 图片与附件链接
 - 缺失的 `user/team/space/project` 会自动补成 `default`
+- 标准化后还会进入“噪声准入门”，过滤拒答、元问题、会话样板和诊断残留
 - 丢弃 `tool/system`
 - 丢弃带 `tool_calls` 的节点
 - 仅保留用户问题与 AI 最终回复，并压缩成 `[]NormalizedTurn`
@@ -95,6 +101,19 @@ go run ./cmd/vmm-local/main.go -config configs/openai.local.example.json
 - `strict`
   - 遇到非标准 user/assistant 快照直接返回校验错误
   - 适合插件已经保证只上传标准问答文本的环境
+
+### 噪声准入门
+
+`noise` 当前支持：
+
+- `enabled`
+  - 是否启用写库前的噪声拦截
+- `default_language`
+  - 规则语言包，当前默认 `zh-CN`
+- `semantic_enabled`
+  - 是否启用语义相似度拦截
+- `semantic_threshold`
+  - 默认语义阈值，类别可在规则文件里覆盖
 
 ## 测试
 
