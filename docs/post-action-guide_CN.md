@@ -156,6 +156,25 @@ Content-Type: application/json
 
 如果 `timeline` 是空数组，则后台会只使用顶层两条文本，拼成一个最小单轮问答继续处理。
 
+### 新版调试日志
+
+新版 `POST /vmm/post-action` 在通过校验后，会把收到的内容输出到运行时控制台日志，便于本地联调时直接确认实际入参。
+
+日志里当前会包含：
+
+- `trace_id`
+- `session_id`
+- `user_content`
+- `assistant_content`
+- `timeline`
+
+说明：
+
+- 如果请求在校验阶段就返回 `400`，这条日志不会出现
+- 是否同时打印原始 `request_body` 取决于：
+  - `logging.log_request_bodies`
+- 当前默认配置里该开关通常是关闭的，因此最稳定的调试日志是新版接口自己的 `post-action received` 记录
+
 ## 旧版路由：`POST /vmm/post-action-old`
 
 ```http

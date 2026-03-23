@@ -414,6 +414,7 @@ curl -X POST http://127.0.0.1:17625/v1/admin/seed-memory \
 - `timeline` 里的每一项都必须是 `user/assistant` 文本节点
 - 非字符串 `user_content` / `assistant_content` / `timeline[*].content` 应直接报错
 - 同步响应应立即返回，后台继续处理
+- 校验通过后，控制台会额外输出一条 `post-action received` 日志，便于确认实际收到的 `user_content / assistant_content / timeline`
 
 ### 11.4 /vmm/post-action-old
 
