@@ -92,6 +92,21 @@ scripts/
 
 `llm.provider` 与 `embedding.provider` 当前都必须使用 `openai`、`openai_go` 或 `openai_native`。如果你需要显式透传组织或项目头，可以使用 `organization` 和 `project` 字段；任何 OpenAI-compatible endpoint 都可以直接通过 `endpoint` 接入。
 
+如果某个兼容模型需要额外参数，例如关闭 thinking、调整 `reasoning_effort` 或透传 provider 专属字段，可以在配置里使用：
+
+- `llm.params`
+- `llm.model_params`
+- `embedding.params`
+- `embedding.model_params`
+
+优先级是：
+
+1. 基础 `params`
+2. 命中模型名的 `model_params`
+3. 运行时请求级 `ProviderHints`
+
+这意味着不同模型可以通过配置自由指定不同的关闭方式或兼容参数，而不需要修改代码。
+
 ### post-action 入口模式
 
 `post_action.input_mode` 当前支持：

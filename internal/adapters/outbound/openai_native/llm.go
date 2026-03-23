@@ -18,14 +18,21 @@ import (
 // LLMClient adapts the internal generation port onto the official OpenAI chat completions SDK.
 // LLMClient 用于把内部生成端口适配到官方 OpenAI Chat Completions SDK。
 type LLMClient struct {
-	client *Client
-	model  string
+	client      *Client
+	model       string
+	params      map[string]any
+	modelParams map[string]map[string]any
 }
 
 // NewLLMClient creates a LLMClient instance.
 // NewLLMClient 用于创建 LLMClient 实例。
-func NewLLMClient(endpoint, apiKey, model, organization, project string) *LLMClient {
-	return &LLMClient{client: NewClient(endpoint, apiKey, organization, project, nil), model: strings.TrimSpace(model)}
+func NewLLMClient(endpoint, apiKey, model, organization, project string, params map[string]any, modelParams map[string]map[string]any) *LLMClient {
+	return &LLMClient{
+		client:      NewClient(endpoint, apiKey, organization, project, nil),
+		model:       strings.TrimSpace(model),
+		params:      cloneHintMap(params),
+		modelParams: cloneNestedHintMap(modelParams),
+	}
 }
 
 // Generate executes the Generate logic.
@@ -50,7 +57,7 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	if responseFormat := mapResponseFormat(req.ResponseFormat); responseFormat != nil {
 		params.ResponseFormat = *responseFormat
 	}
-	applyProviderHints(&params, req.ProviderHints, c.client.compatibleMode)
+	applyProviderHints(&params, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
 
 	// Execute the provider call and reject structurally empty results.
 	// 执行模型调用，并拒绝结构上为空的返回结果。
@@ -109,18 +116,16 @@ func mapResponseFormat(format appports.LLMResponseFormat) *openai.ChatCompletion
 
 // applyProviderHints applies the target settings.
 // applyProviderHints 用于应用目标设置。
-func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string]any, compatibleMode bool) {
-	// Apply portable hint fields and keep compatibility-only fields in extra payload.
-	// 应用可移植的 hint 字段，并把兼容模式专属字段放入扩展载荷。
+func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string]any) {
+	// Apply portable hint fields and forward provider-specific extras through the SDK extra payload.
+	// 应用可移植的 hint 字段，并通过 SDK 扩展载荷转发 provider 专属参数。
 	if params == nil {
 		return
 	}
 	extraFields := map[string]any{}
-	if compatibleMode {
-		extraFields["enable_thinking"] = false
-	}
 	for rawKey, rawValue := range hints {
-		key := strings.ToLower(strings.TrimSpace(rawKey))
+		originalKey := strings.TrimSpace(rawKey)
+		key := strings.ToLower(originalKey)
 		switch key {
 		case "temperature":
 			if value, ok := floatHint(rawValue); ok {
@@ -202,11 +207,58 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 			if value, ok := boolHint(rawValue); ok {
 				extraFields["enable_thinking"] = value
 			}
+		default:
+			if rawValue != nil {
+				extraFields[originalKey] = rawValue
+			}
 		}
 	}
 	if len(extraFields) > 0 {
 		params.SetExtraFields(extraFields)
 	}
+}
+
+// mergeProviderHints merges adapter defaults, model-specific defaults, and request overrides in order.
+// mergeProviderHints 用于按顺序合并适配器默认参数、模型级默认参数和请求级覆盖参数。
+func mergeProviderHints(base map[string]any, modelParams map[string]map[string]any, model string, request map[string]any) map[string]any {
+	// Build one merged hint set so request-level overrides always win over configured defaults.
+	// 组装一份合并后的参数集，保证请求级覆盖始终优先于配置默认值。
+	merged := cloneHintMap(base)
+	if overrides, ok := modelParams[strings.TrimSpace(model)]; ok {
+		for key, value := range overrides {
+			merged[key] = value
+		}
+	}
+	for key, value := range request {
+		merged[key] = value
+	}
+	return merged
+}
+
+// cloneHintMap copies one flat hint map so adapter-level defaults are never mutated by requests.
+// cloneHintMap 用于复制一份扁平参数表，避免请求覆盖时篡改适配器默认参数。
+func cloneHintMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
+}
+
+// cloneNestedHintMap copies one nested model-parameter map so model defaults stay immutable at runtime.
+// cloneNestedHintMap 用于复制模型级嵌套参数表，保证运行时不会修改模型默认参数。
+func cloneNestedHintMap(input map[string]map[string]any) map[string]map[string]any {
+	if len(input) == 0 {
+		return map[string]map[string]any{}
+	}
+	cloned := make(map[string]map[string]any, len(input))
+	for model, params := range input {
+		cloned[strings.TrimSpace(model)] = cloneHintMap(params)
+	}
+	return cloned
 }
 
 // requestOptionsFromContext executes the requestOptionsFromContext logic.

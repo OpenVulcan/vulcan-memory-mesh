@@ -14,8 +14,7 @@ import (
 // Client holds the official OpenAI SDK client plus compatibility-mode flags for OpenAI-compatible endpoints.
 // Client 用于持有官方 OpenAI SDK 客户端，以及 OpenAI-compatible 端点所需的兼容模式标记。
 type Client struct {
-	sdkClient      *openai.Client
-	compatibleMode bool
+	sdkClient *openai.Client
 }
 
 // NewClient creates a Client instance.
@@ -43,7 +42,6 @@ func NewClient(endpoint, apiKey, organization, project string, httpClient *http.
 	}
 	sdkClient := openai.NewClient(opts...)
 	return &Client{
-		sdkClient:      &sdkClient,
-		compatibleMode: strings.Contains(strings.ToLower(trimmed), "compatible-mode"),
+		sdkClient: &sdkClient,
 	}
 }

@@ -16,7 +16,7 @@ import (
 // TestEmbeddingClientRejectsTooManyTexts verifies the TestEmbeddingClientRejectsTooManyTexts behavior.
 // TestEmbeddingClientRejectsTooManyTexts 用于验证 TestEmbeddingClientRejectsTooManyTexts 行为。
 func TestEmbeddingClientRejectsTooManyTexts(t *testing.T) {
-	client := NewEmbeddingClient("http://example.com", "key", "text-embedding-3-large", 1024, "", "")
+	client := NewEmbeddingClient("http://example.com", "key", "text-embedding-3-large", 1024, "", "", nil, nil)
 	texts := make([]string, 11)
 	for i := range texts {
 		texts[i] = "x"
@@ -43,9 +43,18 @@ func TestEmbeddingClientPassesDimension(t *testing.T) {
 	}))
 	defer ts.Close()
 
-	client := NewEmbeddingClient(ts.URL, "key", "text-embedding-3-large", 1024, "org", "proj")
+	client := NewEmbeddingClient(
+		ts.URL,
+		"key",
+		"text-embedding-3-large",
+		1024,
+		"org",
+		"proj",
+		map[string]any{"encoding_format": "float", "custom_mode": "fast"},
+		map[string]map[string]any{"text-embedding-3-large": {"user": "fixture-user"}},
+	)
 	ctx := trace.WithTraceID(context.Background(), "trc_embed")
-	resp, err := client.Embed(ctx, appports.EmbeddingRequest{Texts: []string{"hello"}})
+	resp, err := client.Embed(ctx, appports.EmbeddingRequest{Texts: []string{"hello"}, ProviderHints: map[string]any{"dimensions": 1024}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,6 +63,15 @@ func TestEmbeddingClientPassesDimension(t *testing.T) {
 	}
 	if got["dimensions"].(float64) != 1024 {
 		t.Fatalf("dimensions = %#v", got["dimensions"])
+	}
+	if got["encoding_format"] != "float" {
+		t.Fatalf("encoding_format = %#v", got["encoding_format"])
+	}
+	if got["user"] != "fixture-user" {
+		t.Fatalf("user = %#v", got["user"])
+	}
+	if got["custom_mode"] != "fast" {
+		t.Fatalf("custom_mode = %#v", got["custom_mode"])
 	}
 	if gotHeaders.Get("Authorization") != "Bearer key" {
 		t.Fatalf("authorization header = %q", gotHeaders.Get("Authorization"))

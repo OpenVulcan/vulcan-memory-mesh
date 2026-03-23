@@ -14,15 +14,23 @@ import (
 // EmbeddingClient adapts the internal embedding port onto the official OpenAI embeddings SDK.
 // EmbeddingClient 用于把内部 embedding 端口适配到官方 OpenAI Embeddings SDK。
 type EmbeddingClient struct {
-	client    *Client
-	model     string
-	dimension int
+	client      *Client
+	model       string
+	dimension   int
+	params      map[string]any
+	modelParams map[string]map[string]any
 }
 
 // NewEmbeddingClient creates a EmbeddingClient instance.
 // NewEmbeddingClient 用于创建 EmbeddingClient 实例。
-func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, organization, project string) *EmbeddingClient {
-	return &EmbeddingClient{client: NewClient(endpoint, apiKey, organization, project, nil), model: strings.TrimSpace(model), dimension: dimension}
+func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, organization, project string, params map[string]any, modelParams map[string]map[string]any) *EmbeddingClient {
+	return &EmbeddingClient{
+		client:      NewClient(endpoint, apiKey, organization, project, nil),
+		model:       strings.TrimSpace(model),
+		dimension:   dimension,
+		params:      cloneHintMap(params),
+		modelParams: cloneNestedHintMap(modelParams),
+	}
 }
 
 // Embed executes the Embed logic.
@@ -66,7 +74,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	if dimension > 0 {
 		params.Dimensions = openai.Int(int64(dimension))
 	}
-	applyEmbeddingHints(&params, req.ProviderHints)
+	applyEmbeddingHints(&params, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
 	resp, err := c.client.sdkClient.Embeddings.New(ctx, params, requestOptionsFromContext(ctx)...)
 	if err != nil {
 		return appports.EmbeddingResponse{}, err
@@ -100,13 +108,15 @@ func mapEmbeddingInput(texts []string) openai.EmbeddingNewParamsInputUnion {
 // applyEmbeddingHints applies the target settings.
 // applyEmbeddingHints 用于应用目标设置。
 func applyEmbeddingHints(params *openai.EmbeddingNewParams, hints map[string]any) {
-	// Map a safe subset of provider hints onto the official SDK request fields.
-	// 将安全子集的 provider hints 映射到官方 SDK 请求字段。
+	// Map portable provider hints first, then forward unsupported extras through the SDK payload.
+	// 先映射可移植的 provider 参数，再通过 SDK 扩展载荷转发未内建支持的参数。
 	if params == nil {
 		return
 	}
+	extraFields := map[string]any{}
 	for rawKey, rawValue := range hints {
-		key := strings.ToLower(strings.TrimSpace(rawKey))
+		originalKey := strings.TrimSpace(rawKey)
+		key := strings.ToLower(originalKey)
 		switch key {
 		case "user":
 			if value, ok := stringHint(rawValue); ok {
@@ -120,6 +130,13 @@ func applyEmbeddingHints(params *openai.EmbeddingNewParams, hints map[string]any
 			if value, ok := intHint(rawValue); ok && value > 0 {
 				params.Dimensions = openai.Int(value)
 			}
+		default:
+			if rawValue != nil {
+				extraFields[originalKey] = rawValue
+			}
 		}
+	}
+	if len(extraFields) > 0 {
+		params.SetExtraFields(extraFields)
 	}
 }

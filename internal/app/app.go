@@ -190,7 +190,7 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 	// 根据配置的 provider 选择对应的 LLM 适配器。
 	switch strings.ToLower(cfg.LLM.Provider) {
 	case "openai", "openai_native", "openai_go":
-		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project), nil
+		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project, cfg.LLM.Params, cfg.LLM.ModelParams), nil
 	default:
 		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
 	}
@@ -203,7 +203,7 @@ func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 	// 根据配置的 provider 选择对应的 embedding 适配器。
 	switch strings.ToLower(cfg.Embedding.Provider) {
 	case "openai", "openai_native", "openai_go":
-		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project), nil
+		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams), nil
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
 	}

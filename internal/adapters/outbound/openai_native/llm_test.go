@@ -33,14 +33,29 @@ func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 			"id":"chatcmpl_test",
 			"object":"chat.completion",
 			"created":1,
-			"model":"gpt-4.1-mini",
+			"model":"test-model",
 			"choices":[{"index":0,"message":{"role":"assistant","content":"{\"keywords\":[\"fastapi\"],\"need_memory\":true,\"reason\":\"ok\"}"},"finish_reason":"stop"}],
 			"usage":{"prompt_tokens":11,"completion_tokens":7,"total_tokens":18}
 		}`))
 	}))
 	defer ts.Close()
 
-	client := NewLLMClient(ts.URL+"/compatible-mode/v1", "key", "gpt-4.1-mini", "org", "proj")
+	client := NewLLMClient(
+		ts.URL+"/compatible-mode/v1",
+		"key",
+		"test-model",
+		"org",
+		"proj",
+		map[string]any{
+			"enable_thinking": false,
+			"temperature":     0.1,
+		},
+		map[string]map[string]any{
+			"test-model": {
+				"temperature": 0.3,
+			},
+		},
+	)
 	ctx := trace.WithTraceID(context.Background(), "trc_test")
 	resp, err := client.Generate(ctx, appports.LLMRequest{
 		SystemPrompt:   "system prompt",
@@ -76,7 +91,7 @@ func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 	if gotHeaders.Get("X-Client-Request-Id") != "trc_test" {
 		t.Fatalf("request id header = %q", gotHeaders.Get("X-Client-Request-Id"))
 	}
-	if gotBody["model"] != "gpt-4.1-mini" {
+	if gotBody["model"] != "test-model" {
 		t.Fatalf("model = %#v", gotBody["model"])
 	}
 	if gotBody["temperature"].(float64) != 0.2 {

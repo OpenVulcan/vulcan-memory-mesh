@@ -113,7 +113,7 @@ func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
 	}
 	configBody := `{
 		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
-		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"gpt-4.1-mini"},
+		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
 		"relational":{"provider":"memory"},
@@ -148,7 +148,7 @@ func TestLoadIgnoresMissingDotEnvAndUsesProcessEnv(t *testing.T) {
 	}
 	configBody := `{
 		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
-		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"gpt-4.1-mini"},
+		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
 		"relational":{"provider":"memory"},
@@ -277,6 +277,59 @@ func TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride(t *testing.T) {
 	}
 	if cfg.LLM.APIKey != "bundle-dotenv" {
 		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	}
+}
+
+// TestLoadExpandsModelSpecificProviderParams verifies provider parameter maps can be loaded from config placeholders.
+// TestLoadExpandsModelSpecificProviderParams 用于验证 provider 参数映射可以从配置占位符中正确加载。
+func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
+	const modelKey = "TEST_MODEL_NAME"
+	const apiKey = "TEST_MODEL_PARAMS_API_KEY"
+	restoreEnv(t, modelKey)
+	restoreEnv(t, apiKey)
+	t.Setenv(modelKey, "qwen3.5-flash")
+	t.Setenv(apiKey, "test-key")
+
+	rootDir := t.TempDir()
+	configDir := filepath.Join(rootDir, "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	configBody := `{
+		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"llm":{
+			"provider":"openai",
+			"endpoint":"https://api.openai.com/v1",
+			"api_key":"${` + apiKey + `}",
+			"model":"${` + modelKey + `}",
+			"params":{"reasoning_effort":"low"},
+			"model_params":{"${` + modelKey + `}":{"enable_thinking":false}}
+		},
+		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + apiKey + `}","model":"text-embedding-3-large","dimension":1024},
+		"vector":{"provider":"memory"},
+		"relational":{"provider":"memory"},
+		"precheck":{"intent_timeout":"2s","top_k":5},
+		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75},
+		"admin":{"seed_enabled":true}
+	}`
+	configPath := filepath.Join(configDir, "local.json")
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath, DefaultLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Params["reasoning_effort"] != "low" {
+		t.Fatalf("llm.params.reasoning_effort = %#v", cfg.LLM.Params["reasoning_effort"])
+	}
+	modelParams, ok := cfg.LLM.ModelParams["qwen3.5-flash"]
+	if !ok {
+		t.Fatalf("expected model params for qwen3.5-flash, got %#v", cfg.LLM.ModelParams)
+	}
+	if enabled, ok := modelParams["enable_thinking"].(bool); !ok || enabled {
+		t.Fatalf("llm.model_params.enable_thinking = %#v", modelParams["enable_thinking"])
 	}
 }
 

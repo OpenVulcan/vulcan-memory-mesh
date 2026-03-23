@@ -39,7 +39,15 @@
     "api_key": "${OPENAI_API_KEY}",
     "model": "${OPENAI_MODEL}",
     "organization": "${OPENAI_ORGANIZATION}",
-    "project": "${OPENAI_PROJECT}"
+    "project": "${OPENAI_PROJECT}",
+    "params": {
+      "enable_thinking": false
+    },
+    "model_params": {
+      "${OPENAI_MODEL}": {
+        "enable_thinking": false
+      }
+    }
   },
   "embedding": {
     "provider": "openai",

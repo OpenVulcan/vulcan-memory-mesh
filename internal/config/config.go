@@ -127,24 +127,28 @@ type ArchiveConfig struct {
 // LLMConfig holds the provider and model settings used for intent extraction and other LLM tasks.
 // LLMConfig 用于保存意图提取等 LLM 任务使用的 provider 和模型配置。
 type LLMConfig struct {
-	Provider     string `json:"provider"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
-	Model        string `json:"model,omitempty"`
-	Organization string `json:"organization,omitempty"`
-	Project      string `json:"project,omitempty"`
+	Provider     string                    `json:"provider"`
+	Endpoint     string                    `json:"endpoint,omitempty"`
+	APIKey       string                    `json:"api_key,omitempty"`
+	Model        string                    `json:"model,omitempty"`
+	Organization string                    `json:"organization,omitempty"`
+	Project      string                    `json:"project,omitempty"`
+	Params       map[string]any            `json:"params,omitempty"`
+	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
 }
 
 // EmbeddingConfig holds the provider and model settings used when generating recall vectors.
 // EmbeddingConfig 用于保存生成召回向量时使用的 provider 和模型配置。
 type EmbeddingConfig struct {
-	Provider     string `json:"provider"`
-	Endpoint     string `json:"endpoint,omitempty"`
-	APIKey       string `json:"api_key,omitempty"`
-	Model        string `json:"model,omitempty"`
-	Dimension    int    `json:"dimension,omitempty"`
-	Organization string `json:"organization,omitempty"`
-	Project      string `json:"project,omitempty"`
+	Provider     string                    `json:"provider"`
+	Endpoint     string                    `json:"endpoint,omitempty"`
+	APIKey       string                    `json:"api_key,omitempty"`
+	Model        string                    `json:"model,omitempty"`
+	Dimension    int                       `json:"dimension,omitempty"`
+	Organization string                    `json:"organization,omitempty"`
+	Project      string                    `json:"project,omitempty"`
+	Params       map[string]any            `json:"params,omitempty"`
+	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
 }
 
 // VectorConfig selects the vector backend used by recall and seed-memory flows.
