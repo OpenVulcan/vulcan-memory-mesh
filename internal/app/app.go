@@ -75,7 +75,11 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
-	noiseGate, err := buildNoiseGate(cfg, layout, embedding, logger)
+	var noiseCache appports.NoiseEmbeddingCache
+	if candidate, ok := archiveStore.(appports.NoiseEmbeddingCache); ok {
+		noiseCache = candidate
+	}
+	noiseGate, err := buildNoiseGate(cfg, layout, embedding, noiseCache, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -262,7 +266,7 @@ func buildScrubber(cfg config.Config, layout config.PromptLayout) (appports.Text
 
 // buildNoiseGate builds the pre-persistence admission gate that blocks noisy turns from entering long-term memory.
 // buildNoiseGate 用于构建写库前阻断噪声轮次进入长期记忆的准入门控器。
-func buildNoiseGate(cfg config.Config, layout config.PromptLayout, embedding appports.EmbeddingClient, logger *logx.Logger) (*processor.NoiseGate, error) {
+func buildNoiseGate(cfg config.Config, layout config.PromptLayout, embedding appports.EmbeddingClient, cache appports.NoiseEmbeddingCache, logger *logx.Logger) (*processor.NoiseGate, error) {
 	return processor.NewNoiseGate(context.Background(), embedding, logger, processor.NoiseGateConfig{
 		SystemDir:         layout.SystemNoiseRulesDir(),
 		UserDir:           layout.UserNoiseRulesDir(),
@@ -272,6 +276,7 @@ func buildNoiseGate(cfg config.Config, layout config.PromptLayout, embedding app
 		SemanticThreshold: cfg.Noise.SemanticThreshold,
 		Model:             cfg.Embedding.Model,
 		Dimension:         cfg.Embedding.Dimension,
+		Cache:             cache,
 	})
 }
 

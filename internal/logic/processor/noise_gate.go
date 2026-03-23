@@ -4,12 +4,16 @@ package processor
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -64,6 +68,7 @@ type NoiseGateConfig struct {
 	SemanticThreshold float64
 	Model             string
 	Dimension         int
+	Cache             appports.NoiseEmbeddingCache
 }
 
 // NoiseGate holds compiled regex and semantic prototypes used to reject noisy turns before persistence.
@@ -75,7 +80,9 @@ type NoiseGate struct {
 	semanticThreshold float64
 	model             string
 	dimension         int
+	rulesHash         string
 	embedding         appports.EmbeddingClient
+	cache             appports.NoiseEmbeddingCache
 	logger            *logx.Logger
 	categories        []*compiledNoiseCategory
 	byTarget          map[string][]*compiledNoiseCategory
@@ -95,6 +102,7 @@ func NewNoiseGate(ctx context.Context, embedding appports.EmbeddingClient, logge
 		model:             strings.TrimSpace(cfg.Model),
 		dimension:         cfg.Dimension,
 		embedding:         embedding,
+		cache:             cfg.Cache,
 		logger:            logger,
 		byTarget:          map[string][]*compiledNoiseCategory{},
 	}
@@ -107,11 +115,12 @@ func NewNoiseGate(ctx context.Context, embedding appports.EmbeddingClient, logge
 	if gate.semanticThreshold <= 0 {
 		gate.semanticThreshold = 0.88
 	}
-	compiled, err := loadCompiledNoiseCategories(cfg.SystemDir, cfg.UserDir, gate.defaultLanguage, gate.semanticThreshold)
+	compiled, rulesHash, err := loadCompiledNoiseCategories(cfg.SystemDir, cfg.UserDir, gate.defaultLanguage, gate.semanticThreshold)
 	if err != nil {
 		return nil, err
 	}
 	gate.categories = compiled
+	gate.rulesHash = rulesHash
 	for _, category := range compiled {
 		for _, target := range category.Targets {
 			gate.byTarget[target] = append(gate.byTarget[target], category)
@@ -186,6 +195,27 @@ func (g *NoiseGate) AllowTurn(ctx context.Context, turn logicdomain.NormalizedTu
 // preloadSemanticPrototypes embeds category phrases at startup so runtime admission checks only compare vectors.
 // preloadSemanticPrototypes 用于在启动阶段对类别短语做 embedding，让运行时只需做向量比较。
 func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
+	// Reuse persisted vectors whenever the active rules, model, and dimension fingerprint has not changed.
+	// 当当前规则、模型和维度指纹未变化时，优先复用持久化向量。
+	if g.cache != nil {
+		query := logicdomain.NoiseEmbeddingCacheQuery{
+			Scope:     "noise_gate",
+			Language:  g.defaultLanguage,
+			Model:     g.model,
+			Dimension: g.dimension,
+			RulesHash: g.rulesHash,
+		}
+		entries, err := g.cache.LoadNoiseEmbeddingCache(ctx, query)
+		if err != nil {
+			g.logger.Warn("noise gate cache load degraded to live embedding", "err", err, "language", g.defaultLanguage)
+		} else if g.restoreCachedVectors(entries) {
+			g.logger.Info("noise gate semantic prototypes restored from cache", "language", g.defaultLanguage, "model", g.model, "dimension", g.dimension)
+			return nil
+		}
+	}
+
+	// Fall back to live embedding only for missing or invalid caches, then refresh the persistent cache.
+	// 仅在缓存缺失或无效时回退到实时 embedding，并刷新持久化缓存。
 	for _, category := range g.categories {
 		if len(category.Phrases) == 0 {
 			continue
@@ -206,7 +236,79 @@ func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
 			category.Vectors = append(category.Vectors, normalizeFloat32Vector(vector))
 		}
 	}
+	if g.cache != nil {
+		query := logicdomain.NoiseEmbeddingCacheQuery{
+			Scope:     "noise_gate",
+			Language:  g.defaultLanguage,
+			Model:     g.model,
+			Dimension: g.dimension,
+			RulesHash: g.rulesHash,
+		}
+		if err := g.cache.ReplaceNoiseEmbeddingCache(ctx, query, g.buildCacheEntries(query)); err != nil {
+			g.logger.Warn("noise gate cache refresh degraded", "err", err, "language", g.defaultLanguage)
+		}
+	}
 	return nil
+}
+
+// restoreCachedVectors maps persisted vectors back onto the compiled categories and returns whether the cache is complete.
+// restoreCachedVectors 用于把持久化向量回填到已编译类别，并返回缓存是否完整可用。
+func (g *NoiseGate) restoreCachedVectors(entries []logicdomain.NoiseEmbeddingCacheEntry) bool {
+	// Accept the cache only when every phrase-backed category is fully covered by persisted rows.
+	// 只有当所有带短语的类别都被持久化记录完整覆盖时，才接受这份缓存。
+	if len(entries) == 0 {
+		return false
+	}
+	lookup := make(map[string][]float32, len(entries))
+	for _, entry := range entries {
+		key := entry.CategoryName + "\x00" + entry.Phrase
+		lookup[key] = normalizeFloat32Vector(entry.Vector)
+	}
+	for _, category := range g.categories {
+		if len(category.Phrases) == 0 {
+			category.Vectors = nil
+			continue
+		}
+		vectors := make([][]float32, 0, len(category.Phrases))
+		for _, phrase := range category.Phrases {
+			vector, ok := lookup[category.Name+"\x00"+phrase]
+			if !ok {
+				category.Vectors = nil
+				return false
+			}
+			vectors = append(vectors, vector)
+		}
+		category.Vectors = vectors
+	}
+	return true
+}
+
+// buildCacheEntries converts the in-memory category vectors into SQLite cache rows for the active rule fingerprint.
+// buildCacheEntries 用于把内存中的类别向量转换成当前规则指纹对应的 SQLite 缓存记录。
+func (g *NoiseGate) buildCacheEntries(query logicdomain.NoiseEmbeddingCacheQuery) []logicdomain.NoiseEmbeddingCacheEntry {
+	// Flatten every phrase-vector pair so SQLite can persist one stable row per semantic prototype.
+	// 将每个短语与向量展开成稳定的单行记录，便于 SQLite 持久化。
+	entries := make([]logicdomain.NoiseEmbeddingCacheEntry, 0)
+	now := time.Now().UTC()
+	for _, category := range g.categories {
+		for idx, phrase := range category.Phrases {
+			if idx >= len(category.Vectors) {
+				continue
+			}
+			entries = append(entries, logicdomain.NoiseEmbeddingCacheEntry{
+				Scope:        query.Scope,
+				Language:     query.Language,
+				CategoryName: category.Name,
+				Phrase:       phrase,
+				Model:        query.Model,
+				Dimension:    query.Dimension,
+				RulesHash:    query.RulesHash,
+				Vector:       category.Vectors[idx],
+				UpdatedAt:    now,
+			})
+		}
+	}
+	return entries
 }
 
 // evaluateTargetRegex checks direct regex hits before any semantic work is attempted.
@@ -326,17 +428,21 @@ func (g *NoiseGate) matchSemanticTarget(target string, vector []float32) (NoiseD
 
 // loadCompiledNoiseCategories resolves the selected common/language files and compiles them into immutable runtime categories.
 // loadCompiledNoiseCategories 用于解析选中的公共/语言规则文件，并把它们编译为不可变运行时类别。
-func loadCompiledNoiseCategories(systemDir, userDir, language string, defaultThreshold float64) ([]*compiledNoiseCategory, error) {
+func loadCompiledNoiseCategories(systemDir, userDir, language string, defaultThreshold float64) ([]*compiledNoiseCategory, string, error) {
 	commonRules, err := loadSelectedNoiseRuleFile(systemDir, userDir, noiseLanguageCommon)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	languageRules, err := loadSelectedNoiseRuleFile(systemDir, userDir, language)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	if len(commonRules.Categories) == 0 && len(languageRules.Categories) == 0 {
-		return nil, fmt.Errorf("noise rules are missing for language %q", language)
+		return nil, "", fmt.Errorf("noise rules are missing for language %q", language)
+	}
+	rulesHash, err := hashNoiseRuleBundle(commonRules, languageRules)
+	if err != nil {
+		return nil, "", err
 	}
 	merged := map[string]noiseCategoryDefinition{}
 	order := make([]string, 0, len(commonRules.Categories)+len(languageRules.Categories))
@@ -356,11 +462,30 @@ func loadCompiledNoiseCategories(systemDir, userDir, language string, defaultThr
 	for _, name := range order {
 		compiled, err := compileNoiseCategory(merged[name], defaultThreshold)
 		if err != nil {
-			return nil, err
+			return nil, "", err
 		}
 		out = append(out, compiled)
 	}
-	return out, nil
+	return out, rulesHash, nil
+}
+
+// hashNoiseRuleBundle fingerprints the selected common plus language bundles so cache reuse is invalidated by any rule edit.
+// hashNoiseRuleBundle 用于为选中的公共和语言规则包生成指纹，保证任意规则修改都会让缓存失效。
+func hashNoiseRuleBundle(commonRules, languageRules noiseRuleFile) (string, error) {
+	// Hash the selected rule payloads rather than file paths so user overrides and content edits are both reflected.
+	// 对选中的规则内容而不是文件路径做哈希，这样用户覆盖和内容编辑都会被反映出来。
+	payload, err := json.Marshal(struct {
+		Common   noiseRuleFile `json:"common"`
+		Language noiseRuleFile `json:"language"`
+	}{
+		Common:   commonRules,
+		Language: languageRules,
+	})
+	if err != nil {
+		return "", fmt.Errorf("marshal noise rule bundle fingerprint: %w", err)
+	}
+	sum := sha256.Sum256(payload)
+	return hex.EncodeToString(sum[:]), nil
 }
 
 // loadSelectedNoiseRuleFile picks the user file when it exists, otherwise falls back to the system file.

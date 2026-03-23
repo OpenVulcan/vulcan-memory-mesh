@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -210,11 +211,182 @@ func TestNoiseGateConcurrentAllowTurn(t *testing.T) {
 	wg.Wait()
 }
 
+// TestNoiseGateUsesCachedSemanticPrototypes verifies startup can restore semantic vectors without calling live embedding.
+// TestNoiseGateUsesCachedSemanticPrototypes 用于验证启动阶段可以直接恢复语义缓存，而无需调用实时 embedding。
+func TestNoiseGateUsesCachedSemanticPrototypes(t *testing.T) {
+	root := t.TempDir()
+	systemDir := filepath.Join(root, "system")
+	if err := os.MkdirAll(systemDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	common := `{
+  "language":"common",
+  "version":"1.0.0",
+  "categories":[
+    {"name":"meta_question","targets":["user"],"threshold":0.80,"phrases":["你还记得我之前说过的内容吗"]}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(systemDir, "common.json"), []byte(common), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, rulesHash, err := loadCompiledNoiseCategories(systemDir, "", "zh-CN", 0.88)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeNoiseEmbeddingCache{
+		entries: []logicdomain.NoiseEmbeddingCacheEntry{{
+			Scope:        "noise_gate",
+			Language:     "zh-CN",
+			CategoryName: "meta_question",
+			Phrase:       "你还记得我之前说过的内容吗",
+			Model:        "embed-model",
+			Dimension:    1024,
+			RulesHash:    rulesHash,
+			Vector:       []float32{0.6, 0.8},
+			UpdatedAt:    time.Now().UTC(),
+		}},
+	}
+	embed := &countingNoiseEmbeddingClient{vector: []float32{0.6, 0.8}}
+	gate, err := NewNoiseGate(context.Background(), embed, nil, NoiseGateConfig{
+		SystemDir:         systemDir,
+		DefaultLanguage:   "zh-CN",
+		Enabled:           true,
+		SemanticEnabled:   true,
+		SemanticThreshold: 0.88,
+		Model:             "embed-model",
+		Dimension:         1024,
+		Cache:             cache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embed.called != 0 {
+		t.Fatalf("expected cached bootstrap to skip live embedding, called=%d", embed.called)
+	}
+	decision := gate.AllowTurn(context.Background(), logicdomain.NormalizedTurn{UserMessage: "你还记得我之前说过的内容吗", AssistantReply: "记得"})
+	if decision.Allow || decision.ReasonCode != NoiseReasonSemantic {
+		t.Fatalf("expected semantic cache hit to block, got %+v", decision)
+	}
+}
+
+// TestNoiseGateRecomputesSemanticPrototypesWhenModelChanges verifies model or dimension changes invalidate cache reuse.
+// TestNoiseGateRecomputesSemanticPrototypesWhenModelChanges 用于验证模型或维度变化会使缓存失效并触发重算。
+func TestNoiseGateRecomputesSemanticPrototypesWhenModelChanges(t *testing.T) {
+	root := t.TempDir()
+	systemDir := filepath.Join(root, "system")
+	if err := os.MkdirAll(systemDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	common := `{
+  "language":"common",
+  "version":"1.0.0",
+  "categories":[
+    {"name":"meta_question","targets":["user"],"threshold":0.80,"phrases":["你还记得我之前说过的内容吗"]}
+  ]
+}`
+	if err := os.WriteFile(filepath.Join(systemDir, "common.json"), []byte(common), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	_, oldRulesHash, err := loadCompiledNoiseCategories(systemDir, "", "zh-CN", 0.88)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cache := &fakeNoiseEmbeddingCache{
+		entries: []logicdomain.NoiseEmbeddingCacheEntry{{
+			Scope:        "noise_gate",
+			Language:     "zh-CN",
+			CategoryName: "meta_question",
+			Phrase:       "你还记得我之前说过的内容吗",
+			Model:        "old-model",
+			Dimension:    1024,
+			RulesHash:    oldRulesHash,
+			Vector:       []float32{1, 0},
+			UpdatedAt:    time.Now().UTC(),
+		}},
+	}
+	embed := &countingNoiseEmbeddingClient{vector: []float32{0.6, 0.8}}
+	_, err = NewNoiseGate(context.Background(), embed, nil, NoiseGateConfig{
+		SystemDir:         systemDir,
+		DefaultLanguage:   "zh-CN",
+		Enabled:           true,
+		SemanticEnabled:   true,
+		SemanticThreshold: 0.88,
+		Model:             "new-model",
+		Dimension:         1536,
+		Cache:             cache,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if embed.called == 0 {
+		t.Fatal("expected model change to trigger live embedding rebuild")
+	}
+	if cache.replaceCount != 1 {
+		t.Fatalf("expected cache to be refreshed once, got %d", cache.replaceCount)
+	}
+	if cache.replaceQuery.Model != "new-model" || cache.replaceQuery.Dimension != 1536 {
+		t.Fatalf("unexpected refresh query = %+v", cache.replaceQuery)
+	}
+}
+
 type mustRuleBundles struct {
 	common     string
 	userCommon string
 	lang       string
 	userLang   string
+}
+
+// fakeNoiseEmbeddingCache keeps a deterministic in-memory cache for startup cache reuse tests.
+// fakeNoiseEmbeddingCache 用于保存确定性的内存缓存，供启动缓存复用测试使用。
+type fakeNoiseEmbeddingCache struct {
+	loadQuery    logicdomain.NoiseEmbeddingCacheQuery
+	replaceQuery logicdomain.NoiseEmbeddingCacheQuery
+	entries      []logicdomain.NoiseEmbeddingCacheEntry
+	replaceCount int
+}
+
+// LoadNoiseEmbeddingCache returns the matching cache rows for the requested fingerprint.
+// LoadNoiseEmbeddingCache 用于返回请求指纹对应的缓存记录。
+func (f *fakeNoiseEmbeddingCache) LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error) {
+	f.loadQuery = query
+	loaded := make([]logicdomain.NoiseEmbeddingCacheEntry, 0, len(f.entries))
+	for _, entry := range f.entries {
+		if entry.Scope == query.Scope && entry.Language == query.Language && entry.Model == query.Model && entry.Dimension == query.Dimension && entry.RulesHash == query.RulesHash {
+			loaded = append(loaded, entry)
+		}
+	}
+	return loaded, nil
+}
+
+// ReplaceNoiseEmbeddingCache records the refreshed cache rows so tests can assert cache invalidation behavior.
+// ReplaceNoiseEmbeddingCache 用于记录刷新后的缓存内容，便于测试断言缓存失效行为。
+func (f *fakeNoiseEmbeddingCache) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error {
+	f.replaceQuery = query
+	f.replaceCount++
+	f.entries = append([]logicdomain.NoiseEmbeddingCacheEntry(nil), entries...)
+	return nil
+}
+
+// countingNoiseEmbeddingClient returns one deterministic vector batch while recording how many live calls were made.
+// countingNoiseEmbeddingClient 用于返回确定性的向量批次，并记录实时调用次数。
+type countingNoiseEmbeddingClient struct {
+	called int
+	vector []float32
+	err    error
+}
+
+// Embed returns deterministic vectors so semantic cache behavior can be asserted without network dependence.
+// Embed 用于返回确定性向量，让语义缓存行为可以在无网络依赖下被断言。
+func (c *countingNoiseEmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+	c.called++
+	if c.err != nil {
+		return appports.EmbeddingResponse{}, c.err
+	}
+	vectors := make([][]float32, 0, len(req.Texts))
+	for range req.Texts {
+		vectors = append(vectors, append([]float32(nil), c.vector...))
+	}
+	return appports.EmbeddingResponse{Vectors: vectors}, nil
 }
 
 // errorEmbeddingClient forces one semantic bootstrap failure without depending on the removed in-memory embedding mock.

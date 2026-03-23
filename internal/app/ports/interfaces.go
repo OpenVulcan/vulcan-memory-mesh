@@ -64,6 +64,13 @@ type MemoryArchiveStore interface {
 	Shutdowner
 }
 
+// NoiseEmbeddingCache is the port used by startup processors to reuse previously computed semantic prototype vectors.
+// NoiseEmbeddingCache 用于让启动期处理器复用已计算好的语义原型向量缓存。
+type NoiseEmbeddingCache interface {
+	LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error)
+	ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error
+}
+
 // ContextPersonaProvider is the port used by pre-check flows to load stable persona and project context.
 // ContextPersonaProvider 用于给 pre-check 流程加载稳定的画像和项目上下文。
 type ContextPersonaProvider interface {

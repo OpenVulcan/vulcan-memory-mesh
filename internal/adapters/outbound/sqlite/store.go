@@ -5,6 +5,7 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -26,6 +27,21 @@ CREATE TABLE IF NOT EXISTS vmm_memories (
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_memories_session_id ON vmm_memories(session_id);
+
+CREATE TABLE IF NOT EXISTS vmm_noise_embeddings (
+  scope TEXT NOT NULL,
+  language TEXT NOT NULL,
+  category_name TEXT NOT NULL,
+  phrase TEXT NOT NULL,
+  model TEXT NOT NULL,
+  dimension INTEGER NOT NULL,
+  rules_hash TEXT NOT NULL,
+  vector_json TEXT NOT NULL,
+  updated_at TEXT NOT NULL,
+  PRIMARY KEY (scope, language, category_name, phrase, model, dimension, rules_hash)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_noise_embeddings_lookup
+  ON vmm_noise_embeddings(scope, language, model, dimension, rules_hash);
 `
 )
 
@@ -70,6 +86,94 @@ func (s *Store) SaveMemory(ctx context.Context, record logicdomain.ArchivedMemor
 	if err != nil {
 		return fmt.Errorf("insert archived memory: %w", err)
 	}
+	return nil
+}
+
+// LoadNoiseEmbeddingCache reads one fully qualified semantic prototype bundle from SQLite for startup-time reuse.
+// LoadNoiseEmbeddingCache 用于从 SQLite 读取一组完整限定的语义原型缓存，以供启动阶段复用。
+func (s *Store) LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error) {
+	// Query the exact cache fingerprint so model, dimension, and rules changes always miss cleanly.
+	// 按完整缓存指纹查询，确保模型、维度或规则变化时一定会干净失效。
+	if s == nil || s.db == nil {
+		return nil, fmt.Errorf("sqlite store is not initialized")
+	}
+	rows, err := s.db.QueryContext(ctx, `
+SELECT scope, language, category_name, phrase, model, dimension, rules_hash, vector_json, updated_at
+FROM vmm_noise_embeddings
+WHERE scope = ? AND language = ? AND model = ? AND dimension = ? AND rules_hash = ?
+ORDER BY category_name, phrase
+`, query.Scope, query.Language, query.Model, query.Dimension, query.RulesHash)
+	if err != nil {
+		return nil, fmt.Errorf("load noise embedding cache: %w", err)
+	}
+	defer rows.Close()
+
+	// Decode each cached vector row into the domain cache entry shape expected by the processor.
+	// 将每条缓存向量记录解码成处理器期望的领域缓存结构。
+	entries := make([]logicdomain.NoiseEmbeddingCacheEntry, 0)
+	for rows.Next() {
+		var entry logicdomain.NoiseEmbeddingCacheEntry
+		var vectorJSON string
+		var updatedAt string
+		if err := rows.Scan(&entry.Scope, &entry.Language, &entry.CategoryName, &entry.Phrase, &entry.Model, &entry.Dimension, &entry.RulesHash, &vectorJSON, &updatedAt); err != nil {
+			return nil, fmt.Errorf("scan noise embedding cache: %w", err)
+		}
+		if err := json.Unmarshal([]byte(vectorJSON), &entry.Vector); err != nil {
+			return nil, fmt.Errorf("decode cached vector: %w", err)
+		}
+		if timestamp, err := time.Parse(time.RFC3339Nano, updatedAt); err == nil {
+			entry.UpdatedAt = timestamp
+		}
+		entries = append(entries, entry)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate noise embedding cache: %w", err)
+	}
+	return entries, nil
+}
+
+// ReplaceNoiseEmbeddingCache refreshes one language bundle in place so stale vectors are pruned when config changes.
+// ReplaceNoiseEmbeddingCache 用于原地刷新某个语言包的缓存，从而在配置变化时清理陈旧向量。
+func (s *Store) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error {
+	// Replace the selected scope/language cache atomically so startup always sees a self-consistent bundle.
+	// 以原子方式替换选中作用域和语言的缓存，保证启动时看到的始终是一组自洽数据。
+	if s == nil || s.db == nil {
+		return fmt.Errorf("sqlite store is not initialized")
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return fmt.Errorf("begin noise embedding cache transaction: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tx.Rollback()
+		}
+	}()
+	if _, err = tx.ExecContext(ctx, `DELETE FROM vmm_noise_embeddings WHERE scope = ? AND language = ?`, query.Scope, query.Language); err != nil {
+		return fmt.Errorf("clear stale noise embedding cache: %w", err)
+	}
+	for _, entry := range entries {
+		vectorJSON, marshalErr := json.Marshal(entry.Vector)
+		if marshalErr != nil {
+			return fmt.Errorf("encode noise embedding cache vector: %w", marshalErr)
+		}
+		updatedAt := entry.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = time.Now().UTC()
+		}
+		if _, err = tx.ExecContext(ctx, `
+INSERT INTO vmm_noise_embeddings (
+  scope, language, category_name, phrase, model, dimension, rules_hash, vector_json, updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+`, entry.Scope, entry.Language, entry.CategoryName, entry.Phrase, entry.Model, entry.Dimension, entry.RulesHash, string(vectorJSON), updatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
+			return fmt.Errorf("insert noise embedding cache: %w", err)
+		}
+	}
+	if err = tx.Commit(); err != nil {
+		return fmt.Errorf("commit noise embedding cache transaction: %w", err)
+	}
+	committed = true
 	return nil
 }
 

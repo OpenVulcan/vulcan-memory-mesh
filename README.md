@@ -133,6 +133,12 @@ scripts/
 - `semantic_threshold`
   - 默认语义阈值，类别可在规则文件里覆盖
 
+噪声门的语义原型向量现在会缓存到 SQLite：
+
+- 启动时优先从 `archive.path` 指向的 SQLite 数据库读取
+- 只有在模型、维度或规则内容指纹变化时才会重新计算
+- 重算后的结果会回写到 SQLite，避免每次启动重复消耗 embedding 调用
+
 ## 测试
 
 ```bash
