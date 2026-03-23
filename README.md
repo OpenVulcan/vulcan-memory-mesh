@@ -1,11 +1,12 @@
 # VMM OSS Local (Go)
 
-VulcanMemoryMesh 当前聚焦本地开源版本：插件在主模型调用前通过 `pre-check` 获取可注入上下文，在对话结束后通过 `post-action` 写入本地关系存储；联调环境可使用 `seed-memory` 预热向量库。
+VulcanMemoryMesh 当前聚焦本地开源版本：插件在主模型调用前可以调用 `pre-check`，但当前版本会固定返回“不注入”；对话结束后通过 `post-action` 写入本地关系存储；联调环境可使用 `seed-memory` 预热向量库。
 
 ## 文档导航
 
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
+- [HTTP 接口测试说明（中文）](./docs/api-test-guide_CN.md)
 
 ## 目录
 
@@ -29,8 +30,8 @@ scripts/
 
 ## 已实现内容
 
-- `POST /v1/chat/pre-check`
-- `POST /v1/chat/post-action`
+- `POST /vmm/pre-check`
+- `POST /vmm/post-action`
 - `POST /v1/admin/seed-memory`
 - `cmd/vmm-local` 本地启动入口
 - `MockPersonaProvider`
@@ -45,15 +46,20 @@ scripts/
 
 ### pre-check
 
-- 只取最近 2 轮 `history_content`
-- `is_first_turn=true` 时并发执行「画像读取 + 语义检索」
-- LLM 意图提炼固定 2 秒超时，失败自动降级为原问题
-- 使用 `SearchFilter{UserID, ProjectID, SpaceID}` 检索
-- 固定顺序拼装：
-  1. 项目约束
-  2. 个人画像
-  3. 偏好习惯
-  4. 向量召回记忆
+- 当前版本在用例入口固定短路，不会触发画像加载、意图提炼、embedding 或向量召回
+- 对任意合法请求都返回：
+  1. `should_inject = false`
+  2. `context_text = ""`
+  3. `context_items = []`
+- 当前请求体只保留：
+  - `session_id`
+  - `user_id`
+  - `team_id`
+  - `space_id`
+  - `project_id`
+  - `user_content`
+- `current_content`、`history_content` 和 `is_first_turn` 已从入口契约移除
+- 输入仍会经过请求校验和文本净化，以保证接口契约稳定
 
 ### post-action
 
