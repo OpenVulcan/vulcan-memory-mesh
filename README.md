@@ -32,6 +32,7 @@ scripts/
 
 - `POST /vmm/pre-check`
 - `POST /vmm/post-action`
+- `POST /vmm/post-action-old`
 - `POST /v1/admin/seed-memory`
 - `cmd/vmm-local` 本地启动入口
 - `MockPersonaProvider`
@@ -63,6 +64,21 @@ scripts/
 
 ### post-action
 
+- `POST /vmm/post-action` 是新的字符串契约入口
+- 顶层只接收：
+  - `user_content`
+  - `assistant_content`
+  - `timeline`
+- 其中 `timeline` 必须是数组，数组项格式是：
+  - `type`
+  - `content`
+- `user_content` 表示当前用户首轮提问
+- `assistant_content` 表示当前助手最后回答
+- 如果传了 `timeline`：
+  - 第一项必须是 `type=user` 且内容等于 `user_content`
+  - 最后一项必须是 `type=assistant` 且内容等于 `assistant_content`
+- 新路由会先返回 `accepted=true`，然后在后台继续复用旧版写库逻辑
+- `POST /vmm/post-action-old` 仍承载当前旧版快照写库逻辑
 - 单次线性清洗
 - 严格模式下只接受标准 user/assistant 文本快照，额外内容直接报错
 - 兼容模式下会自动修剪 `system/tool`、`tool_calls` 和非文本内容块

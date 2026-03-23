@@ -65,6 +65,7 @@ http://127.0.0.1:17625
 - `POST /chat`
 - `POST /vmm/pre-check`
 - `POST /vmm/post-action`
+- `POST /vmm/post-action-old`
 - `POST /v1/admin/seed-memory`
 
 说明：
@@ -206,9 +207,117 @@ curl -X POST http://127.0.0.1:17625/vmm/pre-check \
 
 ## 7. /vmm/post-action
 
-`post-action` 用于在一轮对话完成后，把标准化后的 `user -> assistant` 内容写入本地关系存储，并在写库前执行噪声过滤。
+`/vmm/post-action` 是新的字符串契约入口。它会先同步校验请求结构，校验通过后立即返回 `accepted=true`，然后在后台继续复用旧版写库逻辑。
 
 ### 7.1 请求体
+
+```json
+{
+  "session_id": "sess_001",
+  "user_id": "usr_001",
+  "team_id": "team_001",
+  "space_id": "space_001",
+  "project_id": "proj_001",
+  "user_content": "最开始的问题",
+  "assistant_content": "最后的回答",
+  "timeline": [
+    {
+      "type": "user",
+      "content": "最开始的问题"
+    },
+    {
+      "type": "assistant",
+      "content": "中间回答"
+    },
+    {
+      "type": "user",
+      "content": "用户补充提问"
+    },
+    {
+      "type": "assistant",
+      "content": "最后的回答"
+    }
+  ]
+}
+```
+
+### 7.2 字段规则
+
+- `session_id`
+  - 必填
+- `user_id` / `team_id` / `space_id` / `project_id`
+  - 可不传
+  - 为空时后台处理阶段会补成 `default`
+- `user_content`
+  - 必填
+  - 必须是字符串
+  - 表示当前用户首轮提问
+- `assistant_content`
+  - 必填
+  - 必须是字符串
+  - 表示当前助手最后回答
+- `timeline`
+  - 允许为空数组
+  - 如果存在元素，则必须是数组对象
+  - 每项必须是：
+    - `type`: `user` 或 `assistant`
+    - `content`: 字符串
+
+### 7.3 关键校验
+
+如果 `timeline` 不为空，则：
+
+- 第一项必须是：
+  - `type = user`
+  - `content == user_content`
+- 最后一项必须是：
+  - `type = assistant`
+  - `content == assistant_content`
+
+也就是说：
+
+- 顶层 `user_content` 和 `assistant_content` 不是独立无关字段
+- 它们必须和 `timeline` 的首尾边界一致
+
+### 7.4 curl 示例
+
+```bash
+curl -X POST http://127.0.0.1:17625/vmm/post-action \
+  -H "Content-Type: application/json" \
+  -d "{\"session_id\":\"sess_001\",\"user_id\":\"usr_001\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_001\",\"user_content\":\"最开始的问题\",\"assistant_content\":\"最后的回答\",\"timeline\":[{\"type\":\"user\",\"content\":\"最开始的问题\"},{\"type\":\"assistant\",\"content\":\"中间回答\"},{\"type\":\"user\",\"content\":\"用户补充提问\"},{\"type\":\"assistant\",\"content\":\"最后的回答\"}]}"
+```
+
+### 7.5 返回示例
+
+```json
+{
+  "code": 200,
+  "msg": "ok",
+  "data": {
+    "accepted": true
+  },
+  "trace_id": "trc_xxx"
+}
+```
+
+### 7.6 说明
+
+- 这个接口在返回 `200 accepted=true` 之后，才会在后台继续处理
+- 后台仍然复用旧版：
+  - 文本净化
+  - `MessageNormalizer`
+  - `NoiseGate`
+  - 关系存储写入
+- 如果 `timeline` 为空，后台会自动用顶层：
+  - `user_content`
+  - `assistant_content`
+  合成一个最小单轮对话
+
+## 8. /vmm/post-action-old
+
+`post-action-old` 仍然保留当前旧版快照写库逻辑，适合尚未迁移到新字符串契约的测试方。
+
+### 8.1 请求体结构
 
 ```json
 {
@@ -230,83 +339,12 @@ curl -X POST http://127.0.0.1:17625/vmm/pre-check \
 }
 ```
 
-### 7.2 content 支持格式
-
-`raw_messages_snapshot[*].content` 当前支持：
-
-1. 纯字符串
-
-```json
-"请帮我检查数据库状态"
-```
-
-2. 文本块数组
-
-```json
-[
-  { "type": "text", "text": "请帮我检查数据库状态" }
-]
-```
-
-### 7.3 strict / compat 模式
-
-配置项：
-
-```json
-{
-  "post_action": {
-    "input_mode": "compat"
-  }
-}
-```
-
-#### compat
-
-- 默认模式
-- 自动删除 `system` / `tool`
-- 自动删除带 `tool_calls` 的消息
-- 数组内容里只保留 `type=text`
-- 自动清理 `<think>`、base64 图片、Markdown/HTML 媒体链接
-
-#### strict
-
-- 出现非标准 user/assistant 文本消息时直接报错
-- 更适合插件已经保证上传标准文本快照的环境
-
-### 7.4 curl 示例
-
-```bash
-curl -X POST http://127.0.0.1:17625/vmm/post-action \
-  -H "Content-Type: application/json" \
-  -d "{\"session_id\":\"sess_001\",\"user_id\":\"usr_001\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_001\",\"raw_messages_snapshot\":[{\"role\":\"user\",\"content\":\"请帮我检查数据库状态\"},{\"role\":\"assistant\",\"content\":\"目前数据库状态正常。\"}]}"
-```
-
-### 7.5 返回示例
-
-```json
-{
-  "code": 200,
-  "msg": "ok",
-  "data": {
-    "accepted": true
-  },
-  "trace_id": "trc_xxx"
-}
-```
-
-### 7.6 说明
-
-- `user_id` / `team_id` / `space_id` / `project_id` 如果为空，会被补成 `default`
-- 入口层会先做内容净化
-- 然后 `MessageNormalizer` 会压成标准 `user -> assistant` 轮次
-- 最后 `NoiseGate` 会过滤掉拒答、元问题、会话样板和诊断残留
-
-## 8. /v1/admin/seed-memory
+## 9. /v1/admin/seed-memory
 
 该接口用于向向量库存入调试用记忆，方便验证召回链路。  
 虽然当前 `pre-check` 已固定不注入，但这个接口仍可用于联调其它存储与向量逻辑。
 
-### 8.1 请求体
+### 9.1 请求体
 
 ```json
 {
@@ -317,7 +355,7 @@ curl -X POST http://127.0.0.1:17625/vmm/post-action \
 }
 ```
 
-### 8.2 curl 示例
+### 9.2 curl 示例
 
 ```bash
 curl -X POST http://127.0.0.1:17625/v1/admin/seed-memory \
@@ -325,7 +363,7 @@ curl -X POST http://127.0.0.1:17625/v1/admin/seed-memory \
   -d "{\"user_id\":\"usr_001\",\"project_id\":\"proj_001\",\"space_id\":\"space_001\",\"memory_text\":\"后端统一使用 FastAPI。\"}"
 ```
 
-### 8.3 返回示例
+### 9.3 返回示例
 
 ```json
 {
@@ -339,7 +377,7 @@ curl -X POST http://127.0.0.1:17625/v1/admin/seed-memory \
 }
 ```
 
-## 9. 常见错误码
+## 10. 常见错误码
 
 | HTTP 状态 | error_id | 含义 |
 | --- | --- | --- |
@@ -352,31 +390,39 @@ curl -X POST http://127.0.0.1:17625/v1/admin/seed-memory \
 | 504 | `UPSTREAM_TIMEOUT` | 上游处理超时 |
 | 500 | `INTERNAL_ERROR` | 服务器内部错误 |
 
-## 10. 测试建议
+## 11. 测试建议
 
 建议测试同学至少覆盖以下场景：
 
-### 10.1 /chat
+### 11.1 /chat
 
 - 中文手机号脱敏
 - Bearer Token 脱敏
 - `Accept-Language: zh-CN`
 - 超过 1MB 请求体
 
-### 10.2 /vmm/pre-check
+### 11.2 /vmm/pre-check
 
 - 合法请求固定返回 `should_inject=false`
 - `user_content` 缺失时报 `HTTP_VALIDATION_FAILED`
 - 未知字段时报 `HTTP_INVALID_JSON`
 
-### 10.3 /vmm/post-action
+### 11.3 /vmm/post-action
+
+- 顶层 `user_content` / `assistant_content` 传字符串
+- `timeline` 必须是数组
+- `timeline` 首尾边界必须和顶层两个文本一致
+- 非字符串 `user_content` / `assistant_content` / `timeline[*].content` 应直接报错
+- 同步响应应立即返回，后台继续处理
+
+### 11.4 /vmm/post-action-old
 
 - 标准 `user -> assistant` 快照成功写入
 - `compat` 模式自动清理媒体与非文本块
 - `strict` 模式拒绝非标准内容
 - 拒答、元问题、会话样板会被噪声门过滤
 
-## 11. 说明补充
+## 12. 说明补充
 
 - 当前标准构建方式是：
 
@@ -401,4 +447,3 @@ output/bin/vmm-local.exe
 ```text
 output/configs/
 ```
-

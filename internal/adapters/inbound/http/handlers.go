@@ -164,9 +164,52 @@ func (h *Handler) PreCheck(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// PostAction executes the PostAction logic.
-// PostAction 用于执行 PostAction 逻辑。
+// PostAction executes the new async post-action route that acknowledges immediately and keeps processing in the background.
+// PostAction 用于执行新的异步 post-action 路由，会立即确认接收并在后台继续处理。
 func (h *Handler) PostAction(w http.ResponseWriter, r *http.Request) {
+	// Bind, sanitize, and validate the new text-only contract before the request is accepted.
+	// 在接受请求之前，先完成新文本契约的绑定、清洗和校验。
+	if h.postAction == nil {
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), errRouteDisabled)
+		return
+	}
+	var req PostActionAsyncRequestDTO
+	if err := decodeJSON(r, &req); err != nil {
+		writeErrorDescriptor(w, trace.IDFromContext(r.Context()), describeDecodeError(err))
+		return
+	}
+	normalizePostActionAsyncRequest(&req)
+	if err := h.validate.ValidatePostActionAsync(req); err != nil {
+		h.writeError(w, r, err)
+		return
+	}
+	traceID := trace.IDFromContext(r.Context())
+	cmd := toAsyncPostActionCommand(req)
+
+	// Return the acceptance envelope first so callers are not blocked by downstream processing.
+	// 先返回接收成功的响应包，避免调用方被下游处理阻塞。
+	writeJSON(w, http.StatusOK, Envelope{
+		Code:    http.StatusOK,
+		Msg:     "ok",
+		Data:    PostActionResponseDTO{Accepted: true},
+		TraceID: traceID,
+	})
+
+	// Continue the legacy persistence flow in the background using a detached timeout-bound context.
+	// 使用脱离请求生命周期且带超时约束的后台上下文继续执行旧版持久化流程。
+	go func(cmd usecase.PostActionCommand, traceID string) {
+		bgctx, cancel := withTimeout(context.Background(), h.postTimeout)
+		defer cancel()
+		bgctx = trace.WithTraceID(bgctx, traceID)
+		if _, err := h.postAction.Execute(bgctx, cmd); err != nil && h.logger != nil {
+			h.logger.Error("async post-action failed", "trace_id", traceID, "session_id", cmd.SessionID, "err", err)
+		}
+	}(cmd, traceID)
+}
+
+// PostActionOld executes the current legacy post-action persistence flow.
+// PostActionOld 用于执行当前旧版 post-action 持久化流程。
+func (h *Handler) PostActionOld(w http.ResponseWriter, r *http.Request) {
 	// Bind, sanitize, and validate the raw snapshot request before the persistence flow starts.
 	// 在持久化流程开始前，先完成原始快照请求的绑定、清洗和校验。
 	var req PostActionRequestDTO
@@ -292,6 +335,32 @@ func toRawMessagesDomain(items []RawMessageDTO) []logicdomain.RawMessage {
 		})
 	}
 	return out
+}
+
+// toAsyncPostActionCommand converts the new text-only post-action contract into the legacy raw snapshot command reused by the persistence use case.
+// toAsyncPostActionCommand 用于把新的纯文本 post-action 契约转换成持久化用例复用的旧版原始快照命令。
+func toAsyncPostActionCommand(req PostActionAsyncRequestDTO) usecase.PostActionCommand {
+	// Reuse the provided timeline when present, otherwise synthesize a minimal one-turn conversation from the top-level texts.
+	// 优先复用调用方提供的时间线；如果没有，则根据顶层文本合成一个最小单轮对话。
+	raw := make([]logicdomain.RawMessage, 0, max(len(req.Timeline), 2))
+	if len(req.Timeline) == 0 {
+		raw = append(raw,
+			logicdomain.RawMessage{Role: "user", Content: req.UserContent},
+			logicdomain.RawMessage{Role: "assistant", Content: req.AssistantContent},
+		)
+	} else {
+		for _, item := range req.Timeline {
+			raw = append(raw, logicdomain.RawMessage{Role: item.Type, Content: item.Content})
+		}
+	}
+	return usecase.PostActionCommand{
+		SessionID:           req.SessionID,
+		UserID:              req.UserID,
+		TeamID:              req.TeamID,
+		SpaceID:             req.SpaceID,
+		ProjectID:           req.ProjectID,
+		RawMessagesSnapshot: raw,
+	}
 }
 
 // withTimeout executes the withTimeout logic.

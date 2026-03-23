@@ -63,6 +63,25 @@ func normalizePostActionRequest(req *PostActionRequestDTO) {
 	}
 }
 
+// normalizePostActionAsyncRequest trims scope identifiers and sanitizes the text-only fields used by the new async post-action route.
+// normalizePostActionAsyncRequest 用于裁剪范围标识，并清洗新异步 post-action 路由使用的纯文本字段。
+func normalizePostActionAsyncRequest(req *PostActionAsyncRequestDTO) {
+	if req == nil {
+		return
+	}
+	req.SessionID = strings.TrimSpace(req.SessionID)
+	req.UserID = defaultScope(strings.TrimSpace(req.UserID))
+	req.TeamID = defaultScope(strings.TrimSpace(req.TeamID))
+	req.SpaceID = defaultScope(strings.TrimSpace(req.SpaceID))
+	req.ProjectID = defaultScope(strings.TrimSpace(req.ProjectID))
+	req.UserContent = textutil.CleanConversationText(req.UserContent)
+	req.AssistantContent = textutil.CleanConversationText(req.AssistantContent)
+	for idx := range req.Timeline {
+		req.Timeline[idx].Type = strings.ToLower(strings.TrimSpace(req.Timeline[idx].Type))
+		req.Timeline[idx].Content = textutil.CleanConversationText(req.Timeline[idx].Content)
+	}
+}
+
 // normalizeSeedMemoryRequest trims transport strings before the seed-memory use case runs.
 // normalizeSeedMemoryRequest 用于在执行 seed-memory 用例之前裁剪传输层字符串。
 func normalizeSeedMemoryRequest(req *SeedMemoryRequestDTO) {
@@ -123,6 +142,58 @@ func (v *RequestValidator) ValidatePostAction(req PostActionRequestDTO) error {
 	}
 	if err := maxString("space_id", req.SpaceID, 128); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ValidatePostActionAsync validates the new text-only post-action contract before it is converted into a background persistence command.
+// ValidatePostActionAsync 用于在转换成后台持久化命令前校验新的纯文本 post-action 契约。
+func (v *RequestValidator) ValidatePostActionAsync(req PostActionAsyncRequestDTO) error {
+	if err := requireString("session_id", req.SessionID, 128); err != nil {
+		return err
+	}
+	if err := maxString("user_id", req.UserID, 128); err != nil {
+		return err
+	}
+	if err := maxString("team_id", req.TeamID, 128); err != nil {
+		return err
+	}
+	if err := maxString("space_id", req.SpaceID, 128); err != nil {
+		return err
+	}
+	if err := maxString("project_id", req.ProjectID, 128); err != nil {
+		return err
+	}
+	if err := requireString("user_content", req.UserContent, 16000); err != nil {
+		return err
+	}
+	if err := requireString("assistant_content", req.AssistantContent, 16000); err != nil {
+		return err
+	}
+	for idx, item := range req.Timeline {
+		fieldPrefix := fmt.Sprintf("timeline[%d]", idx)
+		if err := requireOneOf(fieldPrefix+".type", item.Type, "user", "assistant"); err != nil {
+			return err
+		}
+		if err := requireString(fieldPrefix+".content", item.Content, 16000); err != nil {
+			return err
+		}
+	}
+	if len(req.Timeline) > 0 {
+		first := req.Timeline[0]
+		last := req.Timeline[len(req.Timeline)-1]
+		if first.Type != "user" {
+			return logicdomain.ValidationError{Field: "timeline[0].type", Message: "must be user so the timeline starts from the first user question"}
+		}
+		if first.Content != req.UserContent {
+			return logicdomain.ValidationError{Field: "timeline[0].content", Message: "must match user_content"}
+		}
+		if last.Type != "assistant" {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("timeline[%d].type", len(req.Timeline)-1), Message: "must be assistant so the timeline ends at the last assistant answer"}
+		}
+		if last.Content != req.AssistantContent {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("timeline[%d].content", len(req.Timeline)-1), Message: "must match assistant_content"}
+		}
 	}
 	return nil
 }

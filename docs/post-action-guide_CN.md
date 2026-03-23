@@ -2,13 +2,31 @@
 
 ## 文档目标
 
-这份文档专门说明 `POST /vmm/post-action` 入口当前的输入参数、配置项、清洗规则、严格模式与兼容模式差异，以及它最终会把什么内容写入本地关系存储。
+这份文档同时说明：
+
+1. 新版字符串契约入口 `POST /vmm/post-action`
+2. 旧版快照入口 `POST /vmm/post-action-old`
+
+以及它们与后台写库逻辑之间的关系、输入参数、配置项和清洗规则。
 
 如果你要对接插件、Agent 网关或调试原始会话上报，这份文档应作为首选参考。
 
 ## 接口定位
 
-`post-action` 用于接收一轮或多轮对话快照，并在入口侧完成二次安全过滤与格式规范化，然后把可保留的 `user -> assistant` 问答轮次写入本地关系存储。
+新版 `post-action` 用于接收一组更稳定的文本参数：
+
+- `user_content`
+- `assistant_content`
+- `timeline`
+
+它会先同步校验参数是否合法，随后立即返回 `accepted=true`，并在后台继续复用旧版写库逻辑。
+
+旧版 `post-action-old` 则用于接收完整原始快照，并在入口侧完成二次安全过滤与格式规范化，然后把可保留的 `user -> assistant` 问答轮次写入本地关系存储。
+
+说明：
+
+- `POST /vmm/post-action` 现在已经启用新版字符串契约
+- `POST /vmm/post-action-old` 继续保留旧版快照契约，后续确认无价值后再清理
 
 它的设计目标不是“完整归档插件传来的所有原始节点”，而是：
 
@@ -28,10 +46,126 @@
 
 - [docs/noise-gate-guide_CN.md](./noise-gate-guide_CN.md)
 
-## 路由
+## 新版路由：`POST /vmm/post-action`
 
 ```http
 POST /vmm/post-action
+Content-Type: application/json
+```
+
+### 新版请求体结构
+
+```json
+{
+  "session_id": "sess_123",
+  "user_id": "usr_8899",
+  "team_id": "team_001",
+  "space_id": "space_001",
+  "project_id": "proj_abc",
+  "user_content": "首轮问题",
+  "assistant_content": "最后回答",
+  "timeline": [
+    {
+      "type": "user",
+      "content": "首轮问题"
+    },
+    {
+      "type": "assistant",
+      "content": "中间回答"
+    },
+    {
+      "type": "user",
+      "content": "补充问题"
+    },
+    {
+      "type": "assistant",
+      "content": "最后回答"
+    }
+  ]
+}
+```
+
+### 新版字段规则
+
+- `session_id`
+  - 必填
+- `user_id` / `team_id` / `space_id` / `project_id`
+  - 可选
+  - 为空时后台处理阶段补成 `default`
+- `user_content`
+  - 必填
+  - 必须是字符串
+  - 表示当前用户首轮提问
+- `assistant_content`
+  - 必填
+  - 必须是字符串
+  - 表示当前助手最后回答
+- `timeline`
+  - 必须是数组
+  - 每项必须是：
+    - `type`
+    - `content`
+  - `type` 只能是：
+    - `user`
+    - `assistant`
+  - `content` 必须是字符串
+
+### 新版时间线校验
+
+如果 `timeline` 不为空：
+
+- 第一项必须是：
+  - `type = user`
+  - `content == user_content`
+- 最后一项必须是：
+  - `type = assistant`
+  - `content == assistant_content`
+
+这样可以确保：
+
+- 顶层两个文本字段不是随便填的摘要
+- 它们真实对应本轮时间线的首尾边界
+
+### 新版返回
+
+同步返回仍然参考旧版：
+
+```json
+{
+  "code": 200,
+  "msg": "ok",
+  "data": {
+    "accepted": true
+  },
+  "trace_id": "trc_xxx"
+}
+```
+
+但语义上有一个很重要的区别：
+
+- 新版 `POST /vmm/post-action` 是“先确认接收，再后台处理”
+- 也就是说，返回 `200` 后，旧版写库链路才在后台继续运行
+
+### 新版后台处理方式
+
+新版入口不会自己单独实现一套写库逻辑，而是把字符串契约转成内部标准快照后，继续复用旧版的：
+
+- 文本净化
+- `MessageNormalizer`
+- `NoiseGate`
+- 关系存储写入
+
+如果 `timeline` 是空数组，则后台会自动用：
+
+- `user_content`
+- `assistant_content`
+
+拼成一个最小单轮问答继续处理。
+
+## 旧版路由：`POST /vmm/post-action-old`
+
+```http
+POST /vmm/post-action-old
 Content-Type: application/json
 ```
 

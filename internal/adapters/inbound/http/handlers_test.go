@@ -165,7 +165,7 @@ func TestPostActionNormalizesRawMessages(t *testing.T) {
 		MaxRequestBodyBytes: 1 << 20,
 	})
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","raw_messages_snapshot":[{"role":"user","content":"你好"},{"role":"assistant","content":[{"type":"text","text":"<think>hidden</think>已收到"}]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action-old", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -196,7 +196,7 @@ func TestPostActionCompatModeTrimsUnsupportedPayloads(t *testing.T) {
 		MaxRequestBodyBytes: 1 << 20,
 	})
 	body := `{"session_id":"s1","raw_messages_snapshot":[{"role":"system","content":"drop-me"},{"role":"user","content":[{"type":"text","text":"你好"},{"type":"image_url","image_url":{"url":"https://example.com"}}]},{"role":"assistant","content":"<think>hidden</think>已收到 ![这是一只猫](https://cdn.example.com/cat.jpg) ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)"},{"role":"assistant","tool_calls":[{"id":"tool-1","type":"function"}],"content":"tooling"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action-old", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -272,7 +272,7 @@ func TestPostActionStrictModeRejectsNonTextContent(t *testing.T) {
 		MaxRequestBodyBytes: 1 << 20,
 	})
 	body := `{"session_id":"s1","raw_messages_snapshot":[{"role":"user","content":[{"type":"text","text":"你好"},{"type":"image_url","image_url":{"url":"https://example.com"}}]},{"role":"assistant","content":"收到"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action-old", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -288,6 +288,119 @@ func TestPostActionStrictModeRejectsNonTextContent(t *testing.T) {
 	}
 	if !strings.Contains(env.Msg, "raw_messages_snapshot[0].content[1].type") {
 		t.Fatalf("expected field path in message, got %q", env.Msg)
+	}
+}
+
+// TestPostActionReturnsAcceptedImmediatelyAndProcessesInBackground verifies that the new route acknowledges first and reuses the old persistence flow asynchronously.
+// TestPostActionReturnsAcceptedImmediatelyAndProcessesInBackground 用于验证新路由会先确认接收，再异步复用旧版持久化流程。
+func TestPostActionReturnsAcceptedImmediatelyAndProcessesInBackground(t *testing.T) {
+	started := make(chan usecase.PostActionCommand, 1)
+	release := make(chan struct{})
+	post := postActionFunc(func(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
+		started <- cmd
+		<-release
+		return usecase.PostActionResult{Accepted: true}, nil
+	})
+	router := NewRouter(Dependencies{
+		IDs:                 xid.NewGenerator(),
+		PostAction:          post,
+		Logger:              logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}),
+		Validator:           NewRequestValidator("compat"),
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","user_content":"第一问","assistant_content":"最终回答","timeline":[{"type":"user","content":"第一问"},{"type":"assistant","content":"中间回答"},{"type":"user","content":"补充问题"},{"type":"assistant","content":"最终回答"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.Code != http.StatusOK {
+		t.Fatalf("response code = %d", env.Code)
+	}
+	select {
+	case cmd := <-started:
+		if len(cmd.RawMessagesSnapshot) != 4 {
+			t.Fatalf("snapshot len = %d", len(cmd.RawMessagesSnapshot))
+		}
+		if cmd.RawMessagesSnapshot[0].Role != "user" || cmd.RawMessagesSnapshot[0].Content != "第一问" {
+			t.Fatalf("first snapshot = %+v", cmd.RawMessagesSnapshot[0])
+		}
+		if cmd.RawMessagesSnapshot[3].Role != "assistant" || cmd.RawMessagesSnapshot[3].Content != "最终回答" {
+			t.Fatalf("last snapshot = %+v", cmd.RawMessagesSnapshot[3])
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("background processing did not start")
+	}
+	close(release)
+}
+
+// TestPostActionRejectsTimelineBoundaryMismatch verifies that the new route requires timeline boundaries to match the top-level user and assistant texts.
+// TestPostActionRejectsTimelineBoundaryMismatch 用于验证新路由要求时间线首尾必须与顶层 user 和 assistant 文本一致。
+func TestPostActionRejectsTimelineBoundaryMismatch(t *testing.T) {
+	router := NewRouter(Dependencies{
+		IDs: xid.NewGenerator(),
+		PostAction: postActionFunc(func(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
+			return usecase.PostActionResult{Accepted: true}, nil
+		}),
+		Logger:              logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}),
+		Validator:           NewRequestValidator("compat"),
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","user_content":"第一问","assistant_content":"最终回答","timeline":[{"type":"user","content":"不是第一问"},{"type":"assistant","content":"最终回答"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.ErrorID != "HTTP_VALIDATION_FAILED" {
+		t.Fatalf("error id = %q", env.ErrorID)
+	}
+	if !strings.Contains(env.Msg, "timeline[0].content") {
+		t.Fatalf("expected timeline boundary message, got %q", env.Msg)
+	}
+}
+
+// TestPostActionRejectsArrayTopLevelContent verifies that the new text-only contract rejects array values for top-level user_content.
+// TestPostActionRejectsArrayTopLevelContent 用于验证新的纯文本契约会拒绝顶层 user_content 被数组替代。
+func TestPostActionRejectsArrayTopLevelContent(t *testing.T) {
+	router := NewRouter(Dependencies{
+		IDs: xid.NewGenerator(),
+		PostAction: postActionFunc(func(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
+			return usecase.PostActionResult{Accepted: true}, nil
+		}),
+		Logger:              logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}),
+		Validator:           NewRequestValidator("compat"),
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","user_content":[],"assistant_content":"最终回答","timeline":[{"type":"user","content":"第一问"},{"type":"assistant","content":"最终回答"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	var env Envelope
+	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	if env.ErrorID != "HTTP_INVALID_JSON" {
+		t.Fatalf("error id = %q", env.ErrorID)
 	}
 }
 
@@ -467,6 +580,16 @@ type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecas
 // Execute executes the Execute logic.
 // Execute 用于执行 Execute 逻辑。
 func (f preCheckFunc) Execute(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+	return f(ctx, cmd)
+}
+
+// postActionFunc adapts a plain function into the PostActionExecutor interface for focused handler tests.
+// postActionFunc 用于把普通函数适配成 PostActionExecutor 接口，便于聚焦 handler 测试。
+type postActionFunc func(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error)
+
+// Execute executes the Execute logic.
+// Execute 用于执行 Execute 逻辑。
+func (f postActionFunc) Execute(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
 	return f(ctx, cmd)
 }
 

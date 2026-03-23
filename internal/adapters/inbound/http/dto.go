@@ -42,6 +42,26 @@ type PostActionRequestDTO struct {
 	RawMessagesSnapshot []RawMessageDTO `json:"raw_messages_snapshot"`
 }
 
+// PostActionTimelineItemDTO binds one simplified timeline item carried by the new /vmm/post-action contract.
+// PostActionTimelineItemDTO 用于绑定新 /vmm/post-action 契约里携带的一条简化时间线节点。
+type PostActionTimelineItemDTO struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// PostActionAsyncRequestDTO binds the new /vmm/post-action request body that only accepts text fields and a text timeline.
+// PostActionAsyncRequestDTO 用于绑定新的 /vmm/post-action 请求体，只接受文本字段和文本时间线。
+type PostActionAsyncRequestDTO struct {
+	SessionID        string                      `json:"session_id"`
+	UserID           string                      `json:"user_id"`
+	TeamID           string                      `json:"team_id"`
+	SpaceID          string                      `json:"space_id,omitempty"`
+	ProjectID        string                      `json:"project_id"`
+	UserContent      string                      `json:"user_content"`
+	AssistantContent string                      `json:"assistant_content"`
+	Timeline         []PostActionTimelineItemDTO `json:"timeline"`
+}
+
 // SeedMemoryRequestDTO binds the admin seed-memory request used to preload local vector memory.
 // SeedMemoryRequestDTO 用于绑定管理员 seed-memory 请求，以便预热本地向量记忆。
 type SeedMemoryRequestDTO struct {

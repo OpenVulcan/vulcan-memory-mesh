@@ -42,6 +42,7 @@ func NewRouter(deps Dependencies) http.Handler {
 	}
 	mux.Handle("/vmm/pre-check", methodHandler(http.MethodPost, http.HandlerFunc(handler.PreCheck)))
 	mux.Handle("/vmm/post-action", methodHandler(http.MethodPost, http.HandlerFunc(handler.PostAction)))
+	mux.Handle("/vmm/post-action-old", methodHandler(http.MethodPost, http.HandlerFunc(handler.PostActionOld)))
 	if deps.EnableSeedRoute && deps.SeedMemory != nil {
 		mux.Handle("/v1/admin/seed-memory", methodHandler(http.MethodPost, http.HandlerFunc(handler.SeedMemory)))
 	}
