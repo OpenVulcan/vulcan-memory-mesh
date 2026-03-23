@@ -329,6 +329,9 @@ func TestPostActionReturnsAcceptedImmediatelyAndProcessesInBackground(t *testing
 		if len(cmd.RawMessagesSnapshot) != 4 {
 			t.Fatalf("snapshot len = %d", len(cmd.RawMessagesSnapshot))
 		}
+		if !cmd.SkipNoiseGate {
+			t.Fatal("expected timeline-driven request to skip noise gate")
+		}
 		if cmd.RawMessagesSnapshot[0].Role != "user" || cmd.RawMessagesSnapshot[0].Content != "第一问" {
 			t.Fatalf("first snapshot = %+v", cmd.RawMessagesSnapshot[0])
 		}
@@ -382,6 +385,46 @@ func TestPostActionLogsReceivedContent(t *testing.T) {
 	if !strings.Contains(logOutput, `timeline="[{\"type\":\"assistant\",\"content\":\"中间回答\"},{\"type\":\"user\",\"content\":\"补充问题\"}]"`) {
 		t.Fatalf("expected timeline in log, got %s", logOutput)
 	}
+}
+
+// TestPostActionWithoutTimelineKeepsNoiseGate verifies that the new route still enables the standard noise-gate flow when no intermediate timeline is provided.
+// TestPostActionWithoutTimelineKeepsNoiseGate 用于验证当未提供中间 timeline 时，新路由仍会保留标准噪声门流程。
+func TestPostActionWithoutTimelineKeepsNoiseGate(t *testing.T) {
+	started := make(chan usecase.PostActionCommand, 1)
+	release := make(chan struct{})
+	post := postActionFunc(func(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
+		started <- cmd
+		<-release
+		return usecase.PostActionResult{Accepted: true}, nil
+	})
+	router := NewRouter(Dependencies{
+		IDs:                 xid.NewGenerator(),
+		PostAction:          post,
+		Logger:              logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}),
+		Validator:           NewRequestValidator("compat"),
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","user_content":"第一问","assistant_content":"最终回答","timeline":[]}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	select {
+	case cmd := <-started:
+		if cmd.SkipNoiseGate {
+			t.Fatal("expected empty timeline request to keep noise gate enabled")
+		}
+		if len(cmd.RawMessagesSnapshot) != 2 {
+			t.Fatalf("snapshot len = %d", len(cmd.RawMessagesSnapshot))
+		}
+	case <-time.After(500 * time.Millisecond):
+		t.Fatal("background processing did not start")
+	}
+	close(release)
 }
 
 // TestPostActionAllowsIntermediateTimeline verifies that the new route accepts timeline items as the middle flow between top-level user and assistant texts.

@@ -119,6 +119,25 @@ Content-Type: application/json
   - `type` 只能是 `user` 或 `assistant`
   - `content` 必须是字符串
 
+### 新版时间线与噪声门关系
+
+新版 `post-action` 当前还有一条额外规则：
+
+- 当 `timeline` 长度大于 `0` 时：
+  - 视为复杂中间流程
+  - 后台会跳过 `NoiseGate`
+  - 直接继续主线持久化
+- 当 `timeline` 长度等于 `0` 时：
+  - 视为标准单轮 `user -> assistant`
+  - 后台会继续执行默认噪声门流程
+  - 包括正则规则和语义判定
+
+这样做的原因是：
+
+- 只要存在中间时间线，就说明这轮对话包含补充提问、打断、澄清或中间多轮交互
+- 这类复杂流程不能再简单套用“首问 + 末答”的单轮噪声判断
+- 因此当前只对 `timeline=[]` 的简单单轮请求执行标准噪声门
+
 ### 新版返回
 
 同步返回仍然参考旧版：
@@ -145,7 +164,7 @@ Content-Type: application/json
 
 - 文本净化
 - `MessageNormalizer`
-- `NoiseGate`
+- `NoiseGate`（仅 `timeline=[]` 时启用）
 - 关系存储写入
 
 后台实际组装顺序固定是：
@@ -155,6 +174,7 @@ Content-Type: application/json
 3. 顶层 `assistant_content`
 
 如果 `timeline` 是空数组，则后台会只使用顶层两条文本，拼成一个最小单轮问答继续处理。
+此时也会继续执行默认噪声门判定。
 
 ### 新版调试日志
 

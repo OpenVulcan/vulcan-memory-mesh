@@ -19,6 +19,7 @@ import (
 type PostActionCommand struct {
 	SessionID, UserID, TeamID, SpaceID, ProjectID string
 	RawMessagesSnapshot                           []logicdomain.RawMessage
+	SkipNoiseGate                                 bool
 }
 
 // PostActionResult returns the persistence acknowledgement back to the transport layer.
@@ -73,7 +74,10 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 	if len(turns) == 0 {
 		return PostActionResult{Accepted: true, TraceID: traceID}, nil
 	}
-	if u.noiseGate != nil {
+
+	// Apply the noise gate only when the caller did not mark the turn flow as timeline-driven.
+	// 只有在调用方未标记为时间线驱动流程时，才执行噪声门过滤。
+	if u.noiseGate != nil && !cmd.SkipNoiseGate {
 		turns = u.noiseGate.FilterPersistableTurns(ctx, turns)
 	}
 	if len(turns) == 0 {

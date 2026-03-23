@@ -79,6 +79,8 @@ scripts/
 - `timeline` 的每一项都必须是：
   - `type=user|assistant`
   - `content` 为字符串
+- `timeline` 非空时会跳过 `NoiseGate`，直接继续主线持久化
+- 只有 `timeline=[]` 的简单单轮请求，才会继续执行标准噪声门判定
 - 新路由会先返回 `accepted=true`，然后在后台继续复用旧版写库逻辑
 - `POST /vmm/post-action-old` 仍承载当前旧版快照写库逻辑
 - 单次线性清洗

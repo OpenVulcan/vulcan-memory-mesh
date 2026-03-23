@@ -279,7 +279,16 @@ curl -X POST http://127.0.0.1:17625/vmm/pre-check \
   - `type` 只能是 `user` 或 `assistant`
   - `content` 必须是字符串
 
-### 7.4 curl 示例
+### 7.4 与噪声门的关系
+
+- 当 `timeline` 长度大于 `0` 时：
+  - 后台跳过 `NoiseGate`
+  - 直接继续主线写库流程
+- 当 `timeline` 长度等于 `0` 时：
+  - 后台继续执行标准噪声门判定
+  - 包括正则和语义相似度判断
+
+### 7.5 curl 示例
 
 ```bash
 curl -X POST http://127.0.0.1:17625/vmm/post-action \
@@ -287,7 +296,7 @@ curl -X POST http://127.0.0.1:17625/vmm/post-action \
   -d "{\"session_id\":\"sess_001\",\"user_id\":\"usr_001\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_001\",\"user_content\":\"最开始的问题\",\"assistant_content\":\"最后的回答\",\"timeline\":[{\"type\":\"assistant\",\"content\":\"中间回答\"},{\"type\":\"user\",\"content\":\"用户补充提问\"}]}"
 ```
 
-### 7.5 返回示例
+### 7.6 返回示例
 
 ```json
 {
@@ -300,13 +309,13 @@ curl -X POST http://127.0.0.1:17625/vmm/post-action \
 }
 ```
 
-### 7.6 说明
+### 7.7 说明
 
 - 这个接口在返回 `200 accepted=true` 之后，才会在后台继续处理
 - 后台仍然复用旧版：
   - 文本净化
   - `MessageNormalizer`
-  - `NoiseGate`
+  - `NoiseGate`（仅 `timeline=[]` 时启用）
   - 关系存储写入
 - 如果 `timeline` 为空，后台会自动用顶层：
   - `user_content`

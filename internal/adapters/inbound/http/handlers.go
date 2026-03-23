@@ -359,6 +359,7 @@ func toAsyncPostActionCommand(req PostActionAsyncRequestDTO) usecase.PostActionC
 		SpaceID:             req.SpaceID,
 		ProjectID:           req.ProjectID,
 		RawMessagesSnapshot: raw,
+		SkipNoiseGate:       len(req.Timeline) > 0,
 	}
 }
 
