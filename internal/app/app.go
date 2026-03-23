@@ -183,14 +183,12 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// buildLLM builds the target dependency.
-// buildLLM 用于构建目标依赖。
+// buildLLM selects the configured real LLM adapter for intent extraction and other generation flows.
+// buildLLM 用于为意图提取等生成链路选择当前配置的真实 LLM 适配器。
 func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 	// Select the LLM adapter according to the configured provider.
 	// 根据配置的 provider 选择对应的 LLM 适配器。
 	switch strings.ToLower(cfg.LLM.Provider) {
-	case "mock", "memory", "memory_mock":
-		return memory_mock.NewLLMClient(), nil
 	case "openai", "openai_native", "openai_go":
 		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project), nil
 	default:
@@ -198,14 +196,12 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 	}
 }
 
-// buildEmbedding builds the target dependency.
-// buildEmbedding 用于构建目标依赖。
+// buildEmbedding selects the configured real embedding adapter for recall and semantic filtering.
+// buildEmbedding 用于为召回和语义过滤选择当前配置的真实 embedding 适配器。
 func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 	// Select the embedding adapter according to the configured provider.
 	// 根据配置的 provider 选择对应的 embedding 适配器。
 	switch strings.ToLower(cfg.Embedding.Provider) {
-	case "mock", "memory", "memory_mock":
-		return memory_mock.NewEmbeddingClient(cfg.Embedding.Dimension), nil
 	case "openai", "openai_native", "openai_go":
 		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project), nil
 	default:

@@ -158,6 +158,13 @@ func (g *NoiseGate) FilterTurns(ctx context.Context, turns []logicdomain.Normali
 	return kept, decisions
 }
 
+// FilterPersistableTurns exposes the post-action-facing filtering capability without leaking decision details into the app layer.
+// FilterPersistableTurns 用于向 post-action 暴露过滤能力，同时避免把判定细节泄漏到应用层。
+func (g *NoiseGate) FilterPersistableTurns(ctx context.Context, turns []logicdomain.NormalizedTurn) []logicdomain.NormalizedTurn {
+	kept, _ := g.FilterTurns(ctx, turns)
+	return kept
+}
+
 // AllowTurn decides whether one normalized turn is valuable enough to enter long-term storage.
 // AllowTurn 用于判断一条标准化轮次是否有足够价值进入长期存储。
 func (g *NoiseGate) AllowTurn(ctx context.Context, turn logicdomain.NormalizedTurn) NoiseDecision {

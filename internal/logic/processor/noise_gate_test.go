@@ -10,8 +10,9 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
+	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestNoiseGateRegexBlocksAssistantDenial verifies the TestNoiseGateRegexBlocksAssistantDenial behavior.
@@ -41,6 +42,7 @@ func TestNoiseGateRegexBlocksAssistantDenial(t *testing.T) {
 // TestNoiseGateSemanticBlocksMetaQuestion verifies the TestNoiseGateSemanticBlocksMetaQuestion behavior.
 // TestNoiseGateSemanticBlocksMetaQuestion 用于验证 TestNoiseGateSemanticBlocksMetaQuestion 行为。
 func TestNoiseGateSemanticBlocksMetaQuestion(t *testing.T) {
+	testutil.RequireLiveModelAccess(t)
 	gate := mustBuildNoiseGate(t, mustRuleBundles{
 		common: `{
   "language":"common",
@@ -154,16 +156,15 @@ func TestNoiseGateSemanticFallbackAllowsWhenEmbeddingFails(t *testing.T) {
 }`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	embed := memory_mock.NewEmbeddingClient(64)
-	embed.ForceError = context.DeadlineExceeded
+	embed := errorEmbeddingClient{err: context.DeadlineExceeded}
 	gate, err := NewNoiseGate(context.Background(), embed, nil, NoiseGateConfig{
 		SystemDir:         systemDir,
 		DefaultLanguage:   "zh-CN",
 		Enabled:           true,
 		SemanticEnabled:   true,
 		SemanticThreshold: 0.88,
-		Model:             "mock",
-		Dimension:         64,
+		Model:             "text-embedding-3-large",
+		Dimension:         1024,
 	})
 	if err != nil {
 		t.Fatalf("new noise gate: %v", err)
@@ -216,6 +217,16 @@ type mustRuleBundles struct {
 	userLang   string
 }
 
+// errorEmbeddingClient forces one semantic bootstrap failure without depending on the removed in-memory embedding mock.
+// errorEmbeddingClient 用于在不依赖已移除内存 embedding mock 的前提下强制制造一次语义预加载失败。
+type errorEmbeddingClient struct{ err error }
+
+// Embed returns the configured error so fallback behavior can be verified deterministically.
+// Embed 用于返回预设错误，以便确定性验证回退行为。
+func (c errorEmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+	return appports.EmbeddingResponse{}, c.err
+}
+
 // mustBuildNoiseGate creates one gate with temp rule bundles for processor tests.
 // mustBuildNoiseGate 用于为处理器测试创建带临时规则包的门控器。
 func mustBuildNoiseGate(t *testing.T, bundles mustRuleBundles) *NoiseGate {
@@ -249,15 +260,16 @@ func mustBuildNoiseGate(t *testing.T, bundles mustRuleBundles) *NoiseGate {
 			t.Fatal(err)
 		}
 	}
-	gate, err := NewNoiseGate(context.Background(), memory_mock.NewEmbeddingClient(64), nil, NoiseGateConfig{
+	fixture := testutil.MustRealRuntimeFixture(t)
+	gate, err := NewNoiseGate(context.Background(), fixture.Embedding, nil, NoiseGateConfig{
 		SystemDir:         systemDir,
 		UserDir:           userDir,
 		DefaultLanguage:   "zh-CN",
 		Enabled:           true,
 		SemanticEnabled:   true,
 		SemanticThreshold: 0.88,
-		Model:             "mock",
-		Dimension:         64,
+		Model:             fixture.Config.Embedding.Model,
+		Dimension:         fixture.Config.Embedding.Dimension,
 	})
 	if err != nil {
 		t.Fatalf("new noise gate: %v", err)

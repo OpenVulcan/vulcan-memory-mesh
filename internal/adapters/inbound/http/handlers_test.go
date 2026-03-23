@@ -19,17 +19,8 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 	"github.com/openvulcan/vmm/internal/platform/xid"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
-
-// stubPromptSource is a test double that returns deterministic prompt content to handler tests.
-// stubPromptSource 用于作为测试替身，为 handler 测试返回确定性的提示词内容。
-type stubPromptSource struct{}
-
-// GetPrompt executes the GetPrompt logic.
-// GetPrompt 用于执行 GetPrompt 逻辑。
-func (stubPromptSource) GetPrompt(scene, modelName string) (string, error) {
-	return scene + ":" + modelName, nil
-}
 
 // float64Ptr executes the float64Ptr logic.
 // float64Ptr 用于执行 float64Ptr 逻辑。
@@ -37,42 +28,41 @@ func float64Ptr(v float64) *float64 { return &v }
 
 // newTestRouter creates a TestRouter instance.
 // newTestRouter 用于创建 TestRouter 实例。
-func newTestRouter() http.Handler { return newTestRouterWithLogger(nil) }
+func newTestRouter(t *testing.T) http.Handler { return newTestRouterWithLogger(t, nil) }
 
 // newTestRouterWithLogger creates a TestRouterWithLogger instance.
 // newTestRouterWithLogger 用于创建 TestRouterWithLogger 实例。
-func newTestRouterWithLogger(logger *logx.Logger) http.Handler {
+func newTestRouterWithLogger(t *testing.T, logger *logx.Logger) http.Handler {
+	t.Helper()
+	fixture := testutil.MustRealRuntimeFixture(t)
 	ids := xid.NewGenerator()
-	llm := memory_mock.NewLLMClient()
-	embed := memory_mock.NewEmbeddingClient(64)
 	vector := memory_mock.NewVectorStore()
 	rel := memory_mock.NewRelationalStore()
-	prompts := stubPromptSource{}
 	pre := usecase.NewPreCheckUseCase(
-		processor.NewIntentExtractor(llm, prompts, "mock-intent", 5),
-		processor.NewContextAssembler(prompts, "mock-intent"),
-		embed,
+		processor.NewIntentExtractor(fixture.LLM, fixture.Prompts, fixture.Config.LLM.Model, 5),
+		processor.NewContextAssembler(fixture.Prompts, fixture.Config.LLM.Model),
+		fixture.Embedding,
 		vector,
 		memory_mock.NewPersonaProvider(),
 		logger,
-		2*time.Second,
+		20*time.Second,
 		5,
 		5,
 		float64Ptr(0.4),
-		"mock-embedding",
-		64,
+		fixture.Config.Embedding.Model,
+		fixture.Config.Embedding.Dimension,
 	)
 	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), nil, rel, logger)
-	seed := usecase.NewSeedMemoryUseCase(embed, vector, ids, logger, "mock-embedding", 64)
+	seed := usecase.NewSeedMemoryUseCase(fixture.Embedding, vector, ids, logger, fixture.Config.Embedding.Model, fixture.Config.Embedding.Dimension)
 	return NewRouter(Dependencies{
 		IDs:                 ids,
 		PreCheck:            pre,
 		PostAction:          post,
 		SeedMemory:          seed,
 		Logger:              logger,
-		PreCheckTimeout:     3 * time.Second,
+		PreCheckTimeout:     20 * time.Second,
 		PostActionTimeout:   3 * time.Second,
-		SeedMemoryTimeout:   3 * time.Second,
+		SeedMemoryTimeout:   15 * time.Second,
 		MaxRequestBodyBytes: 1 << 20,
 		LogRequestBodies:    true,
 		EnableSeedRoute:     true,
@@ -92,7 +82,7 @@ func (f testChatUseCase) Execute(ctx context.Context, cmd usecase.ChatCommand) (
 // TestPreCheckRejectsNonTextHistoryContent verifies the TestPreCheckRejectsNonTextHistoryContent behavior.
 // TestPreCheckRejectsNonTextHistoryContent 用于验证 TestPreCheckRejectsNonTextHistoryContent 行为。
 func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
-	router := newTestRouter()
+	router := newTestRouter(t)
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"user","content":{"type":"text"}}],"current_content":"hi","is_first_turn":true}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -113,9 +103,10 @@ func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
 // TestSeedThenPreCheckRoundTrip verifies the TestSeedThenPreCheckRoundTrip behavior.
 // TestSeedThenPreCheckRoundTrip 用于验证 TestSeedThenPreCheckRoundTrip 行为。
 func TestSeedThenPreCheckRoundTrip(t *testing.T) {
-	router := newTestRouter()
+	testutil.RequireLiveModelAccess(t)
+	router := newTestRouter(t)
 
-	seedBody, _ := json.Marshal(SeedMemoryRequestDTO{UserID: "u1", ProjectID: "p1", MemoryText: "fastapi backend framework"})
+	seedBody, _ := json.Marshal(SeedMemoryRequestDTO{UserID: "u1", ProjectID: "p1", MemoryText: "fastapi backend framework decision"})
 	seedReq := httptest.NewRequest(http.MethodPost, "/v1/admin/seed-memory", bytes.NewReader(seedBody))
 	seedReq.Header.Set("Content-Type", "application/json")
 	seedRec := httptest.NewRecorder()
@@ -130,7 +121,7 @@ func TestSeedThenPreCheckRoundTrip(t *testing.T) {
 		TeamID:         "t1",
 		ProjectID:      "p1",
 		HistoryContent: []HistorySnippetDTO{},
-		CurrentContent: "我们后端用什么框架？",
+		CurrentContent: "请回忆 fastapi backend framework decision",
 		IsFirstTurn:    false,
 	})
 	preReq := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewReader(preBody))
@@ -293,8 +284,9 @@ func TestPostActionStrictModeRejectsNonTextContent(t *testing.T) {
 // TestPostRequestLogsFullBody verifies the TestPostRequestLogsFullBody behavior.
 // TestPostRequestLogsFullBody 用于验证 TestPostRequestLogsFullBody 行为。
 func TestPostRequestLogsFullBody(t *testing.T) {
+	testutil.RequireLiveModelAccess(t)
 	var logBuf bytes.Buffer
-	router := newTestRouterWithLogger(logx.New(&logBuf, logx.Config{Level: "info", Format: "text"}))
+	router := newTestRouterWithLogger(t, logx.New(&logBuf, logx.Config{Level: "info", Format: "text"}))
 	body := `{
 		"session_id":"sess_123",
 		"user_id":"usr_8899",
@@ -324,7 +316,7 @@ func TestPostRequestLogsFullBody(t *testing.T) {
 // TestRequestTooLargeReturnsCatalogedError verifies the TestRequestTooLargeReturnsCatalogedError behavior.
 // TestRequestTooLargeReturnsCatalogedError 用于验证 TestRequestTooLargeReturnsCatalogedError 行为。
 func TestRequestTooLargeReturnsCatalogedError(t *testing.T) {
-	router := newTestRouter()
+	router := newTestRouter(t)
 	oversized := strings.Repeat("x", (1<<20)+128)
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[],"current_content":"` + oversized + `","is_first_turn":false}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
@@ -346,7 +338,7 @@ func TestRequestTooLargeReturnsCatalogedError(t *testing.T) {
 // TestValidationErrorsReturnCatalogedError verifies the TestValidationErrorsReturnCatalogedError behavior.
 // TestValidationErrorsReturnCatalogedError 用于验证 TestValidationErrorsReturnCatalogedError 行为。
 func TestValidationErrorsReturnCatalogedError(t *testing.T) {
-	router := newTestRouter()
+	router := newTestRouter(t)
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"bad","content":"hello"}],"current_content":"hi","is_first_turn":false}`
 	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
@@ -370,7 +362,7 @@ func TestValidationErrorsReturnCatalogedError(t *testing.T) {
 // TestNotFoundCarriesTraceID verifies the TestNotFoundCarriesTraceID behavior.
 // TestNotFoundCarriesTraceID 用于验证 TestNotFoundCarriesTraceID 行为。
 func TestNotFoundCarriesTraceID(t *testing.T) {
-	router := newTestRouter()
+	router := newTestRouter(t)
 	req := httptest.NewRequest(http.MethodGet, "/not-found", nil)
 	req.Header.Set("X-Trace-ID", "trace-fixed")
 	rec := httptest.NewRecorder()

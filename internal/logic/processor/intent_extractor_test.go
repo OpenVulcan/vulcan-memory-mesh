@@ -1,47 +1,18 @@
-// intent_extractor_test.go implements reusable business processors.
-// intent_extractor_test.go 用于实现可复用的业务处理器。
+// intent_extractor_test.go keeps parser-level assertions deterministic while real-model coverage lives in higher-level integration tests.
+// intent_extractor_test.go 用于保持解析器级断言的确定性，而真实模型覆盖交由更高层集成测试承担。
 package processor
 
 import (
-	"context"
 	"errors"
 	"testing"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
-// testPromptSource is a deterministic prompt source used by intent extractor unit tests.
-// testPromptSource 用于作为意图提取器单元测试中的确定性提示词来源。
-type testPromptSource struct{}
-
-// GetPrompt executes the GetPrompt logic.
-// GetPrompt 用于执行 GetPrompt 逻辑。
-func (testPromptSource) GetPrompt(scene, modelName string) (string, error) {
-	return "prompt:" + scene + ":" + modelName, nil
-}
-
-// testLLMClient is a controllable LLM test double used to feed structured and malformed responses.
-// testLLMClient 用于作为可控的 LLM 测试替身，注入结构化或异常响应。
-type testLLMClient struct {
-	content string
-	err     error
-}
-
-// Generate executes the Generate logic.
-// Generate 用于执行 Generate 逻辑。
-func (c testLLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
-	if c.err != nil {
-		return appports.LLMResponse{}, c.err
-	}
-	return appports.LLMResponse{Content: c.content}, nil
-}
-
-// TestIntentExtractorParsesVikingStyleMarkdownJSON verifies the TestIntentExtractorParsesVikingStyleMarkdownJSON behavior.
-// TestIntentExtractorParsesVikingStyleMarkdownJSON 用于验证 TestIntentExtractorParsesVikingStyleMarkdownJSON 行为。
-func TestIntentExtractorParsesVikingStyleMarkdownJSON(t *testing.T) {
-	extractor := NewIntentExtractor(testLLMClient{content: "analysis...\n```json\n{\n  \"keywords\": [\"go\", \"memory\", \"go\"],\n  \"need_memory\": true,\n  \"reason\": \"match user question\"\n}\n```\nextra"}, testPromptSource{}, "mock", 5)
-	intent, err := extractor.Extract(context.Background(), []logicdomain.HistorySnippet{{Role: "user", Content: "hello"}}, "go memory")
+// TestParseIntentResponseParsesMarkdownJSON verifies that fenced JSON model output is accepted and de-duplicated correctly.
+// TestParseIntentResponseParsesMarkdownJSON 用于验证带 fenced code 的 JSON 模型输出能被正确解析并去重。
+func TestParseIntentResponseParsesMarkdownJSON(t *testing.T) {
+	intent, err := parseIntentResponse("analysis...\n```json\n{\n  \"keywords\": [\"go\", \"memory\", \"go\"],\n  \"need_memory\": true,\n  \"reason\": \"match user question\"\n}\n```\nextra")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -56,19 +27,18 @@ func TestIntentExtractorParsesVikingStyleMarkdownJSON(t *testing.T) {
 	}
 }
 
-// TestIntentExtractorRejectsInvalidJSON verifies the TestIntentExtractorRejectsInvalidJSON behavior.
-// TestIntentExtractorRejectsInvalidJSON 用于验证 TestIntentExtractorRejectsInvalidJSON 行为。
-func TestIntentExtractorRejectsInvalidJSON(t *testing.T) {
-	extractor := NewIntentExtractor(testLLMClient{content: "```json\n[1,2,3]\n```"}, testPromptSource{}, "mock", 5)
-	_, err := extractor.Extract(context.Background(), nil, "hello")
+// TestParseIntentResponseRejectsInvalidJSON verifies that malformed payloads are surfaced as InvalidLLMOutputError values.
+// TestParseIntentResponseRejectsInvalidJSON 用于验证畸形载荷会被识别为 InvalidLLMOutputError。
+func TestParseIntentResponseRejectsInvalidJSON(t *testing.T) {
+	_, err := parseIntentResponse("```json\n[1,2,3]\n```")
 	var invalid logicdomain.InvalidLLMOutputError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("expected InvalidLLMOutputError, got %v", err)
 	}
 }
 
-// TestStripMarkdownFences verifies the TestStripMarkdownFences behavior.
-// TestStripMarkdownFences 用于验证 TestStripMarkdownFences 行为。
+// TestStripMarkdownFences verifies that helper-level fence stripping keeps the bare JSON body.
+// TestStripMarkdownFences 用于验证围栏剥离辅助函数会保留纯净 JSON 内容。
 func TestStripMarkdownFences(t *testing.T) {
 	got := stripMarkdownFences("```JSON\n{\"k\":1}\n```")
 	if got != "{\"k\":1}" {

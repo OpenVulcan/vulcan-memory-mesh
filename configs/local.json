@@ -1,6 +1,6 @@
 {
   "http": {
-    "listen_addr": "127.0.0.1:8080",
+    "listen_addr": "127.0.0.1:17625",
     "max_request_body_bytes": 1048576,
     "request_timeout": {
       "chat": "3s",
@@ -43,7 +43,7 @@
   },
   "embedding": {
     "provider": "openai",
-    "endpoint": "${OPENAI_BASE_URL}",
+    "endpoint": "${OPENAI_EMBEDDING_URL}",
     "api_key": "${OPENAI_API_KEY}",
     "model": "${OPENAI_EMBEDDING_MODEL}",
     "dimension": 1024,

@@ -51,6 +51,12 @@ type RelationalStore interface {
 	Shutdowner
 }
 
+// NoiseTurnFilter is the port used by post-action flows to drop noisy normalized turns before relational persistence.
+// NoiseTurnFilter 用于让 post-action 流程在关系持久化前过滤掉噪声标准化轮次。
+type NoiseTurnFilter interface {
+	FilterPersistableTurns(ctx context.Context, turns []logicdomain.NormalizedTurn) []logicdomain.NormalizedTurn
+}
+
 // MemoryArchiveStore is the port used by the /chat archive flow to persist scrubbed messages without storing raw PII.
 // MemoryArchiveStore 用于让 /chat 归档流程在不保存原始敏感信息的前提下持久化已脱敏消息。
 type MemoryArchiveStore interface {

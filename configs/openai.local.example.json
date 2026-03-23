@@ -1,6 +1,6 @@
 {
   "http": {
-    "listen_addr": "127.0.0.1:8080",
+    "listen_addr": "127.0.0.1:17625",
     "max_request_body_bytes": 1048576,
     "request_timeout": {
       "chat": "3s",

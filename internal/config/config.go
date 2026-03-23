@@ -202,8 +202,8 @@ func DefaultLocal() Config {
 		PII:            PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:          NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		Archive:        ArchiveConfig{Provider: "sqlite", Path: "../data/vmm.db"},
-		LLM:            LLMConfig{Provider: "mock", Model: "mock-intent-fast"},
-		Embedding:      EmbeddingConfig{Provider: "mock", Model: "mock-embedding-v1", Dimension: 64},
+		LLM:            LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
+		Embedding:      EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
 		Vector:         VectorConfig{Provider: "memory"},
 		Relational:     RelationalConfig{Provider: "memory"},
 		PostAction:     PostActionConfig{InputMode: "compat"},
@@ -388,8 +388,8 @@ func (c *Config) Normalize() {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(0.75)
 		}
 	}
-	if c.Embedding.Dimension <= 0 && strings.EqualFold(c.Embedding.Provider, "mock") {
-		c.Embedding.Dimension = 64
+	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
+		c.Embedding.Dimension = 1024
 	}
 	if strings.TrimSpace(c.Logging.Level) == "" {
 		c.Logging.Level = "info"
@@ -482,6 +482,33 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.LLM.Provider) == "" || strings.TrimSpace(c.Embedding.Provider) == "" || strings.TrimSpace(c.Vector.Provider) == "" || strings.TrimSpace(c.Relational.Provider) == "" {
 		return errors.New("provider fields are required")
+	}
+	if !isOpenAIProvider(c.LLM.Provider) {
+		return errors.New("llm.provider must use one openai-compatible provider")
+	}
+	if !isOpenAIProvider(c.Embedding.Provider) {
+		return errors.New("embedding.provider must use one openai-compatible provider")
+	}
+	if strings.TrimSpace(c.LLM.Endpoint) == "" {
+		return errors.New("llm.endpoint is required")
+	}
+	if strings.TrimSpace(c.LLM.APIKey) == "" {
+		return errors.New("llm.api_key is required")
+	}
+	if strings.TrimSpace(c.LLM.Model) == "" {
+		return errors.New("llm.model is required")
+	}
+	if strings.TrimSpace(c.Embedding.Endpoint) == "" {
+		return errors.New("embedding.endpoint is required")
+	}
+	if strings.TrimSpace(c.Embedding.APIKey) == "" {
+		return errors.New("embedding.api_key is required")
+	}
+	if strings.TrimSpace(c.Embedding.Model) == "" {
+		return errors.New("embedding.model is required")
+	}
+	if c.Embedding.Dimension <= 0 {
+		return errors.New("embedding.dimension must be > 0")
 	}
 	switch c.PostAction.InputMode {
 	case "strict", "compat":
@@ -589,5 +616,16 @@ func setInt64(k string, target *int64) {
 		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
 			*target = n
 		}
+	}
+}
+
+// isOpenAIProvider reports whether one provider alias resolves to the supported OpenAI-compatible adapter.
+// isOpenAIProvider 用于判断某个 provider 别名是否会落到当前支持的 OpenAI 兼容适配器。
+func isOpenAIProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openai", "openai_native", "openai_go":
+		return true
+	default:
+		return false
 	}
 }

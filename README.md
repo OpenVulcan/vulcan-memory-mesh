@@ -35,7 +35,7 @@ scripts/
 - `cmd/vmm-local` 本地启动入口
 - `MockPersonaProvider`
 - 内存向量库 / 内存关系库存根实现
-- OpenAI 兼容原生 LLM / Embedding 适配器
+- OpenAI 兼容原生 LLM / Embedding 适配器（运行时不再提供 mock 模型）
 - TraceID / Recovery / 请求日志中间件
 - 路由级超时控制
 - 优雅停机顺序
@@ -75,19 +75,22 @@ scripts/
 
 ## 启动示例
 
-### local
+### 标准构建与运行
 
 ```bash
-go run ./cmd/vmm-local/main.go -config configs/local.json
+./make.ps1 build
+./output/bin/vmm-local.exe
 ```
 
-### OpenAI
+### 用户覆盖目录
 
 ```bash
-go run ./cmd/vmm-local/main.go -config configs/openai.local.example.json
+./output/bin/vmm-local.exe -config ~/.vmm
 ```
 
-`llm.provider` 与 `embedding.provider` 可配置为 `openai`、`openai_go` 或 `openai_native`。如果你需要显式透传组织或项目头，可以使用 `organization` 和 `project` 字段；任何 OpenAI-compatible endpoint 都可以直接通过 `endpoint` 接入。
+`-config` 现在表示“覆盖根目录”，不是单个配置文件路径。标准运行时会先读取 `output/configs/local.json`，再叠加 `~/.vmm/local.json` 或 `-config` 指向目录中的 `local.json`。
+
+`llm.provider` 与 `embedding.provider` 当前都必须使用 `openai`、`openai_go` 或 `openai_native`。如果你需要显式透传组织或项目头，可以使用 `organization` 和 `project` 字段；任何 OpenAI-compatible endpoint 都可以直接通过 `endpoint` 接入。
 
 ### post-action 入口模式
 
@@ -120,6 +123,11 @@ go run ./cmd/vmm-local/main.go -config configs/openai.local.example.json
 ```bash
 go test ./...
 ```
+
+如果你要验证真实模型链路，请先确保：
+
+- `output/configs/local.json` 已配置为 OpenAI-compatible provider
+- `output/configs/.env` 已存在并包含可用的 API Key / Base URL / Model
 
 ## 说明
 

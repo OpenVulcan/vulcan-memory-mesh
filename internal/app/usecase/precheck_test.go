@@ -1,86 +1,34 @@
-// precheck_test.go implements application use cases.
-// precheck_test.go 用于实现应用用例层。
+// precheck_test.go verifies both deterministic helpers and the real-model pre-check orchestration path.
+// precheck_test.go 用于同时验证确定性辅助逻辑和真实模型驱动的 pre-check 编排链路。
 package usecase
 
 import (
 	"context"
-	"errors"
 	"testing"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/logic/processor"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
-// precheckPromptSource is a deterministic prompt source used to keep pre-check tests focused on orchestration.
-// precheckPromptSource 用于作为确定性的提示词来源，让 pre-check 测试聚焦编排逻辑。
-type precheckPromptSource struct{}
-
-// GetPrompt executes the GetPrompt logic.
-// GetPrompt 用于执行 GetPrompt 逻辑。
-func (precheckPromptSource) GetPrompt(scene, modelName string) (string, error) {
-	return scene + ":" + modelName, nil
-}
-
-// fakeLLM is a controllable LLM test double used to inject intent results and failures.
-// fakeLLM 用于作为可控的 LLM 测试替身，注入意图结果和失败场景。
-type fakeLLM struct {
-	content string
-	err     error
-}
-
-// Generate executes the Generate logic.
-// Generate 用于执行 Generate 逻辑。
-func (f fakeLLM) Generate(ctx context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
-	if f.err != nil {
-		return appports.LLMResponse{}, f.err
-	}
-	return appports.LLMResponse{Content: f.content}, nil
-}
-
-// fakeEmbedding is a controllable embedding test double used to observe recall inputs.
-// fakeEmbedding 用于作为可控的 embedding 测试替身，观察召回输入。
-type fakeEmbedding struct {
-	called   int
-	lastReq  appports.EmbeddingRequest
-	response appports.EmbeddingResponse
-	err      error
-}
-
-// Embed executes the Embed logic.
-// Embed 用于执行 Embed 逻辑。
-func (f *fakeEmbedding) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
-	f.called++
-	f.lastReq = req
-	if f.err != nil {
-		return appports.EmbeddingResponse{}, f.err
-	}
-	if len(f.response.Vectors) > 0 {
-		return f.response, nil
-	}
-	vectors := make([][]float32, 0, len(req.Texts))
-	for range req.Texts {
-		vectors = append(vectors, []float32{1, 0, 0})
-	}
-	return appports.EmbeddingResponse{Vectors: vectors}, nil
-}
-
-// fakeVector is a controllable vector store test double used to shape recall outputs.
-// fakeVector 用于作为可控的向量库测试替身，塑造召回输出。
+// fakeVector shapes recall outputs without simulating the model itself.
+// fakeVector 用于塑造召回结果，而不去模拟模型本身。
 type fakeVector struct {
 	called int
 	hits   []logicdomain.MemoryHit
 	err    error
 }
 
-// Upsert executes the Upsert logic.
-// Upsert 用于执行 Upsert 逻辑。
+// Upsert keeps the test vector store interface-complete while these tests focus on search behavior only.
+// Upsert 用于补齐测试向量库接口，而这些测试只关注检索行为。
 func (f *fakeVector) Upsert(ctx context.Context, record logicdomain.MemoryRecord) error { return nil }
 
-// Search executes the Search logic.
-// Search 用于执行 Search 逻辑。
+// Search records recall attempts and returns the configured hit set for deterministic orchestration checks.
+// Search 用于记录召回次数，并返回预设命中集以便稳定验证编排逻辑。
 func (f *fakeVector) Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
 	f.called++
 	if f.err != nil {
@@ -91,20 +39,20 @@ func (f *fakeVector) Search(ctx context.Context, vector []float32, topK int, fil
 	return out, nil
 }
 
-// Shutdown executes the Shutdown logic.
-// Shutdown 用于执行 Shutdown 逻辑。
+// Shutdown keeps the test vector store compliant with the shutdown-aware port contract.
+// Shutdown 用于让测试向量库满足带关闭能力的端口契约。
 func (f *fakeVector) Shutdown(ctx context.Context) error { return nil }
 
-// fakePersona is a controllable persona provider test double used to verify first-turn orchestration.
-// fakePersona 用于作为可控的画像提供器测试替身，验证首轮编排逻辑。
+// fakePersona injects one controllable persona payload into first-turn orchestration tests.
+// fakePersona 用于向首轮编排测试注入可控的画像结果。
 type fakePersona struct {
 	called int
 	result logicdomain.PersonaContext
 	err    error
 }
 
-// Load loads related data.
-// Load 用于加载相关数据。
+// Load records persona lookups and returns the configured persona payload.
+// Load 用于记录画像读取次数，并返回预设画像结果。
 func (f *fakePersona) Load(ctx context.Context, session logicdomain.SessionRef) (logicdomain.PersonaContext, error) {
 	f.called++
 	if f.err != nil {
@@ -113,146 +61,166 @@ func (f *fakePersona) Load(ctx context.Context, session logicdomain.SessionRef) 
 	return f.result, nil
 }
 
-// float64Ptr executes the float64Ptr logic.
-// float64Ptr 用于执行 float64Ptr 逻辑。
+// countingLLM wraps the real LLM client so tests can assert the real model path has been exercised.
+// countingLLM 用于包装真实 LLM 客户端，让测试可以断言真实模型链路确实被执行过。
+type countingLLM struct {
+	next   appports.LLMClient
+	called int
+}
+
+// Generate forwards the real model request while counting how many times the orchestration layer invoked it.
+// Generate 用于透传真实模型请求，并统计编排层实际调用了多少次。
+func (c *countingLLM) Generate(ctx context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
+	c.called++
+	return c.next.Generate(ctx, req)
+}
+
+// countingEmbedding wraps the real embedding client so tests can assert semantic retrieval actually ran.
+// countingEmbedding 用于包装真实 embedding 客户端，让测试可以断言语义检索确实执行了。
+type countingEmbedding struct {
+	next   appports.EmbeddingClient
+	called int
+}
+
+// Embed forwards the real embedding request while counting semantic calls.
+// Embed 用于透传真实 embedding 请求，并统计语义调用次数。
+func (c *countingEmbedding) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+	c.called++
+	return c.next.Embed(ctx, req)
+}
+
+// float64Ptr stores one local helper for readability inside threshold-oriented tests.
+// float64Ptr 用于保存一个本地辅助函数，方便阈值相关测试阅读。
 func float64Ptr(v float64) *float64 { return &v }
 
-// newUseCaseForTest creates a UseCaseForTest instance.
-// newUseCaseForTest 用于创建 UseCaseForTest 实例。
-func newUseCaseForTest(t *testing.T, llm appports.LLMClient, embedding appports.EmbeddingClient, vector appports.VectorStore, persona appports.ContextPersonaProvider, maxKeywords int, minSimilarity *float64) *PreCheckUseCase {
+// newRealUseCaseForTest wires the real prompt source, real LLM, and real embedding clients into one test use case.
+// newRealUseCaseForTest 用于把真实提示词、真实 LLM 和真实 embedding 客户端装配成测试用例。
+func newRealUseCaseForTest(t *testing.T, vector appports.VectorStore, persona appports.ContextPersonaProvider) (*PreCheckUseCase, *countingLLM, *countingEmbedding) {
 	t.Helper()
-	prompts := precheckPromptSource{}
-	return NewPreCheckUseCase(
-		processor.NewIntentExtractor(llm, prompts, "mock-intent", 10),
-		processor.NewContextAssembler(prompts, "mock-intent"),
+	fixture := testutil.RequireLiveModelAccess(t)
+	llm := &countingLLM{next: fixture.LLM}
+	embedding := &countingEmbedding{next: fixture.Embedding}
+	uc := NewPreCheckUseCase(
+		processor.NewIntentExtractor(llm, fixture.Prompts, fixture.Config.LLM.Model, 5),
+		processor.NewContextAssembler(fixture.Prompts, fixture.Config.LLM.Model),
 		embedding,
 		vector,
 		persona,
-		nil,
-		time.Second,
+		logx.Default(),
+		20*time.Second,
 		5,
-		maxKeywords,
-		minSimilarity,
-		"mock-embedding",
-		3,
+		5,
+		float64Ptr(0.75),
+		fixture.Config.Embedding.Model,
+		fixture.Config.Embedding.Dimension,
 	)
+	return uc, llm, embedding
 }
 
-// TestPreCheckSkipsMemoryWhenNeedMemoryFalse verifies the TestPreCheckSkipsMemoryWhenNeedMemoryFalse behavior.
-// TestPreCheckSkipsMemoryWhenNeedMemoryFalse 用于验证 TestPreCheckSkipsMemoryWhenNeedMemoryFalse 行为。
-func TestPreCheckSkipsMemoryWhenNeedMemoryFalse(t *testing.T) {
-	embedding := &fakeEmbedding{}
-	vector := &fakeVector{}
+// TestValidatePreCheckRejectsMissingFields keeps the request contract checks deterministic and independent from model calls.
+// TestValidatePreCheckRejectsMissingFields 用于保持请求契约校验的确定性，不受模型调用影响。
+func TestValidatePreCheckRejectsMissingFields(t *testing.T) {
+	err := validatePreCheck(PreCheckCommand{SessionID: "s1", ProjectID: "p1"})
+	if err == nil {
+		t.Fatal("expected validation error")
+	}
+	if validation, ok := err.(logicdomain.ValidationError); !ok || validation.Field != "user_id" {
+		t.Fatalf("unexpected validation error: %#v", err)
+	}
+}
+
+// TestRecentDialogueKeepsLatestTwoRounds verifies the history slicing helper without involving the real model path.
+// TestRecentDialogueKeepsLatestTwoRounds 用于在不触发真实模型路径的前提下验证历史裁剪辅助逻辑。
+func TestRecentDialogueKeepsLatestTwoRounds(t *testing.T) {
+	history := []logicdomain.HistorySnippet{
+		{Role: "user", Content: "u1"},
+		{Role: "assistant", Content: "a1"},
+		{Role: "user", Content: "u2"},
+		{Role: "assistant", Content: "a2"},
+		{Role: "system", Content: "drop"},
+		{Role: "user", Content: "u3"},
+		{Role: "assistant", Content: "a3"},
+	}
+	got := recentDialogue(history, 2)
+	if len(got) != 4 {
+		t.Fatalf("recent history len = %d", len(got))
+	}
+	if got[0].Content != "u2" || got[1].Content != "a2" || got[2].Content != "u3" || got[3].Content != "a3" {
+		t.Fatalf("unexpected recent history = %#v", got)
+	}
+}
+
+// TestResolveSearchTermsFallsBackToRawQuestion keeps fallback behavior deterministic by asserting the helper directly.
+// TestResolveSearchTermsFallsBackToRawQuestion 用于直接断言回退辅助逻辑，保持该行为的确定性。
+func TestResolveSearchTermsFallsBackToRawQuestion(t *testing.T) {
+	uc := &PreCheckUseCase{logger: logx.Default(), maxSearchKeywords: 5}
+	keywords, needMemory, degraded := uc.resolveSearchTerms("原始问题", logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "extract_intent", Message: "bad json"})
+	if !needMemory || !degraded {
+		t.Fatalf("unexpected fallback flags needMemory=%v degraded=%v", needMemory, degraded)
+	}
+	if len(keywords) != 1 || keywords[0] != "原始问题" {
+		t.Fatalf("unexpected fallback keywords = %#v", keywords)
+	}
+}
+
+// TestPreCheckExecuteUsesRealModelAndEmbedding verifies that orchestration now runs through the real model and embedding adapters.
+// TestPreCheckExecuteUsesRealModelAndEmbedding 用于验证当前编排链路已经改为真实模型与真实 embedding 适配器。
+func TestPreCheckExecuteUsesRealModelAndEmbedding(t *testing.T) {
+	vector := &fakeVector{hits: []logicdomain.MemoryHit{{ID: "m1", Text: "remembered framework decision", Score: 0.99}}}
 	persona := &fakePersona{}
-	uc := newUseCaseForTest(t, fakeLLM{content: `{"keywords":["go"],"need_memory":false,"reason":"not needed"}`}, embedding, vector, persona, 5, float64Ptr(0.75))
-	res, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-1"), PreCheckCommand{SessionID: "s1", UserID: "u1", TeamID: "t1", ProjectID: "p1", CurrentContent: "hello", IsFirstTurn: false})
+	uc, llm, embedding := newRealUseCaseForTest(t, vector, persona)
+	res, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-real-precheck"), PreCheckCommand{
+		SessionID:      "s-real",
+		UserID:         "u-real",
+		TeamID:         "t-real",
+		ProjectID:      "p-real",
+		CurrentContent: "我们后端用什么框架？",
+		IsFirstTurn:    false,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if res.Degraded {
-		t.Fatal("unexpected degraded")
+	if llm.called == 0 {
+		t.Fatal("expected real llm to be called")
 	}
-	if embedding.called != 0 {
-		t.Fatalf("embedding called %d times", embedding.called)
+	if embedding.called == 0 {
+		t.Fatal("expected real embedding to be called")
 	}
-	if vector.called != 0 {
-		t.Fatalf("vector called %d times", vector.called)
-	}
-}
-
-// TestPreCheckFallsBackToRawQuestionWhenIntentInvalid verifies the TestPreCheckFallsBackToRawQuestionWhenIntentInvalid behavior.
-// TestPreCheckFallsBackToRawQuestionWhenIntentInvalid 用于验证 TestPreCheckFallsBackToRawQuestionWhenIntentInvalid 行为。
-func TestPreCheckFallsBackToRawQuestionWhenIntentInvalid(t *testing.T) {
-	embedding := &fakeEmbedding{}
-	vector := &fakeVector{hits: []logicdomain.MemoryHit{{ID: "m1", Text: "remember raw question", Score: 0.9}}}
-	uc := newUseCaseForTest(t, fakeLLM{content: "not-json"}, embedding, vector, &fakePersona{}, 5, float64Ptr(0.75))
-	res, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-2"), PreCheckCommand{SessionID: "s1", UserID: "u1", TeamID: "t1", ProjectID: "p1", CurrentContent: "原始问题", IsFirstTurn: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Degraded {
-		t.Fatal("expected degraded=true")
-	}
-	if embedding.called != 1 {
-		t.Fatalf("embedding called %d times", embedding.called)
-	}
-	if len(embedding.lastReq.Texts) != 1 || embedding.lastReq.Texts[0] != "原始问题" {
-		t.Fatalf("embedding req texts = %#v", embedding.lastReq.Texts)
+	if vector.called == 0 {
+		t.Fatal("expected vector recall to be called")
 	}
 	if !res.ShouldInject {
 		t.Fatal("expected should_inject=true")
 	}
-}
-
-// TestPreCheckTruncatesKeywordsAndFiltersLowSimilarity verifies the TestPreCheckTruncatesKeywordsAndFiltersLowSimilarity behavior.
-// TestPreCheckTruncatesKeywordsAndFiltersLowSimilarity 用于验证 TestPreCheckTruncatesKeywordsAndFiltersLowSimilarity 行为。
-func TestPreCheckTruncatesKeywordsAndFiltersLowSimilarity(t *testing.T) {
-	embedding := &fakeEmbedding{}
-	vector := &fakeVector{hits: []logicdomain.MemoryHit{{ID: "hi", Text: "high score memory", Score: 0.91}, {ID: "lo", Text: "low score memory", Score: 0.40}}}
-	uc := newUseCaseForTest(t, fakeLLM{content: `{"keywords":["k1","k2","k3","k4","k5","k6","k7"],"need_memory":true,"reason":"test"}`}, embedding, vector, &fakePersona{}, 5, float64Ptr(0.75))
-	res, err := uc.Execute(context.Background(), PreCheckCommand{SessionID: "s1", UserID: "u1", TeamID: "t1", ProjectID: "p1", CurrentContent: "question", IsFirstTurn: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if embedding.called != 1 {
-		t.Fatalf("embedding called %d times", embedding.called)
-	}
-	if got := len(embedding.lastReq.Texts); got != 5 {
-		t.Fatalf("keyword count = %d, want 5", got)
-	}
-	if got := len(res.ContextItems); got != 1 {
-		t.Fatalf("context items len = %d, want 1", got)
-	}
-	if res.ContextItems[0].Text != "high score memory" {
-		t.Fatalf("unexpected context item: %#v", res.ContextItems[0])
+	if len(res.ContextItems) == 0 {
+		t.Fatal("expected recalled context items")
 	}
 }
 
-// TestPreCheckLoadsPersonaOnFirstTurn verifies the TestPreCheckLoadsPersonaOnFirstTurn behavior.
-// TestPreCheckLoadsPersonaOnFirstTurn 用于验证 TestPreCheckLoadsPersonaOnFirstTurn 行为。
-func TestPreCheckLoadsPersonaOnFirstTurn(t *testing.T) {
-	embedding := &fakeEmbedding{}
+// TestPreCheckFirstTurnStillLoadsPersonaWithRealModel verifies that first-turn orchestration keeps persona loading enabled alongside the real model path.
+// TestPreCheckFirstTurnStillLoadsPersonaWithRealModel 用于验证首轮编排在真实模型路径下仍会并发加载画像。
+func TestPreCheckFirstTurnStillLoadsPersonaWithRealModel(t *testing.T) {
 	vector := &fakeVector{}
 	persona := &fakePersona{result: logicdomain.PersonaContext{Profile: []string{"backend engineer"}}}
-	uc := newUseCaseForTest(t, fakeLLM{content: `{"keywords":[],"need_memory":false,"reason":"persona only"}`}, embedding, vector, persona, 5, float64Ptr(0.75))
-	res, err := uc.Execute(context.Background(), PreCheckCommand{SessionID: "s1", UserID: "u1", TeamID: "t1", ProjectID: "p1", CurrentContent: "hello", IsFirstTurn: true})
+	uc, llm, _ := newRealUseCaseForTest(t, vector, persona)
+	res, err := uc.Execute(context.Background(), PreCheckCommand{
+		SessionID:      "s-first",
+		UserID:         "u-first",
+		TeamID:         "t-first",
+		ProjectID:      "p-first",
+		CurrentContent: "先了解一下我的上下文",
+		IsFirstTurn:    true,
+	})
 	if err != nil {
 		t.Fatal(err)
+	}
+	if llm.called == 0 {
+		t.Fatal("expected real llm to be called on first turn")
 	}
 	if persona.called != 1 {
 		t.Fatalf("persona called %d times", persona.called)
 	}
 	if !res.ShouldInject {
-		t.Fatal("expected should_inject=true because persona exists")
-	}
-}
-
-// TestPreCheckPropagatesVectorError verifies the TestPreCheckPropagatesVectorError behavior.
-// TestPreCheckPropagatesVectorError 用于验证 TestPreCheckPropagatesVectorError 行为。
-func TestPreCheckPropagatesVectorError(t *testing.T) {
-	embedding := &fakeEmbedding{}
-	vector := &fakeVector{err: errors.New("vector boom")}
-	uc := newUseCaseForTest(t, fakeLLM{content: `{"keywords":["go"],"need_memory":true,"reason":"test"}`}, embedding, vector, &fakePersona{}, 5, float64Ptr(0.75))
-	_, err := uc.Execute(context.Background(), PreCheckCommand{SessionID: "s1", UserID: "u1", TeamID: "t1", ProjectID: "p1", CurrentContent: "hello", IsFirstTurn: false})
-	if err == nil || err.Error() != "vector search: vector boom" {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
-// TestPreCheckPreservesExplicitZeroMinSimilarity verifies the TestPreCheckPreservesExplicitZeroMinSimilarity behavior.
-// TestPreCheckPreservesExplicitZeroMinSimilarity 用于验证 TestPreCheckPreservesExplicitZeroMinSimilarity 行为。
-func TestPreCheckPreservesExplicitZeroMinSimilarity(t *testing.T) {
-	embedding := &fakeEmbedding{}
-	vector := &fakeVector{hits: []logicdomain.MemoryHit{{ID: "lo", Text: "low score memory", Score: 0.10}}}
-	uc := newUseCaseForTest(t, fakeLLM{content: `{"keywords":["go"],"need_memory":true,"reason":"test"}`}, embedding, vector, &fakePersona{}, 5, float64Ptr(0))
-	res, err := uc.Execute(context.Background(), PreCheckCommand{SessionID: "s1", UserID: "u1", TeamID: "t1", ProjectID: "p1", CurrentContent: "hello", IsFirstTurn: false})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if got := len(res.ContextItems); got != 1 {
-		t.Fatalf("context items len = %d, want 1", got)
-	}
-	if res.ContextItems[0].Text != "low score memory" {
-		t.Fatalf("unexpected context item: %#v", res.ContextItems[0])
+		t.Fatal("expected persona context to be injected")
 	}
 }

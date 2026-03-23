@@ -4,7 +4,9 @@ package memory_mock
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -77,6 +79,38 @@ func matchFilter(record, target logicdomain.SearchFilter) bool {
 	projectOK := target.ProjectID == "" || record.ProjectID == target.ProjectID
 	spaceOK := target.SpaceID == "" || record.SpaceID == "" || record.SpaceID == target.SpaceID
 	return userOK && projectOK && spaceOK
+}
+
+// cosine computes one cosine score for the in-memory vector store without depending on the removed embedding mock.
+// cosine 用于在不依赖已移除 embedding mock 的前提下，为内存向量库计算一次余弦相似度。
+func cosine(a, b []float32) (float64, error) {
+	if len(a) != len(b) {
+		return 0, errors.New("vector dimensions mismatch")
+	}
+	var dot float64
+	for i := range a {
+		dot += float64(a[i] * b[i])
+	}
+	return dot, nil
+}
+
+// normalizeVector converts one raw vector into unit length so vector-store tests can use literal semantic fixtures.
+// normalizeVector 用于把原始向量归一成单位长度，方便向量库测试直接使用字面语义向量。
+func normalizeVector(vector []float32) []float32 {
+	out := make([]float32, len(vector))
+	copy(out, vector)
+	var sum float64
+	for _, item := range out {
+		sum += float64(item * item)
+	}
+	if sum == 0 {
+		return out
+	}
+	norm := float32(math.Sqrt(sum))
+	for idx := range out {
+		out[idx] /= norm
+	}
+	return out
 }
 
 // Shutdown executes the Shutdown logic.

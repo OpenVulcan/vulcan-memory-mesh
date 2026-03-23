@@ -11,7 +11,7 @@ import (
 // TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp verifies the TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp behavior.
 // TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp 用于验证 TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp 行为。
 func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
-	cfg := DefaultLocal()
+	cfg := newValidConfigForTest()
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
 	cfg.PreCheck.SimilarityThreshold = 0.82
@@ -43,7 +43,7 @@ func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
 // TestConfigValidateRequiresTLSFiles verifies the TestConfigValidateRequiresTLSFiles behavior.
 // TestConfigValidateRequiresTLSFiles 用于验证 TestConfigValidateRequiresTLSFiles 行为。
 func TestConfigValidateRequiresTLSFiles(t *testing.T) {
-	cfg := DefaultLocal()
+	cfg := newValidConfigForTest()
 	cfg.HTTP.TLS.Enabled = true
 	cfg.HTTP.TLS.CertFile = ""
 	cfg.HTTP.TLS.KeyFile = "server.key"
@@ -61,7 +61,7 @@ func TestConfigValidateRequiresTLSFiles(t *testing.T) {
 // TestConfigNormalizeDefaultsPostActionInputMode verifies the TestConfigNormalizeDefaultsPostActionInputMode behavior.
 // TestConfigNormalizeDefaultsPostActionInputMode 用于验证 TestConfigNormalizeDefaultsPostActionInputMode 行为。
 func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
-	cfg := DefaultLocal()
+	cfg := newValidConfigForTest()
 	cfg.PostAction.InputMode = ""
 	cfg.Noise.DefaultLanguage = ""
 	cfg.Noise.SemanticThreshold = 0
@@ -80,7 +80,7 @@ func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
 // TestConfigValidateRejectsUnknownPostActionMode verifies the TestConfigValidateRejectsUnknownPostActionMode behavior.
 // TestConfigValidateRejectsUnknownPostActionMode 用于验证 TestConfigValidateRejectsUnknownPostActionMode 行为。
 func TestConfigValidateRejectsUnknownPostActionMode(t *testing.T) {
-	cfg := DefaultLocal()
+	cfg := newValidConfigForTest()
 	cfg.PostAction.InputMode = "broken"
 	if err := cfg.Validate(); err == nil || err.Error() != "post_action.input_mode must be either strict or compat" {
 		t.Fatalf("unexpected validate error: %v", err)
@@ -90,7 +90,7 @@ func TestConfigValidateRejectsUnknownPostActionMode(t *testing.T) {
 // TestConfigValidateRejectsNoiseThresholdOutsideRange verifies the TestConfigValidateRejectsNoiseThresholdOutsideRange behavior.
 // TestConfigValidateRejectsNoiseThresholdOutsideRange 用于验证 TestConfigValidateRejectsNoiseThresholdOutsideRange 行为。
 func TestConfigValidateRejectsNoiseThresholdOutsideRange(t *testing.T) {
-	cfg := DefaultLocal()
+	cfg := newValidConfigForTest()
 	cfg.Noise.SemanticThreshold = 1.5
 	if err := cfg.Validate(); err == nil || err.Error() != "noise.semantic_threshold must be in [0,1]" {
 		t.Fatalf("unexpected validate error: %v", err)
@@ -114,7 +114,7 @@ func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
 	configBody := `{
 		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"gpt-4.1-mini"},
-		"embedding":{"provider":"mock","model":"mock-embedding-v1","dimension":64},
+		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
 		"relational":{"provider":"memory"},
 		"precheck":{"intent_timeout":"2s","top_k":5},
@@ -149,7 +149,7 @@ func TestLoadIgnoresMissingDotEnvAndUsesProcessEnv(t *testing.T) {
 	configBody := `{
 		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"gpt-4.1-mini"},
-		"embedding":{"provider":"mock","model":"mock-embedding-v1","dimension":64},
+		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
 		"relational":{"provider":"memory"},
 		"precheck":{"intent_timeout":"2s","top_k":5},
@@ -196,7 +196,7 @@ func TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority(t *testing.
 	if err := os.WriteFile(systemConfig, []byte(`{
 		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"system-model"},
-		"embedding":{"provider":"mock","model":"mock-embedding-v1","dimension":64},
+		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
 		"relational":{"provider":"memory"},
 		"precheck":{"intent_timeout":"2s","top_k":5},
@@ -253,7 +253,7 @@ func TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride(t *testing.T) {
 	if err := os.WriteFile(systemConfig, []byte(`{
 		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"system-model"},
-		"embedding":{"provider":"mock","model":"mock-embedding-v1","dimension":64},
+		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
 		"relational":{"provider":"memory"},
 		"precheck":{"intent_timeout":"2s","top_k":5},
@@ -295,4 +295,17 @@ func restoreEnv(t *testing.T, key string) {
 		}
 		_ = os.Setenv(key, value)
 	})
+}
+
+// newValidConfigForTest returns one minimal fully valid real-model config so validation-focused tests fail on the field under test only.
+// newValidConfigForTest 用于返回一份最小且完整的真实模型配置，让聚焦校验测试只因为目标字段而失败。
+func newValidConfigForTest() Config {
+	cfg := DefaultLocal()
+	cfg.HTTP.ListenAddr = "127.0.0.1:8080"
+	cfg.LLM.Endpoint = "https://api.openai.com/v1"
+	cfg.LLM.APIKey = "test-key"
+	cfg.Embedding.Endpoint = "https://api.openai.com/v1"
+	cfg.Embedding.APIKey = "test-key"
+	cfg.Embedding.Dimension = 1024
+	return cfg
 }
