@@ -179,22 +179,6 @@ func (v *RequestValidator) ValidatePostActionAsync(req PostActionAsyncRequestDTO
 			return err
 		}
 	}
-	if len(req.Timeline) > 0 {
-		first := req.Timeline[0]
-		last := req.Timeline[len(req.Timeline)-1]
-		if first.Type != "user" {
-			return logicdomain.ValidationError{Field: "timeline[0].type", Message: "must be user so the timeline starts from the first user question"}
-		}
-		if first.Content != req.UserContent {
-			return logicdomain.ValidationError{Field: "timeline[0].content", Message: "must match user_content"}
-		}
-		if last.Type != "assistant" {
-			return logicdomain.ValidationError{Field: fmt.Sprintf("timeline[%d].type", len(req.Timeline)-1), Message: "must be assistant so the timeline ends at the last assistant answer"}
-		}
-		if last.Content != req.AssistantContent {
-			return logicdomain.ValidationError{Field: fmt.Sprintf("timeline[%d].content", len(req.Timeline)-1), Message: "must match assistant_content"}
-		}
-	}
 	return nil
 }
 

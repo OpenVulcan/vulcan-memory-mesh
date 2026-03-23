@@ -74,9 +74,11 @@ scripts/
   - `content`
 - `user_content` 表示当前用户首轮提问
 - `assistant_content` 表示当前助手最后回答
-- 如果传了 `timeline`：
-  - 第一项必须是 `type=user` 且内容等于 `user_content`
-  - 最后一项必须是 `type=assistant` 且内容等于 `assistant_content`
+- `timeline` 表示位于两者之间的中间流程，不包含首轮 `user_content` 和最后一条 `assistant_content`
+- `timeline` 可以为空，也可以只包含 1 条或多条中间消息
+- `timeline` 的每一项都必须是：
+  - `type=user|assistant`
+  - `content` 为字符串
 - 新路由会先返回 `accepted=true`，然后在后台继续复用旧版写库逻辑
 - `POST /vmm/post-action-old` 仍承载当前旧版快照写库逻辑
 - 单次线性清洗

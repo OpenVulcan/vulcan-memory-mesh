@@ -66,20 +66,12 @@ Content-Type: application/json
   "assistant_content": "最后回答",
   "timeline": [
     {
-      "type": "user",
-      "content": "首轮问题"
-    },
-    {
       "type": "assistant",
       "content": "中间回答"
     },
     {
       "type": "user",
       "content": "补充问题"
-    },
-    {
-      "type": "assistant",
-      "content": "最后回答"
     }
   ]
 }
@@ -112,19 +104,20 @@ Content-Type: application/json
 
 ### 新版时间线校验
 
-如果 `timeline` 不为空：
+`timeline` 表示位于顶层首轮 `user_content` 和最后一条 `assistant_content` 之间的中间流程。
 
-- 第一项必须是：
-  - `type = user`
-  - `content == user_content`
-- 最后一项必须是：
-  - `type = assistant`
-  - `content == assistant_content`
+这意味着：
 
-这样可以确保：
-
-- 顶层两个文本字段不是随便填的摘要
-- 它们真实对应本轮时间线的首尾边界
+- `user_content` 是首轮用户提问
+- `assistant_content` 是最后一条助手回答
+- `timeline` 不包含这两条边界文本
+- `timeline` 可以为空数组
+- `timeline` 里可以有 1 条、2 条或多条中间消息
+- `timeline` 的第一项不强制必须是 `user`
+- `timeline` 的最后一项也不强制必须是 `assistant`
+- 但只要存在项，每项都必须满足：
+  - `type` 只能是 `user` 或 `assistant`
+  - `content` 必须是字符串
 
 ### 新版返回
 
@@ -155,12 +148,13 @@ Content-Type: application/json
 - `NoiseGate`
 - 关系存储写入
 
-如果 `timeline` 是空数组，则后台会自动用：
+后台实际组装顺序固定是：
 
-- `user_content`
-- `assistant_content`
+1. 顶层 `user_content`
+2. `timeline` 中的中间消息
+3. 顶层 `assistant_content`
 
-拼成一个最小单轮问答继续处理。
+如果 `timeline` 是空数组，则后台会只使用顶层两条文本，拼成一个最小单轮问答继续处理。
 
 ## 旧版路由：`POST /vmm/post-action-old`
 

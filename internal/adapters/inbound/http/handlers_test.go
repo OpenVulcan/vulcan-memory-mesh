@@ -309,7 +309,7 @@ func TestPostActionReturnsAcceptedImmediatelyAndProcessesInBackground(t *testing
 		PostActionTimeout:   3 * time.Second,
 		MaxRequestBodyBytes: 1 << 20,
 	})
-	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","user_content":"第一问","assistant_content":"最终回答","timeline":[{"type":"user","content":"第一问"},{"type":"assistant","content":"中间回答"},{"type":"user","content":"补充问题"},{"type":"assistant","content":"最终回答"}]}`
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","user_content":"第一问","assistant_content":"最终回答","timeline":[{"type":"assistant","content":"中间回答"},{"type":"user","content":"补充问题"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
@@ -332,6 +332,12 @@ func TestPostActionReturnsAcceptedImmediatelyAndProcessesInBackground(t *testing
 		if cmd.RawMessagesSnapshot[0].Role != "user" || cmd.RawMessagesSnapshot[0].Content != "第一问" {
 			t.Fatalf("first snapshot = %+v", cmd.RawMessagesSnapshot[0])
 		}
+		if cmd.RawMessagesSnapshot[1].Role != "assistant" || cmd.RawMessagesSnapshot[1].Content != "中间回答" {
+			t.Fatalf("second snapshot = %+v", cmd.RawMessagesSnapshot[1])
+		}
+		if cmd.RawMessagesSnapshot[2].Role != "user" || cmd.RawMessagesSnapshot[2].Content != "补充问题" {
+			t.Fatalf("third snapshot = %+v", cmd.RawMessagesSnapshot[2])
+		}
 		if cmd.RawMessagesSnapshot[3].Role != "assistant" || cmd.RawMessagesSnapshot[3].Content != "最终回答" {
 			t.Fatalf("last snapshot = %+v", cmd.RawMessagesSnapshot[3])
 		}
@@ -341,9 +347,46 @@ func TestPostActionReturnsAcceptedImmediatelyAndProcessesInBackground(t *testing
 	close(release)
 }
 
-// TestPostActionRejectsTimelineBoundaryMismatch verifies that the new route requires timeline boundaries to match the top-level user and assistant texts.
-// TestPostActionRejectsTimelineBoundaryMismatch 用于验证新路由要求时间线首尾必须与顶层 user 和 assistant 文本一致。
-func TestPostActionRejectsTimelineBoundaryMismatch(t *testing.T) {
+// TestPostActionLogsReceivedContent verifies that the new post-action route prints the accepted text payload to the runtime logger.
+// TestPostActionLogsReceivedContent 用于验证新的 post-action 路由会把接收的文本载荷输出到运行时日志。
+func TestPostActionLogsReceivedContent(t *testing.T) {
+	var logBuf bytes.Buffer
+	router := NewRouter(Dependencies{
+		IDs: xid.NewGenerator(),
+		PostAction: postActionFunc(func(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
+			return usecase.PostActionResult{Accepted: true}, nil
+		}),
+		Logger:              logx.New(&logBuf, logx.Config{Level: "info", Format: "text"}),
+		Validator:           NewRequestValidator("compat"),
+		PostActionTimeout:   3 * time.Second,
+		MaxRequestBodyBytes: 1 << 20,
+	})
+	body := `{"session_id":"s1","user_content":"第一问","assistant_content":"最终回答","timeline":[{"type":"assistant","content":"中间回答"},{"type":"user","content":"补充问题"}]}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
+	req.Header.Set("Content-Type", "application/json")
+	rec := httptest.NewRecorder()
+	router.ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
+	}
+	logOutput := logBuf.String()
+	if !strings.Contains(logOutput, `msg="post-action received"`) {
+		t.Fatalf("expected post-action receipt log, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `user_content=第一问`) {
+		t.Fatalf("expected user_content in log, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `assistant_content=最终回答`) {
+		t.Fatalf("expected assistant_content in log, got %s", logOutput)
+	}
+	if !strings.Contains(logOutput, `timeline="[{\"type\":\"assistant\",\"content\":\"中间回答\"},{\"type\":\"user\",\"content\":\"补充问题\"}]"`) {
+		t.Fatalf("expected timeline in log, got %s", logOutput)
+	}
+}
+
+// TestPostActionAllowsIntermediateTimeline verifies that the new route accepts timeline items as the middle flow between top-level user and assistant texts.
+// TestPostActionAllowsIntermediateTimeline 用于验证新路由会把 timeline 作为顶层 user 和 assistant 之间的中间流程来接受。
+func TestPostActionAllowsIntermediateTimeline(t *testing.T) {
 	router := NewRouter(Dependencies{
 		IDs: xid.NewGenerator(),
 		PostAction: postActionFunc(func(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
@@ -354,23 +397,13 @@ func TestPostActionRejectsTimelineBoundaryMismatch(t *testing.T) {
 		PostActionTimeout:   3 * time.Second,
 		MaxRequestBodyBytes: 1 << 20,
 	})
-	body := `{"session_id":"s1","user_content":"第一问","assistant_content":"最终回答","timeline":[{"type":"user","content":"不是第一问"},{"type":"assistant","content":"最终回答"}]}`
+	body := `{"session_id":"s1","user_content":"第一问","assistant_content":"最终回答","timeline":[{"type":"assistant","content":"中间回答"},{"type":"user","content":"补充问题"}]}`
 	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	var env Envelope
-	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
-		t.Fatal(err)
-	}
-	if env.ErrorID != "HTTP_VALIDATION_FAILED" {
-		t.Fatalf("error id = %q", env.ErrorID)
-	}
-	if !strings.Contains(env.Msg, "timeline[0].content") {
-		t.Fatalf("expected timeline boundary message, got %q", env.Msg)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 }
 

@@ -186,6 +186,10 @@ func (h *Handler) PostAction(w http.ResponseWriter, r *http.Request) {
 	traceID := trace.IDFromContext(r.Context())
 	cmd := toAsyncPostActionCommand(req)
 
+	// Emit the received text payload to the runtime logger so local debugging can inspect the new contract directly.
+	// 将收到的文本载荷输出到运行时日志，方便本地调试直接检查新契约内容。
+	h.logAsyncPostActionReceipt(traceID, req)
+
 	// Return the acceptance envelope first so callers are not blocked by downstream processing.
 	// 先返回接收成功的响应包，避免调用方被下游处理阻塞。
 	writeJSON(w, http.StatusOK, Envelope{
@@ -340,19 +344,14 @@ func toRawMessagesDomain(items []RawMessageDTO) []logicdomain.RawMessage {
 // toAsyncPostActionCommand converts the new text-only post-action contract into the legacy raw snapshot command reused by the persistence use case.
 // toAsyncPostActionCommand 用于把新的纯文本 post-action 契约转换成持久化用例复用的旧版原始快照命令。
 func toAsyncPostActionCommand(req PostActionAsyncRequestDTO) usecase.PostActionCommand {
-	// Reuse the provided timeline when present, otherwise synthesize a minimal one-turn conversation from the top-level texts.
-	// 优先复用调用方提供的时间线；如果没有，则根据顶层文本合成一个最小单轮对话。
-	raw := make([]logicdomain.RawMessage, 0, max(len(req.Timeline), 2))
-	if len(req.Timeline) == 0 {
-		raw = append(raw,
-			logicdomain.RawMessage{Role: "user", Content: req.UserContent},
-			logicdomain.RawMessage{Role: "assistant", Content: req.AssistantContent},
-		)
-	} else {
-		for _, item := range req.Timeline {
-			raw = append(raw, logicdomain.RawMessage{Role: item.Type, Content: item.Content})
-		}
+	// Assemble the final conversation flow as top-level first user -> intermediate timeline -> top-level last assistant.
+	// 按“顶层首轮 user -> 中间 timeline -> 顶层最后 assistant”的顺序组装最终对话流。
+	raw := make([]logicdomain.RawMessage, 0, len(req.Timeline)+2)
+	raw = append(raw, logicdomain.RawMessage{Role: "user", Content: req.UserContent})
+	for _, item := range req.Timeline {
+		raw = append(raw, logicdomain.RawMessage{Role: item.Type, Content: item.Content})
 	}
+	raw = append(raw, logicdomain.RawMessage{Role: "assistant", Content: req.AssistantContent})
 	return usecase.PostActionCommand{
 		SessionID:           req.SessionID,
 		UserID:              req.UserID,
@@ -361,6 +360,23 @@ func toAsyncPostActionCommand(req PostActionAsyncRequestDTO) usecase.PostActionC
 		ProjectID:           req.ProjectID,
 		RawMessagesSnapshot: raw,
 	}
+}
+
+// logAsyncPostActionReceipt writes the accepted text-only post-action payload into the structured runtime logger.
+// logAsyncPostActionReceipt 用于把已接收的新纯文本 post-action 载荷写入结构化运行时日志。
+func (h *Handler) logAsyncPostActionReceipt(traceID string, req PostActionAsyncRequestDTO) {
+	// Serialize the timeline once so the console output can show the exact received conversation flow.
+	// 将时间线序列化一次，便于控制台日志准确展示收到的对话流。
+	if h == nil || h.logger == nil {
+		return
+	}
+	timelineJSON, err := json.Marshal(req.Timeline)
+	if err != nil {
+		h.logger.Warn("post-action received timeline marshal failed", "trace_id", traceID, "session_id", req.SessionID, "err", err)
+		h.logger.Info("post-action received", "trace_id", traceID, "session_id", req.SessionID, "user_content", req.UserContent, "assistant_content", req.AssistantContent, "timeline_items", len(req.Timeline))
+		return
+	}
+	h.logger.Info("post-action received", "trace_id", traceID, "session_id", req.SessionID, "user_content", req.UserContent, "assistant_content", req.AssistantContent, "timeline", string(timelineJSON))
 }
 
 // withTimeout executes the withTimeout logic.

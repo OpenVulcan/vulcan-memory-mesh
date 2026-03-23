@@ -222,20 +222,12 @@ curl -X POST http://127.0.0.1:17625/vmm/pre-check \
   "assistant_content": "最后的回答",
   "timeline": [
     {
-      "type": "user",
-      "content": "最开始的问题"
-    },
-    {
       "type": "assistant",
       "content": "中间回答"
     },
     {
       "type": "user",
       "content": "用户补充提问"
-    },
-    {
-      "type": "assistant",
-      "content": "最后的回答"
     }
   ]
 }
@@ -263,28 +255,36 @@ curl -X POST http://127.0.0.1:17625/vmm/pre-check \
     - `type`: `user` 或 `assistant`
     - `content`: 字符串
 
-### 7.3 关键校验
+### 7.3 时间线语义
 
-如果 `timeline` 不为空，则：
+新接口的含义是：
 
-- 第一项必须是：
-  - `type = user`
-  - `content == user_content`
-- 最后一项必须是：
-  - `type = assistant`
-  - `content == assistant_content`
+- `user_content`：首轮用户问题
+- `assistant_content`：最后一条助手回答
+- `timeline`：两者之间的中间流程
 
-也就是说：
+也就是说，真实处理顺序是：
 
-- 顶层 `user_content` 和 `assistant_content` 不是独立无关字段
-- 它们必须和 `timeline` 的首尾边界一致
+1. `user_content`
+2. `timeline`
+3. `assistant_content`
+
+因此：
+
+- `timeline` 可以为空
+- `timeline` 可以只包含 1 条或多条中间消息
+- `timeline` 的第一项不要求必须是 `user`
+- `timeline` 的最后一项也不要求必须是 `assistant`
+- 但时间线里的每一项都必须是标准文本节点：
+  - `type` 只能是 `user` 或 `assistant`
+  - `content` 必须是字符串
 
 ### 7.4 curl 示例
 
 ```bash
 curl -X POST http://127.0.0.1:17625/vmm/post-action \
   -H "Content-Type: application/json" \
-  -d "{\"session_id\":\"sess_001\",\"user_id\":\"usr_001\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_001\",\"user_content\":\"最开始的问题\",\"assistant_content\":\"最后的回答\",\"timeline\":[{\"type\":\"user\",\"content\":\"最开始的问题\"},{\"type\":\"assistant\",\"content\":\"中间回答\"},{\"type\":\"user\",\"content\":\"用户补充提问\"},{\"type\":\"assistant\",\"content\":\"最后的回答\"}]}"
+  -d "{\"session_id\":\"sess_001\",\"user_id\":\"usr_001\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_001\",\"user_content\":\"最开始的问题\",\"assistant_content\":\"最后的回答\",\"timeline\":[{\"type\":\"assistant\",\"content\":\"中间回答\"},{\"type\":\"user\",\"content\":\"用户补充提问\"}]}"
 ```
 
 ### 7.5 返回示例
@@ -411,7 +411,7 @@ curl -X POST http://127.0.0.1:17625/v1/admin/seed-memory \
 
 - 顶层 `user_content` / `assistant_content` 传字符串
 - `timeline` 必须是数组
-- `timeline` 首尾边界必须和顶层两个文本一致
+- `timeline` 里的每一项都必须是 `user/assistant` 文本节点
 - 非字符串 `user_content` / `assistant_content` / `timeline[*].content` 应直接报错
 - 同步响应应立即返回，后台继续处理
 
