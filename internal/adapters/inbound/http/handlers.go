@@ -120,9 +120,6 @@ func (h *Handler) PreCheck(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	normalizePreCheckRequest(&req)
-	if req.HistoryContent == nil {
-		req.HistoryContent = []HistorySnippetDTO{}
-	}
 	if err := h.validate.ValidatePreCheck(req); err != nil {
 		h.writeError(w, r, err)
 		return
@@ -140,9 +137,7 @@ func (h *Handler) PreCheck(w http.ResponseWriter, r *http.Request) {
 		TeamID:         req.TeamID,
 		SpaceID:        req.SpaceID,
 		ProjectID:      req.ProjectID,
-		HistoryContent: toHistoryDomain(req.HistoryContent),
-		CurrentContent: req.CurrentContent,
-		IsFirstTurn:    req.IsFirstTurn,
+		CurrentContent: req.UserText,
 	})
 	if err != nil {
 		h.writeError(w, r, err)
@@ -272,16 +267,6 @@ func decodeJSON(r *http.Request, dst any) error {
 		return errors.New("request body must contain a single JSON object")
 	}
 	return nil
-}
-
-// toHistoryDomain executes the toHistoryDomain logic.
-// toHistoryDomain 用于执行 toHistoryDomain 逻辑。
-func toHistoryDomain(items []HistorySnippetDTO) []logicdomain.HistorySnippet {
-	out := make([]logicdomain.HistorySnippet, 0, len(items))
-	for _, item := range items {
-		out = append(out, logicdomain.HistorySnippet{Role: item.Role, Content: item.Content})
-	}
-	return out
 }
 
 // toRawMessagesDomain executes the toRawMessagesDomain logic.

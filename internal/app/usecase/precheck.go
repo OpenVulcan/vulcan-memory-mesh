@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -42,8 +41,8 @@ type PreCheckExecutor interface {
 	Execute(ctx context.Context, cmd PreCheckCommand) (PreCheckResult, error)
 }
 
-// PreCheckUseCase orchestrates intent extraction, persona loading, recall, and context assembly.
-// PreCheckUseCase 用于编排意图提取、画像加载、记忆召回和上下文组装。
+// PreCheckUseCase owns the pre-check entrypoint that currently short-circuits all injections.
+// PreCheckUseCase 用于承载当前 pre-check 入口的统一短路逻辑，直接禁止注入。
 type PreCheckUseCase struct {
 	intentExtractor   *processor.IntentExtractor
 	contextAssembler  *processor.ContextAssembler
@@ -87,79 +86,26 @@ func NewPreCheckUseCase(intentExtractor *processor.IntentExtractor, contextAssem
 // Execute executes the Execute logic.
 // Execute 用于执行 Execute 逻辑。
 func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (PreCheckResult, error) {
-	// Validate the request and short-circuit empty questions as early as possible.
-	// 尽早完成请求校验，并对空问题做快速返回。
+	// Keep contract validation intact so malformed requests still fail fast at the use-case boundary.
+	// 保留用例边界上的契约校验，确保非法请求仍然能够快速失败。
 	if err := validatePreCheck(cmd); err != nil {
 		return PreCheckResult{}, err
 	}
 	traceID := trace.IDFromContext(ctx)
-	question := strings.TrimSpace(cmd.CurrentContent)
-	if question == "" {
-		return PreCheckResult{ShouldInject: false, ContextText: "", ContextItems: []logicdomain.ContextItem{}, Degraded: false, TraceID: traceID}, nil
-	}
-	session := logicdomain.SessionRef{SessionID: cmd.SessionID, UserID: cmd.UserID, TeamID: cmd.TeamID, SpaceID: cmd.SpaceID, ProjectID: cmd.ProjectID}
-	recentHistory := recentDialogue(cmd.HistoryContent, 2)
-	var personaCtx logicdomain.PersonaContext
-	var intentRes logicdomain.IntentResult
-	var intentErr error
-	degraded := false
-	var mu sync.Mutex
 
-	// Prepare the intent extraction and persona loading branches.
-	// 预先定义意图提取和画像加载两个分支。
-	extractIntent := func() {
-		llmCtx, cancel := context.WithTimeout(ctx, u.intentTimeout)
-		defer cancel()
-		res, err := u.intentExtractor.Extract(llmCtx, recentHistory, question)
-		mu.Lock()
-		defer mu.Unlock()
-		intentRes = res
-		intentErr = err
+	// Force-disable pre-check injection regardless of the incoming question so plugins always receive
+	// a deterministic no-op response while the endpoint stays contract-compatible.
+	// 无论传入什么问题都强制关闭 pre-check 注入，让插件始终得到一个稳定的空响应，同时保持接口契约不变。
+	if u.logger != nil {
+		u.logger.Info("pre-check bypassed", "trace_id", traceID, "session_id", cmd.SessionID)
 	}
-	loadPersona := func() {
-		if u.persona == nil {
-			return
-		}
-		res, err := u.persona.Load(ctx, session)
-		mu.Lock()
-		defer mu.Unlock()
-		if err != nil {
-			degraded = true
-			u.logger.Warn("persona degraded", "trace_id", traceID, "err", err)
-			return
-		}
-		personaCtx = res
-	}
-
-	// Run both branches concurrently on the first turn, otherwise only extract intent.
-	// 首轮对话并发执行两个分支，否则只执行意图提取。
-	if cmd.IsFirstTurn {
-		var wg sync.WaitGroup
-		wg.Add(2)
-		go func() { defer wg.Done(); extractIntent() }()
-		go func() { defer wg.Done(); loadPersona() }()
-		wg.Wait()
-	} else {
-		extractIntent()
-	}
-
-	// Resolve search terms, retrieve memories, and assemble the final injected context.
-	// 解析检索词、召回记忆，并组装最终注入上下文。
-	searchTerms, needMemory, fallbackDegraded := u.resolveSearchTerms(question, intentRes, intentErr)
-	degraded = degraded || fallbackDegraded
-	var hits []logicdomain.MemoryHit
-	if needMemory && len(searchTerms) > 0 {
-		var err error
-		hits, err = u.retrieveRelevantMemories(ctx, session.SearchFilter(), searchTerms)
-		if err != nil {
-			return PreCheckResult{}, err
-		}
-	}
-	contextText, items, err := u.contextAssembler.Assemble(ctx, personaCtx, hits)
-	if err != nil {
-		return PreCheckResult{}, err
-	}
-	return PreCheckResult{ShouldInject: strings.TrimSpace(contextText) != "", ContextText: contextText, ContextItems: items, Degraded: degraded, TraceID: traceID}, nil
+	return PreCheckResult{
+		ShouldInject: false,
+		ContextText:  "",
+		ContextItems: []logicdomain.ContextItem{},
+		Degraded:     false,
+		TraceID:      traceID,
+	}, nil
 }
 
 // validatePreCheck validates the input value.
@@ -180,8 +126,8 @@ func validatePreCheck(cmd PreCheckCommand) error {
 	return nil
 }
 
-// resolveSearchTerms resolves the target value.
-// resolveSearchTerms 用于解析目标值。
+// resolveSearchTerms keeps the legacy fallback helper available for unit-level behavior checks.
+// resolveSearchTerms 用于保留旧的回退辅助逻辑，方便单元级行为验证。
 func (u *PreCheckUseCase) resolveSearchTerms(question string, intent logicdomain.IntentResult, err error) ([]string, bool, bool) {
 	// Fall back to the raw question whenever intent extraction times out or returns invalid output.
 	// 当意图提取超时或输出异常时，回退为直接使用原始问题。
@@ -221,8 +167,8 @@ func (u *PreCheckUseCase) resolveSearchTerms(question string, intent logicdomain
 	return keywords, true, false
 }
 
-// retrieveRelevantMemories executes the retrieveRelevantMemories logic.
-// retrieveRelevantMemories 用于执行 retrieveRelevantMemories 逻辑。
+// retrieveRelevantMemories keeps the legacy retrieval helper available for deterministic helper tests.
+// retrieveRelevantMemories 用于保留旧的召回辅助逻辑，方便确定性辅助测试。
 func (u *PreCheckUseCase) retrieveRelevantMemories(ctx context.Context, filter logicdomain.SearchFilter, keywords []string) ([]logicdomain.MemoryHit, error) {
 	// Embed all search terms first so each term can query the vector store independently.
 	// 先对所有检索词做 embedding，再逐个查询向量库。

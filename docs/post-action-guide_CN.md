@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档专门说明 `POST /v1/chat/post-action` 入口当前的输入参数、配置项、清洗规则、严格模式与兼容模式差异，以及它最终会把什么内容写入本地关系存储。
+这份文档专门说明 `POST /vmm/post-action` 入口当前的输入参数、配置项、清洗规则、严格模式与兼容模式差异，以及它最终会把什么内容写入本地关系存储。
 
 如果你要对接插件、Agent 网关或调试原始会话上报，这份文档应作为首选参考。
 
@@ -31,7 +31,7 @@
 ## 路由
 
 ```http
-POST /v1/chat/post-action
+POST /vmm/post-action
 Content-Type: application/json
 ```
 

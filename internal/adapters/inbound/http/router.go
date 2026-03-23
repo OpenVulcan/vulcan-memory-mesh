@@ -40,8 +40,8 @@ func NewRouter(deps Dependencies) http.Handler {
 	if deps.Chat != nil {
 		mux.Handle("/chat", methodHandler(http.MethodPost, http.HandlerFunc(handler.Chat)))
 	}
-	mux.Handle("/v1/chat/pre-check", methodHandler(http.MethodPost, http.HandlerFunc(handler.PreCheck)))
-	mux.Handle("/v1/chat/post-action", methodHandler(http.MethodPost, http.HandlerFunc(handler.PostAction)))
+	mux.Handle("/vmm/pre-check", methodHandler(http.MethodPost, http.HandlerFunc(handler.PreCheck)))
+	mux.Handle("/vmm/post-action", methodHandler(http.MethodPost, http.HandlerFunc(handler.PostAction)))
 	if deps.EnableSeedRoute && deps.SeedMemory != nil {
 		mux.Handle("/v1/admin/seed-memory", methodHandler(http.MethodPost, http.HandlerFunc(handler.SeedMemory)))
 	}

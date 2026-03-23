@@ -79,12 +79,12 @@ func (f testChatUseCase) Execute(ctx context.Context, cmd usecase.ChatCommand) (
 	return f(ctx, cmd)
 }
 
-// TestPreCheckRejectsNonTextHistoryContent verifies the TestPreCheckRejectsNonTextHistoryContent behavior.
-// TestPreCheckRejectsNonTextHistoryContent 用于验证 TestPreCheckRejectsNonTextHistoryContent 行为。
-func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
+// TestPreCheckRejectsMissingUser verifies that the new pre-check transport contract requires one current user text field.
+// TestPreCheckRejectsMissingUser 用于验证新的 pre-check 传输契约要求必须提供当前 user 文本字段。
+func TestPreCheckRejectsMissingUser(t *testing.T) {
 	router := newTestRouter(t)
-	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"user","content":{"type":"text"}}],"current_content":"hi","is_first_turn":true}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1"}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -95,13 +95,13 @@ func TestPreCheckRejectsNonTextHistoryContent(t *testing.T) {
 	if err := json.Unmarshal(rec.Body.Bytes(), &env); err != nil {
 		t.Fatal(err)
 	}
-	if env.ErrorID != "HTTP_INVALID_JSON" {
+	if env.ErrorID != "HTTP_VALIDATION_FAILED" {
 		t.Fatalf("error id = %q", env.ErrorID)
 	}
 }
 
-// TestSeedThenPreCheckRoundTrip verifies the TestSeedThenPreCheckRoundTrip behavior.
-// TestSeedThenPreCheckRoundTrip 用于验证 TestSeedThenPreCheckRoundTrip 行为。
+// TestSeedThenPreCheckRoundTrip verifies that pre-check now returns an empty no-op payload even after seed-memory succeeds.
+// TestSeedThenPreCheckRoundTrip 用于验证即使 seed-memory 成功，pre-check 现在也会返回空的 no-op 结果。
 func TestSeedThenPreCheckRoundTrip(t *testing.T) {
 	testutil.RequireLiveModelAccess(t)
 	router := newTestRouter(t)
@@ -116,23 +116,36 @@ func TestSeedThenPreCheckRoundTrip(t *testing.T) {
 	}
 
 	preBody, _ := json.Marshal(PreCheckRequestDTO{
-		SessionID:      "s1",
-		UserID:         "u1",
-		TeamID:         "t1",
-		ProjectID:      "p1",
-		HistoryContent: []HistorySnippetDTO{},
-		CurrentContent: "请回忆 fastapi backend framework decision",
-		IsFirstTurn:    false,
+		SessionID: "s1",
+		UserID:    "u1",
+		TeamID:    "t1",
+		ProjectID: "p1",
+		UserText:  "请回忆 fastapi backend framework decision",
 	})
-	preReq := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewReader(preBody))
+	preReq := httptest.NewRequest(http.MethodPost, "/vmm/pre-check", bytes.NewReader(preBody))
 	preReq.Header.Set("Content-Type", "application/json")
 	preRec := httptest.NewRecorder()
 	router.ServeHTTP(preRec, preReq)
 	if preRec.Code != http.StatusOK {
 		t.Fatalf("pre-check expected 200, got %d body=%s", preRec.Code, preRec.Body.String())
 	}
-	if !strings.Contains(strings.ToLower(preRec.Body.String()), "fastapi") {
-		t.Fatalf("expected fastapi in response body=%s", preRec.Body.String())
+	var env Envelope
+	if err := json.Unmarshal(preRec.Body.Bytes(), &env); err != nil {
+		t.Fatal(err)
+	}
+	dataBytes, err := json.Marshal(env.Data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var resp PreCheckResponseDTO
+	if err := json.Unmarshal(dataBytes, &resp); err != nil {
+		t.Fatal(err)
+	}
+	if resp.ShouldInject {
+		t.Fatalf("expected should_inject=false body=%s", preRec.Body.String())
+	}
+	if resp.ContextText != "" || len(resp.ContextItems) != 0 {
+		t.Fatalf("expected empty pre-check payload body=%s", preRec.Body.String())
 	}
 }
 
@@ -152,7 +165,7 @@ func TestPostActionNormalizesRawMessages(t *testing.T) {
 		MaxRequestBodyBytes: 1 << 20,
 	})
 	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","raw_messages_snapshot":[{"role":"user","content":"你好"},{"role":"assistant","content":[{"type":"text","text":"<think>hidden</think>已收到"}]}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/post-action", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -183,7 +196,7 @@ func TestPostActionCompatModeTrimsUnsupportedPayloads(t *testing.T) {
 		MaxRequestBodyBytes: 1 << 20,
 	})
 	body := `{"session_id":"s1","raw_messages_snapshot":[{"role":"system","content":"drop-me"},{"role":"user","content":[{"type":"text","text":"你好"},{"type":"image_url","image_url":{"url":"https://example.com"}}]},{"role":"assistant","content":"<think>hidden</think>已收到 ![这是一只猫](https://cdn.example.com/cat.jpg) ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)"},{"role":"assistant","tool_calls":[{"id":"tool-1","type":"function"}],"content":"tooling"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/post-action", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -218,11 +231,8 @@ func TestPreCheckSanitizesFlattenedMediaArtifacts(t *testing.T) {
 		if got := cmd.CurrentContent; got != "请参考 [图片: 架构图] [图片已过滤]" {
 			t.Fatalf("current content = %q", got)
 		}
-		if len(cmd.HistoryContent) != 2 {
+		if len(cmd.HistoryContent) != 0 {
 			t.Fatalf("history len = %d", len(cmd.HistoryContent))
-		}
-		if got := cmd.HistoryContent[1].Content; got != "请看这里 [图片: 截图] [压缩包: logs]" {
-			t.Fatalf("assistant history content = %q", got)
 		}
 		return usecase.PreCheckResult{ShouldInject: false, ContextText: "", ContextItems: []logicdomain.ContextItem{}}, nil
 	})
@@ -234,8 +244,8 @@ func TestPreCheckSanitizesFlattenedMediaArtifacts(t *testing.T) {
 		PreCheckTimeout:     time.Second,
 		MaxRequestBodyBytes: 1 << 20,
 	})
-	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"user","content":"帮我看一下"},{"role":"assistant","content":"请看这里 ![截图](https://cdn.example.com/shot.png) [logs](https://cdn.example.com/logs.zip)"}],"current_content":"请参考 ![架构图](https://cdn.example.com/arch.png) ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)","is_first_turn":false}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","user_content":"请参考 ![架构图](https://cdn.example.com/arch.png) ![](data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA)"}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -262,7 +272,7 @@ func TestPostActionStrictModeRejectsNonTextContent(t *testing.T) {
 		MaxRequestBodyBytes: 1 << 20,
 	})
 	body := `{"session_id":"s1","raw_messages_snapshot":[{"role":"user","content":[{"type":"text","text":"你好"},{"type":"image_url","image_url":{"url":"https://example.com"}}]},{"role":"assistant","content":"收到"}]}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/post-action", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/vmm/post-action", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -293,14 +303,9 @@ func TestPostRequestLogsFullBody(t *testing.T) {
 		"team_id":"team_001",
 		"space_id":"space_001",
 		"project_id":"proj_abc",
-		"is_first_turn":true,
-		"current_content":"如果是高并发场景，它还撑得住吗？",
-		"history_content":[
-			{"role":"user","content":"我们后端用什么框架？"},
-			{"role":"assistant","content":"采用 Go 语言和标准库实现。"}
-		]
+		"user_content":"如果是高并发场景，它还撑得住吗？"
 	}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	req := httptest.NewRequest(http.MethodPost, "/vmm/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -308,7 +313,7 @@ func TestPostRequestLogsFullBody(t *testing.T) {
 		t.Fatalf("expected 200, got %d body=%s", rec.Code, rec.Body.String())
 	}
 	logOutput := logBuf.String()
-	if !strings.Contains(logOutput, `request_body="{\"session_id\":\"sess_123\",\"user_id\":\"usr_8899\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_abc\",\"is_first_turn\":true,\"current_content\":\"如果是高并发场景，它还撑得住吗？\",\"history_content\":[{\"role\":\"user\",\"content\":\"我们后端用什么框架？\"},{\"role\":\"assistant\",\"content\":\"采用 Go 语言和标准库实现。\"}]}"`) {
+	if !strings.Contains(logOutput, `request_body="{\"session_id\":\"sess_123\",\"user_id\":\"usr_8899\",\"team_id\":\"team_001\",\"space_id\":\"space_001\",\"project_id\":\"proj_abc\",\"user_content\":\"如果是高并发场景，它还撑得住吗？\"}"`) {
 		t.Fatalf("expected request body in logs, got %s", logOutput)
 	}
 }
@@ -318,8 +323,8 @@ func TestPostRequestLogsFullBody(t *testing.T) {
 func TestRequestTooLargeReturnsCatalogedError(t *testing.T) {
 	router := newTestRouter(t)
 	oversized := strings.Repeat("x", (1<<20)+128)
-	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[],"current_content":"` + oversized + `","is_first_turn":false}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","user_content":"` + oversized + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -335,12 +340,12 @@ func TestRequestTooLargeReturnsCatalogedError(t *testing.T) {
 	}
 }
 
-// TestValidationErrorsReturnCatalogedError verifies the TestValidationErrorsReturnCatalogedError behavior.
-// TestValidationErrorsReturnCatalogedError 用于验证 TestValidationErrorsReturnCatalogedError 行为。
+// TestValidationErrorsReturnCatalogedError verifies that malformed pre-check bodies still map into cataloged validation errors.
+// TestValidationErrorsReturnCatalogedError 用于验证格式不合法的 pre-check 请求仍会映射成标准化校验错误。
 func TestValidationErrorsReturnCatalogedError(t *testing.T) {
 	router := newTestRouter(t)
-	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[{"role":"bad","content":"hello"}],"current_content":"hi","is_first_turn":false}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","user_content":""}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	router.ServeHTTP(rec, req)
@@ -394,8 +399,8 @@ func TestWithTimeoutPreservesTraceIDInUseCaseContext(t *testing.T) {
 		return usecase.PreCheckResult{ShouldInject: false, ContextText: "", ContextItems: []logicdomain.ContextItem{}}, nil
 	})
 	router := NewRouter(Dependencies{IDs: xid.NewGenerator(), PreCheck: pre, Logger: logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"}), PreCheckTimeout: time.Second, MaxRequestBodyBytes: 1 << 20})
-	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","history_content":[],"current_content":"hi","is_first_turn":false}`
-	req := httptest.NewRequest(http.MethodPost, "/v1/chat/pre-check", bytes.NewBufferString(body))
+	body := `{"session_id":"s1","user_id":"u1","team_id":"t1","project_id":"p1","user_content":"hi"}`
+	req := httptest.NewRequest(http.MethodPost, "/vmm/pre-check", bytes.NewBufferString(body))
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-Trace-ID", "trace-a")
 	rec := httptest.NewRecorder()

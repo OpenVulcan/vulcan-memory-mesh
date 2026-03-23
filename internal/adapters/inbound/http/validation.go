@@ -33,8 +33,8 @@ func NewRequestValidator(postActionInputMode string) *RequestValidator {
 	return &RequestValidator{postActionInputMode: mode}
 }
 
-// normalizePreCheckRequest trims transport strings before validation and use-case mapping.
-// normalizePreCheckRequest 用于在校验和映射到用例前清理 pre-check 传输层字符串。
+// normalizePreCheckRequest trims the current pre-check user_content text before validation and use-case mapping.
+// normalizePreCheckRequest 用于在校验和映射到用例前清理 pre-check 当前 user_content 文本。
 func normalizePreCheckRequest(req *PreCheckRequestDTO) {
 	if req == nil {
 		return
@@ -44,11 +44,7 @@ func normalizePreCheckRequest(req *PreCheckRequestDTO) {
 	req.TeamID = strings.TrimSpace(req.TeamID)
 	req.SpaceID = strings.TrimSpace(req.SpaceID)
 	req.ProjectID = strings.TrimSpace(req.ProjectID)
-	req.CurrentContent = textutil.CleanConversationText(req.CurrentContent)
-	for i := range req.HistoryContent {
-		req.HistoryContent[i].Role = strings.ToLower(strings.TrimSpace(req.HistoryContent[i].Role))
-		req.HistoryContent[i].Content = textutil.CleanConversationText(req.HistoryContent[i].Content)
-	}
+	req.UserText = textutil.CleanConversationText(req.UserText)
 }
 
 // normalizePostActionRequest trims transport strings before normalization and persistence.
@@ -104,13 +100,8 @@ func (v *RequestValidator) ValidatePreCheck(req PreCheckRequestDTO) error {
 	if err := requireString("project_id", req.ProjectID, 128); err != nil {
 		return err
 	}
-	if err := maxString("current_content", req.CurrentContent, 16000); err != nil {
+	if err := requireString("user_content", req.UserText, 16000); err != nil {
 		return err
-	}
-	for idx, item := range req.HistoryContent {
-		if err := validateHistorySnippet(idx, item); err != nil {
-			return err
-		}
 	}
 	return nil
 }
@@ -179,19 +170,6 @@ func (v *RequestValidator) ValidateChat(req ChatRequestDTO) error {
 		return err
 	}
 	if err := requireString("message", req.Message, 16000); err != nil {
-		return err
-	}
-	return nil
-}
-
-// validateHistorySnippet validates one text-only history message item.
-// validateHistorySnippet 用于校验一条纯文本历史消息项。
-func validateHistorySnippet(index int, item HistorySnippetDTO) error {
-	fieldPrefix := fmt.Sprintf("history_content[%d]", index)
-	if err := requireOneOf(fieldPrefix+".role", item.Role, "user", "assistant"); err != nil {
-		return err
-	}
-	if err := requireString(fieldPrefix+".content", item.Content, 16000); err != nil {
 		return err
 	}
 	return nil

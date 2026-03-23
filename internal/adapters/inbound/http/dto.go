@@ -4,13 +4,6 @@ package httpapi
 
 import "encoding/json"
 
-// HistorySnippetDTO carries one text-only history message from the pre-check request body.
-// HistorySnippetDTO 用于承载 pre-check 请求体中的单条纯文本历史消息。
-type HistorySnippetDTO struct {
-	Role    string `json:"role"`
-	Content string `json:"content"`
-}
-
 // ToolCallDTO captures tool call metadata before the HTTP layer maps snapshots into domain messages.
 // ToolCallDTO 用于在 HTTP 层把快照映射成领域消息之前保存工具调用元数据。
 type ToolCallDTO struct {
@@ -27,21 +20,19 @@ type RawMessageDTO struct {
 	Meta      map[string]any  `json:"meta,omitempty"`
 }
 
-// PreCheckRequestDTO binds the /v1/chat/pre-check request body before it is converted into a use case command.
-// PreCheckRequestDTO 用于绑定 /v1/chat/pre-check 请求体，再转换成用例命令。
+// PreCheckRequestDTO binds the /vmm/pre-check request body before it is converted into a use case command.
+// PreCheckRequestDTO 用于绑定 /vmm/pre-check 请求体，再转换成用例命令。
 type PreCheckRequestDTO struct {
-	SessionID      string              `json:"session_id"`
-	UserID         string              `json:"user_id"`
-	TeamID         string              `json:"team_id"`
-	SpaceID        string              `json:"space_id,omitempty"`
-	ProjectID      string              `json:"project_id"`
-	HistoryContent []HistorySnippetDTO `json:"history_content"`
-	CurrentContent string              `json:"current_content"`
-	IsFirstTurn    bool                `json:"is_first_turn"`
+	SessionID string `json:"session_id"`
+	UserID    string `json:"user_id"`
+	TeamID    string `json:"team_id"`
+	SpaceID   string `json:"space_id,omitempty"`
+	ProjectID string `json:"project_id"`
+	UserText  string `json:"user_content"`
 }
 
-// PostActionRequestDTO binds the /v1/chat/post-action request body before normalization and persistence.
-// PostActionRequestDTO 用于绑定 /v1/chat/post-action 请求体，再进入清洗和持久化流程。
+// PostActionRequestDTO binds the /vmm/post-action request body before normalization and persistence.
+// PostActionRequestDTO 用于绑定 /vmm/post-action 请求体，再进入清洗和持久化流程。
 type PostActionRequestDTO struct {
 	SessionID           string          `json:"session_id"`
 	UserID              string          `json:"user_id"`

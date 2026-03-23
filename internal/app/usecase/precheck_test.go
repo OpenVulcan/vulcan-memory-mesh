@@ -163,8 +163,8 @@ func TestResolveSearchTermsFallsBackToRawQuestion(t *testing.T) {
 	}
 }
 
-// TestPreCheckExecuteUsesRealModelAndEmbedding verifies that orchestration now runs through the real model and embedding adapters.
-// TestPreCheckExecuteUsesRealModelAndEmbedding 用于验证当前编排链路已经改为真实模型与真实 embedding 适配器。
+// TestPreCheckExecuteBypassesAllInjectionWork verifies that pre-check now short-circuits before any model or recall work runs.
+// TestPreCheckExecuteBypassesAllInjectionWork 用于验证 pre-check 现在会在任何模型或召回逻辑执行前直接短路返回。
 func TestPreCheckExecuteUsesRealModelAndEmbedding(t *testing.T) {
 	vector := &fakeVector{hits: []logicdomain.MemoryHit{{ID: "m1", Text: "remembered framework decision", Score: 0.99}}}
 	persona := &fakePersona{}
@@ -180,25 +180,28 @@ func TestPreCheckExecuteUsesRealModelAndEmbedding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if llm.called == 0 {
-		t.Fatal("expected real llm to be called")
+	if llm.called != 0 {
+		t.Fatalf("expected real llm to stay idle, got %d calls", llm.called)
 	}
-	if embedding.called == 0 {
-		t.Fatal("expected real embedding to be called")
+	if embedding.called != 0 {
+		t.Fatalf("expected real embedding to stay idle, got %d calls", embedding.called)
 	}
-	if vector.called == 0 {
-		t.Fatal("expected vector recall to be called")
+	if vector.called != 0 {
+		t.Fatalf("expected vector recall to stay idle, got %d calls", vector.called)
 	}
-	if !res.ShouldInject {
-		t.Fatal("expected should_inject=true")
+	if res.ShouldInject {
+		t.Fatal("expected should_inject=false")
 	}
-	if len(res.ContextItems) == 0 {
-		t.Fatal("expected recalled context items")
+	if len(res.ContextItems) != 0 {
+		t.Fatalf("expected no context items, got %#v", res.ContextItems)
+	}
+	if res.ContextText != "" {
+		t.Fatalf("expected empty context text, got %q", res.ContextText)
 	}
 }
 
-// TestPreCheckFirstTurnStillLoadsPersonaWithRealModel verifies that first-turn orchestration keeps persona loading enabled alongside the real model path.
-// TestPreCheckFirstTurnStillLoadsPersonaWithRealModel 用于验证首轮编排在真实模型路径下仍会并发加载画像。
+// TestPreCheckFirstTurnAlsoBypassesPersonaLoading verifies that first-turn requests are short-circuited before persona loading starts.
+// TestPreCheckFirstTurnAlsoBypassesPersonaLoading 用于验证首轮请求也会在画像加载启动前直接短路返回。
 func TestPreCheckFirstTurnStillLoadsPersonaWithRealModel(t *testing.T) {
 	vector := &fakeVector{}
 	persona := &fakePersona{result: logicdomain.PersonaContext{Profile: []string{"backend engineer"}}}
@@ -214,13 +217,16 @@ func TestPreCheckFirstTurnStillLoadsPersonaWithRealModel(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if llm.called == 0 {
-		t.Fatal("expected real llm to be called on first turn")
+	if llm.called != 0 {
+		t.Fatalf("expected real llm to stay idle on first turn, got %d calls", llm.called)
 	}
-	if persona.called != 1 {
-		t.Fatalf("persona called %d times", persona.called)
+	if persona.called != 0 {
+		t.Fatalf("expected persona loader to stay idle, got %d calls", persona.called)
 	}
-	if !res.ShouldInject {
-		t.Fatal("expected persona context to be injected")
+	if res.ShouldInject {
+		t.Fatal("expected should_inject=false")
+	}
+	if res.ContextText != "" || len(res.ContextItems) != 0 {
+		t.Fatalf("expected empty pre-check payload, got text=%q items=%#v", res.ContextText, res.ContextItems)
 	}
 }

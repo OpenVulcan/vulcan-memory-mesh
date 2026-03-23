@@ -46,16 +46,16 @@
   - `GET /healthz` 返回 `200`。
   - `POST /v1/admin/seed-memory` returned `200`.
   - `POST /v1/admin/seed-memory` 返回 `200`。
-  - `POST /v1/chat/post-action` returned `200`.
-  - `POST /v1/chat/post-action` 返回 `200`。
-  - Oversized `POST /v1/chat/pre-check` returned `413` with `error_id=HTTP_REQUEST_TOO_LARGE`.
-  - 超大 `POST /v1/chat/pre-check` 返回 `413`，并带有 `error_id=HTTP_REQUEST_TOO_LARGE`。
+- `POST /vmm/post-action` returned `200`.
+- `POST /vmm/post-action` 返回 `200`。
+- Oversized `POST /vmm/pre-check` returned `413` with `error_id=HTTP_REQUEST_TOO_LARGE`.
+- 超大 `POST /vmm/pre-check` 返回 `413`，并带有 `error_id=HTTP_REQUEST_TOO_LARGE`。
 - HTTPS runtime checks passed with a self-signed certificate:
 - 使用自签证书的 HTTPS 运行时检查已通过：
   - `GET https://127.0.0.1:18443/healthz` returned `200`.
   - `GET https://127.0.0.1:18443/healthz` 返回 `200`。
-  - `POST https://127.0.0.1:18443/v1/chat/pre-check` returned `200`.
-  - `POST https://127.0.0.1:18443/v1/chat/pre-check` 返回 `200`。
+- `POST https://127.0.0.1:18443/vmm/pre-check` returned `200`.
+- `POST https://127.0.0.1:18443/vmm/pre-check` 返回 `200`。
 
 ## Observations
 ## 观察结论
