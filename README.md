@@ -7,6 +7,7 @@ VulcanMemoryMesh 当前聚焦本地开源版本：插件在主模型调用前可
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
 - [HTTP 接口测试说明（中文）](./docs/api-test-guide_CN.md)
+- [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 
 ## 目录
 
