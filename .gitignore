@@ -6,3 +6,4 @@ dist/
 output/
 /nul
 .env
+bak_version
