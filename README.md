@@ -11,6 +11,7 @@ VulcanMemoryMesh 当前聚焦本地开源版本，并且已经把入站服务从
 
 - [gRPC 对接说明（中文）](./docs/grpc-integration-guide_CN.md)
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
+- [DockDB Schema 版本管理说明（中文）](./docs/dockdb-schema-versioning_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
