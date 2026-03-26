@@ -56,6 +56,8 @@ type Config struct {
 	Logging        LoggingConfig        `json:"logging"`
 	PII            PIIConfig            `json:"pii"`
 	Noise          NoiseConfig          `json:"noise"`
+	DockDB         DockDBConfig         `json:"dockdb"`
+	LanceDB        LanceDBConfig        `json:"lancedb"`
 	Archive        ArchiveConfig        `json:"archive"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
@@ -117,11 +119,26 @@ type NoiseConfig struct {
 	SemanticThreshold float64 `json:"semantic_threshold"`
 }
 
+// DockDBConfig holds the gRPC endpoint used by the local DuckDB gateway for durable SQL-backed data.
+// DockDBConfig 用于保存本地 DuckDB 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
+type DockDBConfig struct {
+	Address string   `json:"address"`
+	Timeout Duration `json:"timeout"`
+}
+
+// LanceDBConfig holds the gRPC endpoint and table settings used by the local LanceDB gateway.
+// LanceDBConfig 用于保存本地 LanceDB 网关的 gRPC 地址与表配置。
+type LanceDBConfig struct {
+	Address      string   `json:"address"`
+	Timeout      Duration `json:"timeout"`
+	TableName    string   `json:"table_name"`
+	VectorColumn string   `json:"vector_column"`
+}
+
 // ArchiveConfig selects the persistence backend used by the scrubbed /chat archive flow.
 // ArchiveConfig 用于选择脱敏后 /chat 归档流程使用的持久化后端。
 type ArchiveConfig struct {
 	Provider string `json:"provider"`
-	Path     string `json:"path"`
 }
 
 // LLMConfig holds the provider and model settings used for intent extraction and other LLM tasks.
@@ -205,11 +222,13 @@ func DefaultLocal() Config {
 		Logging:        LoggingConfig{Level: "info", Format: "text", LogRequestBodies: false},
 		PII:            PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:          NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
-		Archive:        ArchiveConfig{Provider: "sqlite", Path: "../data/vmm.db"},
+		DockDB:         DockDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
+		LanceDB:        LanceDBConfig{Address: "127.0.0.1:50051", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
+		Archive:        ArchiveConfig{Provider: "dockdb"},
 		LLM:            LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
 		Embedding:      EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
-		Vector:         VectorConfig{Provider: "memory"},
-		Relational:     RelationalConfig{Provider: "memory"},
+		Vector:         VectorConfig{Provider: "lancedb"},
+		Relational:     RelationalConfig{Provider: "dockdb"},
 		PostAction:     PostActionConfig{InputMode: "compat"},
 		PreCheck:       PreCheckConfig{IntentTimeout: Duration{2 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
@@ -410,21 +429,39 @@ func (c *Config) Normalize() {
 	if c.Noise.SemanticThreshold <= 0 {
 		c.Noise.SemanticThreshold = 0.88
 	}
-	if strings.TrimSpace(c.Archive.Provider) == "" {
-		c.Archive.Provider = "sqlite"
+	if strings.TrimSpace(c.DockDB.Address) == "" {
+		c.DockDB.Address = "127.0.0.1:50052"
 	}
-	if strings.TrimSpace(c.Archive.Path) == "" {
-		c.Archive.Path = "../data/vmm.db"
+	if c.DockDB.Timeout.Duration <= 0 {
+		c.DockDB.Timeout = Duration{5 * time.Second}
+	}
+	if strings.TrimSpace(c.LanceDB.Address) == "" {
+		c.LanceDB.Address = "127.0.0.1:50051"
+	}
+	if c.LanceDB.Timeout.Duration <= 0 {
+		c.LanceDB.Timeout = Duration{5 * time.Second}
+	}
+	if strings.TrimSpace(c.LanceDB.TableName) == "" {
+		c.LanceDB.TableName = "vmm_memory_vectors"
+	}
+	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
+		c.LanceDB.VectorColumn = "vector"
+	}
+	if strings.TrimSpace(c.Archive.Provider) == "" {
+		c.Archive.Provider = "dockdb"
+	}
+	if strings.TrimSpace(c.Vector.Provider) == "" {
+		c.Vector.Provider = "lancedb"
 	}
 	c.PostAction.InputMode = strings.ToLower(strings.TrimSpace(c.PostAction.InputMode))
 	if c.PostAction.InputMode == "" {
 		c.PostAction.InputMode = "compat"
 	}
 
-	// Default the relational backend to memory for the local OSS runtime.
-	// 为本地 OSS 运行时将关系后端默认归一到内存实现。
+	// Default durable local data paths to the gateway-backed DuckDB implementation.
+	// 为本地持久化数据路径默认归一到基于网关的 DuckDB 实现。
 	if strings.TrimSpace(c.Relational.Provider) == "" {
-		c.Relational.Provider = "memory"
+		c.Relational.Provider = "dockdb"
 	}
 }
 
@@ -442,11 +479,20 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
 		return errors.New("noise.default_language is required")
 	}
+	if strings.TrimSpace(c.DockDB.Address) == "" {
+		return errors.New("dockdb.address is required")
+	}
+	if strings.TrimSpace(c.LanceDB.Address) == "" {
+		return errors.New("lancedb.address is required")
+	}
+	if strings.TrimSpace(c.LanceDB.TableName) == "" {
+		return errors.New("lancedb.table_name is required")
+	}
+	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
+		return errors.New("lancedb.vector_column is required")
+	}
 	if strings.TrimSpace(c.Archive.Provider) == "" {
 		return errors.New("archive.provider is required")
-	}
-	if strings.TrimSpace(c.Archive.Path) == "" {
-		return errors.New("archive.path is required")
 	}
 	if c.HTTP.MaxRequestBodyBytes <= 0 {
 		return errors.New("http.max_request_body_bytes must be > 0")
@@ -465,9 +511,9 @@ func (c Config) Validate() error {
 		return errors.New("logging.format must be either text or json")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Archive.Provider)) {
-	case "sqlite":
+	case "dockdb":
 	default:
-		return errors.New("archive.provider must be sqlite")
+		return errors.New("archive.provider must be dockdb")
 	}
 	if c.PreCheck.TopK <= 0 {
 		return errors.New("precheck.top_k must be > 0")
@@ -492,6 +538,16 @@ func (c Config) Validate() error {
 	}
 	if !isOpenAIProvider(c.Embedding.Provider) {
 		return errors.New("embedding.provider must use one openai-compatible provider")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Vector.Provider)) {
+	case "lancedb", "memory", "mock", "memory_mock":
+	default:
+		return errors.New("vector.provider must be lancedb or memory")
+	}
+	switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
+	case "dockdb", "memory", "mock", "memory_mock":
+	default:
+		return errors.New("relational.provider must be dockdb or memory")
 	}
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
@@ -586,8 +642,13 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
 	setBool("VMM_NOISE_SEMANTIC_ENABLED", &cfg.Noise.SemanticEnabled)
 	setFloat("VMM_NOISE_SEMANTIC_THRESHOLD", &cfg.Noise.SemanticThreshold)
+	setString("VMM_DOCKDB_ADDRESS", &cfg.DockDB.Address)
+	setDuration("VMM_DOCKDB_TIMEOUT", &cfg.DockDB.Timeout)
+	setString("VMM_LANCEDB_ADDRESS", &cfg.LanceDB.Address)
+	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
+	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
+	setString("VMM_LANCEDB_VECTOR_COLUMN", &cfg.LanceDB.VectorColumn)
 	setString("VMM_ARCHIVE_PROVIDER", &cfg.Archive.Provider)
-	setString("VMM_ARCHIVE_PATH", &cfg.Archive.Path)
 	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)
 	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
 	setString("VMM_LLM_API_KEY", &cfg.LLM.APIKey)

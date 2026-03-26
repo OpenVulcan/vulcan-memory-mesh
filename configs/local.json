@@ -29,9 +29,18 @@
     "semantic_enabled": true,
     "semantic_threshold": 0.88
   },
+  "dockdb": {
+    "address": "127.0.0.1:50052",
+    "timeout": "5s"
+  },
+  "lancedb": {
+    "address": "127.0.0.1:50051",
+    "timeout": "5s",
+    "table_name": "vmm_memory_vectors",
+    "vector_column": "vector"
+  },
   "archive": {
-    "provider": "sqlite",
-    "path": "../data/vmm.db"
+    "provider": "dockdb"
   },
   "llm": {
     "provider": "openai",
@@ -56,10 +65,10 @@
     "project": "${OPENAI_PROJECT}"
   },
   "vector": {
-    "provider": "memory"
+    "provider": "lancedb"
   },
   "relational": {
-    "provider": "memory"
+    "provider": "dockdb"
   },
   "post_action": {
     "input_mode": "compat"

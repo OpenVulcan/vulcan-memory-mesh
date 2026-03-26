@@ -1,6 +1,6 @@
 # VMM OSS Local (Go)
 
-VulcanMemoryMesh 当前聚焦本地开源版本：插件在主模型调用前可以调用 `pre-check`，但当前版本会固定返回“不注入”；对话结束后通过 `post-action` 写入本地关系存储；联调环境可使用 `seed-memory` 预热向量库。
+VulcanMemoryMesh 当前聚焦本地开源版本：插件在主模型调用前可以调用 `pre-check`，但当前版本会固定返回“不注入”；对话结束后通过 `post-action` 写入本地长期库；联调环境可使用 `seed-memory` 预热向量库。
 
 ## 文档导航
 
@@ -37,7 +37,9 @@ scripts/
 - `POST /v1/admin/seed-memory`
 - `cmd/vmm-local` 本地启动入口
 - `MockPersonaProvider`
-- 内存向量库 / 内存关系库存根实现
+- LanceDB 本地向量库适配器
+- DockDB 本地长期库适配器
+- 内存向量库 / 内存关系库存根回退实现
 - OpenAI 兼容原生 LLM / Embedding 适配器（运行时不再提供 mock 模型）
 - TraceID / Recovery / 请求日志中间件
 - 路由级超时控制
@@ -119,6 +121,13 @@ scripts/
 
 `llm.provider` 与 `embedding.provider` 当前都必须使用 `openai`、`openai_go` 或 `openai_native`。如果你需要显式透传组织或项目头，可以使用 `organization` 和 `project` 字段；任何 OpenAI-compatible endpoint 都可以直接通过 `endpoint` 接入。
 
+`archive.provider` 当前固定使用 `dockdb`。默认长期库网关配置来自：
+
+- `dockdb.address`
+- `lancedb.address`
+- `lancedb.table_name`
+- `lancedb.vector_column`
+
 如果某个兼容模型需要额外参数，例如关闭 thinking、调整 `reasoning_effort` 或透传 provider 专属字段，可以在配置里使用：
 
 - `llm.params`
@@ -160,11 +169,11 @@ scripts/
 - `semantic_threshold`
   - 默认语义阈值，类别可在规则文件里覆盖
 
-噪声门的语义原型向量现在会缓存到 SQLite：
+噪声门的语义原型向量现在会缓存到长期 SQL 后端（默认 DockDB）：
 
-- 启动时优先从 `archive.path` 指向的 SQLite 数据库读取
+- 启动时优先从 DuckDB 网关持久层读取
 - 只有在模型、维度或规则内容指纹变化时才会重新计算
-- 重算后的结果会回写到 SQLite，避免每次启动重复消耗 embedding 调用
+- 重算后的结果会回写到 DockDB，避免每次启动重复消耗 embedding 调用
 
 ## 测试
 
@@ -181,4 +190,4 @@ go test ./...
 
 - `MockPersonaProvider` 对 `usr_8899` 返回固定画像
 - 内存向量库支持 `user/project/space` 范围过滤
-- `post-action` 默认写入内存关系库，适合本地联调和开源版最小运行集
+- `post-action` 默认写入 DockDB 长期库；如需本地纯内存调试，可显式改成 `relational.provider=memory`

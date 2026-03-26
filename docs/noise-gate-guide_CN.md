@@ -195,7 +195,7 @@
 当前策略是：
 
 - 在应用启动时，读取噪声规则里的 `phrases`
-- 优先尝试从 `archive.path` 对应的 SQLite 数据库读取已缓存向量
+- 优先尝试从当前长期 SQL 后端（默认 DockDB）读取已缓存向量
 - 缓存命中失败时，再通过当前 embedding provider 生成向量
 - 运行时只对当前轮次文本做 embedding，再和类别原型向量比较
 
@@ -208,7 +208,7 @@
 实现方式是：
 
 - 启动时对当前生效规则计算一个 `rules_hash`
-- 读取 SQLite 表 `vmm_noise_embeddings`
+- 读取长期 SQL 表 `vmm_noise_embeddings`
 - 只有当 `model + dimension + rules_hash` 全部一致时，缓存才会被复用
 - 不一致时会重算，并覆盖当前语言包对应的旧缓存
 

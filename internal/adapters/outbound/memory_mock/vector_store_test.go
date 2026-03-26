@@ -14,12 +14,12 @@ import (
 func TestVectorStoreSearchOrdersBySimilarity(t *testing.T) {
 	store := NewVectorStore()
 	fastAPI := normalizeVector([]float32{4, 1, 0})
-	sqlite := normalizeVector([]float32{0, 1, 4})
+	database := normalizeVector([]float32{0, 1, 4})
 	query := normalizeVector([]float32{5, 1, 0})
 	if err := store.Upsert(context.Background(), logicdomain.MemoryRecord{ID: "m1", Text: "fastapi backend", Vector: fastAPI, Filter: logicdomain.SearchFilter{UserID: "u1", ProjectID: "p1"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.Upsert(context.Background(), logicdomain.MemoryRecord{ID: "m2", Text: "sqlite database", Vector: sqlite, Filter: logicdomain.SearchFilter{UserID: "u1", ProjectID: "p1"}}); err != nil {
+	if err := store.Upsert(context.Background(), logicdomain.MemoryRecord{ID: "m2", Text: "database backend", Vector: database, Filter: logicdomain.SearchFilter{UserID: "u1", ProjectID: "p1"}}); err != nil {
 		t.Fatal(err)
 	}
 	hits, err := store.Search(context.Background(), query, 2, logicdomain.SearchFilter{UserID: "u1", ProjectID: "p1"})

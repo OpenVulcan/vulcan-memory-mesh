@@ -37,8 +37,8 @@ type ChatExecutor interface {
 	Execute(ctx context.Context, cmd ChatCommand) (ChatResult, error)
 }
 
-// ChatUseCase orchestrates PII scrubbing and SQLite persistence for inbound chat messages.
-// ChatUseCase 用于编排入站聊天消息的 PII 脱敏与 SQLite 持久化。
+// ChatUseCase orchestrates PII scrubbing and durable archive persistence for inbound chat messages.
+// ChatUseCase 用于编排入站聊天消息的 PII 脱敏与长期归档持久化。
 type ChatUseCase struct {
 	scrubber appports.TextScrubber
 	store    appports.MemoryArchiveStore

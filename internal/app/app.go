@@ -8,14 +8,14 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"syscall"
 
 	httpapi "github.com/openvulcan/vmm/internal/adapters/inbound/http"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/sqlite"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_dockdb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/config"
@@ -219,6 +219,8 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 	// Select the vector store adapter according to the configured provider.
 	// 根据配置的 provider 选择对应的向量存储适配器。
 	switch strings.ToLower(cfg.Vector.Provider) {
+	case "lancedb":
+		return vldg_lancedb.NewStore(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
 	case "memory", "mock", "memory_mock":
 		return memory_mock.NewVectorStore(), nil
 	default:
@@ -232,6 +234,8 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	// Select the relational store adapter according to the configured provider.
 	// 根据配置的 provider 选择对应的关系存储适配器。
 	switch strings.ToLower(cfg.Relational.Provider) {
+	case "dockdb":
+		return vldg_dockdb.NewStore(cfg.DockDB.Address, cfg.DockDB.Timeout.Duration)
 	case "", "memory", "mock", "memory_mock":
 		return memory_mock.NewRelationalStore(), nil
 	default:
@@ -243,8 +247,8 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 // buildArchiveStore 用于构建 /chat 脱敏归档流程使用的存储后端。
 func buildArchiveStore(cfg config.Config) (appports.MemoryArchiveStore, error) {
 	switch strings.ToLower(cfg.Archive.Provider) {
-	case "sqlite":
-		return sqlite.NewStore(resolveRuntimePath(cfg.Archive.Path))
+	case "dockdb":
+		return vldg_dockdb.NewStore(cfg.DockDB.Address, cfg.DockDB.Timeout.Duration)
 	default:
 		return nil, fmt.Errorf("unsupported archive provider: %s", cfg.Archive.Provider)
 	}
@@ -278,21 +282,4 @@ func buildNoiseGate(cfg config.Config, layout config.PromptLayout, embedding app
 		Dimension:         cfg.Embedding.Dimension,
 		Cache:             cache,
 	})
-}
-
-// resolveRuntimePath resolves one relative runtime path against the executable directory.
-// resolveRuntimePath 用于把运行时相对路径解析到可执行文件所在目录。
-func resolveRuntimePath(path string) string {
-	if strings.TrimSpace(path) == "" {
-		return path
-	}
-	if filepath.IsAbs(path) {
-		return path
-	}
-	exePath, err := os.Executable()
-	if err != nil {
-		return filepath.Clean(path)
-	}
-	exeDir := filepath.Dir(exePath)
-	return filepath.Clean(filepath.Join(exeDir, path))
 }

@@ -283,11 +283,11 @@ func (g *NoiseGate) restoreCachedVectors(entries []logicdomain.NoiseEmbeddingCac
 	return true
 }
 
-// buildCacheEntries converts the in-memory category vectors into SQLite cache rows for the active rule fingerprint.
-// buildCacheEntries 用于把内存中的类别向量转换成当前规则指纹对应的 SQLite 缓存记录。
+// buildCacheEntries converts the in-memory category vectors into durable cache rows for the active rule fingerprint.
+// buildCacheEntries 用于把内存中的类别向量转换成当前规则指纹对应的持久化缓存记录。
 func (g *NoiseGate) buildCacheEntries(query logicdomain.NoiseEmbeddingCacheQuery) []logicdomain.NoiseEmbeddingCacheEntry {
-	// Flatten every phrase-vector pair so SQLite can persist one stable row per semantic prototype.
-	// 将每个短语与向量展开成稳定的单行记录，便于 SQLite 持久化。
+	// Flatten every phrase-vector pair so the durable SQL backend can persist one stable row per semantic prototype.
+	// 将每个短语与向量展开成稳定的单行记录，便于长期 SQL 后端持久化。
 	entries := make([]logicdomain.NoiseEmbeddingCacheEntry, 0)
 	now := time.Now().UTC()
 	for _, category := range g.categories {

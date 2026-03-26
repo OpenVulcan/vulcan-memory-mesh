@@ -565,7 +565,7 @@ Content-Type: application/json
 - `ProjectID`
 - `UpdatedAt`
 
-当前本地 OSS 版本默认写入的是内存关系存储，不是 SQLite。
+当前本地 OSS 版本默认写入的是通过 DockDB 网关提供的长期 SQL 存储；如需最小化本地调试，也可以显式切回内存关系存储。
 
 ## 返回格式
 

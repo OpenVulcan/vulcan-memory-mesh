@@ -16,7 +16,7 @@
 - `NoiseGate` 已支持：
   - 正则噪声控制
   - 语义原型向量判定
-  - SQLite 启动缓存
+  - 长期 SQL 后端启动缓存
 - 代码中已经预留了但尚未正式接通的后续处理器：
   - `summarize_entry`
   - `merge_profile`

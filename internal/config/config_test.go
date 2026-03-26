@@ -65,6 +65,11 @@ func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
 	cfg.PostAction.InputMode = ""
 	cfg.Noise.DefaultLanguage = ""
 	cfg.Noise.SemanticThreshold = 0
+	cfg.Archive.Provider = ""
+	cfg.Vector.Provider = ""
+	cfg.Relational.Provider = ""
+	cfg.DockDB.Address = ""
+	cfg.LanceDB.Address = ""
 	cfg.Normalize()
 	if cfg.PostAction.InputMode != "compat" {
 		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
@@ -74,6 +79,21 @@ func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
 	}
 	if cfg.Noise.SemanticThreshold != 0.88 {
 		t.Fatalf("noise semantic threshold = %v", cfg.Noise.SemanticThreshold)
+	}
+	if cfg.Archive.Provider != "dockdb" {
+		t.Fatalf("archive provider = %q", cfg.Archive.Provider)
+	}
+	if cfg.Vector.Provider != "lancedb" {
+		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
+	}
+	if cfg.Relational.Provider != "dockdb" {
+		t.Fatalf("relational provider = %q", cfg.Relational.Provider)
+	}
+	if cfg.DockDB.Address != "127.0.0.1:50052" {
+		t.Fatalf("dockdb address = %q", cfg.DockDB.Address)
+	}
+	if cfg.LanceDB.Address != "127.0.0.1:50051" {
+		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
 	}
 }
 
