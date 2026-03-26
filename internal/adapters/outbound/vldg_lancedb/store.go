@@ -15,6 +15,8 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 )
 
 // Store is the LanceDB-gateway adapter used by the vector store port.
@@ -219,12 +221,44 @@ func (s *Store) init(ctx context.Context) error {
 		},
 	})
 	if err != nil {
+		// Treat idempotent table-exists failures as success so repeated boots can reuse the same vector table.
+		// 将“表已存在”视为幂等成功，保证重复启动时可以直接复用同一张向量表。
+		if isTableAlreadyExistsError(err) {
+			return nil
+		}
 		return fmt.Errorf("create lancedb table: %w", err)
 	}
 	if !resp.Success {
+		// Some gateway builds report existing tables through the response body instead of a transport error.
+		// 某些网关实现会通过响应体而不是传输层错误来报告“表已存在”。
+		if isTableAlreadyExistsMessage(resp.GetMessage()) {
+			return nil
+		}
 		return fmt.Errorf("create lancedb table: %s", resp.Message)
 	}
 	return nil
+}
+
+// isTableAlreadyExistsError classifies gateway transport errors that mean the configured table is already present.
+// isTableAlreadyExistsError 用于识别那些实际表示“目标表已经存在”的网关传输层错误。
+func isTableAlreadyExistsError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if status.Code(err) == codes.AlreadyExists {
+		return true
+	}
+	return isTableAlreadyExistsMessage(err.Error())
+}
+
+// isTableAlreadyExistsMessage matches the gateway messages used when CreateTable is retried on an existing table.
+// isTableAlreadyExistsMessage 用于匹配网关在重复创建已有表时返回的典型消息。
+func isTableAlreadyExistsMessage(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	if normalized == "" {
+		return false
+	}
+	return strings.Contains(normalized, "already exists")
 }
 
 // buildFilterExpr converts one search filter into the simple SQL-like predicate syntax accepted by the gateway.

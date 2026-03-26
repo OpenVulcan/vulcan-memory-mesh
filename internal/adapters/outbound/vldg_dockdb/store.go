@@ -16,7 +16,16 @@ import (
 	"google.golang.org/grpc/credentials/insecure"
 )
 
-const schemaSQL = `
+const (
+	currentSchemaVersion = 1
+	versionTableSQL      = `
+CREATE TABLE IF NOT EXISTS vmm_version (
+  singleton_id INTEGER PRIMARY KEY,
+  schema_version INTEGER NOT NULL,
+  updated_at VARCHAR NOT NULL
+);
+`
+	schemaV1SQL = `
 CREATE TABLE IF NOT EXISTS vmm_memories (
   id VARCHAR PRIMARY KEY,
   session_id VARCHAR NOT NULL,
@@ -68,6 +77,7 @@ CREATE TABLE IF NOT EXISTS vmm_chat_logs (
 CREATE INDEX IF NOT EXISTS idx_vmm_chat_logs_session_turn
   ON vmm_chat_logs(session_id, turn_index);
 `
+)
 
 // Store is the shared DuckDB-gateway adapter used by the local runtime for durable SQL-backed data.
 // Store 用于作为本地运行时的共享 DuckDB 网关适配器，承载长期 SQL 数据。
@@ -287,10 +297,70 @@ func (s *Store) Shutdown(ctx context.Context) error {
 // init creates the VMM tables on the gateway side before the local runtime begins serving traffic.
 // init 用于在本地运行时开始提供服务前，让网关侧先创建 VMM 所需的数据表。
 func (s *Store) init(ctx context.Context) error {
-	if err := s.exec(ctx, schemaSQL); err != nil {
-		return fmt.Errorf("init dockdb schema: %w", err)
+	// Bootstrap the schema version table first so later boots can apply only missing migrations.
+	// 先初始化版本表，让后续启动只需要补齐缺失迁移，而不是每次重跑整套建表脚本。
+	if err := s.exec(ctx, versionTableSQL); err != nil {
+		return fmt.Errorf("init dockdb version table: %w", err)
+	}
+
+	// Load the current schema version and apply forward-only migrations until the runtime catches up.
+	// 读取当前 schema 版本，并按顺序执行前向迁移直到追平当前运行时版本。
+	version, err := s.loadSchemaVersion(ctx)
+	if err != nil {
+		return fmt.Errorf("load dockdb schema version: %w", err)
+	}
+	for next := version + 1; next <= currentSchemaVersion; next++ {
+		if err := s.applySchemaMigration(ctx, next); err != nil {
+			return fmt.Errorf("apply dockdb schema migration v%d: %w", next, err)
+		}
+		if err := s.saveSchemaVersion(ctx, next); err != nil {
+			return fmt.Errorf("persist dockdb schema version v%d: %w", next, err)
+		}
 	}
 	return nil
+}
+
+// loadSchemaVersion reads the current VMM schema version row from DockDB and falls back to zero for fresh installs.
+// loadSchemaVersion 用于读取 DockDB 中当前 VMM schema 版本；对于首次安装则回退为零。
+func (s *Store) loadSchemaVersion(ctx context.Context) (int, error) {
+	rows, err := queryJSONRows[schemaVersionRow](ctx, s, `
+SELECT schema_version
+FROM vmm_version
+WHERE singleton_id = 1
+LIMIT 1
+`)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return rows[0].SchemaVersion, nil
+}
+
+// applySchemaMigration executes one forward-only DockDB schema migration identified by its target version.
+// applySchemaMigration 用于执行一条按目标版本编号区分的 DockDB 前向 schema 迁移。
+func (s *Store) applySchemaMigration(ctx context.Context, version int) error {
+	switch version {
+	case 1:
+		return s.exec(ctx, schemaV1SQL)
+	default:
+		return fmt.Errorf("unsupported dockdb schema version: %d", version)
+	}
+}
+
+// saveSchemaVersion replaces the singleton schema version row after one migration finishes successfully.
+// saveSchemaVersion 用于在单条迁移成功后替换单例 schema 版本记录。
+func (s *Store) saveSchemaVersion(ctx context.Context, version int) error {
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	if err := s.exec(ctx, `DELETE FROM vmm_version WHERE singleton_id = 1`); err != nil {
+		return err
+	}
+	return s.exec(ctx, `
+INSERT INTO vmm_version (singleton_id, schema_version, updated_at)
+VALUES (1, ?, ?)
+`, version, time.Now().UTC().Format(time.RFC3339Nano))
 }
 
 // loadMaxTurnIndex reads the current highest turn index for one session so new normalized turns can append safely.
@@ -408,4 +478,10 @@ type maxTurnIndexRow struct {
 // sessionCreatedAtRow 用于承接某个已存在会话记录的创建时间查询结果。
 type sessionCreatedAtRow struct {
 	CreatedAt string `json:"created_at"`
+}
+
+// schemaVersionRow captures the singleton schema version row returned during migration bootstrap.
+// schemaVersionRow 用于承接迁移初始化阶段返回的单例 schema 版本记录。
+type schemaVersionRow struct {
+	SchemaVersion int `json:"schema_version"`
 }

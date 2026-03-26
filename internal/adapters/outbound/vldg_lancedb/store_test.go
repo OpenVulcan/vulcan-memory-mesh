@@ -14,7 +14,9 @@ import (
 	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
 )
 
@@ -127,11 +129,45 @@ func TestSearchMapsRowsAndFilter(t *testing.T) {
 	}
 }
 
+// TestInitIgnoresAlreadyExistsTransportError verifies startup stays idempotent when the gateway surfaces table reuse as a gRPC error.
+// TestInitIgnoresAlreadyExistsTransportError 用于验证当网关通过 gRPC 错误报告“表已存在”时，启动仍保持幂等。
+func TestInitIgnoresAlreadyExistsTransportError(t *testing.T) {
+	server := &fakeLanceDBServer{
+		createErr: status.Error(codes.Internal, "Table 'vmm_memory_vectors' already exists"),
+	}
+	store := newLanceDBTestStoreWithoutInit(t, server)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init should tolerate already-exists transport error: %v", err)
+	}
+}
+
+// TestInitIgnoresAlreadyExistsResponse verifies startup also tolerates non-success responses that only report an existing table.
+// TestInitIgnoresAlreadyExistsResponse 用于验证当网关通过非成功响应报告“表已存在”时，启动同样会容忍该情况。
+func TestInitIgnoresAlreadyExistsResponse(t *testing.T) {
+	server := &fakeLanceDBServer{
+		createResponse: &lancedbv1.CreateTableResponse{Success: false, Message: "Table 'vmm_memory_vectors' already exists"},
+	}
+	store := newLanceDBTestStoreWithoutInit(t, server)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init should tolerate already-exists response: %v", err)
+	}
+}
+
 // newLanceDBTestStore creates one adapter instance backed by a bufconn gRPC server.
 // newLanceDBTestStore 用于创建一个由 bufconn gRPC 服务支撑的适配器测试实例。
 func newLanceDBTestStore(t *testing.T, server *fakeLanceDBServer) *Store {
 	t.Helper()
+	store := newLanceDBTestStoreWithoutInit(t, server)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	return store
+}
 
+// newLanceDBTestStoreWithoutInit creates one adapter test instance but leaves table bootstrap to the caller.
+// newLanceDBTestStoreWithoutInit 用于创建一个适配器测试实例，但把建表初始化交给调用方自行控制。
+func newLanceDBTestStoreWithoutInit(t *testing.T, server *fakeLanceDBServer) *Store {
+	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	grpcServer := grpc.NewServer()
 	lancedbv1.RegisterLanceDbServiceServer(grpcServer, server)
@@ -168,9 +204,6 @@ func newLanceDBTestStore(t *testing.T, server *fakeLanceDBServer) *Store {
 		vectorColumn: "vector",
 		dimension:    3,
 	}
-	if err := store.init(context.Background()); err != nil {
-		t.Fatalf("init store: %v", err)
-	}
 	return store
 }
 
@@ -180,6 +213,8 @@ type fakeLanceDBServer struct {
 	lancedbv1.UnimplementedLanceDbServiceServer
 	mu              sync.Mutex
 	createRequests  []*lancedbv1.CreateTableRequest
+	createResponse  *lancedbv1.CreateTableResponse
+	createErr       error
 	upsertCalls     []*lancedbv1.UpsertRequest
 	searchCalls     []*lancedbv1.SearchRequest
 	searchData      []byte
@@ -193,6 +228,12 @@ func (s *fakeLanceDBServer) CreateTable(ctx context.Context, req *lancedbv1.Crea
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.createRequests = append(s.createRequests, req)
+	if s.createErr != nil {
+		return nil, s.createErr
+	}
+	if s.createResponse != nil {
+		return s.createResponse, nil
+	}
 	return &lancedbv1.CreateTableResponse{Success: true, Message: "ok"}, nil
 }
 

@@ -21,7 +21,11 @@ import (
 // TestReplaceNoiseEmbeddingCacheRewritesScopedBundle verifies the adapter replaces one scoped cache bundle through delete-plus-insert writes.
 // TestReplaceNoiseEmbeddingCacheRewritesScopedBundle 用于验证适配器会通过“先删后插”重写指定作用域的缓存包。
 func TestReplaceNoiseEmbeddingCacheRewritesScopedBundle(t *testing.T) {
-	server := &fakeDuckDBServer{}
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":1}]`,
+		},
+	}
 	store := newDuckDBTestStore(t, server)
 
 	err := store.ReplaceNoiseEmbeddingCache(context.Background(), logicdomain.NoiseEmbeddingCacheQuery{
@@ -70,6 +74,7 @@ func TestReplaceNoiseEmbeddingCacheRewritesScopedBundle(t *testing.T) {
 func TestUpsertChatLogsAppendsTurnIndexes(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
+			"FROM vmm_version":   `[{"schema_version":1}]`,
 			"FROM vmm_chat_logs": `[{"max_turn_index":2}]`,
 		},
 	}
@@ -111,11 +116,78 @@ func TestUpsertChatLogsAppendsTurnIndexes(t *testing.T) {
 	}
 }
 
+// TestInitAppliesSchemaMigrationOnce verifies fresh installs create the version table, schema objects, and version row in order.
+// TestInitAppliesSchemaMigrationOnce 用于验证首次安装会按顺序创建版本表、业务表结构和版本记录。
+func TestInitAppliesSchemaMigrationOnce(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[]`,
+		},
+	}
+	store := newDuckDBTestStoreWithoutInit(t, server)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	// Fresh installs should bootstrap the version table, apply schema v1, and then persist version=1.
+	// 首次安装应先创建版本表，再执行 v1 schema，最后写入 version=1。
+	execs := server.execRequests()
+	if len(execs) != 4 {
+		t.Fatalf("expected 4 execute calls, got %d", len(execs))
+	}
+	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
+		t.Fatalf("first exec should bootstrap version table: %s", execs[0].Sql)
+	}
+	if !strings.Contains(execs[1].Sql, "CREATE TABLE IF NOT EXISTS vmm_memories") {
+		t.Fatalf("second exec should apply schema v1: %s", execs[1].Sql)
+	}
+	if !strings.Contains(execs[2].Sql, "DELETE FROM vmm_version") {
+		t.Fatalf("third exec should clear version row: %s", execs[2].Sql)
+	}
+	if !strings.Contains(execs[3].Sql, "INSERT INTO vmm_version") {
+		t.Fatalf("fourth exec should persist version row: %s", execs[3].Sql)
+	}
+}
+
+// TestInitSkipsSchemaMigrationWhenVersionMatches verifies steady-state boots only touch the version table and skip full schema DDL.
+// TestInitSkipsSchemaMigrationWhenVersionMatches 用于验证在版本已匹配时，稳定启动只接触版本表而不会重复执行整套 schema DDL。
+func TestInitSkipsSchemaMigrationWhenVersionMatches(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":1}]`,
+		},
+	}
+	store := newDuckDBTestStoreWithoutInit(t, server)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+
+	// Once the schema version is current, startup should only ensure the version table exists.
+	// 当 schema 版本已经最新时，启动阶段只需要确保版本表存在即可。
+	execs := server.execRequests()
+	if len(execs) != 1 {
+		t.Fatalf("expected 1 execute call, got %d", len(execs))
+	}
+	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
+		t.Fatalf("unexpected bootstrap sql: %s", execs[0].Sql)
+	}
+}
+
 // newDuckDBTestStore creates one adapter instance backed by a bufconn gRPC server.
 // newDuckDBTestStore 用于创建一个由 bufconn gRPC 服务支撑的适配器测试实例。
 func newDuckDBTestStore(t *testing.T, server *fakeDuckDBServer) *Store {
 	t.Helper()
+	store := newDuckDBTestStoreWithoutInit(t, server)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init store: %v", err)
+	}
+	return store
+}
 
+// newDuckDBTestStoreWithoutInit creates one adapter test instance and lets the caller control schema bootstrap timing.
+// newDuckDBTestStoreWithoutInit 用于创建一个适配器测试实例，并把 schema 初始化时机交给调用方控制。
+func newDuckDBTestStoreWithoutInit(t *testing.T, server *fakeDuckDBServer) *Store {
+	t.Helper()
 	listener := bufconn.Listen(1 << 20)
 	grpcServer := grpc.NewServer()
 	duckdbv1.RegisterDuckDbServiceServer(grpcServer, server)
@@ -148,9 +220,6 @@ func newDuckDBTestStore(t *testing.T, server *fakeDuckDBServer) *Store {
 		conn:    conn,
 		client:  duckdbv1.NewDuckDbServiceClient(conn),
 		timeout: time.Second,
-	}
-	if err := store.init(context.Background()); err != nil {
-		t.Fatalf("init store: %v", err)
 	}
 	return store
 }
