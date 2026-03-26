@@ -11,6 +11,9 @@ import (
 // acceptable, but deleting human-authored text is not.
 type Config struct {
 	ShortTextImmunityRunes int
+	MaxLineRunes           int
+	LongLineHeadRunes      int
+	LongLineTailRunes      int
 	Fenced                 Rules
 	Plain                  Rules
 }
@@ -29,6 +32,9 @@ type Rules struct {
 func DefaultConfig() Config {
 	return Config{
 		ShortTextImmunityRunes: 100,
+		MaxLineRunes:           1000,
+		LongLineHeadRunes:      240,
+		LongLineTailRunes:      120,
 		Fenced: Rules{
 			MinLines:        10,
 			MinRunes:        300,
@@ -70,13 +76,15 @@ func CleanMemoryTextWithConfig(raw string, cfg Config) string {
 	b.Grow(len(raw))
 	for _, seg := range segments {
 		if !seg.Fenced {
-			b.WriteString(processPlainText(seg.Content, cfg.Plain))
+			b.WriteString(processPlainText(seg.Content, cfg, cfg.Plain))
 			continue
 		}
 
 		// Do not treat fenced text as disposable by marker alone.
-		// First apply short-block immunity and Chinese-density protection.
-		if keepWholeBlock(seg.Content, cfg.Fenced) {
+		// Only truly small blocks are fully immune. Larger fenced blocks are
+		// still processed line-by-line so that Chinese JSON/logs can be folded
+		// while long prose remains intact.
+		if keepWholeBlock(seg.Content, cfg, cfg.Fenced) {
 			b.WriteString(seg.OpenFence)
 			b.WriteString(seg.Content)
 			b.WriteString(seg.CloseFence)
@@ -84,7 +92,7 @@ func CleanMemoryTextWithConfig(raw string, cfg Config) string {
 		}
 
 		b.WriteString(seg.OpenFence)
-		b.WriteString(processPlainText(seg.Content, cfg.Fenced))
+		b.WriteString(processPlainText(seg.Content, cfg, cfg.Fenced))
 		b.WriteString(seg.CloseFence)
 	}
 	return b.String()
@@ -107,18 +115,23 @@ const (
 )
 
 type lineInfo struct {
-	raw           string
-	text          string
-	kind          lineKind
-	runes         int
-	han           int
-	symbols       int
-	naturalWords  int
-	stackSignal   bool
-	logSignal     bool
-	jsonSignal    bool
-	codeSignal    bool
-	strongMachine bool
+	raw            string
+	text           string
+	kind           lineKind
+	runes          int
+	han            int
+	symbols        int
+	asciiLetters   int
+	digits         int
+	spaces         int
+	naturalWords   int
+	stackSignal    bool
+	logSignal      bool
+	jsonSignal     bool
+	codeSignal     bool
+	anchorSignal   bool
+	horizontalClip bool
+	strongMachine  bool
 }
 
 type blockStats struct {
@@ -134,6 +147,7 @@ type blockStats struct {
 	logSignals   int
 	jsonSignals  int
 	codeSignals  int
+	anchorLines  int
 }
 
 type compression struct {
@@ -226,22 +240,25 @@ func stripLineEnding(s string) string {
 	return s
 }
 
-func keepWholeBlock(content string, rules Rules) bool {
+func keepWholeBlock(content string, cfg Config, rules Rules) bool {
 	lines := splitLinesKeepEnd(content)
 	if len(lines) == 0 {
 		return true
 	}
-	stats := analyzeBlock(lines)
-	if stats.lineCount < rules.MinLines || stats.runeCount < rules.MinRunes {
-		return true
+
+	infos := make([]lineInfo, len(lines))
+	for i, line := range lines {
+		infos[i] = classifyLine(line, cfg)
+		if infos[i].horizontalClip {
+			return false
+		}
 	}
-	if stats.runeCount == 0 {
-		return true
-	}
-	return float64(stats.hanCount)/float64(stats.runeCount) >= rules.MaxHanRatio
+
+	stats := analyzeInfos(infos)
+	return stats.lineCount < rules.MinLines && stats.runeCount < rules.MinRunes
 }
 
-func processPlainText(s string, rules Rules) string {
+func processPlainText(s string, cfg Config, rules Rules) string {
 	lines := splitLinesKeepEnd(s)
 	if len(lines) == 0 {
 		return s
@@ -249,7 +266,7 @@ func processPlainText(s string, rules Rules) string {
 
 	infos := make([]lineInfo, len(lines))
 	for i, line := range lines {
-		infos[i] = classifyLine(line)
+		infos[i] = classifyLine(line, cfg)
 	}
 
 	var b strings.Builder
@@ -257,7 +274,7 @@ func processPlainText(s string, rules Rules) string {
 
 	for i := 0; i < len(lines); {
 		if infos[i].kind != lineMachine {
-			b.WriteString(lines[i])
+			b.WriteString(renderLine(lines[i], infos[i], cfg))
 			i++
 			continue
 		}
@@ -280,7 +297,7 @@ func processPlainText(s string, rules Rules) string {
 		cmp := compressRun(run, rules)
 		if !cmp.ok {
 			for j := start; j < end; j++ {
-				b.WriteString(lines[j])
+				b.WriteString(renderLine(lines[j], infos[j], cfg))
 			}
 			i = end
 			continue
@@ -288,12 +305,19 @@ func processPlainText(s string, rules Rules) string {
 
 		b.WriteString(cmp.text)
 		for j := cutEnd; j < end; j++ {
-			b.WriteString(lines[j])
+			b.WriteString(renderLine(lines[j], infos[j], cfg))
 		}
 		i = end
 	}
 
 	return b.String()
+}
+
+func renderLine(raw string, info lineInfo, cfg Config) string {
+	if info.horizontalClip && !info.anchorSignal {
+		return truncateLongLine(raw, cfg)
+	}
+	return raw
 }
 
 func compressRun(run []lineInfo, rules Rules) compression {
@@ -306,8 +330,22 @@ func compressRun(run []lineInfo, rules Rules) compression {
 		return compression{}
 	}
 
-	omitted := stats.lineCount - rules.HeadLines - rules.TailLines
-	if omitted < rules.MinOmittedLines {
+	headEnd := minInt(rules.HeadLines, len(run))
+	tailStart := len(run) - rules.TailLines
+	if tailStart < headEnd {
+		tailStart = headEnd
+	}
+	if tailStart > len(run) {
+		tailStart = len(run)
+	}
+
+	totalOmitted := 0
+	for i := headEnd; i < tailStart; i++ {
+		if !run[i].anchorSignal {
+			totalOmitted++
+		}
+	}
+	if totalOmitted < rules.MinOmittedLines {
 		return compression{}
 	}
 
@@ -315,11 +353,35 @@ func compressRun(run []lineInfo, rules Rules) compression {
 	label := inferLabel(stats)
 
 	var b strings.Builder
-	for i := 0; i < rules.HeadLines && i < len(run); i++ {
+	for i := 0; i < headEnd; i++ {
 		b.WriteString(run[i].raw)
 	}
-	if rules.HeadLines > 0 && len(run) > 0 && !strings.HasSuffix(run[minInt(rules.HeadLines, len(run))-1].raw, "\n") {
-		b.WriteString(newline)
+	prev := headEnd
+	for i := headEnd; i < tailStart; i++ {
+		if !run[i].anchorSignal {
+			continue
+		}
+		if i > prev {
+			writeFoldMarker(&b, i-prev, label, newline)
+		}
+		b.WriteString(run[i].raw)
+		if !strings.HasSuffix(run[i].raw, "\n") && !strings.HasSuffix(run[i].raw, "\r\n") && (i+1 < tailStart || tailStart < len(run)) {
+			b.WriteString(newline)
+		}
+		prev = i + 1
+	}
+	if tailStart > prev {
+		writeFoldMarker(&b, tailStart-prev, label, newline)
+	}
+	for i := tailStart; i < len(run); i++ {
+		b.WriteString(run[i].raw)
+	}
+	return compression{ok: true, text: b.String()}
+}
+
+func writeFoldMarker(b *strings.Builder, omitted int, label, newline string) {
+	if omitted <= 0 {
+		return
 	}
 	b.WriteString("... [中间 ")
 	b.WriteString(itoa(omitted))
@@ -327,14 +389,6 @@ func compressRun(run []lineInfo, rules Rules) compression {
 	b.WriteString(label)
 	b.WriteString("已按策略折叠，节省上下文] ...")
 	b.WriteString(newline)
-	tailStart := len(run) - rules.TailLines
-	if tailStart < rules.HeadLines {
-		tailStart = rules.HeadLines
-	}
-	for i := tailStart; i < len(run); i++ {
-		b.WriteString(run[i].raw)
-	}
-	return compression{ok: true, text: b.String()}
 }
 
 func shouldCompress(stats blockStats, rules Rules) bool {
@@ -345,6 +399,15 @@ func shouldCompress(stats blockStats, rules Rules) bool {
 		return false
 	}
 
+	machineRatio := float64(stats.machineLines) / float64(stats.nonBlank)
+	naturalRatio := float64(stats.naturalLines) / float64(stats.nonBlank)
+	symbolRatio := float64(stats.symbolCount) / float64(maxInt(stats.runeCount, 1))
+
+	forceStructured := dominantStructured(stats)
+	if forceStructured {
+		return true
+	}
+
 	hanRatio := 0.0
 	if stats.runeCount > 0 {
 		hanRatio = float64(stats.hanCount) / float64(stats.runeCount)
@@ -352,10 +415,6 @@ func shouldCompress(stats blockStats, rules Rules) bool {
 	if hanRatio >= rules.MaxHanRatio {
 		return false
 	}
-
-	machineRatio := float64(stats.machineLines) / float64(stats.nonBlank)
-	naturalRatio := float64(stats.naturalLines) / float64(stats.nonBlank)
-	symbolRatio := float64(stats.symbolCount) / float64(maxInt(stats.runeCount, 1))
 
 	if naturalRatio >= 0.35 {
 		return false
@@ -399,10 +458,15 @@ func shouldCompress(stats blockStats, rules Rules) bool {
 	return false
 }
 
-func analyzeBlock(lines []string) blockStats {
+func dominantStructured(stats blockStats) bool {
+	denom := maxInt(stats.nonBlank, 1)
+	return stats.jsonSignals*100 >= denom*60 || stats.logSignals*100 >= denom*60
+}
+
+func analyzeBlock(lines []string, cfg Config) blockStats {
 	infos := make([]lineInfo, len(lines))
 	for i, line := range lines {
-		infos[i] = classifyLine(line)
+		infos[i] = classifyLine(line, cfg)
 	}
 	return analyzeInfos(infos)
 }
@@ -438,49 +502,47 @@ func analyzeInfos(infos []lineInfo) blockStats {
 		if info.codeSignal {
 			stats.codeSignals++
 		}
+		if info.anchorSignal {
+			stats.anchorLines++
+		}
 	}
 	return stats
 }
 
-func classifyLine(raw string) lineInfo {
+func classifyLine(raw string, cfg Config) lineInfo {
 	text := stripLineEnding(raw)
 	trimmed := strings.TrimSpace(text)
 	if trimmed == "" {
 		return lineInfo{raw: raw, text: text, kind: lineBlank}
 	}
 
-	runes, han, symbols, asciiLetters, digits := countChars(trimmed)
+	runes, han, symbols, asciiLetters, digits, spaces := countChars(trimmed)
 	symbolRatio := float64(symbols) / float64(maxInt(runes, 1))
 	hanRatio := float64(han) / float64(maxInt(runes, 1))
 	words := countNaturalWords(trimmed)
 	indent := hasIndent(text)
 
+	anchorSignal := hasAnchorSignal(trimmed)
 	stackSignal := hasStackSignal(trimmed)
 	logSignal := hasLogSignal(trimmed)
 	jsonSignal := hasJSONSignal(trimmed)
 	codeSignal := hasCodeSignal(trimmed, indent, hanRatio)
 
-	strongMachine := stackSignal || logSignal || jsonSignal || codeSignal
+	structuredMachine := logSignal || (jsonSignal && (symbolRatio >= 0.08 || indent || startsStructured(trimmed)))
+	strongMachine := stackSignal || structuredMachine || codeSignal
 
-	naturalChinese := han >= 4 || (hanRatio >= 0.15 && runes >= 20)
-	naturalEnglish := words >= 6 && symbolRatio < 0.18 && !strongMachine
+	naturalChinese := !structuredMachine && (han >= 4 || (hanRatio >= 0.15 && runes >= 20))
+	englishRich := han == 0 && words >= 8 && asciiLetters >= 24 && !stackSignal && !logSignal && !jsonSignal
+	englishVeryRich := han == 0 && words >= 12 && asciiLetters >= maxInt(30, runes/3) && !stackSignal && !logSignal && !jsonSignal
+	naturalEnglish := (words >= 6 && symbolRatio < 0.18 && !stackSignal && !logSignal && !jsonSignal) ||
+		(englishRich && symbolRatio < 0.32) ||
+		(englishVeryRich && symbolRatio < 0.40)
 	naturalSentence := (strings.ContainsAny(trimmed, "。！？?!") && (han >= 2 || words >= 5)) ||
-		(strings.HasSuffix(trimmed, ".") && words >= 8 && !strongMachine)
+		(strings.HasSuffix(trimmed, ".") && words >= 8 && !stackSignal && !logSignal && !jsonSignal)
 
+	kind := lineNeutral
 	if naturalChinese || naturalEnglish || naturalSentence {
-		return lineInfo{
-			raw:          raw,
-			text:         text,
-			kind:         lineNatural,
-			runes:        runes,
-			han:          han,
-			symbols:      symbols,
-			naturalWords: words,
-			stackSignal:  stackSignal,
-			logSignal:    logSignal,
-			jsonSignal:   jsonSignal,
-			codeSignal:   codeSignal,
-		}
+		kind = lineNatural
 	}
 
 	lowHan := hanRatio < 0.08
@@ -490,43 +552,137 @@ func classifyLine(raw string) lineInfo {
 	switch {
 	case stackSignal:
 		machine = true
-	case logSignal && lowHan:
-		machine = true
-	case jsonSignal && lowHan:
+	case structuredMachine:
 		machine = true
 	case codeSignal && lowHan && (codeishDensity || heavySymbols || indent):
 		machine = true
 	case lowHan && heavySymbols && (indent || digits > 0 || asciiLetters > 0):
 		machine = true
 	}
-
-	kind := lineNeutral
 	if machine {
 		kind = lineMachine
 	}
 
+	horizontalClip := shouldHorizontallyTruncate(trimmed, cfg, runes, han, symbols, asciiLetters, digits, spaces, words, anchorSignal, stackSignal, logSignal, jsonSignal, codeSignal)
+
 	return lineInfo{
-		raw:           raw,
-		text:          text,
-		kind:          kind,
-		runes:         runes,
-		han:           han,
-		symbols:       symbols,
-		naturalWords:  words,
-		stackSignal:   stackSignal,
-		logSignal:     logSignal,
-		jsonSignal:    jsonSignal,
-		codeSignal:    codeSignal,
-		strongMachine: strongMachine,
+		raw:            raw,
+		text:           text,
+		kind:           kind,
+		runes:          runes,
+		han:            han,
+		symbols:        symbols,
+		asciiLetters:   asciiLetters,
+		digits:         digits,
+		spaces:         spaces,
+		naturalWords:   words,
+		stackSignal:    stackSignal,
+		logSignal:      logSignal,
+		jsonSignal:     jsonSignal,
+		codeSignal:     codeSignal,
+		anchorSignal:   anchorSignal,
+		horizontalClip: horizontalClip,
+		strongMachine:  strongMachine,
 	}
 }
 
-func countChars(s string) (runes, han, symbols, asciiLetters, digits int) {
+func shouldHorizontallyTruncate(trimmed string, cfg Config, runes, han, symbols, asciiLetters, digits, spaces, words int, anchorSignal, stackSignal, logSignal, jsonSignal, codeSignal bool) bool {
+	if anchorSignal || runes < cfg.MaxLineRunes {
+		return false
+	}
+
+	if jsonSignal || logSignal || stackSignal {
+		return true
+	}
+
+	symbolRatio := float64(symbols) / float64(maxInt(runes, 1))
+	machineDensity := float64(asciiLetters+digits+symbols) / float64(maxInt(runes, 1))
+	noSpaces := spaces == 0
+
+	if noSpaces && looksLikeBase64OrToken(trimmed) {
+		return true
+	}
+	if jsonSignal && machineDensity >= 0.80 {
+		return true
+	}
+	if han == 0 && words <= 8 && spaces <= 8 && machineDensity >= 0.92 && (symbolRatio >= 0.10 || codeSignal) {
+		return true
+	}
+	if han == 0 && words <= 4 && machineDensity >= 0.97 {
+		return true
+	}
+	return false
+}
+
+func looksLikeBase64OrToken(s string) bool {
+	if s == "" {
+		return false
+	}
+	valid := 0
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z':
+			valid++
+		case r >= 'A' && r <= 'Z':
+			valid++
+		case r >= '0' && r <= '9':
+			valid++
+		case r == '+' || r == '/' || r == '=' || r == '-' || r == '_':
+			valid++
+		default:
+			return false
+		}
+	}
+	return valid*100 >= len(s)*95
+}
+
+func truncateLongLine(raw string, cfg Config) string {
+	text := stripLineEnding(raw)
+	totalRunes := utf8.RuneCountInString(text)
+	if totalRunes <= cfg.MaxLineRunes {
+		return raw
+	}
+
+	headRunes := minInt(cfg.LongLineHeadRunes, totalRunes)
+	tailRunes := minInt(cfg.LongLineTailRunes, totalRunes-headRunes)
+	headByte := byteIndexAtRune(text, headRunes)
+	tailByte := byteIndexAtRune(text, totalRunes-tailRunes)
+
+	var b strings.Builder
+	b.Grow(headByte + (len(text) - tailByte) + 64)
+	b.WriteString(text[:headByte])
+	b.WriteString("...[单行超长机器文本已截断]...")
+	b.WriteString(text[tailByte:])
+	b.WriteString(raw[len(text):])
+	return b.String()
+}
+
+func byteIndexAtRune(s string, runePos int) int {
+	if runePos <= 0 {
+		return 0
+	}
+	count := 0
+	for i := range s {
+		if count == runePos {
+			return i
+		}
+		count++
+	}
+	return len(s)
+}
+
+func startsStructured(trimmed string) bool {
+	return strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") || strings.HasPrefix(trimmed, "\"") || strings.HasPrefix(trimmed, "'")
+}
+
+func countChars(s string) (runes, han, symbols, asciiLetters, digits, spaces int) {
 	for _, r := range s {
 		runes++
 		switch {
 		case unicode.Is(unicode.Han, r):
 			han++
+		case unicode.IsSpace(r):
+			spaces++
 		case r <= unicode.MaxASCII && ((r >= 'a' && r <= 'z') || (r >= 'A' && r <= 'Z')):
 			asciiLetters++
 		case r <= unicode.MaxASCII && r >= '0' && r <= '9':
@@ -567,6 +723,15 @@ func countNaturalWords(s string) int {
 
 func hasIndent(s string) bool {
 	return strings.HasPrefix(s, "    ") || strings.HasPrefix(s, "\t") || strings.HasPrefix(s, "  ")
+}
+
+func hasAnchorSignal(s string) bool {
+	lower := strings.ToLower(strings.TrimSpace(s))
+	return strings.Contains(lower, "caused by:") ||
+		strings.Contains(lower, "panic:") ||
+		strings.Contains(lower, "fatal error:") ||
+		strings.Contains(lower, "runtime error:") ||
+		strings.Contains(lower, "root cause:")
 }
 
 func hasStackSignal(s string) bool {

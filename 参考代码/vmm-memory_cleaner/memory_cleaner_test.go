@@ -250,6 +250,96 @@ func TestCleanMemoryText_LongChineseDocOutsideFenceNotKilled(t *testing.T) {
 	}
 }
 
+func TestCleanMemoryText_RootCauseAnchorPreserved(t *testing.T) {
+	input := "```java\n" + strings.Join([]string{
+		"java.lang.RuntimeException: top level failed",
+		"    at app.Service.run(Service.java:10)",
+		"    at app.Controller.handle(Controller.java:20)",
+		"    at app.Controller.handle(Controller.java:21)",
+		"    at app.Controller.handle(Controller.java:22)",
+		"    at app.Controller.handle(Controller.java:23)",
+		"    at app.Controller.handle(Controller.java:24)",
+		"    at app.Controller.handle(Controller.java:25)",
+		"Caused by: java.sql.SQLException: connection reset by peer",
+		"    at db.Driver.query(Driver.java:201)",
+		"    at db.Driver.query(Driver.java:202)",
+		"    at db.Driver.query(Driver.java:203)",
+		"    at db.Driver.query(Driver.java:204)",
+		"    at db.Driver.query(Driver.java:205)",
+		"    at java.base/java.lang.Thread.run(Thread.java:833)",
+		"exit status 1",
+	}, "\n") + "\n```"
+
+	got := CleanMemoryText(input)
+	if !strings.Contains(got, "Caused by: java.sql.SQLException: connection reset by peer") {
+		t.Fatalf("root cause anchor should be preserved\n%s", got)
+	}
+	if count := strings.Count(got, "[中间"); count < 2 {
+		t.Fatalf("expected fold marker around anchor, got %d\n%s", count, got)
+	}
+	if strings.Contains(got, "at db.Driver.query(Driver.java:202)") {
+		t.Fatalf("middle non-anchor lines should still be folded\n%s", got)
+	}
+}
+
+func TestCleanMemoryText_ChineseJSONInFenceStillCompressed(t *testing.T) {
+	input := "```json\n" + strings.Join([]string{
+		"[",
+		"  {\"商品\":\"红富士苹果礼盒\",\"描述\":\"精选山东产区，果径均匀，适合送礼\",\"价格\":128},",
+		"  {\"商品\":\"有机香蕉组合\",\"描述\":\"软糯香甜，适合家庭早餐与加餐\",\"价格\":56},",
+		"  {\"商品\":\"蓝莓大果盒\",\"描述\":\"冷链配送，到手可直接食用\",\"价格\":66},",
+		"  {\"商品\":\"车厘子双J\",\"描述\":\"节庆热卖，口感脆甜，含中文详细文案\",\"价格\":188},",
+		"  {\"商品\":\"芒果礼袋\",\"描述\":\"果香浓郁，适合制作甜品和果切\",\"价格\":79},",
+		"  {\"商品\":\"猕猴桃整箱\",\"描述\":\"维C丰富，酸甜平衡，支持生鲜次日达\",\"价格\":92},",
+		"  {\"商品\":\"草莓优选装\",\"描述\":\"颗粒饱满，适合直接食用或做蛋糕装饰\",\"价格\":88},",
+		"  {\"商品\":\"橙子家庭装\",\"描述\":\"汁水充沛，适合榨汁，中文字段很多很多\",\"价格\":68},",
+		"  {\"商品\":\"葡萄尝鲜装\",\"描述\":\"果粉完整，口感清甜，运输稳定\",\"价格\":73},",
+		"  {\"商品\":\"梨子大箱\",\"描述\":\"清甜多汁，适合家庭囤货与员工福利\",\"价格\":82}",
+		"]",
+	}, "\n") + "\n```"
+
+	got := CleanMemoryText(input)
+	if !strings.Contains(got, "[中间") {
+		t.Fatalf("Chinese JSON should still be compressed\n%s", got)
+	}
+	mustContainInOrder(t, got, "```json", "[", "红富士苹果礼盒", "[中间", "梨子大箱", "]", "```")
+	if strings.Contains(got, "草莓优选装") || strings.Contains(got, "橙子家庭装") {
+		t.Fatalf("middle Chinese JSON rows should be folded\n%s", got)
+	}
+}
+
+func TestCleanMemoryText_SingleLongBase64LineTruncated(t *testing.T) {
+	payload := "BASE64BEGIN" + strings.Repeat("QUJDREVGR0hJSktMTU5PUFFSU1RVVldYWVo", 160) + "BASE64END"
+	input := "下面是一行超长 token：\n" + payload + "\n请只保留关键上下文。"
+
+	got := CleanMemoryText(input)
+	if !strings.Contains(got, "单行超长机器文本已截断") {
+		t.Fatalf("expected horizontal truncation\n%s", got)
+	}
+	if !strings.Contains(got, "BASE64BEGIN") || !strings.Contains(got, "BASE64END") {
+		t.Fatalf("head and tail of long line should be preserved\n%s", got)
+	}
+	if strings.Contains(got, payload) {
+		t.Fatalf("full payload should not remain intact\n%s", got)
+	}
+	if !strings.Contains(got, "下面是一行超长 token") || !strings.Contains(got, "请只保留关键上下文") {
+		t.Fatalf("surrounding natural language should be preserved\n%s", got)
+	}
+}
+
+func TestCleanMemoryText_EnglishRegexDiscussionPreserved(t *testing.T) {
+	input := strings.Join([]string{
+		"In plain English, the regex ^[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}$ is just validating the rough shape of an email address, and grep -E lets you use a similar idea from the shell.",
+		"I am not pasting a log, stack trace, or minified program here; I am explaining what anchors, quantifiers, and character classes mean to another engineer in ordinary prose.",
+		"When a message discusses sed, awk, or a tiny command example inside a paragraph, the cleaner should preserve that English technical context exactly instead of collapsing it as machine text.",
+	}, "\n")
+
+	got := CleanMemoryText(input)
+	if got != input {
+		t.Fatalf("English technical discussion should be preserved\ninput:\n%s\n\ngot:\n%s", input, got)
+	}
+}
+
 func mustContainInOrder(t *testing.T, s string, subs ...string) {
 	t.Helper()
 	pos := 0
