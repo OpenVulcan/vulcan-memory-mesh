@@ -148,10 +148,10 @@ func TestPostActionReturnsAcceptedImmediately(t *testing.T) {
 	ctx := metadata.NewOutgoingContext(context.Background(), metadata.Pairs("x-trace-id", "trace-fixed"))
 	resp, err := fixture.client.PostAction(ctx, &vmmv1.PostActionRequest{
 		SessionId:        "s1",
-		UserContent:      "第一问",
-		AssistantContent: "最终回答",
+		UserContent:      "<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)",
+		AssistantContent: "最终回答 " + strings.Repeat("longword ", 1700),
 		Timeline: []*vmmv1.PostActionTimelineItem{
-			{Type: "assistant", Content: "中间回答"},
+			{Type: "assistant", Content: "中间回答 data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA"},
 			{Type: "user", Content: "补充问题"},
 		},
 	})
@@ -169,11 +169,34 @@ func TestPostActionReturnsAcceptedImmediately(t *testing.T) {
 		if len(cmd.RawMessagesSnapshot) != 4 {
 			t.Fatalf("snapshot len = %d", len(cmd.RawMessagesSnapshot))
 		}
+		if got := cmd.RawMessagesSnapshot[0].Content; got != "第一问 [图片: 猫]" {
+			t.Fatalf("sanitized user_content = %#v", got)
+		}
+		if got := cmd.RawMessagesSnapshot[1].Content; got != "中间回答 [图片已过滤]" {
+			t.Fatalf("sanitized timeline content = %#v", got)
+		}
+		assistantText, ok := cmd.RawMessagesSnapshot[3].Content.(string)
+		if !ok {
+			t.Fatalf("assistant content type = %T", cmd.RawMessagesSnapshot[3].Content)
+		}
+		if !strings.Contains(assistantText, "[已按 Token 预算截断]") {
+			t.Fatalf("assistant content did not include token marker: %q", assistantText)
+		}
 	case <-time.After(500 * time.Millisecond):
 		t.Fatal("background processing did not start")
 	}
-	if !strings.Contains(logBuf.String(), `msg="post-action received"`) {
-		t.Fatalf("expected receipt log, got %s", logBuf.String())
+	logs := logBuf.String()
+	if !strings.Contains(logs, `msg="post-action received raw"`) {
+		t.Fatalf("expected raw receipt log, got %s", logs)
+	}
+	if !strings.Contains(logs, `msg="post-action received cleaned"`) {
+		t.Fatalf("expected cleaned receipt log, got %s", logs)
+	}
+	if !strings.Contains(logs, `<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)`) {
+		t.Fatalf("expected raw payload in logs, got %s", logs)
+	}
+	if !strings.Contains(logs, `第一问 [图片: 猫]`) {
+		t.Fatalf("expected cleaned payload in logs, got %s", logs)
 	}
 }
 

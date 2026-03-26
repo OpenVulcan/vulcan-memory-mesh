@@ -329,9 +329,13 @@
 服务端行为：
 
 1. 校验参数
-2. 把内容打到控制台日志
-3. 立即返回 `accepted=true`
-4. 后台继续复用旧版持久化主线
+2. 分别输出原始请求日志和清洗后请求日志
+3. 对 `user_content`、`timeline[].content`、`assistant_content` 执行存储型清洗：
+   - 媒体与 base64 清理
+   - 机器文本压缩
+   - token 预算裁剪
+4. 立即返回 `accepted=true`
+5. 后台继续复用旧版持久化主线
 
 额外规则：
 

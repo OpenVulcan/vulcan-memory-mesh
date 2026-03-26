@@ -48,8 +48,8 @@ func normalizePreCheckRequest(req *vmmv1.PreCheckRequest) {
 	req.UserContent = textutil.CleanConversationText(req.UserContent)
 }
 
-// normalizePostActionRequest trims scope identifiers and sanitizes the text-only post-action payload.
-// normalizePostActionRequest 用于裁剪范围标识，并清洗纯文本 post-action 载荷。
+// normalizePostActionRequest trims scope identifiers and normalizes lightweight shape fields before storage-oriented cleaning happens later.
+// normalizePostActionRequest 用于裁剪范围标识，并在后续存储型清洗执行前先规范化轻量结构字段。
 func normalizePostActionRequest(req *vmmv1.PostActionRequest) {
 	if req == nil {
 		return
@@ -59,11 +59,11 @@ func normalizePostActionRequest(req *vmmv1.PostActionRequest) {
 	req.TeamId = defaultScope(strings.TrimSpace(req.TeamId))
 	req.SpaceId = defaultScope(strings.TrimSpace(req.SpaceId))
 	req.ProjectId = defaultScope(strings.TrimSpace(req.ProjectId))
-	req.UserContent = textutil.CleanConversationText(req.UserContent)
-	req.AssistantContent = textutil.CleanConversationText(req.AssistantContent)
+	req.UserContent = strings.TrimSpace(req.UserContent)
+	req.AssistantContent = strings.TrimSpace(req.AssistantContent)
 	for _, item := range req.Timeline {
 		item.Type = strings.ToLower(strings.TrimSpace(item.Type))
-		item.Content = textutil.CleanConversationText(item.Content)
+		item.Content = strings.TrimSpace(item.Content)
 	}
 }
 

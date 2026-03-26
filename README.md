@@ -81,6 +81,11 @@ scripts/
   - `user_content`
   - `assistant_content`
   - `timeline`
+- 新 `PostAction` 会分别输出清洗前和清洗后的本地调试日志
+- `user_content`、`timeline[].content`、`assistant_content` 在入库前会执行：
+  - 媒体与 base64 清理
+  - 机器文本压缩
+  - token 预算裁剪
 - `timeline` 非空时会跳过 `NoiseGate`
 - `timeline` 为空时会继续执行标准噪声门判定
 - 方法会先返回 `accepted=true`，然后在后台继续复用旧版持久化逻辑

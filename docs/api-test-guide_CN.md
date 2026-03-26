@@ -237,7 +237,13 @@ grpcurl -plaintext `
 
 - `timeline` 非空时会跳过 `NoiseGate`
 - `timeline` 为空时，才会继续执行标准噪声门判定
-- 服务端会把这次请求内容打印到控制台日志，便于本地调试
+- 服务端会输出两份控制台日志，分别是：
+  - 原始请求
+  - 清洗后请求
+- `userContent`、`timeline[].content`、`assistantContent` 在入库前会额外执行：
+  - 媒体与 base64 清理
+  - 机器文本压缩
+  - token 预算裁剪
 
 ## 5. PostActionOld
 

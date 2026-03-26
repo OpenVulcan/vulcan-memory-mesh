@@ -12,6 +12,7 @@ import (
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 	"google.golang.org/grpc"
 	"google.golang.org/protobuf/types/known/emptypb"
@@ -49,6 +50,7 @@ type Server struct {
 	seedTimeout time.Duration
 	logger      *logx.Logger
 	validate    *RequestValidator
+	sanitizer   *textutil.PostActionTextSanitizer
 }
 
 // NewServer creates a gRPC server implementation from the supplied dependencies.
@@ -71,6 +73,7 @@ func NewServer(deps Dependencies) *Server {
 		seedTimeout: deps.SeedMemoryTimeout,
 		logger:      deps.Logger,
 		validate:    deps.Validator,
+		sanitizer:   textutil.NewPostActionTextSanitizer(),
 	}
 }
 
@@ -168,13 +171,16 @@ func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (
 	if s.postAction == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
+	rawReq := clonePostActionRequest(req)
 	normalizePostActionRequest(req)
 	if err := s.validate.ValidatePostAction(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	traceID := trace.IDFromContext(ctx)
-	cmd := toAsyncPostActionCommand(req)
-	s.logAsyncPostActionReceipt(traceID, req)
+	cleanedReq := s.sanitizePostActionRequest(req)
+	cmd := toAsyncPostActionCommand(cleanedReq)
+	s.logAsyncPostActionReceipt(traceID, "post-action received raw", rawReq)
+	s.logAsyncPostActionReceipt(traceID, "post-action received cleaned", cleanedReq)
 
 	// Acknowledge first so upstream plugins are not blocked by downstream persistence work.
 	// 先返回确认，避免上游插件被下游持久化工作阻塞。
@@ -311,17 +317,57 @@ func toAsyncPostActionCommand(req *vmmv1.PostActionRequest) usecase.PostActionCo
 	}
 }
 
-// logAsyncPostActionReceipt writes the accepted text-only payload into the runtime logger for local debugging.
-// logAsyncPostActionReceipt 用于把已接收的新纯文本载荷写入运行时日志，方便本地调试。
-func (s *Server) logAsyncPostActionReceipt(traceID string, req *vmmv1.PostActionRequest) {
+// sanitizePostActionRequest clones the validated request into one storage-ready copy so raw logs and persisted text can diverge safely.
+// sanitizePostActionRequest 用于把已校验请求复制成一份面向存储的版本，让原始日志与入库文本可以安全分离。
+func (s *Server) sanitizePostActionRequest(req *vmmv1.PostActionRequest) *vmmv1.PostActionRequest {
+	cloned := clonePostActionRequest(req)
+	if cloned == nil || s == nil || s.sanitizer == nil {
+		return cloned
+	}
+	cloned.UserContent = s.sanitizer.Sanitize(cloned.GetUserContent())
+	cloned.AssistantContent = s.sanitizer.Sanitize(cloned.GetAssistantContent())
+	for _, item := range cloned.GetTimeline() {
+		item.Content = s.sanitizer.Sanitize(item.GetContent())
+	}
+	return cloned
+}
+
+// clonePostActionRequest copies the new post-action request so normalization, cleaning, and logging can operate on independent instances.
+// clonePostActionRequest 用于复制新的 post-action 请求，让规范化、清洗和日志输出可以在独立实例上进行。
+func clonePostActionRequest(req *vmmv1.PostActionRequest) *vmmv1.PostActionRequest {
+	if req == nil {
+		return nil
+	}
+	cloned := &vmmv1.PostActionRequest{
+		SessionId:        req.GetSessionId(),
+		UserId:           req.GetUserId(),
+		TeamId:           req.GetTeamId(),
+		SpaceId:          req.GetSpaceId(),
+		ProjectId:        req.GetProjectId(),
+		UserContent:      req.GetUserContent(),
+		AssistantContent: req.GetAssistantContent(),
+		Timeline:         make([]*vmmv1.PostActionTimelineItem, 0, len(req.GetTimeline())),
+	}
+	for _, item := range req.GetTimeline() {
+		cloned.Timeline = append(cloned.Timeline, &vmmv1.PostActionTimelineItem{
+			Type:    item.GetType(),
+			Content: item.GetContent(),
+		})
+	}
+	return cloned
+}
+
+// logAsyncPostActionReceipt writes one accepted text-only payload snapshot into the runtime logger for local debugging.
+// logAsyncPostActionReceipt 用于把某个已接收的纯文本载荷快照写入运行时日志，方便本地调试。
+func (s *Server) logAsyncPostActionReceipt(traceID, message string, req *vmmv1.PostActionRequest) {
 	if s == nil || s.logger == nil {
 		return
 	}
 	timelineJSON, err := json.Marshal(req.GetTimeline())
 	if err != nil {
-		s.logger.Warn("post-action received timeline marshal failed", "trace_id", traceID, "session_id", req.GetSessionId(), "err", err)
-		s.logger.Info("post-action received", "trace_id", traceID, "session_id", req.GetSessionId(), "user_content", req.GetUserContent(), "assistant_content", req.GetAssistantContent(), "timeline_items", len(req.GetTimeline()))
+		s.logger.Warn(message+" timeline marshal failed", "trace_id", traceID, "session_id", req.GetSessionId(), "err", err)
+		s.logger.Info(message, "trace_id", traceID, "session_id", req.GetSessionId(), "user_content", req.GetUserContent(), "assistant_content", req.GetAssistantContent(), "timeline_items", len(req.GetTimeline()))
 		return
 	}
-	s.logger.Info("post-action received", "trace_id", traceID, "session_id", req.GetSessionId(), "user_content", req.GetUserContent(), "assistant_content", req.GetAssistantContent(), "timeline", string(timelineJSON))
+	s.logger.Info(message, "trace_id", traceID, "session_id", req.GetSessionId(), "user_content", req.GetUserContent(), "assistant_content", req.GetAssistantContent(), "timeline", string(timelineJSON))
 }
