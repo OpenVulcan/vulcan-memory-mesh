@@ -22,8 +22,8 @@ type ChatCommand struct {
 	Language  string
 }
 
-// ChatResult returns the scrubbed message content back to the HTTP transport layer.
-// ChatResult 用于把脱敏后的消息内容返回给 HTTP 传输层。
+// ChatResult returns the scrubbed message content back to the inbound transport adapter.
+// ChatResult 用于把脱敏后的消息内容返回给入站传输适配层。
 type ChatResult struct {
 	SessionID string
 	Message   string
@@ -31,8 +31,8 @@ type ChatResult struct {
 	TraceID   string
 }
 
-// ChatExecutor is the interface consumed by the HTTP adapter for the /chat archive route.
-// ChatExecutor 用于让 HTTP 适配层执行 /chat 归档路由。
+// ChatExecutor is the interface consumed by the inbound gRPC adapter for the Chat archive method.
+// ChatExecutor 用于让入站 gRPC 适配层执行 Chat 归档方法。
 type ChatExecutor interface {
 	Execute(ctx context.Context, cmd ChatCommand) (ChatResult, error)
 }

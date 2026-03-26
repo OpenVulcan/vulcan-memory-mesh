@@ -15,13 +15,13 @@ func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
 	cfg.PreCheck.SimilarityThreshold = 0.82
-	cfg.HTTP.MaxRequestBodyBytes = 0
+	cfg.GRPC.MaxReceiveMessageBytes = 0
 	cfg.Normalize()
 	if cfg.MemoryPipeline.MaxSearchKeywords != 5 {
 		t.Fatalf("max search keywords = %d", cfg.MemoryPipeline.MaxSearchKeywords)
 	}
-	if cfg.HTTP.MaxRequestBodyBytes != 1<<20 {
-		t.Fatalf("max request body bytes = %d", cfg.HTTP.MaxRequestBodyBytes)
+	if cfg.GRPC.MaxReceiveMessageBytes != 1<<20 {
+		t.Fatalf("max receive message bytes = %d", cfg.GRPC.MaxReceiveMessageBytes)
 	}
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity = %v", cfg.MemoryPipeline.MinSimilarityScore)
@@ -37,24 +37,6 @@ func TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp(t *testing.T) {
 	cfg.Normalize()
 	if cfg.MemoryPipeline.MaxSearchKeywords != 10 {
 		t.Fatalf("max search keywords after clamp = %d", cfg.MemoryPipeline.MaxSearchKeywords)
-	}
-}
-
-// TestConfigValidateRequiresTLSFiles verifies the TestConfigValidateRequiresTLSFiles behavior.
-// TestConfigValidateRequiresTLSFiles 用于验证 TestConfigValidateRequiresTLSFiles 行为。
-func TestConfigValidateRequiresTLSFiles(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.HTTP.TLS.Enabled = true
-	cfg.HTTP.TLS.CertFile = ""
-	cfg.HTTP.TLS.KeyFile = "server.key"
-	if err := cfg.Validate(); err == nil || err.Error() != "http.tls.cert_file is required when tls is enabled" {
-		t.Fatalf("unexpected validate error: %v", err)
-	}
-
-	cfg.HTTP.TLS.CertFile = "server.crt"
-	cfg.HTTP.TLS.KeyFile = ""
-	if err := cfg.Validate(); err == nil || err.Error() != "http.tls.key_file is required when tls is enabled" {
-		t.Fatalf("unexpected validate error: %v", err)
 	}
 }
 
@@ -132,7 +114,7 @@ func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	configBody := `{
-		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
@@ -167,7 +149,7 @@ func TestLoadIgnoresMissingDotEnvAndUsesProcessEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	configBody := `{
-		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
@@ -214,7 +196,7 @@ func TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority(t *testing.
 	systemConfig := filepath.Join(systemConfigDir, "local.json")
 	userConfig := filepath.Join(userConfigDir, "local.json")
 	if err := os.WriteFile(systemConfig, []byte(`{
-		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"system-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
@@ -271,7 +253,7 @@ func TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride(t *testing.T) {
 	systemConfig := filepath.Join(systemConfigDir, "local.json")
 	overrideConfig := filepath.Join(overrideDir, "local.json")
 	if err := os.WriteFile(systemConfig, []byte(`{
-		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"system-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"memory"},
@@ -316,7 +298,7 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 		t.Fatal(err)
 	}
 	configBody := `{
-		"http":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
 		"llm":{
 			"provider":"openai",
 			"endpoint":"https://api.openai.com/v1",
@@ -374,7 +356,7 @@ func restoreEnv(t *testing.T, key string) {
 // newValidConfigForTest 用于返回一份最小且完整的真实模型配置，让聚焦校验测试只因为目标字段而失败。
 func newValidConfigForTest() Config {
 	cfg := DefaultLocal()
-	cfg.HTTP.ListenAddr = "127.0.0.1:8080"
+	cfg.GRPC.ListenAddr = "127.0.0.1:8080"
 	cfg.LLM.Endpoint = "https://api.openai.com/v1"
 	cfg.LLM.APIKey = "test-key"
 	cfg.Embedding.Endpoint = "https://api.openai.com/v1"

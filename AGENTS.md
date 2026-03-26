@@ -57,12 +57,14 @@
 
 对于 `pii_rules` 和 `noise_rules`，当前代码已经实现了“用户层优先、系统层兜底”的文件选择逻辑。不要在不更新文档和测试的情况下，悄悄修改这些优先级规则。
 
-## HTTP 与持久化规则
+## gRPC 与持久化规则
 
 - `post-action` 支持 `compat` 和 `strict` 两种模式。
 - 入站清洗层负责处理媒体/base64/`<think>` 标签等文本净化。
 - `MessageNormalizer` 只负责把已经清洗过的文本归一成标准轮次。
 - `NoiseGate` 在关系存储写入前执行，用于判断一条标准化轮次是否值得进入长期记忆。
+- 当前运行时只装配 gRPC 服务，不再装配 HTTP 服务。
+- 当前运行时不再内建 TLS；如果需要 TLS，请在前面使用 Caddy。
 
 ## 测试规则
 
@@ -76,7 +78,7 @@
 
 最少要跑：
 
-- `go test ./internal/adapters/inbound/http ./internal/app/usecase ./internal/logic/processor ./internal/platform/textutil ./internal/platform/pii ./internal/config`
+- `go test ./internal/adapters/inbound/grpcapi ./internal/app/usecase ./internal/logic/processor ./internal/platform/textutil ./internal/platform/pii ./internal/config`
 
 在完成较大改动前，还必须跑：
 

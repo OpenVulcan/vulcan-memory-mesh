@@ -56,8 +56,8 @@ func main() {
 		os.Exit(1)
 	}
 
-	// Compose the application and start the HTTP service.
-	// 完成应用装配并启动 HTTP 服务。
+	// Compose the application and start the gRPC service.
+	// 完成应用装配并启动 gRPC 服务。
 	application, err := app.NewLocal(cfg, prompts, layout)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "build app: %v\n", err)

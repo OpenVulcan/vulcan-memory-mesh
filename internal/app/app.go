@@ -4,14 +4,16 @@ package app
 
 import (
 	"context"
+	"errors"
 	"fmt"
-	"net/http"
+	"net"
 	"os"
 	"os/signal"
 	"strings"
 	"syscall"
 
-	httpapi "github.com/openvulcan/vmm/internal/adapters/inbound/http"
+	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
+	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_dockdb"
@@ -23,15 +25,16 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/pii"
 	"github.com/openvulcan/vmm/internal/platform/xid"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
 )
 
-// Application holds the fully wired local runtime, including the HTTP server and shutdown hooks.
-// Application 用于持有完整装配后的本地运行时，包括 HTTP 服务和关闭钩子。
+// Application holds the fully wired local runtime, including the gRPC server and shutdown hooks.
+// Application 用于持有完整装配后的本地运行时，包括 gRPC 服务和关闭钩子。
 type Application struct {
 	Config    config.Config
 	Logger    *logx.Logger
-	Handler   http.Handler
-	Server    *http.Server
+	Server    *grpc.Server
 	Shutdowns []appports.Shutdowner
 }
 
@@ -93,25 +96,31 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	seed := usecase.NewSeedMemoryUseCase(embedding, vector, ids, logger, cfg.Embedding.Model, cfg.Embedding.Dimension)
 	enableSeed := cfg.Admin.SeedEnabled
 
-	// Wire HTTP handlers and shutdown dependencies into the application container.
-	// 将 HTTP 处理器和关闭依赖接入应用容器。
-	deps := httpapi.Dependencies{
-		IDs:                 ids,
-		Chat:                chat,
-		PreCheck:            pre,
-		PostAction:          post,
-		SeedMemory:          seed,
-		Logger:              logger,
-		Validator:           httpapi.NewRequestValidator(cfg.PostAction.InputMode),
-		ChatTimeout:         cfg.HTTP.RequestTimeout.Chat.Duration,
-		PreCheckTimeout:     cfg.HTTP.RequestTimeout.PreCheck.Duration,
-		PostActionTimeout:   cfg.HTTP.RequestTimeout.PostAction.Duration,
-		SeedMemoryTimeout:   cfg.HTTP.RequestTimeout.SeedMemory.Duration,
-		MaxRequestBodyBytes: cfg.HTTP.MaxRequestBodyBytes,
-		LogRequestBodies:    cfg.Logging.LogRequestBodies,
-		EnableSeedRoute:     enableSeed,
+	// Wire gRPC handlers and shutdown dependencies into the application container.
+	// 将 gRPC 处理器和关闭依赖接入应用容器。
+	deps := grpcapi.Dependencies{
+		IDs:               ids,
+		Chat:              chat,
+		PreCheck:          pre,
+		PostAction:        post,
+		SeedMemory:        seed,
+		Logger:            logger,
+		Validator:         grpcapi.NewRequestValidator(cfg.PostAction.InputMode),
+		ChatTimeout:       cfg.GRPC.RequestTimeout.Chat.Duration,
+		PreCheckTimeout:   cfg.GRPC.RequestTimeout.PreCheck.Duration,
+		PostActionTimeout: cfg.GRPC.RequestTimeout.PostAction.Duration,
+		SeedMemoryTimeout: cfg.GRPC.RequestTimeout.SeedMemory.Duration,
 	}
-	handler := httpapi.NewRouter(deps)
+	grpcOptions := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(cfg.GRPC.MaxReceiveMessageBytes),
+		grpc.ChainUnaryInterceptor(grpcapi.BuildUnaryInterceptors(deps)...),
+	}
+	server := grpc.NewServer(grpcOptions...)
+	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
+
+	// Register server reflection so grpcurl and other local debugging tools can inspect services directly.
+	// 注册服务反射，让 grpcurl 等本地调试工具可以直接发现服务定义。
+	reflection.Register(server)
 	shutdowns := []appports.Shutdowner{}
 	if archiveStore != nil {
 		shutdowns = append(shutdowns, archiveStore)
@@ -122,28 +131,28 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if vector != nil {
 		shutdowns = append(shutdowns, vector)
 	}
-	server := &http.Server{Addr: cfg.HTTP.ListenAddr, Handler: handler}
-	return &Application{Config: cfg, Logger: logger, Handler: handler, Server: server, Shutdowns: shutdowns}, nil
+	if !enableSeed {
+		logger.Info("seed-memory rpc disabled")
+	}
+	return &Application{Config: cfg, Logger: logger, Server: server, Shutdowns: shutdowns}, nil
 }
 
 // Run executes the Run logic.
 // Run 用于执行 Run 逻辑。
 func (a *Application) Run(ctx context.Context) error {
-	// Start the HTTP server asynchronously so shutdown signals can be observed.
-	// 异步启动 HTTP 服务，以便同时监听关闭信号。
+	// Start the gRPC server asynchronously so shutdown signals can be observed.
+	// 异步启动 gRPC 服务，以便同时监听关闭信号。
 	errCh := make(chan error, 1)
 	go func() {
-		protocol := "http"
-		var err error
-		if a.Config.HTTP.TLS.Enabled {
-			protocol = "https"
-			a.Logger.Info("http server listening", "protocol", protocol, "addr", a.Server.Addr, "tls_cert_file", a.Config.HTTP.TLS.CertFile)
-			err = a.Server.ListenAndServeTLS(a.Config.HTTP.TLS.CertFile, a.Config.HTTP.TLS.KeyFile)
-		} else {
-			a.Logger.Info("http server listening", "protocol", protocol, "addr", a.Server.Addr)
-			err = a.Server.ListenAndServe()
+		// Bind the TCP listener at start time so Caddy or other proxies can terminate TLS in front of gRPC.
+		// 在启动时绑定 TCP 监听器，让 Caddy 或其他代理在 gRPC 前面终止 TLS。
+		listener, err := net.Listen("tcp", a.Config.GRPC.ListenAddr)
+		if err != nil {
+			errCh <- err
+			return
 		}
-		if err != nil && err != http.ErrServerClosed {
+		a.Logger.Info("grpc server listening", "addr", listener.Addr().String())
+		if err := a.Server.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			errCh <- err
 			return
 		}
@@ -169,12 +178,19 @@ func (a *Application) Run(ctx context.Context) error {
 // Shutdown executes the Shutdown logic.
 // Shutdown 用于执行 Shutdown 逻辑。
 func (a *Application) Shutdown(ctx context.Context) error {
-	// Stop accepting new HTTP requests before tearing down downstream resources.
-	// 先停止接收新的 HTTP 请求，再销毁下游资源。
-	shutdownCtx, cancel := context.WithTimeout(ctx, a.Config.HTTP.ShutdownTimeout.Duration)
+	// Stop accepting new gRPC requests before tearing down downstream resources.
+	// 先停止接收新的 gRPC 请求，再销毁下游资源。
+	shutdownCtx, cancel := context.WithTimeout(ctx, a.Config.GRPC.ShutdownTimeout.Duration)
 	defer cancel()
-	if err := a.Server.Shutdown(shutdownCtx); err != nil {
-		return fmt.Errorf("shutdown http server: %w", err)
+	stopped := make(chan struct{})
+	go func() {
+		a.Server.GracefulStop()
+		close(stopped)
+	}()
+	select {
+	case <-shutdownCtx.Done():
+		a.Server.Stop()
+	case <-stopped:
 	}
 
 	// Release dependencies in reverse order to match the construction sequence.

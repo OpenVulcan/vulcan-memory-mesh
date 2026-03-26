@@ -52,7 +52,7 @@ func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()
 // Config is the root runtime configuration loaded before the local application starts.
 // Config 用于表示本地应用启动前加载的根配置对象。
 type Config struct {
-	HTTP           HTTPConfig           `json:"http"`
+	GRPC           GRPCConfig           `json:"grpc"`
 	Logging        LoggingConfig        `json:"logging"`
 	PII            PIIConfig            `json:"pii"`
 	Noise          NoiseConfig          `json:"noise"`
@@ -69,39 +69,29 @@ type Config struct {
 	Admin          AdminConfig          `json:"admin"`
 }
 
-// HTTPConfig holds listener and timeout settings for the inbound HTTP server.
-// HTTPConfig 用于保存入站 HTTP 服务的监听地址和超时配置。
-type HTTPConfig struct {
-	ListenAddr          string             `json:"listen_addr"`
-	MaxRequestBodyBytes int64              `json:"max_request_body_bytes"`
-	RequestTimeout      HTTPRequestTimeout `json:"request_timeout"`
-	ShutdownTimeout     Duration           `json:"shutdown_timeout"`
-	TLS                 HTTPTLSConfig      `json:"tls"`
+// GRPCConfig holds listener and timeout settings for the inbound gRPC server.
+// GRPCConfig 用于保存入站 gRPC 服务的监听地址和超时配置。
+type GRPCConfig struct {
+	ListenAddr             string             `json:"listen_addr"`
+	MaxReceiveMessageBytes int                `json:"max_receive_message_bytes"`
+	RequestTimeout         GRPCRequestTimeout `json:"request_timeout"`
+	ShutdownTimeout        Duration           `json:"shutdown_timeout"`
 }
 
-// HTTPRequestTimeout groups per-route timeout settings used by the HTTP handlers.
-// HTTPRequestTimeout 用于收集各条 HTTP 路由使用的超时配置。
-type HTTPRequestTimeout struct {
+// GRPCRequestTimeout groups per-method timeout settings used by the gRPC handlers.
+// GRPCRequestTimeout 用于收集各个 gRPC 方法使用的超时配置。
+type GRPCRequestTimeout struct {
 	Chat       Duration `json:"chat"`
 	PreCheck   Duration `json:"pre_check"`
 	PostAction Duration `json:"post_action"`
 	SeedMemory Duration `json:"seed_memory"`
 }
 
-// HTTPTLSConfig holds the optional certificate paths used when the local server must speak HTTPS directly.
-// HTTPTLSConfig 用于保存本地服务直接启用 HTTPS 时使用的可选证书路径。
-type HTTPTLSConfig struct {
-	Enabled  bool   `json:"enabled"`
-	CertFile string `json:"cert_file,omitempty"`
-	KeyFile  string `json:"key_file,omitempty"`
-}
-
 // LoggingConfig holds the structured logging knobs shared by the local runtime.
 // LoggingConfig 用于保存本地运行时共享的结构化日志配置项。
 type LoggingConfig struct {
-	Level            string `json:"level"`
-	Format           string `json:"format"`
-	LogRequestBodies bool   `json:"log_request_bodies"`
+	Level  string `json:"level"`
+	Format string `json:"format"`
 }
 
 // PIIConfig holds the default language used by the fixed pii_rules layout.
@@ -212,14 +202,13 @@ type AdminConfig struct {
 // DefaultLocal 用于执行 DefaultLocal 逻辑。
 func DefaultLocal() Config {
 	return Config{
-		HTTP: HTTPConfig{
-			ListenAddr:          ":8080",
-			MaxRequestBodyBytes: 1 << 20,
-			RequestTimeout:      HTTPRequestTimeout{Chat: Duration{3 * time.Second}, PreCheck: Duration{3 * time.Second}, PostAction: Duration{3 * time.Second}, SeedMemory: Duration{3 * time.Second}},
-			ShutdownTimeout:     Duration{10 * time.Second},
-			TLS:                 HTTPTLSConfig{},
+		GRPC: GRPCConfig{
+			ListenAddr:             ":8080",
+			MaxReceiveMessageBytes: 1 << 20,
+			RequestTimeout:         GRPCRequestTimeout{Chat: Duration{3 * time.Second}, PreCheck: Duration{3 * time.Second}, PostAction: Duration{3 * time.Second}, SeedMemory: Duration{3 * time.Second}},
+			ShutdownTimeout:        Duration{10 * time.Second},
 		},
-		Logging:        LoggingConfig{Level: "info", Format: "text", LogRequestBodies: false},
+		Logging:        LoggingConfig{Level: "info", Format: "text"},
 		PII:            PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:          NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		DockDB:         DockDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
@@ -369,25 +358,25 @@ func float64Ptr(v float64) *float64 { return &v }
 // Normalize executes the Normalize logic.
 // Normalize 用于执行 Normalize 逻辑。
 func (c *Config) Normalize() {
-	// Backfill safe defaults for HTTP timeouts and shutdown behavior.
-	// 为 HTTP 超时和关闭行为补齐安全默认值。
-	if c.HTTP.RequestTimeout.PreCheck.Duration <= 0 {
-		c.HTTP.RequestTimeout.PreCheck = Duration{3 * time.Second}
+	// Backfill safe defaults for gRPC timeouts and shutdown behavior.
+	// 为 gRPC 超时和关闭行为补齐安全默认值。
+	if c.GRPC.RequestTimeout.PreCheck.Duration <= 0 {
+		c.GRPC.RequestTimeout.PreCheck = Duration{3 * time.Second}
 	}
-	if c.HTTP.RequestTimeout.Chat.Duration <= 0 {
-		c.HTTP.RequestTimeout.Chat = Duration{3 * time.Second}
+	if c.GRPC.RequestTimeout.Chat.Duration <= 0 {
+		c.GRPC.RequestTimeout.Chat = Duration{3 * time.Second}
 	}
-	if c.HTTP.MaxRequestBodyBytes <= 0 {
-		c.HTTP.MaxRequestBodyBytes = 1 << 20
+	if c.GRPC.MaxReceiveMessageBytes <= 0 {
+		c.GRPC.MaxReceiveMessageBytes = 1 << 20
 	}
-	if c.HTTP.RequestTimeout.PostAction.Duration <= 0 {
-		c.HTTP.RequestTimeout.PostAction = Duration{3 * time.Second}
+	if c.GRPC.RequestTimeout.PostAction.Duration <= 0 {
+		c.GRPC.RequestTimeout.PostAction = Duration{3 * time.Second}
 	}
-	if c.HTTP.RequestTimeout.SeedMemory.Duration <= 0 {
-		c.HTTP.RequestTimeout.SeedMemory = Duration{3 * time.Second}
+	if c.GRPC.RequestTimeout.SeedMemory.Duration <= 0 {
+		c.GRPC.RequestTimeout.SeedMemory = Duration{3 * time.Second}
 	}
-	if c.HTTP.ShutdownTimeout.Duration <= 0 {
-		c.HTTP.ShutdownTimeout = Duration{10 * time.Second}
+	if c.GRPC.ShutdownTimeout.Duration <= 0 {
+		c.GRPC.ShutdownTimeout = Duration{10 * time.Second}
 	}
 	if c.PreCheck.IntentTimeout.Duration <= 0 {
 		c.PreCheck.IntentTimeout = Duration{2 * time.Second}
@@ -470,8 +459,8 @@ func (c *Config) Normalize() {
 func (c Config) Validate() error {
 	// Verify the minimum runtime contract before the application starts.
 	// 在应用启动前验证最小运行时契约。
-	if strings.TrimSpace(c.HTTP.ListenAddr) == "" {
-		return errors.New("http.listen_addr is required")
+	if strings.TrimSpace(c.GRPC.ListenAddr) == "" {
+		return errors.New("grpc.listen_addr is required")
 	}
 	if strings.TrimSpace(c.PII.DefaultLanguage) == "" {
 		return errors.New("pii.default_language is required")
@@ -494,16 +483,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Archive.Provider) == "" {
 		return errors.New("archive.provider is required")
 	}
-	if c.HTTP.MaxRequestBodyBytes <= 0 {
-		return errors.New("http.max_request_body_bytes must be > 0")
-	}
-	if c.HTTP.TLS.Enabled {
-		if strings.TrimSpace(c.HTTP.TLS.CertFile) == "" {
-			return errors.New("http.tls.cert_file is required when tls is enabled")
-		}
-		if strings.TrimSpace(c.HTTP.TLS.KeyFile) == "" {
-			return errors.New("http.tls.key_file is required when tls is enabled")
-		}
+	if c.GRPC.MaxReceiveMessageBytes <= 0 {
+		return errors.New("grpc.max_receive_message_bytes must be > 0")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Logging.Format)) {
 	case "text", "json":
@@ -624,19 +605,15 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 
-	setString("VMM_HTTP_LISTEN_ADDR", &cfg.HTTP.ListenAddr)
-	setInt64("VMM_HTTP_MAX_REQUEST_BODY_BYTES", &cfg.HTTP.MaxRequestBodyBytes)
-	setDuration("VMM_HTTP_CHAT_TIMEOUT", &cfg.HTTP.RequestTimeout.Chat)
-	setDuration("VMM_HTTP_PRECHECK_TIMEOUT", &cfg.HTTP.RequestTimeout.PreCheck)
-	setDuration("VMM_HTTP_POSTACTION_TIMEOUT", &cfg.HTTP.RequestTimeout.PostAction)
-	setDuration("VMM_HTTP_SEED_TIMEOUT", &cfg.HTTP.RequestTimeout.SeedMemory)
-	setDuration("VMM_HTTP_SHUTDOWN_TIMEOUT", &cfg.HTTP.ShutdownTimeout)
-	setBool("VMM_HTTP_TLS_ENABLED", &cfg.HTTP.TLS.Enabled)
-	setString("VMM_HTTP_TLS_CERT_FILE", &cfg.HTTP.TLS.CertFile)
-	setString("VMM_HTTP_TLS_KEY_FILE", &cfg.HTTP.TLS.KeyFile)
+	setString("VMM_GRPC_LISTEN_ADDR", &cfg.GRPC.ListenAddr)
+	setInt("VMM_GRPC_MAX_RECEIVE_MESSAGE_BYTES", &cfg.GRPC.MaxReceiveMessageBytes)
+	setDuration("VMM_GRPC_CHAT_TIMEOUT", &cfg.GRPC.RequestTimeout.Chat)
+	setDuration("VMM_GRPC_PRECHECK_TIMEOUT", &cfg.GRPC.RequestTimeout.PreCheck)
+	setDuration("VMM_GRPC_POSTACTION_TIMEOUT", &cfg.GRPC.RequestTimeout.PostAction)
+	setDuration("VMM_GRPC_SEED_TIMEOUT", &cfg.GRPC.RequestTimeout.SeedMemory)
+	setDuration("VMM_GRPC_SHUTDOWN_TIMEOUT", &cfg.GRPC.ShutdownTimeout)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
-	setBool("VMM_LOG_REQUEST_BODIES", &cfg.Logging.LogRequestBodies)
 	setString("VMM_PII_DEFAULT_LANGUAGE", &cfg.PII.DefaultLanguage)
 	setBool("VMM_NOISE_ENABLED", &cfg.Noise.Enabled)
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
@@ -672,16 +649,6 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
 	setBool("VMM_ADMIN_SEED_ENABLED", &cfg.Admin.SeedEnabled)
-}
-
-// setInt64 converts one environment variable into a 64-bit integer override.
-// setInt64 用于把单个环境变量转换成 64 位整数覆盖项。
-func setInt64(k string, target *int64) {
-	if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-		if n, err := strconv.ParseInt(v, 10, 64); err == nil {
-			*target = n
-		}
-	}
 }
 
 // isOpenAIProvider reports whether one provider alias resolves to the supported OpenAI-compatible adapter.

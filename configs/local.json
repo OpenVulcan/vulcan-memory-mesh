@@ -1,24 +1,18 @@
 {
-  "http": {
+  "grpc": {
     "listen_addr": "127.0.0.1:17625",
-    "max_request_body_bytes": 1048576,
+    "max_receive_message_bytes": 1048576,
     "request_timeout": {
       "chat": "3s",
       "pre_check": "3s",
       "post_action": "3s",
       "seed_memory": "3s"
     },
-    "shutdown_timeout": "10s",
-    "tls": {
-      "enabled": false,
-      "cert_file": "",
-      "key_file": ""
-    }
+    "shutdown_timeout": "10s"
   },
   "logging": {
     "level": "info",
-    "format": "text",
-    "log_request_bodies": false
+    "format": "text"
   },
   "pii": {
     "default_language": "zh-CN"

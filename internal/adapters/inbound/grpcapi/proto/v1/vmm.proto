@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+package vmm.v1;
+
+option go_package = "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1;vmmv1";
+
+import "google/protobuf/empty.proto";
+
+// VMMService exposes the local gateway workflows over gRPC.
+// VMMService 用于通过 gRPC 暴露本地网关工作流。
+service VMMService {
+  // Healthz reports whether the local gateway process is alive.
+  // Healthz 用于报告本地网关进程是否存活。
+  rpc Healthz(google.protobuf.Empty) returns (HealthzResponse);
+
+  // Chat scrubs one inbound message and archives the sanitized text.
+  // Chat 用于脱敏一条入站消息并归档清洗后的文本。
+  rpc Chat(ChatRequest) returns (ChatResponse);
+
+  // PreCheck decides whether the current user text needs memory injection.
+  // PreCheck 用于判断当前用户文本是否需要记忆注入。
+  rpc PreCheck(PreCheckRequest) returns (PreCheckResponse);
+
+  // PostAction accepts the new text-only contract and continues processing asynchronously.
+  // PostAction 用于接收新的纯文本契约，并在后台继续异步处理。
+  rpc PostAction(PostActionRequest) returns (PostActionResponse);
+
+  // PostActionOld preserves the legacy raw snapshot contract during migration.
+  // PostActionOld 用于在迁移期间保留旧版原始快照契约。
+  rpc PostActionOld(PostActionOldRequest) returns (PostActionResponse);
+
+  // SeedMemory preloads one memory entry into the vector backend for local testing.
+  // SeedMemory 用于为本地测试向向量后端预热一条记忆。
+  rpc SeedMemory(SeedMemoryRequest) returns (SeedMemoryResponse);
+}
+
+// HealthzResponse returns the runtime status plus trace metadata.
+// HealthzResponse 用于返回运行状态和 trace 元数据。
+message HealthzResponse {
+  string status = 1;
+  string trace_id = 2;
+}
+
+// ChatRequest carries the lightweight scrub-and-store request.
+// ChatRequest 用于承载轻量的脱敏归档请求。
+message ChatRequest {
+  string session_id = 1;
+  string message = 2;
+  string accept_language = 3;
+}
+
+// ChatResponse returns the scrubbed message stored by the archive flow.
+// ChatResponse 用于返回归档流程存储的脱敏消息。
+message ChatResponse {
+  string session_id = 1;
+  string message = 2;
+  string language = 3;
+  string trace_id = 4;
+}
+
+// PreCheckRequest carries the simplified current-turn memory lookup request.
+// PreCheckRequest 用于承载简化后的当前轮记忆检索请求。
+message PreCheckRequest {
+  string session_id = 1;
+  string user_id = 2;
+  string team_id = 3;
+  string space_id = 4;
+  string project_id = 5;
+  string user_content = 6;
+}
+
+// ContextItem transports one assembled context item back to the caller.
+// ContextItem 用于把一条组装后的上下文项返回给调用方。
+message ContextItem {
+  string kind = 1;
+  string title = 2;
+  string text = 3;
+  string source = 4;
+  double score = 5;
+}
+
+// PreCheckResponse returns the injection decision and assembled context payload.
+// PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
+message PreCheckResponse {
+  bool should_inject = 1;
+  string context_text = 2;
+  repeated ContextItem context_items = 3;
+  bool degraded = 4;
+  string trace_id = 5;
+}
+
+// PostActionTimelineItem carries one middle timeline node from the new text-only contract.
+// PostActionTimelineItem 用于承载新纯文本契约中的一条中间时间线节点。
+message PostActionTimelineItem {
+  string type = 1;
+  string content = 2;
+}
+
+// PostActionRequest carries the new async post-action contract.
+// PostActionRequest 用于承载新的异步 post-action 契约。
+message PostActionRequest {
+  string session_id = 1;
+  string user_id = 2;
+  string team_id = 3;
+  string space_id = 4;
+  string project_id = 5;
+  string user_content = 6;
+  string assistant_content = 7;
+  repeated PostActionTimelineItem timeline = 8;
+}
+
+// ToolCall transports legacy tool call metadata for the old post-action contract.
+// ToolCall 用于传输旧版 post-action 契约中的工具调用元数据。
+message ToolCall {
+  string id = 1;
+  string type = 2;
+}
+
+// RawMessage carries one legacy raw snapshot node for the old post-action contract.
+// RawMessage 用于承载旧版 post-action 契约中的一条原始快照节点。
+message RawMessage {
+  string role = 1;
+  string content_json = 2;
+  repeated ToolCall tool_calls = 3;
+  string meta_json = 4;
+}
+
+// PostActionOldRequest carries the legacy raw snapshot contract.
+// PostActionOldRequest 用于承载旧版原始快照契约。
+message PostActionOldRequest {
+  string session_id = 1;
+  string user_id = 2;
+  string team_id = 3;
+  string space_id = 4;
+  string project_id = 5;
+  repeated RawMessage raw_messages_snapshot = 6;
+}
+
+// PostActionResponse acknowledges whether the request was accepted for processing.
+// PostActionResponse 用于确认请求是否已被接受处理。
+message PostActionResponse {
+  bool accepted = 1;
+  string trace_id = 2;
+}
+
+// SeedMemoryRequest carries one admin seed-memory request.
+// SeedMemoryRequest 用于承载一条管理员 seed-memory 请求。
+message SeedMemoryRequest {
+  string user_id = 1;
+  string project_id = 2;
+  string memory_text = 3;
+  string space_id = 4;
+}
+
+// SeedMemoryResponse acknowledges the seed request and returns the generated memory id.
+// SeedMemoryResponse 用于确认 seed 请求并返回生成的记忆 ID。
+message SeedMemoryResponse {
+  bool accepted = 1;
+  string memory_id = 2;
+  string trace_id = 3;
+}

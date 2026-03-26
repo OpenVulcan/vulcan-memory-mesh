@@ -36,9 +36,9 @@
 
 ## 工作流程
 
-`post-action` 当前的写库链路是：
+`PostAction` / `PostActionOld` 当前的写库链路是：
 
-1. HTTP 入口做结构校验与文本净化
+1. gRPC 入口做结构校验与文本净化
 2. `MessageNormalizer` 把原始快照压成 `user -> assistant` 轮次
 3. `NoiseGate` 对每条轮次做“是否准入长期记忆”的判断
 4. 只有通过判定的轮次才会写入关系存储
