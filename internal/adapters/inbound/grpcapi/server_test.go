@@ -256,13 +256,13 @@ func TestPostActionReturnsAcceptedImmediately(t *testing.T) {
 		if cmd.Session.SessionID != 41 || cmd.Session.UserID != 7 || cmd.Session.ProjectID != 9 {
 			t.Fatalf("unexpected resolved session: %+v", cmd.Session)
 		}
-		if cmd.UserContent != "第一问 [图片: 猫]" {
+		if cmd.UserContent != "第一问 [Image: 猫]" {
 			t.Fatalf("unexpected cleaned user content: %q", cmd.UserContent)
 		}
 		if len(cmd.Timeline) != 2 {
 			t.Fatalf("timeline len = %d", len(cmd.Timeline))
 		}
-		if cmd.Timeline[0].Content != "中间回答 [图片已过滤]" {
+		if cmd.Timeline[0].Content != "中间回答 [Image filtered]" {
 			t.Fatalf("unexpected cleaned timeline content: %q", cmd.Timeline[0].Content)
 		}
 		if cmd.AssistantContent != "最终回答" {
@@ -281,7 +281,7 @@ func TestPostActionReturnsAcceptedImmediately(t *testing.T) {
 	if !strings.Contains(logs, `<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)`) {
 		t.Fatalf("expected raw payload log, got %s", logs)
 	}
-	if !strings.Contains(logs, `第一问 [图片: 猫]`) {
+	if !strings.Contains(logs, `第一问 [Image: 猫]`) {
 		t.Fatalf("expected cleaned payload log, got %s", logs)
 	}
 }

@@ -28,7 +28,7 @@ func TestCleanMemoryTextFoldsLongMachineBlocks(t *testing.T) {
 	}, "\n")
 
 	got := CleanMemoryText(input)
-	if !strings.Contains(got, "已按策略折叠") {
+	if !strings.Contains(got, "folded by policy") {
 		t.Fatalf("expected folded marker, got %q", got)
 	}
 }

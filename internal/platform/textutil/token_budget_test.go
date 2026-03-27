@@ -14,7 +14,7 @@ func TestEnforceTokenBudgetClipsOversizedText(t *testing.T) {
 	cfg.MaxTokens = 200
 	input := "标题\n" + strings.Repeat("A", 4000)
 	got := EnforceTokenBudget(input, cfg)
-	if !strings.Contains(got, "[已按 Token 预算截断]") {
+	if !strings.Contains(got, "[truncated by token budget]") {
 		t.Fatalf("expected token budget marker, got %q", got)
 	}
 	if got == input {

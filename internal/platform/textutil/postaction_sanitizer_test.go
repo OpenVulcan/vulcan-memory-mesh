@@ -12,7 +12,7 @@ import (
 func TestCleanConversationTextForMemoryPreservesStructure(t *testing.T) {
 	input := "<think>hidden</think>\n第一行\n![猫](https://cdn.example.com/cat.jpg)\n第二行"
 	got := CleanConversationTextForMemory(input)
-	want := "第一行\n[图片: 猫]\n第二行"
+	want := "第一行\n[Image: 猫]\n第二行"
 	if got != want {
 		t.Fatalf("got %q want %q", got, want)
 	}
@@ -27,10 +27,10 @@ func TestPostActionTextSanitizerSanitize(t *testing.T) {
 	if strings.Contains(got, "<think>") {
 		t.Fatalf("expected thought tags removed, got %q", got)
 	}
-	if !strings.Contains(got, "[图片: 图]") {
+	if !strings.Contains(got, "[Image: 图]") {
 		t.Fatalf("expected image placeholder, got %q", got)
 	}
-	if !strings.Contains(got, "[已按 Token 预算截断]") {
+	if !strings.Contains(got, "[truncated by token budget]") {
 		t.Fatalf("expected token budget marker, got %q", got)
 	}
 }

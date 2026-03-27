@@ -59,13 +59,13 @@ func CleanConversationText(s string) string {
 	out = markdownImagePattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := markdownImagePattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[图片已过滤]"
+			return "[Image filtered]"
 		}
 		alt := NormalizeWhitespace(sub[1])
 		target := strings.TrimSpace(sub[2])
 		kind := classifyResourceTarget(target)
 		if kind == "" {
-			kind = "图片"
+			kind = "Image"
 		}
 		return buildResourcePlaceholder(kind, alt, target)
 	})
@@ -85,7 +85,7 @@ func CleanConversationText(s string) string {
 	out = htmlAnchorPattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := htmlAnchorPattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[链接已过滤]"
+			return "[Link filtered]"
 		}
 		target := extractHTMLAttribute(sub[1], "href")
 		kind := classifyResourceTarget(target)
@@ -97,7 +97,7 @@ func CleanConversationText(s string) string {
 	out = htmlVoidMediaPattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := htmlVoidMediaPattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[媒体已过滤]"
+			return "[Media filtered]"
 		}
 		tag := strings.ToLower(strings.TrimSpace(sub[1]))
 		target := extractHTMLAttribute(sub[2], "src")
@@ -114,7 +114,7 @@ func CleanConversationText(s string) string {
 	out = htmlBlockMediaPattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := htmlBlockMediaPattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[媒体已过滤]"
+			return "[Media filtered]"
 		}
 		tag := strings.ToLower(strings.TrimSpace(sub[1]))
 		target := extractHTMLAttribute(sub[2], "src")
@@ -212,14 +212,14 @@ func ExtractTextFromRawJSON(raw json.RawMessage) string {
 func buildResourcePlaceholder(kind, label, target string) string {
 	kind = NormalizeWhitespace(kind)
 	if kind == "" {
-		kind = "资源"
+		kind = "Resource"
 	}
 	label = NormalizeWhitespace(label)
 	if label == "" {
 		label = extractResourceName(target)
 	}
 	if label == "" {
-		return "[" + kind + "已过滤]"
+		return "[" + kind + " filtered]"
 	}
 	return "[" + kind + ": " + label + "]"
 }
@@ -233,36 +233,36 @@ func classifyResourceTarget(target string) string {
 	}
 	switch {
 	case strings.HasPrefix(trimmed, "data:image/"):
-		return "图片"
+		return "Image"
 	case strings.HasPrefix(trimmed, "data:video/"):
-		return "视频"
+		return "Video"
 	case strings.HasPrefix(trimmed, "data:audio/"):
-		return "音频"
+		return "Audio"
 	case strings.HasPrefix(trimmed, "data:"):
-		return "附件"
+		return "Attachment"
 	case strings.HasPrefix(trimmed, "blob:"):
 		if ext := resourceExtension(trimmed); ext != "" {
 			break
 		}
-		return "附件"
+		return "Attachment"
 	case strings.HasPrefix(trimmed, "file:"):
 		if ext := resourceExtension(trimmed); ext != "" {
 			break
 		}
-		return "附件"
+		return "Attachment"
 	}
 	ext := resourceExtension(trimmed)
 	switch ext {
 	case ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg", ".ico":
-		return "图片"
+		return "Image"
 	case ".mp4", ".mov", ".avi", ".webm", ".mkv":
-		return "视频"
+		return "Video"
 	case ".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a":
-		return "音频"
+		return "Audio"
 	case ".zip", ".rar", ".7z", ".tar", ".gz", ".tgz", ".bz2", ".xz":
-		return "压缩包"
+		return "Archive"
 	case ".pdf", ".doc", ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".csv", ".txt", ".md":
-		return "文件"
+		return "File"
 	default:
 		return ""
 	}
@@ -276,15 +276,15 @@ func classifyHTMLTag(tag, target string) string {
 	}
 	switch tag {
 	case "img":
-		return "图片"
+		return "Image"
 	case "video":
-		return "视频"
+		return "Video"
 	case "audio":
-		return "音频"
+		return "Audio"
 	case "source", "object", "embed", "iframe":
-		return "附件"
+		return "Attachment"
 	default:
-		return "资源"
+		return "Resource"
 	}
 }
 

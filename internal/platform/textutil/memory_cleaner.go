@@ -401,11 +401,11 @@ func writeFoldMarker(b *strings.Builder, omitted int, label, newline string) {
 	if omitted <= 0 {
 		return
 	}
-	b.WriteString("... [中间 ")
+	b.WriteString("... [")
 	b.WriteString(itoa(omitted))
-	b.WriteString(" 行")
+	b.WriteString(" lines of ")
 	b.WriteString(label)
-	b.WriteString("已按策略折叠，节省上下文] ...")
+	b.WriteString(" folded by policy to save context] ...")
 	b.WriteString(newline)
 }
 
@@ -660,7 +660,7 @@ func truncateLongLine(raw string, cfg MemoryCleanerConfig) string {
 	var b strings.Builder
 	b.Grow(headByte + (len(text) - tailByte) + 64)
 	b.WriteString(text[:headByte])
-	b.WriteString("...[单行超长机器文本已截断]...")
+	b.WriteString("...[long machine line clipped]...")
 	b.WriteString(text[tailByte:])
 	b.WriteString(raw[len(text):])
 	return b.String()
@@ -875,15 +875,15 @@ func hasCodeSignal(s string, indent bool, hanRatio float64) bool {
 func inferLabel(stats blockStats) string {
 	switch {
 	case stats.stackSignals >= maxInt(stats.logSignals, maxInt(stats.jsonSignals, stats.codeSignals)) && stats.stackSignals >= 1:
-		return "超长报错日志"
+		return "long error logs"
 	case stats.jsonSignals >= maxInt(stats.logSignals, stats.codeSignals) && stats.jsonSignals >= 2:
-		return "超长结构化数据"
+		return "long structured data"
 	case stats.logSignals >= maxInt(stats.jsonSignals, stats.codeSignals) && stats.logSignals >= 2:
-		return "超长运行日志"
+		return "long runtime logs"
 	case stats.codeSignals >= 1:
-		return "超长代码"
+		return "long code"
 	default:
-		return "超长机器文本"
+		return "long machine text"
 	}
 }
 

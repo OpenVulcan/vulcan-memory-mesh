@@ -107,7 +107,7 @@ func DefaultTokenBudgetConfig() TokenBudgetConfig {
 		MaxTokens: 1200,
 		HeadRunes: 1200,
 		TailRunes: 400,
-		Marker:    "\n...[已按 Token 预算截断]...\n",
+		Marker:    "\n...[truncated by token budget]...\n",
 		Estimator: DomesticTokenEstimatorConfig(),
 	}
 }

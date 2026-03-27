@@ -51,13 +51,13 @@ func CleanConversationTextForMemory(s string) string {
 	out = markdownImagePattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := markdownImagePattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[图片已过滤]"
+			return "[Image filtered]"
 		}
 		alt := NormalizeMemoryWhitespace(sub[1])
 		target := strings.TrimSpace(sub[2])
 		kind := classifyResourceTarget(target)
 		if kind == "" {
-			kind = "图片"
+			kind = "Image"
 		}
 		return buildResourcePlaceholder(kind, alt, target)
 	})
@@ -77,7 +77,7 @@ func CleanConversationTextForMemory(s string) string {
 	out = htmlAnchorPattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := htmlAnchorPattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[链接已过滤]"
+			return "[Link filtered]"
 		}
 		target := extractHTMLAttribute(sub[1], "href")
 		kind := classifyResourceTarget(target)
@@ -89,7 +89,7 @@ func CleanConversationTextForMemory(s string) string {
 	out = htmlVoidMediaPattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := htmlVoidMediaPattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[媒体已过滤]"
+			return "[Media filtered]"
 		}
 		tag := strings.ToLower(strings.TrimSpace(sub[1]))
 		target := extractHTMLAttribute(sub[2], "src")
@@ -105,7 +105,7 @@ func CleanConversationTextForMemory(s string) string {
 	out = htmlBlockMediaPattern.ReplaceAllStringFunc(out, func(match string) string {
 		sub := htmlBlockMediaPattern.FindStringSubmatch(match)
 		if len(sub) != 3 {
-			return "[媒体已过滤]"
+			return "[Media filtered]"
 		}
 		tag := strings.ToLower(strings.TrimSpace(sub[1]))
 		target := extractHTMLAttribute(sub[2], "src")
