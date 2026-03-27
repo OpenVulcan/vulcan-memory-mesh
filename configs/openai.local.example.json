@@ -3,10 +3,10 @@
     "listen_addr": "127.0.0.1:17625",
     "max_receive_message_bytes": 1048576,
     "request_timeout": {
-      "chat": "3s",
-      "pre_check": "3s",
-      "post_action": "3s",
-      "seed_memory": "3s"
+      "chat": "5s",
+      "pre_check": "8s",
+      "post_action": "8s",
+      "seed_memory": "15s"
     },
     "shutdown_timeout": "10s"
   },
@@ -33,9 +33,6 @@
     "table_name": "vmm_memory_vectors",
     "vector_column": "vector"
   },
-  "archive": {
-    "provider": "dockdb"
-  },
   "llm": {
     "provider": "openai",
     "endpoint": "${OPENAI_BASE_URL}",
@@ -54,7 +51,7 @@
   },
   "embedding": {
     "provider": "openai",
-    "endpoint": "${OPENAI_BASE_URL}",
+    "endpoint": "${OPENAI_EMBEDDING_URL}",
     "api_key": "${OPENAI_API_KEY}",
     "model": "${OPENAI_EMBEDDING_MODEL}",
     "dimension": 1024,
@@ -62,16 +59,16 @@
     "project": "${OPENAI_PROJECT}"
   },
   "vector": {
-    "provider": "lancedb"
+    "provider": "${VMM_VECTOR_PROVIDER}"
   },
   "relational": {
-    "provider": "dockdb"
+    "provider": "${VMM_RELATIONAL_PROVIDER}"
   },
   "post_action": {
     "input_mode": "compat"
   },
-  "precheck": {
-    "intent_timeout": "2s",
+  "pre_check": {
+    "intent_timeout": "5s",
     "top_k": 5
   },
   "memory_pipeline": {

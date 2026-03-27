@@ -58,13 +58,12 @@ type Config struct {
 	Noise          NoiseConfig          `json:"noise"`
 	DockDB         DockDBConfig         `json:"dockdb"`
 	LanceDB        LanceDBConfig        `json:"lancedb"`
-	Archive        ArchiveConfig        `json:"archive"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
 	Vector         VectorConfig         `json:"vector"`
 	Relational     RelationalConfig     `json:"relational"`
 	PostAction     PostActionConfig     `json:"post_action"`
-	PreCheck       PreCheckConfig       `json:"precheck"`
+	PreCheck       PreCheckConfig       `json:"pre_check"`
 	MemoryPipeline MemoryPipelineConfig `json:"memory_pipeline"`
 	Admin          AdminConfig          `json:"admin"`
 }
@@ -125,12 +124,6 @@ type LanceDBConfig struct {
 	VectorColumn string   `json:"vector_column"`
 }
 
-// ArchiveConfig selects the persistence backend used by the scrubbed /chat archive flow.
-// ArchiveConfig 用于选择脱敏后 /chat 归档流程使用的持久化后端。
-type ArchiveConfig struct {
-	Provider string `json:"provider"`
-}
-
 // LLMConfig holds the provider and model settings used for intent extraction and other LLM tasks.
 // LLMConfig 用于保存意图提取等 LLM 任务使用的 provider 和模型配置。
 type LLMConfig struct {
@@ -164,11 +157,10 @@ type VectorConfig struct {
 	Provider string `json:"provider"`
 }
 
-// RelationalConfig selects the relational backend used by post-action persistence.
-// RelationalConfig 用于选择 post-action 持久化流程使用的关系后端。
+// RelationalConfig selects the durable storage backend shared by post-action and the temporary chat archive flow.
+// RelationalConfig 用于选择 post-action 与临时 chat 归档流程共享的长期存储后端。
 type RelationalConfig struct {
 	Provider string `json:"provider"`
-	DSN      string `json:"dsn,omitempty"`
 }
 
 // PostActionConfig controls how strictly the inbound snapshot is validated before normalization.
@@ -205,7 +197,7 @@ func DefaultLocal() Config {
 		GRPC: GRPCConfig{
 			ListenAddr:             ":8080",
 			MaxReceiveMessageBytes: 1 << 20,
-			RequestTimeout:         GRPCRequestTimeout{Chat: Duration{3 * time.Second}, PreCheck: Duration{3 * time.Second}, PostAction: Duration{3 * time.Second}, SeedMemory: Duration{3 * time.Second}},
+			RequestTimeout:         GRPCRequestTimeout{Chat: Duration{5 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}, SeedMemory: Duration{15 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
 		},
 		Logging:        LoggingConfig{Level: "info", Format: "text"},
@@ -213,13 +205,12 @@ func DefaultLocal() Config {
 		Noise:          NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		DockDB:         DockDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
 		LanceDB:        LanceDBConfig{Address: "127.0.0.1:50051", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
-		Archive:        ArchiveConfig{Provider: "dockdb"},
 		LLM:            LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
 		Embedding:      EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
 		Vector:         VectorConfig{Provider: "lancedb"},
 		Relational:     RelationalConfig{Provider: "dockdb"},
 		PostAction:     PostActionConfig{InputMode: "compat"},
-		PreCheck:       PreCheckConfig{IntentTimeout: Duration{2 * time.Second}, TopK: 5},
+		PreCheck:       PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
 		Admin:          AdminConfig{SeedEnabled: true},
 	}
@@ -361,25 +352,25 @@ func (c *Config) Normalize() {
 	// Backfill safe defaults for gRPC timeouts and shutdown behavior.
 	// 为 gRPC 超时和关闭行为补齐安全默认值。
 	if c.GRPC.RequestTimeout.PreCheck.Duration <= 0 {
-		c.GRPC.RequestTimeout.PreCheck = Duration{3 * time.Second}
+		c.GRPC.RequestTimeout.PreCheck = Duration{8 * time.Second}
 	}
 	if c.GRPC.RequestTimeout.Chat.Duration <= 0 {
-		c.GRPC.RequestTimeout.Chat = Duration{3 * time.Second}
+		c.GRPC.RequestTimeout.Chat = Duration{5 * time.Second}
 	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		c.GRPC.MaxReceiveMessageBytes = 1 << 20
 	}
 	if c.GRPC.RequestTimeout.PostAction.Duration <= 0 {
-		c.GRPC.RequestTimeout.PostAction = Duration{3 * time.Second}
+		c.GRPC.RequestTimeout.PostAction = Duration{8 * time.Second}
 	}
 	if c.GRPC.RequestTimeout.SeedMemory.Duration <= 0 {
-		c.GRPC.RequestTimeout.SeedMemory = Duration{3 * time.Second}
+		c.GRPC.RequestTimeout.SeedMemory = Duration{15 * time.Second}
 	}
 	if c.GRPC.ShutdownTimeout.Duration <= 0 {
 		c.GRPC.ShutdownTimeout = Duration{10 * time.Second}
 	}
 	if c.PreCheck.IntentTimeout.Duration <= 0 {
-		c.PreCheck.IntentTimeout = Duration{2 * time.Second}
+		c.PreCheck.IntentTimeout = Duration{5 * time.Second}
 	}
 	if c.PreCheck.TopK <= 0 {
 		c.PreCheck.TopK = 5
@@ -436,9 +427,6 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
 		c.LanceDB.VectorColumn = "vector"
 	}
-	if strings.TrimSpace(c.Archive.Provider) == "" {
-		c.Archive.Provider = "dockdb"
-	}
 	if strings.TrimSpace(c.Vector.Provider) == "" {
 		c.Vector.Provider = "lancedb"
 	}
@@ -480,9 +468,6 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
 		return errors.New("lancedb.vector_column is required")
 	}
-	if strings.TrimSpace(c.Archive.Provider) == "" {
-		return errors.New("archive.provider is required")
-	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
 	}
@@ -491,13 +476,11 @@ func (c Config) Validate() error {
 	default:
 		return errors.New("logging.format must be either text or json")
 	}
-	switch strings.ToLower(strings.TrimSpace(c.Archive.Provider)) {
-	case "dockdb":
-	default:
-		return errors.New("archive.provider must be dockdb")
-	}
 	if c.PreCheck.TopK <= 0 {
 		return errors.New("precheck.top_k must be > 0")
+	}
+	if c.GRPC.RequestTimeout.PreCheck.Duration <= c.PreCheck.IntentTimeout.Duration {
+		return errors.New("grpc.request_timeout.pre_check must be greater than pre_check.intent_timeout")
 	}
 	if c.MemoryPipeline.MaxSearchKeywords <= 0 || c.MemoryPipeline.MaxSearchKeywords > 10 {
 		return errors.New("memory_pipeline.max_search_keywords must be in [1,10]")
@@ -521,14 +504,14 @@ func (c Config) Validate() error {
 		return errors.New("embedding.provider must use one openai-compatible provider")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Vector.Provider)) {
-	case "lancedb", "memory", "mock", "memory_mock":
+	case "lancedb":
 	default:
-		return errors.New("vector.provider must be lancedb or memory")
+		return errors.New("vector.provider must be lancedb")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
-	case "dockdb", "memory", "mock", "memory_mock":
+	case "dockdb":
 	default:
-		return errors.New("relational.provider must be dockdb or memory")
+		return errors.New("relational.provider must be dockdb")
 	}
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
@@ -608,9 +591,9 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_GRPC_LISTEN_ADDR", &cfg.GRPC.ListenAddr)
 	setInt("VMM_GRPC_MAX_RECEIVE_MESSAGE_BYTES", &cfg.GRPC.MaxReceiveMessageBytes)
 	setDuration("VMM_GRPC_CHAT_TIMEOUT", &cfg.GRPC.RequestTimeout.Chat)
-	setDuration("VMM_GRPC_PRECHECK_TIMEOUT", &cfg.GRPC.RequestTimeout.PreCheck)
-	setDuration("VMM_GRPC_POSTACTION_TIMEOUT", &cfg.GRPC.RequestTimeout.PostAction)
-	setDuration("VMM_GRPC_SEED_TIMEOUT", &cfg.GRPC.RequestTimeout.SeedMemory)
+	setDuration("VMM_GRPC_PRE_CHECK_TIMEOUT", &cfg.GRPC.RequestTimeout.PreCheck)
+	setDuration("VMM_GRPC_POST_ACTION_TIMEOUT", &cfg.GRPC.RequestTimeout.PostAction)
+	setDuration("VMM_GRPC_SEED_MEMORY_TIMEOUT", &cfg.GRPC.RequestTimeout.SeedMemory)
 	setDuration("VMM_GRPC_SHUTDOWN_TIMEOUT", &cfg.GRPC.ShutdownTimeout)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
@@ -625,7 +608,6 @@ func applyEnvOverrides(cfg *Config) {
 	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
 	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
 	setString("VMM_LANCEDB_VECTOR_COLUMN", &cfg.LanceDB.VectorColumn)
-	setString("VMM_ARCHIVE_PROVIDER", &cfg.Archive.Provider)
 	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)
 	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
 	setString("VMM_LLM_API_KEY", &cfg.LLM.APIKey)
@@ -641,11 +623,10 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_EMBED_PROJECT", &cfg.Embedding.Project)
 	setString("VMM_VECTOR_PROVIDER", &cfg.Vector.Provider)
 	setString("VMM_RELATIONAL_PROVIDER", &cfg.Relational.Provider)
-	setString("VMM_RELATIONAL_DSN", &cfg.Relational.DSN)
-	setString("VMM_POSTACTION_INPUT_MODE", &cfg.PostAction.InputMode)
-	setDuration("VMM_PRECHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
-	setInt("VMM_PRECHECK_TOPK", &cfg.PreCheck.TopK)
-	setFloat("VMM_PRECHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)
+	setString("VMM_POST_ACTION_INPUT_MODE", &cfg.PostAction.InputMode)
+	setDuration("VMM_PRE_CHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
+	setInt("VMM_PRE_CHECK_TOPK", &cfg.PreCheck.TopK)
+	setFloat("VMM_PRE_CHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
 	setBool("VMM_ADMIN_SEED_ENABLED", &cfg.Admin.SeedEnabled)

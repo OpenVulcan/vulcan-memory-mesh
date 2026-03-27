@@ -31,7 +31,6 @@ internal/
   adapters/
     inbound/grpcapi/
     outbound/
-      memory_mock/
       openai_native/
       vldg_dockdb/
       vldg_lancedb/
@@ -50,7 +49,6 @@ scripts/
 - `cmd/vmm-local` 本地启动入口
 - LanceDB 本地向量库适配器
 - DockDB 本地长期库适配器
-- 内存向量库 / 内存关系库存根回退实现
 - OpenAI 兼容原生 LLM / Embedding 适配器（运行时不再提供 mock 模型）
 - TraceID / Recovery / 请求日志拦截器
 - 路由级超时控制
@@ -90,6 +88,7 @@ scripts/
 - `timeline` 为空时会继续执行标准噪声门判定
 - 方法会先返回 `accepted=true`，然后在后台继续复用旧版持久化逻辑
 - `PostActionOld` 仍保留旧版原始快照契约
+- `Chat` 只是临时测试入口，但也会复用同一个 DockDB 存储后端
 - 入站清洗会处理：
   - `<think>`
   - base64 媒体数据
@@ -141,10 +140,40 @@ scripts/
 - `lancedb.address`
 - `lancedb.table_name`
 - `lancedb.vector_column`
+- `relational.provider`（当前固定为 `dockdb`）
+- `vector.provider`（当前固定为 `lancedb`）
 - `llm.*`
 - `embedding.*`
 - `post_action.input_mode`
 - `noise.*`
+
+其中：
+
+- `grpc.request_timeout.pre_check`
+  - 表示整次 `PreCheck` gRPC 方法的外层超时
+- `pre_check.intent_timeout`
+  - 表示 `PreCheck` 内部意图提取子步骤的超时
+
+对应环境变量也统一使用同一套 `snake_case` 语义：
+
+- `VMM_GRPC_PRE_CHECK_TIMEOUT`
+- `VMM_GRPC_POST_ACTION_TIMEOUT`
+- `VMM_GRPC_SEED_MEMORY_TIMEOUT`
+- `VMM_PRE_CHECK_INTENT_TIMEOUT`
+- `VMM_PRE_CHECK_TOPK`
+- `VMM_PRE_CHECK_SIMILARITY_THRESHOLD`
+- `VMM_POST_ACTION_INPUT_MODE`
+
+这两个配置不合并，但必须保持：
+
+- `grpc.request_timeout.pre_check > pre_check.intent_timeout`
+
+另外：
+
+- `lancedb.table_name` 配置的是基础表名
+- 运行时实际表名会自动追加 embedding 维度后缀
+  - 例如基础名 `vmm_memory_vectors`
+  - 维度 `1024` 时实际表名为 `vmm_memory_vectors_1024`
 
 如果某个兼容模型需要额外参数，例如关闭 thinking、调整 `reasoning_effort` 或透传 provider 专属字段，可以在配置里使用：
 
@@ -172,5 +201,7 @@ go test ./...
 
 ## 说明
 
-- `MockPersonaProvider` 对 `usr_8899` 返回固定画像
-- `post-action` 默认写入 DockDB 长期库；如需最小化本地调试，可显式改成 `relational.provider=memory`
+- 当前本地长期存储只保留两条主线：
+  - DockDB：会话与脱敏文本存储
+  - LanceDB：向量存储
+- 运行时已经移除内存向量库、内存关系库存根和画像 mock 回退

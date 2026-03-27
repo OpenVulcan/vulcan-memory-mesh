@@ -14,7 +14,6 @@ import (
 
 	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_dockdb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb"
@@ -70,7 +69,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
-	archiveStore, err := buildArchiveStore(cfg)
+	archiveStore, err := resolveArchiveStore(relational)
 	if err != nil {
 		return nil, err
 	}
@@ -86,7 +85,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
-	persona := buildPersona()
+	persona, err := resolvePersonaProvider(relational)
+	if err != nil {
+		return nil, err
+	}
 
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
@@ -122,9 +124,6 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// 注册服务反射，让 grpcurl 等本地调试工具可以直接发现服务定义。
 	reflection.Register(server)
 	shutdowns := []appports.Shutdowner{}
-	if archiveStore != nil {
-		shutdowns = append(shutdowns, archiveStore)
-	}
 	if relational != nil {
 		shutdowns = append(shutdowns, relational)
 	}
@@ -237,8 +236,6 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 	switch strings.ToLower(cfg.Vector.Provider) {
 	case "lancedb":
 		return vldg_lancedb.NewStore(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
-	case "memory", "mock", "memory_mock":
-		return memory_mock.NewVectorStore(), nil
 	default:
 		return nil, fmt.Errorf("unsupported vector provider: %s", cfg.Vector.Provider)
 	}
@@ -252,30 +249,31 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	switch strings.ToLower(cfg.Relational.Provider) {
 	case "dockdb":
 		return vldg_dockdb.NewStore(cfg.DockDB.Address, cfg.DockDB.Timeout.Duration)
-	case "", "memory", "mock", "memory_mock":
-		return memory_mock.NewRelationalStore(), nil
 	default:
 		return nil, fmt.Errorf("unsupported relational provider: %s", cfg.Relational.Provider)
 	}
 }
 
-// buildArchiveStore builds the archive store used by the /chat scrub-and-store flow.
-// buildArchiveStore 用于构建 /chat 脱敏归档流程使用的存储后端。
-func buildArchiveStore(cfg config.Config) (appports.MemoryArchiveStore, error) {
-	switch strings.ToLower(cfg.Archive.Provider) {
-	case "dockdb":
-		return vldg_dockdb.NewStore(cfg.DockDB.Address, cfg.DockDB.Timeout.Duration)
-	default:
-		return nil, fmt.Errorf("unsupported archive provider: %s", cfg.Archive.Provider)
+// resolveArchiveStore reuses the primary DockDB relational store for the temporary /chat archive flow.
+// resolveArchiveStore 用于复用主 DockDB 关系存储，承接临时 /chat 归档流程。
+func resolveArchiveStore(relational appports.RelationalStore) (appports.MemoryArchiveStore, error) {
+	// Keep chat on the same durable storage line as post-action so local mode only configures one SQL backend.
+	// 让 chat 和 post-action 共享同一条长期存储链，确保本地模式只需要配置一个 SQL 后端。
+	if archiveStore, ok := relational.(appports.MemoryArchiveStore); ok {
+		return archiveStore, nil
 	}
+	return nil, fmt.Errorf("relational store does not support archive flow")
 }
 
-// buildPersona builds the target dependency.
-// buildPersona 用于构建目标依赖。
-func buildPersona() appports.ContextPersonaProvider {
-	// Use the local persona provider for the OSS local runtime.
-	// 在 OSS 本地运行时中使用本地画像提供器。
-	return memory_mock.NewPersonaProvider()
+// resolvePersonaProvider reuses the primary DockDB storage adapter as the current persona source.
+// resolvePersonaProvider 用于复用主 DockDB 存储适配器，作为当前画像上下文来源。
+func resolvePersonaProvider(relational appports.RelationalStore) (appports.ContextPersonaProvider, error) {
+	// Keep persona loading on the same durable backend so runtime startup has no hidden in-memory fallback.
+	// 让画像加载也走同一条长期后端，避免运行时继续保留隐式内存回退。
+	if personaProvider, ok := relational.(appports.ContextPersonaProvider); ok {
+		return personaProvider, nil
+	}
+	return nil, fmt.Errorf("relational store does not support persona loading")
 }
 
 // buildScrubber builds the multi-language scrubber used by the local chat archive route.

@@ -4,9 +4,10 @@ package usecase
 
 import (
 	"context"
+	"sort"
 	"testing"
+	"time"
 
-	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/logic/processor"
 )
@@ -14,7 +15,7 @@ import (
 // TestPostActionUseCaseDefaultsScopeFields verifies the TestPostActionUseCaseDefaultsScopeFields behavior.
 // TestPostActionUseCaseDefaultsScopeFields 用于验证 TestPostActionUseCaseDefaultsScopeFields 行为。
 func TestPostActionUseCaseDefaultsScopeFields(t *testing.T) {
-	store := memory_mock.NewRelationalStore()
+	store := newTestRelationalStore()
 	usecase := NewPostActionUseCase(processor.NewMessageNormalizer(), nil, store, nil)
 	result, err := usecase.Execute(context.Background(), PostActionCommand{
 		SessionID: "sess-1",
@@ -41,7 +42,7 @@ func TestPostActionUseCaseDefaultsScopeFields(t *testing.T) {
 // TestPostActionUseCaseDropsNoiseTurns verifies the TestPostActionUseCaseDropsNoiseTurns behavior.
 // TestPostActionUseCaseDropsNoiseTurns 用于验证 TestPostActionUseCaseDropsNoiseTurns 行为。
 func TestPostActionUseCaseDropsNoiseTurns(t *testing.T) {
-	store := memory_mock.NewRelationalStore()
+	store := newTestRelationalStore()
 	filter := &stubNoiseTurnFilter{}
 	usecase := NewPostActionUseCase(processor.NewMessageNormalizer(), filter, store, nil)
 	result, err := usecase.Execute(context.Background(), PostActionCommand{
@@ -71,7 +72,7 @@ func TestPostActionUseCaseDropsNoiseTurns(t *testing.T) {
 // TestPostActionUseCaseSkipsNoiseGateWhenTimelineFlowIsMarked verifies that timeline-driven flows bypass noise filtering and still persist.
 // TestPostActionUseCaseSkipsNoiseGateWhenTimelineFlowIsMarked 用于验证时间线驱动流程会跳过噪声门过滤并继续持久化。
 func TestPostActionUseCaseSkipsNoiseGateWhenTimelineFlowIsMarked(t *testing.T) {
-	store := memory_mock.NewRelationalStore()
+	store := newTestRelationalStore()
 	filter := &stubNoiseTurnFilter{}
 	usecase := NewPostActionUseCase(processor.NewMessageNormalizer(), filter, store, nil)
 	result, err := usecase.Execute(context.Background(), PostActionCommand{
@@ -108,4 +109,99 @@ type stubNoiseTurnFilter struct {
 func (s *stubNoiseTurnFilter) FilterPersistableTurns(_ context.Context, turns []logicdomain.NormalizedTurn) []logicdomain.NormalizedTurn {
 	s.seen = append([]logicdomain.NormalizedTurn(nil), turns...)
 	return append([]logicdomain.NormalizedTurn(nil), s.filtered...)
+}
+
+// testSessionMeta stores lightweight session bookkeeping for post-action unit tests.
+// testSessionMeta 用于保存 post-action 单测里使用的轻量会话元数据。
+type testSessionMeta struct {
+	Session   logicdomain.SessionRef
+	UpdatedAt time.Time
+	TurnCount int
+}
+
+// testRelationalStore is the minimal in-test relational store used after removing runtime memory fallbacks.
+// testRelationalStore 用于在移除运行时内存回退后，为单测提供最小化关系存储桩。
+type testRelationalStore struct {
+	turns    map[string]map[int]logicdomain.NormalizedTurn
+	sessions map[string]testSessionMeta
+}
+
+// newTestRelationalStore creates one isolated relational-store stub for a post-action test case.
+// newTestRelationalStore 用于为单个 post-action 测试用例创建隔离的关系存储桩。
+func newTestRelationalStore() *testRelationalStore {
+	return &testRelationalStore{
+		turns:    map[string]map[int]logicdomain.NormalizedTurn{},
+		sessions: map[string]testSessionMeta{},
+	}
+}
+
+// UpsertChatLogs appends normalized turns into the per-session bucket observed by the tests.
+// UpsertChatLogs 用于把标准化轮次追加到测试可观察的会话桶中。
+func (s *testRelationalStore) UpsertChatLogs(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.NormalizedTurn) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	bucket := s.turns[session.SessionID]
+	if bucket == nil {
+		bucket = map[int]logicdomain.NormalizedTurn{}
+		s.turns[session.SessionID] = bucket
+	}
+	for _, turn := range turns {
+		bucket[turn.TurnIndex] = turn
+	}
+	meta := s.sessions[session.SessionID]
+	meta.Session = session
+	meta.TurnCount = len(bucket)
+	s.sessions[session.SessionID] = meta
+	return nil
+}
+
+// RefreshSession updates the stored scope metadata so tests can assert default-value backfilling.
+// RefreshSession 用于更新保存的作用域元数据，方便测试断言默认值补齐逻辑。
+func (s *testRelationalStore) RefreshSession(ctx context.Context, session logicdomain.SessionRef) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+	}
+	meta := s.sessions[session.SessionID]
+	meta.Session = session
+	meta.UpdatedAt = time.Now().UTC()
+	if bucket, ok := s.turns[session.SessionID]; ok {
+		meta.TurnCount = len(bucket)
+	}
+	s.sessions[session.SessionID] = meta
+	return nil
+}
+
+// Shutdown returns immediately because the stub owns no external resources.
+// Shutdown 用于立即返回，因为该桩不持有任何外部资源。
+func (s *testRelationalStore) Shutdown(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+// Turns returns persisted turns sorted by turn index so assertions stay deterministic.
+// Turns 用于按 turn index 排序返回已持久化轮次，确保断言结果稳定。
+func (s *testRelationalStore) Turns(sessionID string) []logicdomain.NormalizedTurn {
+	bucket := s.turns[sessionID]
+	out := make([]logicdomain.NormalizedTurn, 0, len(bucket))
+	for _, turn := range bucket {
+		out = append(out, turn)
+	}
+	sort.SliceStable(out, func(i, j int) bool { return out[i].TurnIndex < out[j].TurnIndex })
+	return out
+}
+
+// Session returns the stored session metadata snapshot for assertions about default scope values.
+// Session 用于返回保存的会话元数据快照，供默认作用域断言使用。
+func (s *testRelationalStore) Session(sessionID string) (testSessionMeta, bool) {
+	meta, ok := s.sessions[sessionID]
+	return meta, ok
 }

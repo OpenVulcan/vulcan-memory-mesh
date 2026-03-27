@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp verifies the TestConfigNormalizeAppliesMemoryPipelineDefaultsAndClamp behavior.
@@ -47,7 +48,6 @@ func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
 	cfg.PostAction.InputMode = ""
 	cfg.Noise.DefaultLanguage = ""
 	cfg.Noise.SemanticThreshold = 0
-	cfg.Archive.Provider = ""
 	cfg.Vector.Provider = ""
 	cfg.Relational.Provider = ""
 	cfg.DockDB.Address = ""
@@ -62,9 +62,6 @@ func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
 	if cfg.Noise.SemanticThreshold != 0.88 {
 		t.Fatalf("noise semantic threshold = %v", cfg.Noise.SemanticThreshold)
 	}
-	if cfg.Archive.Provider != "dockdb" {
-		t.Fatalf("archive provider = %q", cfg.Archive.Provider)
-	}
 	if cfg.Vector.Provider != "lancedb" {
 		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
 	}
@@ -76,6 +73,21 @@ func TestConfigNormalizeDefaultsPostActionInputMode(t *testing.T) {
 	}
 	if cfg.LanceDB.Address != "127.0.0.1:50051" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
+	}
+	if cfg.GRPC.RequestTimeout.Chat.Duration != 5*time.Second {
+		t.Fatalf("grpc chat timeout = %v", cfg.GRPC.RequestTimeout.Chat.Duration)
+	}
+	if cfg.GRPC.RequestTimeout.PreCheck.Duration != 8*time.Second {
+		t.Fatalf("grpc precheck timeout = %v", cfg.GRPC.RequestTimeout.PreCheck.Duration)
+	}
+	if cfg.GRPC.RequestTimeout.PostAction.Duration != 8*time.Second {
+		t.Fatalf("grpc post action timeout = %v", cfg.GRPC.RequestTimeout.PostAction.Duration)
+	}
+	if cfg.GRPC.RequestTimeout.SeedMemory.Duration != 15*time.Second {
+		t.Fatalf("grpc seed memory timeout = %v", cfg.GRPC.RequestTimeout.SeedMemory.Duration)
+	}
+	if cfg.PreCheck.IntentTimeout.Duration != 5*time.Second {
+		t.Fatalf("precheck intent timeout = %v", cfg.PreCheck.IntentTimeout.Duration)
 	}
 }
 
@@ -99,6 +111,37 @@ func TestConfigValidateRejectsNoiseThresholdOutsideRange(t *testing.T) {
 	}
 }
 
+// TestConfigValidateRejectsPreCheckMethodTimeoutNotGreaterThanIntentTimeout verifies the request budget leaves room for outer orchestration beyond intent extraction.
+// TestConfigValidateRejectsPreCheckMethodTimeoutNotGreaterThanIntentTimeout 用于验证 pre-check 方法级预算必须大于内部意图提取预算。
+func TestConfigValidateRejectsPreCheckMethodTimeoutNotGreaterThanIntentTimeout(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.GRPC.RequestTimeout.PreCheck = Duration{5 * time.Second}
+	cfg.PreCheck.IntentTimeout = Duration{5 * time.Second}
+	if err := cfg.Validate(); err == nil || err.Error() != "grpc.request_timeout.pre_check must be greater than pre_check.intent_timeout" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsMemoryVectorProvider verifies vector storage no longer allows the removed in-memory fallback.
+// TestConfigValidateRejectsMemoryVectorProvider 用于验证向量存储已经不再允许被移除的内存回退实现。
+func TestConfigValidateRejectsMemoryVectorProvider(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Vector.Provider = "memory"
+	if err := cfg.Validate(); err == nil || err.Error() != "vector.provider must be lancedb" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsMemoryRelationalProvider verifies relational storage now only accepts the DockDB backend.
+// TestConfigValidateRejectsMemoryRelationalProvider 用于验证关系存储现在只接受 DockDB 后端。
+func TestConfigValidateRejectsMemoryRelationalProvider(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Relational.Provider = "memory"
+	if err := cfg.Validate(); err == nil || err.Error() != "relational.provider must be dockdb" {
+		t.Fatalf("unexpected validate error: %v", err)
+	}
+}
+
 // TestLoadExpandsEnvPlaceholdersFromDotEnv verifies the TestLoadExpandsEnvPlaceholdersFromDotEnv behavior.
 // TestLoadExpandsEnvPlaceholdersFromDotEnv 用于验证 TestLoadExpandsEnvPlaceholdersFromDotEnv 行为。
 func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
@@ -114,12 +157,12 @@ func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	configBody := `{
-		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"8s","post_action":"8s","seed_memory":"15s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
-		"vector":{"provider":"memory"},
-		"relational":{"provider":"memory"},
-		"precheck":{"intent_timeout":"2s","top_k":5},
+		"vector":{"provider":"lancedb"},
+		"relational":{"provider":"dockdb"},
+		"pre_check":{"intent_timeout":"5s","top_k":5},
 		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75},
 		"admin":{"seed_enabled":true}
 	}`
@@ -149,12 +192,12 @@ func TestLoadIgnoresMissingDotEnvAndUsesProcessEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	configBody := `{
-		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"8s","post_action":"8s","seed_memory":"15s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + key + `}","model":"text-embedding-3-large","dimension":1024},
-		"vector":{"provider":"memory"},
-		"relational":{"provider":"memory"},
-		"precheck":{"intent_timeout":"2s","top_k":5},
+		"vector":{"provider":"lancedb"},
+		"relational":{"provider":"dockdb"},
+		"pre_check":{"intent_timeout":"5s","top_k":5},
 		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75},
 		"admin":{"seed_enabled":true}
 	}`
@@ -196,12 +239,12 @@ func TestLoadPathsMergesSystemAndOverrideConfigsWithOverridePriority(t *testing.
 	systemConfig := filepath.Join(systemConfigDir, "local.json")
 	userConfig := filepath.Join(userConfigDir, "local.json")
 	if err := os.WriteFile(systemConfig, []byte(`{
-		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"8s","post_action":"8s","seed_memory":"15s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"system-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"text-embedding-3-large","dimension":1024},
-		"vector":{"provider":"memory"},
-		"relational":{"provider":"memory"},
-		"precheck":{"intent_timeout":"2s","top_k":5},
+		"vector":{"provider":"lancedb"},
+		"relational":{"provider":"dockdb"},
+		"pre_check":{"intent_timeout":"5s","top_k":5},
 		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75},
 		"admin":{"seed_enabled":false}
 	}`), 0o644); err != nil {
@@ -253,12 +296,12 @@ func TestLoadPathsUsesExplicitConfigDirectoryDotEnvAsOverride(t *testing.T) {
 	systemConfig := filepath.Join(systemConfigDir, "local.json")
 	overrideConfig := filepath.Join(overrideDir, "local.json")
 	if err := os.WriteFile(systemConfig, []byte(`{
-		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"8s","post_action":"8s","seed_memory":"15s"},"shutdown_timeout":"10s"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"system-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${`+key+`}","model":"text-embedding-3-large","dimension":1024},
-		"vector":{"provider":"memory"},
-		"relational":{"provider":"memory"},
-		"precheck":{"intent_timeout":"2s","top_k":5},
+		"vector":{"provider":"lancedb"},
+		"relational":{"provider":"dockdb"},
+		"pre_check":{"intent_timeout":"5s","top_k":5},
 		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75},
 		"admin":{"seed_enabled":false}
 	}`), 0o644); err != nil {
@@ -298,7 +341,7 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 		t.Fatal(err)
 	}
 	configBody := `{
-		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"3s","post_action":"3s","seed_memory":"3s"},"shutdown_timeout":"10s"},
+		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"pre_check":"8s","post_action":"8s","seed_memory":"15s"},"shutdown_timeout":"10s"},
 		"llm":{
 			"provider":"openai",
 			"endpoint":"https://api.openai.com/v1",
@@ -308,9 +351,9 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 			"model_params":{"${` + modelKey + `}":{"enable_thinking":false}}
 		},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + apiKey + `}","model":"text-embedding-3-large","dimension":1024},
-		"vector":{"provider":"memory"},
-		"relational":{"provider":"memory"},
-		"precheck":{"intent_timeout":"2s","top_k":5},
+		"vector":{"provider":"lancedb"},
+		"relational":{"provider":"dockdb"},
+		"pre_check":{"intent_timeout":"5s","top_k":5},
 		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75},
 		"admin":{"seed_enabled":true}
 	}`

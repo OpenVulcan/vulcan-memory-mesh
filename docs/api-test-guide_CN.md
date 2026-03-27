@@ -30,6 +30,11 @@
 - VMM 只监听本地纯 gRPC
 - 需要 TLS 时，由 Caddy 反向代理处理
 
+当前本地数据面只保留两条主线：
+
+- DockDB：会话文本与脱敏文本存储
+- LanceDB：向量存储
+
 ## 推荐测试工具
 
 推荐使用：
@@ -125,6 +130,11 @@ grpcurl -plaintext `
   "traceId": "trc_xxx"
 }
 ```
+
+说明：
+
+- `Chat` 只是临时测试入口
+- 它会复用与 `PostAction` 相同的 DockDB 存储后端
 
 ## 3. PreCheck
 

@@ -28,6 +28,11 @@
 2. 客户端直接通过 gRPC 连接
 3. 如果需要域名、TLS 或公网接入，请在前面放 Caddy
 
+当前本地数据面只保留两条主线：
+
+- DockDB：会话文本与脱敏文本存储
+- LanceDB：向量存储
+
 推荐理解为：
 
 - VMM 负责业务协议
@@ -170,10 +175,35 @@
 - `grpc.request_timeout.post_action`
 - `grpc.request_timeout.seed_memory`
 
+对应环境变量也统一使用 `snake_case`：
+
+- `VMM_GRPC_CHAT_TIMEOUT`
+- `VMM_GRPC_PRE_CHECK_TIMEOUT`
+- `VMM_GRPC_POST_ACTION_TIMEOUT`
+- `VMM_GRPC_SEED_MEMORY_TIMEOUT`
+
 说明：
 
 - 这些是服务端方法级超时
 - 超时后通常返回 gRPC 错误
+- `grpc.request_timeout.pre_check` 是整次 `PreCheck` 调用的外层预算
+- `pre_check.intent_timeout` 是内部意图提取子步骤预算
+- 当前要求前者必须大于后者，避免外层预算比内部子步骤还短
+
+## LanceDB 表名规则
+
+当前 `lancedb.table_name` 配置的是基础表名，不是最终物理表名。
+
+运行时会自动按 embedding 维度扩展实际表名：
+
+- 基础表名：`vmm_memory_vectors`
+- 维度：`1024`
+- 实际表名：`vmm_memory_vectors_1024`
+
+这样做的目的是：
+
+- 避免不同 embedding 维度共用一张表
+- 防止 `1024` 和 `2048` 维度数据互相污染
 
 ## 错误模型
 
@@ -232,6 +262,11 @@
 
 - 纯文本单条归档
 - 需要先走脱敏再存储的轻量场景
+
+说明：
+
+- `Chat` 只是临时测试入口
+- 它会复用与 `PostAction` 相同的 DockDB 存储后端
 
 输入字段：
 

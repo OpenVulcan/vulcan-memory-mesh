@@ -26,6 +26,12 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 	server := &fakeLanceDBServer{}
 	store := newLanceDBTestStore(t, server)
 
+	// Assert bootstrap also uses the dimension-qualified table name so different embedding sizes never collide.
+	// 断言启动建表同样使用带维度后缀的表名，避免不同 embedding 尺寸发生冲突。
+	if len(server.createRequests) != 1 || server.createRequests[0].TableName != "vmm_memory_vectors_3" {
+		t.Fatalf("create table name = %#v", server.createRequests)
+	}
+
 	err := store.Upsert(context.Background(), logicdomain.MemoryRecord{
 		ID:     "mem-1",
 		Text:   "gateway-backed memory",
@@ -49,7 +55,7 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 		t.Fatalf("expected 1 upsert request, got %d", len(requests))
 	}
 	req := requests[0]
-	if req.TableName != "vmm_memory_vectors" {
+	if req.TableName != "vmm_memory_vectors_3" {
 		t.Fatalf("table name = %q", req.TableName)
 	}
 	if len(req.KeyColumns) != 1 || req.KeyColumns[0] != "id" {
@@ -133,7 +139,7 @@ func TestSearchMapsRowsAndFilter(t *testing.T) {
 // TestInitIgnoresAlreadyExistsTransportError 用于验证当网关通过 gRPC 错误报告“表已存在”时，启动仍保持幂等。
 func TestInitIgnoresAlreadyExistsTransportError(t *testing.T) {
 	server := &fakeLanceDBServer{
-		createErr: status.Error(codes.Internal, "Table 'vmm_memory_vectors' already exists"),
+		createErr: status.Error(codes.Internal, "Table 'vmm_memory_vectors_3' already exists"),
 	}
 	store := newLanceDBTestStoreWithoutInit(t, server)
 	if err := store.init(context.Background()); err != nil {
@@ -145,7 +151,7 @@ func TestInitIgnoresAlreadyExistsTransportError(t *testing.T) {
 // TestInitIgnoresAlreadyExistsResponse 用于验证当网关通过非成功响应报告“表已存在”时，启动同样会容忍该情况。
 func TestInitIgnoresAlreadyExistsResponse(t *testing.T) {
 	server := &fakeLanceDBServer{
-		createResponse: &lancedbv1.CreateTableResponse{Success: false, Message: "Table 'vmm_memory_vectors' already exists"},
+		createResponse: &lancedbv1.CreateTableResponse{Success: false, Message: "Table 'vmm_memory_vectors_3' already exists"},
 	}
 	store := newLanceDBTestStoreWithoutInit(t, server)
 	if err := store.init(context.Background()); err != nil {
@@ -200,7 +206,7 @@ func newLanceDBTestStoreWithoutInit(t *testing.T, server *fakeLanceDBServer) *St
 		conn:         conn,
 		client:       lancedbv1.NewLanceDbServiceClient(conn),
 		timeout:      time.Second,
-		tableName:    "vmm_memory_vectors",
+		tableName:    resolveVectorTableName("vmm_memory_vectors", 3),
 		vectorColumn: "vector",
 		dimension:    3,
 	}

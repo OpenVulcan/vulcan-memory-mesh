@@ -11,8 +11,8 @@ import (
 	"time"
 
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/memory_mock"
 	"github.com/openvulcan/vmm/internal/app/usecase"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/logic/processor"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
@@ -93,7 +93,7 @@ func TestPreCheckRejectsMissingUser(t *testing.T) {
 	logger := logx.New(&bytes.Buffer{}, logx.Config{Level: "info", Format: "text"})
 	deps := Dependencies{
 		IDs:             xid.NewGenerator(),
-		PreCheck:        usecase.NewPreCheckUseCase(processor.NewIntentExtractor(fixture.LLM, fixture.Prompts, fixture.Config.LLM.Model, 5), processor.NewContextAssembler(fixture.Prompts, fixture.Config.LLM.Model), fixture.Embedding, memory_mock.NewVectorStore(), memory_mock.NewPersonaProvider(), logger, fixture.Config.PreCheck.IntentTimeout.Duration, 5, 5, float64Ptr(0.4), fixture.Config.Embedding.Model, fixture.Config.Embedding.Dimension),
+		PreCheck:        usecase.NewPreCheckUseCase(processor.NewIntentExtractor(fixture.LLM, fixture.Prompts, fixture.Config.LLM.Model, 5), processor.NewContextAssembler(fixture.Prompts, fixture.Config.LLM.Model), fixture.Embedding, &testVectorStore{}, testPersonaProvider{}, logger, fixture.Config.PreCheck.IntentTimeout.Duration, 5, 5, float64Ptr(0.4), fixture.Config.Embedding.Model, fixture.Config.Embedding.Dimension),
 		Logger:          logger,
 		Validator:       NewRequestValidator("compat"),
 		PreCheckTimeout: time.Second,
@@ -309,4 +309,56 @@ type postActionFunc func(ctx context.Context, cmd usecase.PostActionCommand) (us
 // Execute 用于把 post-action 执行转发给包装函数。
 func (f postActionFunc) Execute(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
 	return f(ctx, cmd)
+}
+
+// testVectorStore is the minimal vector-store stub used to keep gRPC contract tests independent from removed memory fallbacks.
+// testVectorStore 用于提供最小化向量存储桩，让 gRPC 契约测试不再依赖已移除的内存回退实现。
+type testVectorStore struct{}
+
+// Upsert accepts test writes without persisting anything because pre-check contract tests never assert recall state.
+// Upsert 用于接受测试写入而不实际持久化，因为当前 pre-check 契约测试不会断言召回状态。
+func (s *testVectorStore) Upsert(ctx context.Context, record logicdomain.MemoryRecord) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+// Search returns an empty result set so pre-check tests can focus on transport validation only.
+// Search 用于返回空召回结果，让 pre-check 测试只聚焦传输层校验行为。
+func (s *testVectorStore) Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	default:
+		return []logicdomain.MemoryHit{}, nil
+	}
+}
+
+// Shutdown completes immediately because the stub holds no external resources.
+// Shutdown 用于立即完成关闭，因为该桩对象不持有任何外部资源。
+func (s *testVectorStore) Shutdown(ctx context.Context) error {
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+// testPersonaProvider returns an empty persona so transport tests avoid hidden storage dependencies.
+// testPersonaProvider 用于返回空画像，让传输层测试避免再次依赖隐藏的存储实现。
+type testPersonaProvider struct{}
+
+// Load returns an empty persona context because pre-check contract tests do not exercise persona injection.
+// Load 用于返回空画像上下文，因为 pre-check 契约测试并不会覆盖画像注入分支。
+func (p testPersonaProvider) Load(ctx context.Context, session logicdomain.SessionRef) (logicdomain.PersonaContext, error) {
+	select {
+	case <-ctx.Done():
+		return logicdomain.PersonaContext{}, ctx.Err()
+	default:
+		return logicdomain.PersonaContext{}, nil
+	}
 }

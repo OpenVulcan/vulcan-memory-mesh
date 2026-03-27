@@ -14,8 +14,8 @@ import (
 	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/grpc"
-	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/status"
 )
 
@@ -69,7 +69,7 @@ func NewStore(address string, timeout time.Duration, tableName, vectorColumn str
 		conn:         conn,
 		client:       lancedbv1.NewLanceDbServiceClient(conn),
 		timeout:      timeout,
-		tableName:    strings.TrimSpace(tableName),
+		tableName:    resolveVectorTableName(tableName, dimension),
 		vectorColumn: strings.TrimSpace(vectorColumn),
 		dimension:    dimension,
 	}
@@ -290,6 +290,13 @@ func distanceToScore(distance float64) float64 {
 		return 1
 	}
 	return 1 / (1 + math.Max(distance, 0))
+}
+
+// resolveVectorTableName derives the concrete LanceDB table name from the logical base name and embedding dimension.
+// resolveVectorTableName 用于根据逻辑基础表名和 embedding 维度推导实际的 LanceDB 表名。
+func resolveVectorTableName(baseName string, dimension int) string {
+	trimmedBase := strings.TrimSpace(baseName)
+	return fmt.Sprintf("%s_%d", trimmedBase, dimension)
 }
 
 // searchRow mirrors the JSON search row emitted by the gateway in JSON output mode.
