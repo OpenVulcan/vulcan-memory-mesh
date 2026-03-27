@@ -23,7 +23,7 @@ import (
 func TestInitAppliesSchemaMigrationsUpToCurrentVersion(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[]`,
+			"WHERE singleton_id = 1": `[]`,
 		},
 	}
 	store := newDuckDBTestStoreWithoutInit(t, server)
@@ -32,30 +32,65 @@ func TestInitAppliesSchemaMigrationsUpToCurrentVersion(t *testing.T) {
 	}
 
 	execs := server.execRequests()
-	if len(execs) != 9 {
-		t.Fatalf("expected 9 execute calls, got %d", len(execs))
+	if len(execs) != 11 {
+		t.Fatalf("expected 11 execute calls, got %d", len(execs))
 	}
 	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
 		t.Fatalf("missing version bootstrap sql: %s", execs[0].Sql)
 	}
-	if !strings.Contains(execs[1].Sql, "ALTER TABLE vmm_version ADD COLUMN updated_at") {
-		t.Fatalf("missing version-shape sql: %s", execs[1].Sql)
+	if !strings.Contains(execs[1].Sql, "ALTER TABLE vmm_version ADD COLUMN singleton_id") {
+		t.Fatalf("missing singleton backfill sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[2].Sql, "UPDATE vmm_version SET updated_at") {
-		t.Fatalf("missing version backfill sql: %s", execs[2].Sql)
+	if !strings.Contains(execs[2].Sql, "ALTER TABLE vmm_version ADD COLUMN updated_at") {
+		t.Fatalf("missing updated_at shape sql: %s", execs[2].Sql)
 	}
-	if !strings.Contains(execs[3].Sql, "CREATE TABLE IF NOT EXISTS vmm_memories") {
-		t.Fatalf("missing schema v1 sql: %s", execs[3].Sql)
+	if !strings.Contains(execs[3].Sql, "UPDATE vmm_version SET singleton_id = 1") {
+		t.Fatalf("missing singleton backfill update sql: %s", execs[3].Sql)
 	}
-	if !strings.Contains(execs[6].Sql, "CREATE TABLE IF NOT EXISTS vmm_users") {
-		t.Fatalf("missing schema v2 sql: %s", execs[6].Sql)
+	if !strings.Contains(execs[4].Sql, "UPDATE vmm_version SET updated_at") {
+		t.Fatalf("missing version updated_at backfill sql: %s", execs[4].Sql)
+	}
+	if !strings.Contains(execs[5].Sql, "CREATE TABLE IF NOT EXISTS vmm_memories") {
+		t.Fatalf("missing schema v1 sql: %s", execs[5].Sql)
+	}
+	if !strings.Contains(execs[8].Sql, "CREATE TABLE IF NOT EXISTS vmm_users") {
+		t.Fatalf("missing schema v2 sql: %s", execs[8].Sql)
 	}
 	var params []any
-	if err := json.Unmarshal([]byte(execs[8].ParamsJson), &params); err != nil {
+	if err := json.Unmarshal([]byte(execs[10].ParamsJson), &params); err != nil {
 		t.Fatalf("decode version insert params: %v", err)
 	}
-	if len(params) != 2 || params[0] != float64(currentSchemaVersion) {
+	if len(params) != 3 || params[0] != float64(versionSingletonID) || params[1] != float64(currentSchemaVersion) {
 		t.Fatalf("unexpected version params: %#v", params)
+	}
+}
+
+// TestEnsureVersionTableShapeHandlesExistingSingletonSchema verifies startup stays idempotent when the version table already contains singleton_id.
+// TestEnsureVersionTableShapeHandlesExistingSingletonSchema 用于验证当版本表已经包含 singleton_id 时，启动流程仍然保持幂等。
+func TestEnsureVersionTableShapeHandlesExistingSingletonSchema(t *testing.T) {
+	server := &fakeDuckDBServer{
+		execErrors: map[string]string{
+			"ALTER TABLE vmm_version ADD COLUMN singleton_id": "duckdb execute failed: Catalog Error: Column with name singleton_id already exists!",
+			"ALTER TABLE vmm_version ADD COLUMN updated_at":   "duckdb execute failed: Catalog Error: Column with name updated_at already exists!",
+		},
+		queryJSON: map[string]string{
+			"WHERE singleton_id = 1": `[{"schema_version":2}]`,
+		},
+	}
+	store := newDuckDBTestStoreWithoutInit(t, server)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init store with existing singleton schema: %v", err)
+	}
+
+	execs := server.execRequests()
+	if len(execs) != 5 {
+		t.Fatalf("expected 5 execute calls, got %d", len(execs))
+	}
+	if !strings.Contains(execs[3].Sql, "UPDATE vmm_version SET singleton_id = 1") {
+		t.Fatalf("missing singleton id backfill after duplicate-column path: %s", execs[3].Sql)
+	}
+	if !strings.Contains(execs[4].Sql, "UPDATE vmm_version SET updated_at") {
+		t.Fatalf("missing updated_at backfill after duplicate-column path: %s", execs[4].Sql)
 	}
 }
 
@@ -199,6 +234,7 @@ type fakeDuckDBServer struct {
 	execs     []*duckdbv1.ExecuteRequest
 	querys    []*duckdbv1.QueryRequest
 	queryJSON map[string]string
+	execErrors map[string]string
 }
 
 // ExecuteScript records every execute request so tests can assert SQL shape and parameters.
@@ -207,6 +243,11 @@ func (s *fakeDuckDBServer) ExecuteScript(_ context.Context, req *duckdbv1.Execut
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.execs = append(s.execs, req)
+	for fragment, message := range s.execErrors {
+		if strings.Contains(req.Sql, fragment) {
+			return &duckdbv1.ExecuteResponse{Success: false, Message: message}, nil
+		}
+	}
 	return &duckdbv1.ExecuteResponse{Success: true, Message: "ok"}, nil
 }
 

@@ -58,11 +58,11 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 
 当前代码中的版本常量：
 
-- `currentSchemaVersion = 1`
+- `currentSchemaVersion = 2`
 
 也就是说，当前运行时认为：
 
-- VMM DockDB schema 当前版本为 `v1`
+- VMM DockDB schema 当前版本为 `v2`
 
 ## 当前启动流程
 
@@ -77,7 +77,7 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 可以理解为：
 
 - 新安装：`0 -> 1`
-- 已是最新：不重复跑 `v1` 的业务 schema
+- 已是最新：不重复跑已有业务 schema
 - 后续升级：例如 `1 -> 2 -> 3`
 
 ## 当前 `v1` 迁移内容
@@ -86,12 +86,26 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 
 - `vmm_memories`
 - `vmm_noise_embeddings`
-- `vmm_chat_sessions`
-- `vmm_chat_logs`
 
 这些对象目前放在：
 
 - `schemaV1SQL`
+
+## 当前 `v2` 迁移内容
+
+当前 `v2` schema 追加了新的层级和会话存储表：
+
+- `vmm_users`
+- `vmm_teams`
+- `vmm_spaces`
+- `vmm_projects`
+- `vmm_sessions`
+- `vmm_chat_messages`
+- `vmm_memory_entries`
+
+这些对象目前放在：
+
+- `schemaV2SQL`
 
 ## 为什么还保留 `CREATE TABLE IF NOT EXISTS`
 
@@ -120,13 +134,13 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 把：
 
 ```go
-const currentSchemaVersion = 1
+const currentSchemaVersion = 2
 ```
 
 改成：
 
 ```go
-const currentSchemaVersion = 2
+const currentSchemaVersion = 3
 ```
 
 ### 2. 增加新的迁移函数或 SQL 片段

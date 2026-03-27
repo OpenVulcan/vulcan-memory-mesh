@@ -23,6 +23,10 @@ const (
 	// currentSchemaVersion tracks the newest DockDB schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 DockDB 表结构版本。
 	currentSchemaVersion = 2
+
+	// versionSingletonID pins the schema-version row to one deterministic singleton record.
+	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
+	versionSingletonID = 1
 )
 
 const schemaV1SQL = `
@@ -201,13 +205,13 @@ func (s *Store) Shutdown(ctx context.Context) error {
 func (s *Store) init(ctx context.Context) error {
 	// Bootstrap the version table first so later migrations can be applied incrementally.
 	// 先引导版本表，便于后续迁移按版本递增执行。
-	if err := s.exec(ctx, `CREATE TABLE IF NOT EXISTS vmm_version (schema_version INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`); err != nil {
+	if err := s.exec(ctx, `CREATE TABLE IF NOT EXISTS vmm_version (singleton_id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`); err != nil {
 		return fmt.Errorf("bootstrap schema version table: %w", err)
 	}
 	if err := s.ensureVersionTableShape(ctx); err != nil {
 		return err
 	}
-	rows, err := queryRows[versionRow](s, ctx, `SELECT schema_version FROM vmm_version LIMIT 1`)
+	rows, err := queryRows[versionRow](s, ctx, `SELECT schema_version FROM vmm_version WHERE singleton_id = 1 LIMIT 1`)
 	if err != nil {
 		return fmt.Errorf("query schema version: %w", err)
 	}
@@ -246,7 +250,7 @@ func (s *Store) applyMigration(ctx context.Context, version int) error {
 	if err := s.exec(ctx, `DELETE FROM vmm_version`); err != nil {
 		return fmt.Errorf("clear dockdb schema version row: %w", err)
 	}
-	if err := s.exec(ctx, `INSERT INTO vmm_version (schema_version, updated_at) VALUES (?, ?)`, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err := s.exec(ctx, `INSERT INTO vmm_version (singleton_id, schema_version, updated_at) VALUES (?, ?, ?)`, versionSingletonID, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("persist dockdb schema version row: %w", err)
 	}
 	return nil
@@ -255,17 +259,31 @@ func (s *Store) applyMigration(ctx context.Context, version int) error {
 // ensureVersionTableShape upgrades the tiny version table in place so older bootstrap layouts stay writable.
 // ensureVersionTableShape 用于原地升级极小的版本表结构，确保旧的引导布局仍然可写。
 func (s *Store) ensureVersionTableShape(ctx context.Context) error {
-	// Add the updated_at column lazily without inline constraints because DuckDB does not support
-	// adding a constrained column through ALTER TABLE in older gateway layouts.
-	// 惰性补齐 updated_at 列，但不要在 ALTER TABLE 里追加约束，因为旧版 DuckDB 网关不支持这种写法。
-	if err := s.exec(ctx, `ALTER TABLE vmm_version ADD COLUMN updated_at TEXT`); err != nil {
+	// Add singleton_id and updated_at lazily so older version-table layouts can be upgraded in place.
+	// 惰性补齐 singleton_id 和 updated_at，让旧版版本表布局也能原地升级。
+	if err := s.ensureVersionTableColumn(ctx, `ALTER TABLE vmm_version ADD COLUMN singleton_id INTEGER`); err != nil {
+		return err
+	}
+	if err := s.ensureVersionTableColumn(ctx, `ALTER TABLE vmm_version ADD COLUMN updated_at TEXT`); err != nil {
+		return err
+	}
+	if err := s.exec(ctx, `UPDATE vmm_version SET singleton_id = 1 WHERE singleton_id IS NULL OR singleton_id = 0`); err != nil {
+		return fmt.Errorf("backfill dockdb schema version singleton_id: %w", err)
+	}
+	if err := s.exec(ctx, `UPDATE vmm_version SET updated_at = '' WHERE updated_at IS NULL`); err != nil {
+		return fmt.Errorf("backfill dockdb schema version updated_at: %w", err)
+	}
+	return nil
+}
+
+// ensureVersionTableColumn applies one additive ALTER TABLE to the version table and tolerates duplicate-column retries.
+// ensureVersionTableColumn 用于给版本表执行一次增量 ALTER TABLE，并容忍重复补列时的幂等重试。
+func (s *Store) ensureVersionTableColumn(ctx context.Context, sql string) error {
+	if err := s.exec(ctx, sql); err != nil {
 		if isAlreadyExistsMessage(err.Error()) || isDuplicateColumnMessage(err.Error()) {
 			return nil
 		}
 		return fmt.Errorf("ensure dockdb schema version columns: %w", err)
-	}
-	if err := s.exec(ctx, `UPDATE vmm_version SET updated_at = '' WHERE updated_at IS NULL`); err != nil {
-		return fmt.Errorf("backfill dockdb schema version updated_at: %w", err)
 	}
 	return nil
 }

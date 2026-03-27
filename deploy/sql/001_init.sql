@@ -2,6 +2,7 @@
 -- 001_init.sql 用于声明本地 VMM 运行时当前使用的 DockDB 基线表结构。
 
 CREATE TABLE IF NOT EXISTS vmm_version (
+    singleton_id   INTEGER PRIMARY KEY,
     schema_version INTEGER NOT NULL,
     updated_at     TEXT    NOT NULL DEFAULT ''
 );
