@@ -1,112 +1,133 @@
 # VMM OSS Local (Go)
 
-VulcanMemoryMesh 当前聚焦本地开源版本，并且已经把入站服务从 HTTP 切换为 gRPC。当前主线能力仍然保持保守节奏：
+VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务链：
 
-- `PreCheck` 会固定返回“不注入”
-- `PostAction` 负责接收、清洗并持久化会话文本
-- `SeedMemory` 用于本地向量库预热
-- TLS 已从应用内移除；如需 TLS，请在服务前使用 [Caddy](https://caddyserver.com/)
+- `PreCheck`
+- `PostAction`
+
+当前运行时的定位是：
+
+- 用 `project_id + user_id + session_id` 做确定性层级寻址
+- 用 DockDB 保存层级、session、消息与长期 SQL 数据
+- 用 LanceDB 保存向量数据
+- 由 Caddy 等外部反向代理负责 TLS
 
 ## 文档导航
 
+- [层级数据模型与 gRPC 设计（中文）](./docs/hierarchy-grpc-design_CN.md)
 - [gRPC 对接说明（中文）](./docs/grpc-integration-guide_CN.md)
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
-- [DockDB Schema 版本管理说明（中文）](./docs/dockdb-schema-versioning_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
+- [DockDB Schema 版本管理说明（中文）](./docs/dockdb-schema-versioning_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 
-## 目录
+## 当前运行模型
 
-```text
-cmd/
-  vmm-local/
-configs/
-deploy/sql/
-internal/
-  app/
-  config/
-  logic/
-  platform/
-  adapters/
-    inbound/grpcapi/
-    outbound/
-      openai_native/
-      vldg_dockdb/
-      vldg_lancedb/
-scripts/
-```
+### 入站协议
 
-## 已实现内容
+当前只暴露 gRPC：
 
-- gRPC 服务 `vmm.v1.VMMService`
+- 服务：`vmm.v1.VMMService`
+
+当前主线方法：
+
 - `Healthz`
-- `Chat`
+- `ListProjects`
+- `ResolveProject`
+- `EnsureProject`
+- `DeleteProject`
+- `MigrateProject`
+- `ResolveUser`
+- `ListUsers`
+- `DeleteUser`
 - `PreCheck`
 - `PostAction`
-- `PostActionOld`
-- `SeedMemory`
-- `cmd/vmm-local` 本地启动入口
-- LanceDB 本地向量库适配器
-- DockDB 本地长期库适配器
-- OpenAI 兼容原生 LLM / Embedding 适配器（运行时不再提供 mock 模型）
-- TraceID / Recovery / 请求日志拦截器
-- 路由级超时控制
-- 优雅停机顺序
-- 单元测试与 gRPC 回归测试样例
 
-## 核心规则
+### 数据后端
+
+当前只保留两条本地数据线：
+
+- DockDB：层级、用户、session、消息、长期 SQL 记录
+- LanceDB：向量写入、检索和删除
+
+运行时已经移除：
+
+- HTTP 服务
+- 应用内 TLS
+- SQLite 运行时支持
+- 内存关系库存根 / 内存向量库存根回退
+
+## 核心约束
+
+### 业务入参
+
+`PreCheck` 和 `PostAction` 现在只接受：
+
+- `session_id`
+- `user_id`
+- `project_id`
+
+说明：
+
+- `user_id`、`project_id` 必须是数字 ID
+- `team_id`、`space_id` 不再由客户端传入
+- 服务端会先解析 `project_id -> space_id -> team_id`
+- 如果 `session_id` 不存在，会自动在 `vmm_sessions` 中创建一条 session 记录
 
 ### PreCheck
 
-- 当前版本在用例入口固定短路，不会触发画像加载、意图提炼、embedding 或向量召回
-- 对任意合法请求都返回：
-  - `should_inject = false`
-  - `context_text = ""`
-  - `context_items = []`
-- 当前请求字段只保留：
-  - `session_id`
-  - `user_id`
-  - `team_id`
-  - `space_id`
-  - `project_id`
-  - `user_content`
+当前 `PreCheck` 仍然是保守模式：
+
+- 完成请求校验与范围解析
+- 固定返回 `should_inject = false`
+- 不做真正的记忆注入
 
 ### PostAction
 
-- `PostAction` 是新的字符串契约入口
-- 顶层只接收：
-  - `user_content`
-  - `assistant_content`
-  - `timeline`
-- 新 `PostAction` 会分别输出清洗前和清洗后的本地调试日志
-- `user_content`、`timeline[].content`、`assistant_content` 在入库前会执行：
-  - 媒体与 base64 清理
-  - 机器文本压缩
-  - token 预算裁剪
-- `timeline` 非空时会跳过 `NoiseGate`
-- `timeline` 为空时会继续执行标准噪声门判定
-- 方法会先返回 `accepted=true`，然后在后台继续复用旧版持久化逻辑
-- `PostActionOld` 仍保留旧版原始快照契约
-- `Chat` 只是临时测试入口，但也会复用同一个 DockDB 存储后端
-- 入站清洗会处理：
-  - `<think>`
-  - base64 媒体数据
-  - Markdown/HTML 图片与附件链接
-- 缺失的 `user/team/space/project` 会自动补成 `default`
+当前 `PostAction` 是新的文本契约入口，只接受：
 
-### SeedMemory
+- `user_content`
+- `assistant_content`
+- `timeline[]`
 
-- 将 `memory_text` 向量化
-- 组装 `MemoryRecord`
-- 写入 LanceDB
+服务端流程是：
 
-## 启动示例
+1. 先解析 `session_id / user_id / project_id`
+2. 记录原始日志
+3. 清洗 `user_content`、`timeline[].content`、`assistant_content`
+4. 记录清洗后日志
+5. 立即返回 `accepted=true`
+6. 后台继续：
+   - 按 `user -> timeline -> assistant` 顺序持久化消息
+   - 当 `timeline` 为空时，先过 `NoiseGate`
 
-### 标准构建与运行
+## 构建与运行
+
+标准构建入口只有：
 
 ```powershell
 .\make.ps1 build
+```
+
+或：
+
+```powershell
+.\make.bat build
+```
+
+标准运行产物：
+
+- `output/bin/vmm-local.exe`
+
+标准配置目录：
+
+- `output/configs/`
+
+### 启动示例
+
+```powershell
+.\make.bat build
 .\output\bin\vmm-local.exe
 ```
 
@@ -116,92 +137,60 @@ scripts/
 .\output\bin\vmm-local.exe -config ~/.vmm
 ```
 
-`-config` 现在表示“覆盖根目录”，不是单个配置文件路径。标准运行时会先读取 `output/configs/local.json`，再叠加 `~/.vmm/local.json` 或 `-config` 指向目录中的 `local.json`。
-
-### gRPC 监听与 TLS
-
-- 当前服务监听地址来自 `grpc.listen_addr`
-- 当前服务只暴露纯 gRPC，不再内建 TLS
-- 如果你需要 TLS、域名或公网入口，请在前面使用 Caddy 反代
-
-### gRPC 调试
-
-- 当前运行时已开启 gRPC reflection
-- 可以直接用 `grpcurl` 枚举服务和方法，而不需要额外传 proto 文件
+`-config` 表示“覆盖根目录”，不是单个配置文件路径。
 
 ## 配置说明
 
-当前关键配置项包括：
+当前关键配置项：
 
 - `grpc.listen_addr`
 - `grpc.max_receive_message_bytes`
-- `grpc.request_timeout.*`
+- `grpc.request_timeout.workspace`
+- `grpc.request_timeout.pre_check`
+- `grpc.request_timeout.post_action`
 - `dockdb.address`
 - `lancedb.address`
 - `lancedb.table_name`
 - `lancedb.vector_column`
-- `relational.provider`（当前固定为 `dockdb`）
-- `vector.provider`（当前固定为 `lancedb`）
 - `llm.*`
 - `embedding.*`
-- `post_action.input_mode`
 - `noise.*`
+- `post_action.input_mode`
 
-其中：
+### 超时模型
 
 - `grpc.request_timeout.pre_check`
-  - 表示整次 `PreCheck` gRPC 方法的外层超时
+  - 表示整次 `PreCheck` RPC 的外层预算
 - `pre_check.intent_timeout`
-  - 表示 `PreCheck` 内部意图提取子步骤的超时
+  - 表示未来恢复意图提取后，内部子步骤的预算
 
-对应环境变量也统一使用同一套 `snake_case` 语义：
-
-- `VMM_GRPC_PRE_CHECK_TIMEOUT`
-- `VMM_GRPC_POST_ACTION_TIMEOUT`
-- `VMM_GRPC_SEED_MEMORY_TIMEOUT`
-- `VMM_PRE_CHECK_INTENT_TIMEOUT`
-- `VMM_PRE_CHECK_TOPK`
-- `VMM_PRE_CHECK_SIMILARITY_THRESHOLD`
-- `VMM_POST_ACTION_INPUT_MODE`
-
-这两个配置不合并，但必须保持：
+当前要求：
 
 - `grpc.request_timeout.pre_check > pre_check.intent_timeout`
 
-另外：
+### LanceDB 表名规则
 
-- `lancedb.table_name` 配置的是基础表名
-- 运行时实际表名会自动追加 embedding 维度后缀
-  - 例如基础名 `vmm_memory_vectors`
-  - 维度 `1024` 时实际表名为 `vmm_memory_vectors_1024`
+`lancedb.table_name` 现在是基础表名。
 
-如果某个兼容模型需要额外参数，例如关闭 thinking、调整 `reasoning_effort` 或透传 provider 专属字段，可以在配置里使用：
+运行时会自动追加 embedding 维度：
 
-- `llm.params`
-- `llm.model_params`
-- `embedding.params`
-- `embedding.model_params`
+- 基础表名：`vmm_memory_vectors`
+- 维度：`1024`
+- 实际表名：`vmm_memory_vectors_1024`
 
-优先级是：
+这样可以避免不同向量维度共用同一张物理表。
 
-1. 基础 `params`
-2. 命中模型名的 `model_params`
-3. 运行时请求级 `ProviderHints`
+## 开发验证
 
-## 测试
+提交较大改动前，至少执行：
 
 ```powershell
-go test ./...
+go test ./... -count=1
+.\make.bat build
 ```
 
-如果你要验证真实模型链路，请先确保：
+## TLS 说明
 
-- `output/configs/local.json` 已配置为 OpenAI-compatible provider
-- `output/configs/.env` 已存在并包含可用的 API Key / Base URL / Model
+当前应用内不再支持 TLS。
 
-## 说明
-
-- 当前本地长期存储只保留两条主线：
-  - DockDB：会话与脱敏文本存储
-  - LanceDB：向量存储
-- 运行时已经移除内存向量库、内存关系库存根和画像 mock 回退
+如果需要 TLS、域名或公网入口，请在前面使用 [Caddy](https://caddyserver.com/) 做反向代理。

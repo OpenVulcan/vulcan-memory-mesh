@@ -65,7 +65,6 @@ type Config struct {
 	PostAction     PostActionConfig     `json:"post_action"`
 	PreCheck       PreCheckConfig       `json:"pre_check"`
 	MemoryPipeline MemoryPipelineConfig `json:"memory_pipeline"`
-	Admin          AdminConfig          `json:"admin"`
 }
 
 // GRPCConfig holds listener and timeout settings for the inbound gRPC server.
@@ -80,10 +79,9 @@ type GRPCConfig struct {
 // GRPCRequestTimeout groups per-method timeout settings used by the gRPC handlers.
 // GRPCRequestTimeout 用于收集各个 gRPC 方法使用的超时配置。
 type GRPCRequestTimeout struct {
-	Chat       Duration `json:"chat"`
+	Workspace  Duration `json:"workspace"`
 	PreCheck   Duration `json:"pre_check"`
 	PostAction Duration `json:"post_action"`
-	SeedMemory Duration `json:"seed_memory"`
 }
 
 // LoggingConfig holds the structured logging knobs shared by the local runtime.
@@ -151,14 +149,14 @@ type EmbeddingConfig struct {
 	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
 }
 
-// VectorConfig selects the vector backend used by recall and seed-memory flows.
-// VectorConfig 用于选择记忆召回和 seed-memory 流程使用的向量后端。
+// VectorConfig selects the vector backend used by recall and long-term memory indexing.
+// VectorConfig 用于选择记忆召回和长期记忆索引使用的向量后端。
 type VectorConfig struct {
 	Provider string `json:"provider"`
 }
 
-// RelationalConfig selects the durable storage backend shared by post-action and the temporary chat archive flow.
-// RelationalConfig 用于选择 post-action 与临时 chat 归档流程共享的长期存储后端。
+// RelationalConfig selects the durable storage backend used by hierarchy, session, and message persistence.
+// RelationalConfig 用于选择层级、session 和消息持久化所使用的长期存储后端。
 type RelationalConfig struct {
 	Provider string `json:"provider"`
 }
@@ -184,12 +182,6 @@ type MemoryPipelineConfig struct {
 	MinSimilarityScore *float64 `json:"min_similarity_score,omitempty"`
 }
 
-// AdminConfig controls whether local admin-only routes such as seed-memory are exposed.
-// AdminConfig 用于控制本地管理员专用路由如 seed-memory 是否暴露。
-type AdminConfig struct {
-	SeedEnabled bool `json:"seed_enabled"`
-}
-
 // DefaultLocal executes the DefaultLocal logic.
 // DefaultLocal 用于执行 DefaultLocal 逻辑。
 func DefaultLocal() Config {
@@ -197,7 +189,7 @@ func DefaultLocal() Config {
 		GRPC: GRPCConfig{
 			ListenAddr:             ":8080",
 			MaxReceiveMessageBytes: 1 << 20,
-			RequestTimeout:         GRPCRequestTimeout{Chat: Duration{5 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}, SeedMemory: Duration{15 * time.Second}},
+			RequestTimeout:         GRPCRequestTimeout{Workspace: Duration{15 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
 		},
 		Logging:        LoggingConfig{Level: "info", Format: "text"},
@@ -212,7 +204,6 @@ func DefaultLocal() Config {
 		PostAction:     PostActionConfig{InputMode: "compat"},
 		PreCheck:       PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
-		Admin:          AdminConfig{SeedEnabled: true},
 	}
 }
 
@@ -354,17 +345,14 @@ func (c *Config) Normalize() {
 	if c.GRPC.RequestTimeout.PreCheck.Duration <= 0 {
 		c.GRPC.RequestTimeout.PreCheck = Duration{8 * time.Second}
 	}
-	if c.GRPC.RequestTimeout.Chat.Duration <= 0 {
-		c.GRPC.RequestTimeout.Chat = Duration{5 * time.Second}
+	if c.GRPC.RequestTimeout.Workspace.Duration <= 0 {
+		c.GRPC.RequestTimeout.Workspace = Duration{15 * time.Second}
 	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		c.GRPC.MaxReceiveMessageBytes = 1 << 20
 	}
 	if c.GRPC.RequestTimeout.PostAction.Duration <= 0 {
 		c.GRPC.RequestTimeout.PostAction = Duration{8 * time.Second}
-	}
-	if c.GRPC.RequestTimeout.SeedMemory.Duration <= 0 {
-		c.GRPC.RequestTimeout.SeedMemory = Duration{15 * time.Second}
 	}
 	if c.GRPC.ShutdownTimeout.Duration <= 0 {
 		c.GRPC.ShutdownTimeout = Duration{10 * time.Second}
@@ -590,10 +578,9 @@ func applyEnvOverrides(cfg *Config) {
 
 	setString("VMM_GRPC_LISTEN_ADDR", &cfg.GRPC.ListenAddr)
 	setInt("VMM_GRPC_MAX_RECEIVE_MESSAGE_BYTES", &cfg.GRPC.MaxReceiveMessageBytes)
-	setDuration("VMM_GRPC_CHAT_TIMEOUT", &cfg.GRPC.RequestTimeout.Chat)
+	setDuration("VMM_GRPC_WORKSPACE_TIMEOUT", &cfg.GRPC.RequestTimeout.Workspace)
 	setDuration("VMM_GRPC_PRE_CHECK_TIMEOUT", &cfg.GRPC.RequestTimeout.PreCheck)
 	setDuration("VMM_GRPC_POST_ACTION_TIMEOUT", &cfg.GRPC.RequestTimeout.PostAction)
-	setDuration("VMM_GRPC_SEED_MEMORY_TIMEOUT", &cfg.GRPC.RequestTimeout.SeedMemory)
 	setDuration("VMM_GRPC_SHUTDOWN_TIMEOUT", &cfg.GRPC.ShutdownTimeout)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
@@ -629,7 +616,6 @@ func applyEnvOverrides(cfg *Config) {
 	setFloat("VMM_PRE_CHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
-	setBool("VMM_ADMIN_SEED_ENABLED", &cfg.Admin.SeedEnabled)
 }
 
 // isOpenAIProvider reports whether one provider alias resolves to the supported OpenAI-compatible adapter.

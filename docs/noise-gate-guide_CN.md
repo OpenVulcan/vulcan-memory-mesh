@@ -2,74 +2,134 @@
 
 ## 文档目标
 
-这份文档说明 VMM 在 `post-action` 写入长期记忆前新增的“噪声准入门（Noise Gate）”模块。它专门用于拦截那些虽然结构上合法、但语义上不值得进入长期记忆库的问答内容。
+这份文档说明当前主线版本中，`NoiseGate` 在 `PostAction` 链路里的职责、触发条件、规则来源和语义缓存方式。
 
-它和入口清洗不是同一层能力：
+当前它只服务于：
 
-- 入口清洗负责去掉 `<think>`、base64、图片/附件链接等“脏文本”
-- 噪声准入门负责判断“这一轮问答值不值得记下来”
+- `vmm.v1.VMMService/PostAction`
+
+它不是传输层校验器，也不是文本清洗器。
 
 ## 它解决什么问题
 
-如果把下面这些内容写进长期记忆，会明显污染召回质量：
+即使请求结构合法，也不代表这条对话值得写进长期记忆。
 
-- 代理拒答
-  - 例如“我不记得”“没有相关记忆”“I don't have any information”
-- 关于记忆本身的元问题
-  - 例如“你还记得吗”“我之前说过什么来着”“只回复 none”
-- 新会话或心跳样板
-  - 例如“fresh session”“new session”“HEARTBEAT”
-- 诊断、评测或测试残留
-  - 例如 `query -> none`、`no explicit solution`
+下面这些内容如果直接持久化，会明显污染后续召回和提炼质量：
 
-这些内容有些可以靠正则直接拦截，有些问法变化很多，更适合用向量相似度做语义复核。
+- 关于“记忆本身”的元问题
+  - 例如“你还记得吗”
+  - “我之前说过什么”
+- 明显拒答
+  - 例如“我不记得”
+  - “没有相关信息”
+- 心跳或会话样板
+  - 例如 `fresh session`
+  - `HEARTBEAT`
+- 诊断残留
+  - 例如 `query -> none`
+  - `no explicit solution`
 
-## 模块位置
+`NoiseGate` 的目标就是在真正写入长期存储前，把这类语义上低价值的单轮内容拦下来。
 
-- [internal/logic/processor/noise_gate.go](../internal/logic/processor/noise_gate.go)
-- [internal/logic/processor/noise_rules.go](../internal/logic/processor/noise_rules.go)
+## 它不负责什么
 
-规则文件目录：
+`NoiseGate` 不负责：
+
+- `session_id / user_id / project_id` 校验
+- gRPC 请求大小限制
+- base64 / 图片 / `<think>` 文本清洗
+- timeline 结构合法性判断
+
+这些能力分别由：
+
+- gRPC 请求校验器
+- gRPC 接收大小限制
+- `PostAction` 存储清洗器
+- 统一范围拦截器
+
+负责。
+
+## 当前在链路中的位置
+
+当前 `PostAction` 的执行顺序里，`NoiseGate` 位于：
+
+1. gRPC 请求校验
+2. 作用域解析
+3. 原始日志记录
+4. 文本清洗
+5. 清洗后日志记录
+6. 后台 `PostActionUseCase`
+7. **NoiseGate**
+8. DockDB 写入
+
+也就是说：
+
+- 它发生在文本已经清洗之后
+- 发生在真正写入 `vmm_chat_messages` 之前
+
+## 当前触发规则
+
+当前主线不是“所有 `PostAction` 都走噪声门”，而是：
+
+- 当 `timeline == 0`：
+  - 认为这是一个简单单轮 `user -> assistant`
+  - 才执行 `NoiseGate`
+- 当 `timeline > 0`：
+  - 认为这是带中间流程的复杂会话片段
+  - 直接跳过 `NoiseGate`
+
+原因是：
+
+- `NoiseGate` 当前只针对简单单轮问答做准入判断
+- 中间包含补充提问、插话或回答中断的复杂片段，不适合直接套这层单轮过滤
+
+## 当前判定对象
+
+当前当 `timeline == 0` 时，`NoiseGate` 实际看到的是一个临时单轮：
+
+- `user_message = user_content`
+- `assistant_reply = assistant_content`
+
+也就是说：
+
+- 它不会看原始 `timeline`
+- 它不会看原始 JSON
+- 它只看一个标准化的简单问答对
+
+如果这对问答被判定为噪声：
+
+- 整次后台持久化直接结束
+- 不写入 `vmm_chat_messages`
+
+## 规则目录
+
+当前规则目录仍然是固定结构：
 
 - 系统目录：`configs/noise_rules/`
 - 用户覆盖目录：`~/.vmm/noise_rules/` 或 `-config` 指向目录下的 `noise_rules/`
 
-## 工作流程
+规则分两类文件：
 
-`PostAction` / `PostActionOld` 当前的写库链路是：
+- `common.json`
+- `<language>.json`，例如 `zh-CN.json`
 
-1. gRPC 入口做结构校验与文本净化
-2. `MessageNormalizer` 把原始快照压成 `user -> assistant` 轮次
-3. `NoiseGate` 对每条轮次做“是否准入长期记忆”的判断
-4. 只有通过判定的轮次才会写入关系存储
+## 规则选择优先级
 
-也就是说：
-
-- 结构不合法：在入口被拒绝
-- 结构合法但语义无价值：在 `NoiseGate` 被拦截
-
-## 规则加载优先级
-
-噪声规则采用两层结构：
+当前仍然遵循“用户层优先、系统层兜底”的文件选择逻辑：
 
 1. `common.json`
-2. `<language>.json`，例如 `zh-CN.json`
-
-实际加载顺序是：
-
-1. 先确定 `common.json` 来源
-   - 用户目录存在 `common.json` 时，只用用户的
+   - 用户目录存在时，只用用户的
    - 否则只用系统的
-2. 再确定语言文件来源
-   - 用户目录存在 `zh-CN.json` 时，只用用户的
+2. `<language>.json`
+   - 用户目录存在时，只用用户的
    - 否则只用系统的
 3. 最终把“选中的 common”和“选中的 language”组合
-4. 如果语言文件和 `common.json` 中有同名类别，语言文件覆盖 `common.json`
+4. 如果语言文件里有和 common 同名的类别，语言文件覆盖 common
 
 注意：
 
-- 系统和用户的同层文件不会 merge
-- 用户可以通过提供自己的 `common.json` 或 `zh-CN.json`，完整替换系统同层规则
+- 系统层和用户层不会做同层 merge
+- 用户可以通过自己的 `common.json` 或 `<language>.json` 完整替换系统同层规则
 
 ## JSON 规则格式
 
@@ -86,12 +146,10 @@
       "threshold": 0.88,
       "patterns": [
         "你还?记得",
-        "记不记得",
-        "我(?:之前|上次|以前)(?:说|提|讲).*(?:吗|呢|？|\\?)"
+        "记不记得"
       ],
       "phrases": [
         "你还记得我之前说过的内容吗",
-        "记不记得我上次提到的代号",
         "我之前说过什么来着"
       ]
     }
@@ -99,64 +157,56 @@
 }
 ```
 
-### 字段说明
-
-- `language`
-  - 规则包语言标识
-  - `common.json` 固定写 `common`
-  - 中文包通常写 `zh-CN`
-- `version`
-  - 规则版本号
-- `categories`
-  - 类别列表
-
-每个类别包含：
+### 类别字段说明
 
 - `name`
   - 类别唯一名称
-  - 例如 `meta_question`、`denial_response`
 - `targets`
-  - 作用对象
-  - 可选值：
+  - 生效对象：
     - `user`
     - `assistant`
-- `threshold`
-  - 语义相似度阈值
-  - 当 `phrases` 存在时生效
 - `patterns`
-  - 正则规则列表
-  - 适合高置信、低成本拦截
+  - 高置信正则列表
 - `phrases`
-  - 语义原型短语列表
-  - 启动时会做 embedding，用于运行时相似度比对
+  - 语义原型短语
+- `threshold`
+  - 该类别自己的语义阈值
 
-## 当前内置类别
+## 判定顺序
 
-当前系统规则中主要内置了这些类别：
+每条简单单轮问答会按这个顺序判定：
 
-- `meta_question`
-  - 主要针对 `user`
-  - 拦截“你还记得吗”“我之前说过什么”这类 recall / 元问题
-- `denial_response`
-  - 主要针对 `assistant`
-  - 拦截“我不记得”“没有相关记忆”“I don't have access to ...”这类拒答
-- `boilerplate`
-  - 可同时针对 `user` 和 `assistant`
-  - 拦截 `fresh session`、`new session`、`HEARTBEAT`
-- `diagnostic_artifact`
-  - 可同时针对 `user` 和 `assistant`
-  - 拦截 `query -> none`、`no explicit solution`
+1. 对 `user_message` 做正则匹配
+2. 对 `assistant_reply` 做正则匹配
+3. 如果正则都没命中，并且启用了语义判定：
+   - 对 `user_message` 做 embedding，相似度比对面向 `user` 的类别
+   - 对 `assistant_reply` 做 embedding，相似度比对面向 `assistant` 的类别
+4. 任一侧命中，整条轮次不写库
 
-## 判定策略
+## 语义原型缓存
 
-每条 `NormalizedTurn` 会按下面的顺序判定：
+当前语义原型不会每次启动都重新计算。
 
-1. 先对 `user` 文本做正则判定
-2. 再对 `assistant` 文本做正则判定
-3. 如果正则都没命中，且语义门已启用：
-   - 对 `user` 文本做 embedding，相似度比对 `user` 目标类别
-   - 对 `assistant` 文本做 embedding，相似度比对 `assistant` 目标类别
-4. 任一侧命中，即整条轮次不写库
+当前策略是：
+
+1. 应用启动时读取当前生效规则
+2. 对规则内容计算 `rules_hash`
+3. 优先从 DockDB 的 `vmm_noise_embeddings` 读取缓存
+4. 只有当以下条件全部一致时才复用：
+   - `scope`
+   - `language`
+   - `model`
+   - `dimension`
+   - `rules_hash`
+5. 如果不一致：
+   - 重新做 embedding
+   - 覆盖写回 DockDB
+
+这意味着以下变化会触发重算：
+
+- embedding 模型变化
+- embedding 维度变化
+- 当前 `common.json + <language>.json` 内容变化
 
 ## 配置项
 
@@ -177,99 +227,56 @@
 }
 ```
 
-### 配置字段
+字段说明：
 
 - `noise.enabled`
-  - 是否启用噪声准入门
+  - 是否启用噪声门
 - `noise.default_language`
-  - 用于选择 `<language>.json`
-  - 当前 `post-action` 没有单独传入语言，因此这里作为默认判定语言
+  - 当前默认规则语言
 - `noise.semantic_enabled`
-  - 是否启用语义相似度判定
+  - 是否启用语义相似度判断
 - `noise.semantic_threshold`
   - 默认语义阈值
-  - 如果类别自身配置了 `threshold`，优先使用类别值
 
-## 语义向量加载方式
+## 当前效果示例
 
-当前策略是：
-
-- 在应用启动时，读取噪声规则里的 `phrases`
-- 优先尝试从当前长期 SQL 后端（默认 DockDB）读取已缓存向量
-- 缓存命中失败时，再通过当前 embedding provider 生成向量
-- 运行时只对当前轮次文本做 embedding，再和类别原型向量比较
-
-缓存失效条件是：
-
-- embedding 模型变化
-- embedding 维度变化
-- 当前生效的 `common.json + <language>.json` 规则内容发生变化
-
-实现方式是：
-
-- 启动时对当前生效规则计算一个 `rules_hash`
-- 读取长期 SQL 表 `vmm_noise_embeddings`
-- 只有当 `model + dimension + rules_hash` 全部一致时，缓存才会被复用
-- 不一致时会重算，并覆盖当前语言包对应的旧缓存
-
-如果启动时 embedding 失败：
-
-- 服务不会直接起不来
-- 噪声门会降级为 regex-only
-- 会记录一条降级日志
-
-## 为什么要把它放在 `post-action` 里
-
-因为这层判断的目标不是“请求是否合法”，而是“这条内容值不值得长期保存”。
-
-这意味着它天然属于：
-
-- 业务准入门
-
-而不是：
-
-- 传输层校验
-- 文本清洗器
-
-## 实际效果示例
-
-### 示例 1：元问题被拦截
+### 示例 1：单轮元问题被拦截
 
 输入：
 
-- user: `你还记得我上次说过的部署方案吗`
-- assistant: `我不记得`
+- `user_content = "你还记得我上次说过什么吗"`
+- `assistant_content = "我不记得"`
+- `timeline = []`
 
 结果：
 
-- 这一轮不会进入长期记忆
+- 这次后台持久化被 `NoiseGate` 拦下
+- 不写入长期消息存储
 
-### 示例 2：正常业务对话保留
+### 示例 2：复杂 timeline 跳过噪声门
 
 输入：
 
-- user: `数据库连接池建议开多大`
-- assistant: `建议根据实例规格与并发量做压测后设定`
+- `user_content = "最开始的问题"`
+- `assistant_content = "最终回答"`
+- `timeline` 包含多条中间问答
 
 结果：
 
-- 这一轮允许写入
+- 跳过 `NoiseGate`
+- 直接按 `user -> timeline -> assistant` 顺序写入 DockDB
 
-## 编写规则时的建议
+## 编写规则建议
 
-1. 高置信规则优先用 `patterns`
-   - 更快，也更可解释
-2. 容易变形的问法再补 `phrases`
-   - 比如 recall 元问题
-3. 不要把阈值设太低
-   - 否则容易误杀正常业务提问
-4. `common.json` 适合放跨语言概念
-   - 例如英文拒答模板、诊断残留
-5. 语言文件适合放本地语言表达
-   - 例如中文“你还记得吗”
+1. 高置信规则优先放 `patterns`
+2. 易变表达再补 `phrases`
+3. 阈值不要设置过低
+4. `common.json` 放跨语言概念
+5. `<language>.json` 放本地语言表达
 
 ## 当前限制
 
-- 目前 `post-action` 没有单独传语言，所以默认按 `noise.default_language` 判定
-- 语义门只在写库前使用，不影响实时回答
-- 语义判定失败时会降级为 regex-only，而不是阻断整个请求
+- 当前 `NoiseGate` 只处理简单单轮问答
+- 当前 `timeline > 0` 的复杂流程直接跳过噪声门
+- 当前 `PostAction` 没有单独传语言，因此默认使用 `noise.default_language`
+- 当前语义判定失败时会降级为 regex-only，而不是阻断整个请求

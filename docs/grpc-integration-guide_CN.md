@@ -2,47 +2,56 @@
 
 ## 文档目标
 
-这份文档面向需要接入 VulcanMemoryMesh 的客户端、插件和网关开发者。
+这份文档面向插件、客户端和网关开发者，说明当前主线版本应该如何接入 VMM 的 gRPC 服务。
 
-它重点说明：
+重点包括：
 
-- 当前 gRPC 服务如何连接
-- 当前 proto 服务和方法有哪些
-- metadata、错误、消息大小限制如何处理
-- 各方法适合什么场景
-- 什么时候应该使用 Caddy 处理 TLS
+- 当前开放的方法
+- 业务接口应该传什么
+- 管理接口应该传什么
+- trace、大小限制、超时和 TLS 应该怎么处理
 
-这份文档是“对接说明”。
+## 一、当前服务模型
 
-如果你只是想快速做联调测试，请优先看：
+当前服务定义在：
 
-- [gRPC 接口测试说明（中文）](./api-test-guide_CN.md)
+- [internal/adapters/inbound/grpcapi/proto/v1/vmm.proto](../internal/adapters/inbound/grpcapi/proto/v1/vmm.proto)
 
-## 当前运行模型
+服务名：
 
-当前 VMM 本地版只暴露 gRPC 服务，不再内建 HTTP 或 TLS。
+- `vmm.v1.VMMService`
 
-运行模型如下：
+当前只暴露 gRPC，不再暴露 HTTP。
 
-1. VMM 自身监听本地 gRPC 地址
-2. 客户端直接通过 gRPC 连接
-3. 如果需要域名、TLS 或公网接入，请在前面放 Caddy
+当前应用内也不再支持 TLS。
 
-当前本地数据面只保留两条主线：
+如果需要 TLS，请在前面使用：
 
-- DockDB：会话文本与脱敏文本存储
-- LanceDB：向量存储
+- [Caddy](https://caddyserver.com/)
 
-推荐理解为：
+## 二、当前开放的方法
 
-- VMM 负责业务协议
-- Caddy 负责 TLS 和反向代理
+### 管理面
 
-## 连接方式
+- `Healthz`
+- `ListProjects`
+- `ResolveProject`
+- `EnsureProject`
+- `DeleteProject`
+- `MigrateProject`
+- `ResolveUser`
+- `ListUsers`
+- `DeleteUser`
+
+### 业务面
+
+- `PreCheck`
+- `PostAction`
+
+## 三、连接方式
 
 监听地址来自：
 
-- `configs/local.json`
 - `grpc.listen_addr`
 
 典型配置：
@@ -59,437 +68,202 @@
 说明：
 
 - 当前默认只监听本机
-- 如果要跨主机访问，请自行调整监听地址并加反向代理
+- 需要跨主机访问时，请自行调整监听地址并加反向代理
 
-## TLS 说明
+## 四、metadata 与 trace
 
-当前应用内已经移除 TLS。
-
-也就是说：
-
-- VMM 不提供证书加载
-- VMM 不提供 `ListenAndServeTLS`
-- VMM 不负责域名证书续期
-
-如果你需要 TLS，请在前面使用：
-
-- [Caddy](https://caddyserver.com/)
-
-推荐原因：
-
-- 配置更简单
-- 证书管理更稳定
-- 后续切换域名和反代更方便
-
-## Proto 服务
-
-当前服务定义在：
-
-- [internal/adapters/inbound/grpcapi/proto/v1/vmm.proto](../internal/adapters/inbound/grpcapi/proto/v1/vmm.proto)
-
-当前 package：
-
-- `vmm.v1`
-
-当前 service：
-
-- `vmm.v1.VMMService`
-
-当前方法：
-
-- `Healthz`
-- `Chat`
-- `PreCheck`
-- `PostAction`
-- `PostActionOld`
-- `SeedMemory`
-
-## 推荐客户端接入方式
-
-推荐优先使用 protobuf 生成客户端代码，不建议长期依赖手写 JSON over grpcurl。
-
-建议做法：
-
-1. 拉取或复制 `vmm.proto`
-2. 用你自己的语言生成 gRPC client
-3. 在业务代码里按 proto 消息结构发起调用
-
-`grpcurl` 更适合：
-
-- 本地联调
-- 快速验证
-- 排查参数错误
-
-## Reflection
-
-当前运行时已启用 gRPC reflection。
-
-这意味着：
-
-- 可以直接用 `grpcurl list`
-- 可以直接用 `grpcurl describe`
-- 联调时不一定需要手动传入 proto 文件
-
-## Metadata
-
-当前服务支持通过 metadata 透传：
+当前支持透传：
 
 - `x-trace-id`
 
-用途：
+如果你传入这个 metadata，服务端会继续沿用它。
 
-- 把上游 trace id 继续传入 VMM
-- 方便串联插件层、网关层、VMM 日志
+如果不传，服务端会自动生成新的 trace id。
 
-如果你不传：
+## 五、大小限制
 
-- 服务端会自动生成新的 `trace_id`
-
-建议：
-
-- 网关或插件层如果本身已有 trace id，请透传给 VMM
-
-## 大小限制
-
-当前服务使用：
+当前请求大小限制使用：
 
 - `grpc.max_receive_message_bytes`
 
-默认值：
+默认：
 
 - `1048576`，也就是 1MB
 
-超过限制时：
+超限时通常会直接返回：
 
-- 请求通常会在 gRPC 传输层直接被拒绝
-- 常见表现是 `ResourceExhausted`
+- `ResourceExhausted`
 
-这类错误不一定会进入业务层，因此也不一定会带完整业务错误结构。
+## 六、超时
 
-## 超时模型
+当前服务端按方法配置超时：
 
-当前服务按方法配置超时：
-
-- `grpc.request_timeout.chat`
+- `grpc.request_timeout.workspace`
 - `grpc.request_timeout.pre_check`
 - `grpc.request_timeout.post_action`
-- `grpc.request_timeout.seed_memory`
 
-对应环境变量也统一使用 `snake_case`：
+环境变量：
 
-- `VMM_GRPC_CHAT_TIMEOUT`
+- `VMM_GRPC_WORKSPACE_TIMEOUT`
 - `VMM_GRPC_PRE_CHECK_TIMEOUT`
 - `VMM_GRPC_POST_ACTION_TIMEOUT`
-- `VMM_GRPC_SEED_MEMORY_TIMEOUT`
 
-说明：
+## 七、业务接口约束
 
-- 这些是服务端方法级超时
-- 超时后通常返回 gRPC 错误
-- `grpc.request_timeout.pre_check` 是整次 `PreCheck` 调用的外层预算
-- `pre_check.intent_timeout` 是内部意图提取子步骤预算
-- 当前要求前者必须大于后者，避免外层预算比内部子步骤还短
+### 1. PreCheck
 
-## LanceDB 表名规则
-
-当前 `lancedb.table_name` 配置的是基础表名，不是最终物理表名。
-
-运行时会自动按 embedding 维度扩展实际表名：
-
-- 基础表名：`vmm_memory_vectors`
-- 维度：`1024`
-- 实际表名：`vmm_memory_vectors_1024`
-
-这样做的目的是：
-
-- 避免不同 embedding 维度共用一张表
-- 防止 `1024` 和 `2048` 维度数据互相污染
-
-## 错误模型
-
-当前服务主要通过：
-
-- gRPC status code
-- `google.rpc.ErrorInfo`（尽量附带）
-
-来表达错误。
-
-常见 reason 包括：
-
-- `GRPC_VALIDATION_FAILED`
-- `GRPC_ROUTE_DISABLED`
-- `UPSTREAM_TIMEOUT`
-- `INTERNAL_ERROR`
-
-建议调用方同时处理两层：
-
-1. gRPC code
-2. `ErrorInfo.reason`
-
-## 方法说明
-
-### 1. Healthz
-
-用途：
-
-- 判断进程是否存活
-
-适合：
-
-- 启动探针
-- 存活检查
-- 反代健康检查
-
-输入：
-
-- 空请求
-
-输出：
-
-- `status`
-- `trace_id`
-
-### 2. Chat
-
-用途：
-
-- 接收一条消息
-- 先做 PII 脱敏
-- 再写入长期库
-- 返回脱敏后的文本
-
-适合：
-
-- 纯文本单条归档
-- 需要先走脱敏再存储的轻量场景
-
-说明：
-
-- `Chat` 只是临时测试入口
-- 它会复用与 `PostAction` 相同的 DockDB 存储后端
-
-输入字段：
-
-- `session_id`
-- `message`
-- `accept_language`
-
-输出字段：
-
-- `session_id`
-- `message`
-- `language`
-- `trace_id`
-
-说明：
-
-- 返回的 `message` 是脱敏后的文本，不是原文
-
-### 3. PreCheck
-
-用途：
-
-- 当前版本仅保留接口，不做真正注入计算
-
-当前行为：
-
-- 固定返回“不注入”
-
-输入字段：
+当前业务请求只接受：
 
 - `session_id`
 - `user_id`
-- `team_id`
-- `space_id`
 - `project_id`
 - `user_content`
 
-输出字段：
+不再接受：
 
-- `should_inject`
-- `context_text`
-- `context_items`
-- `degraded`
-- `trace_id`
+- `team_id`
+- `space_id`
 
-当前返回特征：
+原因：
 
-- `should_inject = false`
-- `context_text = ""`
-- `context_items = []`
+- `project_id` 在数据库层级上已经唯一绑定 `space_id` 和 `team_id`
+- 这两个字段由服务端统一反查，不再由客户端传入
 
-所以当前它更像：
+### 2. PostAction
 
-- 占位接口
-- 契约对齐接口
-
-而不是完整记忆注入入口。
-
-### 4. PostAction
-
-用途：
-
-- 新版字符串契约入口
-- 接收一段整理后的对话结果
-- 立即确认已接收
-- 然后后台继续处理
-
-输入字段：
+当前业务请求只接受：
 
 - `session_id`
 - `user_id`
-- `team_id`
-- `space_id`
 - `project_id`
 - `user_content`
 - `assistant_content`
-- `timeline`
+- `timeline[]`
 
-其中：
-
-- `user_content`：首轮用户问题
-- `assistant_content`：最后一条助手回答
-- `timeline`：中间流程数组
-
-`timeline` 元素结构：
+`timeline[]` 的元素格式：
 
 - `type`
 - `content`
 
-约束：
+其中：
 
 - `type` 只能是 `user` 或 `assistant`
 - `content` 必须是字符串
 
-服务端行为：
+## 八、统一前置拦截
 
-1. 校验参数
-2. 分别输出原始请求日志和清洗后请求日志
-3. 对 `user_content`、`timeline[].content`、`assistant_content` 执行存储型清洗：
-   - 媒体与 base64 清理
-   - 机器文本压缩
-   - token 预算裁剪
-4. 立即返回 `accepted=true`
-5. 后台继续复用旧版持久化主线
+`PreCheck` 和 `PostAction` 在真正进入业务逻辑之前，都会经过统一的范围解析拦截器。
 
-额外规则：
+拦截器会做这些事：
 
-- 当 `timeline` 非空时，会跳过 `NoiseGate`
-- 当 `timeline` 为空时，才会执行标准噪声门
+1. 检查 `session_id`
+2. 检查 `user_id`
+3. 检查 `project_id`
+4. 根据 `project_id` 反查：
+   - `team_id`
+   - `space_id`
+   - 层级名称
+5. 根据 `session_id`：
+   - 已存在则读取
+   - 不存在则创建 `vmm_sessions` 行
+6. 把解析结果注入上下文
 
-适合：
+这意味着：
 
-- 插件层已经整理出首问、尾答和中间过程
+- `PreCheck` / `PostAction` 用例层看到的已经是完整 `SessionRef`
+- 业务层无需再处理 `team_id` / `space_id` 解析
 
-### 5. PostActionOld
+## 九、当前方法语义
 
-用途：
-
-- 保留旧版原始快照契约
-- 兼容仍然上传原始节点快照的旧调用方
-
-输入字段：
-
-- `session_id`
-- `user_id`
-- `team_id`
-- `space_id`
-- `project_id`
-- `raw_messages_snapshot`
-
-每个 `raw_messages_snapshot` 节点包括：
-
-- `role`
-- `content_json`
-- `tool_calls`
-- `meta_json`
-
-适合：
-
-- 还没迁移到新版 `PostAction` 契约的客户端
-
-### 6. SeedMemory
+### Healthz
 
 用途：
 
-- 主动灌入一条向量记忆
+- 健康检查
 
-输入字段：
+### ListProjects
 
-- `user_id`
-- `project_id`
-- `memory_text`
-- `space_id`
+用途：
 
-输出字段：
+- 列出全部项目空间
 
-- `accepted`
-- `memory_id`
-- `trace_id`
+返回展示格式：
 
-适合：
+- `[PROJECT_ID]TeamName/SpaceName/ProjectName`
 
-- 本地调试
-- 管理员预热测试数据
+### ResolveProject
 
-## 当前对接建议
+用途：
 
-如果你是新的调用方，建议优先使用：
+- 通过数字 `project_id` 或 `Team/Space/Project` 路径解析项目
+
+### EnsureProject
+
+用途：
+
+- 根据 `confirm_create` 规则解析或创建 `Team/Space/Project`
+
+### DeleteProject
+
+用途：
+
+- 显式确认后删除某个项目及其 DockDB/LanceDB 数据
+
+### MigrateProject
+
+用途：
+
+- 显式确认后，把源项目的数据迁移到目标项目
+
+### ResolveUser
+
+用途：
+
+- 通过数字 ID 或用户名解析用户
+- 在 `confirm_create=true` 时创建用户
+
+### ListUsers
+
+用途：
+
+- 返回用户列表
+
+### DeleteUser
+
+用途：
+
+- 通过确认码保护删除用户及其 SQL/向量数据
+
+### PreCheck
+
+当前状态：
+
+- 保守禁用
+- 固定返回不注入
+
+### PostAction
+
+当前状态：
+
+- 主业务入口
+- 记录原始日志和清洗后日志
+- 清洗 `user_content` / `timeline[].content` / `assistant_content`
+- 立即返回 `accepted=true`
+- 后台继续写入 DockDB
+
+## 十、推荐对接顺序
+
+建议你按下面顺序联调：
 
 1. `Healthz`
-2. `Chat`
-3. `PostAction`
-4. `PreCheck`
+2. `ListProjects`
+3. `ResolveProject`
+4. `ResolveUser`
+5. `PostAction`
+6. `PreCheck`
 
-其中：
+原因：
 
-- `PostActionOld` 只用于兼容旧调用方
-- `SeedMemory` 更偏管理员或测试用途
-
-## 当前行为上的保守点
-
-当前主线仍然是保守版本，对接方需要知道这几个事实：
-
-1. `PreCheck` 现在不会真正返回记忆注入
-2. `PostAction` 的后台处理仍以本地调试和逐步放通为主
-3. 新旧 `PostAction` 同时存在，是为了迁移期兼容
-
-所以如果你在联调时发现：
-
-- `PreCheck` 一直不注入
-
-这在当前版本是正常行为，不是对接失败。
-
-## 推荐 Caddy 方式
-
-如果你准备把 VMM 放到局域网或公网环境中，推荐：
-
-1. VMM 本地监听纯 gRPC
-2. Caddy 负责：
-   - TLS
-   - 域名
-   - 反向代理
-   - 暴露公网入口
-
-这样可以避免：
-
-- 在应用里自行管理证书
-- 在业务代码里维护 TLS 细节
-
-## 与测试文档的区别
-
-这份文档关注：
-
-- 如何接入
-- 方法有什么语义
-- 应该如何设计客户端
-
-而测试文档关注：
-
-- 如何用 `grpcurl` 快速验证
-- 请求/响应示例
-- 常见测试顺序
-
-如果你只是想先打通联调，请继续看：
-
-- [gRPC 接口测试说明（中文）](./api-test-guide_CN.md)
+- 先打通层级和用户解析
+- 再打通主写入链
+- 最后再验证当前保守版 `PreCheck`

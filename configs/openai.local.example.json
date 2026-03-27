@@ -3,10 +3,9 @@
     "listen_addr": "127.0.0.1:17625",
     "max_receive_message_bytes": 1048576,
     "request_timeout": {
-      "chat": "5s",
+      "workspace": "15s",
       "pre_check": "8s",
-      "post_action": "8s",
-      "seed_memory": "15s"
+      "post_action": "8s"
     },
     "shutdown_timeout": "10s"
   },
@@ -74,8 +73,5 @@
   "memory_pipeline": {
     "max_search_keywords": 5,
     "min_similarity_score": 0.75
-  },
-  "admin": {
-    "seed_enabled": true
   }
 }

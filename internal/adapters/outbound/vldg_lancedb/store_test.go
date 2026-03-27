@@ -1,5 +1,5 @@
-// store_test.go exercises the LanceDB-gateway adapter without depending on a real external gateway.
-// store_test.go 用于在不依赖真实外部网关的情况下验证 LanceDB 网关适配器。
+// store_test.go exercises the LanceDB-gateway adapter against the flattened numeric metadata contract.
+// store_test.go 用于围绕扁平化数字元数据契约验证 LanceDB 网关适配器。
 package vldg_lancedb
 
 import (
@@ -20,16 +20,14 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// TestUpsertEncodesJSONRowsAndKeys verifies the adapter emits one JSON-row upsert keyed by id.
-// TestUpsertEncodesJSONRowsAndKeys 用于验证适配器会按 id 键发送一条 JSON 行 upsert 请求。
+// TestUpsertEncodesJSONRowsAndKeys verifies the adapter sends one dimension-qualified JSON-row upsert keyed by id.
+// TestUpsertEncodesJSONRowsAndKeys 用于验证适配器会向带维度后缀的表发送一条以 id 为键的 JSON 行 upsert。
 func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 	server := &fakeLanceDBServer{}
 	store := newLanceDBTestStore(t, server)
 
-	// Assert bootstrap also uses the dimension-qualified table name so different embedding sizes never collide.
-	// 断言启动建表同样使用带维度后缀的表名，避免不同 embedding 尺寸发生冲突。
 	if len(server.createRequests) != 1 || server.createRequests[0].TableName != "vmm_memory_vectors_3" {
-		t.Fatalf("create table name = %#v", server.createRequests)
+		t.Fatalf("create table request = %#v", server.createRequests)
 	}
 
 	err := store.Upsert(context.Background(), logicdomain.MemoryRecord{
@@ -37,19 +35,19 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 		Text:   "gateway-backed memory",
 		Vector: []float32{0.1, 0.2, 0.3},
 		Filter: logicdomain.SearchFilter{
-			UserID:    "u1",
-			ProjectID: "p1",
-			SpaceID:   "s1",
+			UserID:    7,
+			TeamID:    3,
+			SpaceID:   5,
+			ProjectID: 9,
+			SessionID: 11,
 		},
 		Metadata:  map[string]string{"source": "seed"},
-		CreatedAt: time.Date(2026, 3, 26, 9, 0, 0, 0, time.UTC),
+		CreatedAt: time.Date(2026, 3, 27, 9, 0, 0, 0, time.UTC),
 	})
 	if err != nil {
 		t.Fatalf("upsert memory record: %v", err)
 	}
 
-	// Inspect the emitted upsert payload so the adapter contract stays stable without a live gateway.
-	// 检查实际发出的 upsert 载荷，保证在没有真实网关时适配器契约依然稳定。
 	requests := server.upsertRequests()
 	if len(requests) != 1 {
 		t.Fatalf("expected 1 upsert request, got %d", len(requests))
@@ -68,34 +66,28 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 	if len(rows) != 1 {
 		t.Fatalf("expected 1 row, got %d", len(rows))
 	}
-	if got := rows[0]["id"]; got != "mem-1" {
-		t.Fatalf("row id = %#v", got)
+	row := rows[0]
+	if row["id"] != "mem-1" || row["content"] != "gateway-backed memory" {
+		t.Fatalf("unexpected row payload = %#v", row)
 	}
-	if got := rows[0]["text"]; got != "gateway-backed memory" {
-		t.Fatalf("row text = %#v", got)
-	}
-	if got := rows[0]["user_id"]; got != "u1" {
-		t.Fatalf("row user_id = %#v", got)
-	}
-	if got := rows[0]["project_id"]; got != "p1" {
-		t.Fatalf("row project_id = %#v", got)
-	}
-	if got := rows[0]["space_id"]; got != "s1" {
-		t.Fatalf("row space_id = %#v", got)
+	if row["team_id"] != float64(3) || row["space_id"] != float64(5) || row["project_id"] != float64(9) || row["session_id"] != float64(11) || row["user_id"] != float64(7) {
+		t.Fatalf("unexpected flattened ids = %#v", row)
 	}
 }
 
-// TestSearchMapsRowsAndFilter verifies the adapter maps JSON rows and keeps the in-memory filter semantics.
-// TestSearchMapsRowsAndFilter 用于验证适配器会正确映射 JSON 行，并保持与内存实现一致的过滤语义。
+// TestSearchMapsRowsAndFilter verifies search rows map back into numeric hierarchy filters and preserve shared-user semantics.
+// TestSearchMapsRowsAndFilter 用于验证检索结果会映射回数字层级过滤条件，并保留共享用户语义。
 func TestSearchMapsRowsAndFilter(t *testing.T) {
 	server := &fakeLanceDBServer{
 		searchData: []byte(`[
 			{
 				"id":"mem-1",
-				"text":"hello from gateway",
-				"user_id":"",
-				"project_id":"p1",
-				"space_id":"s1",
+				"content":"hello from gateway",
+				"team_id":3,
+				"space_id":5,
+				"project_id":9,
+				"session_id":11,
+				"user_id":0,
 				"metadata_json":"{\"source\":\"seed\"}",
 				"_distance":0.25
 			}
@@ -104,9 +96,10 @@ func TestSearchMapsRowsAndFilter(t *testing.T) {
 	store := newLanceDBTestStore(t, server)
 
 	hits, err := store.Search(context.Background(), []float32{0.2, 0.3, 0.4}, 3, logicdomain.SearchFilter{
-		UserID:    "u1",
-		ProjectID: "p1",
-		SpaceID:   "s1",
+		UserID:    7,
+		TeamID:    3,
+		SpaceID:   5,
+		ProjectID: 9,
 	})
 	if err != nil {
 		t.Fatalf("search memory vectors: %v", err)
@@ -114,53 +107,43 @@ func TestSearchMapsRowsAndFilter(t *testing.T) {
 	if len(hits) != 1 {
 		t.Fatalf("expected 1 hit, got %d", len(hits))
 	}
-	if hits[0].ID != "mem-1" {
-		t.Fatalf("hit id = %q", hits[0].ID)
+	if hits[0].ID != "mem-1" || hits[0].Text != "hello from gateway" {
+		t.Fatalf("unexpected hit = %#v", hits[0])
 	}
-	if hits[0].Score <= 0 || hits[0].Score >= 1 {
-		t.Fatalf("hit score = %v", hits[0].Score)
+	if hits[0].Filter.TeamID != 3 || hits[0].Filter.SpaceID != 5 || hits[0].Filter.ProjectID != 9 || hits[0].Filter.SessionID != 11 || hits[0].Filter.UserID != 0 {
+		t.Fatalf("unexpected hit filter = %#v", hits[0].Filter)
 	}
-	if hits[0].Metadata["source"] != "seed" {
-		t.Fatalf("hit metadata = %#v", hits[0].Metadata)
-	}
-
-	// Assert the gateway filter keeps globally shared user rows by allowing empty or zero user ids.
-	// 断言网关过滤条件允许 user_id 为空或为 0 的共享记忆，保持与内存实现一致。
 	requests := server.searchRequests()
 	if len(requests) != 1 {
 		t.Fatalf("expected 1 search request, got %d", len(requests))
 	}
-	if !strings.Contains(requests[0].Filter, "user_id = '' OR user_id = '0' OR user_id = 'u1'") {
+	if !strings.Contains(requests[0].Filter, "(user_id = 0 OR user_id = 7)") {
 		t.Fatalf("unexpected filter expression: %s", requests[0].Filter)
 	}
 }
 
-// TestInitIgnoresAlreadyExistsTransportError verifies startup stays idempotent when the gateway surfaces table reuse as a gRPC error.
-// TestInitIgnoresAlreadyExistsTransportError 用于验证当网关通过 gRPC 错误报告“表已存在”时，启动仍保持幂等。
-func TestInitIgnoresAlreadyExistsTransportError(t *testing.T) {
-	server := &fakeLanceDBServer{
+// TestInitIgnoresAlreadyExistsResponses verifies repeated boots treat existing tables as a successful idempotent state.
+// TestInitIgnoresAlreadyExistsResponses 用于验证重复启动会把“表已存在”视为成功的幂等状态。
+func TestInitIgnoresAlreadyExistsResponses(t *testing.T) {
+	transportServer := &fakeLanceDBServer{
 		createErr: status.Error(codes.Internal, "Table 'vmm_memory_vectors_3' already exists"),
 	}
-	store := newLanceDBTestStoreWithoutInit(t, server)
+	store := newLanceDBTestStoreWithoutInit(t, transportServer)
 	if err := store.init(context.Background()); err != nil {
-		t.Fatalf("init should tolerate already-exists transport error: %v", err)
+		t.Fatalf("init should tolerate transport already-exists error: %v", err)
 	}
-}
 
-// TestInitIgnoresAlreadyExistsResponse verifies startup also tolerates non-success responses that only report an existing table.
-// TestInitIgnoresAlreadyExistsResponse 用于验证当网关通过非成功响应报告“表已存在”时，启动同样会容忍该情况。
-func TestInitIgnoresAlreadyExistsResponse(t *testing.T) {
-	server := &fakeLanceDBServer{
+	bodyServer := &fakeLanceDBServer{
 		createResponse: &lancedbv1.CreateTableResponse{Success: false, Message: "Table 'vmm_memory_vectors_3' already exists"},
 	}
-	store := newLanceDBTestStoreWithoutInit(t, server)
+	store = newLanceDBTestStoreWithoutInit(t, bodyServer)
 	if err := store.init(context.Background()); err != nil {
-		t.Fatalf("init should tolerate already-exists response: %v", err)
+		t.Fatalf("init should tolerate body already-exists response: %v", err)
 	}
 }
 
-// newLanceDBTestStore creates one adapter instance backed by a bufconn gRPC server.
-// newLanceDBTestStore 用于创建一个由 bufconn gRPC 服务支撑的适配器测试实例。
+// newLanceDBTestStore creates one initialized adapter backed by a bufconn gRPC server.
+// newLanceDBTestStore 用于创建一个已经初始化完成、并由 bufconn gRPC 服务支撑的适配器实例。
 func newLanceDBTestStore(t *testing.T, server *fakeLanceDBServer) *Store {
 	t.Helper()
 	store := newLanceDBTestStoreWithoutInit(t, server)
@@ -202,7 +185,7 @@ func newLanceDBTestStoreWithoutInit(t *testing.T, server *fakeLanceDBServer) *St
 		_ = conn.Close()
 	})
 
-	store := &Store{
+	return &Store{
 		conn:         conn,
 		client:       lancedbv1.NewLanceDbServiceClient(conn),
 		timeout:      time.Second,
@@ -210,27 +193,26 @@ func newLanceDBTestStoreWithoutInit(t *testing.T, server *fakeLanceDBServer) *St
 		vectorColumn: "vector",
 		dimension:    3,
 	}
-	return store
 }
 
 // fakeLanceDBServer records gRPC requests so adapter tests can assert the emitted gateway contract.
 // fakeLanceDBServer 用于记录 gRPC 请求，方便适配器测试断言实际发出的网关契约。
 type fakeLanceDBServer struct {
 	lancedbv1.UnimplementedLanceDbServiceServer
-	mu              sync.Mutex
-	createRequests  []*lancedbv1.CreateTableRequest
-	createResponse  *lancedbv1.CreateTableResponse
-	createErr       error
-	upsertCalls     []*lancedbv1.UpsertRequest
-	searchCalls     []*lancedbv1.SearchRequest
-	searchData      []byte
-	searchMessage   string
-	searchSucceeded bool
+	mu             sync.Mutex
+	createRequests []*lancedbv1.CreateTableRequest
+	createResponse *lancedbv1.CreateTableResponse
+	createErr      error
+	upsertCalls    []*lancedbv1.UpsertRequest
+	searchCalls    []*lancedbv1.SearchRequest
+	searchData     []byte
+	searchMessage  string
+	searchSuccess  bool
 }
 
 // CreateTable records the bootstrap request and reports success so the adapter can initialize normally.
 // CreateTable 用于记录启动建表请求，并返回成功结果让适配器正常初始化。
-func (s *fakeLanceDBServer) CreateTable(ctx context.Context, req *lancedbv1.CreateTableRequest) (*lancedbv1.CreateTableResponse, error) {
+func (s *fakeLanceDBServer) CreateTable(_ context.Context, req *lancedbv1.CreateTableRequest) (*lancedbv1.CreateTableResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.createRequests = append(s.createRequests, req)
@@ -245,7 +227,7 @@ func (s *fakeLanceDBServer) CreateTable(ctx context.Context, req *lancedbv1.Crea
 
 // VectorUpsert records upsert payloads so tests can assert row encoding and key configuration.
 // VectorUpsert 用于记录 upsert 载荷，方便测试断言行编码和主键配置。
-func (s *fakeLanceDBServer) VectorUpsert(ctx context.Context, req *lancedbv1.UpsertRequest) (*lancedbv1.UpsertResponse, error) {
+func (s *fakeLanceDBServer) VectorUpsert(_ context.Context, req *lancedbv1.UpsertRequest) (*lancedbv1.UpsertResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.upsertCalls = append(s.upsertCalls, req)
@@ -254,13 +236,13 @@ func (s *fakeLanceDBServer) VectorUpsert(ctx context.Context, req *lancedbv1.Ups
 
 // VectorSearch records search requests and returns one canned JSON payload for deterministic adapter assertions.
 // VectorSearch 用于记录检索请求，并返回预置 JSON 载荷供适配器做确定性断言。
-func (s *fakeLanceDBServer) VectorSearch(ctx context.Context, req *lancedbv1.SearchRequest) (*lancedbv1.SearchResponse, error) {
+func (s *fakeLanceDBServer) VectorSearch(_ context.Context, req *lancedbv1.SearchRequest) (*lancedbv1.SearchResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.searchCalls = append(s.searchCalls, req)
-	success := s.searchSucceeded
-	if !success {
-		success = true
+	success := true
+	if s.searchSuccess {
+		success = s.searchSuccess
 	}
 	return &lancedbv1.SearchResponse{
 		Success: success,
@@ -269,8 +251,14 @@ func (s *fakeLanceDBServer) VectorSearch(ctx context.Context, req *lancedbv1.Sea
 	}, nil
 }
 
-// upsertRequests returns a snapshot of recorded upsert requests for stable assertions.
-// upsertRequests 用于返回已记录的 upsert 请求快照，便于做稳定断言。
+// Delete returns a successful deletion response because these focused tests do not inspect delete semantics.
+// Delete 用于返回成功删除响应，因为这些聚焦测试不会断言删除语义。
+func (s *fakeLanceDBServer) Delete(_ context.Context, req *lancedbv1.DeleteRequest) (*lancedbv1.DeleteResponse, error) {
+	return &lancedbv1.DeleteResponse{Success: true, DeletedRows: 0, Message: "ok"}, nil
+}
+
+// upsertRequests returns a stable snapshot of recorded upsert requests.
+// upsertRequests 用于返回已记录 upsert 请求的稳定快照。
 func (s *fakeLanceDBServer) upsertRequests() []*lancedbv1.UpsertRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -279,8 +267,8 @@ func (s *fakeLanceDBServer) upsertRequests() []*lancedbv1.UpsertRequest {
 	return out
 }
 
-// searchRequests returns a snapshot of recorded search requests for stable assertions.
-// searchRequests 用于返回已记录的检索请求快照，便于做稳定断言。
+// searchRequests returns a stable snapshot of recorded search requests.
+// searchRequests 用于返回已记录检索请求的稳定快照。
 func (s *fakeLanceDBServer) searchRequests() []*lancedbv1.SearchRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()

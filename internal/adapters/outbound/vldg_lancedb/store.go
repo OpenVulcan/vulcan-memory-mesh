@@ -1,5 +1,5 @@
-// store.go implements the LanceDB-gateway outbound adapter used by seed-memory and future recall flows.
-// store.go 用于实现基于 LanceDB 网关的出站适配器，承接 seed-memory 和后续召回流程。
+// store.go implements the LanceDB-gateway outbound adapter used by vector recall and admin cleanup flows.
+// store.go 用于实现基于 LanceDB 网关的出站适配器，承接向量召回和管理清理流程。
 package vldg_lancedb
 
 import (
@@ -95,10 +95,12 @@ func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) err
 	rows := []map[string]any{
 		{
 			"id":            record.ID,
-			"text":          record.Text,
-			"user_id":       record.Filter.UserID,
-			"project_id":    record.Filter.ProjectID,
+			"content":       record.Text,
+			"team_id":       record.Filter.TeamID,
 			"space_id":      record.Filter.SpaceID,
+			"project_id":    record.Filter.ProjectID,
+			"session_id":    record.Filter.SessionID,
+			"user_id":       record.Filter.UserID,
 			"metadata_json": string(metadataJSON),
 			"created_at":    record.CreatedAt.UTC().Format(time.RFC3339Nano),
 			s.vectorColumn:  record.Vector,
@@ -124,6 +126,31 @@ func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) err
 		return fmt.Errorf("lancedb vector upsert: %s", resp.Message)
 	}
 	return nil
+}
+
+// DeleteByFilter removes all vector rows that match one flattened hierarchy filter.
+// DeleteByFilter 用于删除符合某个扁平层级过滤条件的全部向量行。
+func (s *Store) DeleteByFilter(ctx context.Context, filter logicdomain.SearchFilter) (uint64, error) {
+	if s == nil || s.client == nil {
+		return 0, fmt.Errorf("lancedb store is not initialized")
+	}
+	condition := buildDeleteCondition(filter)
+	if strings.TrimSpace(condition) == "" {
+		return 0, fmt.Errorf("lancedb delete filter is empty")
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	resp, err := s.client.Delete(callCtx, &lancedbv1.DeleteRequest{
+		TableName: s.tableName,
+		Condition: condition,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("lancedb delete: %w", err)
+	}
+	if !resp.GetSuccess() {
+		return 0, fmt.Errorf("lancedb delete: %s", resp.GetMessage())
+	}
+	return resp.GetDeletedRows(), nil
 }
 
 // Search runs one vector search against the configured table and maps the returned JSON rows back into MemoryHit values.
@@ -174,12 +201,14 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 		}
 		hits = append(hits, logicdomain.MemoryHit{
 			ID:    row.ID,
-			Text:  row.Text,
+			Text:  row.Content,
 			Score: distanceToScore(distance),
 			Filter: logicdomain.SearchFilter{
-				UserID:    row.UserID,
-				ProjectID: row.ProjectID,
+				TeamID:    row.TeamID,
 				SpaceID:   row.SpaceID,
+				ProjectID: row.ProjectID,
+				SessionID: row.SessionID,
+				UserID:    row.UserID,
 			},
 			Metadata: metadata,
 		})
@@ -211,10 +240,12 @@ func (s *Store) init(ctx context.Context) error {
 		OverwriteIfExists: false,
 		Columns: []*lancedbv1.ColumnDef{
 			{Name: "id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: "text", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: "user_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: "project_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: "space_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
+			{Name: "content", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
+			{Name: "team_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
+			{Name: "space_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
+			{Name: "project_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
+			{Name: "session_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
+			{Name: "user_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
 			{Name: "metadata_json", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
 			{Name: "created_at", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
 			{Name: s.vectorColumn, ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_VECTOR_FLOAT32, VectorDim: uint32(s.dimension), Nullable: false},
@@ -264,23 +295,45 @@ func isTableAlreadyExistsMessage(message string) bool {
 // buildFilterExpr converts one search filter into the simple SQL-like predicate syntax accepted by the gateway.
 // buildFilterExpr 用于把检索过滤条件转换成网关接受的简易 SQL 风格谓词表达式。
 func buildFilterExpr(filter logicdomain.SearchFilter) string {
-	parts := make([]string, 0, 3)
-	if strings.TrimSpace(filter.UserID) != "" {
-		parts = append(parts, "(user_id = '' OR user_id = '0' OR user_id = '"+escapeLiteral(filter.UserID)+"')")
+	parts := make([]string, 0, 5)
+	if filter.TeamID > 0 {
+		parts = append(parts, fmt.Sprintf("team_id = %d", filter.TeamID))
 	}
-	if strings.TrimSpace(filter.ProjectID) != "" {
-		parts = append(parts, "project_id = '"+escapeLiteral(filter.ProjectID)+"'")
+	if filter.SpaceID > 0 {
+		parts = append(parts, fmt.Sprintf("space_id = %d", filter.SpaceID))
 	}
-	if strings.TrimSpace(filter.SpaceID) != "" {
-		parts = append(parts, "(space_id = '' OR space_id = '"+escapeLiteral(filter.SpaceID)+"')")
+	if filter.ProjectID > 0 {
+		parts = append(parts, fmt.Sprintf("project_id = %d", filter.ProjectID))
+	}
+	if filter.SessionID > 0 {
+		parts = append(parts, fmt.Sprintf("session_id = %d", filter.SessionID))
+	}
+	if filter.UserID > 0 {
+		parts = append(parts, fmt.Sprintf("(user_id = 0 OR user_id = %d)", filter.UserID))
 	}
 	return strings.Join(parts, " AND ")
 }
 
-// escapeLiteral escapes single quotes in filter literals so local scope values remain safe in the gateway predicate.
-// escapeLiteral 用于转义过滤字面量中的单引号，保证本地范围值在网关谓词中保持安全。
-func escapeLiteral(value string) string {
-	return strings.ReplaceAll(strings.TrimSpace(value), "'", "''")
+// buildDeleteCondition converts a hierarchy filter into the stricter predicate used by destructive vector cleanup flows.
+// buildDeleteCondition 用于把层级过滤条件转换成更严格的删除谓词，服务向量清理流程。
+func buildDeleteCondition(filter logicdomain.SearchFilter) string {
+	parts := make([]string, 0, 5)
+	if filter.TeamID > 0 {
+		parts = append(parts, fmt.Sprintf("team_id = %d", filter.TeamID))
+	}
+	if filter.SpaceID > 0 {
+		parts = append(parts, fmt.Sprintf("space_id = %d", filter.SpaceID))
+	}
+	if filter.ProjectID > 0 {
+		parts = append(parts, fmt.Sprintf("project_id = %d", filter.ProjectID))
+	}
+	if filter.SessionID > 0 {
+		parts = append(parts, fmt.Sprintf("session_id = %d", filter.SessionID))
+	}
+	if filter.UserID > 0 {
+		parts = append(parts, fmt.Sprintf("user_id = %d", filter.UserID))
+	}
+	return strings.Join(parts, " AND ")
 }
 
 // distanceToScore turns the LanceDB nearest-neighbor distance into a stable higher-is-better score.
@@ -303,10 +356,12 @@ func resolveVectorTableName(baseName string, dimension int) string {
 // searchRow 用于映射网关在 JSON 输出模式下返回的一行检索结果。
 type searchRow struct {
 	ID           string  `json:"id"`
-	Text         string  `json:"text"`
-	UserID       string  `json:"user_id"`
-	ProjectID    string  `json:"project_id"`
-	SpaceID      string  `json:"space_id"`
+	Content      string  `json:"content"`
+	TeamID       uint64  `json:"team_id"`
+	SpaceID      uint64  `json:"space_id"`
+	ProjectID    uint64  `json:"project_id"`
+	SessionID    uint64  `json:"session_id"`
+	UserID       uint64  `json:"user_id"`
 	MetadataJSON string  `json:"metadata_json"`
 	Distance     float64 `json:"_distance"`
 	Score        float64 `json:"distance"`
@@ -331,14 +386,50 @@ func (r *searchRow) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	r.ID = asString(raw["id"])
-	r.Text = asString(raw["text"])
-	r.UserID = asString(raw["user_id"])
-	r.ProjectID = asString(raw["project_id"])
-	r.SpaceID = asString(raw["space_id"])
+	r.Content = asString(raw["content"])
+	r.TeamID = asUint64(raw["team_id"])
+	r.SpaceID = asUint64(raw["space_id"])
+	r.ProjectID = asUint64(raw["project_id"])
+	r.SessionID = asUint64(raw["session_id"])
+	r.UserID = asUint64(raw["user_id"])
 	r.MetadataJSON = asString(raw["metadata_json"])
 	r.Distance = asFloat64(raw["_distance"])
 	r.Score = asFloat64(raw["distance"])
 	return nil
+}
+
+// asUint64 converts one generic JSON field into uint64 while tolerating float and string encodings from the gateway.
+// asUint64 用于把通用 JSON 字段转换成 uint64，并兼容网关返回的浮点或字符串编码。
+func asUint64(value any) uint64 {
+	switch typed := value.(type) {
+	case float64:
+		if typed < 0 {
+			return 0
+		}
+		return uint64(typed)
+	case float32:
+		if typed < 0 {
+			return 0
+		}
+		return uint64(typed)
+	case int:
+		if typed < 0 {
+			return 0
+		}
+		return uint64(typed)
+	case int64:
+		if typed < 0 {
+			return 0
+		}
+		return uint64(typed)
+	case uint64:
+		return typed
+	case string:
+		number, _ := strconv.ParseUint(strings.TrimSpace(typed), 10, 64)
+		return number
+	default:
+		return 0
+	}
 }
 
 // asString converts one generic JSON field into a string without panicking on null or unexpected shapes.

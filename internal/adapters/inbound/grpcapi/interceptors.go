@@ -1,5 +1,5 @@
-// interceptors.go implements reusable gRPC unary interceptors for the inbound adapter.
-// interceptors.go 用于实现入站适配层复用的 gRPC 一元拦截器。
+// interceptors.go implements reusable gRPC unary interceptors for trace, scope resolution, logging, and panic recovery.
+// interceptors.go 用于实现 gRPC 可复用的一元拦截器，覆盖 trace、范围解析、日志和 panic 恢复。
 package grpcapi
 
 import (
@@ -8,6 +8,7 @@ import (
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 	"google.golang.org/grpc"
@@ -18,6 +19,16 @@ import (
 )
 
 const traceIDHeader = "x-trace-id"
+
+type resolvedSessionContextKey struct{}
+
+// scopeResolvedRequest is the narrow request shape used by the scope interceptor to resolve project/user/session coordinates.
+// scopeResolvedRequest 用于描述范围拦截器解析 project/user/session 坐标时需要的最小请求形态。
+type scopeResolvedRequest interface {
+	GetSessionId() string
+	GetUserId() uint64
+	GetProjectId() uint64
+}
 
 // TraceIDInterceptor reuses inbound trace ids or generates a new one before the RPC reaches business code.
 // TraceIDInterceptor 用于在 RPC 进入业务代码前复用上游 trace id，或生成新的 trace id。
@@ -42,22 +53,31 @@ func TraceIDInterceptor(ids appports.IDGenerator) grpc.UnaryServerInterceptor {
 	}
 }
 
-// RecoveryInterceptor converts unexpected panics into stable internal gRPC errors.
-// RecoveryInterceptor 用于把未预期的 panic 转换成稳定的 gRPC 内部错误。
-func RecoveryInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
+// ScopeResolutionInterceptor validates numeric project/user identifiers and injects the resolved session scope into context for business handlers.
+// ScopeResolutionInterceptor 用于校验数字 project/user 标识，并把解析出的 session 范围注入上下文供业务处理器复用。
+func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *logx.Logger) grpc.UnaryServerInterceptor {
 	if logger == nil {
 		logger = logx.Default()
 	}
-	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, err error) {
-		// Recover at the transport edge so panics never leak across the gRPC boundary.
-		// 在传输层边界做 recover，确保 panic 不会越过 gRPC 边界泄露出去。
-		defer func() {
-			if rec := recover(); rec != nil {
-				logger.Error("panic recovered", "trace_id", trace.IDFromContext(ctx), "method", info.FullMethod, "err", rec)
-				err = toStatus(errInternal)
-			}
-		}()
-		return handler(ctx, req)
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		// Only pre-check and post-action require deterministic scope resolution before the handler starts.
+		// 只有 pre-check 和 post-action 需要在处理器执行前完成确定性范围解析。
+		if info == nil || !requiresResolvedScope(info.FullMethod) {
+			return handler(ctx, req)
+		}
+		if resolver == nil {
+			return nil, toStatus(withMessage(errInternal, "request scope resolver is not configured"))
+		}
+		payload, ok := req.(scopeResolvedRequest)
+		if !ok {
+			return nil, toStatus(withMessage(errInternal, "request does not expose scope fields"))
+		}
+		session, err := resolver.ResolveRequestScope(ctx, strings.TrimSpace(payload.GetSessionId()), payload.GetUserId(), payload.GetProjectId())
+		if err != nil {
+			return nil, toStatus(describeError(err))
+		}
+		logger.Info("grpc scope resolved", "trace_id", trace.IDFromContext(ctx), "method", info.FullMethod, "session_key", session.SessionKey, "session_id", session.SessionID, "user_id", session.UserID, "project_id", session.ProjectID)
+		return handler(withResolvedSessionRef(ctx, session), req)
 	}
 }
 
@@ -88,5 +108,48 @@ func RequestLoggerInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 			logger.Warn("grpc request", args...)
 		}
 		return resp, err
+	}
+}
+
+// RecoveryInterceptor converts unexpected panics into stable internal gRPC errors.
+// RecoveryInterceptor 用于把未预期的 panic 转换成稳定的 gRPC 内部错误。
+func RecoveryInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
+	if logger == nil {
+		logger = logx.Default()
+	}
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, err error) {
+		// Recover at the transport edge so panics never leak across the gRPC boundary.
+		// 在传输层边界做 recover，确保 panic 不会越过 gRPC 边界泄露出去。
+		defer func() {
+			if rec := recover(); rec != nil {
+				logger.Error("panic recovered", "trace_id", trace.IDFromContext(ctx), "method", info.FullMethod, "err", rec)
+				err = toStatus(errInternal)
+			}
+		}()
+		return handler(ctx, req)
+	}
+}
+
+// withResolvedSessionRef stores the resolved session scope into context so handlers can reuse one shared lookup result.
+// withResolvedSessionRef 用于把解析好的 session 范围写入上下文，让处理器复用同一份查询结果。
+func withResolvedSessionRef(ctx context.Context, session logicdomain.SessionRef) context.Context {
+	return context.WithValue(ctx, resolvedSessionContextKey{}, session)
+}
+
+// resolvedSessionRefFromContext extracts the resolved session scope prepared by the scope interceptor.
+// resolvedSessionRefFromContext 用于提取由范围拦截器预先放入上下文的 session 范围。
+func resolvedSessionRefFromContext(ctx context.Context) (logicdomain.SessionRef, bool) {
+	session, ok := ctx.Value(resolvedSessionContextKey{}).(logicdomain.SessionRef)
+	return session, ok
+}
+
+// requiresResolvedScope reports whether one gRPC method belongs to the business chain that needs deterministic project/user scope resolution.
+// requiresResolvedScope 用于判断某个 gRPC 方法是否属于需要确定性 project/user 范围解析的业务链路。
+func requiresResolvedScope(fullMethod string) bool {
+	switch fullMethod {
+	case "/vmm.v1.VMMService/PreCheck", "/vmm.v1.VMMService/PostAction":
+		return true
+	default:
+		return false
 	}
 }

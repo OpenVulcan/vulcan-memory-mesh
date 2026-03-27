@@ -2,113 +2,222 @@
 
 ## 文档目标
 
-这份文档说明当前 gRPC 版 `PostAction` / `PostActionOld` 的输入契约、后台处理方式、噪声门规则和调试行为。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及最终如何写入 DockDB。
 
-当前相关方法：
+当前相关方法只有：
 
 - `vmm.v1.VMMService/PostAction`
-- `vmm.v1.VMMService/PostActionOld`
+
+这不是历史兼容说明。旧 HTTP、旧 `PostActionOld`、旧 `raw_messages_snapshot` 契约都不再属于当前主线。
 
 ## 接口定位
 
-### 新版 `PostAction`
+`PostAction` 是当前主业务写入入口，用于接收一段已经整理过的纯文本对话片段：
 
-新版 `PostAction` 是字符串契约入口，用于接收：
+- 顶层首轮用户提问：`user_content`
+- 中间时间线：`timeline[]`
+- 顶层最终助手回答：`assistant_content`
 
-- `user_content`
-- `assistant_content`
-- `timeline`
+服务端会：
 
-特点：
+1. 先校验 `session_id / user_id / project_id`
+2. 记录原始日志
+3. 清洗待存储文本
+4. 记录清洗后日志
+5. 立即返回 `accepted=true`
+6. 后台继续把消息序列写入 DockDB
 
-- 同步校验参数是否合法
-- 立即返回 `accepted=true`
-- 然后在后台继续复用旧版持久化主线
-- 会分别输出清洗前和清洗后的调试日志
+## 请求结构
 
-### 旧版 `PostActionOld`
+当前 proto 定义位于：
 
-旧版 `PostActionOld` 用于接收完整原始快照：
+- [internal/adapters/inbound/grpcapi/proto/v1/vmm.proto](../internal/adapters/inbound/grpcapi/proto/v1/vmm.proto)
 
-- `raw_messages_snapshot`
+核心请求结构如下：
 
-特点：
+```proto
+message PostActionRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string user_content = 4;
+  string assistant_content = 5;
+  repeated PostActionTimelineItem timeline = 6;
+}
 
-- 入口侧完成二次安全过滤与格式规范化
-- 再把可保留的 `user -> assistant` 问答轮次写入长期存储
-
-## 新版方法：`vmm.v1.VMMService/PostAction`
-
-### 请求结构
-
-```json
-{
-  "sessionId": "sess_123",
-  "userId": "usr_8899",
-  "teamId": "team_001",
-  "spaceId": "space_001",
-  "projectId": "proj_abc",
-  "userContent": "首轮问题",
-  "assistantContent": "最后回答",
-  "timeline": [
-    {
-      "type": "assistant",
-      "content": "中间回答"
-    },
-    {
-      "type": "user",
-      "content": "补充问题"
-    }
-  ]
+message PostActionTimelineItem {
+  string type = 1;
+  string content = 2;
 }
 ```
 
-### 字段规则
+## 字段规则
 
-- `sessionId`
+### 顶层范围字段
+
+- `session_id`
   - 必填
-- `userId` / `teamId` / `spaceId` / `projectId`
-  - 可选
-  - 后台处理时为空会补成 `default`
-- `userContent`
+  - 业务会话键
+- `user_id`
+  - 必填
+  - 必须是数字 ID
+- `project_id`
+  - 必填
+  - 必须是数字 ID
+
+说明：
+
+- 客户端不再传 `team_id`
+- 客户端不再传 `space_id`
+- 服务端会通过统一前置拦截器，根据 `project_id` 反查 `team_id / space_id`
+- 如果 `session_id` 不存在，服务端会自动创建一条 `vmm_sessions` 记录
+
+### 顶层文本字段
+
+- `user_content`
   - 必填
   - 必须是字符串
-  - 表示当前用户首轮提问
-- `assistantContent`
+  - 表示当前这一段对话的首轮用户提问
+- `assistant_content`
   - 必填
   - 必须是字符串
-  - 表示当前助手最后回答
-- `timeline`
-  - 必须是数组
-  - 每项都必须是：
-    - `type=user|assistant`
-    - `content` 为字符串
+  - 表示当前这一段对话的最终助手回答
 
-### 时间线语义
+### `timeline`
 
-`timeline` 表示位于顶层首轮 `userContent` 和最后一条 `assistantContent` 之间的中间流程。
+- `timeline` 可以为空数组
+- `timeline` 每一项都必须包含：
+  - `type`
+  - `content`
+
+其中：
+
+- `type` 只能是：
+  - `user`
+  - `assistant`
+- `content` 必须是字符串且非空
+
+## 时间线语义
+
+`timeline` 只表示中间流程，不包含顶层的边界文本。
+
+也就是说，最终的业务顺序永远是：
+
+1. `user_content`
+2. `timeline[0..n]`
+3. `assistant_content`
 
 这意味着：
 
-- `userContent` 是首轮用户提问
-- `assistantContent` 是最后一条助手回答
-- `timeline` 不包含这两条边界文本
-- `timeline` 可以为空数组
-- `timeline` 可以有 1 条或多条中间消息
+- `user_content` 一定是首轮问题
+- `assistant_content` 一定是最后回答
+- `timeline` 是中间被插入的补充提问、追问或中断回答
 
-### 时间线与噪声门关系
+## 完整执行顺序
 
-当前规则是：
+当前 `PostAction` 的完整链路如下：
 
-- 当 `timeline` 长度大于 `0` 时：
-  - 视为复杂中间流程
-  - 后台跳过 `NoiseGate`
-  - 直接继续主线持久化
-- 当 `timeline` 长度等于 `0` 时：
-  - 视为标准单轮 `user -> assistant`
-  - 后台继续执行默认噪声门流程
+1. gRPC 入口收到请求
+2. 轻量规范化：
+   - trim `session_id`
+   - trim `user_content`
+   - trim `assistant_content`
+   - `timeline[i].type` 转小写
+   - trim `timeline[i].content`
+3. 传输层校验：
+   - `session_id` 必填
+   - `user_id` 必须为数字 ID
+   - `project_id` 必须为数字 ID
+   - `user_content` 必填
+   - `assistant_content` 必填
+   - `timeline[*].type/content` 必须合法
+4. 统一范围拦截器解析：
+   - 检查 `user_id`
+   - 检查 `project_id`
+   - 反查 `team_id / space_id`
+   - 必要时创建 `session`
+5. 记录原始请求日志
+6. 对待存储文本执行清洗：
+   - `user_content`
+   - `timeline[*].content`
+   - `assistant_content`
+7. 记录清洗后日志
+8. 立即返回：
+   - `accepted = true`
+   - `trace_id`
+9. 后台 goroutine 调用 `PostActionUseCase.Execute`
+10. 如果 `timeline` 为空且启用了 `NoiseGate`：
+    - 先把顶层 `user_content + assistant_content` 视作一个简单单轮
+    - 经过噪声门判断是否值得入库
+11. 按固定顺序写入消息：
+    - `user_content` -> `source_kind=entry_user`
+    - `timeline[*]` -> `source_kind=timeline`
+    - `assistant_content` -> `source_kind=final_assistant`
+12. 追加到 DockDB：
+    - `vmm_chat_messages`
+    - 同步更新 `vmm_sessions.message_count / last_message_index / updated_at`
 
-### 同步返回
+## 清洗行为
+
+当前 `PostAction` 在入库前会执行面向长期存储的文本清洗。
+
+主要目标是：
+
+- 去掉对长期记忆没有价值、但会污染 token 预算或语义的噪声
+- 保留尽量稳定、可追溯的纯文本内容
+
+当前会处理的内容包括：
+
+- `<think>...</think>`
+- base64 图片/音频/视频片段
+- Markdown 图片链接
+- HTML 媒体标签
+- 裸露媒体 URL
+- 长代码块、长日志、长 JSON、长堆栈
+- 超过 token 预算的超长文本
+
+## 噪声门位置
+
+`NoiseGate` 不在 gRPC 入口层执行，而是在后台用例层执行。
+
+具体位置：
+
+1. 请求先通过传输层校验
+2. 文本先完成清洗
+3. 后台进入 `PostActionUseCase`
+4. 当 `timeline == 0` 时：
+   - 才执行一次简单单轮噪声过滤
+5. 当 `timeline > 0` 时：
+   - 直接跳过噪声门
+
+原因：
+
+- 带 `timeline` 的流程通常表示多步补充、打断或回合穿插
+- 这类流程不适合用单轮噪声门做简单拦截
+
+## 最终写入的表
+
+当前主线会写入 DockDB 的以下表：
+
+- `vmm_sessions`
+- `vmm_chat_messages`
+
+不会直接把原始请求 JSON 原样写入数据库。
+
+真正持久化的是清洗后的消息序列。
+
+## 响应结构
+
+当前响应定义：
+
+```proto
+message PostActionResponse {
+  bool accepted = 1;
+  string trace_id = 2;
+}
+```
+
+典型返回：
 
 ```json
 {
@@ -119,155 +228,28 @@
 
 说明：
 
-- 这里的 `accepted=true` 表示“请求已接收”
+- `accepted=true` 只表示“请求已被接收”
 - 不表示后台一定已经写库完成
-- 真正的持久化和噪声门判断仍在后台继续执行
+- 如果后台写库失败，会体现在运行日志里，而不是同步响应里
 
-### 后台处理顺序
+## grpcurl 示例
 
-后台会按固定顺序把新版请求转换成旧版内部快照：
-
-1. 顶层 `userContent`
-2. `timeline` 中间流程
-3. 顶层 `assistantContent`
-
-在转换成内部快照前，新版 `PostAction` 会先对这三个位置的文本执行存储型清洗：
-
-1. 媒体与 base64 清理
-2. 机器文本压缩
-3. token 预算裁剪
-
-然后继续执行旧版主线：
-
-1. 文本净化
-2. `MessageNormalizer`
-3. `NoiseGate`（仅 `timeline=[]` 时启用）
-4. 长期存储写入
-
-### 调试日志
-
-新版 `PostAction` 在通过校验后，会把收到的内容输出到运行时日志，方便本地联调直接确认入参。
-
-日志会分成两份：
-
-1. 原始请求日志
-2. 清洗后请求日志
-
-两份日志里都会包含：
-
-- `trace_id`
-- `session_id`
-- `user_content`
-- `assistant_content`
-- `timeline`
-
-这样可以直接对比：
-
-- 上游发来的原始文本
-- 实际进入长期存储前的清洗结果
-
-## 旧版方法：`vmm.v1.VMMService/PostActionOld`
-
-### 请求结构
-
-```json
-{
-  "sessionId": "sess_123",
-  "userId": "usr_8899",
-  "teamId": "team_001",
-  "spaceId": "space_001",
-  "projectId": "proj_abc",
-  "rawMessagesSnapshot": [
-    {
-      "role": "user",
-      "contentJson": "\"你好\""
-    },
-    {
-      "role": "assistant",
-      "contentJson": "\"已收到\""
-    }
-  ]
-}
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "sessionId": "sess_001",
+    "userId": 7,
+    "projectId": 9,
+    "userContent": "最开始的问题",
+    "assistantContent": "最后的回答",
+    "timeline": [
+      { "type": "assistant", "content": "中间回答" },
+      { "type": "user", "content": "补充问题" }
+    ]
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/PostAction
 ```
-
-### 字段说明
-
-- `sessionId`
-  - 必填
-- `userId` / `teamId` / `spaceId` / `projectId`
-  - 可选
-  - 为空时自动补成 `default`
-- `rawMessagesSnapshot`
-  - 可为空
-  - 每项包括：
-    - `role`
-    - `contentJson`
-    - `toolCalls`
-    - `metaJson`
-
-注意：
-
-- `contentJson` 必须是 JSON 字符串
-- 如果要表达纯文本 `"你好"`，应传成 `"\"你好\""`
-
-## 输入模式
-
-配置项：
-
-- `post_action.input_mode`
-
-可选值：
-
-- `compat`
-- `strict`
-
-### `compat`
-
-兼容模式会自动修剪：
-
-- `system`
-- `tool`
-- `tool_calls`
-- 非文本内容块
-
-适合上游插件暂时还不能保证只上传标准问答文本的情况。
-
-### `strict`
-
-严格模式会直接拒绝不合规的 `user/assistant` 文本节点，例如：
-
-- `content` 不是字符串或文本块数组
-- 数组里混入 `type != text`
-- `user/assistant` 节点携带 `tool_calls`
-
-## 入口清洗规则
-
-当前文本净化集中在入站层完成一次。
-
-主要会处理：
-
-- `<think>...</think>`
-- base64 图片/视频/音频数据
-- Markdown 图片与文件链接
-- HTML 媒体标签
-- 裸露的媒体/附件 URL
-- 长代码、长日志、长 JSON、长堆栈等机器文本
-- 超过 token 预算的超长文本
-
-处理目标是：
-
-- 避免把无意义媒体垃圾、超长 base64 文本或附件地址送进长期存储
-- 避免把超长机器文本原样写入长期存储
-- 在保留核心语义的同时把入库文本控制在稳定预算内
-
-## 最终持久化内容
-
-当前不会直接保存原始节点，而是保存标准化后的问答轮次，并刷新会话元数据。
-
-如果修剪后没有形成完整 `user -> assistant` 配对：
-
-- 仍可能返回成功
-- 但不会产生有效持久化内容
 
 ## 相关配置
 
@@ -278,7 +260,7 @@
   "grpc": {
     "max_receive_message_bytes": 1048576,
     "request_timeout": {
-      "post_action": "3s"
+      "post_action": "8s"
     }
   },
   "post_action": {
@@ -287,27 +269,19 @@
 }
 ```
 
-### 配置项说明
+当前真正相关的配置项：
 
 - `grpc.max_receive_message_bytes`
-  - 单次 gRPC 请求大小上限
-  - 默认 1MB
 - `grpc.request_timeout.post_action`
-  - `PostAction` / `PostActionOld` 后台处理的超时
 - `post_action.input_mode`
-  - 入口处理模式
 - `noise.enabled`
-  - 是否启用写库前噪声准入门
 - `noise.default_language`
-  - 当前噪声判定默认语言
 - `noise.semantic_enabled`
-  - 是否启用语义相似度判定
 - `noise.semantic_threshold`
-  - 默认语义阈值
 
 ## 当前限制
 
-- 当前不支持多模态内容入库
-- 图片、音频、文件类块不会保留
-- `metaJson` 当前不会进入长期记忆正文
-- `PostAction` 只是立即确认接收，后台是否真正产生有效轮次要看清洗和标准化结果
+- 当前主线不再支持旧的 `raw_messages_snapshot` 契约
+- 当前主线不再支持 `team_id / space_id` 由客户端直接传入
+- 当前 `PostAction` 只接受纯文本字段，不接受原始消息节点对象
+- 当前 `PostAction` 返回的是“已接收”，不是“已写库完成”

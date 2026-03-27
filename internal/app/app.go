@@ -1,5 +1,5 @@
-// app.go implements the application composition root.
-// app.go 用于实现应用组合根。
+// app.go implements the application composition root for the local gRPC runtime.
+// app.go 用于实现本地 gRPC 运行时的应用组合根。
 package app
 
 import (
@@ -22,7 +22,6 @@ import (
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/logic/processor"
 	"github.com/openvulcan/vmm/internal/platform/logx"
-	"github.com/openvulcan/vmm/internal/platform/pii"
 	"github.com/openvulcan/vmm/internal/platform/xid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -37,26 +36,22 @@ type Application struct {
 	Shutdowns []appports.Shutdowner
 }
 
-// NewLocal creates a Local instance.
-// NewLocal 用于创建 Local 实例。
+// NewLocal creates the local application instance.
+// NewLocal 用于创建本地应用实例。
 func NewLocal(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
 	return newApplication(cfg, prompts, layout)
 }
 
-// newApplication creates a Application instance.
-// newApplication 用于创建 Application 实例。
+// newApplication composes the runtime dependencies for the local gRPC server.
+// newApplication 用于为本地 gRPC 服务装配运行时依赖。
 func newApplication(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
-	// Initialize shared runtime utilities such as logging and ID generation.
-	// 初始化日志和 ID 生成器等共享运行时能力。
+	// Initialize shared runtime utilities such as logging and ID generation first.
+	// 先初始化日志和 ID 生成器等共享运行时能力。
 	logger := logx.New(os.Stdout, logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format})
 	ids := xid.NewGenerator()
 
 	// Build outbound dependencies from the active configuration.
 	// 根据当前配置构建出站依赖。
-	llm, err := buildLLM(cfg)
-	if err != nil {
-		return nil, err
-	}
 	embedding, err := buildEmbedding(cfg)
 	if err != nil {
 		return nil, err
@@ -69,49 +64,42 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
-	archiveStore, err := resolveArchiveStore(relational)
-	if err != nil {
-		return nil, err
+	noiseCache, ok := relational.(appports.NoiseEmbeddingCache)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support noise embedding cache")
 	}
-	scrubber, err := buildScrubber(cfg, layout)
-	if err != nil {
-		return nil, err
+	scopeResolver, ok := relational.(appports.RequestScopeResolver)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support request scope resolution")
 	}
-	var noiseCache appports.NoiseEmbeddingCache
-	if candidate, ok := archiveStore.(appports.NoiseEmbeddingCache); ok {
-		noiseCache = candidate
+	workspaceStore, ok := relational.(appports.WorkspaceStore)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support workspace management")
 	}
 	noiseGate, err := buildNoiseGate(cfg, layout, embedding, noiseCache, logger)
-	if err != nil {
-		return nil, err
-	}
-	persona, err := resolvePersonaProvider(relational)
 	if err != nil {
 		return nil, err
 	}
 
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
-	chat := usecase.NewChatUseCase(scrubber, archiveStore, ids, logger)
-	pre := usecase.NewPreCheckUseCase(processor.NewIntentExtractor(llm, prompts, cfg.LLM.Model, cfg.MemoryPipeline.MaxSearchKeywords), processor.NewContextAssembler(prompts, cfg.LLM.Model), embedding, vector, persona, logger, cfg.PreCheck.IntentTimeout.Duration, cfg.PreCheck.TopK, cfg.MemoryPipeline.MaxSearchKeywords, cfg.MemoryPipeline.MinSimilarityScore, cfg.Embedding.Model, cfg.Embedding.Dimension)
-	post := usecase.NewPostActionUseCase(processor.NewMessageNormalizer(), noiseGate, relational, logger)
-	seed := usecase.NewSeedMemoryUseCase(embedding, vector, ids, logger, cfg.Embedding.Model, cfg.Embedding.Dimension)
-	enableSeed := cfg.Admin.SeedEnabled
+	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
+	pre := usecase.NewPreCheckUseCase(logger)
+	post := usecase.NewPostActionUseCase(noiseGate, relational, logger)
 
 	// Wire gRPC handlers and shutdown dependencies into the application container.
 	// 将 gRPC 处理器和关闭依赖接入应用容器。
 	deps := grpcapi.Dependencies{
 		IDs:               ids,
-		Chat:              chat,
+		Workspace:         workspace,
 		PreCheck:          pre,
 		PostAction:        post,
-		SeedMemory:        seed,
+		ScopeResolver:     scopeResolver,
 		Logger:            logger,
-		Validator:         grpcapi.NewRequestValidator(cfg.PostAction.InputMode),
-		ChatTimeout:       cfg.GRPC.RequestTimeout.Chat.Duration,
+		Validator:         grpcapi.NewRequestValidator(),
+		WorkspaceTimeout:  cfg.GRPC.RequestTimeout.Workspace.Duration,
 		PreCheckTimeout:   cfg.GRPC.RequestTimeout.PreCheck.Duration,
 		PostActionTimeout: cfg.GRPC.RequestTimeout.PostAction.Duration,
-		SeedMemoryTimeout: cfg.GRPC.RequestTimeout.SeedMemory.Duration,
 	}
 	grpcOptions := []grpc.ServerOption{
 		grpc.MaxRecvMsgSize(cfg.GRPC.MaxReceiveMessageBytes),
@@ -119,32 +107,19 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	}
 	server := grpc.NewServer(grpcOptions...)
 	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
-
-	// Register server reflection so grpcurl and other local debugging tools can inspect services directly.
-	// 注册服务反射，让 grpcurl 等本地调试工具可以直接发现服务定义。
 	reflection.Register(server)
-	shutdowns := []appports.Shutdowner{}
-	if relational != nil {
-		shutdowns = append(shutdowns, relational)
-	}
-	if vector != nil {
-		shutdowns = append(shutdowns, vector)
-	}
-	if !enableSeed {
-		logger.Info("seed-memory rpc disabled")
-	}
+
+	shutdowns := []appports.Shutdowner{relational, vector}
 	return &Application{Config: cfg, Logger: logger, Server: server, Shutdowns: shutdowns}, nil
 }
 
-// Run executes the Run logic.
-// Run 用于执行 Run 逻辑。
+// Run starts the gRPC server and coordinates graceful shutdown against context cancellation, OS signals, and serve failures.
+// Run 用于启动 gRPC 服务，并在上下文取消、系统信号和服务错误之间协调优雅停机。
 func (a *Application) Run(ctx context.Context) error {
-	// Start the gRPC server asynchronously so shutdown signals can be observed.
-	// 异步启动 gRPC 服务，以便同时监听关闭信号。
 	errCh := make(chan error, 1)
 	go func() {
-		// Bind the TCP listener at start time so Caddy or other proxies can terminate TLS in front of gRPC.
-		// 在启动时绑定 TCP 监听器，让 Caddy 或其他代理在 gRPC 前面终止 TLS。
+		// Bind the TCP listener at start time so TLS can be terminated by an external proxy such as Caddy.
+		// 在启动时绑定 TCP 监听器，让 TLS 由外部代理如 Caddy 终止。
 		listener, err := net.Listen("tcp", a.Config.GRPC.ListenAddr)
 		if err != nil {
 			errCh <- err
@@ -161,8 +136,6 @@ func (a *Application) Run(ctx context.Context) error {
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 	defer signal.Stop(sigCh)
 
-	// Coordinate graceful shutdown across context cancellation, OS signals, and server failures.
-	// 在上下文取消、系统信号和服务异常之间协调优雅停机。
 	select {
 	case <-ctx.Done():
 		return a.Shutdown(context.Background())
@@ -174,11 +147,9 @@ func (a *Application) Run(ctx context.Context) error {
 	}
 }
 
-// Shutdown executes the Shutdown logic.
-// Shutdown 用于执行 Shutdown 逻辑。
+// Shutdown stops the gRPC server and releases downstream resources in reverse construction order.
+// Shutdown 用于停止 gRPC 服务，并按构建逆序释放下游资源。
 func (a *Application) Shutdown(ctx context.Context) error {
-	// Stop accepting new gRPC requests before tearing down downstream resources.
-	// 先停止接收新的 gRPC 请求，再销毁下游资源。
 	shutdownCtx, cancel := context.WithTimeout(ctx, a.Config.GRPC.ShutdownTimeout.Duration)
 	defer cancel()
 	stopped := make(chan struct{})
@@ -192,8 +163,6 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	case <-stopped:
 	}
 
-	// Release dependencies in reverse order to match the construction sequence.
-	// 按构建的逆序释放依赖，保证关闭顺序稳定。
 	for i := len(a.Shutdowns) - 1; i >= 0; i-- {
 		if err := a.Shutdowns[i].Shutdown(shutdownCtx); err != nil {
 			return fmt.Errorf("shutdown dependency[%d]: %w", i, err)
@@ -202,24 +171,9 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	return nil
 }
 
-// buildLLM selects the configured real LLM adapter for intent extraction and other generation flows.
-// buildLLM 用于为意图提取等生成链路选择当前配置的真实 LLM 适配器。
-func buildLLM(cfg config.Config) (appports.LLMClient, error) {
-	// Select the LLM adapter according to the configured provider.
-	// 根据配置的 provider 选择对应的 LLM 适配器。
-	switch strings.ToLower(cfg.LLM.Provider) {
-	case "openai", "openai_native", "openai_go":
-		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project, cfg.LLM.Params, cfg.LLM.ModelParams), nil
-	default:
-		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
-	}
-}
-
 // buildEmbedding selects the configured real embedding adapter for recall and semantic filtering.
 // buildEmbedding 用于为召回和语义过滤选择当前配置的真实 embedding 适配器。
 func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
-	// Select the embedding adapter according to the configured provider.
-	// 根据配置的 provider 选择对应的 embedding 适配器。
 	switch strings.ToLower(cfg.Embedding.Provider) {
 	case "openai", "openai_native", "openai_go":
 		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams), nil
@@ -228,11 +182,9 @@ func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 	}
 }
 
-// buildVector builds the target dependency.
-// buildVector 用于构建目标依赖。
+// buildVector selects the configured vector backend used by retrieval and destructive cleanup flows.
+// buildVector 用于选择当前配置的向量后端，服务检索和破坏性清理流程。
 func buildVector(cfg config.Config) (appports.VectorStore, error) {
-	// Select the vector store adapter according to the configured provider.
-	// 根据配置的 provider 选择对应的向量存储适配器。
 	switch strings.ToLower(cfg.Vector.Provider) {
 	case "lancedb":
 		return vldg_lancedb.NewStore(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
@@ -241,11 +193,9 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 	}
 }
 
-// buildRelational builds the target dependency.
-// buildRelational 用于构建目标依赖。
+// buildRelational selects the configured durable SQL backend used by workspace/session/message persistence.
+// buildRelational 用于选择当前配置的长期 SQL 后端，服务层级、session 和消息持久化。
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
-	// Select the relational store adapter according to the configured provider.
-	// 根据配置的 provider 选择对应的关系存储适配器。
 	switch strings.ToLower(cfg.Relational.Provider) {
 	case "dockdb":
 		return vldg_dockdb.NewStore(cfg.DockDB.Address, cfg.DockDB.Timeout.Duration)
@@ -254,36 +204,8 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	}
 }
 
-// resolveArchiveStore reuses the primary DockDB relational store for the temporary /chat archive flow.
-// resolveArchiveStore 用于复用主 DockDB 关系存储，承接临时 /chat 归档流程。
-func resolveArchiveStore(relational appports.RelationalStore) (appports.MemoryArchiveStore, error) {
-	// Keep chat on the same durable storage line as post-action so local mode only configures one SQL backend.
-	// 让 chat 和 post-action 共享同一条长期存储链，确保本地模式只需要配置一个 SQL 后端。
-	if archiveStore, ok := relational.(appports.MemoryArchiveStore); ok {
-		return archiveStore, nil
-	}
-	return nil, fmt.Errorf("relational store does not support archive flow")
-}
-
-// resolvePersonaProvider reuses the primary DockDB storage adapter as the current persona source.
-// resolvePersonaProvider 用于复用主 DockDB 存储适配器，作为当前画像上下文来源。
-func resolvePersonaProvider(relational appports.RelationalStore) (appports.ContextPersonaProvider, error) {
-	// Keep persona loading on the same durable backend so runtime startup has no hidden in-memory fallback.
-	// 让画像加载也走同一条长期后端，避免运行时继续保留隐式内存回退。
-	if personaProvider, ok := relational.(appports.ContextPersonaProvider); ok {
-		return personaProvider, nil
-	}
-	return nil, fmt.Errorf("relational store does not support persona loading")
-}
-
-// buildScrubber builds the multi-language scrubber used by the local chat archive route.
-// buildScrubber 用于构建本地聊天归档路由使用的多语言脱敏器。
-func buildScrubber(cfg config.Config, layout config.PromptLayout) (appports.TextScrubber, error) {
-	return pii.NewEngine(layout.SystemPIIRulesDir(), layout.UserPIIRulesDir(), cfg.PII.DefaultLanguage)
-}
-
-// buildNoiseGate builds the pre-persistence admission gate that blocks noisy turns from entering long-term memory.
-// buildNoiseGate 用于构建写库前阻断噪声轮次进入长期记忆的准入门控器。
+// buildNoiseGate builds the pre-persistence admission gate that blocks noisy single-round turns from entering long-term memory.
+// buildNoiseGate 用于构建写库前的准入门控器，阻止噪声单轮问答进入长期记忆。
 func buildNoiseGate(cfg config.Config, layout config.PromptLayout, embedding appports.EmbeddingClient, cache appports.NoiseEmbeddingCache, logger *logx.Logger) (*processor.NoiseGate, error) {
 	return processor.NewNoiseGate(context.Background(), embedding, logger, processor.NoiseGateConfig{
 		SystemDir:         layout.SystemNoiseRulesDir(),

@@ -27,6 +27,9 @@ type ErrorDescriptor struct {
 var (
 	errInvalidArgument = ErrorDescriptor{Code: codes.InvalidArgument, ID: "GRPC_VALIDATION_FAILED", Category: "validation", Message: "request validation failed"}
 	errRouteDisabled   = ErrorDescriptor{Code: codes.Unimplemented, ID: "GRPC_ROUTE_DISABLED", Category: "routing", Message: "rpc is disabled"}
+	errNotFound        = ErrorDescriptor{Code: codes.NotFound, ID: "RESOURCE_NOT_FOUND", Category: "lookup", Message: "requested resource was not found"}
+	errConflict        = ErrorDescriptor{Code: codes.AlreadyExists, ID: "RESOURCE_CONFLICT", Category: "conflict", Message: "requested resource conflicts with existing data"}
+	errConfirmation    = ErrorDescriptor{Code: codes.FailedPrecondition, ID: "CONFIRMATION_REQUIRED", Category: "confirmation", Message: "explicit confirmation is required"}
 	errTimeout         = ErrorDescriptor{Code: codes.DeadlineExceeded, ID: "UPSTREAM_TIMEOUT", Category: "timeout", Message: "request timeout"}
 	errInternal        = ErrorDescriptor{Code: codes.Internal, ID: "INTERNAL_ERROR", Category: "internal", Message: "internal server error"}
 	errTooLarge        = ErrorDescriptor{Code: codes.ResourceExhausted, ID: "GRPC_REQUEST_TOO_LARGE", Category: "transport", Message: "request payload exceeds size limit"}
@@ -40,6 +43,12 @@ func describeError(err error) ErrorDescriptor {
 		return ErrorDescriptor{}
 	case logicdomain.IsValidationError(err):
 		return withMessage(errInvalidArgument, err.Error())
+	case logicdomain.IsNotFoundError(err):
+		return withMessage(errNotFound, err.Error())
+	case logicdomain.IsConflictError(err):
+		return withMessage(errConflict, err.Error())
+	case logicdomain.IsConfirmationRequired(err):
+		return withMessage(errConfirmation, err.Error())
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, logicdomain.ErrTimeout):
 		return errTimeout
 	default:

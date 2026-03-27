@@ -35,19 +35,19 @@ type EmbeddingClient interface {
 	Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error)
 }
 
-// VectorStore is the port used to persist and search memory vectors inside the recall pipeline.
-// VectorStore 用于抽象记忆召回流水线中的向量写入与检索能力。
+// VectorStore is the port used to persist, search, and administratively clean memory vectors inside the recall pipeline.
+// VectorStore 用于抽象记忆召回流水线中的向量写入、检索和管理清理能力。
 type VectorStore interface {
 	Upsert(ctx context.Context, record logicdomain.MemoryRecord) error
 	Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error)
+	DeleteByFilter(ctx context.Context, filter logicdomain.SearchFilter) (uint64, error)
 	Shutdowner
 }
 
-// RelationalStore is the port used by post-action flows to persist cleaned chat turns and session metadata.
-// RelationalStore 用于给 post-action 流程持久化清洗后的对话轮次和会话元数据。
+// RelationalStore is the port used by post-action flows to persist cleaned chat messages inside one resolved session scope.
+// RelationalStore 用于给 post-action 流程在某个已解析的 session 范围内持久化清洗后的聊天消息。
 type RelationalStore interface {
-	UpsertChatLogs(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.NormalizedTurn) error
-	RefreshSession(ctx context.Context, session logicdomain.SessionRef) error
+	AppendChatMessages(ctx context.Context, session logicdomain.SessionRef, messages []logicdomain.ChatMessage) error
 	Shutdowner
 }
 
@@ -55,13 +55,6 @@ type RelationalStore interface {
 // NoiseTurnFilter 用于让 post-action 流程在关系持久化前过滤掉噪声标准化轮次。
 type NoiseTurnFilter interface {
 	FilterPersistableTurns(ctx context.Context, turns []logicdomain.NormalizedTurn) []logicdomain.NormalizedTurn
-}
-
-// MemoryArchiveStore is the port used by the /chat archive flow to persist scrubbed messages without storing raw PII.
-// MemoryArchiveStore 用于让 /chat 归档流程在不保存原始敏感信息的前提下持久化已脱敏消息。
-type MemoryArchiveStore interface {
-	SaveMemory(ctx context.Context, record logicdomain.ArchivedMemory) error
-	Shutdowner
 }
 
 // NoiseEmbeddingCache is the port used by startup processors to reuse previously computed semantic prototype vectors.
@@ -77,14 +70,29 @@ type ContextPersonaProvider interface {
 	Load(ctx context.Context, session logicdomain.SessionRef) (logicdomain.PersonaContext, error)
 }
 
-// TextScrubber is the utility port used by chat archive flows to scrub PII according to the active language rules.
-// TextScrubber 用于让聊天归档流程根据当前语言规则执行 PII 脱敏。
-type TextScrubber interface {
-	Scrub(text string, lang string) string
+// RequestScopeResolver is the port used by gRPC interceptors to validate numeric project/user ids and auto-create sessions.
+// RequestScopeResolver 用于让 gRPC 拦截器校验数字 project/user id，并在需要时自动创建 session。
+type RequestScopeResolver interface {
+	ResolveRequestScope(ctx context.Context, sessionKey string, userID, projectID uint64) (logicdomain.SessionRef, error)
+}
+
+// WorkspaceStore is the port used by admin RPCs to manage users plus Team/Space/Project hierarchy nodes.
+// WorkspaceStore 用于让管理 RPC 管理用户和 Team/Space/Project 层级节点。
+type WorkspaceStore interface {
+	ListProjects(ctx context.Context) ([]logicdomain.ProjectRecord, error)
+	ResolveProjectRef(ctx context.Context, projectRef string) (logicdomain.ProjectRecord, error)
+	ListProjectMemories(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error)
+	EnsureProjectPath(ctx context.Context, projectPath string, confirmCreate bool) (logicdomain.ProjectMutationResult, error)
+	DeleteProjectPath(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error)
+	MigrateProjectPath(ctx context.Context, sourcePath, targetPath string, confirm bool) (logicdomain.ProjectMigrationResult, error)
+	ResolveUserRef(ctx context.Context, userRef string) (logicdomain.UserRecord, error)
+	EnsureUserName(ctx context.Context, userName string, confirmCreate bool) (logicdomain.UserResolveResult, error)
+	ListUsers(ctx context.Context) ([]logicdomain.UserRecord, error)
+	DeleteUserRef(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error)
 }
 
 // IDGenerator is the utility port used to create stable IDs for traces and seeded memories.
-// IDGenerator 用于生成 trace 和 seed-memory 等场景所需的稳定 ID。
+// IDGenerator 用于生成 trace 等运行时标识所需的稳定 ID。
 type IDGenerator interface {
 	NewID(prefix string) string
 }

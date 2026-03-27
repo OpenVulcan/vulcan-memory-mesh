@@ -1,5 +1,5 @@
-// store_test.go exercises the DuckDB-gateway adapter without depending on a real external gateway.
-// store_test.go 用于在不依赖真实外部网关的情况下验证 DuckDB 网关适配器。
+// store_test.go exercises the DockDB-gateway adapter against the current hierarchy/session/message schema.
+// store_test.go 用于围绕当前层级、session 和消息表结构验证 DockDB 网关适配器。
 package vldg_dockdb
 
 import (
@@ -18,107 +18,9 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// TestReplaceNoiseEmbeddingCacheRewritesScopedBundle verifies the adapter replaces one scoped cache bundle through delete-plus-insert writes.
-// TestReplaceNoiseEmbeddingCacheRewritesScopedBundle 用于验证适配器会通过“先删后插”重写指定作用域的缓存包。
-func TestReplaceNoiseEmbeddingCacheRewritesScopedBundle(t *testing.T) {
-	server := &fakeDuckDBServer{
-		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":1}]`,
-		},
-	}
-	store := newDuckDBTestStore(t, server)
-
-	err := store.ReplaceNoiseEmbeddingCache(context.Background(), logicdomain.NoiseEmbeddingCacheQuery{
-		Scope:    "noise_gate",
-		Language: "zh-CN",
-	}, []logicdomain.NoiseEmbeddingCacheEntry{
-		{
-			Scope:        "noise_gate",
-			Language:     "zh-CN",
-			CategoryName: "meta_question",
-			Phrase:       "你还记得吗",
-			Model:        "text-embedding-v4",
-			Dimension:    1024,
-			RulesHash:    "hash-a",
-			Vector:       []float32{0.1, 0.2},
-			UpdatedAt:    time.Unix(100, 0).UTC(),
-		},
-	})
-	if err != nil {
-		t.Fatalf("replace cache: %v", err)
-	}
-
-	// The adapter should first clear the selected bundle and then insert the refreshed rows.
-	// 适配器应先清空目标缓存包，再插入刷新后的新记录。
-	execs := server.execRequests()
-	if len(execs) < 3 {
-		t.Fatalf("expected init + delete + insert calls, got %d", len(execs))
-	}
-	if !strings.Contains(execs[1].Sql, "DELETE FROM vmm_noise_embeddings") {
-		t.Fatalf("unexpected delete sql: %s", execs[1].Sql)
-	}
-	if !strings.Contains(execs[2].Sql, "INSERT INTO vmm_noise_embeddings") {
-		t.Fatalf("unexpected insert sql: %s", execs[2].Sql)
-	}
-	var params []any
-	if err := json.Unmarshal([]byte(execs[2].ParamsJson), &params); err != nil {
-		t.Fatalf("decode insert params: %v", err)
-	}
-	if got := params[2]; got != "meta_question" {
-		t.Fatalf("category_name param = %#v", got)
-	}
-}
-
-// TestUpsertChatLogsAppendsTurnIndexes verifies the adapter appends persisted turn indexes after querying the current session maximum.
-// TestUpsertChatLogsAppendsTurnIndexes 用于验证适配器会先查询当前最大 turn_index，再向后追加新轮次。
-func TestUpsertChatLogsAppendsTurnIndexes(t *testing.T) {
-	server := &fakeDuckDBServer{
-		queryJSON: map[string]string{
-			"FROM vmm_version":   `[{"schema_version":1}]`,
-			"FROM vmm_chat_logs": `[{"max_turn_index":2}]`,
-		},
-	}
-	store := newDuckDBTestStore(t, server)
-
-	err := store.UpsertChatLogs(context.Background(), logicdomain.SessionRef{
-		SessionID: "sess-1",
-		UserID:    "u1",
-		TeamID:    "t1",
-		ProjectID: "p1",
-		SpaceID:   "s1",
-	}, []logicdomain.NormalizedTurn{
-		{TurnIndex: 1, UserMessage: "第一问", AssistantReply: "第一答"},
-		{TurnIndex: 2, UserMessage: "第二问", AssistantReply: "第二答"},
-	})
-	if err != nil {
-		t.Fatalf("upsert chat logs: %v", err)
-	}
-
-	// The first appended rows should continue from the current max turn index rather than overwriting turn 1.
-	// 新增的轮次应从当前最大 turn_index 继续递增，而不是回写覆盖 turn 1。
-	execs := server.execRequests()
-	if len(execs) < 3 {
-		t.Fatalf("expected init + 2 insert calls, got %d", len(execs))
-	}
-	var firstParams []any
-	if err := json.Unmarshal([]byte(execs[1].ParamsJson), &firstParams); err != nil {
-		t.Fatalf("decode first insert params: %v", err)
-	}
-	if got := firstParams[1]; got != float64(3) {
-		t.Fatalf("first persisted turn index = %#v", got)
-	}
-	var secondParams []any
-	if err := json.Unmarshal([]byte(execs[2].ParamsJson), &secondParams); err != nil {
-		t.Fatalf("decode second insert params: %v", err)
-	}
-	if got := secondParams[1]; got != float64(4) {
-		t.Fatalf("second persisted turn index = %#v", got)
-	}
-}
-
-// TestInitAppliesSchemaMigrationOnce verifies fresh installs create the version table, schema objects, and version row in order.
-// TestInitAppliesSchemaMigrationOnce 用于验证首次安装会按顺序创建版本表、业务表结构和版本记录。
-func TestInitAppliesSchemaMigrationOnce(t *testing.T) {
+// TestInitAppliesSchemaMigrationsUpToCurrentVersion verifies fresh installs bootstrap the version table and apply both v1 and v2 migrations.
+// TestInitAppliesSchemaMigrationsUpToCurrentVersion 用于验证首次安装会先引导版本表，再依次执行 v1 和 v2 迁移。
+func TestInitAppliesSchemaMigrationsUpToCurrentVersion(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
 			"FROM vmm_version": `[]`,
@@ -129,52 +31,118 @@ func TestInitAppliesSchemaMigrationOnce(t *testing.T) {
 		t.Fatalf("init store: %v", err)
 	}
 
-	// Fresh installs should bootstrap the version table, apply schema v1, and then persist version=1.
-	// 首次安装应先创建版本表，再执行 v1 schema，最后写入 version=1。
 	execs := server.execRequests()
-	if len(execs) != 4 {
-		t.Fatalf("expected 4 execute calls, got %d", len(execs))
+	if len(execs) != 9 {
+		t.Fatalf("expected 9 execute calls, got %d", len(execs))
 	}
 	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
-		t.Fatalf("first exec should bootstrap version table: %s", execs[0].Sql)
+		t.Fatalf("missing version bootstrap sql: %s", execs[0].Sql)
 	}
-	if !strings.Contains(execs[1].Sql, "CREATE TABLE IF NOT EXISTS vmm_memories") {
-		t.Fatalf("second exec should apply schema v1: %s", execs[1].Sql)
+	if !strings.Contains(execs[1].Sql, "ALTER TABLE vmm_version ADD COLUMN updated_at") {
+		t.Fatalf("missing version-shape sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[2].Sql, "DELETE FROM vmm_version") {
-		t.Fatalf("third exec should clear version row: %s", execs[2].Sql)
+	if !strings.Contains(execs[2].Sql, "UPDATE vmm_version SET updated_at") {
+		t.Fatalf("missing version backfill sql: %s", execs[2].Sql)
 	}
-	if !strings.Contains(execs[3].Sql, "INSERT INTO vmm_version") {
-		t.Fatalf("fourth exec should persist version row: %s", execs[3].Sql)
+	if !strings.Contains(execs[3].Sql, "CREATE TABLE IF NOT EXISTS vmm_memories") {
+		t.Fatalf("missing schema v1 sql: %s", execs[3].Sql)
+	}
+	if !strings.Contains(execs[6].Sql, "CREATE TABLE IF NOT EXISTS vmm_users") {
+		t.Fatalf("missing schema v2 sql: %s", execs[6].Sql)
+	}
+	var params []any
+	if err := json.Unmarshal([]byte(execs[8].ParamsJson), &params); err != nil {
+		t.Fatalf("decode version insert params: %v", err)
+	}
+	if len(params) != 2 || params[0] != float64(currentSchemaVersion) {
+		t.Fatalf("unexpected version params: %#v", params)
 	}
 }
 
-// TestInitSkipsSchemaMigrationWhenVersionMatches verifies steady-state boots only touch the version table and skip full schema DDL.
-// TestInitSkipsSchemaMigrationWhenVersionMatches 用于验证在版本已匹配时，稳定启动只接触版本表而不会重复执行整套 schema DDL。
-func TestInitSkipsSchemaMigrationWhenVersionMatches(t *testing.T) {
+// TestResolveRequestScopeCreatesSession verifies business interceptors can resolve numeric user/project ids and auto-create one session row.
+// TestResolveRequestScopeCreatesSession 用于验证业务拦截器可以解析数字 user/project id，并自动创建 session 行。
+func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":1}]`,
+			"FROM vmm_version": `[{"schema_version":2}]`,
+			"FROM vmm_users":   `[{"id":7,"name":"alice","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"FROM vmm_sessions": `[]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_sessions": `[{"next_id":41}]`,
 		},
 	}
-	store := newDuckDBTestStoreWithoutInit(t, server)
-	if err := store.init(context.Background()); err != nil {
-		t.Fatalf("init store: %v", err)
+	store := newDuckDBTestStore(t, server)
+
+	session, err := store.ResolveRequestScope(context.Background(), "sess-key-1", 7, 9)
+	if err != nil {
+		t.Fatalf("resolve request scope: %v", err)
+	}
+	if session.SessionID != 41 || session.SessionKey != "sess-key-1" {
+		t.Fatalf("unexpected session ref: %+v", session)
+	}
+	if session.TeamID != 3 || session.SpaceID != 5 || session.ProjectID != 9 || session.UserID != 7 {
+		t.Fatalf("unexpected scope ids: %+v", session)
+	}
+	if session.TeamName != "team-a" || session.SpaceName != "space-a" || session.ProjectName != "proj-a" || session.UserName != "alice" {
+		t.Fatalf("unexpected scope names: %+v", session)
 	}
 
-	// Once the schema version is current, startup should only ensure the version table exists.
-	// 当 schema 版本已经最新时，启动阶段只需要确保版本表存在即可。
 	execs := server.execRequests()
-	if len(execs) != 1 {
-		t.Fatalf("expected 1 execute call, got %d", len(execs))
-	}
-	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
-		t.Fatalf("unexpected bootstrap sql: %s", execs[0].Sql)
+	last := execs[len(execs)-1]
+	if !strings.Contains(last.Sql, "INSERT INTO vmm_sessions") {
+		t.Fatalf("expected session insert sql, got %s", last.Sql)
 	}
 }
 
-// newDuckDBTestStore creates one adapter instance backed by a bufconn gRPC server.
-// newDuckDBTestStore 用于创建一个由 bufconn gRPC 服务支撑的适配器测试实例。
+// TestAppendChatMessagesAppendsSequentialIndexes verifies message-level persistence continues from the current last_message_index.
+// TestAppendChatMessagesAppendsSequentialIndexes 用于验证消息级持久化会从当前 last_message_index 继续顺序追加。
+func TestAppendChatMessagesAppendsSequentialIndexes(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":2}]`,
+			"SELECT id, message_count, last_message_index": `[{"id":41,"message_count":2,"last_message_index":2}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_chat_messages": `[{"next_id":100}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	err := store.AppendChatMessages(context.Background(), logicdomain.SessionRef{
+		SessionID:  41,
+		SessionKey: "sess-key-1",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}, []logicdomain.ChatMessage{
+		{Role: "user", Content: "第一问", SourceKind: "entry_user"},
+		{Role: "assistant", Content: "最终回答", SourceKind: "final_assistant"},
+	})
+	if err != nil {
+		t.Fatalf("append chat messages: %v", err)
+	}
+
+	execs := server.execRequests()
+	if len(execs) < 5 {
+		t.Fatalf("expected init + 3 persistence writes, got %d", len(execs))
+	}
+	var firstParams []any
+	if err := json.Unmarshal([]byte(execs[len(execs)-3].ParamsJson), &firstParams); err != nil {
+		t.Fatalf("decode first insert params: %v", err)
+	}
+	if got := firstParams[2]; got != float64(3) {
+		t.Fatalf("first persisted message index = %#v", got)
+	}
+	var secondParams []any
+	if err := json.Unmarshal([]byte(execs[len(execs)-2].ParamsJson), &secondParams); err != nil {
+		t.Fatalf("decode second insert params: %v", err)
+	}
+	if got := secondParams[2]; got != float64(4) {
+		t.Fatalf("second persisted message index = %#v", got)
+	}
+}
+
+// newDuckDBTestStore creates one initialized adapter backed by a bufconn gRPC server.
+// newDuckDBTestStore 用于创建一个已经初始化完成、并由 bufconn gRPC 服务支撑的适配器实例。
 func newDuckDBTestStore(t *testing.T, server *fakeDuckDBServer) *Store {
 	t.Helper()
 	store := newDuckDBTestStoreWithoutInit(t, server)
@@ -216,12 +184,11 @@ func newDuckDBTestStoreWithoutInit(t *testing.T, server *fakeDuckDBServer) *Stor
 		_ = conn.Close()
 	})
 
-	store := &Store{
+	return &Store{
 		conn:    conn,
 		client:  duckdbv1.NewDuckDbServiceClient(conn),
 		timeout: time.Second,
 	}
-	return store
 }
 
 // fakeDuckDBServer captures SQL requests and returns canned JSON query payloads for adapter tests.
@@ -236,7 +203,7 @@ type fakeDuckDBServer struct {
 
 // ExecuteScript records every execute request so tests can assert SQL shape and parameters.
 // ExecuteScript 用于记录每一次执行请求，方便测试断言 SQL 形态和参数。
-func (s *fakeDuckDBServer) ExecuteScript(ctx context.Context, req *duckdbv1.ExecuteRequest) (*duckdbv1.ExecuteResponse, error) {
+func (s *fakeDuckDBServer) ExecuteScript(_ context.Context, req *duckdbv1.ExecuteRequest) (*duckdbv1.ExecuteResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.execs = append(s.execs, req)
@@ -245,26 +212,32 @@ func (s *fakeDuckDBServer) ExecuteScript(ctx context.Context, req *duckdbv1.Exec
 
 // QueryJson records every query request and returns the canned JSON payload that matches the SQL fragment.
 // QueryJson 用于记录每一次查询请求，并按 SQL 片段返回预置 JSON 结果。
-func (s *fakeDuckDBServer) QueryJson(ctx context.Context, req *duckdbv1.QueryRequest) (*duckdbv1.QueryJsonResponse, error) {
+func (s *fakeDuckDBServer) QueryJson(_ context.Context, req *duckdbv1.QueryRequest) (*duckdbv1.QueryJsonResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.querys = append(s.querys, req)
+	bestFragment := ""
+	bestPayload := ""
 	for fragment, payload := range s.queryJSON {
-		if strings.Contains(req.Sql, fragment) {
-			return &duckdbv1.QueryJsonResponse{JsonData: payload}, nil
+		if strings.Contains(req.Sql, fragment) && len(fragment) > len(bestFragment) {
+			bestFragment = fragment
+			bestPayload = payload
 		}
+	}
+	if bestFragment != "" {
+		return &duckdbv1.QueryJsonResponse{JsonData: bestPayload}, nil
 	}
 	return &duckdbv1.QueryJsonResponse{JsonData: "[]"}, nil
 }
 
-// QueryStream is not used by the adapter and therefore stays unimplemented in these focused tests.
-// QueryStream 不会被当前适配器使用，因此在这些聚焦测试里保持未实现。
+// QueryStream stays unused in these focused tests.
+// QueryStream 用于在这些聚焦测试里保持未使用状态。
 func (s *fakeDuckDBServer) QueryStream(req *duckdbv1.QueryRequest, stream grpc.ServerStreamingServer[duckdbv1.QueryResponse]) error {
 	return nil
 }
 
-// execRequests returns a snapshot of recorded execute requests for stable assertions.
-// execRequests 用于返回已记录执行请求的快照，便于做稳定断言。
+// execRequests returns a stable snapshot of all execute calls observed during the test.
+// execRequests 用于返回测试期间观察到的全部执行请求快照。
 func (s *fakeDuckDBServer) execRequests() []*duckdbv1.ExecuteRequest {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -6,32 +6,52 @@ option go_package = "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi
 
 import "google/protobuf/empty.proto";
 
-// VMMService exposes the local gateway workflows over gRPC.
-// VMMService 用于通过 gRPC 暴露本地网关工作流。
+// VMMService exposes the deterministic hierarchy management surface plus the main PreCheck/PostAction business chain.
+// VMMService 用于暴露确定性层级管理接口，以及主业务链路 PreCheck/PostAction。
 service VMMService {
   // Healthz reports whether the local gateway process is alive.
   // Healthz 用于报告本地网关进程是否存活。
   rpc Healthz(google.protobuf.Empty) returns (HealthzResponse);
 
-  // Chat scrubs one inbound message and archives the sanitized text.
-  // Chat 用于脱敏一条入站消息并归档清洗后的文本。
-  rpc Chat(ChatRequest) returns (ChatResponse);
+  // ListProjects returns all Team/Space/Project paths in deterministic display order.
+  // ListProjects 用于按稳定展示顺序返回全部 Team/Space/Project 路径。
+  rpc ListProjects(google.protobuf.Empty) returns (ListProjectsResponse);
 
-  // PreCheck decides whether the current user text needs memory injection.
-  // PreCheck 用于判断当前用户文本是否需要记忆注入。
+  // ResolveProject resolves one project by numeric id or canonical Team/Space/Project path.
+  // ResolveProject 用于按数字 ID 或标准 Team/Space/Project 路径解析单个项目。
+  rpc ResolveProject(ResolveProjectRequest) returns (ResolveProjectResponse);
+
+  // EnsureProject resolves or creates one Team/Space/Project path according to the confirm-create contract.
+  // EnsureProject 用于按 confirm_create 规则解析或创建 Team/Space/Project 路径。
+  rpc EnsureProject(EnsureProjectRequest) returns (EnsureProjectResponse);
+
+  // DeleteProject deletes one project path and its SQL/vector data after explicit confirmation.
+  // DeleteProject 用于在显式确认后删除单个项目路径及其 SQL/向量数据。
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+
+  // MigrateProject moves all SQL/vector data from one source project path onto another target project path.
+  // MigrateProject 用于把某个源项目路径下的全部 SQL/向量数据迁移到目标项目路径。
+  rpc MigrateProject(MigrateProjectRequest) returns (MigrateProjectResponse);
+
+  // ResolveUser resolves one user by numeric id or name, and can optionally create it when confirm_create is true.
+  // ResolveUser 用于按数字 ID 或名称解析用户，并在 confirm_create 为真时按需创建用户。
+  rpc ResolveUser(ResolveUserRequest) returns (ResolveUserResponse);
+
+  // ListUsers returns the durable user list.
+  // ListUsers 用于返回长期用户列表。
+  rpc ListUsers(google.protobuf.Empty) returns (ListUsersResponse);
+
+  // DeleteUser removes one user and all SQL/vector data after the caller presents the generated confirmation code.
+  // DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
+  rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
+
+  // PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
+  // PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
   rpc PreCheck(PreCheckRequest) returns (PreCheckResponse);
 
-  // PostAction accepts the new text-only contract and continues processing asynchronously.
-  // PostAction 用于接收新的纯文本契约，并在后台继续异步处理。
+  // PostAction validates project_id/user_id through the interceptor, logs the payload, and persists the cleaned message sequence asynchronously.
+  // PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志，并异步持久化清洗后的消息序列。
   rpc PostAction(PostActionRequest) returns (PostActionResponse);
-
-  // PostActionOld preserves the legacy raw snapshot contract during migration.
-  // PostActionOld 用于在迁移期间保留旧版原始快照契约。
-  rpc PostActionOld(PostActionOldRequest) returns (PostActionResponse);
-
-  // SeedMemory preloads one memory entry into the vector backend for local testing.
-  // SeedMemory 用于为本地测试向向量后端预热一条记忆。
-  rpc SeedMemory(SeedMemoryRequest) returns (SeedMemoryResponse);
 }
 
 // HealthzResponse returns the runtime status plus trace metadata.
@@ -41,32 +61,162 @@ message HealthzResponse {
   string trace_id = 2;
 }
 
-// ChatRequest carries the lightweight scrub-and-store request.
-// ChatRequest 用于承载轻量的脱敏归档请求。
-message ChatRequest {
-  string session_id = 1;
-  string message = 2;
-  string accept_language = 3;
+// ProjectEntry transports one canonical project node plus its display path.
+// ProjectEntry 用于承载一个标准项目节点及其展示路径。
+message ProjectEntry {
+  uint64 project_id = 1;
+  uint64 team_id = 2;
+  uint64 space_id = 3;
+  string team_name = 4;
+  string space_name = 5;
+  string project_name = 6;
+  string display_path = 7;
 }
 
-// ChatResponse returns the scrubbed message stored by the archive flow.
-// ChatResponse 用于返回归档流程存储的脱敏消息。
-message ChatResponse {
-  string session_id = 1;
-  string message = 2;
-  string language = 3;
-  string trace_id = 4;
+// UserEntry transports one durable user row.
+// UserEntry 用于承载一条长期用户记录。
+message UserEntry {
+  uint64 user_id = 1;
+  string user_name = 2;
 }
 
-// PreCheckRequest carries the simplified current-turn memory lookup request.
-// PreCheckRequest 用于承载简化后的当前轮记忆检索请求。
+// ListProjectsResponse returns all projects plus trace metadata.
+// ListProjectsResponse 用于返回全部项目和 trace 元数据。
+message ListProjectsResponse {
+  repeated ProjectEntry projects = 1;
+  string trace_id = 2;
+}
+
+// ResolveProjectRequest accepts either a numeric project id or one canonical Team/Space/Project path.
+// ResolveProjectRequest 用于接收数字 project id，或标准 Team/Space/Project 路径。
+message ResolveProjectRequest {
+  string project_ref = 1;
+}
+
+// ResolveProjectResponse returns the resolved canonical project node and a stable status message.
+// ResolveProjectResponse 用于返回解析后的标准项目节点和稳定状态消息。
+message ResolveProjectResponse {
+  ProjectEntry project = 1;
+  string message = 2;
+  string trace_id = 3;
+}
+
+// EnsureProjectRequest asks the server to resolve or create one canonical Team/Space/Project path.
+// EnsureProjectRequest 用于请求服务端解析或创建一个标准 Team/Space/Project 路径。
+message EnsureProjectRequest {
+  string project_path = 1;
+  bool confirm_create = 2;
+}
+
+// EnsureProjectResponse returns the project node plus creation/confirmation state.
+// EnsureProjectResponse 用于返回项目节点，以及创建或确认状态。
+message EnsureProjectResponse {
+  ProjectEntry project = 1;
+  string message = 2;
+  bool exists = 3;
+  bool needs_confirm = 4;
+  bool created_team = 5;
+  bool created_space = 6;
+  bool created_project = 7;
+  bool missing_team = 8;
+  bool missing_space = 9;
+  string trace_id = 10;
+}
+
+// DeleteProjectRequest identifies the target project path and whether deletion has been explicitly confirmed.
+// DeleteProjectRequest 用于标识目标项目路径，以及删除是否已经显式确认。
+message DeleteProjectRequest {
+  string project_path = 1;
+  bool confirm_delete = 2;
+}
+
+// DeleteProjectResponse returns deletion counts, confirmation status, and the affected project.
+// DeleteProjectResponse 用于返回删除计数、确认状态以及受影响项目。
+message DeleteProjectResponse {
+  ProjectEntry project = 1;
+  string message = 2;
+  bool needs_confirm = 3;
+  int64 deleted_sessions = 4;
+  int64 deleted_messages = 5;
+  int64 deleted_memories = 6;
+  uint64 deleted_vector_rows = 7;
+  string trace_id = 8;
+}
+
+// MigrateProjectRequest identifies the source and target project paths plus the explicit migration confirmation flag.
+// MigrateProjectRequest 用于标识源/目标项目路径，以及显式迁移确认标记。
+message MigrateProjectRequest {
+  string source_project_path = 1;
+  string target_project_path = 2;
+  bool confirm_migrate = 3;
+}
+
+// MigrateProjectResponse returns migration counts, confirmation status, and both source/target project nodes.
+// MigrateProjectResponse 用于返回迁移计数、确认状态，以及源/目标项目节点。
+message MigrateProjectResponse {
+  ProjectEntry source_project = 1;
+  ProjectEntry target_project = 2;
+  string message = 3;
+  bool needs_confirm = 4;
+  int64 migrated_sessions = 5;
+  int64 migrated_messages = 6;
+  int64 migrated_memories = 7;
+  int64 rebuilt_vector_rows = 8;
+  string trace_id = 9;
+}
+
+// ResolveUserRequest accepts either a numeric user id or a user name and can optionally create a missing user.
+// ResolveUserRequest 用于接收数字 user id 或用户名，并在需要时创建缺失用户。
+message ResolveUserRequest {
+  string user_ref = 1;
+  bool confirm_create = 2;
+}
+
+// ResolveUserResponse returns the resolved user row and creation/existence status.
+// ResolveUserResponse 用于返回解析后的用户记录，以及创建/存在状态。
+message ResolveUserResponse {
+  UserEntry user = 1;
+  string message = 2;
+  bool created = 3;
+  bool exists = 4;
+  string trace_id = 5;
+}
+
+// ListUsersResponse returns all durable users plus trace metadata.
+// ListUsersResponse 用于返回全部长期用户和 trace 元数据。
+message ListUsersResponse {
+  repeated UserEntry users = 1;
+  string trace_id = 2;
+}
+
+// DeleteUserRequest carries the user reference and the generated confirmation code for protected deletion.
+// DeleteUserRequest 用于承载用户引用和受保护删除所需的确认码。
+message DeleteUserRequest {
+  string user_ref = 1;
+  string confirmation_code = 2;
+}
+
+// DeleteUserResponse returns deletion counts, confirmation state, and the user row involved in the flow.
+// DeleteUserResponse 用于返回删除计数、确认状态，以及流程涉及的用户记录。
+message DeleteUserResponse {
+  UserEntry user = 1;
+  string message = 2;
+  bool requires_confirmation = 3;
+  string confirmation_code = 4;
+  int64 deleted_sessions = 5;
+  int64 deleted_messages = 6;
+  int64 deleted_memories = 7;
+  uint64 deleted_vector_rows = 8;
+  string trace_id = 9;
+}
+
+// PreCheckRequest carries only the numeric project/user ids plus the current user text.
+// PreCheckRequest 用于只承载数字 project/user id，以及当前用户文本。
 message PreCheckRequest {
   string session_id = 1;
-  string user_id = 2;
-  string team_id = 3;
-  string space_id = 4;
-  string project_id = 5;
-  string user_content = 6;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string user_content = 4;
 }
 
 // ContextItem transports one assembled context item back to the caller.
@@ -89,73 +239,27 @@ message PreCheckResponse {
   string trace_id = 5;
 }
 
-// PostActionTimelineItem carries one middle timeline node from the new text-only contract.
-// PostActionTimelineItem 用于承载新纯文本契约中的一条中间时间线节点。
+// PostActionTimelineItem carries one middle timeline node from the text-only contract.
+// PostActionTimelineItem 用于承载纯文本契约中的一条中间 timeline 节点。
 message PostActionTimelineItem {
   string type = 1;
   string content = 2;
 }
 
-// PostActionRequest carries the new async post-action contract.
-// PostActionRequest 用于承载新的异步 post-action 契约。
+// PostActionRequest carries the new text-only post-action payload.
+// PostActionRequest 用于承载新的纯文本 post-action 载荷。
 message PostActionRequest {
   string session_id = 1;
-  string user_id = 2;
-  string team_id = 3;
-  string space_id = 4;
-  string project_id = 5;
-  string user_content = 6;
-  string assistant_content = 7;
-  repeated PostActionTimelineItem timeline = 8;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string user_content = 4;
+  string assistant_content = 5;
+  repeated PostActionTimelineItem timeline = 6;
 }
 
-// ToolCall transports legacy tool call metadata for the old post-action contract.
-// ToolCall 用于传输旧版 post-action 契约中的工具调用元数据。
-message ToolCall {
-  string id = 1;
-  string type = 2;
-}
-
-// RawMessage carries one legacy raw snapshot node for the old post-action contract.
-// RawMessage 用于承载旧版 post-action 契约中的一条原始快照节点。
-message RawMessage {
-  string role = 1;
-  string content_json = 2;
-  repeated ToolCall tool_calls = 3;
-  string meta_json = 4;
-}
-
-// PostActionOldRequest carries the legacy raw snapshot contract.
-// PostActionOldRequest 用于承载旧版原始快照契约。
-message PostActionOldRequest {
-  string session_id = 1;
-  string user_id = 2;
-  string team_id = 3;
-  string space_id = 4;
-  string project_id = 5;
-  repeated RawMessage raw_messages_snapshot = 6;
-}
-
-// PostActionResponse acknowledges whether the request was accepted for processing.
-// PostActionResponse 用于确认请求是否已被接受处理。
+// PostActionResponse acknowledges whether the request was accepted for background persistence.
+// PostActionResponse 用于确认请求是否已被接受并进入后台持久化流程。
 message PostActionResponse {
   bool accepted = 1;
   string trace_id = 2;
-}
-
-// SeedMemoryRequest carries one admin seed-memory request.
-// SeedMemoryRequest 用于承载一条管理员 seed-memory 请求。
-message SeedMemoryRequest {
-  string user_id = 1;
-  string project_id = 2;
-  string memory_text = 3;
-  string space_id = 4;
-}
-
-// SeedMemoryResponse acknowledges the seed request and returns the generated memory id.
-// SeedMemoryResponse 用于确认 seed 请求并返回生成的记忆 ID。
-message SeedMemoryResponse {
-  bool accepted = 1;
-  string memory_id = 2;
-  string trace_id = 3;
 }

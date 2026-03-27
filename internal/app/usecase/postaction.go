@@ -1,120 +1,148 @@
-// postaction.go implements application use cases.
-// postaction.go 用于实现应用用例层。
+// postaction.go implements the main post-action persistence workflow on top of resolved session scope metadata.
+// postaction.go 用于基于已解析 session 范围元数据实现主 post-action 持久化工作流。
 package usecase
 
 import (
 	"context"
-	"fmt"
+	"strconv"
 	"strings"
+	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
-	"github.com/openvulcan/vmm/internal/logic/processor"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
-// PostActionCommand carries the raw chat snapshot from the HTTP adapter into the persistence flow.
-// PostActionCommand 用于承载从 HTTP 适配层进入持久化流程的原始对话快照。
-type PostActionCommand struct {
-	SessionID, UserID, TeamID, SpaceID, ProjectID string
-	RawMessagesSnapshot                           []logicdomain.RawMessage
-	SkipNoiseGate                                 bool
+// PostActionTimelineItem carries one validated timeline message that sits between the first user prompt and final assistant reply.
+// PostActionTimelineItem 用于承载一条已经校验过的 timeline 中间消息，它位于首轮用户提问和最终助手回答之间。
+type PostActionTimelineItem struct {
+	Type    string
+	Content string
 }
 
-// PostActionResult returns the persistence acknowledgement back to the transport layer.
-// PostActionResult 用于把持久化确认结果返回给传输层。
+// PostActionCommand carries the resolved session scope plus the new text-only post-action payload.
+// PostActionCommand 用于承载已解析的 session 范围以及新的纯文本 post-action 载荷。
+type PostActionCommand struct {
+	Session          logicdomain.SessionRef
+	UserContent      string
+	AssistantContent string
+	Timeline         []PostActionTimelineItem
+}
+
+// PostActionResult returns the asynchronous acknowledgement data back to the transport layer.
+// PostActionResult 用于把异步确认结果返回给传输层。
 type PostActionResult struct {
 	Accepted bool
 	TraceID  string
 }
 
-// PostActionExecutor is the interface consumed by the HTTP adapter to run the post-action workflow.
-// PostActionExecutor 用于让 HTTP 适配层执行 post-action 工作流。
+// PostActionExecutor is the interface consumed by the gRPC adapter to run the post-action workflow.
+// PostActionExecutor 用于让 gRPC 适配层执行 post-action 工作流。
 type PostActionExecutor interface {
 	Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error)
 }
 
-// PostActionUseCase orchestrates message normalization and relational persistence after a chat round completes.
-// PostActionUseCase 用于在对话轮次结束后编排消息清洗和关系存储持久化。
+// PostActionUseCase stores message-level conversation data and applies the noise gate only to simple single-round flows.
+// PostActionUseCase 用于按消息级存储对话数据，并只在简单单轮流程上执行噪声门。
 type PostActionUseCase struct {
-	normalizer *processor.MessageNormalizer
-	noiseGate  appports.NoiseTurnFilter
-	store      appports.RelationalStore
-	logger     *logx.Logger
+	noiseGate appports.NoiseTurnFilter
+	store     appports.RelationalStore
+	logger    *logx.Logger
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance.
 // NewPostActionUseCase 用于创建 PostActionUseCase 实例。
-func NewPostActionUseCase(normalizer *processor.MessageNormalizer, noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, logger *logx.Logger) *PostActionUseCase {
+func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, logger *logx.Logger) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
-	return &PostActionUseCase{normalizer: normalizer, noiseGate: noiseGate, store: store, logger: logger}
+	return &PostActionUseCase{noiseGate: noiseGate, store: store, logger: logger}
 }
 
-// Execute executes the Execute logic.
-// Execute 用于执行 Execute 逻辑。
+// Execute persists cleaned messages into the resolved session after optional noise screening.
+// Execute 用于在可选噪声筛查之后，把清洗后的消息持久化到已解析的 session 中。
 func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error) {
-	cmd.UserID = defaultScopeValue(cmd.UserID)
-	cmd.TeamID = defaultScopeValue(cmd.TeamID)
-	cmd.SpaceID = defaultScopeValue(cmd.SpaceID)
-	cmd.ProjectID = defaultScopeValue(cmd.ProjectID)
-
-	// Validate the incoming snapshot before touching the relational store.
-	// 在访问关系存储之前先校验输入快照。
+	// Validate the resolved session scope and the new text-only payload before touching storage.
+	// 在访问存储前先校验已解析的 session 范围和新的纯文本载荷。
 	if err := validatePostAction(cmd); err != nil {
 		return PostActionResult{}, err
 	}
 	traceID := trace.IDFromContext(ctx)
 
-	// Normalize the raw messages and short-circuit empty results.
-	// 规范化原始消息，并对空结果做短路返回。
-	turns := u.normalizer.Normalize(cmd.RawMessagesSnapshot)
-	if len(turns) == 0 {
-		return PostActionResult{Accepted: true, TraceID: traceID}, nil
+	// Skip the noise gate for timeline-driven flows because the middle messages already indicate one interrupted or branching conversation.
+	// 对带 timeline 的流程直接跳过噪声门，因为中间消息已经表明它不是简单的单轮问答。
+	if u.noiseGate != nil && len(cmd.Timeline) == 0 {
+		turns := []logicdomain.NormalizedTurn{{
+			TurnIndex:      1,
+			UserMessage:    strings.TrimSpace(cmd.UserContent),
+			AssistantReply: strings.TrimSpace(cmd.AssistantContent),
+			CreatedAt:      time.Now().UTC(),
+		}}
+		kept := u.noiseGate.FilterPersistableTurns(ctx, turns)
+		if len(kept) == 0 {
+			if u.logger != nil {
+				u.logger.Info("post-action dropped by noise gate", "trace_id", traceID, "session_key", cmd.Session.SessionKey)
+			}
+			return PostActionResult{Accepted: true, TraceID: traceID}, nil
+		}
 	}
 
-	// Apply the noise gate only when the caller did not mark the turn flow as timeline-driven.
-	// 只有在调用方未标记为时间线驱动流程时，才执行噪声门过滤。
-	if u.noiseGate != nil && !cmd.SkipNoiseGate {
-		turns = u.noiseGate.FilterPersistableTurns(ctx, turns)
+	// Persist the canonical message sequence exactly as user -> timeline[] -> assistant so later batch extraction can replay it faithfully.
+	// 以 user -> timeline[] -> assistant 的标准顺序持久化消息，保证后续批量提炼可以忠实回放原始流程。
+	messages := make([]logicdomain.ChatMessage, 0, len(cmd.Timeline)+2)
+	messages = append(messages, logicdomain.ChatMessage{
+		Role:       "user",
+		Content:    strings.TrimSpace(cmd.UserContent),
+		SourceKind: "entry_user",
+		CreatedAt:  time.Now().UTC(),
+	})
+	for _, item := range cmd.Timeline {
+		messages = append(messages, logicdomain.ChatMessage{
+			Role:       strings.TrimSpace(item.Type),
+			Content:    strings.TrimSpace(item.Content),
+			SourceKind: "timeline",
+			CreatedAt:  time.Now().UTC(),
+		})
 	}
-	if len(turns) == 0 {
-		return PostActionResult{Accepted: true, TraceID: traceID}, nil
-	}
-	session := logicdomain.SessionRef{SessionID: cmd.SessionID, UserID: cmd.UserID, TeamID: cmd.TeamID, SpaceID: cmd.SpaceID, ProjectID: cmd.ProjectID}
-
-	// Persist cleaned turns first, then refresh the session metadata.
-	// 先持久化清洗后的轮次，再刷新会话元数据。
-	if err := u.store.UpsertChatLogs(ctx, session, turns); err != nil {
-		return PostActionResult{}, fmt.Errorf("upsert chat logs: %w", err)
-	}
-	if err := u.store.RefreshSession(ctx, session); err != nil {
-		return PostActionResult{}, fmt.Errorf("refresh session: %w", err)
+	messages = append(messages, logicdomain.ChatMessage{
+		Role:       "assistant",
+		Content:    strings.TrimSpace(cmd.AssistantContent),
+		SourceKind: "final_assistant",
+		CreatedAt:  time.Now().UTC(),
+	})
+	if err := u.store.AppendChatMessages(ctx, cmd.Session, messages); err != nil {
+		return PostActionResult{}, err
 	}
 	return PostActionResult{Accepted: true, TraceID: traceID}, nil
 }
 
-// validatePostAction validates the input value.
-// validatePostAction 用于校验输入值。
+// validatePostAction checks the resolved identifiers and required message fields for the new message-level persistence flow.
+// validatePostAction 用于校验新消息级持久化流程所需的已解析标识和必填消息字段。
 func validatePostAction(cmd PostActionCommand) error {
-	// Check the minimum identifiers required for relational persistence.
-	// 校验关系持久化所需的最小标识字段。
-	if strings.TrimSpace(cmd.SessionID) == "" {
-		return logicdomain.ValidationError{Field: "session_id", Message: "is required"}
+	if cmd.Session.SessionID == 0 || strings.TrimSpace(cmd.Session.SessionKey) == "" {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
-	if cmd.RawMessagesSnapshot == nil {
-		return logicdomain.ValidationError{Field: "raw_messages_snapshot", Message: "is required"}
+	if cmd.Session.UserID == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+	}
+	if cmd.Session.ProjectID == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+	}
+	if strings.TrimSpace(cmd.UserContent) == "" {
+		return logicdomain.ValidationError{Field: "user_content", Message: "is required"}
+	}
+	if strings.TrimSpace(cmd.AssistantContent) == "" {
+		return logicdomain.ValidationError{Field: "assistant_content", Message: "is required"}
+	}
+	for idx, item := range cmd.Timeline {
+		role := strings.TrimSpace(strings.ToLower(item.Type))
+		if role != "user" && role != "assistant" {
+			return logicdomain.ValidationError{Field: "timeline[" + strconv.Itoa(idx) + "].type", Message: "must be user or assistant"}
+		}
+		if strings.TrimSpace(item.Content) == "" {
+			return logicdomain.ValidationError{Field: "timeline[" + strconv.Itoa(idx) + "].content", Message: "is required"}
+		}
 	}
 	return nil
-}
-
-// defaultScopeValue fills one blank scope field with the local default namespace.
-// defaultScopeValue 用于把单个空范围字段补成默认命名空间值。
-func defaultScopeValue(value string) string {
-	if strings.TrimSpace(value) == "" {
-		return "default"
-	}
-	return strings.TrimSpace(value)
 }

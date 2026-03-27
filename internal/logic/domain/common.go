@@ -1,31 +1,54 @@
-// common.go declares the core conversation, memory, and persona models shared across the logic layer.
-// common.go 用于声明逻辑层共享的核心会话、记忆和画像模型。
+// common.go declares the core hierarchy, conversation, and memory models shared across the logic layer.
+// common.go 用于声明逻辑层共享的核心层级、会话和记忆模型。
 package domain
 
 import "time"
 
-// SessionRef carries the identifiers that tie one request to a concrete user, session, and project scope.
-// SessionRef 用于承载把一次请求绑定到具体用户、会话和项目范围的标识。
+// SessionRef carries the resolved numeric hierarchy identifiers plus the external session key used by business RPCs.
+// SessionRef 用于承载业务 RPC 使用的外部 session_key，以及解析后的数字层级标识。
 type SessionRef struct {
-	SessionID string
-	UserID    string
-	TeamID    string
-	SpaceID   string
-	ProjectID string
+	SessionID   uint64
+	SessionKey  string
+	UserID      uint64
+	TeamID      uint64
+	SpaceID     uint64
+	ProjectID   uint64
+	UserName    string
+	TeamName    string
+	SpaceName   string
+	ProjectName string
 }
 
-// SearchFilter executes the SearchFilter logic.
-// SearchFilter 用于执行 SearchFilter 逻辑。
+// SearchFilter derives the concrete vector-scope coordinates used by recall and cleanup flows.
+// SearchFilter 用于推导召回和清理流程使用的具体向量范围坐标。
 func (s SessionRef) SearchFilter() SearchFilter {
-	return SearchFilter{UserID: s.UserID, ProjectID: s.ProjectID, SpaceID: s.SpaceID}
+	return SearchFilter{
+		UserID:    s.UserID,
+		TeamID:    s.TeamID,
+		SpaceID:   s.SpaceID,
+		ProjectID: s.ProjectID,
+		SessionID: s.SessionID,
+	}
 }
 
-// SearchFilter carries the scope fields applied when vector recall must stay inside the active tenant/project context.
-// SearchFilter 用于承载向量召回时限制在当前用户和项目范围内的过滤字段。
+// SearchFilter carries the flattened hierarchy coordinates applied when vector reads or deletes must stay inside one scope.
+// SearchFilter 用于承载向量读写或删除时限制在单个层级范围内的扁平坐标字段。
 type SearchFilter struct {
-	UserID    string
-	ProjectID string
-	SpaceID   string
+	UserID    uint64
+	TeamID    uint64
+	SpaceID   uint64
+	ProjectID uint64
+	SessionID uint64
+}
+
+// ChatMessage stores one cleaned message node that will be persisted in session/message tables without re-pairing it up front.
+// ChatMessage 用于保存一条清洗后的消息节点，让系统可以先按消息级持久化，而不是提前强行配对。
+type ChatMessage struct {
+	MessageIndex int
+	Role         string
+	Content      string
+	SourceKind   string
+	CreatedAt    time.Time
 }
 
 // HistorySnippet stores one normalized text-only dialogue snippet used during intent extraction.
@@ -95,13 +118,80 @@ type MemoryHit struct {
 	Metadata map[string]string
 }
 
-// ArchivedMemory represents one scrubbed chat message persisted by the local /chat archive flow.
-// ArchivedMemory 用于表示由本地 /chat 归档流程持久化的一条已脱敏消息。
-type ArchivedMemory struct {
-	ID        string
-	SessionID string
-	Content   string
+// UserRecord stores one durable user row that can be resolved by numeric id or unique name during admin RPCs.
+// UserRecord 用于保存一条可通过数字 ID 或唯一名称解析的长期用户记录，供管理 RPC 使用。
+type UserRecord struct {
+	ID                uint64
+	Name              string
+	DeleteConfirmCode string
+	CreatedAt         time.Time
+	UpdatedAt         time.Time
+}
+
+// TeamRecord stores one top-level hierarchy node that namespaces spaces and projects.
+// TeamRecord 用于保存一个顶层层级节点，为 space 和 project 提供命名空间。
+type TeamRecord struct {
+	ID        uint64
+	Name      string
 	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// SpaceRecord stores one team-scoped hierarchy node that namespaces projects.
+// SpaceRecord 用于保存一个 team 作用域下的层级节点，为 project 提供命名空间。
+type SpaceRecord struct {
+	ID        uint64
+	TeamID    uint64
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// ProjectRecord stores one canonical project node that clients use as the public hierarchy handle.
+// ProjectRecord 用于保存一个规范项目节点，并作为客户端对外使用的层级句柄。
+type ProjectRecord struct {
+	ID        uint64
+	TeamID    uint64
+	SpaceID   uint64
+	TeamName  string
+	SpaceName string
+	Name      string
+	CreatedAt time.Time
+	UpdatedAt time.Time
+}
+
+// Path returns the canonical Team/Space/Project path shown to clients and docs.
+// Path 用于返回展示给客户端和文档的标准 Team/Space/Project 路径。
+func (p ProjectRecord) Path() string {
+	return p.TeamName + "/" + p.SpaceName + "/" + p.Name
+}
+
+// SessionRecord stores one durable session row that binds an external session key to concrete hierarchy coordinates.
+// SessionRecord 用于保存一条长期 session 记录，把外部 session_key 绑定到具体层级坐标。
+type SessionRecord struct {
+	ID                        uint64
+	SessionKey                string
+	UserID                    uint64
+	TeamID                    uint64
+	SpaceID                   uint64
+	ProjectID                 uint64
+	MessageCount              int
+	LastMessageIndex          int
+	LastExtractedMessageIndex int
+	CreatedAt                 time.Time
+	UpdatedAt                 time.Time
+}
+
+// ChatMessageRecord stores one durable message row that belongs to one resolved session.
+// ChatMessageRecord 用于保存一条属于某个已解析 session 的长期消息记录。
+type ChatMessageRecord struct {
+	ID           uint64
+	SessionID    uint64
+	MessageIndex int
+	Role         string
+	Content      string
+	SourceKind   string
+	CreatedAt    time.Time
 }
 
 // ContextItem represents one final context fragment returned to plugins after assembly.
