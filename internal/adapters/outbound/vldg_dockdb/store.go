@@ -29,15 +29,7 @@ const (
 	versionSingletonID = 1
 )
 
-const schemaV1SQL = `
-CREATE TABLE IF NOT EXISTS vmm_memories (
-  id TEXT PRIMARY KEY,
-  session_id TEXT NOT NULL,
-  content TEXT NOT NULL,
-  created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_vmm_memories_session ON vmm_memories(session_id, created_at);
-
+const currentSchemaSQL = `
 CREATE TABLE IF NOT EXISTS vmm_noise_embeddings (
   scope TEXT NOT NULL,
   language TEXT NOT NULL,
@@ -50,9 +42,7 @@ CREATE TABLE IF NOT EXISTS vmm_noise_embeddings (
   updated_at TEXT NOT NULL,
   PRIMARY KEY (scope, language, category_name, phrase, model, dimension, rules_hash)
 );
-`
 
-const schemaV2SQL = `
 CREATE TABLE IF NOT EXISTS vmm_users (
   id BIGINT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
@@ -200,112 +190,45 @@ func (s *Store) Shutdown(ctx context.Context) error {
 	return s.conn.Close()
 }
 
-// init applies versioned schema migrations so startup no longer replays full table creation scripts every time.
-// init 用于执行带版本号的表结构迁移，避免启动时每次都重放完整建表脚本。
+// init bootstraps only the current DockDB baseline schema and rejects older version layouts instead of patching them in place.
+// init 用于只引导当前 DockDB 基线表结构，并拒绝旧版本布局，而不是继续做原地兼容补丁。
 func (s *Store) init(ctx context.Context) error {
-	// Bootstrap the version table first so later migrations can be applied incrementally.
-	// 先引导版本表，便于后续迁移按版本递增执行。
+	// Bootstrap the version table first so fresh installs can claim the current baseline version.
+	// 先引导版本表，让全新安装可以登记当前基线版本。
 	if err := s.exec(ctx, `CREATE TABLE IF NOT EXISTS vmm_version (singleton_id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`); err != nil {
 		return fmt.Errorf("bootstrap schema version table: %w", err)
-	}
-	if err := s.ensureVersionTableShape(ctx); err != nil {
-		return err
 	}
 	rows, err := queryRows[versionRow](s, ctx, `SELECT schema_version FROM vmm_version WHERE singleton_id = 1 LIMIT 1`)
 	if err != nil {
 		return fmt.Errorf("query schema version: %w", err)
 	}
-	current := 0
-	if len(rows) > 0 {
-		current = rows[0].SchemaVersion
+	if len(rows) == 0 {
+		return s.bootstrapCurrentSchema(ctx)
 	}
-	for version := current + 1; version <= currentSchemaVersion; version++ {
-		if err := s.applyMigration(ctx, version); err != nil {
-			return err
-		}
+	if rows[0].SchemaVersion != currentSchemaVersion {
+		return fmt.Errorf("unsupported dockdb schema version: got %d, expected %d", rows[0].SchemaVersion, currentSchemaVersion)
 	}
 	return nil
 }
 
-// applyMigration runs one concrete schema migration and then persists the upgraded version row.
-// applyMigration 用于执行单个具体版本迁移，并在完成后写回升级后的版本记录。
-func (s *Store) applyMigration(ctx context.Context, version int) error {
-	// Serialize schema writes so concurrent startups never interleave migration scripts.
-	// 串行化表结构写入，避免并发启动时交错执行迁移脚本。
+// bootstrapCurrentSchema installs the latest baseline tables and persists the matching schema-version singleton row.
+// bootstrapCurrentSchema 用于安装最新基线表，并写入与之匹配的 schema 版本单例记录。
+func (s *Store) bootstrapCurrentSchema(ctx context.Context) error {
+	// Serialize schema bootstrap writes so concurrent startups never interleave baseline creation.
+	// 串行化 schema 引导写入，避免并发启动时交错创建基线对象。
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	script := ""
-	switch version {
-	case 1:
-		script = schemaV1SQL
-	case 2:
-		script = schemaV2SQL
-	default:
-		return fmt.Errorf("unsupported dockdb schema version: %d", version)
-	}
-	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("apply dockdb schema v%d: %w", version, err)
+	if err := s.exec(ctx, currentSchemaSQL); err != nil {
+		return fmt.Errorf("apply current dockdb schema: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_version`); err != nil {
 		return fmt.Errorf("clear dockdb schema version row: %w", err)
 	}
-	if err := s.exec(ctx, `INSERT INTO vmm_version (singleton_id, schema_version, updated_at) VALUES (?, ?, ?)`, versionSingletonID, version, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
+	if err := s.exec(ctx, `INSERT INTO vmm_version (singleton_id, schema_version, updated_at) VALUES (?, ?, ?)`, versionSingletonID, currentSchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
 		return fmt.Errorf("persist dockdb schema version row: %w", err)
 	}
 	return nil
-}
-
-// ensureVersionTableShape upgrades the tiny version table in place so older bootstrap layouts stay writable.
-// ensureVersionTableShape 用于原地升级极小的版本表结构，确保旧的引导布局仍然可写。
-func (s *Store) ensureVersionTableShape(ctx context.Context) error {
-	// Add singleton_id and updated_at lazily so older version-table layouts can be upgraded in place.
-	// 惰性补齐 singleton_id 和 updated_at，让旧版版本表布局也能原地升级。
-	if err := s.ensureVersionTableColumn(ctx, `ALTER TABLE vmm_version ADD COLUMN singleton_id INTEGER`); err != nil {
-		return err
-	}
-	if err := s.ensureVersionTableColumn(ctx, `ALTER TABLE vmm_version ADD COLUMN updated_at TEXT`); err != nil {
-		return err
-	}
-	if err := s.exec(ctx, `UPDATE vmm_version SET singleton_id = 1 WHERE singleton_id IS NULL OR singleton_id = 0`); err != nil {
-		return fmt.Errorf("backfill dockdb schema version singleton_id: %w", err)
-	}
-	if err := s.exec(ctx, `UPDATE vmm_version SET updated_at = '' WHERE updated_at IS NULL`); err != nil {
-		return fmt.Errorf("backfill dockdb schema version updated_at: %w", err)
-	}
-	return nil
-}
-
-// ensureVersionTableColumn applies one additive ALTER TABLE to the version table and tolerates duplicate-column retries.
-// ensureVersionTableColumn 用于给版本表执行一次增量 ALTER TABLE，并容忍重复补列时的幂等重试。
-func (s *Store) ensureVersionTableColumn(ctx context.Context, sql string) error {
-	if err := s.exec(ctx, sql); err != nil {
-		if isAlreadyExistsMessage(err.Error()) || isDuplicateColumnMessage(err.Error()) {
-			return nil
-		}
-		return fmt.Errorf("ensure dockdb schema version columns: %w", err)
-	}
-	return nil
-}
-
-// isAlreadyExistsMessage matches common gateway messages used when a schema mutation is retried on an existing object.
-// isAlreadyExistsMessage 用于匹配当表结构变更重试到已存在对象时，网关常用的错误消息。
-func isAlreadyExistsMessage(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	return strings.Contains(normalized, "already exists")
-}
-
-// isDuplicateColumnMessage matches gateway and DuckDB messages emitted when one column has already been added.
-// isDuplicateColumnMessage 用于匹配网关和 DuckDB 在列已经存在时发出的错误消息。
-func isDuplicateColumnMessage(message string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	return strings.Contains(normalized, "column with name") && strings.Contains(normalized, "already exists")
 }
 
 // exec sends one SQL script to the DuckDB gateway with optional JSON parameters.
@@ -644,17 +567,17 @@ INSERT INTO vmm_sessions (
 		return logicdomain.SessionRecord{}, fmt.Errorf("insert session: %w", err)
 	}
 	return logicdomain.SessionRecord{
-		ID:                       nextID,
-		SessionKey:               sessionKey,
-		UserID:                   userID,
-		TeamID:                   project.TeamID,
-		SpaceID:                  project.SpaceID,
-		ProjectID:                project.ID,
-		MessageCount:             0,
-		LastMessageIndex:         0,
+		ID:                        nextID,
+		SessionKey:                sessionKey,
+		UserID:                    userID,
+		TeamID:                    project.TeamID,
+		SpaceID:                   project.SpaceID,
+		ProjectID:                 project.ID,
+		MessageCount:              0,
+		LastMessageIndex:          0,
 		LastExtractedMessageIndex: 0,
-		CreatedAt:                now,
-		UpdatedAt:                now,
+		CreatedAt:                 now,
+		UpdatedAt:                 now,
 	}, nil
 }
 
@@ -1101,14 +1024,14 @@ func (s *Store) insertProject(ctx context.Context, team logicdomain.TeamRecord, 
 		return logicdomain.ProjectRecord{}, fmt.Errorf("insert project: %w", err)
 	}
 	return logicdomain.ProjectRecord{
-		ID:          nextID,
-		TeamID:      team.ID,
-		SpaceID:     space.ID,
-		TeamName:    team.Name,
-		SpaceName:   space.Name,
-		Name:        projectName,
-		CreatedAt:   now,
-		UpdatedAt:   now,
+		ID:        nextID,
+		TeamID:    team.ID,
+		SpaceID:   space.ID,
+		TeamName:  team.Name,
+		SpaceName: space.Name,
+		Name:      projectName,
+		CreatedAt: now,
+		UpdatedAt: now,
 	}, nil
 }
 
@@ -1299,17 +1222,17 @@ func (r projectJoinRow) toDomain() logicdomain.ProjectRecord {
 }
 
 type sessionRow struct {
-	ID                       uint64 `json:"id"`
-	SessionKey               string `json:"session_key"`
-	UserID                   uint64 `json:"user_id"`
-	TeamID                   uint64 `json:"team_id"`
-	SpaceID                  uint64 `json:"space_id"`
-	ProjectID                uint64 `json:"project_id"`
-	MessageCount             int    `json:"message_count"`
-	LastMessageIndex         int    `json:"last_message_index"`
-	LastExtractedMessageIndex int   `json:"last_extracted_message_index"`
-	CreatedAt                string `json:"created_at"`
-	UpdatedAt                string `json:"updated_at"`
+	ID                        uint64 `json:"id"`
+	SessionKey                string `json:"session_key"`
+	UserID                    uint64 `json:"user_id"`
+	TeamID                    uint64 `json:"team_id"`
+	SpaceID                   uint64 `json:"space_id"`
+	ProjectID                 uint64 `json:"project_id"`
+	MessageCount              int    `json:"message_count"`
+	LastMessageIndex          int    `json:"last_message_index"`
+	LastExtractedMessageIndex int    `json:"last_extracted_message_index"`
+	CreatedAt                 string `json:"created_at"`
+	UpdatedAt                 string `json:"updated_at"`
 }
 
 func (r sessionRow) toDomain() logicdomain.SessionRecord {

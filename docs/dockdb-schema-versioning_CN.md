@@ -7,8 +7,8 @@
 这份说明聚焦：
 
 - `vmm_version` 表的作用
-- 当前启动时的迁移流程
-- 为什么不再每次启动无脑执行全量建表
+- 当前启动时的 schema 引导流程
+- 为什么当前运行时不再保留旧版本兼容迁移
 - 后续扩版本时应该如何改代码
 
 ## 当前背景
@@ -19,20 +19,20 @@ VMM 当前已经取消 SQLite 运行时支持，长期 SQL 数据通过 DockDB �
 
 - [internal/adapters/outbound/vldg_dockdb/store.go](../internal/adapters/outbound/vldg_dockdb/store.go)
 
-过去的做法是：
+当前运行时只接受：
 
-- 启动时直接执行整段 schema DDL
-- 使用 `CREATE TABLE IF NOT EXISTS ...`
-- 使用 `CREATE INDEX IF NOT EXISTS ...`
+- 当前基线 schema
 
-这个做法虽然简单，但有两个问题：
+当前运行时不再负责：
 
-1. 每次启动都会重复执行整段建表脚本
-2. 当后续需要结构升级时，缺少明确的版本管理入口
+- 自动补齐旧版 `vmm_version` 表字段
+- 继续创建历史兼容记忆表
+- 从旧 schema 版本逐步迁到最新版本
 
-为了解决这个问题，当前版本引入了：
+如果现有 DockDB 里保存的是旧版本 schema：
 
-- `vmm_version`
+- 运行时会直接报错
+- 需要先人工清理或重建到当前基线结构
 
 ## `vmm_version` 表
 
@@ -64,37 +64,11 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 
 - VMM DockDB schema 当前版本为 `v2`
 
-## 当前启动流程
+## 当前基线 schema
 
-当前 DockDB 适配器启动时，按下面顺序执行：
+当前基线 schema 直接包含这些表：
 
-1. 先确保 `vmm_version` 表存在
-2. 读取 `singleton_id = 1` 的当前 `schema_version`
-3. 如果没有版本记录，则视为 `0`
-4. 从 `当前版本 + 1` 开始逐条执行迁移
-5. 每成功执行一条迁移，就回写一次 `vmm_version`
-
-可以理解为：
-
-- 新安装：`0 -> 1`
-- 已是最新：不重复跑已有业务 schema
-- 后续升级：例如 `1 -> 2 -> 3`
-
-## 当前 `v1` 迁移内容
-
-当前 `v1` schema 包括这些表：
-
-- `vmm_memories`
 - `vmm_noise_embeddings`
-
-这些对象目前放在：
-
-- `schemaV1SQL`
-
-## 当前 `v2` 迁移内容
-
-当前 `v2` schema 追加了新的层级和会话存储表：
-
 - `vmm_users`
 - `vmm_teams`
 - `vmm_spaces`
@@ -103,27 +77,47 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 - `vmm_chat_messages`
 - `vmm_memory_entries`
 
-这些对象目前放在：
+再加上版本表：
 
-- `schemaV2SQL`
+- `vmm_version`
 
-## 为什么还保留 `CREATE TABLE IF NOT EXISTS`
+当前不再属于主线 schema 的对象：
 
-虽然现在已经有版本表，但 `v1` 迁移脚本里仍然使用：
+- 历史兼容记忆表
 
-- `CREATE TABLE IF NOT EXISTS`
-- `CREATE INDEX IF NOT EXISTS`
+## 当前启动流程
 
-原因是：
+当前 DockDB 适配器启动时，按下面顺序执行：
 
-1. 新安装时可以直接执行
-2. 迁移脚本本身更稳
-3. 即使某次网关侧部分对象已存在，也更不容易因为重复创建失败
+1. 先确保 `vmm_version` 表存在
+2. 读取 `singleton_id = 1` 的当前 `schema_version`
+3. 如果没有版本记录，则视为“全新安装”
+4. 全新安装时：
+   - 直接执行当前基线 schema
+   - 再写入 `vmm_version`
+5. 如果已有版本记录且版本等于 `currentSchemaVersion`
+   - 直接继续启动
+6. 如果已有版本记录但版本不等于 `currentSchemaVersion`
+   - 直接报错并拒绝继续兼容启动
 
-但注意：
+可以理解为：
 
-- 版本表的意义不是完全替代 `IF NOT EXISTS`
-- 而是避免每次启动都重复跑整套 schema
+- 新安装：直接引导到当前版本
+- 已是最新：不重复跑业务 schema
+- 旧版本：直接失败，不做兼容迁移
+
+## 为什么不再保留旧版本兼容迁移
+
+当前策略改成“只接受当前基线 schema”，原因是：
+
+1. 当前仓库已经不再需要历史兼容表
+2. 继续保留旧迁移会让运行时逻辑和文档都变复杂
+3. 旧版本兼容路径会掩盖实际部署状态，增加排障成本
+
+因此当前要求是：
+
+- 代码里只保留当前基线 schema
+- 运行时不再对旧版本做补列、补表或兼容升级
 
 ## 后续如何升级 schema
 
@@ -143,40 +137,34 @@ const currentSchemaVersion = 2
 const currentSchemaVersion = 3
 ```
 
-### 2. 增加新的迁移函数或 SQL 片段
+### 2. 更新当前基线 schema
 
-例如新增：
+把 `currentSchemaSQL` 更新为新的完整基线结构。
 
-```go
-const schemaV2SQL = `
-ALTER TABLE ...
-CREATE INDEX ...
-`
-```
+也就是说，当前仓库维护的是：
 
-### 3. 在 `applySchemaMigration` 里增加对应分支
+- 一份最新基线
 
-例如：
+而不是：
 
-```go
-func (s *Store) applySchemaMigration(ctx context.Context, version int) error {
-	switch version {
-	case 1:
-		return s.exec(ctx, schemaV1SQL)
-	case 2:
-		return s.exec(ctx, schemaV2SQL)
-	default:
-		return fmt.Errorf("unsupported dockdb schema version: %d", version)
-	}
-}
-```
+- 一串继续向后兼容的历史迁移链
+
+### 3. 调整启动判断
+
+如果你决定引入新版本 `v3`，要同步修改启动逻辑，让它接受：
+
+- `schema_version = 3`
+
+并拒绝：
+
+- 其他旧版本
 
 ### 4. 补测试
 
 至少补两类测试：
 
-1. 新安装从 `0` 直接迁到最新版本
-2. 已有旧版本时只执行缺失迁移，不重复执行旧迁移
+1. 全新安装时会创建当前基线 schema 并写入版本
+2. 旧版本 schema 会被直接拒绝，而不是被兼容升级
 
 当前相关测试在：
 
@@ -184,21 +172,27 @@ func (s *Store) applySchemaMigration(ctx context.Context, version int) error {
 
 ## 不建议的做法
 
-### 不要直接修改旧版本 SQL 的语义
+### 不要重新引入历史兼容表
 
 例如：
 
-- 不要在已经发布后的 `schemaV1SQL` 里随意改表结构语义
+- 不要再把历史兼容记忆表加回当前运行时引导脚本
 
-更稳的做法是：
+如果确实需要新表：
 
-- 保留 `v1`
-- 新增 `v2`
-- 通过新迁移逐步升级
+- 直接按当前业务模型设计新的正式表
 
-### 不要跳过版本号直接改线上结构
+### 不要恢复旧版本自动补形状逻辑
 
-如果你直接手动改网关数据库，而不更新 `currentSchemaVersion` 和迁移逻辑：
+例如：
+
+- 不要重新加入给 `vmm_version` 自动补字段的兼容代码
+
+因为这会再次把运行时拉回“混合兼容状态”。
+
+### 不要手动改库但不更新版本常量
+
+如果你直接手动改网关数据库，而不更新 `currentSchemaVersion` 和当前基线 schema：
 
 - 后续启动无法准确判断当前 schema 状态
 - 不利于团队协作和问题追踪
@@ -220,7 +214,7 @@ func (s *Store) applySchemaMigration(ctx context.Context, version int) error {
 
 所以当前策略是：
 
-- DockDB：走 `vmm_version` 迁移表
+- DockDB：只接受当前基线 schema，并通过 `vmm_version` 标记版本
 - LanceDB：启动时做幂等初始化，表已存在时视为成功
 
 ## 当前建议
@@ -228,9 +222,10 @@ func (s *Store) applySchemaMigration(ctx context.Context, version int) error {
 如果你后面要继续扩展长期记忆结构，建议遵守：
 
 1. DockDB 所有结构变化都通过 `schema_version` 管理
-2. 每次只做前向迁移，不回写旧版本语义
-3. 所有新增迁移都补单测
-4. 文档同步更新这份说明
+2. 当前仓库只维护最新基线，不维护历史兼容迁移链
+3. 遇到旧版本库时直接显式失败，不静默兼容
+4. 所有新增版本都补单测
+5. 文档同步更新这份说明
 
 这样后面无论是增加：
 
@@ -239,4 +234,4 @@ func (s *Store) applySchemaMigration(ctx context.Context, version int) error {
 - 摘要表
 - 画像表
 
-都可以沿着同一套模式演进。
+都可以沿着同一套规则演进。

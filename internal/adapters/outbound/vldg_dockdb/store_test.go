@@ -18,9 +18,9 @@ import (
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// TestInitAppliesSchemaMigrationsUpToCurrentVersion verifies fresh installs bootstrap the version table and apply both v1 and v2 migrations.
-// TestInitAppliesSchemaMigrationsUpToCurrentVersion 用于验证首次安装会先引导版本表，再依次执行 v1 和 v2 迁移。
-func TestInitAppliesSchemaMigrationsUpToCurrentVersion(t *testing.T) {
+// TestInitBootstrapsCurrentSchemaOnFreshInstall verifies fresh installs create only the current baseline schema and record its version.
+// TestInitBootstrapsCurrentSchemaOnFreshInstall 用于验证首次安装只会创建当前基线表结构，并写入对应版本号。
+func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
 			"WHERE singleton_id = 1": `[]`,
@@ -32,32 +32,29 @@ func TestInitAppliesSchemaMigrationsUpToCurrentVersion(t *testing.T) {
 	}
 
 	execs := server.execRequests()
-	if len(execs) != 11 {
-		t.Fatalf("expected 11 execute calls, got %d", len(execs))
+	if len(execs) != 4 {
+		t.Fatalf("expected 4 execute calls, got %d", len(execs))
 	}
 	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
 		t.Fatalf("missing version bootstrap sql: %s", execs[0].Sql)
 	}
-	if !strings.Contains(execs[1].Sql, "ALTER TABLE vmm_version ADD COLUMN singleton_id") {
-		t.Fatalf("missing singleton backfill sql: %s", execs[1].Sql)
+	if !strings.Contains(execs[1].Sql, "CREATE TABLE IF NOT EXISTS vmm_noise_embeddings") {
+		t.Fatalf("missing current schema cache table sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[2].Sql, "ALTER TABLE vmm_version ADD COLUMN updated_at") {
-		t.Fatalf("missing updated_at shape sql: %s", execs[2].Sql)
+	if !strings.Contains(execs[1].Sql, "CREATE TABLE IF NOT EXISTS vmm_users") {
+		t.Fatalf("missing current schema user table sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[3].Sql, "UPDATE vmm_version SET singleton_id = 1") {
-		t.Fatalf("missing singleton backfill update sql: %s", execs[3].Sql)
+	if strings.Contains(execs[1].Sql, "vmm_memories") {
+		t.Fatalf("unexpected legacy compatibility table in current schema sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[4].Sql, "UPDATE vmm_version SET updated_at") {
-		t.Fatalf("missing version updated_at backfill sql: %s", execs[4].Sql)
+	if !strings.Contains(execs[2].Sql, "DELETE FROM vmm_version") {
+		t.Fatalf("missing version cleanup sql: %s", execs[2].Sql)
 	}
-	if !strings.Contains(execs[5].Sql, "CREATE TABLE IF NOT EXISTS vmm_memories") {
-		t.Fatalf("missing schema v1 sql: %s", execs[5].Sql)
-	}
-	if !strings.Contains(execs[8].Sql, "CREATE TABLE IF NOT EXISTS vmm_users") {
-		t.Fatalf("missing schema v2 sql: %s", execs[8].Sql)
+	if !strings.Contains(execs[3].Sql, "INSERT INTO vmm_version") {
+		t.Fatalf("missing version insert sql: %s", execs[3].Sql)
 	}
 	var params []any
-	if err := json.Unmarshal([]byte(execs[10].ParamsJson), &params); err != nil {
+	if err := json.Unmarshal([]byte(execs[3].ParamsJson), &params); err != nil {
 		t.Fatalf("decode version insert params: %v", err)
 	}
 	if len(params) != 3 || params[0] != float64(versionSingletonID) || params[1] != float64(currentSchemaVersion) {
@@ -65,32 +62,25 @@ func TestInitAppliesSchemaMigrationsUpToCurrentVersion(t *testing.T) {
 	}
 }
 
-// TestEnsureVersionTableShapeHandlesExistingSingletonSchema verifies startup stays idempotent when the version table already contains singleton_id.
-// TestEnsureVersionTableShapeHandlesExistingSingletonSchema 用于验证当版本表已经包含 singleton_id 时，启动流程仍然保持幂等。
-func TestEnsureVersionTableShapeHandlesExistingSingletonSchema(t *testing.T) {
+// TestInitRejectsUnsupportedSchemaVersion verifies startup now fails fast on older schema versions instead of attempting compatibility upgrades.
+// TestInitRejectsUnsupportedSchemaVersion 用于验证启动流程现在会在遇到旧 schema 版本时直接失败，而不是继续做兼容升级。
+func TestInitRejectsUnsupportedSchemaVersion(t *testing.T) {
 	server := &fakeDuckDBServer{
-		execErrors: map[string]string{
-			"ALTER TABLE vmm_version ADD COLUMN singleton_id": "duckdb execute failed: Catalog Error: Column with name singleton_id already exists!",
-			"ALTER TABLE vmm_version ADD COLUMN updated_at":   "duckdb execute failed: Catalog Error: Column with name updated_at already exists!",
-		},
 		queryJSON: map[string]string{
-			"WHERE singleton_id = 1": `[{"schema_version":2}]`,
+			"WHERE singleton_id = 1": `[{"schema_version":1}]`,
 		},
 	}
 	store := newDuckDBTestStoreWithoutInit(t, server)
-	if err := store.init(context.Background()); err != nil {
-		t.Fatalf("init store with existing singleton schema: %v", err)
+	err := store.init(context.Background())
+	if err == nil {
+		t.Fatal("expected unsupported schema version error")
 	}
-
+	if !strings.Contains(err.Error(), "unsupported dockdb schema version") {
+		t.Fatalf("unexpected error: %v", err)
+	}
 	execs := server.execRequests()
-	if len(execs) != 5 {
-		t.Fatalf("expected 5 execute calls, got %d", len(execs))
-	}
-	if !strings.Contains(execs[3].Sql, "UPDATE vmm_version SET singleton_id = 1") {
-		t.Fatalf("missing singleton id backfill after duplicate-column path: %s", execs[3].Sql)
-	}
-	if !strings.Contains(execs[4].Sql, "UPDATE vmm_version SET updated_at") {
-		t.Fatalf("missing updated_at backfill after duplicate-column path: %s", execs[4].Sql)
+	if len(execs) != 1 {
+		t.Fatalf("expected only version bootstrap sql before failure, got %d calls", len(execs))
 	}
 }
 
@@ -99,10 +89,10 @@ func TestEnsureVersionTableShapeHandlesExistingSingletonSchema(t *testing.T) {
 func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":2}]`,
-			"FROM vmm_users":   `[{"id":7,"name":"alice","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"FROM vmm_version":    `[{"schema_version":2}]`,
+			"FROM vmm_users":      `[{"id":7,"name":"alice","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
-			"FROM vmm_sessions": `[]`,
+			"FROM vmm_sessions":   `[]`,
 			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_sessions": `[{"next_id":41}]`,
 		},
 	}
@@ -135,7 +125,7 @@ func TestAppendChatMessagesAppendsSequentialIndexes(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
 			"FROM vmm_version": `[{"schema_version":2}]`,
-			"SELECT id, message_count, last_message_index": `[{"id":41,"message_count":2,"last_message_index":2}]`,
+			"SELECT id, message_count, last_message_index":                      `[{"id":41,"message_count":2,"last_message_index":2}]`,
 			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_chat_messages": `[{"next_id":100}]`,
 		},
 	}
@@ -157,8 +147,8 @@ func TestAppendChatMessagesAppendsSequentialIndexes(t *testing.T) {
 	}
 
 	execs := server.execRequests()
-	if len(execs) < 5 {
-		t.Fatalf("expected init + 3 persistence writes, got %d", len(execs))
+	if len(execs) < 4 {
+		t.Fatalf("expected version bootstrap + 3 persistence writes, got %d", len(execs))
 	}
 	var firstParams []any
 	if err := json.Unmarshal([]byte(execs[len(execs)-3].ParamsJson), &firstParams); err != nil {
@@ -230,10 +220,10 @@ func newDuckDBTestStoreWithoutInit(t *testing.T, server *fakeDuckDBServer) *Stor
 // fakeDuckDBServer 用于捕获 SQL 请求并返回预置 JSON 查询结果，供适配器测试使用。
 type fakeDuckDBServer struct {
 	duckdbv1.UnimplementedDuckDbServiceServer
-	mu        sync.Mutex
-	execs     []*duckdbv1.ExecuteRequest
-	querys    []*duckdbv1.QueryRequest
-	queryJSON map[string]string
+	mu         sync.Mutex
+	execs      []*duckdbv1.ExecuteRequest
+	querys     []*duckdbv1.QueryRequest
+	queryJSON  map[string]string
 	execErrors map[string]string
 }
 
