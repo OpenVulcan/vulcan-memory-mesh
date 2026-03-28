@@ -5,7 +5,7 @@
 这份文档记录当前主线版本采用的：
 
 - Team / Space / Project / User 层级模型
-- DockDB 基础表结构
+- DuckDB 基础表结构
 - gRPC 对外契约
 - `PreCheck` / `PostAction` 的核心实现逻辑
 
@@ -41,7 +41,7 @@ flowchart TD
   A["Team"] --> B["Space"]
   B --> C["Project"]
   C --> D["Session"]
-  D --> E["ChatMessage"]
+  D --> E["TurnRecord"]
   C --> F["MemoryEntry"]
   G["User"] --> D
   G["User"] --> F
@@ -55,10 +55,10 @@ flowchart TD
   - `team_id`
   - `space_id`
   - `project_id`
-- `ChatMessage` 属于某个 `Session`
+- `TurnRecord` 属于某个 `Session`
 - `MemoryEntry` 属于某个 `Project` 和 `User`
 
-## 三、DockDB 表结构
+## 三、DuckDB 表结构
 
 当前基线 SQL 文件：
 
@@ -70,6 +70,7 @@ flowchart TD
 
 ```sql
 CREATE TABLE IF NOT EXISTS vmm_version (
+    singleton_id   INTEGER PRIMARY KEY,
     schema_version INTEGER NOT NULL,
     updated_at     TEXT    NOT NULL DEFAULT ''
 );
@@ -77,8 +78,8 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 
 用途：
 
-- 记录当前 DockDB schema 版本
-- 启动时按版本执行迁移，而不是每次无脑建表
+- 记录当前 DuckDB schema 版本
+- 启动时判断是否需要重置调试阶段的受管表
 
 ### 2. 用户与层级表
 
@@ -128,50 +129,59 @@ CREATE TABLE IF NOT EXISTS vmm_projects (
 
 ```sql
 CREATE TABLE IF NOT EXISTS vmm_sessions (
-    id                           BIGINT PRIMARY KEY,
-    session_key                  TEXT   NOT NULL UNIQUE,
-    user_id                      BIGINT NOT NULL,
-    team_id                      BIGINT NOT NULL,
-    space_id                     BIGINT NOT NULL,
-    project_id                   BIGINT NOT NULL,
-    message_count                BIGINT NOT NULL DEFAULT 0,
-    last_message_index           BIGINT NOT NULL DEFAULT 0,
-    last_extracted_message_index BIGINT NOT NULL DEFAULT 0,
-    created_at                   TEXT   NOT NULL,
-    updated_at                   TEXT   NOT NULL
+    id                 BIGINT PRIMARY KEY,
+    session_key        TEXT    NOT NULL,
+    user_id            BIGINT  NOT NULL,
+    team_id            BIGINT  NOT NULL,
+    space_id           BIGINT  NOT NULL,
+    project_id         BIGINT  NOT NULL,
+    turn_count         INTEGER NOT NULL DEFAULT 0,
+    last_summarized_id BIGINT  NOT NULL DEFAULT 0,
+    summarize_content  TEXT    NOT NULL DEFAULT '',
+    summarize_budget   INTEGER NOT NULL DEFAULT 0,
+    created_timestamp  BIGINT  NOT NULL,
+    updated_timestamp  BIGINT  NOT NULL,
+    UNIQUE(project_id, session_key)
 );
 ```
 
 说明：
 
-- `session_key` 是客户端传入的业务会话键
-- `id` 是内部数字主键
-- `last_extracted_message_index` 为后续批量提炼预留
+ - `session_key` 是客户端传入的业务会话键
+ - `id` 是内部数字主键
+ - `turn_count` 表示当前 session 下已经成功持久化的 turn 数
+ - `last_summarized_id` 为后续宏观总结流程预留
+ - 时间字段统一使用毫秒时间戳
 
-### 4. 消息表
+### 4. Turn 表
 
 ```sql
-CREATE TABLE IF NOT EXISTS vmm_chat_messages (
-    id            BIGINT PRIMARY KEY,
-    session_id    BIGINT NOT NULL,
-    message_index BIGINT NOT NULL,
-    role          TEXT   NOT NULL,
-    content       TEXT   NOT NULL,
-    source_kind   TEXT   NOT NULL,
-    created_at    TEXT   NOT NULL,
-    UNIQUE(session_id, message_index)
+CREATE TABLE IF NOT EXISTS vmm_turn_records (
+    id                 BIGINT PRIMARY KEY,
+    session_id         BIGINT  NOT NULL,
+    project_id         BIGINT  NOT NULL,
+    dehydrated_content JSON    NOT NULL,
+    dehydrated_budget  INTEGER NOT NULL DEFAULT 0,
+    extracted_status   TINYINT NOT NULL DEFAULT 0,
+    created_timestamp  BIGINT  NOT NULL,
+    updated_timestamp  BIGINT  NOT NULL
 );
 ```
 
 说明：
 
-当前 `PostAction` 按消息级存储，而不是直接按 `user_message / assistant_reply` 二元组存储。
+当前 `PostAction` 按 turn 级存储，而不是再拆成多条消息行。
 
-写入顺序固定为：
+当前会保存一条脱水 JSON：
 
-1. `user_content`
-2. `timeline[]`
-3. `assistant_content`
+1. 顶层 `user_content`
+2. 原始 `timeline[]`
+3. 顶层 `assistant_content`
+
+其中：
+
+- `timeline` 里的 `assistant` 节点会被脱水成固定占位文本
+- `dehydrated_budget` 来自脱水 JSON 的 token 预算估算
 
 ### 5. 记忆表
 
@@ -374,7 +384,7 @@ message PostActionTimelineItem {
 
 实现逻辑：
 
-1. 从 DockDB 联表查询 `team / space / project`
+1. 从 DuckDB 联表查询 `team / space / project`
 2. 按 `TeamName / SpaceName / ProjectName` 排序
 3. 返回 `ProjectEntry`
 4. `display_path` 组装成：
@@ -410,24 +420,25 @@ message PostActionTimelineItem {
 2. 如果 `confirm_delete=false`：
    - 返回 `needs_confirm=true`
 3. 如果确认删除：
-   - 先删 DockDB 中的：
-     - `vmm_chat_messages`
-     - `vmm_sessions`
-     - `vmm_memory_entries`
+   - 先删 DuckDB 中的：
+      - `vmm_turn_records`
+      - `vmm_sessions`
+      - `vmm_memory_entries`
    - 再按扁平化过滤条件清理 LanceDB
 
 ### 4. `MigrateProject`
 
 作用：
 
-- 把某个项目下的全部 session / message / memory 迁移到目标项目
+ - 把某个项目下的全部 session / turn / memory 迁移到目标项目
 
 实现逻辑：
 
 1. 解析源项目和目标项目
 2. `confirm_migrate=false` 时只返回确认提示
 3. `confirm_migrate=true` 时：
-   - 先更新 DockDB 中的 `team_id / space_id / project_id`
+   - 先更新 DuckDB 中 session 的 `team_id / space_id / project_id`
+   - 再更新 `vmm_turn_records.project_id`
    - 再删除 LanceDB 源项目向量
    - 再根据目标项目已有长期记忆重建向量
 
@@ -462,11 +473,11 @@ message PostActionTimelineItem {
    - 写入 `vmm_users.delete_confirm_code`
    - 返回 `requires_confirmation=true`
 2. 第二次带正确确认码后：
-   - 删 DockDB 中该用户的：
-     - `vmm_chat_messages`
-     - `vmm_sessions`
-     - `vmm_memory_entries`
-     - `vmm_users`
+   - 删 DuckDB 中该用户的：
+      - `vmm_turn_records`
+      - `vmm_sessions`
+      - `vmm_memory_entries`
+      - `vmm_users`
    - 再删 LanceDB 中该用户向量
 
 ### 7. `PreCheck`
@@ -501,12 +512,10 @@ message PostActionTimelineItem {
 5. 记录清洗后日志
 6. 立即返回 `accepted=true`
 7. 后台持久化：
-   - `user_content`
-   - `timeline`
-   - `assistant_content`
+   - 把 `user_content / timeline / assistant_content` 组装成一条 turn
 8. 如果 `timeline` 为空：
    - 先过 `NoiseGate`
-9. 然后按消息级写入 `vmm_chat_messages`
+9. 然后按 turn 级写入 `vmm_turn_records`
 
 ## 九、后续扩展规则
 
@@ -517,9 +526,9 @@ message PostActionTimelineItem {
    - `user_id`
    - `project_id`
 2. `team_id` / `space_id` 一律服务端反查
-3. 原始会话数据先按消息级存储
+3. 原始会话数据先按 turn 级存储
 4. 未来批量提炼、画像合并、摘要召回，都基于：
-   - `vmm_sessions`
-   - `vmm_chat_messages`
-   - `vmm_memory_entries`
+    - `vmm_sessions`
+    - `vmm_turn_records`
+    - `vmm_memory_entries`
 5. LanceDB 必须继续使用扁平化数值元数据过滤

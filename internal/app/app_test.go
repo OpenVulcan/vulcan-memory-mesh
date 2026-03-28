@@ -9,7 +9,7 @@ import (
 	"strings"
 	"testing"
 
-	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_dockdb/proto/v1"
+	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb/proto/v1"
 	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb/proto/v1"
 	"github.com/openvulcan/vmm/internal/config"
 	"google.golang.org/grpc"
@@ -41,13 +41,13 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 
 	// Start local fake gateways on loopback TCP so NewLocal can dial them through the normal gRPC clients.
 	// 在本机回环地址启动假的网关，让 NewLocal 可以通过正常 gRPC 客户端拨号。
-	dockAddr, stopDock := startFakeDockDBGateway(t)
+	dockAddr, stopDock := startFakeDuckDBGateway(t)
 	defer stopDock()
 	lanceAddr, stopLance := startFakeLanceDBGateway(t)
 	defer stopLance()
 
 	cfg := config.DefaultLocal()
-	cfg.DockDB.Address = dockAddr
+	cfg.DuckDB.Address = dockAddr
 	cfg.LanceDB.Address = lanceAddr
 	cfg.LLM.Endpoint = "https://example.com/v1"
 	cfg.LLM.APIKey = "test-key"
@@ -70,16 +70,16 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 	}
 }
 
-// startFakeDockDBGateway serves the minimal DockDB RPC surface needed by runtime composition tests.
-// startFakeDockDBGateway 用于提供运行时装配测试所需的最小 DockDB RPC 面。
-func startFakeDockDBGateway(t *testing.T) (string, func()) {
+// startFakeDuckDBGateway serves the minimal DuckDB RPC surface needed by runtime composition tests.
+// startFakeDuckDBGateway 用于提供运行时装配测试所需的最小 DuckDB RPC 面。
+func startFakeDuckDBGateway(t *testing.T) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen fake dockdb: %v", err)
+		t.Fatalf("listen fake duckdb: %v", err)
 	}
 	server := grpc.NewServer()
-	duckdbv1.RegisterDuckDbServiceServer(server, fakeDockDBGateway{})
+	duckdbv1.RegisterDuckDbServiceServer(server, fakeDuckDBGateway{})
 	go func() { _ = server.Serve(listener) }()
 	return listener.Addr().String(), func() {
 		server.Stop()
@@ -104,25 +104,25 @@ func startFakeLanceDBGateway(t *testing.T) (string, func()) {
 	}
 }
 
-// fakeDockDBGateway implements the tiny subset of DockDB calls exercised while bootstrapping the local runtime.
-// fakeDockDBGateway 用于实现本地运行时启动时会触发的最小 DockDB 调用集合。
-type fakeDockDBGateway struct {
+// fakeDuckDBGateway implements the tiny subset of DuckDB calls exercised while bootstrapping the local runtime.
+// fakeDuckDBGateway 用于实现本地运行时启动时会触发的最小 DuckDB 调用集合。
+type fakeDuckDBGateway struct {
 	duckdbv1.UnimplementedDuckDbServiceServer
 }
 
 // ExecuteScript always succeeds because this test only cares about successful schema bootstrap wiring.
 // ExecuteScript 总是返回成功，因为这个测试只关心 schema 引导接线是否成功。
-func (fakeDockDBGateway) ExecuteScript(context.Context, *duckdbv1.ExecuteRequest) (*duckdbv1.ExecuteResponse, error) {
+func (fakeDuckDBGateway) ExecuteScript(context.Context, *duckdbv1.ExecuteRequest) (*duckdbv1.ExecuteResponse, error) {
 	return &duckdbv1.ExecuteResponse{Success: true, Message: "ok"}, nil
 }
 
 // QueryJson returns canned rows for version and noise-cache lookups used during startup.
 // QueryJson 用于返回启动期 schema 版本和噪声缓存查询需要的预置结果。
-func (fakeDockDBGateway) QueryJson(_ context.Context, req *duckdbv1.QueryRequest) (*duckdbv1.QueryJsonResponse, error) {
+func (fakeDuckDBGateway) QueryJson(_ context.Context, req *duckdbv1.QueryRequest) (*duckdbv1.QueryJsonResponse, error) {
 	sql := strings.TrimSpace(req.GetSql())
 	switch {
 	case strings.Contains(sql, "FROM vmm_version"):
-		return &duckdbv1.QueryJsonResponse{JsonData: `[{"schema_version":2}]`}, nil
+		return &duckdbv1.QueryJsonResponse{JsonData: `[{"schema_version":3}]`}, nil
 	case strings.Contains(sql, "FROM vmm_noise_embeddings"):
 		return &duckdbv1.QueryJsonResponse{JsonData: `[]`}, nil
 	default:
@@ -132,7 +132,7 @@ func (fakeDockDBGateway) QueryJson(_ context.Context, req *duckdbv1.QueryRequest
 
 // QueryStream stays unused in this focused runtime composition test.
 // QueryStream 在这个聚焦的运行时装配测试里保持未使用状态。
-func (fakeDockDBGateway) QueryStream(*duckdbv1.QueryRequest, grpc.ServerStreamingServer[duckdbv1.QueryResponse]) error {
+func (fakeDuckDBGateway) QueryStream(*duckdbv1.QueryRequest, grpc.ServerStreamingServer[duckdbv1.QueryResponse]) error {
 	return nil
 }
 

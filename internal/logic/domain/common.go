@@ -41,14 +41,20 @@ type SearchFilter struct {
 	SessionID uint64
 }
 
-// ChatMessage stores one cleaned message node that will be persisted in session/message tables without re-pairing it up front.
-// ChatMessage 用于保存一条清洗后的消息节点，让系统可以先按消息级持久化，而不是提前强行配对。
-type ChatMessage struct {
-	MessageIndex int
-	Role         string
-	Content      string
-	SourceKind   string
-	CreatedAt    time.Time
+// TurnTimelineItem stores one cleaned middle node that still needs to survive dehydration before a turn is persisted.
+// TurnTimelineItem 用于保存一条清洗后的中间节点，让它在 turn 落库前仍能参与脱水处理。
+type TurnTimelineItem struct {
+	Type    string
+	Content string
+}
+
+// TurnRecord stores one cleaned post-action turn before the relational adapter dehydrates it into JSON for DuckDB.
+// TurnRecord 用于保存一条清洗后的 post-action 轮次，让关系适配器再把它脱水成 DuckDB 里的 JSON 结构。
+type TurnRecord struct {
+	UserContent      string
+	Timeline         []TurnTimelineItem
+	AssistantContent string
+	CreatedAt        time.Time
 }
 
 // HistorySnippet stores one normalized text-only dialogue snippet used during intent extraction.
@@ -169,29 +175,18 @@ func (p ProjectRecord) Path() string {
 // SessionRecord stores one durable session row that binds an external session key to concrete hierarchy coordinates.
 // SessionRecord 用于保存一条长期 session 记录，把外部 session_key 绑定到具体层级坐标。
 type SessionRecord struct {
-	ID                        uint64
-	SessionKey                string
-	UserID                    uint64
-	TeamID                    uint64
-	SpaceID                   uint64
-	ProjectID                 uint64
-	MessageCount              int
-	LastMessageIndex          int
-	LastExtractedMessageIndex int
-	CreatedAt                 time.Time
-	UpdatedAt                 time.Time
-}
-
-// ChatMessageRecord stores one durable message row that belongs to one resolved session.
-// ChatMessageRecord 用于保存一条属于某个已解析 session 的长期消息记录。
-type ChatMessageRecord struct {
-	ID           uint64
-	SessionID    uint64
-	MessageIndex int
-	Role         string
-	Content      string
-	SourceKind   string
-	CreatedAt    time.Time
+	ID               uint64
+	SessionKey       string
+	UserID           uint64
+	TeamID           uint64
+	SpaceID          uint64
+	ProjectID        uint64
+	TurnCount        int
+	LastSummarizedID uint64
+	SummarizeContent string
+	SummarizeBudget  int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
 }
 
 // ContextItem represents one final context fragment returned to plugins after assembly.

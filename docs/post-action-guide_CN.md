@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及最终如何写入 DockDB。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及最终如何写入 DuckDB。
 
 当前相关方法只有：
 
@@ -25,7 +25,7 @@
 3. 清洗待存储文本
 4. 记录清洗后日志
 5. 立即返回 `accepted=true`
-6. 后台继续把消息序列写入 DockDB
+6. 后台继续把脱水后的 turn 记录写入 DuckDB
 
 ## 请求结构
 
@@ -70,7 +70,7 @@ message PostActionTimelineItem {
 - 客户端不再传 `team_id`
 - 客户端不再传 `space_id`
 - 服务端会通过统一前置拦截器，根据 `project_id` 反查 `team_id / space_id`
-- 如果 `session_id` 不存在，服务端会自动创建一条 `vmm_sessions` 记录
+- 如果目标 `project_id` 下不存在该 `session_id`，服务端会自动创建一条 `vmm_sessions` 记录
 
 ### 顶层文本字段
 
@@ -149,13 +149,19 @@ message PostActionTimelineItem {
 10. 如果 `timeline` 为空且启用了 `NoiseGate`：
     - 先把顶层 `user_content + assistant_content` 视作一个简单单轮
     - 经过噪声门判断是否值得入库
-11. 按固定顺序写入消息：
-    - `user_content` -> `source_kind=entry_user`
-    - `timeline[*]` -> `source_kind=timeline`
-    - `assistant_content` -> `source_kind=final_assistant`
-12. 追加到 DockDB：
-    - `vmm_chat_messages`
-    - 同步更新 `vmm_sessions.message_count / last_message_index / updated_at`
+11. 组装一条标准 turn：
+    - 顶层 `user_content`
+    - 原始 `timeline[*]`
+    - 顶层 `assistant_content`
+12. 对 turn 做脱水：
+    - 顶层 `user_content` 保留
+    - `timeline[*].type=user` 的内容保留
+    - `timeline[*].type=assistant` 的内容替换为固定占位文本
+    - 顶层 `assistant_content` 保留
+13. 计算脱水 JSON 的 token 预算
+14. 追加到 DuckDB：
+    - `vmm_turn_records`
+    - 同步更新 `vmm_sessions.turn_count / updated_timestamp`
 
 ## 清洗行为
 
@@ -197,14 +203,14 @@ message PostActionTimelineItem {
 
 ## 最终写入的表
 
-当前主线会写入 DockDB 的以下表：
+当前主线会写入 DuckDB 的以下表：
 
 - `vmm_sessions`
-- `vmm_chat_messages`
+- `vmm_turn_records`
 
 不会直接把原始请求 JSON 原样写入数据库。
 
-真正持久化的是清洗后的消息序列。
+真正持久化的是清洗后的 turn 脱水 JSON。
 
 ## 响应结构
 

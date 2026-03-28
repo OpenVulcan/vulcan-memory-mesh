@@ -23,8 +23,8 @@ type WorkspaceExecutor interface {
 	DeleteUser(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error)
 }
 
-// WorkspaceUseCase orchestrates hierarchy mutations on DockDB and vector cleanup/rebuild work on LanceDB.
-// WorkspaceUseCase 用于编排 DockDB 上的层级变更，以及 LanceDB 上的向量清理和重建工作。
+// WorkspaceUseCase orchestrates hierarchy mutations on DuckDB and vector cleanup/rebuild work on LanceDB.
+// WorkspaceUseCase 用于编排 DuckDB 上的层级变更，以及 LanceDB 上的向量清理和重建工作。
 type WorkspaceUseCase struct {
 	store  appports.WorkspaceStore
 	vector appports.VectorStore
@@ -54,8 +54,8 @@ func (u *WorkspaceUseCase) EnsureProject(ctx context.Context, projectPath string
 	return u.store.EnsureProjectPath(ctx, projectPath, confirmCreate)
 }
 
-// DeleteProject removes one project from DockDB and then clears all vector rows under the same flattened hierarchy filter.
-// DeleteProject 用于先从 DockDB 删除单个项目，再清理同一扁平层级范围下的全部向量行。
+// DeleteProject removes one project from DuckDB and then clears all vector rows under the same flattened hierarchy filter.
+// DeleteProject 用于先从 DuckDB 删除单个项目，再清理同一扁平层级范围下的全部向量行。
 func (u *WorkspaceUseCase) DeleteProject(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
 	result, err := u.store.DeleteProjectPath(ctx, projectPath, confirmDelete)
 	if err != nil || result.NeedsConfirm {
@@ -127,8 +127,8 @@ func (u *WorkspaceUseCase) ListUsers(ctx context.Context) ([]logicdomain.UserRec
 	return u.store.ListUsers(ctx)
 }
 
-// DeleteUser removes one user from DockDB and then clears all vector rows associated with that user.
-// DeleteUser 用于先从 DockDB 删除用户，再清理与该用户关联的全部向量行。
+// DeleteUser removes one user from DuckDB and then clears all vector rows associated with that user.
+// DeleteUser 用于先从 DuckDB 删除用户，再清理与该用户关联的全部向量行。
 func (u *WorkspaceUseCase) DeleteUser(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error) {
 	result, err := u.store.DeleteUserRef(ctx, userRef, confirmationCode)
 	if err != nil || result.RequiresConfirmation {

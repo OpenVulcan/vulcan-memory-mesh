@@ -1,6 +1,6 @@
-// store.go implements the DockDB-gateway outbound adapter used as the durable SQL source of truth.
-// store.go 用于实现 DockDB 网关适配器，并把它作为长期 SQL 事实来源。
-package vldg_dockdb
+// store.go implements the DuckDB-gateway outbound adapter used as the durable SQL source of truth.
+// store.go 用于实现 DuckDB 网关适配器，并把它作为长期 SQL 事实来源。
+package vldg_duckdb
 
 import (
 	"context"
@@ -13,21 +13,34 @@ import (
 	"sync"
 	"time"
 
-	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_dockdb/proto/v1"
+	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 )
 
 const (
-	// currentSchemaVersion tracks the newest DockDB schema version understood by this runtime.
-	// currentSchemaVersion 用于标记当前运行时理解的最新 DockDB 表结构版本。
-	currentSchemaVersion = 2
+	// currentSchemaVersion tracks the newest DuckDB schema version understood by this runtime.
+	// currentSchemaVersion 用于标记当前运行时理解的最新 DuckDB 表结构版本。
+	currentSchemaVersion = 3
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
 	versionSingletonID = 1
 )
+
+const resetManagedSchemaSQL = `
+DROP TABLE IF EXISTS vmm_turn_records;
+DROP TABLE IF EXISTS vmm_chat_messages;
+DROP TABLE IF EXISTS vmm_memory_entries;
+DROP TABLE IF EXISTS vmm_sessions;
+DROP TABLE IF EXISTS vmm_projects;
+DROP TABLE IF EXISTS vmm_spaces;
+DROP TABLE IF EXISTS vmm_teams;
+DROP TABLE IF EXISTS vmm_users;
+DROP TABLE IF EXISTS vmm_noise_embeddings;
+`
 
 const currentSchemaSQL = `
 CREATE TABLE IF NOT EXISTS vmm_noise_embeddings (
@@ -82,33 +95,38 @@ CREATE TABLE IF NOT EXISTS vmm_projects (
 
 CREATE TABLE IF NOT EXISTS vmm_sessions (
   id BIGINT PRIMARY KEY,
-  session_key TEXT NOT NULL UNIQUE,
+  session_key TEXT NOT NULL,
   user_id BIGINT NOT NULL,
   team_id BIGINT NOT NULL,
   space_id BIGINT NOT NULL,
   project_id BIGINT NOT NULL,
-  message_count BIGINT NOT NULL DEFAULT 0,
-  last_message_index BIGINT NOT NULL DEFAULT 0,
-  last_extracted_message_index BIGINT NOT NULL DEFAULT 0,
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  last_summarized_id BIGINT NOT NULL DEFAULT 0,
+  summarize_content TEXT NOT NULL DEFAULT '',
+  summarize_budget INTEGER NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  UNIQUE(project_id, session_key),
   FOREIGN KEY(user_id) REFERENCES vmm_users(id),
   FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
 );
-CREATE INDEX IF NOT EXISTS idx_vmm_sessions_scope ON vmm_sessions(user_id, team_id, space_id, project_id, updated_at);
+CREATE INDEX IF NOT EXISTS idx_vmm_sessions_scope ON vmm_sessions(user_id, team_id, space_id, project_id, updated_timestamp);
+CREATE INDEX IF NOT EXISTS idx_vmm_sessions_project_session ON vmm_sessions(project_id, session_key);
 
-CREATE TABLE IF NOT EXISTS vmm_chat_messages (
+CREATE TABLE IF NOT EXISTS vmm_turn_records (
   id BIGINT PRIMARY KEY,
   session_id BIGINT NOT NULL,
-  message_index BIGINT NOT NULL,
-  role TEXT NOT NULL,
-  content TEXT NOT NULL,
-  source_kind TEXT NOT NULL,
-  created_at TEXT NOT NULL,
-  UNIQUE(session_id, message_index),
-  FOREIGN KEY(session_id) REFERENCES vmm_sessions(id)
+  project_id BIGINT NOT NULL,
+  dehydrated_content JSON NOT NULL,
+  dehydrated_budget INTEGER NOT NULL DEFAULT 0,
+  extracted_status TINYINT NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  FOREIGN KEY(session_id) REFERENCES vmm_sessions(id),
+  FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
 );
-CREATE INDEX IF NOT EXISTS idx_vmm_chat_messages_session ON vmm_chat_messages(session_id, message_index);
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_session ON vmm_turn_records(session_id, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_project_status ON vmm_turn_records(project_id, extracted_status, id);
 
 CREATE TABLE IF NOT EXISTS vmm_memory_entries (
   id TEXT PRIMARY KEY,
@@ -129,8 +147,8 @@ CREATE TABLE IF NOT EXISTS vmm_memory_entries (
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_entries_scope ON vmm_memory_entries(user_id, team_id, space_id, project_id, session_id, updated_at);
 `
 
-// Store is the DockDB-gateway adapter used for hierarchy metadata, session/message persistence, and cache storage.
-// Store 用于作为 DockDB 网关适配器，承接层级元数据、session/message 持久化以及缓存存储。
+// Store is the DuckDB-gateway adapter used for hierarchy metadata, session/turn persistence, and cache storage.
+// Store 用于作为 DuckDB 网关适配器，承接层级元数据、session/turn 持久化以及缓存存储。
 type Store struct {
 	conn    *grpc.ClientConn
 	client  duckdbv1.DuckDbServiceClient
@@ -138,13 +156,13 @@ type Store struct {
 	writeMu sync.Mutex
 }
 
-// NewStore dials the DockDB gateway and ensures the local schema is initialized before serving traffic.
-// NewStore 用于连接 DockDB 网关，并在对外提供服务前确保本地表结构已经初始化。
+// NewStore dials the DuckDB gateway and ensures the local schema is initialized before serving traffic.
+// NewStore 用于连接 DuckDB 网关，并在对外提供服务前确保本地表结构已经初始化。
 func NewStore(address string, timeout time.Duration) (*Store, error) {
 	// Validate and normalize the gateway endpoint first so startup failures remain easy to diagnose.
 	// 先校验并规范化网关地址，确保启动失败原因保持易于诊断。
 	if strings.TrimSpace(address) == "" {
-		return nil, fmt.Errorf("dockdb address is required")
+		return nil, fmt.Errorf("duckdb address is required")
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
@@ -161,7 +179,7 @@ func NewStore(address string, timeout time.Duration) (*Store, error) {
 		grpc.WithBlock(),
 	)
 	if err != nil {
-		return nil, fmt.Errorf("dial dockdb gateway: %w", err)
+		return nil, fmt.Errorf("dial duckdb gateway: %w", err)
 	}
 
 	store := &Store{
@@ -176,8 +194,8 @@ func NewStore(address string, timeout time.Duration) (*Store, error) {
 	return store, nil
 }
 
-// Shutdown closes the gRPC client connection used by the DockDB gateway adapter.
-// Shutdown 用于关闭 DockDB 网关适配器所使用的 gRPC 客户端连接。
+// Shutdown closes the gRPC client connection used by the DuckDB gateway adapter.
+// Shutdown 用于关闭 DuckDB 网关适配器所使用的 gRPC 客户端连接。
 func (s *Store) Shutdown(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
@@ -190,11 +208,11 @@ func (s *Store) Shutdown(ctx context.Context) error {
 	return s.conn.Close()
 }
 
-// init bootstraps only the current DockDB baseline schema and rejects older version layouts instead of patching them in place.
-// init 用于只引导当前 DockDB 基线表结构，并拒绝旧版本布局，而不是继续做原地兼容补丁。
+// init ensures the debugging-stage DuckDB schema always matches the current post-action baseline, resetting managed tables when needed.
+// init 用于确保调试阶段 DuckDB schema 始终匹配当前 post-action 基线，并在需要时重置受管表。
 func (s *Store) init(ctx context.Context) error {
-	// Bootstrap the version table first so fresh installs can claim the current baseline version.
-	// 先引导版本表，让全新安装可以登记当前基线版本。
+	// Bootstrap the version table first so startup can decide whether the managed schema needs a full reset.
+	// 先引导版本表，让启动流程可以判断当前受管 schema 是否需要整库重置。
 	if err := s.exec(ctx, `CREATE TABLE IF NOT EXISTS vmm_version (singleton_id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`); err != nil {
 		return fmt.Errorf("bootstrap schema version table: %w", err)
 	}
@@ -202,31 +220,31 @@ func (s *Store) init(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("query schema version: %w", err)
 	}
-	if len(rows) == 0 {
-		return s.bootstrapCurrentSchema(ctx)
-	}
-	if rows[0].SchemaVersion != currentSchemaVersion {
-		return fmt.Errorf("unsupported dockdb schema version: got %d, expected %d", rows[0].SchemaVersion, currentSchemaVersion)
+	if len(rows) == 0 || rows[0].SchemaVersion != currentSchemaVersion {
+		return s.resetCurrentSchema(ctx)
 	}
 	return nil
 }
 
-// bootstrapCurrentSchema installs the latest baseline tables and persists the matching schema-version singleton row.
-// bootstrapCurrentSchema 用于安装最新基线表，并写入与之匹配的 schema 版本单例记录。
-func (s *Store) bootstrapCurrentSchema(ctx context.Context) error {
-	// Serialize schema bootstrap writes so concurrent startups never interleave baseline creation.
-	// 串行化 schema 引导写入，避免并发启动时交错创建基线对象。
+// resetCurrentSchema clears the managed DuckDB tables and recreates the current baseline because old debug data is disposable.
+// resetCurrentSchema 用于清空受管 DuckDB 表并重建当前基线，因为调试阶段的旧数据可以直接丢弃。
+func (s *Store) resetCurrentSchema(ctx context.Context) error {
+	// Serialize destructive schema rewrites so concurrent startups never interleave drop/create scripts.
+	// 串行化破坏性 schema 重写，避免并发启动时交错执行删表和建表脚本。
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
+	if err := s.exec(ctx, resetManagedSchemaSQL); err != nil {
+		return fmt.Errorf("reset managed duckdb schema: %w", err)
+	}
 	if err := s.exec(ctx, currentSchemaSQL); err != nil {
-		return fmt.Errorf("apply current dockdb schema: %w", err)
+		return fmt.Errorf("apply current duckdb schema: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_version`); err != nil {
-		return fmt.Errorf("clear dockdb schema version row: %w", err)
+		return fmt.Errorf("clear duckdb schema version row: %w", err)
 	}
 	if err := s.exec(ctx, `INSERT INTO vmm_version (singleton_id, schema_version, updated_at) VALUES (?, ?, ?)`, versionSingletonID, currentSchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("persist dockdb schema version row: %w", err)
+		return fmt.Errorf("persist duckdb schema version row: %w", err)
 	}
 	return nil
 }
@@ -235,7 +253,7 @@ func (s *Store) bootstrapCurrentSchema(ctx context.Context) error {
 // exec 用于把一段 SQL 脚本和可选 JSON 参数发送给 DuckDB 网关。
 func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 	if s == nil || s.client == nil {
-		return fmt.Errorf("dockdb store is not initialized")
+		return fmt.Errorf("duckdb store is not initialized")
 	}
 	payload, err := marshalParams(params)
 	if err != nil {
@@ -248,10 +266,10 @@ func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 		ParamsJson: payload,
 	})
 	if err != nil {
-		return fmt.Errorf("dockdb execute: %w", err)
+		return fmt.Errorf("duckdb execute: %w", err)
 	}
 	if !resp.GetSuccess() {
-		return fmt.Errorf("dockdb execute: %s", strings.TrimSpace(resp.GetMessage()))
+		return fmt.Errorf("duckdb execute: %s", strings.TrimSpace(resp.GetMessage()))
 	}
 	return nil
 }
@@ -260,7 +278,7 @@ func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 // queryRows 用于把 JSON 查询结果解码为强类型切片，让上层方法保持小而明确。
 func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) ([]T, error) {
 	if s == nil || s.client == nil {
-		return nil, fmt.Errorf("dockdb store is not initialized")
+		return nil, fmt.Errorf("duckdb store is not initialized")
 	}
 	payload, err := marshalParams(params)
 	if err != nil {
@@ -273,7 +291,7 @@ func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) 
 		ParamsJson: payload,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("dockdb query: %w", err)
+		return nil, fmt.Errorf("duckdb query: %w", err)
 	}
 	rows := make([]T, 0)
 	body := strings.TrimSpace(resp.GetJsonData())
@@ -281,7 +299,7 @@ func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) 
 		return rows, nil
 	}
 	if err := json.Unmarshal([]byte(body), &rows); err != nil {
-		return nil, fmt.Errorf("decode dockdb query rows: %w", err)
+		return nil, fmt.Errorf("decode duckdb query rows: %w", err)
 	}
 	return rows, nil
 }
@@ -294,7 +312,7 @@ func marshalParams(params []any) (string, error) {
 	}
 	body, err := json.Marshal(params)
 	if err != nil {
-		return "", fmt.Errorf("marshal dockdb params: %w", err)
+		return "", fmt.Errorf("marshal duckdb params: %w", err)
 	}
 	return string(body), nil
 }
@@ -433,59 +451,42 @@ func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, user
 	}, nil
 }
 
-// AppendChatMessages appends cleaned messages into one resolved session and refreshes the session counters in the same write path.
-// AppendChatMessages 用于把清洗后的消息追加到某个已解析的 session，并同步刷新该 session 的统计字段。
-func (s *Store) AppendChatMessages(ctx context.Context, session logicdomain.SessionRef, messages []logicdomain.ChatMessage) error {
-	if len(messages) == 0 {
+// AppendTurnRecord persists one cleaned turn into the resolved session and increments the session turn counter in the same write path.
+// AppendTurnRecord 用于把一条清洗后的 turn 写入已解析的 session，并在同一路径里递增会话 turn 计数。
+func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) error {
+	if strings.TrimSpace(turn.UserContent) == "" && strings.TrimSpace(turn.AssistantContent) == "" && len(turn.Timeline) == 0 {
 		return nil
 	}
+	if session.SessionID == 0 {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if session.ProjectID == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+	}
 
-	// Serialize session appends so message indexes inside one session remain monotonic and deterministic.
-	// 串行化同一类写入，确保单个 session 内的 message_index 保持单调且确定。
+	// Serialize turn writes so session counters and turn rows stay consistent inside one DuckDB transaction boundary.
+	// 串行化 turn 写入，确保 session 计数和 turn 行在同一个 DuckDB 写入边界内保持一致。
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	rows, err := queryRows[sessionStateRow](s, ctx, `
-SELECT id, message_count, last_message_index
-FROM vmm_sessions
-WHERE session_key = ?
-LIMIT 1
-`, session.SessionKey)
+	nextID, err := s.nextNumericID(ctx, "vmm_turn_records")
 	if err != nil {
-		return fmt.Errorf("load session state: %w", err)
+		return fmt.Errorf("allocate turn record id: %w", err)
 	}
-	if len(rows) == 0 {
-		return logicdomain.NotFoundError{Resource: "session", Message: "session does not exist"}
+	dehydratedContent, dehydratedBudget, err := buildDehydratedTurn(turn)
+	if err != nil {
+		return err
 	}
-	sessionID := rows[0].ID
-	messageCount := rows[0].MessageCount
-	lastMessageIndex := rows[0].LastMessageIndex
-
-	now := time.Now().UTC()
-	for _, message := range messages {
-		nextID, err := s.nextNumericID(ctx, "vmm_chat_messages")
-		if err != nil {
-			return fmt.Errorf("allocate chat message id: %w", err)
-		}
-		lastMessageIndex++
-		messageCount++
-		createdAt := message.CreatedAt
-		if createdAt.IsZero() {
-			createdAt = now
-		}
-		if err := s.exec(ctx, `
-INSERT INTO vmm_chat_messages (id, session_id, message_index, role, content, source_kind, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?)
-`, nextID, sessionID, lastMessageIndex, strings.TrimSpace(message.Role), strings.TrimSpace(message.Content), strings.TrimSpace(message.SourceKind), createdAt.UTC().Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("insert chat message: %w", err)
-		}
+	nowMs := time.Now().UTC().UnixMilli()
+	createdMs := nowMs
+	if !turn.CreatedAt.IsZero() {
+		createdMs = turn.CreatedAt.UTC().UnixMilli()
 	}
-	if err := s.exec(ctx, `
-UPDATE vmm_sessions
-SET message_count = ?, last_message_index = ?, updated_at = ?
-WHERE id = ?
-`, messageCount, lastMessageIndex, now.Format(time.RFC3339Nano), sessionID); err != nil {
-		return fmt.Errorf("update session counters: %w", err)
+	if err := s.exec(ctx, buildTurnInsertSQL(nextID, session.SessionID, session.ProjectID, dehydratedContent, dehydratedBudget, createdMs, nowMs)); err != nil {
+		return fmt.Errorf("insert turn record: %w", err)
+	}
+	if err := s.exec(ctx, buildSessionTurnUpdateSQL(session.SessionID, nowMs)); err != nil {
+		return fmt.Errorf("update session turn counters: %w", err)
 	}
 	return nil
 }
@@ -530,15 +531,15 @@ LIMIT 1
 	return rows[0].toDomain(), nil
 }
 
-// ensureSession loads one existing session by external key or creates it under the resolved hierarchy when it does not exist yet.
-// ensureSession 用于按外部 session_key 读取 session；如果还不存在，则在已解析层级下创建一条新 session。
+// ensureSession loads one existing session inside the target project or creates it under the resolved hierarchy when it does not exist yet.
+// ensureSession 用于在目标项目内按外部 session_key 读取 session；如果还不存在，则在已解析层级下创建一条新 session。
 func (s *Store) ensureSession(ctx context.Context, sessionKey string, userID uint64, project logicdomain.ProjectRecord) (logicdomain.SessionRecord, error) {
 	rows, err := queryRows[sessionRow](s, ctx, `
-SELECT id, session_key, user_id, team_id, space_id, project_id, message_count, last_message_index, created_at, updated_at
+SELECT id, session_key, user_id, team_id, space_id, project_id, turn_count, last_summarized_id, summarize_content, summarize_budget, created_timestamp, updated_timestamp
 FROM vmm_sessions
-WHERE session_key = ?
+WHERE project_id = ? AND session_key = ?
 LIMIT 1
-`, sessionKey)
+`, project.ID, sessionKey)
 	if err != nil {
 		return logicdomain.SessionRecord{}, fmt.Errorf("query session: %w", err)
 	}
@@ -559,25 +560,27 @@ LIMIT 1
 		return logicdomain.SessionRecord{}, fmt.Errorf("allocate session id: %w", err)
 	}
 	now := time.Now().UTC()
+	nowMs := now.UnixMilli()
 	if err := s.exec(ctx, `
 INSERT INTO vmm_sessions (
-  id, session_key, user_id, team_id, space_id, project_id, message_count, last_message_index, last_extracted_message_index, created_at, updated_at
-) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, ?, ?)
-`, nextID, sessionKey, userID, project.TeamID, project.SpaceID, project.ID, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
+  id, session_key, user_id, team_id, space_id, project_id, turn_count, last_summarized_id, summarize_content, summarize_budget, created_timestamp, updated_timestamp
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, '', 0, ?, ?)
+`, nextID, sessionKey, userID, project.TeamID, project.SpaceID, project.ID, nowMs, nowMs); err != nil {
 		return logicdomain.SessionRecord{}, fmt.Errorf("insert session: %w", err)
 	}
 	return logicdomain.SessionRecord{
-		ID:                        nextID,
-		SessionKey:                sessionKey,
-		UserID:                    userID,
-		TeamID:                    project.TeamID,
-		SpaceID:                   project.SpaceID,
-		ProjectID:                 project.ID,
-		MessageCount:              0,
-		LastMessageIndex:          0,
-		LastExtractedMessageIndex: 0,
-		CreatedAt:                 now,
-		UpdatedAt:                 now,
+		ID:               nextID,
+		SessionKey:       sessionKey,
+		UserID:           userID,
+		TeamID:           project.TeamID,
+		SpaceID:          project.SpaceID,
+		ProjectID:        project.ID,
+		TurnCount:        0,
+		LastSummarizedID: 0,
+		SummarizeContent: "",
+		SummarizeBudget:  0,
+		CreatedAt:        now,
+		UpdatedAt:        now,
 	}, nil
 }
 
@@ -723,8 +726,8 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 	}, nil
 }
 
-// DeleteProjectPath deletes one resolved project plus its sessions, messages, and SQL-backed memories when confirmation is explicit.
-// DeleteProjectPath 用于在确认删除时，删除一个已解析项目及其 sessions、messages 和 SQL 侧记忆。
+// DeleteProjectPath deletes one resolved project plus its sessions, turn records, and SQL-backed memories when confirmation is explicit.
+// DeleteProjectPath 用于在确认删除时，删除一个已解析项目及其 sessions、turn 记录和 SQL 侧记忆。
 func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
 	project, err := s.ResolveProjectRef(ctx, projectPath)
 	if err != nil {
@@ -744,8 +747,8 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.exec(ctx, `DELETE FROM vmm_chat_messages WHERE session_id IN (SELECT id FROM vmm_sessions WHERE project_id = ?)`, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project messages: %w", err)
+	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE project_id = ?`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project turn records: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE project_id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project sessions: %w", err)
@@ -765,8 +768,8 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	}, nil
 }
 
-// MigrateProjectPath moves SQL-backed sessions/messages/memories from one project scope onto another when explicitly confirmed.
-// MigrateProjectPath 用于在显式确认后，把 SQL 侧的 sessions/messages/memories 从源项目范围迁移到目标项目范围。
+// MigrateProjectPath moves SQL-backed sessions/turn records/memories from one project scope onto another when explicitly confirmed.
+// MigrateProjectPath 用于在显式确认后，把 SQL 侧的 sessions/turn 记录/memories 从源项目范围迁移到目标项目范围。
 func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath string, confirm bool) (logicdomain.ProjectMigrationResult, error) {
 	source, err := s.ResolveProjectRef(ctx, sourcePath)
 	if err != nil {
@@ -794,12 +797,20 @@ func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath s
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.exec(ctx, `
+	nowMs := time.Now().UTC().UnixMilli()
+	if err := s.exec(ctx, fmt.Sprintf(`
 UPDATE vmm_sessions
-SET team_id = ?, space_id = ?, project_id = ?, updated_at = ?
-WHERE project_id = ?
-`, target.TeamID, target.SpaceID, target.ID, time.Now().UTC().Format(time.RFC3339Nano), source.ID); err != nil {
+SET team_id = %d, space_id = %d, project_id = %d, updated_timestamp = %d
+WHERE project_id = %d
+`, target.TeamID, target.SpaceID, target.ID, nowMs, source.ID)); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate sessions: %w", err)
+	}
+	if err := s.exec(ctx, fmt.Sprintf(`
+UPDATE vmm_turn_records
+SET project_id = %d, updated_timestamp = %d
+WHERE project_id = %d
+`, target.ID, nowMs, source.ID)); err != nil {
+		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate turn records: %w", err)
 	}
 	if err := s.exec(ctx, `
 UPDATE vmm_memory_entries
@@ -927,8 +938,8 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.exec(ctx, `DELETE FROM vmm_chat_messages WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, user.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user messages: %w", err)
+	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, user.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user turn records: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE user_id = ?`, user.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user sessions: %w", err)
@@ -1042,9 +1053,9 @@ func (s *Store) countProjectRows(ctx context.Context, projectID uint64) (int, in
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count project sessions: %w", err)
 	}
-	messageRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_chat_messages WHERE session_id IN (SELECT id FROM vmm_sessions WHERE project_id = ?)`, projectID)
+	messageRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_turn_records WHERE project_id = ?`, projectID)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("count project messages: %w", err)
+		return 0, 0, 0, fmt.Errorf("count project turn records: %w", err)
 	}
 	memoryRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?`, projectID)
 	if err != nil {
@@ -1060,9 +1071,9 @@ func (s *Store) countUserRows(ctx context.Context, userID uint64) (int, int, int
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count user sessions: %w", err)
 	}
-	messageRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_chat_messages WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, userID)
+	messageRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, userID)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("count user messages: %w", err)
+		return 0, 0, 0, fmt.Errorf("count user turn records: %w", err)
 	}
 	memoryRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE user_id = ?`, userID)
 	if err != nil {
@@ -1134,6 +1145,87 @@ func decodeStringMap(raw string) map[string]string {
 		return map[string]string{}
 	}
 	return out
+}
+
+const omittedTimelineAssistantContent = "[对话内容已省略]"
+
+// dehydratedTurnPayload mirrors the JSON document persisted into vmm_turn_records after assistant timeline nodes are dehydrated.
+// dehydratedTurnPayload 用于映射写入 vmm_turn_records 的 JSON 文档，此时 assistant 类型的 timeline 节点已经被脱水。
+type dehydratedTurnPayload struct {
+	User      string                       `json:"user"`
+	Timeline  []dehydratedTurnTimelineItem `json:"timeline"`
+	Assistant string                       `json:"assistant"`
+}
+
+// dehydratedTurnTimelineItem stores one middle timeline node inside the dehydrated turn JSON payload.
+// dehydratedTurnTimelineItem 用于保存脱水 turn JSON 载荷中的一条中间 timeline 节点。
+type dehydratedTurnTimelineItem struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// buildDehydratedTurn converts one cleaned turn into the persisted JSON payload and estimates its token budget.
+// buildDehydratedTurn 用于把一条清洗后的 turn 转换成持久化 JSON 载荷，并估算对应的 token 预算。
+func buildDehydratedTurn(turn logicdomain.TurnRecord) (string, int, error) {
+	// Keep user and final assistant text intact while dehydrating assistant timeline nodes into one stable placeholder.
+	// 保留 user 和最终 assistant 的全文，同时把 timeline 里的 assistant 节点脱水成稳定占位文本。
+	timeline := make([]dehydratedTurnTimelineItem, 0, len(turn.Timeline))
+	for _, item := range turn.Timeline {
+		entry := dehydratedTurnTimelineItem{
+			Type:    strings.TrimSpace(item.Type),
+			Content: strings.TrimSpace(item.Content),
+		}
+		if strings.EqualFold(entry.Type, "assistant") {
+			entry.Content = omittedTimelineAssistantContent
+		}
+		timeline = append(timeline, entry)
+	}
+	payload := dehydratedTurnPayload{
+		User:      strings.TrimSpace(turn.UserContent),
+		Timeline:  timeline,
+		Assistant: strings.TrimSpace(turn.AssistantContent),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", 0, fmt.Errorf("marshal dehydrated turn: %w", err)
+	}
+	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
+	return string(body), estimator.Estimate(string(body)), nil
+}
+
+// buildTurnInsertSQL renders one raw INSERT statement so the gateway avoids the buggy optional-pointer update path seen during debug runs.
+// buildTurnInsertSQL 用于渲染原始 INSERT 语句，让网关绕开调试阶段已出现过的 optional-pointer 更新故障路径。
+func buildTurnInsertSQL(id, sessionID, projectID uint64, dehydratedContent string, dehydratedBudget int, createdMs, updatedMs int64) string {
+	return fmt.Sprintf(`
+INSERT INTO vmm_turn_records (
+  id, session_id, project_id, dehydrated_content, dehydrated_budget, extracted_status, created_timestamp, updated_timestamp
+) VALUES (%d, %d, %d, CAST(%s AS JSON), %d, 0, %d, %d)
+`, id, sessionID, projectID, sqlStringLiteral(dehydratedContent), dehydratedBudget, createdMs, updatedMs)
+}
+
+// buildSessionTurnUpdateSQL renders one raw UPDATE that increments the turn counter after a turn row is inserted successfully.
+// buildSessionTurnUpdateSQL 用于渲染原始 UPDATE，在 turn 行成功插入后递增 turn 计数。
+func buildSessionTurnUpdateSQL(sessionID uint64, updatedMs int64) string {
+	return fmt.Sprintf(`
+UPDATE vmm_sessions
+SET turn_count = turn_count + 1, updated_timestamp = %d
+WHERE id = %d
+`, updatedMs, sessionID)
+}
+
+// sqlStringLiteral escapes one string into a single-quoted SQL literal for debug-stage raw statement rendering.
+// sqlStringLiteral 用于把字符串转成单引号 SQL 字面量，服务调试阶段的原始语句渲染。
+func sqlStringLiteral(raw string) string {
+	return "'" + strings.ReplaceAll(raw, "'", "''") + "'"
+}
+
+// unixMilliToTime converts one millisecond unix timestamp back into UTC time and tolerates zero values.
+// unixMilliToTime 用于把毫秒 unix 时间戳转回 UTC time，并容忍零值。
+func unixMilliToTime(ms int64) time.Time {
+	if ms <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(ms).UTC()
 }
 
 type noiseEmbeddingRow struct {
@@ -1222,41 +1314,35 @@ func (r projectJoinRow) toDomain() logicdomain.ProjectRecord {
 }
 
 type sessionRow struct {
-	ID                        uint64 `json:"id"`
-	SessionKey                string `json:"session_key"`
-	UserID                    uint64 `json:"user_id"`
-	TeamID                    uint64 `json:"team_id"`
-	SpaceID                   uint64 `json:"space_id"`
-	ProjectID                 uint64 `json:"project_id"`
-	MessageCount              int    `json:"message_count"`
-	LastMessageIndex          int    `json:"last_message_index"`
-	LastExtractedMessageIndex int    `json:"last_extracted_message_index"`
-	CreatedAt                 string `json:"created_at"`
-	UpdatedAt                 string `json:"updated_at"`
+	ID               uint64 `json:"id"`
+	SessionKey       string `json:"session_key"`
+	UserID           uint64 `json:"user_id"`
+	TeamID           uint64 `json:"team_id"`
+	SpaceID          uint64 `json:"space_id"`
+	ProjectID        uint64 `json:"project_id"`
+	TurnCount        int    `json:"turn_count"`
+	LastSummarizedID uint64 `json:"last_summarized_id"`
+	SummarizeContent string `json:"summarize_content"`
+	SummarizeBudget  int    `json:"summarize_budget"`
+	CreatedTimestamp int64  `json:"created_timestamp"`
+	UpdatedTimestamp int64  `json:"updated_timestamp"`
 }
 
 func (r sessionRow) toDomain() logicdomain.SessionRecord {
-	createdAt, _ := time.Parse(time.RFC3339Nano, r.CreatedAt)
-	updatedAt, _ := time.Parse(time.RFC3339Nano, r.UpdatedAt)
 	return logicdomain.SessionRecord{
-		ID:                        r.ID,
-		SessionKey:                r.SessionKey,
-		UserID:                    r.UserID,
-		TeamID:                    r.TeamID,
-		SpaceID:                   r.SpaceID,
-		ProjectID:                 r.ProjectID,
-		MessageCount:              r.MessageCount,
-		LastMessageIndex:          r.LastMessageIndex,
-		LastExtractedMessageIndex: r.LastExtractedMessageIndex,
-		CreatedAt:                 createdAt,
-		UpdatedAt:                 updatedAt,
+		ID:               r.ID,
+		SessionKey:       r.SessionKey,
+		UserID:           r.UserID,
+		TeamID:           r.TeamID,
+		SpaceID:          r.SpaceID,
+		ProjectID:        r.ProjectID,
+		TurnCount:        r.TurnCount,
+		LastSummarizedID: r.LastSummarizedID,
+		SummarizeContent: r.SummarizeContent,
+		SummarizeBudget:  r.SummarizeBudget,
+		CreatedAt:        unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:        unixMilliToTime(r.UpdatedTimestamp),
 	}
-}
-
-type sessionStateRow struct {
-	ID               uint64 `json:"id"`
-	MessageCount     int    `json:"message_count"`
-	LastMessageIndex int    `json:"last_message_index"`
 }
 
 type memoryEntryRow struct {

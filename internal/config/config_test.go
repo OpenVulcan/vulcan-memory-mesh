@@ -21,7 +21,7 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.PostAction.InputMode = ""
 	cfg.Vector.Provider = ""
 	cfg.Relational.Provider = ""
-	cfg.DockDB.Address = ""
+	cfg.DuckDB.Address = ""
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
@@ -50,11 +50,11 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.Vector.Provider != "lancedb" {
 		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
 	}
-	if cfg.Relational.Provider != "dockdb" {
+	if cfg.Relational.Provider != "duckdb" {
 		t.Fatalf("relational provider = %q", cfg.Relational.Provider)
 	}
-	if cfg.DockDB.Address != "127.0.0.1:50052" {
-		t.Fatalf("dockdb address = %q", cfg.DockDB.Address)
+	if cfg.DuckDB.Address != "127.0.0.1:50052" {
+		t.Fatalf("duckdb address = %q", cfg.DuckDB.Address)
 	}
 	if cfg.LanceDB.Address != "127.0.0.1:50051" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
@@ -110,7 +110,7 @@ func TestConfigValidateRejectsRemovedProviders(t *testing.T) {
 
 	cfg = newValidConfigForTest()
 	cfg.Relational.Provider = "memory"
-	if err := cfg.Validate(); err == nil || err.Error() != "relational.provider must be dockdb" {
+	if err := cfg.Validate(); err == nil || err.Error() != "relational.provider must be duckdb" {
 		t.Fatalf("unexpected relational validate error: %v", err)
 	}
 }
@@ -203,7 +203,7 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 	}
 	configBody := `{
 		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"dockdb":{"address":"127.0.0.1:50052","timeout":"5s"},
+		"duckdb":{"address":"127.0.0.1:50052","timeout":"5s"},
 		"lancedb":{"address":"127.0.0.1:50051","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
 		"llm":{
 			"provider":"openai",
@@ -215,7 +215,7 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 		},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + apiKey + `}","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"lancedb"},
-		"relational":{"provider":"dockdb"},
+		"relational":{"provider":"duckdb"},
 		"pre_check":{"intent_timeout":"5s","top_k":5},
 		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75}
 	}`
@@ -262,12 +262,12 @@ func restoreEnv(t *testing.T, key string) {
 func currentTestConfigBody(apiKeyExpr string) string {
 	return `{
 		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"dockdb":{"address":"127.0.0.1:50052","timeout":"5s"},
+		"duckdb":{"address":"127.0.0.1:50052","timeout":"5s"},
 		"lancedb":{"address":"127.0.0.1:50051","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"` + apiKeyExpr + `","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"` + apiKeyExpr + `","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"lancedb"},
-		"relational":{"provider":"dockdb"},
+		"relational":{"provider":"duckdb"},
 		"pre_check":{"intent_timeout":"5s","top_k":5},
 		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75}
 	}`
@@ -283,7 +283,7 @@ func newValidConfigForTest() Config {
 	cfg.Embedding.Endpoint = "https://api.openai.com/v1"
 	cfg.Embedding.APIKey = "test-key"
 	cfg.Embedding.Dimension = 1024
-	cfg.DockDB.Address = "127.0.0.1:50052"
+	cfg.DuckDB.Address = "127.0.0.1:50052"
 	cfg.LanceDB.Address = "127.0.0.1:50051"
 	return cfg
 }

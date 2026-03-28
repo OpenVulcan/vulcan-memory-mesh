@@ -1,5 +1,5 @@
-// postaction_test.go verifies the latest message-level post-action workflow against the new resolved-session contract.
-// postaction_test.go 用于围绕新的已解析 session 契约，验证最新的消息级 post-action 工作流。
+// postaction_test.go verifies the latest turn-level post-action workflow against the new resolved-session contract.
+// postaction_test.go 用于围绕新的已解析 session 契约，验证最新的 turn 级 post-action 工作流。
 package usecase
 
 import (
@@ -40,13 +40,13 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	if got := filter.seen[0].UserMessage; got != "你还记得我上次说过什么吗" {
 		t.Fatalf("unexpected normalized user message: %q", got)
 	}
-	if len(store.messages) != 0 {
-		t.Fatalf("expected no persisted messages, got %#v", store.messages)
+	if store.turn.UserContent != "" || store.turn.AssistantContent != "" || len(store.turn.Timeline) != 0 {
+		t.Fatalf("expected no persisted turn, got %#v", store.turn)
 	}
 }
 
-// TestPostActionUseCaseSkipsNoiseGateForTimeline verifies timeline-driven payloads bypass the single-round noise gate and persist in canonical order.
-// TestPostActionUseCaseSkipsNoiseGateForTimeline 用于验证带 timeline 的载荷会跳过单轮噪声门，并按标准顺序持久化。
+// TestPostActionUseCaseSkipsNoiseGateForTimeline verifies timeline-driven payloads bypass the single-round noise gate and persist one canonical turn.
+// TestPostActionUseCaseSkipsNoiseGateForTimeline 用于验证带 timeline 的载荷会跳过单轮噪声门，并持久化为一条标准 turn。
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
@@ -77,17 +77,14 @@ func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	if len(filter.seen) != 0 {
 		t.Fatalf("expected noise gate to be skipped, got %#v", filter.seen)
 	}
-	if len(store.messages) != 4 {
-		t.Fatalf("expected 4 persisted messages, got %d", len(store.messages))
-	}
-	assertPersistedMessage(t, store.messages[0], "user", "最开始的问题", "entry_user")
-	assertPersistedMessage(t, store.messages[1], "assistant", "中间回答", "timeline")
-	assertPersistedMessage(t, store.messages[2], "user", "补充问题", "timeline")
-	assertPersistedMessage(t, store.messages[3], "assistant", "最后的回答", "final_assistant")
+	assertPersistedTurn(t, store.turn, "最开始的问题", "最后的回答", []logicdomain.TurnTimelineItem{
+		{Type: "assistant", Content: "中间回答"},
+		{Type: "user", Content: "补充问题"},
+	})
 }
 
-// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval verifies accepted single-round payloads are stored as the new canonical message sequence.
-// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval 用于验证通过噪声门的单轮载荷会按新的标准消息序列落库。
+// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval verifies accepted single-round payloads are stored as one canonical turn.
+// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval 用于验证通过噪声门的单轮载荷会按新的标准 turn 落库。
 func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
 	store := &testRelationalStore{}
@@ -114,19 +111,23 @@ func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	if len(filter.seen) != 1 {
 		t.Fatalf("expected one normalized turn, got %d", len(filter.seen))
 	}
-	if len(store.messages) != 2 {
-		t.Fatalf("expected 2 persisted messages, got %d", len(store.messages))
-	}
-	assertPersistedMessage(t, store.messages[0], "user", "你好", "entry_user")
-	assertPersistedMessage(t, store.messages[1], "assistant", "收到", "final_assistant")
+	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
 }
 
-// assertPersistedMessage keeps message-level persistence assertions compact and readable.
-// assertPersistedMessage 用于让消息级持久化断言保持紧凑和易读。
-func assertPersistedMessage(t *testing.T, message logicdomain.ChatMessage, role, content, sourceKind string) {
+// assertPersistedTurn keeps turn-level persistence assertions compact and readable.
+// assertPersistedTurn 用于让 turn 级持久化断言保持紧凑和易读。
+func assertPersistedTurn(t *testing.T, turn logicdomain.TurnRecord, userContent, assistantContent string, timeline []logicdomain.TurnTimelineItem) {
 	t.Helper()
-	if message.Role != role || message.Content != content || message.SourceKind != sourceKind {
-		t.Fatalf("unexpected persisted message: %+v", message)
+	if turn.UserContent != userContent || turn.AssistantContent != assistantContent {
+		t.Fatalf("unexpected persisted turn header: %+v", turn)
+	}
+	if len(turn.Timeline) != len(timeline) {
+		t.Fatalf("unexpected persisted timeline length: %+v", turn.Timeline)
+	}
+	for idx := range timeline {
+		if turn.Timeline[idx] != timeline[idx] {
+			t.Fatalf("unexpected persisted timeline item[%d]: %+v", idx, turn.Timeline[idx])
+		}
 	}
 }
 
@@ -144,18 +145,23 @@ func (s *stubNoiseTurnFilter) FilterPersistableTurns(_ context.Context, turns []
 	return append([]logicdomain.NormalizedTurn(nil), s.filtered...)
 }
 
-// testRelationalStore is the minimal relational-store stub needed by post-action tests after the move to message-level persistence.
-// testRelationalStore 用于在迁移到消息级持久化后，为 post-action 测试提供最小化关系存储桩。
+// testRelationalStore is the minimal relational-store stub needed by post-action tests after the move to turn-level persistence.
+// testRelationalStore 用于在迁移到 turn 级持久化后，为 post-action 测试提供最小化关系存储桩。
 type testRelationalStore struct {
-	session  logicdomain.SessionRef
-	messages []logicdomain.ChatMessage
+	session logicdomain.SessionRef
+	turn    logicdomain.TurnRecord
 }
 
-// AppendChatMessages records the latest session scope and canonical message sequence for assertions.
-// AppendChatMessages 用于记录最新的 session 范围和标准消息序列，供测试断言使用。
-func (s *testRelationalStore) AppendChatMessages(_ context.Context, session logicdomain.SessionRef, messages []logicdomain.ChatMessage) error {
+// AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
+// AppendTurnRecord 用于记录最新的 session 范围和标准 turn 载荷，供测试断言使用。
+func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) error {
 	s.session = session
-	s.messages = append([]logicdomain.ChatMessage(nil), messages...)
+	s.turn = logicdomain.TurnRecord{
+		UserContent:      turn.UserContent,
+		AssistantContent: turn.AssistantContent,
+		CreatedAt:        turn.CreatedAt,
+		Timeline:         append([]logicdomain.TurnTimelineItem(nil), turn.Timeline...),
+	}
 	return nil
 }
 

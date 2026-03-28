@@ -1,6 +1,6 @@
-// store_test.go exercises the DockDB-gateway adapter against the current hierarchy/session/message schema.
-// store_test.go 用于围绕当前层级、session 和消息表结构验证 DockDB 网关适配器。
-package vldg_dockdb
+// store_test.go exercises the DuckDB-gateway adapter against the current hierarchy/session/turn schema.
+// store_test.go 用于围绕当前层级、session 和 turn 表结构验证 DuckDB 网关适配器。
+package vldg_duckdb
 
 import (
 	"context"
@@ -11,15 +11,15 @@ import (
 	"testing"
 	"time"
 
-	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_dockdb/proto/v1"
+	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
 	"google.golang.org/grpc/test/bufconn"
 )
 
-// TestInitBootstrapsCurrentSchemaOnFreshInstall verifies fresh installs create only the current baseline schema and record its version.
-// TestInitBootstrapsCurrentSchemaOnFreshInstall 用于验证首次安装只会创建当前基线表结构，并写入对应版本号。
+// TestInitBootstrapsCurrentSchemaOnFreshInstall verifies fresh installs reset disposable debug tables, create the current baseline schema, and record its version.
+// TestInitBootstrapsCurrentSchemaOnFreshInstall 用于验证首次安装会重置可丢弃的调试表、创建当前基线结构，并写入对应版本号。
 func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
@@ -32,29 +32,35 @@ func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	}
 
 	execs := server.execRequests()
-	if len(execs) != 4 {
-		t.Fatalf("expected 4 execute calls, got %d", len(execs))
+	if len(execs) != 5 {
+		t.Fatalf("expected 5 execute calls, got %d", len(execs))
 	}
 	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
 		t.Fatalf("missing version bootstrap sql: %s", execs[0].Sql)
 	}
-	if !strings.Contains(execs[1].Sql, "CREATE TABLE IF NOT EXISTS vmm_noise_embeddings") {
-		t.Fatalf("missing current schema cache table sql: %s", execs[1].Sql)
+	if !strings.Contains(execs[1].Sql, "DROP TABLE IF EXISTS vmm_turn_records") {
+		t.Fatalf("missing managed schema reset sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[1].Sql, "CREATE TABLE IF NOT EXISTS vmm_users") {
+	if !strings.Contains(execs[2].Sql, "CREATE TABLE IF NOT EXISTS vmm_users") {
 		t.Fatalf("missing current schema user table sql: %s", execs[1].Sql)
 	}
-	if strings.Contains(execs[1].Sql, "vmm_memories") {
+	if !strings.Contains(execs[2].Sql, "CREATE TABLE IF NOT EXISTS vmm_turn_records") {
+		t.Fatalf("missing current schema turn table sql: %s", execs[2].Sql)
+	}
+	if !strings.Contains(execs[2].Sql, "turn_count INTEGER NOT NULL DEFAULT 0") {
+		t.Fatalf("missing current schema session turn counter sql: %s", execs[2].Sql)
+	}
+	if strings.Contains(execs[2].Sql, "vmm_memories") {
 		t.Fatalf("unexpected legacy compatibility table in current schema sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[2].Sql, "DELETE FROM vmm_version") {
-		t.Fatalf("missing version cleanup sql: %s", execs[2].Sql)
+	if !strings.Contains(execs[3].Sql, "DELETE FROM vmm_version") {
+		t.Fatalf("missing version cleanup sql: %s", execs[3].Sql)
 	}
-	if !strings.Contains(execs[3].Sql, "INSERT INTO vmm_version") {
-		t.Fatalf("missing version insert sql: %s", execs[3].Sql)
+	if !strings.Contains(execs[4].Sql, "INSERT INTO vmm_version") {
+		t.Fatalf("missing version insert sql: %s", execs[4].Sql)
 	}
 	var params []any
-	if err := json.Unmarshal([]byte(execs[3].ParamsJson), &params); err != nil {
+	if err := json.Unmarshal([]byte(execs[4].ParamsJson), &params); err != nil {
 		t.Fatalf("decode version insert params: %v", err)
 	}
 	if len(params) != 3 || params[0] != float64(versionSingletonID) || params[1] != float64(currentSchemaVersion) {
@@ -62,25 +68,27 @@ func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	}
 }
 
-// TestInitRejectsUnsupportedSchemaVersion verifies startup now fails fast on older schema versions instead of attempting compatibility upgrades.
-// TestInitRejectsUnsupportedSchemaVersion 用于验证启动流程现在会在遇到旧 schema 版本时直接失败，而不是继续做兼容升级。
-func TestInitRejectsUnsupportedSchemaVersion(t *testing.T) {
+// TestInitResetsManagedSchemaOnVersionMismatch verifies old debug data is discarded and the current baseline schema is recreated.
+// TestInitResetsManagedSchemaOnVersionMismatch 用于验证遇到旧版本调试数据时会直接丢弃并重建当前基线 schema。
+func TestInitResetsManagedSchemaOnVersionMismatch(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
 			"WHERE singleton_id = 1": `[{"schema_version":1}]`,
 		},
 	}
 	store := newDuckDBTestStoreWithoutInit(t, server)
-	err := store.init(context.Background())
-	if err == nil {
-		t.Fatal("expected unsupported schema version error")
-	}
-	if !strings.Contains(err.Error(), "unsupported dockdb schema version") {
-		t.Fatalf("unexpected error: %v", err)
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init store with version mismatch: %v", err)
 	}
 	execs := server.execRequests()
-	if len(execs) != 1 {
-		t.Fatalf("expected only version bootstrap sql before failure, got %d calls", len(execs))
+	if len(execs) != 5 {
+		t.Fatalf("expected version bootstrap plus reset path, got %d calls", len(execs))
+	}
+	if !strings.Contains(execs[1].Sql, "DROP TABLE IF EXISTS vmm_turn_records") {
+		t.Fatalf("missing reset sql after version mismatch: %s", execs[1].Sql)
+	}
+	if !strings.Contains(execs[2].Sql, "CREATE TABLE IF NOT EXISTS vmm_turn_records") {
+		t.Fatalf("missing recreated turn schema after version mismatch: %s", execs[2].Sql)
 	}
 }
 
@@ -89,7 +97,7 @@ func TestInitRejectsUnsupportedSchemaVersion(t *testing.T) {
 func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":2}]`,
+			"FROM vmm_version":    `[{"schema_version":3}]`,
 			"FROM vmm_users":      `[{"id":7,"name":"alice","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_sessions":   `[]`,
@@ -119,50 +127,53 @@ func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	}
 }
 
-// TestAppendChatMessagesAppendsSequentialIndexes verifies message-level persistence continues from the current last_message_index.
-// TestAppendChatMessagesAppendsSequentialIndexes 用于验证消息级持久化会从当前 last_message_index 继续顺序追加。
-func TestAppendChatMessagesAppendsSequentialIndexes(t *testing.T) {
+// TestAppendTurnRecordPersistsDehydratedPayload verifies post-action persistence writes one dehydrated turn row and then increments the session turn counter.
+// TestAppendTurnRecordPersistsDehydratedPayload 用于验证 post-action 持久化会写入一条脱水 turn 行，并随后递增 session turn 计数。
+func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":2}]`,
-			"SELECT id, message_count, last_message_index":                      `[{"id":41,"message_count":2,"last_message_index":2}]`,
-			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_chat_messages": `[{"next_id":100}]`,
+			"FROM vmm_version": `[{"schema_version":3}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_turn_records": `[{"next_id":100}]`,
 		},
 	}
 	store := newDuckDBTestStore(t, server)
 
-	err := store.AppendChatMessages(context.Background(), logicdomain.SessionRef{
+	err := store.AppendTurnRecord(context.Background(), logicdomain.SessionRef{
 		SessionID:  41,
 		SessionKey: "sess-key-1",
 		UserID:     7,
 		TeamID:     3,
 		SpaceID:    5,
 		ProjectID:  9,
-	}, []logicdomain.ChatMessage{
-		{Role: "user", Content: "第一问", SourceKind: "entry_user"},
-		{Role: "assistant", Content: "最终回答", SourceKind: "final_assistant"},
+	}, logicdomain.TurnRecord{
+		UserContent:      "第一问",
+		AssistantContent: "最终回答",
+		Timeline: []logicdomain.TurnTimelineItem{
+			{Type: "assistant", Content: "中间回答"},
+			{Type: "user", Content: "补充问题"},
+		},
 	})
 	if err != nil {
-		t.Fatalf("append chat messages: %v", err)
+		t.Fatalf("append turn record: %v", err)
 	}
 
 	execs := server.execRequests()
-	if len(execs) < 4 {
-		t.Fatalf("expected version bootstrap + 3 persistence writes, got %d", len(execs))
+	if len(execs) < 3 {
+		t.Fatalf("expected version bootstrap + 2 persistence writes, got %d", len(execs))
 	}
-	var firstParams []any
-	if err := json.Unmarshal([]byte(execs[len(execs)-3].ParamsJson), &firstParams); err != nil {
-		t.Fatalf("decode first insert params: %v", err)
+	insertSQL := execs[len(execs)-2].Sql
+	if !strings.Contains(insertSQL, "INSERT INTO vmm_turn_records") {
+		t.Fatalf("expected turn insert sql, got %s", insertSQL)
 	}
-	if got := firstParams[2]; got != float64(3) {
-		t.Fatalf("first persisted message index = %#v", got)
+	if !strings.Contains(insertSQL, "\"assistant\":\"最终回答\"") {
+		t.Fatalf("expected final assistant in dehydrated payload, got %s", insertSQL)
 	}
-	var secondParams []any
-	if err := json.Unmarshal([]byte(execs[len(execs)-2].ParamsJson), &secondParams); err != nil {
-		t.Fatalf("decode second insert params: %v", err)
+	if !strings.Contains(insertSQL, "\"content\":\"[对话内容已省略]\"") {
+		t.Fatalf("expected dehydrated assistant timeline placeholder, got %s", insertSQL)
 	}
-	if got := secondParams[2]; got != float64(4) {
-		t.Fatalf("second persisted message index = %#v", got)
+	updateSQL := execs[len(execs)-1].Sql
+	if !strings.Contains(updateSQL, "SET turn_count = turn_count + 1") {
+		t.Fatalf("expected session turn counter update sql, got %s", updateSQL)
 	}
 }
 

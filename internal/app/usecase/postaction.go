@@ -43,8 +43,8 @@ type PostActionExecutor interface {
 	Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error)
 }
 
-// PostActionUseCase stores message-level conversation data and applies the noise gate only to simple single-round flows.
-// PostActionUseCase 用于按消息级存储对话数据，并只在简单单轮流程上执行噪声门。
+// PostActionUseCase stores one cleaned turn record and applies the noise gate only to simple single-round flows.
+// PostActionUseCase 用于存储一条清洗后的 turn 记录，并只在简单单轮流程上执行噪声门。
 type PostActionUseCase struct {
 	noiseGate appports.NoiseTurnFilter
 	store     appports.RelationalStore
@@ -60,8 +60,8 @@ func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	return &PostActionUseCase{noiseGate: noiseGate, store: store, logger: logger}
 }
 
-// Execute persists cleaned messages into the resolved session after optional noise screening.
-// Execute 用于在可选噪声筛查之后，把清洗后的消息持久化到已解析的 session 中。
+// Execute persists one cleaned turn into the resolved session after optional noise screening.
+// Execute 用于在可选噪声筛查之后，把清洗后的单条 turn 持久化到已解析的 session 中。
 func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error) {
 	// Validate the resolved session scope and the new text-only payload before touching storage.
 	// 在访问存储前先校验已解析的 session 范围和新的纯文本载荷。
@@ -88,37 +88,29 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 		}
 	}
 
-	// Persist the canonical message sequence exactly as user -> timeline[] -> assistant so later batch extraction can replay it faithfully.
-	// 以 user -> timeline[] -> assistant 的标准顺序持久化消息，保证后续批量提炼可以忠实回放原始流程。
-	messages := make([]logicdomain.ChatMessage, 0, len(cmd.Timeline)+2)
-	messages = append(messages, logicdomain.ChatMessage{
-		Role:       "user",
-		Content:    strings.TrimSpace(cmd.UserContent),
-		SourceKind: "entry_user",
-		CreatedAt:  time.Now().UTC(),
-	})
+	// Persist one canonical turn record so DuckDB can keep the cleaned conversation as one dehydrated analysis unit.
+	// 持久化一条标准 turn 记录，让 DuckDB 可以把清洗后的对话保存为一个脱水分析单元。
+	timeline := make([]logicdomain.TurnTimelineItem, 0, len(cmd.Timeline))
 	for _, item := range cmd.Timeline {
-		messages = append(messages, logicdomain.ChatMessage{
-			Role:       strings.TrimSpace(item.Type),
-			Content:    strings.TrimSpace(item.Content),
-			SourceKind: "timeline",
-			CreatedAt:  time.Now().UTC(),
+		timeline = append(timeline, logicdomain.TurnTimelineItem{
+			Type:    strings.TrimSpace(item.Type),
+			Content: strings.TrimSpace(item.Content),
 		})
 	}
-	messages = append(messages, logicdomain.ChatMessage{
-		Role:       "assistant",
-		Content:    strings.TrimSpace(cmd.AssistantContent),
-		SourceKind: "final_assistant",
-		CreatedAt:  time.Now().UTC(),
-	})
-	if err := u.store.AppendChatMessages(ctx, cmd.Session, messages); err != nil {
+	turn := logicdomain.TurnRecord{
+		UserContent:      strings.TrimSpace(cmd.UserContent),
+		Timeline:         timeline,
+		AssistantContent: strings.TrimSpace(cmd.AssistantContent),
+		CreatedAt:        time.Now().UTC(),
+	}
+	if err := u.store.AppendTurnRecord(ctx, cmd.Session, turn); err != nil {
 		return PostActionResult{}, err
 	}
 	return PostActionResult{Accepted: true, TraceID: traceID}, nil
 }
 
-// validatePostAction checks the resolved identifiers and required message fields for the new message-level persistence flow.
-// validatePostAction 用于校验新消息级持久化流程所需的已解析标识和必填消息字段。
+// validatePostAction checks the resolved identifiers and required turn fields for the new turn-level persistence flow.
+// validatePostAction 用于校验新 turn 级持久化流程所需的已解析标识和必填字段。
 func validatePostAction(cmd PostActionCommand) error {
 	if cmd.Session.SessionID == 0 || strings.TrimSpace(cmd.Session.SessionKey) == "" {
 		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}

@@ -207,7 +207,7 @@
 
 用途：
 
-- 显式确认后删除某个项目及其 DockDB/LanceDB 数据
+- 显式确认后删除某个项目及其 DuckDB/LanceDB 数据
 
 ### MigrateProject
 
@@ -249,7 +249,7 @@
 - 记录原始日志和清洗后日志
 - 清洗 `user_content` / `timeline[].content` / `assistant_content`
 - 立即返回 `accepted=true`
-- 后台继续写入 DockDB
+- 后台继续写入 DuckDB
 
 ## 十、推荐对接顺序
 

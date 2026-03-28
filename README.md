@@ -8,7 +8,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 当前运行时的定位是：
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
-- 用 DockDB 保存层级、session、消息与长期 SQL 数据
+- 用 DuckDB 保存层级、session、turn 记录与长期 SQL 数据
 - 用 LanceDB 保存向量数据
 - 由 Caddy 等外部反向代理负责 TLS
 
@@ -19,7 +19,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
-- [DockDB Schema 版本管理说明（中文）](./docs/dockdb-schema-versioning_CN.md)
+- [DuckDB Schema 版本管理说明（中文）](./docs/duckdb-schema-versioning_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 
 ## 当前运行模型
@@ -48,7 +48,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 当前只保留两条本地数据线：
 
-- DockDB：层级、用户、session、消息、长期 SQL 记录
+- DuckDB：层级、用户、session、turn 记录、长期 SQL 记录
 - LanceDB：向量写入、检索和删除
 
 运行时已经移除：
@@ -99,7 +99,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 4. 记录清洗后日志
 5. 立即返回 `accepted=true`
 6. 后台继续：
-   - 按 `user -> timeline -> assistant` 顺序持久化消息
+   - 按 `user / timeline / assistant` 组装一条脱水 turn 记录
+   - 写入 `vmm_turn_records`
    - 当 `timeline` 为空时，先过 `NoiseGate`
 
 ## 构建与运行
@@ -148,7 +149,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `grpc.request_timeout.workspace`
 - `grpc.request_timeout.pre_check`
 - `grpc.request_timeout.post_action`
-- `dockdb.address`
+- `duckdb.address`
 - `lancedb.address`
 - `lancedb.table_name`
 - `lancedb.vector_column`

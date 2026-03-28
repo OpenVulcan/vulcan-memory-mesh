@@ -22,8 +22,8 @@
     "semantic_enabled": true,
     "semantic_threshold": 0.88
   },
-  "dockdb": {
-    "address": "${VMM_DOCKDB_ADDRESS}",
+  "duckdb": {
+    "address": "${VMM_DUCKDB_ADDRESS}",
     "timeout": "5s"
   },
   "lancedb": {

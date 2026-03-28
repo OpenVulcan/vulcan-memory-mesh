@@ -60,12 +60,12 @@
 5. 清洗后日志记录
 6. 后台 `PostActionUseCase`
 7. **NoiseGate**
-8. DockDB 写入
+8. DuckDB 写入
 
 也就是说：
 
 - 它发生在文本已经清洗之后
-- 发生在真正写入 `vmm_chat_messages` 之前
+- 发生在真正写入 `vmm_turn_records` 之前
 
 ## 当前触发规则
 
@@ -99,7 +99,7 @@
 如果这对问答被判定为噪声：
 
 - 整次后台持久化直接结束
-- 不写入 `vmm_chat_messages`
+- 不写入 `vmm_turn_records`
 
 ## 规则目录
 
@@ -191,7 +191,7 @@
 
 1. 应用启动时读取当前生效规则
 2. 对规则内容计算 `rules_hash`
-3. 优先从 DockDB 的 `vmm_noise_embeddings` 读取缓存
+3. 优先从 DuckDB 的 `vmm_noise_embeddings` 读取缓存
 4. 只有当以下条件全部一致时才复用：
    - `scope`
    - `language`
@@ -200,7 +200,7 @@
    - `rules_hash`
 5. 如果不一致：
    - 重新做 embedding
-   - 覆盖写回 DockDB
+   - 覆盖写回 DuckDB
 
 这意味着以下变化会触发重算：
 
@@ -264,7 +264,7 @@
 结果：
 
 - 跳过 `NoiseGate`
-- 直接按 `user -> timeline -> assistant` 顺序写入 DockDB
+- 直接把 `user / timeline / assistant` 组装成一条脱水 turn 写入 DuckDB
 
 ## 编写规则建议
 

@@ -1,5 +1,5 @@
--- 001_init.sql declares the current DockDB baseline schema used by the local VMM runtime.
--- 001_init.sql 用于声明本地 VMM 运行时当前使用的 DockDB 基线表结构。
+-- 001_init.sql declares the current DuckDB baseline schema used by the local VMM runtime.
+-- 001_init.sql 用于声明本地 VMM 运行时当前使用的 DuckDB 基线表结构。
 
 CREATE TABLE IF NOT EXISTS vmm_version (
     singleton_id   INTEGER PRIMARY KEY,
@@ -59,37 +59,46 @@ CREATE TABLE IF NOT EXISTS vmm_projects (
 
 CREATE TABLE IF NOT EXISTS vmm_sessions (
     id                           BIGINT PRIMARY KEY,
-    session_key                  TEXT   NOT NULL UNIQUE,
+    session_key                  TEXT   NOT NULL,
     user_id                      BIGINT NOT NULL,
     team_id                      BIGINT NOT NULL,
     space_id                     BIGINT NOT NULL,
     project_id                   BIGINT NOT NULL,
-    message_count                BIGINT NOT NULL DEFAULT 0,
-    last_message_index           BIGINT NOT NULL DEFAULT 0,
-    last_extracted_message_index BIGINT NOT NULL DEFAULT 0,
-    created_at                   TEXT   NOT NULL,
-    updated_at                   TEXT   NOT NULL,
+    turn_count                   INTEGER NOT NULL DEFAULT 0,
+    last_summarized_id           BIGINT NOT NULL DEFAULT 0,
+    summarize_content            TEXT    NOT NULL DEFAULT '',
+    summarize_budget             INTEGER NOT NULL DEFAULT 0,
+    created_timestamp            BIGINT  NOT NULL,
+    updated_timestamp            BIGINT  NOT NULL,
+    UNIQUE(project_id, session_key),
     FOREIGN KEY(user_id) REFERENCES vmm_users(id),
     FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_vmm_sessions_scope
-ON vmm_sessions(user_id, team_id, space_id, project_id, updated_at);
+ON vmm_sessions(user_id, team_id, space_id, project_id, updated_timestamp);
 
-CREATE TABLE IF NOT EXISTS vmm_chat_messages (
-    id            BIGINT PRIMARY KEY,
-    session_id    BIGINT NOT NULL,
-    message_index BIGINT NOT NULL,
-    role          TEXT   NOT NULL,
-    content       TEXT   NOT NULL,
-    source_kind   TEXT   NOT NULL,
-    created_at    TEXT   NOT NULL,
-    UNIQUE(session_id, message_index),
-    FOREIGN KEY(session_id) REFERENCES vmm_sessions(id)
+CREATE INDEX IF NOT EXISTS idx_vmm_sessions_project_session
+ON vmm_sessions(project_id, session_key);
+
+CREATE TABLE IF NOT EXISTS vmm_turn_records (
+    id                 BIGINT PRIMARY KEY,
+    session_id         BIGINT  NOT NULL,
+    project_id         BIGINT  NOT NULL,
+    dehydrated_content JSON    NOT NULL,
+    dehydrated_budget  INTEGER NOT NULL DEFAULT 0,
+    extracted_status   TINYINT NOT NULL DEFAULT 0,
+    created_timestamp  BIGINT  NOT NULL,
+    updated_timestamp  BIGINT  NOT NULL,
+    FOREIGN KEY(session_id) REFERENCES vmm_sessions(id),
+    FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
 );
 
-CREATE INDEX IF NOT EXISTS idx_vmm_chat_messages_session
-ON vmm_chat_messages(session_id, message_index);
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_session
+ON vmm_turn_records(session_id, id);
+
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_project_status
+ON vmm_turn_records(project_id, extracted_status, id);
 
 CREATE TABLE IF NOT EXISTS vmm_memory_entries (
     id            TEXT   PRIMARY KEY,

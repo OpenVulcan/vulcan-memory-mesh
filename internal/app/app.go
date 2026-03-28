@@ -15,7 +15,7 @@ import (
 	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_dockdb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/app/usecase"
@@ -193,12 +193,12 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 	}
 }
 
-// buildRelational selects the configured durable SQL backend used by workspace/session/message persistence.
-// buildRelational 用于选择当前配置的长期 SQL 后端，服务层级、session 和消息持久化。
+// buildRelational selects the configured durable SQL backend used by workspace/session/turn persistence.
+// buildRelational 用于选择当前配置的长期 SQL 后端，服务层级、session 和 turn 持久化。
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	switch strings.ToLower(cfg.Relational.Provider) {
-	case "dockdb":
-		return vldg_dockdb.NewStore(cfg.DockDB.Address, cfg.DockDB.Timeout.Duration)
+	case "duckdb":
+		return vldg_duckdb.NewStore(cfg.DuckDB.Address, cfg.DuckDB.Timeout.Duration)
 	default:
 		return nil, fmt.Errorf("unsupported relational provider: %s", cfg.Relational.Provider)
 	}

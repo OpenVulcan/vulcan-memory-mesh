@@ -279,7 +279,7 @@ grpcurl -plaintext `
 
 - 服务端会先记录原始日志
 - 再记录清洗后日志
-- 然后异步写入 DockDB
+- 然后异步写入 DuckDB
 - 当 `timeline` 为空时，才会走 `NoiseGate`
 
 ## 十二、常见错误

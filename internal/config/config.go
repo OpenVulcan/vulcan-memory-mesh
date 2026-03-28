@@ -56,7 +56,7 @@ type Config struct {
 	Logging        LoggingConfig        `json:"logging"`
 	PII            PIIConfig            `json:"pii"`
 	Noise          NoiseConfig          `json:"noise"`
-	DockDB         DockDBConfig         `json:"dockdb"`
+	DuckDB         DuckDBConfig         `json:"duckdb"`
 	LanceDB        LanceDBConfig        `json:"lancedb"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
@@ -106,9 +106,9 @@ type NoiseConfig struct {
 	SemanticThreshold float64 `json:"semantic_threshold"`
 }
 
-// DockDBConfig holds the gRPC endpoint used by the local DuckDB gateway for durable SQL-backed data.
-// DockDBConfig 用于保存本地 DuckDB 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
-type DockDBConfig struct {
+// DuckDBConfig holds the gRPC endpoint used by the local DuckDB gateway for durable SQL-backed data.
+// DuckDBConfig 用于保存本地 DuckDB 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
+type DuckDBConfig struct {
 	Address string   `json:"address"`
 	Timeout Duration `json:"timeout"`
 }
@@ -155,8 +155,8 @@ type VectorConfig struct {
 	Provider string `json:"provider"`
 }
 
-// RelationalConfig selects the durable storage backend used by hierarchy, session, and message persistence.
-// RelationalConfig 用于选择层级、session 和消息持久化所使用的长期存储后端。
+// RelationalConfig selects the durable storage backend used by hierarchy, session, and turn persistence.
+// RelationalConfig 用于选择层级、session 和 turn 持久化所使用的长期存储后端。
 type RelationalConfig struct {
 	Provider string `json:"provider"`
 }
@@ -195,12 +195,12 @@ func DefaultLocal() Config {
 		Logging:        LoggingConfig{Level: "info", Format: "text"},
 		PII:            PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:          NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
-		DockDB:         DockDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
+		DuckDB:         DuckDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
 		LanceDB:        LanceDBConfig{Address: "127.0.0.1:50051", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
 		LLM:            LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
 		Embedding:      EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
 		Vector:         VectorConfig{Provider: "lancedb"},
-		Relational:     RelationalConfig{Provider: "dockdb"},
+		Relational:     RelationalConfig{Provider: "duckdb"},
 		PostAction:     PostActionConfig{InputMode: "compat"},
 		PreCheck:       PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
@@ -397,11 +397,11 @@ func (c *Config) Normalize() {
 	if c.Noise.SemanticThreshold <= 0 {
 		c.Noise.SemanticThreshold = 0.88
 	}
-	if strings.TrimSpace(c.DockDB.Address) == "" {
-		c.DockDB.Address = "127.0.0.1:50052"
+	if strings.TrimSpace(c.DuckDB.Address) == "" {
+		c.DuckDB.Address = "127.0.0.1:50052"
 	}
-	if c.DockDB.Timeout.Duration <= 0 {
-		c.DockDB.Timeout = Duration{5 * time.Second}
+	if c.DuckDB.Timeout.Duration <= 0 {
+		c.DuckDB.Timeout = Duration{5 * time.Second}
 	}
 	if strings.TrimSpace(c.LanceDB.Address) == "" {
 		c.LanceDB.Address = "127.0.0.1:50051"
@@ -426,7 +426,7 @@ func (c *Config) Normalize() {
 	// Default durable local data paths to the gateway-backed DuckDB implementation.
 	// 为本地持久化数据路径默认归一到基于网关的 DuckDB 实现。
 	if strings.TrimSpace(c.Relational.Provider) == "" {
-		c.Relational.Provider = "dockdb"
+		c.Relational.Provider = "duckdb"
 	}
 }
 
@@ -444,8 +444,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
 		return errors.New("noise.default_language is required")
 	}
-	if strings.TrimSpace(c.DockDB.Address) == "" {
-		return errors.New("dockdb.address is required")
+	if strings.TrimSpace(c.DuckDB.Address) == "" {
+		return errors.New("duckdb.address is required")
 	}
 	if strings.TrimSpace(c.LanceDB.Address) == "" {
 		return errors.New("lancedb.address is required")
@@ -497,9 +497,9 @@ func (c Config) Validate() error {
 		return errors.New("vector.provider must be lancedb")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
-	case "dockdb":
+	case "duckdb":
 	default:
-		return errors.New("relational.provider must be dockdb")
+		return errors.New("relational.provider must be duckdb")
 	}
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
@@ -589,8 +589,8 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
 	setBool("VMM_NOISE_SEMANTIC_ENABLED", &cfg.Noise.SemanticEnabled)
 	setFloat("VMM_NOISE_SEMANTIC_THRESHOLD", &cfg.Noise.SemanticThreshold)
-	setString("VMM_DOCKDB_ADDRESS", &cfg.DockDB.Address)
-	setDuration("VMM_DOCKDB_TIMEOUT", &cfg.DockDB.Timeout)
+	setString("VMM_DUCKDB_ADDRESS", &cfg.DuckDB.Address)
+	setDuration("VMM_DUCKDB_TIMEOUT", &cfg.DuckDB.Timeout)
 	setString("VMM_LANCEDB_ADDRESS", &cfg.LanceDB.Address)
 	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
 	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
