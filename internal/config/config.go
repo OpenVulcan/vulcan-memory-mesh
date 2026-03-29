@@ -161,10 +161,13 @@ type RelationalConfig struct {
 	Provider string `json:"provider"`
 }
 
-// PostActionConfig controls how strictly the inbound snapshot is validated before normalization.
-// PostActionConfig 用于控制在进入标准化流程前，对入站快照执行多严格的校验。
+// PostActionConfig controls inbound validation strictness plus the future session-level analysis thresholds used by the post-action pipeline.
+// PostActionConfig 用于控制入站校验严格度，以及 post-action 流水线未来执行 session 级分析时使用的阈值。
 type PostActionConfig struct {
-	InputMode string `json:"input_mode"`
+	InputMode                     string   `json:"input_mode"`
+	SessionAnalysisTurnThreshold  int      `json:"session_analysis_turn_threshold"`
+	SessionAnalysisTokenThreshold int      `json:"session_analysis_token_threshold"`
+	SessionAnalysisIdleTimeout    Duration `json:"session_analysis_idle_timeout"`
 }
 
 // PreCheckConfig controls timeout and recall window settings for the pre-check workflow.
@@ -192,16 +195,21 @@ func DefaultLocal() Config {
 			RequestTimeout:         GRPCRequestTimeout{Workspace: Duration{15 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
 		},
-		Logging:        LoggingConfig{Level: "info", Format: "text"},
-		PII:            PIIConfig{DefaultLanguage: "zh-CN"},
-		Noise:          NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
-		DuckDB:         DuckDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
-		LanceDB:        LanceDBConfig{Address: "127.0.0.1:50051", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
-		LLM:            LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
-		Embedding:      EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
-		Vector:         VectorConfig{Provider: "lancedb"},
-		Relational:     RelationalConfig{Provider: "duckdb"},
-		PostAction:     PostActionConfig{InputMode: "compat"},
+		Logging:    LoggingConfig{Level: "info", Format: "text"},
+		PII:        PIIConfig{DefaultLanguage: "zh-CN"},
+		Noise:      NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
+		DuckDB:     DuckDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
+		LanceDB:    LanceDBConfig{Address: "127.0.0.1:50051", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
+		LLM:        LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
+		Embedding:  EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
+		Vector:     VectorConfig{Provider: "lancedb"},
+		Relational: RelationalConfig{Provider: "duckdb"},
+		PostAction: PostActionConfig{
+			InputMode:                     "compat",
+			SessionAnalysisTurnThreshold:  20,
+			SessionAnalysisTokenThreshold: 12000,
+			SessionAnalysisIdleTimeout:    Duration{15 * time.Minute},
+		},
 		PreCheck:       PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
 	}
@@ -362,6 +370,15 @@ func (c *Config) Normalize() {
 	}
 	if c.PreCheck.TopK <= 0 {
 		c.PreCheck.TopK = 5
+	}
+	if c.PostAction.SessionAnalysisTurnThreshold <= 0 {
+		c.PostAction.SessionAnalysisTurnThreshold = 20
+	}
+	if c.PostAction.SessionAnalysisTokenThreshold <= 0 {
+		c.PostAction.SessionAnalysisTokenThreshold = 12000
+	}
+	if c.PostAction.SessionAnalysisIdleTimeout.Duration <= 0 {
+		c.PostAction.SessionAnalysisIdleTimeout = Duration{15 * time.Minute}
 	}
 
 	// Clamp memory pipeline knobs to keep recall fan-out predictable.
@@ -527,6 +544,15 @@ func (c Config) Validate() error {
 	default:
 		return errors.New("post_action.input_mode must be either strict or compat")
 	}
+	if c.PostAction.SessionAnalysisTurnThreshold <= 0 {
+		return errors.New("post_action.session_analysis_turn_threshold must be > 0")
+	}
+	if c.PostAction.SessionAnalysisTokenThreshold <= 0 {
+		return errors.New("post_action.session_analysis_token_threshold must be > 0")
+	}
+	if c.PostAction.SessionAnalysisIdleTimeout.Duration <= 0 {
+		return errors.New("post_action.session_analysis_idle_timeout must be > 0")
+	}
 	return nil
 }
 
@@ -611,6 +637,9 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_VECTOR_PROVIDER", &cfg.Vector.Provider)
 	setString("VMM_RELATIONAL_PROVIDER", &cfg.Relational.Provider)
 	setString("VMM_POST_ACTION_INPUT_MODE", &cfg.PostAction.InputMode)
+	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_TURN_THRESHOLD", &cfg.PostAction.SessionAnalysisTurnThreshold)
+	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_TOKEN_THRESHOLD", &cfg.PostAction.SessionAnalysisTokenThreshold)
+	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", &cfg.PostAction.SessionAnalysisIdleTimeout)
 	setDuration("VMM_PRE_CHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
 	setInt("VMM_PRE_CHECK_TOPK", &cfg.PreCheck.TopK)
 	setFloat("VMM_PRE_CHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)

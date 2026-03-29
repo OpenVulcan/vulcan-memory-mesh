@@ -61,7 +61,10 @@
     "provider": "${VMM_RELATIONAL_PROVIDER}"
   },
   "post_action": {
-    "input_mode": "compat"
+    "input_mode": "compat",
+    "session_analysis_turn_threshold": 20,
+    "session_analysis_token_threshold": 12000,
+    "session_analysis_idle_timeout": "15m"
   },
   "pre_check": {
     "intent_timeout": "5s",

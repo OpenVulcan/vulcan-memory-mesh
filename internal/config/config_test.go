@@ -19,6 +19,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.GRPC.RequestTimeout.PostAction = Duration{}
 	cfg.PreCheck.IntentTimeout = Duration{}
 	cfg.PostAction.InputMode = ""
+	cfg.PostAction.SessionAnalysisTurnThreshold = 0
+	cfg.PostAction.SessionAnalysisTokenThreshold = 0
+	cfg.PostAction.SessionAnalysisIdleTimeout = Duration{}
 	cfg.Vector.Provider = ""
 	cfg.Relational.Provider = ""
 	cfg.DuckDB.Address = ""
@@ -46,6 +49,15 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if cfg.PostAction.InputMode != "compat" {
 		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
+	}
+	if cfg.PostAction.SessionAnalysisTurnThreshold != 20 {
+		t.Fatalf("post action session analysis turn threshold = %d", cfg.PostAction.SessionAnalysisTurnThreshold)
+	}
+	if cfg.PostAction.SessionAnalysisTokenThreshold != 12000 {
+		t.Fatalf("post action session analysis token threshold = %d", cfg.PostAction.SessionAnalysisTokenThreshold)
+	}
+	if cfg.PostAction.SessionAnalysisIdleTimeout.Duration != 15*time.Minute {
+		t.Fatalf("post action session analysis idle timeout = %v", cfg.PostAction.SessionAnalysisIdleTimeout.Duration)
 	}
 	if cfg.Vector.Provider != "lancedb" {
 		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
@@ -85,6 +97,28 @@ func TestConfigValidateRejectsUnknownPostActionMode(t *testing.T) {
 	cfg.PostAction.InputMode = "broken"
 	if err := cfg.Validate(); err == nil || err.Error() != "post_action.input_mode must be either strict or compat" {
 		t.Fatalf("unexpected validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsInvalidPostActionAnalysisThresholds verifies the future session-analysis trigger thresholds must stay positive.
+// TestConfigValidateRejectsInvalidPostActionAnalysisThresholds 用于验证未来 session 分析触发阈值必须保持正数。
+func TestConfigValidateRejectsInvalidPostActionAnalysisThresholds(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.PostAction.SessionAnalysisTurnThreshold = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_turn_threshold must be > 0" {
+		t.Fatalf("unexpected turn-threshold validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.PostAction.SessionAnalysisTokenThreshold = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_token_threshold must be > 0" {
+		t.Fatalf("unexpected token-threshold validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.PostAction.SessionAnalysisIdleTimeout = Duration{}
+	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_idle_timeout must be > 0" {
+		t.Fatalf("unexpected idle-timeout validate error: %v", err)
 	}
 }
 
@@ -237,6 +271,27 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 	}
 	if enabled, ok := modelParams["enable_thinking"].(bool); !ok || enabled {
 		t.Fatalf("llm.model_params.enable_thinking = %#v", modelParams["enable_thinking"])
+	}
+}
+
+// TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds verifies process-level overrides can tune the future session-analysis trigger thresholds.
+// TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds 用于验证进程级环境变量可以覆盖未来 session 分析触发阈值。
+func TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_TURN_THRESHOLD", "33")
+	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_TOKEN_THRESHOLD", "24000")
+	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", "25m")
+
+	applyEnvOverrides(&cfg)
+
+	if cfg.PostAction.SessionAnalysisTurnThreshold != 33 {
+		t.Fatalf("post action session analysis turn threshold = %d", cfg.PostAction.SessionAnalysisTurnThreshold)
+	}
+	if cfg.PostAction.SessionAnalysisTokenThreshold != 24000 {
+		t.Fatalf("post action session analysis token threshold = %d", cfg.PostAction.SessionAnalysisTokenThreshold)
+	}
+	if cfg.PostAction.SessionAnalysisIdleTimeout.Duration != 25*time.Minute {
+		t.Fatalf("post action session analysis idle timeout = %v", cfg.PostAction.SessionAnalysisIdleTimeout.Duration)
 	}
 }
 

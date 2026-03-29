@@ -272,7 +272,10 @@ grpcurl -plaintext `
     }
   },
   "post_action": {
-    "input_mode": "compat"
+    "input_mode": "compat",
+    "session_analysis_turn_threshold": 20,
+    "session_analysis_token_threshold": 12000,
+    "session_analysis_idle_timeout": "15m"
   }
 }
 ```
@@ -282,10 +285,24 @@ grpcurl -plaintext `
 - `grpc.max_receive_message_bytes`
 - `grpc.request_timeout.post_action`
 - `post_action.input_mode`
+- `post_action.session_analysis_turn_threshold`
+- `post_action.session_analysis_token_threshold`
+- `post_action.session_analysis_idle_timeout`
 - `noise.enabled`
 - `noise.default_language`
 - `noise.semantic_enabled`
 - `noise.semantic_threshold`
+
+其中：
+
+- `post_action.session_analysis_turn_threshold`
+  - 表示同一个 session 在后台累计达到多少条 `turn` 后，满足一次后续 LLM 分析条件
+- `post_action.session_analysis_token_threshold`
+  - 表示同一个 session 在后台累计达到多少 token 预算后，满足一次后续 LLM 分析条件
+- `post_action.session_analysis_idle_timeout`
+  - 表示距离同一个 session 最后一次会话更新时间超过多久后，强制满足一次后续 LLM 分析条件
+
+当前三者的关系是“任一达到即可触发”。这次只增加了配置入口；真正的 LLM 分析触发与执行逻辑，会在后续实现中接入。
 
 ## 当前限制
 

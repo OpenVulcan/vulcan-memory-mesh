@@ -20,6 +20,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
 - [DuckDB Schema 版本管理说明（中文）](./docs/duckdb-schema-versioning_CN.md)
+- [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 
 ## 当前运行模型
@@ -173,6 +174,24 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `embedding.*`
 - `noise.*`
 - `post_action.input_mode`
+- `post_action.session_analysis_turn_threshold`
+- `post_action.session_analysis_token_threshold`
+- `post_action.session_analysis_idle_timeout`
+
+`post_action` 下这三个阈值用于后续 session 级 LLM 分析触发：
+
+- `session_analysis_turn_threshold`
+  - 同一个 session 累计达到多少条 `turn` 后，满足一次分析条件
+- `session_analysis_token_threshold`
+  - 同一个 session 累计达到多少 token 预算后，满足一次分析条件
+- `session_analysis_idle_timeout`
+  - 距离同一个 session 最后一次会话更新时间超过多久后，强制满足一次分析条件
+
+当前三者的关系是“任一达到即可触发后续分析”；这次改动先只增加配置，不接入实际 LLM 执行。
+
+另外，当前还有一批“已经声明但尚未接入主运行时”的配置参数，见：
+
+- [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 
 ### 超时模型
 
