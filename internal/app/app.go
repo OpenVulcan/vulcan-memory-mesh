@@ -15,8 +15,8 @@ import (
 	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/config"
@@ -187,7 +187,7 @@ func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 func buildVector(cfg config.Config) (appports.VectorStore, error) {
 	switch strings.ToLower(cfg.Vector.Provider) {
 	case "lancedb":
-		return vldg_lancedb.NewStore(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
+		return vldb_lancedb.NewStore(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
 	default:
 		return nil, fmt.Errorf("unsupported vector provider: %s", cfg.Vector.Provider)
 	}
@@ -198,7 +198,7 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	switch strings.ToLower(cfg.Relational.Provider) {
 	case "duckdb":
-		return vldg_duckdb.NewStore(cfg.DuckDB.Address, cfg.DuckDB.Timeout.Duration)
+		return vldb_duckdb.NewStore(cfg.DuckDB.Address, cfg.DuckDB.Timeout.Duration)
 	default:
 		return nil, fmt.Errorf("unsupported relational provider: %s", cfg.Relational.Provider)
 	}

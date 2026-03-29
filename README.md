@@ -140,6 +140,22 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 `-config` 表示“覆盖根目录”，不是单个配置文件路径。
 
+### 调试清库
+
+需要调试时，可以继续通过 `make` 调主程序，但把清理目标通过 `--debug-clean` 传给二进制：
+
+```powershell
+.\make.bat run --debug-clean duckdb
+.\make.bat run --debug-clean lancedb
+.\make.bat run --debug-clean all
+```
+
+说明：
+
+- `make` 只负责透传参数，不在脚本里直接做数据库清理
+- `vmm-local --debug-clean ...` 会只连接对应的 DuckDB / LanceDB gRPC 网关
+- 清理完成后立即退出，不会启动 VMM gRPC 服务
+
 ## 配置说明
 
 当前关键配置项：

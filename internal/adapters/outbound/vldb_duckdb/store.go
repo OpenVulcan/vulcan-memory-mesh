@@ -1,6 +1,6 @@
 // store.go implements the DuckDB-gateway outbound adapter used as the durable SQL source of truth.
 // store.go 用于实现 DuckDB 网关适配器，并把它作为长期 SQL 事实来源。
-package vldg_duckdb
+package vldb_duckdb
 
 import (
 	"context"
@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb/proto/v1"
+	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"google.golang.org/grpc"

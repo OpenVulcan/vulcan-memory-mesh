@@ -17,7 +17,7 @@ VMM 当前已经取消 SQLite 运行时支持，长期 SQL 数据通过 DuckDB �
 
 相关代码在：
 
-- [internal/adapters/outbound/vldg_duckdb/store.go](../internal/adapters/outbound/vldg_duckdb/store.go)
+- [internal/adapters/outbound/vldb_duckdb/store.go](../internal/adapters/outbound/vldb_duckdb/store.go)
 
 当前阶段仍处于调试期，因此策略是：
 
@@ -196,7 +196,7 @@ const currentSchemaVersion = 3
 
 当前相关测试在：
 
-- [internal/adapters/outbound/vldg_duckdb/store_test.go](../internal/adapters/outbound/vldg_duckdb/store_test.go)
+- [internal/adapters/outbound/vldb_duckdb/store_test.go](../internal/adapters/outbound/vldb_duckdb/store_test.go)
 
 ## LanceDB 为什么没有共用这套版本表
 

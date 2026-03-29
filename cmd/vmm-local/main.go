@@ -28,6 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 	cfgPath := flag.String("config", "", "user config dir (~/.vmm by default); legacy json config file path is still supported")
+	debugClean := flag.String("debug-clean", "", "debug-only gateway cleanup target: duckdb, lancedb, or all")
 	flag.Parse()
 
 	// Build the prompt/config layout before any application dependency is created.
@@ -43,16 +44,26 @@ func main() {
 		fmt.Printf("[vmm-boot] ConfigChain[%d]: %s\n", idx, path)
 	}
 
-	// Load prompt assets and merged configuration layers for the local runtime.
-	// 为本地运行时加载提示词资产和合并后的配置层。
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "%v\n", err)
-		os.Exit(1)
-	}
+	// Load the merged configuration layers before deciding whether to run the full server or one debug-only cleanup path.
+	// 先加载合并后的配置层，再决定是启动完整服务还是进入调试专用清理路径。
 	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultLocal())
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
+		os.Exit(1)
+	}
+	if *debugClean != "" {
+		if err := runDebugClean(context.Background(), cfg, *debugClean); err != nil {
+			fmt.Fprintf(os.Stderr, "debug clean: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
+
+	// Load prompt assets only for the normal runtime path because debug-clean exits after talking to storage gateways.
+	// 仅在正常运行路径加载提示词资产，因为 debug-clean 会在访问存储网关后直接退出。
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
 

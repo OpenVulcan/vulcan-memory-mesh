@@ -19,11 +19,11 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	LanceDbService_CreateTable_FullMethodName  = "/vldg.lancedb.v1.LanceDbService/CreateTable"
-	LanceDbService_VectorUpsert_FullMethodName = "/vldg.lancedb.v1.LanceDbService/VectorUpsert"
-	LanceDbService_VectorSearch_FullMethodName = "/vldg.lancedb.v1.LanceDbService/VectorSearch"
-	LanceDbService_Delete_FullMethodName       = "/vldg.lancedb.v1.LanceDbService/Delete"
-	LanceDbService_DropTable_FullMethodName    = "/vldg.lancedb.v1.LanceDbService/DropTable"
+	LanceDbService_CreateTable_FullMethodName  = "/vldb.lancedb.v1.LanceDbService/CreateTable"
+	LanceDbService_VectorUpsert_FullMethodName = "/vldb.lancedb.v1.LanceDbService/VectorUpsert"
+	LanceDbService_VectorSearch_FullMethodName = "/vldb.lancedb.v1.LanceDbService/VectorSearch"
+	LanceDbService_Delete_FullMethodName       = "/vldb.lancedb.v1.LanceDbService/Delete"
+	LanceDbService_DropTable_FullMethodName    = "/vldb.lancedb.v1.LanceDbService/DropTable"
 )
 
 // LanceDbServiceClient is the client API for LanceDbService service.
@@ -244,7 +244,7 @@ func _LanceDbService_DropTable_Handler(srv interface{}, ctx context.Context, dec
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var LanceDbService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "vldg.lancedb.v1.LanceDbService",
+	ServiceName: "vldb.lancedb.v1.LanceDbService",
 	HandlerType: (*LanceDbServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

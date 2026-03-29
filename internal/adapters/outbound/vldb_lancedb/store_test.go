@@ -1,6 +1,6 @@
 // store_test.go exercises the LanceDB-gateway adapter against the flattened numeric metadata contract.
 // store_test.go 用于围绕扁平化数字元数据契约验证 LanceDB 网关适配器。
-package vldg_lancedb
+package vldb_lancedb
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb/proto/v1"
+	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -142,6 +142,38 @@ func TestInitIgnoresAlreadyExistsResponses(t *testing.T) {
 	}
 }
 
+// TestDebugDropConfiguredTableDropsResolvedTable verifies the debug-clean helper drops the resolved runtime LanceDB table.
+// TestDebugDropConfiguredTableDropsResolvedTable 用于验证调试清理辅助逻辑会删除解析后的运行时 LanceDB 表。
+func TestDebugDropConfiguredTableDropsResolvedTable(t *testing.T) {
+	server := &fakeLanceDBServer{}
+	store := newLanceDBTestStoreWithoutInit(t, server)
+
+	if err := debugDropTableWithClient(context.Background(), store.client, "vmm_memory_vectors_3", time.Second); err != nil {
+		t.Fatalf("debug drop configured table: %v", err)
+	}
+
+	requests := server.dropRequests()
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 drop-table request, got %d", len(requests))
+	}
+	if requests[0].GetTableName() != "vmm_memory_vectors_3" {
+		t.Fatalf("unexpected drop-table target: %s", requests[0].GetTableName())
+	}
+}
+
+// TestDebugDropConfiguredTableTreatsMissingTableAsSuccess verifies repeated debug cleans stay idempotent when the target table is already gone.
+// TestDebugDropConfiguredTableTreatsMissingTableAsSuccess 用于验证目标表已经不存在时，重复执行调试清理仍保持幂等成功。
+func TestDebugDropConfiguredTableTreatsMissingTableAsSuccess(t *testing.T) {
+	server := &fakeLanceDBServer{
+		dropResponse: &lancedbv1.DropTableResponse{Success: false, Message: "table does not exist"},
+	}
+	store := newLanceDBTestStoreWithoutInit(t, server)
+
+	if err := debugDropTableWithClient(context.Background(), store.client, "vmm_memory_vectors_3", time.Second); err != nil {
+		t.Fatalf("debug drop configured table should tolerate missing table: %v", err)
+	}
+}
+
 // newLanceDBTestStore creates one initialized adapter backed by a bufconn gRPC server.
 // newLanceDBTestStore 用于创建一个已经初始化完成、并由 bufconn gRPC 服务支撑的适配器实例。
 func newLanceDBTestStore(t *testing.T, server *fakeLanceDBServer) *Store {
@@ -208,6 +240,9 @@ type fakeLanceDBServer struct {
 	searchData     []byte
 	searchMessage  string
 	searchSuccess  bool
+	dropCalls      []*lancedbv1.DropTableRequest
+	dropResponse   *lancedbv1.DropTableResponse
+	dropErr        error
 }
 
 // CreateTable records the bootstrap request and reports success so the adapter can initialize normally.
@@ -257,6 +292,21 @@ func (s *fakeLanceDBServer) Delete(_ context.Context, req *lancedbv1.DeleteReque
 	return &lancedbv1.DeleteResponse{Success: true, DeletedRows: 0, Message: "ok"}, nil
 }
 
+// DropTable records drop requests so tests can assert debug-clean behavior against the resolved runtime table name.
+// DropTable 用于记录删表请求，方便测试断言调试清理是否命中了正确的运行时表名。
+func (s *fakeLanceDBServer) DropTable(_ context.Context, req *lancedbv1.DropTableRequest) (*lancedbv1.DropTableResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.dropCalls = append(s.dropCalls, req)
+	if s.dropErr != nil {
+		return nil, s.dropErr
+	}
+	if s.dropResponse != nil {
+		return s.dropResponse, nil
+	}
+	return &lancedbv1.DropTableResponse{Success: true, Message: "ok"}, nil
+}
+
 // upsertRequests returns a stable snapshot of recorded upsert requests.
 // upsertRequests 用于返回已记录 upsert 请求的稳定快照。
 func (s *fakeLanceDBServer) upsertRequests() []*lancedbv1.UpsertRequest {
@@ -274,5 +324,15 @@ func (s *fakeLanceDBServer) searchRequests() []*lancedbv1.SearchRequest {
 	defer s.mu.Unlock()
 	out := make([]*lancedbv1.SearchRequest, len(s.searchCalls))
 	copy(out, s.searchCalls)
+	return out
+}
+
+// dropRequests returns a stable snapshot of recorded drop-table requests.
+// dropRequests 用于返回已记录删表请求的稳定快照。
+func (s *fakeLanceDBServer) dropRequests() []*lancedbv1.DropTableRequest {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]*lancedbv1.DropTableRequest, len(s.dropCalls))
+	copy(out, s.dropCalls)
 	return out
 }

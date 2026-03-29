@@ -1,6 +1,6 @@
 // store.go implements the LanceDB-gateway outbound adapter used by vector recall and admin cleanup flows.
 // store.go 用于实现基于 LanceDB 网关的出站适配器，承接向量召回和管理清理流程。
-package vldg_lancedb
+package vldb_lancedb
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"strings"
 	"time"
 
-	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb/proto/v1"
+	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"

@@ -1,6 +1,6 @@
 // persona.go implements the persona-loading side of the DuckDB gateway adapter.
 // persona.go 用于实现 DuckDB 网关适配器中的画像加载能力。
-package vldg_duckdb
+package vldb_duckdb
 
 import (
 	"context"

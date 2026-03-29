@@ -19,9 +19,9 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	DuckDbService_ExecuteScript_FullMethodName = "/vldg.duckdb.v1.DuckDbService/ExecuteScript"
-	DuckDbService_QueryStream_FullMethodName   = "/vldg.duckdb.v1.DuckDbService/QueryStream"
-	DuckDbService_QueryJson_FullMethodName     = "/vldg.duckdb.v1.DuckDbService/QueryJson"
+	DuckDbService_ExecuteScript_FullMethodName = "/vldb.duckdb.v1.DuckDbService/ExecuteScript"
+	DuckDbService_QueryStream_FullMethodName   = "/vldb.duckdb.v1.DuckDbService/QueryStream"
+	DuckDbService_QueryJson_FullMethodName     = "/vldb.duckdb.v1.DuckDbService/QueryJson"
 )
 
 // DuckDbServiceClient is the client API for DuckDbService service.
@@ -184,7 +184,7 @@ func _DuckDbService_QueryJson_Handler(srv interface{}, ctx context.Context, dec 
 // It's only intended for direct use with grpc.RegisterService,
 // and not to be introspected or modified (even as a copy)
 var DuckDbService_ServiceDesc = grpc.ServiceDesc{
-	ServiceName: "vldg.duckdb.v1.DuckDbService",
+	ServiceName: "vldb.duckdb.v1.DuckDbService",
 	HandlerType: (*DuckDbServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{

@@ -269,7 +269,7 @@ var File_proto_v1_duckdb_proto protoreflect.FileDescriptor
 
 const file_proto_v1_duckdb_proto_rawDesc = "" +
 	"\n" +
-	"\x15proto/v1/duckdb.proto\x12\x0evldg.duckdb.v1\"C\n" +
+	"\x15proto/v1/duckdb.proto\x12\x0evldb.duckdb.v1\"C\n" +
 	"\x0eExecuteRequest\x12\x10\n" +
 	"\x03sql\x18\x01 \x01(\tR\x03sql\x12\x1f\n" +
 	"\vparams_json\x18\x02 \x01(\tR\n" +
@@ -286,9 +286,9 @@ const file_proto_v1_duckdb_proto_rawDesc = "" +
 	"\x11QueryJsonResponse\x12\x1b\n" +
 	"\tjson_data\x18\x01 \x01(\tR\bjsonData2\xfd\x01\n" +
 	"\rDuckDbService\x12P\n" +
-	"\rExecuteScript\x12\x1e.vldg.duckdb.v1.ExecuteRequest\x1a\x1f.vldg.duckdb.v1.ExecuteResponse\x12L\n" +
-	"\vQueryStream\x12\x1c.vldg.duckdb.v1.QueryRequest\x1a\x1d.vldg.duckdb.v1.QueryResponse0\x01\x12L\n" +
-	"\tQueryJson\x12\x1c.vldg.duckdb.v1.QueryRequest\x1a!.vldg.duckdb.v1.QueryJsonResponseB>Z<github.com/vldg/vldg-duckdb/demo/go-client/proto/v1;duckdbv1b\x06proto3"
+	"\rExecuteScript\x12\x1e.vldb.duckdb.v1.ExecuteRequest\x1a\x1f.vldb.duckdb.v1.ExecuteResponse\x12L\n" +
+	"\vQueryStream\x12\x1c.vldb.duckdb.v1.QueryRequest\x1a\x1d.vldb.duckdb.v1.QueryResponse0\x01\x12L\n" +
+	"\tQueryJson\x12\x1c.vldb.duckdb.v1.QueryRequest\x1a!.vldb.duckdb.v1.QueryJsonResponseB>Z<github.com/vldb/vldb-duckdb/demo/go-client/proto/v1;duckdbv1b\x06proto3"
 
 var (
 	file_proto_v1_duckdb_proto_rawDescOnce sync.Once
@@ -304,19 +304,19 @@ func file_proto_v1_duckdb_proto_rawDescGZIP() []byte {
 
 var file_proto_v1_duckdb_proto_msgTypes = make([]protoimpl.MessageInfo, 5)
 var file_proto_v1_duckdb_proto_goTypes = []any{
-	(*ExecuteRequest)(nil),    // 0: vldg.duckdb.v1.ExecuteRequest
-	(*ExecuteResponse)(nil),   // 1: vldg.duckdb.v1.ExecuteResponse
-	(*QueryRequest)(nil),      // 2: vldg.duckdb.v1.QueryRequest
-	(*QueryResponse)(nil),     // 3: vldg.duckdb.v1.QueryResponse
-	(*QueryJsonResponse)(nil), // 4: vldg.duckdb.v1.QueryJsonResponse
+	(*ExecuteRequest)(nil),    // 0: vldb.duckdb.v1.ExecuteRequest
+	(*ExecuteResponse)(nil),   // 1: vldb.duckdb.v1.ExecuteResponse
+	(*QueryRequest)(nil),      // 2: vldb.duckdb.v1.QueryRequest
+	(*QueryResponse)(nil),     // 3: vldb.duckdb.v1.QueryResponse
+	(*QueryJsonResponse)(nil), // 4: vldb.duckdb.v1.QueryJsonResponse
 }
 var file_proto_v1_duckdb_proto_depIdxs = []int32{
-	0, // 0: vldg.duckdb.v1.DuckDbService.ExecuteScript:input_type -> vldg.duckdb.v1.ExecuteRequest
-	2, // 1: vldg.duckdb.v1.DuckDbService.QueryStream:input_type -> vldg.duckdb.v1.QueryRequest
-	2, // 2: vldg.duckdb.v1.DuckDbService.QueryJson:input_type -> vldg.duckdb.v1.QueryRequest
-	1, // 3: vldg.duckdb.v1.DuckDbService.ExecuteScript:output_type -> vldg.duckdb.v1.ExecuteResponse
-	3, // 4: vldg.duckdb.v1.DuckDbService.QueryStream:output_type -> vldg.duckdb.v1.QueryResponse
-	4, // 5: vldg.duckdb.v1.DuckDbService.QueryJson:output_type -> vldg.duckdb.v1.QueryJsonResponse
+	0, // 0: vldb.duckdb.v1.DuckDbService.ExecuteScript:input_type -> vldb.duckdb.v1.ExecuteRequest
+	2, // 1: vldb.duckdb.v1.DuckDbService.QueryStream:input_type -> vldb.duckdb.v1.QueryRequest
+	2, // 2: vldb.duckdb.v1.DuckDbService.QueryJson:input_type -> vldb.duckdb.v1.QueryRequest
+	1, // 3: vldb.duckdb.v1.DuckDbService.ExecuteScript:output_type -> vldb.duckdb.v1.ExecuteResponse
+	3, // 4: vldb.duckdb.v1.DuckDbService.QueryStream:output_type -> vldb.duckdb.v1.QueryResponse
+	4, // 5: vldb.duckdb.v1.DuckDbService.QueryJson:output_type -> vldb.duckdb.v1.QueryJsonResponse
 	3, // [3:6] is the sub-list for method output_type
 	0, // [0:3] is the sub-list for method input_type
 	0, // [0:0] is the sub-list for extension type_name

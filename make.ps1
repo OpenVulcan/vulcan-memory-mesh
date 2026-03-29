@@ -9,7 +9,9 @@
 Param(
     [Parameter(Position=0)]
     [ValidateSet("build", "run", "clean", "all")]
-    $Target = "build"
+    $Target = "build",
+    [Parameter(ValueFromRemainingArguments=$true)]
+    [string[]]$ForwardArgs = @()
 )
 
 $ErrorActionPreference = "Stop"
@@ -29,7 +31,11 @@ Write-Host "--- VMM Task: $Target ---" -ForegroundColor DarkGray
 switch ($Target) {
     "all"   { & $VmmScript build }
     "build" { & $VmmScript build }
-    "run"   { & $VmmScript run }
+    "run"   { & $VmmScript run @ForwardArgs }
     "clean" { & $VmmScript clean }
     Default { & $VmmScript build }
+}
+
+if ($LASTEXITCODE -ne 0) {
+    exit $LASTEXITCODE
 }

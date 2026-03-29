@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb/proto/v1"
-	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_lancedb/proto/v1"
+	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb/proto/v1"
+	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
 	"github.com/openvulcan/vmm/internal/config"
 	"google.golang.org/grpc"
 )

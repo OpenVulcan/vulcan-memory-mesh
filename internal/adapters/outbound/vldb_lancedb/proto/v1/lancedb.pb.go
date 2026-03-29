@@ -192,7 +192,7 @@ func (OutputFormat) EnumDescriptor() ([]byte, []int) {
 type ColumnDef struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	ColumnType    ColumnType             `protobuf:"varint,2,opt,name=column_type,json=columnType,proto3,enum=vldg.lancedb.v1.ColumnType" json:"column_type,omitempty"`
+	ColumnType    ColumnType             `protobuf:"varint,2,opt,name=column_type,json=columnType,proto3,enum=vldb.lancedb.v1.ColumnType" json:"column_type,omitempty"`
 	VectorDim     uint32                 `protobuf:"varint,3,opt,name=vector_dim,json=vectorDim,proto3" json:"vector_dim,omitempty"`
 	Nullable      bool                   `protobuf:"varint,4,opt,name=nullable,proto3" json:"nullable,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -372,7 +372,7 @@ func (x *CreateTableResponse) GetMessage() string {
 type UpsertRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TableName     string                 `protobuf:"bytes,1,opt,name=table_name,json=tableName,proto3" json:"table_name,omitempty"`
-	InputFormat   InputFormat            `protobuf:"varint,2,opt,name=input_format,json=inputFormat,proto3,enum=vldg.lancedb.v1.InputFormat" json:"input_format,omitempty"`
+	InputFormat   InputFormat            `protobuf:"varint,2,opt,name=input_format,json=inputFormat,proto3,enum=vldb.lancedb.v1.InputFormat" json:"input_format,omitempty"`
 	Data          []byte                 `protobuf:"bytes,3,opt,name=data,proto3" json:"data,omitempty"`
 	KeyColumns    []string               `protobuf:"bytes,4,rep,name=key_columns,json=keyColumns,proto3" json:"key_columns,omitempty"`
 	unknownFields protoimpl.UnknownFields
@@ -536,7 +536,7 @@ type SearchRequest struct {
 	Limit         uint32                 `protobuf:"varint,3,opt,name=limit,proto3" json:"limit,omitempty"`
 	Filter        string                 `protobuf:"bytes,4,opt,name=filter,proto3" json:"filter,omitempty"`
 	VectorColumn  string                 `protobuf:"bytes,5,opt,name=vector_column,json=vectorColumn,proto3" json:"vector_column,omitempty"`
-	OutputFormat  OutputFormat           `protobuf:"varint,6,opt,name=output_format,json=outputFormat,proto3,enum=vldg.lancedb.v1.OutputFormat" json:"output_format,omitempty"`
+	OutputFormat  OutputFormat           `protobuf:"varint,6,opt,name=output_format,json=outputFormat,proto3,enum=vldb.lancedb.v1.OutputFormat" json:"output_format,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -909,10 +909,10 @@ var File_proto_v1_lancedb_proto protoreflect.FileDescriptor
 
 const file_proto_v1_lancedb_proto_rawDesc = "" +
 	"\n" +
-	"\x16proto/v1/lancedb.proto\x12\x0fvldg.lancedb.v1\"\x98\x01\n" +
+	"\x16proto/v1/lancedb.proto\x12\x0fvldb.lancedb.v1\"\x98\x01\n" +
 	"\tColumnDef\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12<\n" +
-	"\vcolumn_type\x18\x02 \x01(\x0e2\x1b.vldg.lancedb.v1.ColumnTypeR\n" +
+	"\vcolumn_type\x18\x02 \x01(\x0e2\x1b.vldb.lancedb.v1.ColumnTypeR\n" +
 	"columnType\x12\x1d\n" +
 	"\n" +
 	"vector_dim\x18\x03 \x01(\rR\tvectorDim\x12\x1a\n" +
@@ -920,7 +920,7 @@ const file_proto_v1_lancedb_proto_rawDesc = "" +
 	"\x12CreateTableRequest\x12\x1d\n" +
 	"\n" +
 	"table_name\x18\x01 \x01(\tR\ttableName\x124\n" +
-	"\acolumns\x18\x02 \x03(\v2\x1a.vldg.lancedb.v1.ColumnDefR\acolumns\x12.\n" +
+	"\acolumns\x18\x02 \x03(\v2\x1a.vldb.lancedb.v1.ColumnDefR\acolumns\x12.\n" +
 	"\x13overwrite_if_exists\x18\x03 \x01(\bR\x11overwriteIfExists\"I\n" +
 	"\x13CreateTableResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
@@ -928,7 +928,7 @@ const file_proto_v1_lancedb_proto_rawDesc = "" +
 	"\rUpsertRequest\x12\x1d\n" +
 	"\n" +
 	"table_name\x18\x01 \x01(\tR\ttableName\x12?\n" +
-	"\finput_format\x18\x02 \x01(\x0e2\x1c.vldg.lancedb.v1.InputFormatR\vinputFormat\x12\x12\n" +
+	"\finput_format\x18\x02 \x01(\x0e2\x1c.vldb.lancedb.v1.InputFormatR\vinputFormat\x12\x12\n" +
 	"\x04data\x18\x03 \x01(\fR\x04data\x12\x1f\n" +
 	"\vkey_columns\x18\x04 \x03(\tR\n" +
 	"keyColumns\"\xe8\x01\n" +
@@ -948,7 +948,7 @@ const file_proto_v1_lancedb_proto_rawDesc = "" +
 	"\x05limit\x18\x03 \x01(\rR\x05limit\x12\x16\n" +
 	"\x06filter\x18\x04 \x01(\tR\x06filter\x12#\n" +
 	"\rvector_column\x18\x05 \x01(\tR\fvectorColumn\x12B\n" +
-	"\routput_format\x18\x06 \x01(\x0e2\x1d.vldg.lancedb.v1.OutputFormatR\foutputFormat\"\x84\x01\n" +
+	"\routput_format\x18\x06 \x01(\x0e2\x1d.vldb.lancedb.v1.OutputFormatR\foutputFormat\"\x84\x01\n" +
 	"\x0eSearchResponse\x12\x18\n" +
 	"\asuccess\x18\x01 \x01(\bR\asuccess\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12\x16\n" +
@@ -991,11 +991,11 @@ const file_proto_v1_lancedb_proto_rawDesc = "" +
 	"\x17OUTPUT_FORMAT_ARROW_IPC\x10\x01\x12\x1b\n" +
 	"\x17OUTPUT_FORMAT_JSON_ROWS\x10\x022\xab\x03\n" +
 	"\x0eLanceDbService\x12X\n" +
-	"\vCreateTable\x12#.vldg.lancedb.v1.CreateTableRequest\x1a$.vldg.lancedb.v1.CreateTableResponse\x12O\n" +
-	"\fVectorUpsert\x12\x1e.vldg.lancedb.v1.UpsertRequest\x1a\x1f.vldg.lancedb.v1.UpsertResponse\x12O\n" +
-	"\fVectorSearch\x12\x1e.vldg.lancedb.v1.SearchRequest\x1a\x1f.vldg.lancedb.v1.SearchResponse\x12I\n" +
-	"\x06Delete\x12\x1e.vldg.lancedb.v1.DeleteRequest\x1a\x1f.vldg.lancedb.v1.DeleteResponse\x12R\n" +
-	"\tDropTable\x12!.vldg.lancedb.v1.DropTableRequest\x1a\".vldg.lancedb.v1.DropTableResponseB\x14Z\x12proto/v1;lancedbv1b\x06proto3"
+	"\vCreateTable\x12#.vldb.lancedb.v1.CreateTableRequest\x1a$.vldb.lancedb.v1.CreateTableResponse\x12O\n" +
+	"\fVectorUpsert\x12\x1e.vldb.lancedb.v1.UpsertRequest\x1a\x1f.vldb.lancedb.v1.UpsertResponse\x12O\n" +
+	"\fVectorSearch\x12\x1e.vldb.lancedb.v1.SearchRequest\x1a\x1f.vldb.lancedb.v1.SearchResponse\x12I\n" +
+	"\x06Delete\x12\x1e.vldb.lancedb.v1.DeleteRequest\x1a\x1f.vldb.lancedb.v1.DeleteResponse\x12R\n" +
+	"\tDropTable\x12!.vldb.lancedb.v1.DropTableRequest\x1a\".vldb.lancedb.v1.DropTableResponseB\x14Z\x12proto/v1;lancedbv1b\x06proto3"
 
 var (
 	file_proto_v1_lancedb_proto_rawDescOnce sync.Once
@@ -1012,36 +1012,36 @@ func file_proto_v1_lancedb_proto_rawDescGZIP() []byte {
 var file_proto_v1_lancedb_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
 var file_proto_v1_lancedb_proto_msgTypes = make([]protoimpl.MessageInfo, 11)
 var file_proto_v1_lancedb_proto_goTypes = []any{
-	(ColumnType)(0),             // 0: vldg.lancedb.v1.ColumnType
-	(InputFormat)(0),            // 1: vldg.lancedb.v1.InputFormat
-	(OutputFormat)(0),           // 2: vldg.lancedb.v1.OutputFormat
-	(*ColumnDef)(nil),           // 3: vldg.lancedb.v1.ColumnDef
-	(*CreateTableRequest)(nil),  // 4: vldg.lancedb.v1.CreateTableRequest
-	(*CreateTableResponse)(nil), // 5: vldg.lancedb.v1.CreateTableResponse
-	(*UpsertRequest)(nil),       // 6: vldg.lancedb.v1.UpsertRequest
-	(*UpsertResponse)(nil),      // 7: vldg.lancedb.v1.UpsertResponse
-	(*SearchRequest)(nil),       // 8: vldg.lancedb.v1.SearchRequest
-	(*SearchResponse)(nil),      // 9: vldg.lancedb.v1.SearchResponse
-	(*DeleteRequest)(nil),       // 10: vldg.lancedb.v1.DeleteRequest
-	(*DeleteResponse)(nil),      // 11: vldg.lancedb.v1.DeleteResponse
-	(*DropTableRequest)(nil),    // 12: vldg.lancedb.v1.DropTableRequest
-	(*DropTableResponse)(nil),   // 13: vldg.lancedb.v1.DropTableResponse
+	(ColumnType)(0),             // 0: vldb.lancedb.v1.ColumnType
+	(InputFormat)(0),            // 1: vldb.lancedb.v1.InputFormat
+	(OutputFormat)(0),           // 2: vldb.lancedb.v1.OutputFormat
+	(*ColumnDef)(nil),           // 3: vldb.lancedb.v1.ColumnDef
+	(*CreateTableRequest)(nil),  // 4: vldb.lancedb.v1.CreateTableRequest
+	(*CreateTableResponse)(nil), // 5: vldb.lancedb.v1.CreateTableResponse
+	(*UpsertRequest)(nil),       // 6: vldb.lancedb.v1.UpsertRequest
+	(*UpsertResponse)(nil),      // 7: vldb.lancedb.v1.UpsertResponse
+	(*SearchRequest)(nil),       // 8: vldb.lancedb.v1.SearchRequest
+	(*SearchResponse)(nil),      // 9: vldb.lancedb.v1.SearchResponse
+	(*DeleteRequest)(nil),       // 10: vldb.lancedb.v1.DeleteRequest
+	(*DeleteResponse)(nil),      // 11: vldb.lancedb.v1.DeleteResponse
+	(*DropTableRequest)(nil),    // 12: vldb.lancedb.v1.DropTableRequest
+	(*DropTableResponse)(nil),   // 13: vldb.lancedb.v1.DropTableResponse
 }
 var file_proto_v1_lancedb_proto_depIdxs = []int32{
-	0,  // 0: vldg.lancedb.v1.ColumnDef.column_type:type_name -> vldg.lancedb.v1.ColumnType
-	3,  // 1: vldg.lancedb.v1.CreateTableRequest.columns:type_name -> vldg.lancedb.v1.ColumnDef
-	1,  // 2: vldg.lancedb.v1.UpsertRequest.input_format:type_name -> vldg.lancedb.v1.InputFormat
-	2,  // 3: vldg.lancedb.v1.SearchRequest.output_format:type_name -> vldg.lancedb.v1.OutputFormat
-	4,  // 4: vldg.lancedb.v1.LanceDbService.CreateTable:input_type -> vldg.lancedb.v1.CreateTableRequest
-	6,  // 5: vldg.lancedb.v1.LanceDbService.VectorUpsert:input_type -> vldg.lancedb.v1.UpsertRequest
-	8,  // 6: vldg.lancedb.v1.LanceDbService.VectorSearch:input_type -> vldg.lancedb.v1.SearchRequest
-	10, // 7: vldg.lancedb.v1.LanceDbService.Delete:input_type -> vldg.lancedb.v1.DeleteRequest
-	12, // 8: vldg.lancedb.v1.LanceDbService.DropTable:input_type -> vldg.lancedb.v1.DropTableRequest
-	5,  // 9: vldg.lancedb.v1.LanceDbService.CreateTable:output_type -> vldg.lancedb.v1.CreateTableResponse
-	7,  // 10: vldg.lancedb.v1.LanceDbService.VectorUpsert:output_type -> vldg.lancedb.v1.UpsertResponse
-	9,  // 11: vldg.lancedb.v1.LanceDbService.VectorSearch:output_type -> vldg.lancedb.v1.SearchResponse
-	11, // 12: vldg.lancedb.v1.LanceDbService.Delete:output_type -> vldg.lancedb.v1.DeleteResponse
-	13, // 13: vldg.lancedb.v1.LanceDbService.DropTable:output_type -> vldg.lancedb.v1.DropTableResponse
+	0,  // 0: vldb.lancedb.v1.ColumnDef.column_type:type_name -> vldb.lancedb.v1.ColumnType
+	3,  // 1: vldb.lancedb.v1.CreateTableRequest.columns:type_name -> vldb.lancedb.v1.ColumnDef
+	1,  // 2: vldb.lancedb.v1.UpsertRequest.input_format:type_name -> vldb.lancedb.v1.InputFormat
+	2,  // 3: vldb.lancedb.v1.SearchRequest.output_format:type_name -> vldb.lancedb.v1.OutputFormat
+	4,  // 4: vldb.lancedb.v1.LanceDbService.CreateTable:input_type -> vldb.lancedb.v1.CreateTableRequest
+	6,  // 5: vldb.lancedb.v1.LanceDbService.VectorUpsert:input_type -> vldb.lancedb.v1.UpsertRequest
+	8,  // 6: vldb.lancedb.v1.LanceDbService.VectorSearch:input_type -> vldb.lancedb.v1.SearchRequest
+	10, // 7: vldb.lancedb.v1.LanceDbService.Delete:input_type -> vldb.lancedb.v1.DeleteRequest
+	12, // 8: vldb.lancedb.v1.LanceDbService.DropTable:input_type -> vldb.lancedb.v1.DropTableRequest
+	5,  // 9: vldb.lancedb.v1.LanceDbService.CreateTable:output_type -> vldb.lancedb.v1.CreateTableResponse
+	7,  // 10: vldb.lancedb.v1.LanceDbService.VectorUpsert:output_type -> vldb.lancedb.v1.UpsertResponse
+	9,  // 11: vldb.lancedb.v1.LanceDbService.VectorSearch:output_type -> vldb.lancedb.v1.SearchResponse
+	11, // 12: vldb.lancedb.v1.LanceDbService.Delete:output_type -> vldb.lancedb.v1.DeleteResponse
+	13, // 13: vldb.lancedb.v1.LanceDbService.DropTable:output_type -> vldb.lancedb.v1.DropTableResponse
 	9,  // [9:14] is the sub-list for method output_type
 	4,  // [4:9] is the sub-list for method input_type
 	4,  // [4:4] is the sub-list for extension type_name

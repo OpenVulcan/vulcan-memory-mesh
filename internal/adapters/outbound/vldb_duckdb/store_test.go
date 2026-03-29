@@ -1,6 +1,6 @@
 // store_test.go exercises the DuckDB-gateway adapter against the current hierarchy/session/turn schema.
 // store_test.go 用于围绕当前层级、session 和 turn 表结构验证 DuckDB 网关适配器。
-package vldg_duckdb
+package vldb_duckdb
 
 import (
 	"context"
@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldg_duckdb/proto/v1"
+	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials/insecure"
@@ -174,6 +174,28 @@ func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	updateSQL := execs[len(execs)-1].Sql
 	if !strings.Contains(updateSQL, "SET turn_count = turn_count + 1") {
 		t.Fatalf("expected session turn counter update sql, got %s", updateSQL)
+	}
+}
+
+// TestDebugCleanManagedSchemaExecutesDropScript verifies the debug-clean helper wipes the managed DuckDB schema through one execute call.
+// TestDebugCleanManagedSchemaExecutesDropScript 用于验证调试清理辅助逻辑会通过一次执行调用清空受管 DuckDB schema。
+func TestDebugCleanManagedSchemaExecutesDropScript(t *testing.T) {
+	server := &fakeDuckDBServer{}
+	store := newDuckDBTestStoreWithoutInit(t, server)
+
+	if err := debugCleanWithClient(context.Background(), store.client, time.Second); err != nil {
+		t.Fatalf("debug clean managed schema: %v", err)
+	}
+
+	execs := server.execRequests()
+	if len(execs) != 1 {
+		t.Fatalf("expected 1 debug-clean execute call, got %d", len(execs))
+	}
+	if !strings.Contains(execs[0].Sql, "DROP TABLE IF EXISTS vmm_turn_records") {
+		t.Fatalf("missing managed table cleanup in debug-clean sql: %s", execs[0].Sql)
+	}
+	if !strings.Contains(execs[0].Sql, "DROP TABLE IF EXISTS vmm_version") {
+		t.Fatalf("missing version-table cleanup in debug-clean sql: %s", execs[0].Sql)
 	}
 }
 
