@@ -127,6 +127,38 @@ func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	}
 }
 
+// TestResolveRequestScopeReusesExistingSessionAfterUserSwitch verifies debug-stage session reuse tolerates manual user-id switches under the same project/session key.
+// TestResolveRequestScopeReusesExistingSessionAfterUserSwitch 用于验证调试阶段在同一 project/session_key 下即使手动切换 user_id，也仍然会复用已有 session。
+func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version":    `[{"schema_version":3}]`,
+			"FROM vmm_users":      `[{"id":8,"name":"bob","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"FROM vmm_sessions":   `[{"id":41,"session_key":"sess-key-1","user_id":7,"team_id":3,"space_id":5,"project_id":9,"turn_count":2,"last_summarized_id":0,"summarize_content":"","summarize_budget":0,"created_timestamp":1710000000000,"updated_timestamp":1710000001000}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	session, err := store.ResolveRequestScope(context.Background(), "sess-key-1", 8, 9)
+	if err != nil {
+		t.Fatalf("resolve request scope with switched user id: %v", err)
+	}
+	if session.SessionID != 41 || session.SessionKey != "sess-key-1" {
+		t.Fatalf("unexpected reused session ref: %+v", session)
+	}
+	if session.UserID != 8 || session.ProjectID != 9 || session.TeamID != 3 || session.SpaceID != 5 {
+		t.Fatalf("unexpected resolved scope after user switch: %+v", session)
+	}
+
+	execs := server.execRequests()
+	for _, req := range execs {
+		if strings.Contains(req.Sql, "INSERT INTO vmm_sessions") {
+			t.Fatalf("did not expect a new session row when reusing existing session: %s", req.Sql)
+		}
+	}
+}
+
 // TestAppendTurnRecordPersistsDehydratedPayload verifies post-action persistence writes one dehydrated turn row and then increments the session turn counter.
 // TestAppendTurnRecordPersistsDehydratedPayload 用于验证 post-action 持久化会写入一条脱水 turn 行，并随后递增 session turn 计数。
 func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
@@ -168,8 +200,8 @@ func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	if !strings.Contains(insertSQL, "\"assistant\":\"最终回答\"") {
 		t.Fatalf("expected final assistant in dehydrated payload, got %s", insertSQL)
 	}
-	if !strings.Contains(insertSQL, "\"content\":\"[对话内容已省略]\"") {
-		t.Fatalf("expected dehydrated assistant timeline placeholder, got %s", insertSQL)
+	if !strings.Contains(insertSQL, "\"content\":\"中间回答\"") {
+		t.Fatalf("expected cleaned assistant timeline content to stay in dehydrated payload, got %s", insertSQL)
 	}
 	updateSQL := execs[len(execs)-1].Sql
 	if !strings.Contains(updateSQL, "SET turn_count = turn_count + 1") {

@@ -71,6 +71,7 @@ message PostActionTimelineItem {
 - 客户端不再传 `space_id`
 - 服务端会通过统一前置拦截器，根据 `project_id` 反查 `team_id / space_id`
 - 如果目标 `project_id` 下不存在该 `session_id`，服务端会自动创建一条 `vmm_sessions` 记录
+- 如果目标 `project_id` 下已经存在该 `session_id`，服务端会直接复用这条 `session`
 
 ### 顶层文本字段
 
@@ -136,6 +137,7 @@ message PostActionTimelineItem {
    - 检查 `project_id`
    - 反查 `team_id / space_id`
    - 必要时创建 `session`
+   - 同一 `project_id + session_id` 已存在时直接复用，即使调试阶段上游手动切换过 `user_id` 也不会拦截
 5. 记录原始请求日志
 6. 对待存储文本执行清洗：
    - `user_content`
@@ -155,9 +157,9 @@ message PostActionTimelineItem {
     - 顶层 `assistant_content`
 12. 对 turn 做脱水：
     - 顶层 `user_content` 保留
-    - `timeline[*].type=user` 的内容保留
-    - `timeline[*].type=assistant` 的内容替换为固定占位文本
+    - `timeline[*]` 按顺序整体保留
     - 顶层 `assistant_content` 保留
+    - 这里的“脱水”指的是整理成稳定 JSON 分析单元，不再对 `timeline[*].type=assistant` 做二次占位替换
 13. 计算脱水 JSON 的 token 预算
 14. 追加到 DuckDB：
     - `vmm_turn_records`

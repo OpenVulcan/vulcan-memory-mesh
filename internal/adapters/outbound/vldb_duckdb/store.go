@@ -544,11 +544,9 @@ LIMIT 1
 		return logicdomain.SessionRecord{}, fmt.Errorf("query session: %w", err)
 	}
 	if len(rows) > 0 {
-		existing := rows[0].toDomain()
-		if existing.UserID != userID || existing.ProjectID != project.ID || existing.TeamID != project.TeamID || existing.SpaceID != project.SpaceID {
-			return logicdomain.SessionRecord{}, logicdomain.ConflictError{Resource: "session", Message: "session_id is already bound to another hierarchy scope"}
-		}
-		return existing, nil
+		// Reuse the project-scoped session row directly even when the upstream plugin has switched user ids during debugging.
+		// 在调试阶段，即使上游插件手动切换了 user_id，也直接复用同一 project 下的 session 行。
+		return rows[0].toDomain(), nil
 	}
 
 	// Auto-create the session row only after user and project are both confirmed to exist.
@@ -1147,10 +1145,8 @@ func decodeStringMap(raw string) map[string]string {
 	return out
 }
 
-const omittedTimelineAssistantContent = "[对话内容已省略]"
-
-// dehydratedTurnPayload mirrors the JSON document persisted into vmm_turn_records after assistant timeline nodes are dehydrated.
-// dehydratedTurnPayload 用于映射写入 vmm_turn_records 的 JSON 文档，此时 assistant 类型的 timeline 节点已经被脱水。
+// dehydratedTurnPayload mirrors the JSON document persisted into vmm_turn_records after one cleaned turn is flattened into a stable analysis unit.
+// dehydratedTurnPayload 用于映射写入 vmm_turn_records 的 JSON 文档，此时一条清洗后的 turn 已经被压平成稳定分析单元。
 type dehydratedTurnPayload struct {
 	User      string                       `json:"user"`
 	Timeline  []dehydratedTurnTimelineItem `json:"timeline"`
@@ -1167,18 +1163,14 @@ type dehydratedTurnTimelineItem struct {
 // buildDehydratedTurn converts one cleaned turn into the persisted JSON payload and estimates its token budget.
 // buildDehydratedTurn 用于把一条清洗后的 turn 转换成持久化 JSON 载荷，并估算对应的 token 预算。
 func buildDehydratedTurn(turn logicdomain.TurnRecord) (string, int, error) {
-	// Keep user and final assistant text intact while dehydrating assistant timeline nodes into one stable placeholder.
-	// 保留 user 和最终 assistant 的全文，同时把 timeline 里的 assistant 节点脱水成稳定占位文本。
+	// Preserve the storage-ready timeline exactly as the upstream sanitizer produced it because media/noise filtering already happened earlier.
+	// 原样保留上游清洗后的 timeline 文本，因为媒体与噪声过滤已经在更前面的阶段完成。
 	timeline := make([]dehydratedTurnTimelineItem, 0, len(turn.Timeline))
 	for _, item := range turn.Timeline {
-		entry := dehydratedTurnTimelineItem{
+		timeline = append(timeline, dehydratedTurnTimelineItem{
 			Type:    strings.TrimSpace(item.Type),
 			Content: strings.TrimSpace(item.Content),
-		}
-		if strings.EqualFold(entry.Type, "assistant") {
-			entry.Content = omittedTimelineAssistantContent
-		}
-		timeline = append(timeline, entry)
+		})
 	}
 	payload := dehydratedTurnPayload{
 		User:      strings.TrimSpace(turn.UserContent),
