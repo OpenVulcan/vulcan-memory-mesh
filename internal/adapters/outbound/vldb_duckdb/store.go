@@ -28,6 +28,26 @@ const (
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
 	versionSingletonID = 1
+
+	// debugSeedUserID keeps the testing-stage default user row stable so grpc debugging can immediately target user_id=1.
+	// debugSeedUserID 用于固定测试阶段的默认用户行，便于 gRPC 调试时直接使用 user_id=1。
+	debugSeedUserID = 1
+
+	// debugSeedTeamID keeps the testing-stage default team row stable so project hierarchy bootstraps deterministically.
+	// debugSeedTeamID 用于固定测试阶段的默认 team 行，确保项目层级启动时保持确定性。
+	debugSeedTeamID = 1
+
+	// debugSeedSpaceID keeps the testing-stage default space row stable so project_id=1 always resolves through the same hierarchy.
+	// debugSeedSpaceID 用于固定测试阶段的默认 space 行，确保 project_id=1 始终通过同一层级解析。
+	debugSeedSpaceID = 1
+
+	// debugSeedProjectID keeps the testing-stage default project row stable so grpc debugging can immediately target project_id=1.
+	// debugSeedProjectID 用于固定测试阶段的默认项目行，便于 gRPC 调试时直接使用 project_id=1。
+	debugSeedProjectID = 1
+
+	// debugSeedDefaultName is reused across the default debug user/team/space/project rows so the initial hierarchy is predictable after every reset.
+	// debugSeedDefaultName 用于复用默认调试 user/team/space/project 的名称，保证每次重置后的初始层级可预测。
+	debugSeedDefaultName = "default"
 )
 
 const resetManagedSchemaSQL = `
@@ -273,6 +293,9 @@ func (s *Store) resetCurrentSchema(ctx context.Context) error {
 	if err := s.exec(ctx, currentSchemaSQL); err != nil {
 		return fmt.Errorf("apply current duckdb schema: %w", err)
 	}
+	if err := s.exec(ctx, buildDebugSeedWorkspaceSQL(time.Now().UTC())); err != nil {
+		return fmt.Errorf("seed debug duckdb workspace: %w", err)
+	}
 	if err := s.exec(ctx, `DELETE FROM vmm_version`); err != nil {
 		return fmt.Errorf("clear duckdb schema version row: %w", err)
 	}
@@ -280,6 +303,29 @@ func (s *Store) resetCurrentSchema(ctx context.Context) error {
 		return fmt.Errorf("persist duckdb schema version row: %w", err)
 	}
 	return nil
+}
+
+// buildDebugSeedWorkspaceSQL renders the deterministic testing-stage seed rows so grpc debugging always starts with user_id=1 and project_id=1 available.
+// buildDebugSeedWorkspaceSQL 用于渲染测试阶段的确定性种子数据，让 gRPC 调试时始终直接拥有 user_id=1 和 project_id=1。
+func buildDebugSeedWorkspaceSQL(now time.Time) string {
+	now = now.UTC()
+	nowRFC3339 := now.Format(time.RFC3339Nano)
+	return fmt.Sprintf(`
+INSERT INTO vmm_users (id, name, profile, delete_confirm_code, created_at, updated_at)
+VALUES (%d, %s, '', '', %s, %s);
+
+INSERT INTO vmm_teams (id, name, profile, created_at, updated_at)
+VALUES (%d, %s, '', %s, %s);
+
+INSERT INTO vmm_spaces (id, team_id, name, profile, created_at, updated_at)
+VALUES (%d, %d, %s, '', %s, %s);
+
+INSERT INTO vmm_projects (id, team_id, space_id, name, profile, created_at, updated_at)
+VALUES (%d, %d, %d, %s, '', %s, %s);
+`, debugSeedUserID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339),
+		debugSeedTeamID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339),
+		debugSeedSpaceID, debugSeedTeamID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339),
+		debugSeedProjectID, debugSeedTeamID, debugSeedSpaceID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339))
 }
 
 // exec sends one SQL script to the DuckDB gateway with optional JSON parameters.
@@ -1379,7 +1425,7 @@ func buildTurnAnalysisUpdateSQL(turnID uint64, details string, detailsBudget int
 	return fmt.Sprintf(`
 UPDATE vmm_turn_records
 SET details = %s, details_budget = %d, extracted_status = %d, updated_timestamp = %d
-WHERE id = %d
+WHERE id = %d;
 `, sqlStringLiteral(details), detailsBudget, logicdomain.TurnExtractedStatusDone, updatedMs, turnID)
 }
 
@@ -1389,7 +1435,7 @@ func buildMemoryNodeInsertSQL(id, projectID, userID, turnID uint64, vectorID str
 	return fmt.Sprintf(`
 INSERT INTO vmm_memory_nodes (
   id, project_id, user_id, turn_id, vector_id, category, abstract, details, node_status, created_timestamp
-) VALUES (%d, %d, %d, %d, CAST(%s AS UUID), %d, %s, %s, %d, %d)
+) VALUES (%d, %d, %d, %d, CAST(%s AS UUID), %d, %s, %s, %d, %d);
 `, id, projectID, userID, turnID, sqlStringLiteral(vectorID), category, sqlStringLiteral(abstract), sqlStringLiteral(details), logicdomain.MemoryNodeStatusActive, createdMs)
 }
 
@@ -1399,7 +1445,7 @@ func buildProfileNodeInsertSQL(id, turnID uint64, profileType int, bindID uint64
 	return fmt.Sprintf(`
 INSERT INTO vmm_profile_nodes (
   id, turn_id, profile_type, bind_id, content, profile_status, created_timestamp
-) VALUES (%d, %d, %d, %d, %s, %d, %d)
+) VALUES (%d, %d, %d, %d, %s, %d, %d);
 `, id, turnID, profileType, bindID, sqlStringLiteral(content), logicdomain.ProfileStatusPending, createdMs)
 }
 

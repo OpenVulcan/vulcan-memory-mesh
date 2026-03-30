@@ -32,8 +32,8 @@ func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	}
 
 	execs := server.execRequests()
-	if len(execs) != 5 {
-		t.Fatalf("expected 5 execute calls, got %d", len(execs))
+	if len(execs) != 6 {
+		t.Fatalf("expected 6 execute calls, got %d", len(execs))
 	}
 	if !strings.Contains(execs[0].Sql, "CREATE TABLE IF NOT EXISTS vmm_version") {
 		t.Fatalf("missing version bootstrap sql: %s", execs[0].Sql)
@@ -68,14 +68,23 @@ func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	if strings.Contains(execs[2].Sql, "vmm_memories") {
 		t.Fatalf("unexpected legacy compatibility table in current schema sql: %s", execs[1].Sql)
 	}
-	if !strings.Contains(execs[3].Sql, "DELETE FROM vmm_version") {
-		t.Fatalf("missing version cleanup sql: %s", execs[3].Sql)
+	if !strings.Contains(execs[3].Sql, "INSERT INTO vmm_users") {
+		t.Fatalf("missing default debug seed sql: %s", execs[3].Sql)
 	}
-	if !strings.Contains(execs[4].Sql, "INSERT INTO vmm_version") {
-		t.Fatalf("missing version insert sql: %s", execs[4].Sql)
+	if !strings.Contains(execs[3].Sql, "INSERT INTO vmm_projects") {
+		t.Fatalf("missing default debug project seed sql: %s", execs[3].Sql)
+	}
+	if !strings.Contains(execs[3].Sql, "VALUES (1, 'default'") {
+		t.Fatalf("expected deterministic default seed ids and names, got %s", execs[3].Sql)
+	}
+	if !strings.Contains(execs[4].Sql, "DELETE FROM vmm_version") {
+		t.Fatalf("missing version cleanup sql: %s", execs[4].Sql)
+	}
+	if !strings.Contains(execs[5].Sql, "INSERT INTO vmm_version") {
+		t.Fatalf("missing version insert sql: %s", execs[5].Sql)
 	}
 	var params []any
-	if err := json.Unmarshal([]byte(execs[4].ParamsJson), &params); err != nil {
+	if err := json.Unmarshal([]byte(execs[5].ParamsJson), &params); err != nil {
 		t.Fatalf("decode version insert params: %v", err)
 	}
 	if len(params) != 3 || params[0] != float64(versionSingletonID) || params[1] != float64(currentSchemaVersion) {
@@ -96,7 +105,7 @@ func TestInitResetsManagedSchemaOnVersionMismatch(t *testing.T) {
 		t.Fatalf("init store with version mismatch: %v", err)
 	}
 	execs := server.execRequests()
-	if len(execs) != 5 {
+	if len(execs) != 6 {
 		t.Fatalf("expected version bootstrap plus reset path, got %d calls", len(execs))
 	}
 	if !strings.Contains(execs[1].Sql, "DROP TABLE IF EXISTS vmm_turn_records") {
@@ -104,6 +113,9 @@ func TestInitResetsManagedSchemaOnVersionMismatch(t *testing.T) {
 	}
 	if !strings.Contains(execs[2].Sql, "CREATE TABLE IF NOT EXISTS vmm_turn_records") {
 		t.Fatalf("missing recreated turn schema after version mismatch: %s", execs[2].Sql)
+	}
+	if !strings.Contains(execs[3].Sql, "INSERT INTO vmm_users") {
+		t.Fatalf("missing default debug seed sql after version mismatch: %s", execs[3].Sql)
 	}
 }
 
@@ -281,6 +293,12 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 	}
 	if !strings.Contains(last, "details_budget = 15") {
 		t.Fatalf("expected details budget update, got %s", last)
+	}
+	if !strings.Contains(last, "WHERE id = 100;") {
+		t.Fatalf("expected turn analysis update statement terminator, got %s", last)
+	}
+	if !strings.Contains(last, ");\n\nINSERT INTO vmm_profile_nodes") && !strings.Contains(last, ");\r\n\r\nINSERT INTO vmm_profile_nodes") {
+		t.Fatalf("expected memory/profile inserts to be separated by statement terminators, got %s", last)
 	}
 	if !strings.Contains(last, "INSERT INTO vmm_memory_nodes") {
 		t.Fatalf("expected memory node insert sql, got %s", last)
