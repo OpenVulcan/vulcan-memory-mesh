@@ -604,7 +604,9 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	if analysis.DetailsBudget <= 0 {
 		analysis.DetailsBudget = estimateTokenBudget(analysis.Details)
 	}
-	nowMs := time.Now().UTC().UnixMilli()
+	now := time.Now().UTC()
+	nowMs := now.UnixMilli()
+	nowRFC3339 := now.Format(time.RFC3339Nano)
 	memoryStartID := uint64(0)
 	profileStartID := uint64(0)
 	var err error
@@ -622,6 +624,12 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	}
 
 	script := buildTurnAnalysisUpdateSQL(turn.ID, strings.TrimSpace(analysis.Details), analysis.DetailsBudget, nowMs)
+	if analysis.UserProfileMerged {
+		script += buildUserProfileUpdateSQL(session.UserID, analysis.MergedUserProfile, nowRFC3339)
+	}
+	if analysis.ProjectProfileMerged {
+		script += buildProjectProfileUpdateSQL(session.ProjectID, analysis.MergedProjectProfile, nowRFC3339)
+	}
 	for idx, node := range analysis.MemoryNodes {
 		if strings.TrimSpace(node.VectorID) == "" {
 			return logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
@@ -629,16 +637,48 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		script += buildMemoryNodeInsertSQL(memoryStartID+uint64(idx), session.ProjectID, session.UserID, turn.ID, strings.TrimSpace(node.VectorID), node.Category, node.Abstract, node.Details, nowMs)
 	}
 	for idx, node := range analysis.ProfileNodes {
+		if !logicdomain.ValidProfileType(node.ProfileType) {
+			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
+		}
+		if strings.TrimSpace(node.Content) == "" {
+			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
+		}
+		if !logicdomain.ValidProfileStatus(node.Status) {
+			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
+		}
 		bindID := session.ProjectID
 		if node.ProfileType == logicdomain.ProfileTypeUser {
 			bindID = session.UserID
 		}
-		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), turn.ID, node.ProfileType, bindID, node.Content, nowMs)
+		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), turn.ID, node.ProfileType, bindID, node.Content, node.Status, nowMs)
 	}
 	if err := s.exec(ctx, script); err != nil {
 		return fmt.Errorf("apply turn analysis: %w", err)
 	}
 	return nil
+}
+
+// LoadProfileTargets loads the current durable user/project profile blobs so post-action can merge fresh profile evidence before persistence.
+// LoadProfileTargets 用于加载当前长期 user/project 画像 Blob，让 post-action 在持久化前先合并新的画像证据。
+func (s *Store) LoadProfileTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error) {
+	if session.UserID == 0 {
+		return logicdomain.ProfileTargetsSnapshot{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+	}
+	if session.ProjectID == 0 {
+		return logicdomain.ProfileTargetsSnapshot{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+	}
+	user, err := s.loadUserByID(ctx, session.UserID)
+	if err != nil {
+		return logicdomain.ProfileTargetsSnapshot{}, err
+	}
+	project, err := s.loadProjectByID(ctx, session.ProjectID)
+	if err != nil {
+		return logicdomain.ProfileTargetsSnapshot{}, err
+	}
+	return logicdomain.ProfileTargetsSnapshot{
+		UserProfile:    strings.TrimSpace(user.Profile),
+		ProjectProfile: strings.TrimSpace(project.Profile),
+	}, nil
 }
 
 // loadUserByID resolves one durable user row by numeric id and converts absence into a stable domain not-found error.
@@ -1426,14 +1466,34 @@ INSERT INTO vmm_memory_nodes (
 `, id, projectID, userID, turnID, sqlStringLiteral(vectorID), category, sqlStringLiteral(abstract), sqlStringLiteral(details), logicdomain.MemoryNodeStatusActive, createdMs)
 }
 
-// buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node while the merge pipeline is still pending.
-// buildProfileNodeInsertSQL 用于渲染单条画像节点的原始 INSERT 语句，服务尚未接通合并流水线时的待合并落库。
-func buildProfileNodeInsertSQL(id, turnID uint64, profileType int, bindID uint64, content string, createdMs int64) string {
+// buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node together with its final merge status.
+// buildProfileNodeInsertSQL 用于渲染单条画像节点的原始 INSERT 语句，并携带最终合并状态。
+func buildProfileNodeInsertSQL(id, turnID uint64, profileType int, bindID uint64, content string, profileStatus int, createdMs int64) string {
 	return fmt.Sprintf(`
 INSERT INTO vmm_profile_nodes (
   id, turn_id, profile_type, bind_id, content, profile_status, created_timestamp
 ) VALUES (%d, %d, %d, %d, %s, %d, %d);
-`, id, turnID, profileType, bindID, sqlStringLiteral(content), logicdomain.ProfileStatusPending, createdMs)
+`, id, turnID, profileType, bindID, sqlStringLiteral(content), profileStatus, createdMs)
+}
+
+// buildUserProfileUpdateSQL renders the raw UPDATE used to replace the durable user profile blob once the merge scene has accepted the latest evidence.
+// buildUserProfileUpdateSQL 用于渲染原始 UPDATE 语句，在合并场景接纳最新证据后替换长期用户画像 Blob。
+func buildUserProfileUpdateSQL(userID uint64, profile, updatedAt string) string {
+	return fmt.Sprintf(`
+UPDATE vmm_users
+SET profile = %s, updated_at = %s
+WHERE id = %d;
+`, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), userID)
+}
+
+// buildProjectProfileUpdateSQL renders the raw UPDATE used to replace the durable project profile blob once the merge scene has accepted the latest evidence.
+// buildProjectProfileUpdateSQL 用于渲染原始 UPDATE 语句，在合并场景接纳最新证据后替换长期项目画像 Blob。
+func buildProjectProfileUpdateSQL(projectID uint64, profile, updatedAt string) string {
+	return fmt.Sprintf(`
+UPDATE vmm_projects
+SET profile = %s, updated_at = %s
+WHERE id = %d;
+`, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), projectID)
 }
 
 // sqlStringLiteral escapes one string into a single-quoted SQL literal for debug-stage raw statement rendering.

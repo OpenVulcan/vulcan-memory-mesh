@@ -100,10 +100,14 @@ type PersistedTurnRecord struct {
 // TurnAnalysis carries the structured LLM extraction output that should be written back onto one turn row and its derived node tables.
 // TurnAnalysis 用于承载结构化 LLM 提炼结果，并回写到 turn 行及其衍生节点表。
 type TurnAnalysis struct {
-	Details       string
-	DetailsBudget int
-	MemoryNodes   []MemoryNodeCandidate
-	ProfileNodes  []ProfileNodeCandidate
+	Details              string
+	DetailsBudget        int
+	MemoryNodes          []MemoryNodeCandidate
+	ProfileNodes         []ProfileNodeCandidate
+	UserProfileMerged    bool
+	MergedUserProfile    string
+	ProjectProfileMerged bool
+	MergedProjectProfile string
 }
 
 // MemoryNodeCandidate stores one memory feature extracted from a turn before it is assigned ids and persisted.
@@ -120,6 +124,7 @@ type MemoryNodeCandidate struct {
 type ProfileNodeCandidate struct {
 	ProfileType int
 	Content     string
+	Status      int
 }
 
 // ValidMemoryNodeCategory reports whether one category id belongs to the supported memory-node enum set.
@@ -132,4 +137,10 @@ func ValidMemoryNodeCategory(category int) bool {
 // ValidProfileType 用于判断某个画像类型 ID 是否属于当前支持的画像节点枚举集合。
 func ValidProfileType(profileType int) bool {
 	return profileType == ProfileTypeUser || profileType == ProfileTypeProject
+}
+
+// ValidProfileStatus reports whether one profile status id belongs to the supported profile-node status enum set.
+// ValidProfileStatus 用于判断某个画像状态 ID 是否属于当前支持的画像节点状态枚举集合。
+func ValidProfileStatus(status int) bool {
+	return status >= ProfileStatusInvalid && status <= ProfileStatusMerged
 }

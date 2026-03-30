@@ -177,25 +177,42 @@ message PostActionTimelineItem {
       - `details`
       - `memory_nodes[]`
       - `profile_nodes[]`
-16. 如果 `memory_nodes[]` 不为空：
+16. 如果 `profile_nodes[]` 不为空：
+    - 会先加载当前 `vmm_users.profile / vmm_projects.profile`
+    - 把 user/project 两类新画像证据一起送入一次 `merge_profile` prompt
+    - 如果本轮只有 user 或只有 project 候选，则只发送存在的一侧，不把缺失侧空块送进 LLM
+    - `merge_profile` 会在一个 JSON 对象里分开返回：
+      - `user`
+      - `project`
+    - 每个结果块都会给出：
+      - 完整更新后的画像文本
+      - 哪些候选 index 被 `merged`
+      - 哪些候选 index 被 `invalid`
+    - 如果合并成功：
+      - 会把 `vmm_users.profile / vmm_projects.profile` 更新为新的完整画像
+      - 并把对应 `vmm_profile_nodes.profile_status` 写成最终状态
+17. 如果 `memory_nodes[]` 不为空：
     - 先对每条 `memory_nodes[].abstract` 做 embedding
     - 先把向量写入 LanceDB
     - LanceDB 行 `id` 会回填成 `memory_nodes[].vector_id`
-17. 只有向量写入成功后，才会回写 DuckDB：
+18. 只有向量写入成功后，才会回写 DuckDB：
     - `vmm_turn_records.details`
     - `vmm_turn_records.details_budget`
     - `vmm_turn_records.extracted_status = 1`
     - 同步插入：
       - `vmm_memory_nodes`
       - `vmm_profile_nodes`
+      - 并按需更新：
+        - `vmm_users.profile`
+        - `vmm_projects.profile`
     - `vmm_memory_nodes.vector_id` 会关联 LanceDB 里的对应行
     - LanceDB 行里的 `session_id` 会保存真实来源 session
-18. 如果 LanceDB 已写入，但 DuckDB 最终回写失败：
+19. 如果 LanceDB 已写入，但 DuckDB 最终回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立向量
-19. 当前限制：
+20. 当前限制：
     - 当前不做“历史 3 轮提炼文”拼装
-    - 当前不做 user/project profile blob 合并
+    - 当前不自动更新 `vmm_teams.profile / vmm_spaces.profile`
 
 ## 清洗行为
 
@@ -244,6 +261,11 @@ message PostActionTimelineItem {
 - `vmm_memory_nodes`
 - `vmm_profile_nodes`
 
+其中，当前自动合并会额外更新：
+
+- `vmm_users.profile`
+- `vmm_projects.profile`
+
 同时会在 LanceDB 中写入当前 turn 提炼出的记忆向量：
 
 - 行主键：`id`
@@ -268,7 +290,14 @@ message PostActionTimelineItem {
 - `vmm_spaces`
 - `vmm_projects`
 
-当前自动提取阶段只会写 `vmm_profile_nodes` 证据节点，不会自动更新这些 `profile` 字段。
+当前主线的行为是：
+
+- 自动合并并更新：
+  - `vmm_users.profile`
+  - `vmm_projects.profile`
+- 暂不自动合并：
+  - `vmm_teams.profile`
+  - `vmm_spaces.profile`
 
 ## 响应结构
 
@@ -364,6 +393,10 @@ grpcurl -plaintext `
 当前已经接入的行为是：
 
 - 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”直接送入 `analyze_turn` prompt
+- 如果有 `profile_nodes`，会把 user/project 两类候选和当前画像一起送入一次 `merge_profile` prompt
+- `merge_profile` 会分开返回 user/project 两块 JSON 结果
+- 合并成功后会更新 `vmm_users.profile / vmm_projects.profile`
+- `vmm_profile_nodes.profile_status` 会记录当前节点是 `merged / invalid / pending`
 - 如果有 `memory_nodes`，会先写入 LanceDB
 - 返回结果会写回 `vmm_turn_records.details / details_budget / extracted_status`
 - 同步插入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
@@ -371,7 +404,7 @@ grpcurl -plaintext `
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
 - 如果 DuckDB 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
 - 仍然不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
-- 仍然不做 user/project profile blob 合并
+- 仍然不自动更新 `vmm_teams.profile / vmm_spaces.profile`
 
 当前这三个阈值字段只是保留在配置层，暂未参与实际触发判断。
 
@@ -382,4 +415,4 @@ grpcurl -plaintext `
 - 当前 `PostAction` 只接受纯文本字段，不接受原始消息节点对象
 - 当前 `PostAction` 返回的是“已接收”，不是“已写库完成”
 - 当前阈值触发后的批量分析尚未接入，调试阶段是“每个 turn 都直接分析一次”
-- 当前画像只保存节点证据，尚未合并进 user/project profile blob
+- 当前只会自动合并 user/project 画像，team/space 画像仍需后续显式配置

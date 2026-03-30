@@ -20,7 +20,7 @@ import (
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, nil, nil, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -56,7 +56,7 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, nil, nil, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -94,7 +94,7 @@ func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, nil, nil, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -136,7 +136,7 @@ func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
 			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目关注 AI 记忆能力设计。"},
 		},
 	}}
-	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -204,6 +204,91 @@ func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
 	}
 }
 
+// TestPostActionUseCaseBatchesProfileMergeOncePerTurn verifies one turn with multiple user/project profile nodes triggers exactly one batched merge call and maps the merge result back into DuckDB persistence fields.
+// TestPostActionUseCaseBatchesProfileMergeOncePerTurn 用于验证单个 turn 中出现多条 user/project 画像节点时，只会触发一次批量合并调用，并把合并结果映射回 DuckDB 持久化字段。
+func TestPostActionUseCaseBatchesProfileMergeOncePerTurn(t *testing.T) {
+	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
+	store := &testRelationalStore{
+		persistedTurn: logicdomain.PersistedTurnRecord{ID: 601, SessionID: 91, ProjectID: 12, DehydratedBudget: 9, CreatedAt: time.Date(2026, 3, 30, 8, 0, 0, 0, time.UTC)},
+		profileTargets: logicdomain.ProfileTargetsSnapshot{
+			UserProfile:    "旧用户画像",
+			ProjectProfile: "旧项目画像",
+		},
+	}
+	analyzer := &stubPostActionAnalyzer{result: logicdomain.TurnAnalysis{
+		Details: "这轮对话给出了新的用户偏好和项目约束。",
+		ProfileNodes: []logicdomain.ProfileNodeCandidate{
+			{ProfileType: logicdomain.ProfileTypeUser, Content: "用户偏好 Rust 进行后端开发。"},
+			{ProfileType: logicdomain.ProfileTypeProject, Content: "项目当前仍处于设计阶段，尚无代码。"},
+			{ProfileType: logicdomain.ProfileTypeUser, Content: "用户希望面向多个 AI 编程工具做记忆扩展。"},
+			{ProfileType: logicdomain.ProfileTypeProject, Content: "项目需要兼容 Opencode、OpenClaw、Claude Code、Codex。"},
+		},
+	}}
+	merger := &stubPostActionProfileMerger{
+		result: logicdomain.TurnProfileMergeResult{
+			User: &logicdomain.ProfileMergeSection{
+				UpdatedProfile:          "合并后的用户画像",
+				MergedCandidateIndexes:  []int{0, 1},
+				InvalidCandidateIndexes: []int{},
+				Reason:                  "两条用户画像都应纳入长期偏好。",
+			},
+			Project: &logicdomain.ProfileMergeSection{
+				UpdatedProfile:          "合并后的项目画像",
+				MergedCandidateIndexes:  []int{0},
+				InvalidCandidateIndexes: []int{1},
+				Reason:                  "项目兼容工具范围暂不稳定，保留设计阶段信息，标记工具清单为无效候选。",
+			},
+		},
+	}
+	uc := NewPostActionUseCase(filter, store, nil, nil, analyzer, merger, PostActionAnalysisConfig{}, nil)
+
+	result, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  91,
+			SessionKey: "sess-profile-batch",
+			UserID:     9,
+			TeamID:     4,
+			SpaceID:    6,
+			ProjectID:  12,
+		},
+		UserContent:      "clean-user",
+		AssistantContent: "clean-assistant",
+	})
+	if err != nil {
+		t.Fatalf("execute post-action with profile merge: %v", err)
+	}
+	if !result.Accepted {
+		t.Fatal("expected accepted result")
+	}
+	if merger.calls != 1 {
+		t.Fatalf("expected one batched profile merge call, got %d", merger.calls)
+	}
+	if merger.snapshot.UserProfile != "旧用户画像" || merger.snapshot.ProjectProfile != "旧项目画像" {
+		t.Fatalf("unexpected merge snapshot: %+v", merger.snapshot)
+	}
+	if len(merger.nodes) != 4 {
+		t.Fatalf("expected all profile nodes to flow into one merge call, got %+v", merger.nodes)
+	}
+	if !store.analysis.UserProfileMerged || store.analysis.MergedUserProfile != "合并后的用户画像" {
+		t.Fatalf("unexpected merged user profile state: %+v", store.analysis)
+	}
+	if !store.analysis.ProjectProfileMerged || store.analysis.MergedProjectProfile != "合并后的项目画像" {
+		t.Fatalf("unexpected merged project profile state: %+v", store.analysis)
+	}
+	if got := store.analysis.ProfileNodes[0].Status; got != logicdomain.ProfileStatusMerged {
+		t.Fatalf("expected first user node to be merged, got %d", got)
+	}
+	if got := store.analysis.ProfileNodes[1].Status; got != logicdomain.ProfileStatusMerged {
+		t.Fatalf("expected first project node to be merged, got %d", got)
+	}
+	if got := store.analysis.ProfileNodes[2].Status; got != logicdomain.ProfileStatusMerged {
+		t.Fatalf("expected second user node to be merged, got %d", got)
+	}
+	if got := store.analysis.ProfileNodes[3].Status; got != logicdomain.ProfileStatusInvalid {
+		t.Fatalf("expected second project node to be invalid, got %d", got)
+	}
+}
+
 // TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails verifies the new debug-stage turn analysis never breaks the main post-action persistence flow.
 // TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails 用于验证新的调试阶段逐轮分析即使失败，也绝不会破坏主 post-action 持久化链路。
 func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails(t *testing.T) {
@@ -218,6 +303,7 @@ func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails(t *tes
 		nil,
 		nil,
 		analyzer,
+		nil,
 		PostActionAnalysisConfig{IdleTimeout: 15 * time.Minute},
 		logger,
 	)
@@ -274,7 +360,7 @@ func TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails(
 	}}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, PostActionAnalysisConfig{}, logger)
+	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{}, logger)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -347,12 +433,13 @@ func (s *stubNoiseTurnFilter) FilterPersistableTurns(_ context.Context, turns []
 // testRelationalStore is the minimal relational-store stub needed by post-action tests after the move to turn-level persistence.
 // testRelationalStore 用于在迁移到 turn 级持久化后，为 post-action 测试提供最小化关系存储桩。
 type testRelationalStore struct {
-	session       logicdomain.SessionRef
-	turn          logicdomain.TurnRecord
-	persistedTurn logicdomain.PersistedTurnRecord
-	analysisTurn  logicdomain.PersistedTurnRecord
-	analysis      logicdomain.TurnAnalysis
-	analysisErr   error
+	session        logicdomain.SessionRef
+	turn           logicdomain.TurnRecord
+	persistedTurn  logicdomain.PersistedTurnRecord
+	profileTargets logicdomain.ProfileTargetsSnapshot
+	analysisTurn   logicdomain.PersistedTurnRecord
+	analysis       logicdomain.TurnAnalysis
+	analysisErr    error
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
@@ -366,6 +453,12 @@ func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicd
 		Timeline:         append([]logicdomain.TurnTimelineItem(nil), turn.Timeline...),
 	}
 	return s.persistedTurn, nil
+}
+
+// LoadProfileTargets returns the canned durable user/project profile blobs so tests can verify the merge request input.
+// LoadProfileTargets 用于返回预设的长期 user/project 画像 Blob，方便测试断言合并请求输入。
+func (s *testRelationalStore) LoadProfileTargets(_ context.Context, _ logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error) {
+	return s.profileTargets, nil
 }
 
 // ApplyTurnAnalysis records the extracted turn-analysis payload so tests can verify the post-action chain writes back structured results.
@@ -396,6 +489,28 @@ func (s *stubPostActionAnalyzer) Analyze(_ context.Context, transcript string) (
 	s.transcript = transcript
 	if s.err != nil {
 		return logicdomain.TurnAnalysis{}, s.err
+	}
+	return s.result, nil
+}
+
+// stubPostActionProfileMerger records batched profile merge calls and returns one canned result or error.
+// stubPostActionProfileMerger 用于记录批量画像合并调用，并返回预设结果或错误。
+type stubPostActionProfileMerger struct {
+	calls    int
+	snapshot logicdomain.ProfileTargetsSnapshot
+	nodes    []logicdomain.ProfileNodeCandidate
+	result   logicdomain.TurnProfileMergeResult
+	err      error
+}
+
+// Merge captures the full batch input so tests can assert the use case sends user/project nodes together.
+// Merge 用于捕获完整批量输入，方便测试断言用例会把 user/project 节点一起送进合并器。
+func (s *stubPostActionProfileMerger) Merge(_ context.Context, snapshot logicdomain.ProfileTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileMergeResult, error) {
+	s.calls++
+	s.snapshot = snapshot
+	s.nodes = append([]logicdomain.ProfileNodeCandidate(nil), nodes...)
+	if s.err != nil {
+		return logicdomain.TurnProfileMergeResult{}, s.err
 	}
 	return s.result, nil
 }

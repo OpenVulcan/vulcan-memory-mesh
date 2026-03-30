@@ -273,13 +273,17 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 		ProjectID:        9,
 		DehydratedBudget: 123,
 	}, logicdomain.TurnAnalysis{
-		Details:       "这轮对话明确需要先给出 AI 记忆子项目建议。",
-		DetailsBudget: 15,
+		Details:              "这轮对话明确需要先给出 AI 记忆子项目建议。",
+		DetailsBudget:        15,
+		UserProfileMerged:    true,
+		MergedUserProfile:    "合并后的用户画像",
+		ProjectProfileMerged: true,
+		MergedProjectProfile: "合并后的项目画像",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, VectorID: "11111111-1111-4111-8111-111111111111", Abstract: "当前对话需要先形成 AI 记忆子项目建议。", Details: "用户当前诉求是获得该子项目的设计建议。"},
 		},
 		ProfileNodes: []logicdomain.ProfileNodeCandidate{
-			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目聚焦 AI 记忆能力设计。"},
+			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目聚焦 AI 记忆能力设计。", Status: logicdomain.ProfileStatusMerged},
 		},
 	})
 	if err != nil {
@@ -294,6 +298,12 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 	if !strings.Contains(last, "details_budget = 15") {
 		t.Fatalf("expected details budget update, got %s", last)
 	}
+	if !strings.Contains(last, "UPDATE vmm_users") || !strings.Contains(last, "合并后的用户画像") {
+		t.Fatalf("expected user profile update sql, got %s", last)
+	}
+	if !strings.Contains(last, "UPDATE vmm_projects") || !strings.Contains(last, "合并后的项目画像") {
+		t.Fatalf("expected project profile update sql, got %s", last)
+	}
 	if !strings.Contains(last, "WHERE id = 100;") {
 		t.Fatalf("expected turn analysis update statement terminator, got %s", last)
 	}
@@ -306,8 +316,35 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 	if !strings.Contains(last, "INSERT INTO vmm_profile_nodes") {
 		t.Fatalf("expected profile node insert sql, got %s", last)
 	}
+	if !strings.Contains(last, ", 2, ") {
+		t.Fatalf("expected merged profile status in profile node insert, got %s", last)
+	}
 	if !strings.Contains(last, "CAST('11111111-1111-4111-8111-111111111111' AS UUID)") {
 		t.Fatalf("expected supplied vector uuid cast in memory node insert, got %s", last)
+	}
+}
+
+// TestLoadProfileTargetsReadsCurrentUserAndProjectProfiles verifies post-action profile merging can load the current durable user/project profile blobs from DuckDB.
+// TestLoadProfileTargetsReadsCurrentUserAndProjectProfiles 用于验证 post-action 画像合并可以从 DuckDB 读取当前长期 user/project 画像 Blob。
+func TestLoadProfileTargetsReadsCurrentUserAndProjectProfiles(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version":    `[{"schema_version":5}]`,
+			"FROM vmm_users":      `[{"id":7,"name":"alice","profile":"用户画像","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","profile":"项目画像","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	snapshot, err := store.LoadProfileTargets(context.Background(), logicdomain.SessionRef{
+		UserID:    7,
+		ProjectID: 9,
+	})
+	if err != nil {
+		t.Fatalf("load profile targets: %v", err)
+	}
+	if snapshot.UserProfile != "用户画像" || snapshot.ProjectProfile != "项目画像" {
+		t.Fatalf("unexpected profile snapshot: %+v", snapshot)
 	}
 }
 

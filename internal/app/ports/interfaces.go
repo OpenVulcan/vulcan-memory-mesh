@@ -49,6 +49,7 @@ type VectorStore interface {
 // RelationalStore 用于给 post-action 流程在某个已解析的 session 范围内持久化一条清洗后的 turn。
 type RelationalStore interface {
 	AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) (logicdomain.PersistedTurnRecord, error)
+	LoadProfileTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error)
 	ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error
 	Shutdowner
 }

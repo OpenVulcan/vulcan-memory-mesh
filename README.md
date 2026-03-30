@@ -107,13 +107,17 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
    - 写入 `vmm_turn_records`
    - 当 `timeline` 为空时，先过 `NoiseGate`
    - 把当前原始 turn 送入 `analyze_turn` prompt 做结构化 LLM 提炼
+   - 如果有 `profile_nodes[]`，会把当前 `vmm_users.profile / vmm_projects.profile` 与本轮新证据一起送入一次 `merge_profile` prompt
+   - 如果本轮只有 user 或只有 project 画像候选，则只把对应那一侧送进 LLM，不会把缺失侧作为空块一起传入
    - 对 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
    - 只有 LanceDB 成功后，才回写 `vmm_turn_records.details / details_budget / extracted_status`
    - 同步写入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+   - 如果画像合并成功，会同步更新 `vmm_users.profile / vmm_projects.profile`
+   - `vmm_profile_nodes.profile_status` 会记录该节点最终是否 `merged / invalid / pending`
    - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
    - LanceDB 行里的 `session_id` 会保存真实来源 session
    - 如果 DuckDB 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
-   - 当前只记录节点，不做 user/project profile blob 合并
+   - `vmm_teams.profile / vmm_spaces.profile` 仍保留给后续显式配置，不做自动合并
 
 ## 构建与运行
 

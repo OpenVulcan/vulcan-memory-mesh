@@ -123,6 +123,7 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		analysis.ProfileNodes = append(analysis.ProfileNodes, logicdomain.ProfileNodeCandidate{
 			ProfileType: node.ProfileType,
 			Content:     node.Content,
+			Status:      logicdomain.ProfileStatusPending,
 		})
 	}
 	return analysis, nil

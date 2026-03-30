@@ -95,6 +95,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		embedding,
 		vector,
 		processor.NewTurnAnalyzer(llm, prompts, cfg.LLM.Model),
+		processor.NewProfileMerger(llm, prompts, cfg.LLM.Model),
 		usecase.PostActionAnalysisConfig{
 			TurnThreshold:  cfg.PostAction.SessionAnalysisTurnThreshold,
 			TokenThreshold: cfg.PostAction.SessionAnalysisTokenThreshold,
