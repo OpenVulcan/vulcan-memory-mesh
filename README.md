@@ -107,8 +107,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
    - 写入 `vmm_turn_records`
    - 当 `timeline` 为空时，先过 `NoiseGate`
    - 把当前原始 turn 送入 `analyze_turn` prompt 做结构化 LLM 提炼
-   - 成功后回写 `vmm_turn_records.details / details_budget / extracted_status`
+   - 对 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
+   - 只有 LanceDB 成功后，才回写 `vmm_turn_records.details / details_budget / extracted_status`
    - 同步写入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+   - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
+   - 如果 DuckDB 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
    - 当前只记录节点，不做 user/project profile blob 合并
 
 ## 构建与运行
@@ -197,8 +200,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 当前主线的行为是：
 
 - 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”送到 `analyze_turn` prompt
+- 如果提炼结果里有 `memory_nodes`，会先写入 LanceDB
 - 成功返回后会写回 `vmm_turn_records.details / details_budget / extracted_status`
 - 同步写入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+- `vmm_memory_nodes.vector_id` 会关联到 LanceDB 中对应的向量行
+- 如果 DuckDB 回写失败，会尝试回滚这次新增的 LanceDB 向量
 - 当前不做历史 3 轮提炼拼装
 - 当前不做 user/project profile blob 合并
 

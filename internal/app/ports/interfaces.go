@@ -41,6 +41,7 @@ type VectorStore interface {
 	Upsert(ctx context.Context, record logicdomain.MemoryRecord) error
 	Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error)
 	DeleteByFilter(ctx context.Context, filter logicdomain.SearchFilter) (uint64, error)
+	DeleteByIDs(ctx context.Context, ids []string) (uint64, error)
 	Shutdowner
 }
 

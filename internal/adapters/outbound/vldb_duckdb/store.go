@@ -431,18 +431,6 @@ func generateConfirmationCode() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
-// generateUUID returns one random UUID string used as the temporary vector anchor before LanceDB syncing is wired in.
-// generateUUID 用于生成随机 UUID 字符串，在接通 LanceDB 同步前先作为临时向量锚点。
-func generateUUID() (string, error) {
-	buf := make([]byte, 16)
-	if _, err := rand.Read(buf); err != nil {
-		return "", fmt.Errorf("generate uuid: %w", err)
-	}
-	buf[6] = (buf[6] & 0x0f) | 0x40
-	buf[8] = (buf[8] & 0x3f) | 0x80
-	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
-}
-
 // LoadNoiseEmbeddingCache returns one persisted semantic prototype bundle keyed by scope, language, model, dimension, and rules hash.
 // LoadNoiseEmbeddingCache 用于返回按作用域、语言、模型、维度和规则哈希定位的一组语义原型缓存。
 func (s *Store) LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error) {
@@ -635,11 +623,10 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 
 	script := buildTurnAnalysisUpdateSQL(turn.ID, strings.TrimSpace(analysis.Details), analysis.DetailsBudget, nowMs)
 	for idx, node := range analysis.MemoryNodes {
-		vectorID, err := generateUUID()
-		if err != nil {
-			return err
+		if strings.TrimSpace(node.VectorID) == "" {
+			return logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
 		}
-		script += buildMemoryNodeInsertSQL(memoryStartID+uint64(idx), session.ProjectID, session.UserID, turn.ID, vectorID, node.Category, node.Abstract, node.Details, nowMs)
+		script += buildMemoryNodeInsertSQL(memoryStartID+uint64(idx), session.ProjectID, session.UserID, turn.ID, strings.TrimSpace(node.VectorID), node.Category, node.Abstract, node.Details, nowMs)
 	}
 	for idx, node := range analysis.ProfileNodes {
 		bindID := session.ProjectID

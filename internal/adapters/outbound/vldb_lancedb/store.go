@@ -153,6 +153,31 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter logicdomain.SearchFil
 	return resp.GetDeletedRows(), nil
 }
 
+// DeleteByIDs removes the specified vector rows precisely by their ids so higher-level workflows can roll back partial post-action writes.
+// DeleteByIDs 用于按 id 精确删除指定向量行，让上层工作流可以回滚部分 post-action 写入。
+func (s *Store) DeleteByIDs(ctx context.Context, ids []string) (uint64, error) {
+	if s == nil || s.client == nil {
+		return 0, fmt.Errorf("lancedb store is not initialized")
+	}
+	condition := buildDeleteIDsCondition(ids)
+	if strings.TrimSpace(condition) == "" {
+		return 0, nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
+	defer cancel()
+	resp, err := s.client.Delete(callCtx, &lancedbv1.DeleteRequest{
+		TableName: s.tableName,
+		Condition: condition,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("lancedb delete by ids: %w", err)
+	}
+	if !resp.GetSuccess() {
+		return 0, fmt.Errorf("lancedb delete by ids: %s", resp.GetMessage())
+	}
+	return resp.GetDeletedRows(), nil
+}
+
 // Search runs one vector search against the configured table and maps the returned JSON rows back into MemoryHit values.
 // Search 用于对配置好的表执行一次向量检索，并把返回的 JSON 行映射回 MemoryHit 结构。
 func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
@@ -334,6 +359,31 @@ func buildDeleteCondition(filter logicdomain.SearchFilter) string {
 		parts = append(parts, fmt.Sprintf("user_id = %d", filter.UserID))
 	}
 	return strings.Join(parts, " AND ")
+}
+
+// buildDeleteIDsCondition converts one id list into the OR predicate accepted by the gateway delete RPC.
+// buildDeleteIDsCondition 用于把 id 列表转换成网关删除 RPC 接受的 OR 谓词表达式。
+func buildDeleteIDsCondition(ids []string) string {
+	parts := make([]string, 0, len(ids))
+	seen := map[string]struct{}{}
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		parts = append(parts, fmt.Sprintf("id = %s", quoteLanceString(id)))
+	}
+	return strings.Join(parts, " OR ")
+}
+
+// quoteLanceString escapes one string literal for the simple SQL-like filter language accepted by the gateway.
+// quoteLanceString 用于为网关接受的简易 SQL 风格过滤语法转义字符串字面量。
+func quoteLanceString(raw string) string {
+	return "'" + strings.ReplaceAll(raw, "'", "''") + "'"
 }
 
 // distanceToScore turns the LanceDB nearest-neighbor distance into a stable higher-is-better score.

@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及最终如何写入 DuckDB。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及最终如何写入 DuckDB 与 LanceDB。
 
 当前相关方法只有：
 
@@ -25,7 +25,7 @@
 3. 清洗待存储文本
 4. 记录清洗后日志
 5. 立即返回 `accepted=true`
-6. 后台继续把脱水后的 turn 记录写入 DuckDB
+6. 后台继续把脱水后的 turn 记录写入 DuckDB，并在需要时把记忆向量写入 LanceDB
 
 ## 请求结构
 
@@ -177,13 +177,22 @@ message PostActionTimelineItem {
       - `details`
       - `memory_nodes[]`
       - `profile_nodes[]`
-    - 成功后会回写：
+16. 如果 `memory_nodes[]` 不为空：
+    - 先对每条 `memory_nodes[].abstract` 做 embedding
+    - 先把向量写入 LanceDB
+    - LanceDB 行 `id` 会回填成 `memory_nodes[].vector_id`
+17. 只有向量写入成功后，才会回写 DuckDB：
       - `vmm_turn_records.details`
       - `vmm_turn_records.details_budget`
       - `vmm_turn_records.extracted_status = 1`
     - 同步插入：
       - `vmm_memory_nodes`
       - `vmm_profile_nodes`
+    - `vmm_memory_nodes.vector_id` 会关联 LanceDB 里的对应行
+18. 如果 LanceDB 已写入，但 DuckDB 最终回写失败：
+    - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
+    - 避免 `extracted_status=0` 却残留孤立向量
+19. 当前限制：
     - 当前不做“历史 3 轮提炼文”拼装
     - 当前不做 user/project profile blob 合并
 
@@ -233,6 +242,18 @@ message PostActionTimelineItem {
 - `vmm_turn_records`
 - `vmm_memory_nodes`
 - `vmm_profile_nodes`
+
+同时会在 LanceDB 中写入当前 turn 提炼出的记忆向量：
+
+- 行主键：`id`
+- 关联键：与 `vmm_memory_nodes.vector_id` 一一对应
+- 向量来源：`memory_nodes[].abstract`
+- 元数据中会附带：
+  - `turn_id`
+  - `session_id`
+  - `user_id`
+  - `project_id`
+  - `category`
 
 不会直接把原始请求 JSON 原样写入数据库。
 
@@ -341,8 +362,11 @@ grpcurl -plaintext `
 当前已经接入的行为是：
 
 - 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”直接送入 `analyze_turn` prompt
+- 如果有 `memory_nodes`，会先写入 LanceDB
 - 返回结果会写回 `vmm_turn_records.details / details_budget / extracted_status`
 - 同步插入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+- `vmm_memory_nodes.vector_id` 会关联 LanceDB 行 `id`
+- 如果 DuckDB 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
 - 仍然不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
 - 仍然不做 user/project profile blob 合并
 

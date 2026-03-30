@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 )
@@ -19,7 +20,7 @@ import (
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, nil, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -55,7 +56,7 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, nil, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -93,7 +94,7 @@ func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, nil, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -123,7 +124,9 @@ func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 // TestPostActionUseCaseAlwaysRunsTurnAnalysis 用于验证当前调试阶段会把每一条已落库 turn 都送入结构化逐轮分析提示词，并把提炼结果回写到关系存储。
 func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
-	store := &testRelationalStore{persistedTurn: logicdomain.PersistedTurnRecord{ID: 501, SessionID: 91, ProjectID: 12, DehydratedBudget: 9}}
+	store := &testRelationalStore{persistedTurn: logicdomain.PersistedTurnRecord{ID: 501, SessionID: 91, ProjectID: 12, DehydratedBudget: 9, CreatedAt: time.Date(2026, 3, 30, 8, 0, 0, 0, time.UTC)}}
+	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.11, 0.22, 0.33}}}}
+	vector := &stubVectorStore{}
 	analyzer := &stubPostActionAnalyzer{result: logicdomain.TurnAnalysis{
 		Details: "这轮对话明确了 AI 记忆子项目的方向建议需求。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
@@ -133,7 +136,7 @@ func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
 			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目关注 AI 记忆能力设计。"},
 		},
 	}}
-	uc := NewPostActionUseCase(filter, store, analyzer, PostActionAnalysisConfig{}, nil)
+	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -184,6 +187,21 @@ func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
 	if len(store.analysis.MemoryNodes) != 1 || len(store.analysis.ProfileNodes) != 1 {
 		t.Fatalf("unexpected stored analysis nodes: %+v", store.analysis)
 	}
+	if strings.TrimSpace(store.analysis.MemoryNodes[0].VectorID) == "" {
+		t.Fatalf("expected vector id to be attached back onto memory node, got %+v", store.analysis.MemoryNodes[0])
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected 1 vector upsert, got %d", len(vector.upserts))
+	}
+	if vector.upserts[0].ID != store.analysis.MemoryNodes[0].VectorID {
+		t.Fatalf("expected duckdb vector_id to match lancedb row id, got upsert=%s node=%s", vector.upserts[0].ID, store.analysis.MemoryNodes[0].VectorID)
+	}
+	if vector.upserts[0].Filter.SessionID != 0 {
+		t.Fatalf("expected post-action long-term memory vectors to stay cross-session, got %+v", vector.upserts[0].Filter)
+	}
+	if vector.upserts[0].Metadata["turn_id"] != "501" {
+		t.Fatalf("expected vector metadata to keep turn anchor, got %+v", vector.upserts[0].Metadata)
+	}
 }
 
 // TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails verifies the new debug-stage turn analysis never breaks the main post-action persistence flow.
@@ -197,6 +215,8 @@ func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails(t *tes
 	uc := NewPostActionUseCase(
 		filter,
 		store,
+		nil,
+		nil,
 		analyzer,
 		PostActionAnalysisConfig{IdleTimeout: 15 * time.Minute},
 		logger,
@@ -233,6 +253,63 @@ func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails(t *tes
 	}
 	if !strings.Contains(logBuf.String(), "post-action turn analysis failed") {
 		t.Fatalf("expected turn analysis failure to be logged, got %s", logBuf.String())
+	}
+}
+
+// TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails verifies the vector-first flow deletes freshly written LanceDB rows if DuckDB cannot link them back.
+// TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails 用于验证当前“先向量后回写”流程在 DuckDB 无法回链时，会删除刚写入的 LanceDB 向量行。
+func TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails(t *testing.T) {
+	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
+	store := &testRelationalStore{
+		persistedTurn: logicdomain.PersistedTurnRecord{ID: 808, SessionID: 93, ProjectID: 12, DehydratedBudget: 13},
+		analysisErr:   errors.New("duckdb write failed"),
+	}
+	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.3, 0.2, 0.1}}}}
+	vector := &stubVectorStore{}
+	analyzer := &stubPostActionAnalyzer{result: logicdomain.TurnAnalysis{
+		Details: "这轮对话产出了一条需要持久化的记忆特征。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先给出 AI 记忆子项目建议。", Details: "这是当前 turn 的核心任务诉求。"},
+		},
+	}}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, PostActionAnalysisConfig{}, logger)
+
+	result, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  93,
+			SessionKey: "sess-rollback",
+			UserID:     9,
+			TeamID:     4,
+			SpaceID:    6,
+			ProjectID:  12,
+		},
+		UserContent:         "clean-user",
+		AssistantContent:    "clean-assistant",
+		RawUserContent:      "raw-user",
+		RawAssistantContent: "raw-assistant",
+	})
+	if err != nil {
+		t.Fatalf("execute post-action with rollback path: %v", err)
+	}
+	if !result.Accepted {
+		t.Fatal("expected accepted result")
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected 1 vector upsert before rollback, got %d", len(vector.upserts))
+	}
+	if len(vector.deleteIDsCalls) != 1 {
+		t.Fatalf("expected 1 rollback delete-by-ids call, got %d", len(vector.deleteIDsCalls))
+	}
+	if len(vector.deleteIDsCalls[0]) != 1 || vector.deleteIDsCalls[0][0] != vector.upserts[0].ID {
+		t.Fatalf("expected rollback ids to match inserted vector row, got delete=%v upsert=%s", vector.deleteIDsCalls[0], vector.upserts[0].ID)
+	}
+	if store.analysisTurn.ID != 808 {
+		t.Fatalf("expected relational store to attempt analysis persistence before rollback, got %+v", store.analysisTurn)
+	}
+	if !strings.Contains(logBuf.String(), "post-action turn analysis persistence failed") {
+		t.Fatalf("expected persistence failure to be logged, got %s", logBuf.String())
 	}
 }
 
@@ -275,6 +352,7 @@ type testRelationalStore struct {
 	persistedTurn logicdomain.PersistedTurnRecord
 	analysisTurn  logicdomain.PersistedTurnRecord
 	analysis      logicdomain.TurnAnalysis
+	analysisErr   error
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
@@ -295,7 +373,7 @@ func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicd
 func (s *testRelationalStore) ApplyTurnAnalysis(_ context.Context, _ logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error {
 	s.analysisTurn = turn
 	s.analysis = analysis
-	return nil
+	return s.analysisErr
 }
 
 // Shutdown returns immediately because the stub does not own external resources.
@@ -321,3 +399,76 @@ func (s *stubPostActionAnalyzer) Analyze(_ context.Context, transcript string) (
 	}
 	return s.result, nil
 }
+
+// stubEmbeddingClient records embedding requests and returns one canned response so post-action tests can verify vector persistence without a real model backend.
+// stubEmbeddingClient 用于记录 embedding 请求，并返回预设结果，让 post-action 测试在没有真实模型后端时也能验证向量持久化。
+type stubEmbeddingClient struct {
+	requests []appports.EmbeddingRequest
+	response appports.EmbeddingResponse
+	err      error
+}
+
+// Embed captures the request order and replays the configured response or error.
+// Embed 用于记录请求顺序，并回放预设响应或错误。
+func (s *stubEmbeddingClient) Embed(_ context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+	s.requests = append(s.requests, req)
+	if s.err != nil {
+		return appports.EmbeddingResponse{}, s.err
+	}
+	return s.response, nil
+}
+
+// stubVectorStore captures vector writes and rollback deletions so post-action tests can assert the LanceDB-facing contract.
+// stubVectorStore 用于捕获向量写入和回滚删除，让 post-action 测试可以断言面向 LanceDB 的契约。
+type stubVectorStore struct {
+	upserts        []logicdomain.MemoryRecord
+	deleteFilters  []logicdomain.SearchFilter
+	deleteIDsCalls [][]string
+	searchFilters  []logicdomain.SearchFilter
+	searchHits     []logicdomain.MemoryHit
+	upsertErr      error
+	searchErr      error
+	deleteErr      error
+}
+
+// Upsert records one memory vector row and optionally returns the configured failure.
+// Upsert 用于记录一条记忆向量行，并按需返回预设失败。
+func (s *stubVectorStore) Upsert(_ context.Context, record logicdomain.MemoryRecord) error {
+	s.upserts = append(s.upserts, record)
+	return s.upsertErr
+}
+
+// Search returns the configured hits because these post-action tests only need interface completeness.
+// Search 用于返回预设检索结果，因为这些 post-action 测试只需要补全接口。
+func (s *stubVectorStore) Search(_ context.Context, _ []float32, _ int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
+	if s.searchErr != nil {
+		return nil, s.searchErr
+	}
+	s.searchFilters = append(s.searchFilters, filter)
+	return append([]logicdomain.MemoryHit(nil), s.searchHits...), nil
+}
+
+// DeleteByFilter records the destructive filter call and reuses the configured delete error when needed.
+// DeleteByFilter 用于记录按过滤条件删除的调用，并在需要时复用预设删除错误。
+func (s *stubVectorStore) DeleteByFilter(_ context.Context, filter logicdomain.SearchFilter) (uint64, error) {
+	s.deleteFilters = append(s.deleteFilters, filter)
+	if s.deleteErr != nil {
+		return 0, s.deleteErr
+	}
+	return 0, nil
+}
+
+// DeleteByIDs records the rollback vector ids so tests can assert that DuckDB persistence failures clean up the just-inserted rows.
+// DeleteByIDs 用于记录回滚时的向量 id，方便测试断言 DuckDB 持久化失败后会清理刚插入的向量行。
+func (s *stubVectorStore) DeleteByIDs(_ context.Context, ids []string) (uint64, error) {
+	copied := append([]string(nil), ids...)
+	s.deleteIDsCalls = append(s.deleteIDsCalls, copied)
+	if s.deleteErr != nil {
+		return 0, s.deleteErr
+	}
+	return uint64(len(ids)), nil
+}
+
+// Shutdown returns immediately because the vector stub holds no external resources.
+// Shutdown 用于立即返回，因为该向量桩不持有外部资源。
+func (s *stubVectorStore) Shutdown(context.Context) error { return nil }

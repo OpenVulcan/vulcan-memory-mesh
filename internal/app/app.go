@@ -92,6 +92,8 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	post := usecase.NewPostActionUseCase(
 		noiseGate,
 		relational,
+		embedding,
+		vector,
 		processor.NewTurnAnalyzer(llm, prompts, cfg.LLM.Model),
 		usecase.PostActionAnalysisConfig{
 			TurnThreshold:  cfg.PostAction.SessionAnalysisTurnThreshold,

@@ -174,6 +174,31 @@ func TestDebugDropConfiguredTableTreatsMissingTableAsSuccess(t *testing.T) {
 	}
 }
 
+// TestDeleteByIDsBuildsPreciseDeleteCondition verifies rollback deletes target only the supplied vector ids.
+// TestDeleteByIDsBuildsPreciseDeleteCondition 用于验证回滚删除只会精确命中提供的向量 id。
+func TestDeleteByIDsBuildsPreciseDeleteCondition(t *testing.T) {
+	server := &fakeLanceDBServer{}
+	store := newLanceDBTestStore(t, server)
+
+	deletedRows, err := store.DeleteByIDs(context.Background(), []string{"vec-1", "vec-2", "vec-1"})
+	if err != nil {
+		t.Fatalf("delete vector ids: %v", err)
+	}
+	if deletedRows != 0 {
+		t.Fatalf("expected fake delete rows to stay 0, got %d", deletedRows)
+	}
+	if len(server.deleteCalls) != 1 {
+		t.Fatalf("expected 1 delete request, got %d", len(server.deleteCalls))
+	}
+	condition := server.deleteCalls[0].GetCondition()
+	if !strings.Contains(condition, "id = 'vec-1'") || !strings.Contains(condition, "id = 'vec-2'") {
+		t.Fatalf("unexpected delete-by-ids condition: %s", condition)
+	}
+	if strings.Count(condition, "vec-1") != 1 {
+		t.Fatalf("expected duplicate ids to be de-duplicated, got %s", condition)
+	}
+}
+
 // newLanceDBTestStore creates one initialized adapter backed by a bufconn gRPC server.
 // newLanceDBTestStore 用于创建一个已经初始化完成、并由 bufconn gRPC 服务支撑的适配器实例。
 func newLanceDBTestStore(t *testing.T, server *fakeLanceDBServer) *Store {
@@ -240,6 +265,7 @@ type fakeLanceDBServer struct {
 	searchData     []byte
 	searchMessage  string
 	searchSuccess  bool
+	deleteCalls    []*lancedbv1.DeleteRequest
 	dropCalls      []*lancedbv1.DropTableRequest
 	dropResponse   *lancedbv1.DropTableResponse
 	dropErr        error
@@ -289,6 +315,9 @@ func (s *fakeLanceDBServer) VectorSearch(_ context.Context, req *lancedbv1.Searc
 // Delete returns a successful deletion response because these focused tests do not inspect delete semantics.
 // Delete 用于返回成功删除响应，因为这些聚焦测试不会断言删除语义。
 func (s *fakeLanceDBServer) Delete(_ context.Context, req *lancedbv1.DeleteRequest) (*lancedbv1.DeleteResponse, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.deleteCalls = append(s.deleteCalls, req)
 	return &lancedbv1.DeleteResponse{Success: true, DeletedRows: 0, Message: "ok"}, nil
 }
 

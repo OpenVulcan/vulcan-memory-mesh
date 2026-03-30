@@ -110,6 +110,7 @@ type TurnAnalysis struct {
 // MemoryNodeCandidate 用于保存一条从 turn 中提炼出的记忆特征，等待分配 ID 后持久化。
 type MemoryNodeCandidate struct {
 	Category int
+	VectorID string
 	Abstract string
 	Details  string
 }

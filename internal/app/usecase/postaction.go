@@ -4,7 +4,9 @@ package usecase
 
 import (
 	"context"
+	"crypto/rand"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"time"
@@ -67,6 +69,8 @@ type PostActionAnalysisConfig struct {
 type PostActionUseCase struct {
 	noiseGate   appports.NoiseTurnFilter
 	store       appports.RelationalStore
+	embedding   appports.EmbeddingClient
+	vector      appports.VectorStore
 	analyzer    PostActionTurnAnalyzer
 	analysisCfg PostActionAnalysisConfig
 	logger      *logx.Logger
@@ -74,7 +78,7 @@ type PostActionUseCase struct {
 
 // NewPostActionUseCase creates a PostActionUseCase instance.
 // NewPostActionUseCase 用于创建 PostActionUseCase 实例。
-func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, analyzer PostActionTurnAnalyzer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
+func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionTurnAnalyzer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -90,6 +94,8 @@ func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	return &PostActionUseCase{
 		noiseGate:   noiseGate,
 		store:       store,
+		embedding:   embedding,
+		vector:      vector,
 		analyzer:    analyzer,
 		analysisCfg: analysisCfg,
 		logger:      logger,
@@ -219,7 +225,34 @@ func (u *PostActionUseCase) runDebugTurnAnalysis(ctx context.Context, traceID st
 		return
 	}
 	analysis.DetailsBudget = estimatePostActionTextBudget(analysis.Details)
+	vectorIDs, err := u.persistMemoryNodeVectors(ctx, cmd.Session, persistedTurn, &analysis)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Error(
+				"post-action memory vector persistence failed",
+				"trace_id", traceID,
+				"session_key", cmd.Session.SessionKey,
+				"session_id", cmd.Session.SessionID,
+				"turn_id", persistedTurn.ID,
+				"err", err,
+			)
+		}
+		return
+	}
 	if err := u.store.ApplyTurnAnalysis(ctx, cmd.Session, persistedTurn, analysis); err != nil {
+		if len(vectorIDs) > 0 && u.vector != nil {
+			if _, rollbackErr := u.vector.DeleteByIDs(ctx, vectorIDs); rollbackErr != nil && u.logger != nil {
+				u.logger.Error(
+					"post-action memory vector rollback failed",
+					"trace_id", traceID,
+					"session_key", cmd.Session.SessionKey,
+					"session_id", cmd.Session.SessionID,
+					"turn_id", persistedTurn.ID,
+					"vector_ids", strings.Join(vectorIDs, ","),
+					"err", rollbackErr,
+				)
+			}
+		}
 		if u.logger != nil {
 			u.logger.Error(
 				"post-action turn analysis persistence failed",
@@ -246,11 +279,81 @@ func (u *PostActionUseCase) runDebugTurnAnalysis(ctx context.Context, traceID st
 			"next_summarize_budget", state.NextSummarizeBudget,
 			"idle_gap_ms", state.IdleGap.Milliseconds(),
 			"details_budget", analysis.DetailsBudget,
+			"vector_count", len(vectorIDs),
 			"memory_node_count", len(analysis.MemoryNodes),
 			"profile_node_count", len(analysis.ProfileNodes),
 			"analysis", string(analysisJSON),
 		)
 	}
+}
+
+// persistMemoryNodeVectors embeds the extracted memory-node abstracts, writes them to LanceDB, and attaches the resulting vector ids back onto the analysis payload.
+// persistMemoryNodeVectors 用于对提炼出的记忆节点摘要生成向量、写入 LanceDB，并把得到的 vector_id 回填到分析结果中。
+func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis *logicdomain.TurnAnalysis) ([]string, error) {
+	if analysis == nil || len(analysis.MemoryNodes) == 0 {
+		return nil, nil
+	}
+	if u.embedding == nil {
+		return nil, fmt.Errorf("embedding client is nil")
+	}
+	if u.vector == nil {
+		return nil, fmt.Errorf("vector store is nil")
+	}
+
+	// Embed the memory-node abstracts in batches so provider batch limits do not break post-action extraction on larger outputs.
+	// 按批次对记忆节点摘要做向量化，避免较大的提炼结果触发 provider 的 batch 限制。
+	texts := make([]string, 0, len(analysis.MemoryNodes))
+	for idx, node := range analysis.MemoryNodes {
+		text := strings.TrimSpace(node.Abstract)
+		if text == "" {
+			return nil, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].abstract", Message: "is required for vector persistence"}
+		}
+		texts = append(texts, text)
+	}
+	vectors, err := embedPostActionTexts(ctx, u.embedding, texts)
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != len(analysis.MemoryNodes) {
+		return nil, fmt.Errorf("embedding result count mismatch: got %d want %d", len(vectors), len(analysis.MemoryNodes))
+	}
+
+	// Upsert LanceDB rows first so DuckDB only flips extracted_status after the corresponding vectors already exist.
+	// 先 upsert LanceDB 行，确保 DuckDB 只有在对应向量已存在时才会把 extracted_status 置为完成。
+	insertedIDs := make([]string, 0, len(analysis.MemoryNodes))
+	for idx := range analysis.MemoryNodes {
+		vectorID, err := generatePostActionUUID()
+		if err != nil {
+			if len(insertedIDs) > 0 {
+				_, _ = u.vector.DeleteByIDs(ctx, insertedIDs)
+			}
+			return nil, err
+		}
+		analysis.MemoryNodes[idx].VectorID = vectorID
+		record := logicdomain.MemoryRecord{
+			ID:     vectorID,
+			Text:   strings.TrimSpace(analysis.MemoryNodes[idx].Abstract),
+			Vector: vectors[idx],
+			Filter: buildPostActionMemoryFilter(session),
+			Metadata: map[string]string{
+				"turn_id":    strconv.FormatUint(turn.ID, 10),
+				"session_id": strconv.FormatUint(session.SessionID, 10),
+				"user_id":    strconv.FormatUint(session.UserID, 10),
+				"project_id": strconv.FormatUint(session.ProjectID, 10),
+				"category":   strconv.Itoa(analysis.MemoryNodes[idx].Category),
+				"details":    strings.TrimSpace(analysis.MemoryNodes[idx].Details),
+			},
+			CreatedAt: choosePostActionCreatedAt(turn),
+		}
+		if err := u.vector.Upsert(ctx, record); err != nil {
+			if len(insertedIDs) > 0 {
+				_, _ = u.vector.DeleteByIDs(ctx, insertedIDs)
+			}
+			return nil, err
+		}
+		insertedIDs = append(insertedIDs, vectorID)
+	}
+	return insertedIDs, nil
 }
 
 // postActionAnalysisState captures the evolving session counters after the latest turn is appended so debug logs can explain the current window shape.
@@ -345,6 +448,63 @@ func estimatePostActionTextBudget(text string) int {
 	}
 	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
 	return estimator.Estimate(text)
+}
+
+// embedPostActionTexts runs embedding requests in provider-safe batches and returns vectors in the same order as the input texts.
+// embedPostActionTexts 用于按 provider 安全批次执行 embedding，并按输入文本顺序返回向量。
+func embedPostActionTexts(ctx context.Context, client appports.EmbeddingClient, texts []string) ([][]float32, error) {
+	if client == nil {
+		return nil, fmt.Errorf("embedding client is nil")
+	}
+	if len(texts) == 0 {
+		return [][]float32{}, nil
+	}
+	vectors := make([][]float32, 0, len(texts))
+	for start := 0; start < len(texts); start += 10 {
+		end := start + 10
+		if end > len(texts) {
+			end = len(texts)
+		}
+		resp, err := client.Embed(ctx, appports.EmbeddingRequest{Texts: texts[start:end]})
+		if err != nil {
+			return nil, err
+		}
+		vectors = append(vectors, resp.Vectors...)
+	}
+	return vectors, nil
+}
+
+// buildPostActionMemoryFilter derives the flattened hierarchy scope stored on vector rows for post-action memory nodes.
+// buildPostActionMemoryFilter 用于推导 post-action 记忆节点写入向量行时携带的扁平层级范围。
+func buildPostActionMemoryFilter(session logicdomain.SessionRef) logicdomain.SearchFilter {
+	return logicdomain.SearchFilter{
+		UserID:    session.UserID,
+		TeamID:    session.TeamID,
+		SpaceID:   session.SpaceID,
+		ProjectID: session.ProjectID,
+		SessionID: 0,
+	}
+}
+
+// choosePostActionCreatedAt prefers the persisted turn timestamp so vector rows and DuckDB memory nodes share the same approximate origin time.
+// choosePostActionCreatedAt 用于优先复用已落库 turn 的时间戳，让向量行和 DuckDB 记忆节点共享接近的产生时间。
+func choosePostActionCreatedAt(turn logicdomain.PersistedTurnRecord) time.Time {
+	if !turn.CreatedAt.IsZero() {
+		return turn.CreatedAt
+	}
+	return time.Now().UTC()
+}
+
+// generatePostActionUUID creates one random UUID string for the LanceDB row id and DuckDB memory-node vector_id link.
+// generatePostActionUUID 用于生成随机 UUID 字符串，同时作为 LanceDB 行 id 和 DuckDB 记忆节点的 vector_id 关联键。
+func generatePostActionUUID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate post-action uuid: %w", err)
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
 }
 
 // buildPostActionAnalysisTranscript pretty-prints the current raw turn into a stable JSON transcript so the existing single-turn prompt can inspect the full dialogue structure.

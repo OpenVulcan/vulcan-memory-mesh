@@ -276,7 +276,7 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 		Details:       "这轮对话明确需要先给出 AI 记忆子项目建议。",
 		DetailsBudget: 15,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先形成 AI 记忆子项目建议。", Details: "用户当前诉求是获得该子项目的设计建议。"},
+			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, VectorID: "11111111-1111-4111-8111-111111111111", Abstract: "当前对话需要先形成 AI 记忆子项目建议。", Details: "用户当前诉求是获得该子项目的设计建议。"},
 		},
 		ProfileNodes: []logicdomain.ProfileNodeCandidate{
 			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目聚焦 AI 记忆能力设计。"},
@@ -306,8 +306,8 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 	if !strings.Contains(last, "INSERT INTO vmm_profile_nodes") {
 		t.Fatalf("expected profile node insert sql, got %s", last)
 	}
-	if !strings.Contains(last, "CAST('") || !strings.Contains(last, "AS UUID") {
-		t.Fatalf("expected generated vector uuid cast in memory node insert, got %s", last)
+	if !strings.Contains(last, "CAST('11111111-1111-4111-8111-111111111111' AS UUID)") {
+		t.Fatalf("expected supplied vector uuid cast in memory node insert, got %s", last)
 	}
 }
 
