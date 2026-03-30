@@ -37,7 +37,7 @@ func New(w io.Writer, cfg Config) *Logger {
 	case "json":
 		handler = slog.NewJSONHandler(w, opts)
 	default:
-		handler = slog.NewTextHandler(w, opts)
+		handler = newMultilineTextHandler(w, opts)
 	}
 	return &Logger{base: slog.New(handler)}
 }

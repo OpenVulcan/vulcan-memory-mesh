@@ -154,8 +154,10 @@ func TestListProjectsReturnsDisplayPath(t *testing.T) {
 // TestPreCheckRejectsMissingUserContent 用于验证在范围解析成功后，最新传输契约仍会拒绝空 user_content。
 func TestPreCheckRejectsMissingUserContent(t *testing.T) {
 	fixture := newTestFixture(t, Dependencies{
-		IDs:           xid.NewGenerator(),
-		PreCheck:      preCheckFunc(func(context.Context, usecase.PreCheckCommand) (usecase.PreCheckResult, error) { return usecase.PreCheckResult{}, nil }),
+		IDs: xid.NewGenerator(),
+		PreCheck: preCheckFunc(func(context.Context, usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+			return usecase.PreCheckResult{}, nil
+		}),
 		ScopeResolver: stubScopeResolver{},
 	}, testBufSize)
 
@@ -272,10 +274,10 @@ func TestPostActionReturnsAcceptedImmediately(t *testing.T) {
 		t.Fatal("background post-action was not started")
 	}
 	logs := fixture.logs.String()
-	if !strings.Contains(logs, `msg="post-action received raw"`) {
+	if !strings.Contains(logs, `MSG："post-action received raw"`) {
 		t.Fatalf("expected raw receipt log, got %s", logs)
 	}
-	if !strings.Contains(logs, `msg="post-action received cleaned"`) {
+	if !strings.Contains(logs, `MSG："post-action received cleaned"`) {
 		t.Fatalf("expected cleaned receipt log, got %s", logs)
 	}
 	if !strings.Contains(logs, `<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)`) {
@@ -290,8 +292,10 @@ func TestPostActionReturnsAcceptedImmediately(t *testing.T) {
 // TestServerRejectsOversizedPayload 用于验证 gRPC 接收限制仍会在业务逻辑执行前拒绝超大载荷。
 func TestServerRejectsOversizedPayload(t *testing.T) {
 	fixture := newTestFixture(t, Dependencies{
-		IDs:           xid.NewGenerator(),
-		PreCheck:      preCheckFunc(func(context.Context, usecase.PreCheckCommand) (usecase.PreCheckResult, error) { return usecase.PreCheckResult{}, nil }),
+		IDs: xid.NewGenerator(),
+		PreCheck: preCheckFunc(func(context.Context, usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+			return usecase.PreCheckResult{}, nil
+		}),
 		ScopeResolver: stubScopeResolver{},
 	}, 128)
 
