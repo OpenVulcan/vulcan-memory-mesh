@@ -182,13 +182,14 @@ message PostActionTimelineItem {
     - 先把向量写入 LanceDB
     - LanceDB 行 `id` 会回填成 `memory_nodes[].vector_id`
 17. 只有向量写入成功后，才会回写 DuckDB：
-      - `vmm_turn_records.details`
-      - `vmm_turn_records.details_budget`
-      - `vmm_turn_records.extracted_status = 1`
+    - `vmm_turn_records.details`
+    - `vmm_turn_records.details_budget`
+    - `vmm_turn_records.extracted_status = 1`
     - 同步插入：
       - `vmm_memory_nodes`
       - `vmm_profile_nodes`
     - `vmm_memory_nodes.vector_id` 会关联 LanceDB 里的对应行
+    - LanceDB 行里的 `session_id` 会保存真实来源 session
 18. 如果 LanceDB 已写入，但 DuckDB 最终回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立向量
@@ -248,6 +249,7 @@ message PostActionTimelineItem {
 - 行主键：`id`
 - 关联键：与 `vmm_memory_nodes.vector_id` 一一对应
 - 向量来源：`memory_nodes[].abstract`
+- `session_id`：保存真实来源 session，而不是占位值
 - 元数据中会附带：
   - `turn_id`
   - `session_id`
@@ -366,6 +368,7 @@ grpcurl -plaintext `
 - 返回结果会写回 `vmm_turn_records.details / details_budget / extracted_status`
 - 同步插入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
 - `vmm_memory_nodes.vector_id` 会关联 LanceDB 行 `id`
+- LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
 - 如果 DuckDB 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
 - 仍然不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
 - 仍然不做 user/project profile blob 合并

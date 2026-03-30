@@ -196,8 +196,8 @@ func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
 	if vector.upserts[0].ID != store.analysis.MemoryNodes[0].VectorID {
 		t.Fatalf("expected duckdb vector_id to match lancedb row id, got upsert=%s node=%s", vector.upserts[0].ID, store.analysis.MemoryNodes[0].VectorID)
 	}
-	if vector.upserts[0].Filter.SessionID != 0 {
-		t.Fatalf("expected post-action long-term memory vectors to stay cross-session, got %+v", vector.upserts[0].Filter)
+	if vector.upserts[0].Filter.SessionID != 91 {
+		t.Fatalf("expected post-action memory vectors to keep the source session id, got %+v", vector.upserts[0].Filter)
 	}
 	if vector.upserts[0].Metadata["turn_id"] != "501" {
 		t.Fatalf("expected vector metadata to keep turn anchor, got %+v", vector.upserts[0].Metadata)

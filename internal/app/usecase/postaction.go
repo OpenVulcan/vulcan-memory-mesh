@@ -482,7 +482,7 @@ func buildPostActionMemoryFilter(session logicdomain.SessionRef) logicdomain.Sea
 		TeamID:    session.TeamID,
 		SpaceID:   session.SpaceID,
 		ProjectID: session.ProjectID,
-		SessionID: 0,
+		SessionID: session.SessionID,
 	}
 }
 
