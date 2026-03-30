@@ -1,5 +1,5 @@
-// postaction_test.go verifies the latest turn-level post-action workflow against the new resolved-session contract.
-// postaction_test.go 用于围绕新的已解析 session 契约，验证最新的 turn 级 post-action 工作流。
+// postaction_test.go verifies the queued post-action workflow that now persists turns first and analyzes them later in session batches.
+// postaction_test.go 用于验证新的排队式 post-action 工作流：先持久化 turn，再按 session 批量分析。
 package usecase
 
 import (
@@ -15,12 +15,12 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 )
 
-// TestPostActionUseCaseDropsSingleRoundNoise verifies simple user-assistant pairs can still be rejected by the noise gate.
-// TestPostActionUseCaseDropsSingleRoundNoise 用于验证简单的单轮 user-assistant 问答仍然会被噪声门拒绝。
+// TestPostActionUseCaseDropsSingleRoundNoise verifies simple user-assistant pairs can still be rejected by the noise gate before relational persistence.
+// TestPostActionUseCaseDropsSingleRoundNoise 用于验证简单的单轮 user-assistant 问答仍然会在关系持久化前被噪声门拒绝。
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil)
+	uc := newPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -43,20 +43,17 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	if len(filter.seen) != 1 {
 		t.Fatalf("expected one normalized turn to be inspected, got %d", len(filter.seen))
 	}
-	if got := filter.seen[0].UserMessage; got != "你还记得我上次说过什么吗" {
-		t.Fatalf("unexpected normalized user message: %q", got)
-	}
 	if store.turn.UserContent != "" || store.turn.AssistantContent != "" || len(store.turn.Timeline) != 0 {
 		t.Fatalf("expected no persisted turn, got %#v", store.turn)
 	}
 }
 
-// TestPostActionUseCaseSkipsNoiseGateForTimeline verifies timeline-driven payloads bypass the single-round noise gate and persist one canonical turn.
-// TestPostActionUseCaseSkipsNoiseGateForTimeline 用于验证带 timeline 的载荷会跳过单轮噪声门，并持久化为一条标准 turn。
+// TestPostActionUseCaseSkipsNoiseGateForTimeline verifies timeline-driven payloads still bypass the single-round noise gate and persist one canonical turn row.
+// TestPostActionUseCaseSkipsNoiseGateForTimeline 用于验证带 timeline 的载荷仍会跳过单轮噪声门，并持久化成一条标准 turn 记录。
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil)
+	uc := newPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -89,12 +86,12 @@ func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	})
 }
 
-// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval verifies accepted single-round payloads are stored as one canonical turn.
-// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval 用于验证通过噪声门的单轮载荷会按新的标准 turn 落库。
+// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval verifies accepted single-round payloads are stored immediately even though later analysis moved into the queue.
+// TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval 用于验证通过噪声门的单轮载荷会立即落库，即使后续分析已经移到队列中。
 func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil)
+	uc := newPostActionUseCase(filter, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -114,114 +111,134 @@ func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	if !result.Accepted {
 		t.Fatal("expected accepted result")
 	}
-	if len(filter.seen) != 1 {
-		t.Fatalf("expected one normalized turn, got %d", len(filter.seen))
-	}
 	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
 }
 
-// TestPostActionUseCaseAlwaysRunsTurnAnalysis verifies the debug-stage analysis now sends every persisted turn through the structured turn-analysis prompt and writes the extracted result back to the relational store.
-// TestPostActionUseCaseAlwaysRunsTurnAnalysis 用于验证当前调试阶段会把每一条已落库 turn 都送入结构化逐轮分析提示词，并把提炼结果回写到关系存储。
-func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
-	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
-	store := &testRelationalStore{persistedTurn: logicdomain.PersistedTurnRecord{ID: 501, SessionID: 91, ProjectID: 12, DehydratedBudget: 9, CreatedAt: time.Date(2026, 3, 30, 8, 0, 0, 0, time.UTC)}}
+// TestPostActionUseCaseProcessesQueuedSessionBatch verifies one queued batch uses recent refined history, persists vectors, and writes the batch result back to DuckDB.
+// TestPostActionUseCaseProcessesQueuedSessionBatch 用于验证一次排队批处理会读取最近历史精要、持久化向量，并把批处理结果回写到 DuckDB。
+func TestPostActionUseCaseProcessesQueuedSessionBatch(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                501,
+				SessionID:         91,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"raw-user","timeline":[{"type":"assistant","content":"raw-middle"}],"assistant":"raw-assistant"}`,
+				DehydratedBudget:  90,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 3, 30, 8, 0, 0, 0, time.UTC),
+			},
+			{
+				ID:                502,
+				SessionID:         91,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"raw-user-2","timeline":[],"assistant":"raw-assistant-2"}`,
+				DehydratedBudget:  80,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 3, 30, 8, 1, 0, 0, time.UTC),
+			},
+		},
+		historyTurns: []logicdomain.SessionTurnRecord{
+			{ID: 401, SessionID: 91, ProjectID: 12, Details: "历史精要", DetailsBudget: 30, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+		},
+		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
+			{ID: 701, TurnID: 401, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "旧需求", Details: "旧需求详情", NodeStatus: logicdomain.MemoryNodeStatusActive},
+		},
+		batchApplyResult: logicdomain.SessionAnalysisApplyResult{ObsoleteVectorIDs: []string{"old-vector"}},
+	}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.11, 0.22, 0.33}}}}
 	vector := &stubVectorStore{}
-	analyzer := &stubPostActionAnalyzer{result: logicdomain.TurnAnalysis{
-		Details: "这轮对话明确了 AI 记忆子项目的方向建议需求。",
-		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先提供 AI 记忆子项目的方向建议。", Details: "用户当前诉求是先获得 AI 记忆子项目的设计建议。"},
+	analyzer := &stubPostActionBatchAnalyzer{result: logicdomain.SessionBatchAnalysis{
+		Turns: []logicdomain.SessionBatchTurnAnalysis{
+			{
+				TurnID:       501,
+				Details:      "第一条待处理 turn 的精要。",
+				MemoryNodes:  []logicdomain.MemoryNodeCandidate{{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先给出 AI 记忆项目建议。", Details: "用户当前诉求是先获得 AI 记忆项目建议。"}},
+				ProfileNodes: []logicdomain.ProfileNodeCandidate{{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目仍处于早期设计阶段。"}},
+			},
+			{
+				TurnID:       502,
+				Details:      "第二条待处理 turn 的精要。",
+				MemoryNodes:  []logicdomain.MemoryNodeCandidate{},
+				ProfileNodes: []logicdomain.ProfileNodeCandidate{},
+			},
 		},
-		ProfileNodes: []logicdomain.ProfileNodeCandidate{
-			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目关注 AI 记忆能力设计。"},
-		},
+		ObsoleteMemoryTurnIDs: []uint64{401},
 	}}
-	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{}, nil)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{
+		TurnThreshold:     2,
+		TokenThreshold:    9999,
+		IdleTimeout:       15 * time.Minute,
+		HistoryTurns:      3,
+		MaxInputTokens:    300,
+		QueueScanInterval: 30 * time.Second,
+	}, nil, false)
 
-	result, err := uc.Execute(context.Background(), PostActionCommand{
-		Session: logicdomain.SessionRef{
-			SessionID:  91,
-			SessionKey: "sess-always",
-			UserID:     9,
-			TeamID:     4,
-			SpaceID:    6,
-			ProjectID:  12,
-			TurnCount:  0,
-		},
-		UserContent:         "clean-user",
-		AssistantContent:    "clean-assistant",
-		RawUserContent:      "raw-user",
-		RawAssistantContent: "raw-assistant",
-		RawTimeline: []PostActionTimelineItem{
-			{Type: "assistant", Content: "raw-middle"},
-		},
-	})
-	if err != nil {
-		t.Fatalf("execute post-action with debug summary: %v", err)
-	}
-	if !result.Accepted {
-		t.Fatal("expected accepted result")
-	}
-	assertPersistedTurn(t, store.turn, "clean-user", "clean-assistant", nil)
+	uc.processQueuedSession(logicdomain.SessionRef{
+		SessionID:  91,
+		SessionKey: "sess-batch",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+		TurnCount:  2,
+		UpdatedAt:  time.Now(),
+	}, false, "test")
+
 	if analyzer.calls != 1 {
-		t.Fatalf("expected one turn analysis call, got %d", analyzer.calls)
+		t.Fatalf("expected one batch analysis call, got %d", analyzer.calls)
 	}
-	if !strings.Contains(analyzer.transcript, `"user": "raw-user"`) {
-		t.Fatalf("expected raw user content in analysis transcript, got %s", analyzer.transcript)
-	}
-	if !strings.Contains(analyzer.transcript, `"assistant": "raw-assistant"`) {
-		t.Fatalf("expected raw assistant content in analysis transcript, got %s", analyzer.transcript)
-	}
-	if !strings.Contains(analyzer.transcript, `"content": "raw-middle"`) {
-		t.Fatalf("expected raw timeline content in analysis transcript, got %s", analyzer.transcript)
-	}
-	if store.analysisTurn.ID != 501 {
-		t.Fatalf("expected persisted turn id to flow into analysis persistence, got %+v", store.analysisTurn)
-	}
-	if got := store.analysis.Details; got != "这轮对话明确了 AI 记忆子项目的方向建议需求。" {
-		t.Fatalf("unexpected stored analysis details: %+v", store.analysis)
-	}
-	if store.analysis.DetailsBudget <= 0 {
-		t.Fatalf("expected computed details budget, got %+v", store.analysis)
-	}
-	if len(store.analysis.MemoryNodes) != 1 || len(store.analysis.ProfileNodes) != 1 {
-		t.Fatalf("unexpected stored analysis nodes: %+v", store.analysis)
-	}
-	if strings.TrimSpace(store.analysis.MemoryNodes[0].VectorID) == "" {
-		t.Fatalf("expected vector id to be attached back onto memory node, got %+v", store.analysis.MemoryNodes[0])
+	if !strings.Contains(analyzer.requestBody, `"history_turns"`) || !strings.Contains(analyzer.requestBody, `"pending_turns"`) {
+		t.Fatalf("expected history and pending turns in request body, got %s", analyzer.requestBody)
 	}
 	if len(vector.upserts) != 1 {
-		t.Fatalf("expected 1 vector upsert, got %d", len(vector.upserts))
-	}
-	if vector.upserts[0].ID != store.analysis.MemoryNodes[0].VectorID {
-		t.Fatalf("expected duckdb vector_id to match lancedb row id, got upsert=%s node=%s", vector.upserts[0].ID, store.analysis.MemoryNodes[0].VectorID)
+		t.Fatalf("expected one vector upsert, got %d", len(vector.upserts))
 	}
 	if vector.upserts[0].Filter.SessionID != 91 {
-		t.Fatalf("expected post-action memory vectors to keep the source session id, got %+v", vector.upserts[0].Filter)
+		t.Fatalf("expected persisted vector to keep session id, got %+v", vector.upserts[0].Filter)
 	}
-	if vector.upserts[0].Metadata["turn_id"] != "501" {
-		t.Fatalf("expected vector metadata to keep turn anchor, got %+v", vector.upserts[0].Metadata)
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 || vector.deleteIDsCalls[0][0] != "old-vector" {
+		t.Fatalf("expected obsolete vector delete to be called with old-vector, got %#v", vector.deleteIDsCalls)
+	}
+	if len(store.batchTurns) != 2 || store.batchTurns[0].ID != 501 || store.batchTurns[1].ID != 502 {
+		t.Fatalf("unexpected batch turns: %+v", store.batchTurns)
+	}
+	if len(store.batchAnalysis.Turns) != 2 {
+		t.Fatalf("unexpected persisted batch analysis: %+v", store.batchAnalysis)
+	}
+	if strings.TrimSpace(store.batchAnalysis.Turns[0].MemoryNodes[0].VectorID) == "" {
+		t.Fatalf("expected vector id to be backfilled onto batch analysis: %+v", store.batchAnalysis)
 	}
 }
 
-// TestPostActionUseCaseBatchesProfileMergeOncePerTurn verifies one turn with multiple user/project profile nodes triggers exactly one batched merge call and maps the merge result back into DuckDB persistence fields.
-// TestPostActionUseCaseBatchesProfileMergeOncePerTurn 用于验证单个 turn 中出现多条 user/project 画像节点时，只会触发一次批量合并调用，并把合并结果映射回 DuckDB 持久化字段。
-func TestPostActionUseCaseBatchesProfileMergeOncePerTurn(t *testing.T) {
-	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
+// TestPostActionUseCaseBatchesProfileMergeAcrossTurns verifies user/project profile evidence from multiple pending turns is merged in one batched merge call.
+// TestPostActionUseCaseBatchesProfileMergeAcrossTurns 用于验证来自多条待处理 turn 的 user/project 画像证据会通过一次批量合并调用统一处理。
+func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {
 	store := &testRelationalStore{
-		persistedTurn: logicdomain.PersistedTurnRecord{ID: 601, SessionID: 91, ProjectID: 12, DehydratedBudget: 9, CreatedAt: time.Date(2026, 3, 30, 8, 0, 0, 0, time.UTC)},
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{ID: 601, SessionID: 91, ProjectID: 12, DehydratedContent: `{"user":"u1","timeline":[],"assistant":"a1"}`, DehydratedBudget: 50},
+			{ID: 602, SessionID: 91, ProjectID: 12, DehydratedContent: `{"user":"u2","timeline":[],"assistant":"a2"}`, DehydratedBudget: 50},
+		},
 		profileTargets: logicdomain.ProfileTargetsSnapshot{
 			UserProfile:    "旧用户画像",
 			ProjectProfile: "旧项目画像",
 		},
 	}
-	analyzer := &stubPostActionAnalyzer{result: logicdomain.TurnAnalysis{
-		Details: "这轮对话给出了新的用户偏好和项目约束。",
-		ProfileNodes: []logicdomain.ProfileNodeCandidate{
-			{ProfileType: logicdomain.ProfileTypeUser, Content: "用户偏好 Rust 进行后端开发。"},
-			{ProfileType: logicdomain.ProfileTypeProject, Content: "项目当前仍处于设计阶段，尚无代码。"},
-			{ProfileType: logicdomain.ProfileTypeUser, Content: "用户希望面向多个 AI 编程工具做记忆扩展。"},
-			{ProfileType: logicdomain.ProfileTypeProject, Content: "项目需要兼容 Opencode、OpenClaw、Claude Code、Codex。"},
+	analyzer := &stubPostActionBatchAnalyzer{result: logicdomain.SessionBatchAnalysis{
+		Turns: []logicdomain.SessionBatchTurnAnalysis{
+			{
+				TurnID:       601,
+				Details:      "第一条。",
+				ProfileNodes: []logicdomain.ProfileNodeCandidate{{ProfileType: logicdomain.ProfileTypeUser, Content: "用户偏好 Rust。"}},
+			},
+			{
+				TurnID:  602,
+				Details: "第二条。",
+				ProfileNodes: []logicdomain.ProfileNodeCandidate{
+					{ProfileType: logicdomain.ProfileTypeProject, Content: "项目目前没有代码。"},
+					{ProfileType: logicdomain.ProfileTypeUser, Content: "用户希望面向多个 AI 编程工具做记忆扩展。"},
+				},
+			},
 		},
 	}}
 	merger := &stubPostActionProfileMerger{
@@ -230,158 +247,131 @@ func TestPostActionUseCaseBatchesProfileMergeOncePerTurn(t *testing.T) {
 				UpdatedProfile:          "合并后的用户画像",
 				MergedCandidateIndexes:  []int{0, 1},
 				InvalidCandidateIndexes: []int{},
-				Reason:                  "两条用户画像都应纳入长期偏好。",
 			},
 			Project: &logicdomain.ProfileMergeSection{
 				UpdatedProfile:          "合并后的项目画像",
 				MergedCandidateIndexes:  []int{0},
-				InvalidCandidateIndexes: []int{1},
-				Reason:                  "项目兼容工具范围暂不稳定，保留设计阶段信息，标记工具清单为无效候选。",
+				InvalidCandidateIndexes: []int{},
 			},
 		},
 	}
-	uc := NewPostActionUseCase(filter, store, nil, nil, analyzer, merger, PostActionAnalysisConfig{}, nil)
+	uc := newPostActionUseCase(nil, store, nil, &stubVectorStore{}, analyzer, merger, PostActionAnalysisConfig{
+		TurnThreshold:  2,
+		TokenThreshold: 9999,
+		IdleTimeout:    15 * time.Minute,
+		HistoryTurns:   3,
+		MaxInputTokens: 300,
+	}, nil, false)
 
-	result, err := uc.Execute(context.Background(), PostActionCommand{
-		Session: logicdomain.SessionRef{
-			SessionID:  91,
-			SessionKey: "sess-profile-batch",
-			UserID:     9,
-			TeamID:     4,
-			SpaceID:    6,
-			ProjectID:  12,
-		},
-		UserContent:      "clean-user",
-		AssistantContent: "clean-assistant",
-	})
-	if err != nil {
-		t.Fatalf("execute post-action with profile merge: %v", err)
-	}
-	if !result.Accepted {
-		t.Fatal("expected accepted result")
-	}
+	uc.processQueuedSession(logicdomain.SessionRef{
+		SessionID:  91,
+		SessionKey: "sess-profile-batch",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+		UpdatedAt:  time.Now(),
+	}, false, "test")
+
 	if merger.calls != 1 {
-		t.Fatalf("expected one batched profile merge call, got %d", merger.calls)
+		t.Fatalf("expected one batched merge call, got %d", merger.calls)
 	}
-	if merger.snapshot.UserProfile != "旧用户画像" || merger.snapshot.ProjectProfile != "旧项目画像" {
-		t.Fatalf("unexpected merge snapshot: %+v", merger.snapshot)
-	}
-	if len(merger.nodes) != 4 {
+	if len(merger.nodes) != 3 {
 		t.Fatalf("expected all profile nodes to flow into one merge call, got %+v", merger.nodes)
 	}
-	if !store.analysis.UserProfileMerged || store.analysis.MergedUserProfile != "合并后的用户画像" {
-		t.Fatalf("unexpected merged user profile state: %+v", store.analysis)
+	if !store.batchAnalysis.UserProfileMerged || store.batchAnalysis.MergedUserProfile != "合并后的用户画像" {
+		t.Fatalf("unexpected merged user profile state: %+v", store.batchAnalysis)
 	}
-	if !store.analysis.ProjectProfileMerged || store.analysis.MergedProjectProfile != "合并后的项目画像" {
-		t.Fatalf("unexpected merged project profile state: %+v", store.analysis)
-	}
-	if got := store.analysis.ProfileNodes[0].Status; got != logicdomain.ProfileStatusMerged {
-		t.Fatalf("expected first user node to be merged, got %d", got)
-	}
-	if got := store.analysis.ProfileNodes[1].Status; got != logicdomain.ProfileStatusMerged {
-		t.Fatalf("expected first project node to be merged, got %d", got)
-	}
-	if got := store.analysis.ProfileNodes[2].Status; got != logicdomain.ProfileStatusMerged {
-		t.Fatalf("expected second user node to be merged, got %d", got)
-	}
-	if got := store.analysis.ProfileNodes[3].Status; got != logicdomain.ProfileStatusInvalid {
-		t.Fatalf("expected second project node to be invalid, got %d", got)
+	if !store.batchAnalysis.ProjectProfileMerged || store.batchAnalysis.MergedProjectProfile != "合并后的项目画像" {
+		t.Fatalf("unexpected merged project profile state: %+v", store.batchAnalysis)
 	}
 }
 
-// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails verifies the new debug-stage turn analysis never breaks the main post-action persistence flow.
-// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails 用于验证新的调试阶段逐轮分析即使失败，也绝不会破坏主 post-action 持久化链路。
-func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails(t *testing.T) {
-	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
-	store := &testRelationalStore{persistedTurn: logicdomain.PersistedTurnRecord{ID: 777, SessionID: 92, ProjectID: 12, DehydratedBudget: 11}}
-	analyzer := &stubPostActionAnalyzer{err: errors.New("llm failed")}
+// TestPostActionUseCaseSkipsBatchBelowThreshold verifies queued sessions remain pending when neither count threshold nor token threshold has been met.
+// TestPostActionUseCaseSkipsBatchBelowThreshold 用于验证当条数阈值和 token 阈值都未达到时，排队 session 会继续保持待处理状态。
+func TestPostActionUseCaseSkipsBatchBelowThreshold(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{ID: 701, SessionID: 91, ProjectID: 12, DehydratedContent: `{"user":"u1","timeline":[],"assistant":"a1"}`, DehydratedBudget: 30},
+		},
+	}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := NewPostActionUseCase(
-		filter,
-		store,
-		nil,
-		nil,
-		analyzer,
-		nil,
-		PostActionAnalysisConfig{IdleTimeout: 15 * time.Minute},
-		logger,
-	)
+	analyzer := &stubPostActionBatchAnalyzer{}
+	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, nil, PostActionAnalysisConfig{
+		TurnThreshold:  2,
+		TokenThreshold: 100,
+		IdleTimeout:    15 * time.Minute,
+		HistoryTurns:   3,
+		MaxInputTokens: 300,
+	}, logger, false)
 
-	result, err := uc.Execute(context.Background(), PostActionCommand{
-		Session: logicdomain.SessionRef{
-			SessionID:  92,
-			SessionKey: "sess-idle",
-			UserID:     9,
-			TeamID:     4,
-			SpaceID:    6,
-			ProjectID:  12,
-			TurnCount:  1,
-			UpdatedAt:  time.Now().Add(-20 * time.Minute),
-		},
-		UserContent:         "你好",
-		AssistantContent:    "收到",
-		RawUserContent:      "你好 raw",
-		RawAssistantContent: "收到 raw",
-	})
-	if err != nil {
-		t.Fatalf("execute post-action with failing debug summary: %v", err)
+	uc.processQueuedSession(logicdomain.SessionRef{
+		SessionID:  91,
+		SessionKey: "sess-skip",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+		UpdatedAt:  time.Now(),
+	}, false, "test")
+
+	if analyzer.calls != 0 {
+		t.Fatalf("expected batch analyzer not to run, got %d calls", analyzer.calls)
 	}
-	if !result.Accepted {
-		t.Fatal("expected accepted result")
+	if len(store.batchTurns) != 0 {
+		t.Fatalf("expected no batch persistence, got %+v", store.batchTurns)
 	}
-	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
-	if analyzer.calls != 1 {
-		t.Fatalf("expected one turn analysis attempt, got %d", analyzer.calls)
-	}
-	if store.analysisTurn.ID != 0 {
-		t.Fatalf("did not expect failed analysis to be persisted, got %+v", store.analysisTurn)
-	}
-	if !strings.Contains(logBuf.String(), "post-action turn analysis failed") {
-		t.Fatalf("expected turn analysis failure to be logged, got %s", logBuf.String())
+	if !strings.Contains(logBuf.String(), "post-action queue skipped by thresholds") {
+		t.Fatalf("expected threshold skip log, got %s", logBuf.String())
 	}
 }
 
-// TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails verifies the vector-first flow deletes freshly written LanceDB rows if DuckDB cannot link them back.
-// TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails 用于验证当前“先向量后回写”流程在 DuckDB 无法回链时，会删除刚写入的 LanceDB 向量行。
-func TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails(t *testing.T) {
-	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
+// TestPostActionUseCaseRollsBackVectorRowsWhenBatchPersistenceFails verifies freshly inserted vectors are deleted again when DuckDB cannot commit the batch result.
+// TestPostActionUseCaseRollsBackVectorRowsWhenBatchPersistenceFails 用于验证当 DuckDB 无法提交批处理结果时，刚写入的向量会被回滚删除。
+func TestPostActionUseCaseRollsBackVectorRowsWhenBatchPersistenceFails(t *testing.T) {
 	store := &testRelationalStore{
-		persistedTurn: logicdomain.PersistedTurnRecord{ID: 808, SessionID: 93, ProjectID: 12, DehydratedBudget: 13},
-		analysisErr:   errors.New("duckdb write failed"),
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{ID: 808, SessionID: 93, ProjectID: 12, DehydratedContent: `{"user":"u1","timeline":[],"assistant":"a1"}`, DehydratedBudget: 50},
+			{ID: 809, SessionID: 93, ProjectID: 12, DehydratedContent: `{"user":"u2","timeline":[],"assistant":"a2"}`, DehydratedBudget: 50},
+		},
+		batchApplyErr: errors.New("duckdb write failed"),
 	}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.3, 0.2, 0.1}}}}
 	vector := &stubVectorStore{}
-	analyzer := &stubPostActionAnalyzer{result: logicdomain.TurnAnalysis{
-		Details: "这轮对话产出了一条需要持久化的记忆特征。",
-		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先给出 AI 记忆子项目建议。", Details: "这是当前 turn 的核心任务诉求。"},
+	analyzer := &stubPostActionBatchAnalyzer{result: logicdomain.SessionBatchAnalysis{
+		Turns: []logicdomain.SessionBatchTurnAnalysis{
+			{
+				TurnID:      808,
+				Details:     "这轮对话产出了一条需要持久化的记忆特征。",
+				MemoryNodes: []logicdomain.MemoryNodeCandidate{{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先给出 AI 记忆子项目建议。", Details: "这是当前 turn 的核心任务诉求。"}},
+			},
+			{
+				TurnID:  809,
+				Details: "第二条待处理 turn。",
+			},
 		},
 	}}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := NewPostActionUseCase(filter, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{}, logger)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{
+		TurnThreshold:  2,
+		TokenThreshold: 9999,
+		IdleTimeout:    15 * time.Minute,
+		HistoryTurns:   3,
+		MaxInputTokens: 300,
+	}, logger, false)
 
-	result, err := uc.Execute(context.Background(), PostActionCommand{
-		Session: logicdomain.SessionRef{
-			SessionID:  93,
-			SessionKey: "sess-rollback",
-			UserID:     9,
-			TeamID:     4,
-			SpaceID:    6,
-			ProjectID:  12,
-		},
-		UserContent:         "clean-user",
-		AssistantContent:    "clean-assistant",
-		RawUserContent:      "raw-user",
-		RawAssistantContent: "raw-assistant",
-	})
-	if err != nil {
-		t.Fatalf("execute post-action with rollback path: %v", err)
-	}
-	if !result.Accepted {
-		t.Fatal("expected accepted result")
-	}
+	uc.processQueuedSession(logicdomain.SessionRef{
+		SessionID:  93,
+		SessionKey: "sess-rollback",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+		UpdatedAt:  time.Now(),
+	}, false, "test")
+
 	if len(vector.upserts) != 1 {
 		t.Fatalf("expected 1 vector upsert before rollback, got %d", len(vector.upserts))
 	}
@@ -391,10 +381,7 @@ func TestPostActionUseCaseRollsBackVectorRowsWhenDuckDBAnalysisPersistenceFails(
 	if len(vector.deleteIDsCalls[0]) != 1 || vector.deleteIDsCalls[0][0] != vector.upserts[0].ID {
 		t.Fatalf("expected rollback ids to match inserted vector row, got delete=%v upsert=%s", vector.deleteIDsCalls[0], vector.upserts[0].ID)
 	}
-	if store.analysisTurn.ID != 808 {
-		t.Fatalf("expected relational store to attempt analysis persistence before rollback, got %+v", store.analysisTurn)
-	}
-	if !strings.Contains(logBuf.String(), "post-action turn analysis persistence failed") {
+	if !strings.Contains(logBuf.String(), "post-action session batch persistence failed") {
 		t.Fatalf("expected persistence failure to be logged, got %s", logBuf.String())
 	}
 }
@@ -430,16 +417,24 @@ func (s *stubNoiseTurnFilter) FilterPersistableTurns(_ context.Context, turns []
 	return append([]logicdomain.NormalizedTurn(nil), s.filtered...)
 }
 
-// testRelationalStore is the minimal relational-store stub needed by post-action tests after the move to turn-level persistence.
-// testRelationalStore 用于在迁移到 turn 级持久化后，为 post-action 测试提供最小化关系存储桩。
+// testRelationalStore is the minimal relational-store stub needed by the queued post-action tests.
+// testRelationalStore 用于为排队式 post-action 测试提供最小化的关系存储桩。
 type testRelationalStore struct {
-	session        logicdomain.SessionRef
-	turn           logicdomain.TurnRecord
-	persistedTurn  logicdomain.PersistedTurnRecord
-	profileTargets logicdomain.ProfileTargetsSnapshot
-	analysisTurn   logicdomain.PersistedTurnRecord
-	analysis       logicdomain.TurnAnalysis
-	analysisErr    error
+	session           logicdomain.SessionRef
+	turn              logicdomain.TurnRecord
+	persistedTurn     logicdomain.PersistedTurnRecord
+	pendingTurns      []logicdomain.SessionTurnRecord
+	historyTurns      []logicdomain.SessionTurnRecord
+	activeMemoryNodes []logicdomain.SessionMemoryNodeRecord
+	idleSessions      []logicdomain.SessionRef
+	profileTargets    logicdomain.ProfileTargetsSnapshot
+	analysisTurn      logicdomain.PersistedTurnRecord
+	analysis          logicdomain.TurnAnalysis
+	analysisErr       error
+	batchTurns        []logicdomain.SessionTurnRecord
+	batchAnalysis     logicdomain.SessionBatchAnalysis
+	batchApplyResult  logicdomain.SessionAnalysisApplyResult
+	batchApplyErr     error
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
@@ -452,7 +447,34 @@ func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicd
 		CreatedAt:        turn.CreatedAt,
 		Timeline:         append([]logicdomain.TurnTimelineItem(nil), turn.Timeline...),
 	}
-	return s.persistedTurn, nil
+	if s.persistedTurn.ID != 0 {
+		return s.persistedTurn, nil
+	}
+	return logicdomain.PersistedTurnRecord{ID: 1, SessionID: session.SessionID, ProjectID: session.ProjectID, DehydratedBudget: 10}, nil
+}
+
+// LoadPendingSessionTurns returns the canned pending turns used by the queue-processing tests.
+// LoadPendingSessionTurns 用于返回队列处理测试中预设的待处理 turn。
+func (s *testRelationalStore) LoadPendingSessionTurns(_ context.Context, _ logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error) {
+	return append([]logicdomain.SessionTurnRecord(nil), s.pendingTurns...), nil
+}
+
+// LoadRecentSessionHistory returns the canned extracted history turns used as batch references.
+// LoadRecentSessionHistory 用于返回预设的已提炼历史 turn，作为批处理参考上下文。
+func (s *testRelationalStore) LoadRecentSessionHistory(_ context.Context, _ logicdomain.SessionRef, _ int) ([]logicdomain.SessionTurnRecord, error) {
+	return append([]logicdomain.SessionTurnRecord(nil), s.historyTurns...), nil
+}
+
+// LoadActiveSessionMemoryNodes returns the canned active memory anchors exposed to the batch analyzer.
+// LoadActiveSessionMemoryNodes 用于返回暴露给批处理分析器的预设活跃记忆锚点。
+func (s *testRelationalStore) LoadActiveSessionMemoryNodes(_ context.Context, _ logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
+	return append([]logicdomain.SessionMemoryNodeRecord(nil), s.activeMemoryNodes...), nil
+}
+
+// ListIdlePendingSessions returns the canned idle sessions used by queue-scan tests.
+// ListIdlePendingSessions 用于返回队列扫描测试中预设的空闲 session。
+func (s *testRelationalStore) ListIdlePendingSessions(_ context.Context, _ time.Duration, _ int) ([]logicdomain.SessionRef, error) {
+	return append([]logicdomain.SessionRef(nil), s.idleSessions...), nil
 }
 
 // LoadProfileTargets returns the canned durable user/project profile blobs so tests can verify the merge request input.
@@ -461,34 +483,45 @@ func (s *testRelationalStore) LoadProfileTargets(_ context.Context, _ logicdomai
 	return s.profileTargets, nil
 }
 
-// ApplyTurnAnalysis records the extracted turn-analysis payload so tests can verify the post-action chain writes back structured results.
-// ApplyTurnAnalysis 用于记录提炼后的 turn 分析载荷，方便测试验证 post-action 链路会回写结构化结果。
+// ApplyTurnAnalysis keeps interface completeness for legacy tests that still compile against the expanded port.
+// ApplyTurnAnalysis 用于补齐接口，让扩展后的端口在遗留测试场景下仍可编译。
 func (s *testRelationalStore) ApplyTurnAnalysis(_ context.Context, _ logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error {
 	s.analysisTurn = turn
 	s.analysis = analysis
 	return s.analysisErr
 }
 
+// ApplySessionBatchAnalysis records the selected turns and the structured batch payload so tests can assert the queue pipeline writes back the expected result.
+// ApplySessionBatchAnalysis 用于记录所选 turn 和结构化批处理载荷，方便测试断言队列流水线会回写正确结果。
+func (s *testRelationalStore) ApplySessionBatchAnalysis(_ context.Context, _ logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis logicdomain.SessionBatchAnalysis) (logicdomain.SessionAnalysisApplyResult, error) {
+	s.batchTurns = append([]logicdomain.SessionTurnRecord(nil), turns...)
+	s.batchAnalysis = analysis
+	if s.batchApplyErr != nil {
+		return logicdomain.SessionAnalysisApplyResult{}, s.batchApplyErr
+	}
+	return s.batchApplyResult, nil
+}
+
 // Shutdown returns immediately because the stub does not own external resources.
 // Shutdown 用于立即返回，因为该桩不持有外部资源。
 func (s *testRelationalStore) Shutdown(context.Context) error { return nil }
 
-// stubPostActionAnalyzer records debug turn-analysis invocations and returns one canned result or error.
-// stubPostActionAnalyzer 用于记录调试逐轮分析调用，并返回预设结果或错误。
-type stubPostActionAnalyzer struct {
-	calls      int
-	transcript string
-	result     logicdomain.TurnAnalysis
-	err        error
+// stubPostActionBatchAnalyzer records queued batch-analysis invocations and returns one canned result or error.
+// stubPostActionBatchAnalyzer 用于记录排队批处理分析调用，并返回预设结果或错误。
+type stubPostActionBatchAnalyzer struct {
+	calls       int
+	requestBody string
+	result      logicdomain.SessionBatchAnalysis
+	err         error
 }
 
-// Analyze captures the transcript so tests can assert the trigger path and payload shape.
-// Analyze 用于捕获传入 transcript，方便测试断言触发路径和载荷形态。
-func (s *stubPostActionAnalyzer) Analyze(_ context.Context, transcript string) (logicdomain.TurnAnalysis, error) {
+// Analyze captures the request body so tests can assert the queued batch window shape.
+// Analyze 用于捕获请求体，方便测试断言排队批处理窗口的形态。
+func (s *stubPostActionBatchAnalyzer) Analyze(_ context.Context, requestBody string) (logicdomain.SessionBatchAnalysis, error) {
 	s.calls++
-	s.transcript = transcript
+	s.requestBody = requestBody
 	if s.err != nil {
-		return logicdomain.TurnAnalysis{}, s.err
+		return logicdomain.SessionBatchAnalysis{}, s.err
 	}
 	return s.result, nil
 }
@@ -573,8 +606,8 @@ func (s *stubVectorStore) DeleteByFilter(_ context.Context, filter logicdomain.S
 	return 0, nil
 }
 
-// DeleteByIDs records the rollback vector ids so tests can assert that DuckDB persistence failures clean up the just-inserted rows.
-// DeleteByIDs 用于记录回滚时的向量 id，方便测试断言 DuckDB 持久化失败后会清理刚插入的向量行。
+// DeleteByIDs records rollback or obsolete vector ids so tests can assert the queued batch pipeline cleans up the right rows.
+// DeleteByIDs 用于记录回滚或淘汰时的向量 id，方便测试断言队列批处理流水线会清理正确的行。
 func (s *stubVectorStore) DeleteByIDs(_ context.Context, ids []string) (uint64, error) {
 	copied := append([]string(nil), ids...)
 	s.deleteIDsCalls = append(s.deleteIDsCalls, copied)

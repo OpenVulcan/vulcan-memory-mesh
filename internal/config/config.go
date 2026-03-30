@@ -168,6 +168,8 @@ type PostActionConfig struct {
 	SessionAnalysisTurnThreshold  int      `json:"session_analysis_turn_threshold"`
 	SessionAnalysisTokenThreshold int      `json:"session_analysis_token_threshold"`
 	SessionAnalysisIdleTimeout    Duration `json:"session_analysis_idle_timeout"`
+	SessionAnalysisHistoryTurns   int      `json:"session_analysis_history_turns"`
+	SessionAnalysisMaxInputTokens int      `json:"session_analysis_max_input_tokens"`
 }
 
 // PreCheckConfig controls timeout and recall window settings for the pre-check workflow.
@@ -206,9 +208,11 @@ func DefaultLocal() Config {
 		Relational: RelationalConfig{Provider: "duckdb"},
 		PostAction: PostActionConfig{
 			InputMode:                     "compat",
-			SessionAnalysisTurnThreshold:  20,
+			SessionAnalysisTurnThreshold:  2,
 			SessionAnalysisTokenThreshold: 12000,
 			SessionAnalysisIdleTimeout:    Duration{15 * time.Minute},
+			SessionAnalysisHistoryTurns:   3,
+			SessionAnalysisMaxInputTokens: 6000,
 		},
 		PreCheck:       PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
@@ -372,13 +376,19 @@ func (c *Config) Normalize() {
 		c.PreCheck.TopK = 5
 	}
 	if c.PostAction.SessionAnalysisTurnThreshold <= 0 {
-		c.PostAction.SessionAnalysisTurnThreshold = 20
+		c.PostAction.SessionAnalysisTurnThreshold = 2
 	}
 	if c.PostAction.SessionAnalysisTokenThreshold <= 0 {
 		c.PostAction.SessionAnalysisTokenThreshold = 12000
 	}
 	if c.PostAction.SessionAnalysisIdleTimeout.Duration <= 0 {
 		c.PostAction.SessionAnalysisIdleTimeout = Duration{15 * time.Minute}
+	}
+	if c.PostAction.SessionAnalysisHistoryTurns <= 0 {
+		c.PostAction.SessionAnalysisHistoryTurns = 3
+	}
+	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
+		c.PostAction.SessionAnalysisMaxInputTokens = 6000
 	}
 
 	// Clamp memory pipeline knobs to keep recall fan-out predictable.
@@ -553,6 +563,12 @@ func (c Config) Validate() error {
 	if c.PostAction.SessionAnalysisIdleTimeout.Duration <= 0 {
 		return errors.New("post_action.session_analysis_idle_timeout must be > 0")
 	}
+	if c.PostAction.SessionAnalysisHistoryTurns <= 0 {
+		return errors.New("post_action.session_analysis_history_turns must be > 0")
+	}
+	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
+		return errors.New("post_action.session_analysis_max_input_tokens must be > 0")
+	}
 	return nil
 }
 
@@ -640,6 +656,8 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_TURN_THRESHOLD", &cfg.PostAction.SessionAnalysisTurnThreshold)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_TOKEN_THRESHOLD", &cfg.PostAction.SessionAnalysisTokenThreshold)
 	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", &cfg.PostAction.SessionAnalysisIdleTimeout)
+	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS", &cfg.PostAction.SessionAnalysisHistoryTurns)
+	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", &cfg.PostAction.SessionAnalysisMaxInputTokens)
 	setDuration("VMM_PRE_CHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
 	setInt("VMM_PRE_CHECK_TOPK", &cfg.PreCheck.TopK)
 	setFloat("VMM_PRE_CHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)

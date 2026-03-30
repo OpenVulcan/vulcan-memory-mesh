@@ -22,6 +22,8 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.PostAction.SessionAnalysisTurnThreshold = 0
 	cfg.PostAction.SessionAnalysisTokenThreshold = 0
 	cfg.PostAction.SessionAnalysisIdleTimeout = Duration{}
+	cfg.PostAction.SessionAnalysisHistoryTurns = 0
+	cfg.PostAction.SessionAnalysisMaxInputTokens = 0
 	cfg.Vector.Provider = ""
 	cfg.Relational.Provider = ""
 	cfg.DuckDB.Address = ""
@@ -50,7 +52,7 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.PostAction.InputMode != "compat" {
 		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
 	}
-	if cfg.PostAction.SessionAnalysisTurnThreshold != 20 {
+	if cfg.PostAction.SessionAnalysisTurnThreshold != 2 {
 		t.Fatalf("post action session analysis turn threshold = %d", cfg.PostAction.SessionAnalysisTurnThreshold)
 	}
 	if cfg.PostAction.SessionAnalysisTokenThreshold != 12000 {
@@ -58,6 +60,12 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if cfg.PostAction.SessionAnalysisIdleTimeout.Duration != 15*time.Minute {
 		t.Fatalf("post action session analysis idle timeout = %v", cfg.PostAction.SessionAnalysisIdleTimeout.Duration)
+	}
+	if cfg.PostAction.SessionAnalysisHistoryTurns != 3 {
+		t.Fatalf("post action session analysis history turns = %d", cfg.PostAction.SessionAnalysisHistoryTurns)
+	}
+	if cfg.PostAction.SessionAnalysisMaxInputTokens != 6000 {
+		t.Fatalf("post action session analysis max input tokens = %d", cfg.PostAction.SessionAnalysisMaxInputTokens)
 	}
 	if cfg.Vector.Provider != "lancedb" {
 		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
@@ -119,6 +127,18 @@ func TestConfigValidateRejectsInvalidPostActionAnalysisThresholds(t *testing.T) 
 	cfg.PostAction.SessionAnalysisIdleTimeout = Duration{}
 	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_idle_timeout must be > 0" {
 		t.Fatalf("unexpected idle-timeout validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.PostAction.SessionAnalysisHistoryTurns = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_history_turns must be > 0" {
+		t.Fatalf("unexpected history-turns validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.PostAction.SessionAnalysisMaxInputTokens = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_max_input_tokens must be > 0" {
+		t.Fatalf("unexpected max-input-tokens validate error: %v", err)
 	}
 }
 
@@ -281,6 +301,8 @@ func TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds(t *testing.T) 
 	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_TURN_THRESHOLD", "33")
 	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_TOKEN_THRESHOLD", "24000")
 	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", "25m")
+	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS", "5")
+	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", "7200")
 
 	applyEnvOverrides(&cfg)
 
@@ -292,6 +314,12 @@ func TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds(t *testing.T) 
 	}
 	if cfg.PostAction.SessionAnalysisIdleTimeout.Duration != 25*time.Minute {
 		t.Fatalf("post action session analysis idle timeout = %v", cfg.PostAction.SessionAnalysisIdleTimeout.Duration)
+	}
+	if cfg.PostAction.SessionAnalysisHistoryTurns != 5 {
+		t.Fatalf("post action session analysis history turns = %d", cfg.PostAction.SessionAnalysisHistoryTurns)
+	}
+	if cfg.PostAction.SessionAnalysisMaxInputTokens != 7200 {
+		t.Fatalf("post action session analysis max input tokens = %d", cfg.PostAction.SessionAnalysisMaxInputTokens)
 	}
 }
 

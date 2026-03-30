@@ -25,7 +25,7 @@
 3. 清洗待存储文本
 4. 记录清洗后日志
 5. 立即返回 `accepted=true`
-6. 后台继续把脱水后的 turn 记录写入 DuckDB，并在需要时把记忆向量写入 LanceDB
+6. 后台继续把脱水后的 turn 记录写入 DuckDB，并把后续 LLM 分析转交给 session 队列
 
 ## 请求结构
 
@@ -171,48 +171,70 @@ message PostActionTimelineItem {
 14. 追加到 DuckDB：
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
-15. 当前调试阶段每次写入 turn 成功后：
-    - 都会直接把“当前原始 turn”送到 `analyze_turn` prompt
-    - LLM 会返回结构化的：
+15. turn 写入成功后：
+    - 不在主写链路里直接调 LLM
+    - 而是把当前 `session` 投递到后台队列
+16. 后台队列有两条工作线：
+    - 优先消费显式入队的 `session`
+    - 每 30 秒扫描一次“超过空闲阈值且仍有待处理 turn”的 `session`
+17. 当满足任一条件时，会触发一次批量分析：
+    - 待处理 turn 数达到 `session_analysis_turn_threshold`
+    - 待处理 turn 的累计 token 预算达到 `session_analysis_token_threshold`
+    - 距离最后一次会话更新时间超过 `session_analysis_idle_timeout`
+18. 触发后会组装一份 `analyze_session_batch` 请求：
+    - 最近若干条已提炼历史 `details`
+    - 当前仍未提炼的原始 turn
+    - 当前 session 下仍然活跃的旧记忆节点
+    - 其中：
+      - 历史部分只用于参考
+      - 待处理部分必须逐条输出对应结果
+      - 活跃记忆节点会带：
+        - `turn_id`
+        - `memory_node_id`
+        - `vector_id`
+19. `analyze_session_batch` 会返回：
+    - 每条待处理 turn 的：
       - `details`
       - `memory_nodes[]`
       - `profile_nodes[]`
-16. 如果 `profile_nodes[]` 不为空：
+    - 以及：
+      - `obsolete_memory_turn_ids`
+20. 如果批次里有 `profile_nodes[]`：
     - 会先加载当前 `vmm_users.profile / vmm_projects.profile`
-    - 把 user/project 两类新画像证据一起送入一次 `merge_profile` prompt
-    - 如果本轮只有 user 或只有 project 候选，则只发送存在的一侧，不把缺失侧空块送进 LLM
-    - `merge_profile` 会在一个 JSON 对象里分开返回：
+    - 把整批 user/project 画像证据一起送入一次 `merge_profile`
+    - 如果本批次只有 user 或只有 project 候选，则只发送存在的一侧
+    - `merge_profile` 会分别返回：
       - `user`
       - `project`
     - 每个结果块都会给出：
       - 完整更新后的画像文本
       - 哪些候选 index 被 `merged`
       - 哪些候选 index 被 `invalid`
-    - 如果合并成功：
-      - 会把 `vmm_users.profile / vmm_projects.profile` 更新为新的完整画像
-      - 并把对应 `vmm_profile_nodes.profile_status` 写成最终状态
-17. 如果 `memory_nodes[]` 不为空：
-    - 先对每条 `memory_nodes[].abstract` 做 embedding
-    - 先把向量写入 LanceDB
-    - LanceDB 行 `id` 会回填成 `memory_nodes[].vector_id`
-18. 只有向量写入成功后，才会回写 DuckDB：
-    - `vmm_turn_records.details`
-    - `vmm_turn_records.details_budget`
-    - `vmm_turn_records.extracted_status = 1`
+21. 如果批次里有新的 `memory_nodes[]`：
+    - 会先对每条 `memory_nodes[].abstract` 做 embedding
+    - 先把新向量写入 LanceDB
+    - LanceDB 行 `id` 会回填成对应 `memory_nodes[].vector_id`
+22. 只有新向量写入成功后，才会批量回写 DuckDB：
+    - 更新每条待处理 turn：
+      - `details`
+      - `details_budget`
+      - `extracted_status = 1`
     - 同步插入：
       - `vmm_memory_nodes`
       - `vmm_profile_nodes`
-      - 并按需更新：
-        - `vmm_users.profile`
-        - `vmm_projects.profile`
-    - `vmm_memory_nodes.vector_id` 会关联 LanceDB 里的对应行
-    - LanceDB 行里的 `session_id` 会保存真实来源 session
-19. 如果 LanceDB 已写入，但 DuckDB 最终回写失败：
+    - 同步更新：
+      - `vmm_users.profile`
+      - `vmm_projects.profile`
+      - `vmm_sessions.last_summarized_id`
+      - `vmm_sessions.summarize_budget`
+23. 如果 `obsolete_memory_turn_ids` 不为空：
+    - 会把这些 turn 对应的 `vmm_memory_nodes.node_status` 标成 `superseded`
+    - DuckDB 提交成功后，再删除 LanceDB 对应的旧向量
+24. 如果 LanceDB 已写入新向量，但 DuckDB 最终回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
-    - 避免 `extracted_status=0` 却残留孤立向量
-20. 当前限制：
-    - 当前不做“历史 3 轮提炼文”拼装
-    - 当前不自动更新 `vmm_teams.profile / vmm_spaces.profile`
+    - 避免 `extracted_status=0` 却残留孤立新向量
+25. 当前限制：
+    - 仍不自动更新 `vmm_teams.profile / vmm_spaces.profile`
 
 ## 清洗行为
 
@@ -361,9 +383,11 @@ grpcurl -plaintext `
   },
   "post_action": {
     "input_mode": "compat",
-    "session_analysis_turn_threshold": 20,
+    "session_analysis_turn_threshold": 2,
     "session_analysis_token_threshold": 12000,
-    "session_analysis_idle_timeout": "15m"
+    "session_analysis_idle_timeout": "15m",
+    "session_analysis_history_turns": 3,
+    "session_analysis_max_input_tokens": 6000
   }
 }
 ```
@@ -376,6 +400,8 @@ grpcurl -plaintext `
 - `post_action.session_analysis_turn_threshold`
 - `post_action.session_analysis_token_threshold`
 - `post_action.session_analysis_idle_timeout`
+- `post_action.session_analysis_history_turns`
+- `post_action.session_analysis_max_input_tokens`
 - `noise.enabled`
 - `noise.default_language`
 - `noise.semantic_enabled`
@@ -389,24 +415,34 @@ grpcurl -plaintext `
   - 表示同一个 session 在后台累计达到多少 token 预算后，满足一次后续 LLM 分析条件
 - `post_action.session_analysis_idle_timeout`
   - 表示距离同一个 session 最后一次会话更新时间超过多久后，强制满足一次后续 LLM 分析条件
+- `post_action.session_analysis_history_turns`
+  - 表示每次批处理最多回带多少条历史 `details` 精要
+- `post_action.session_analysis_max_input_tokens`
+  - 表示单次批处理允许送给 LLM 的总输入预算上限
 
 当前已经接入的行为是：
 
-- 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”直接送入 `analyze_turn` prompt
-- 如果有 `profile_nodes`，会把 user/project 两类候选和当前画像一起送入一次 `merge_profile` prompt
-- `merge_profile` 会分开返回 user/project 两块 JSON 结果
+- `PostAction` 成功写入 turn 后，只负责入库并投递 `session` 队列任务
+- 队列优先消费显式入队内容
+- 同时每 30 秒扫描一次空闲超时且仍有待处理 turn 的 `session`
+- 达到条数、token、空闲任一阈值，就会触发一次 `analyze_session_batch`
+- `analyze_session_batch` 会基于“历史精要 + 待处理原始 turn + 活跃记忆节点”返回整批结果
+- 如果批次里有 `profile_nodes`，会统一走一次 `merge_profile`
+- `merge_profile` 仍然会分开返回 user/project 两块 JSON 结果
 - 合并成功后会更新 `vmm_users.profile / vmm_projects.profile`
 - `vmm_profile_nodes.profile_status` 会记录当前节点是 `merged / invalid / pending`
-- 如果有 `memory_nodes`，会先写入 LanceDB
-- 返回结果会写回 `vmm_turn_records.details / details_budget / extracted_status`
-- 同步插入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+- 如果有新的 `memory_nodes`，会先写入 LanceDB
+- DuckDB 成功回写后会更新：
+  - `vmm_turn_records.details / details_budget / extracted_status`
+  - `vmm_memory_nodes`
+  - `vmm_profile_nodes`
+  - `vmm_sessions.last_summarized_id / summarize_budget`
 - `vmm_memory_nodes.vector_id` 会关联 LanceDB 行 `id`
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
+- 如果旧记忆 turn 被判定淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
+- DuckDB 成功提交后，会删除 LanceDB 中对应的旧向量
 - 如果 DuckDB 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
-- 仍然不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
 - 仍然不自动更新 `vmm_teams.profile / vmm_spaces.profile`
-
-当前这三个阈值字段只是保留在配置层，暂未参与实际触发判断。
 
 ## 当前限制
 
@@ -414,5 +450,5 @@ grpcurl -plaintext `
 - 当前主线不再支持 `team_id / space_id` 由客户端直接传入
 - 当前 `PostAction` 只接受纯文本字段，不接受原始消息节点对象
 - 当前 `PostAction` 返回的是“已接收”，不是“已写库完成”
-- 当前阈值触发后的批量分析尚未接入，调试阶段是“每个 turn 都直接分析一次”
+- 当前 session 批处理已经接入，但 `vmm_sessions.summarize_content` 仍未开始维护宏观会话总结正文
 - 当前只会自动合并 user/project 画像，team/space 画像仍需后续显式配置

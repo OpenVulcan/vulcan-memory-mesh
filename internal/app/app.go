@@ -94,12 +94,14 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		relational,
 		embedding,
 		vector,
-		processor.NewTurnAnalyzer(llm, prompts, cfg.LLM.Model),
+		processor.NewSessionBatchAnalyzer(llm, prompts, cfg.LLM.Model),
 		processor.NewProfileMerger(llm, prompts, cfg.LLM.Model),
 		usecase.PostActionAnalysisConfig{
 			TurnThreshold:  cfg.PostAction.SessionAnalysisTurnThreshold,
 			TokenThreshold: cfg.PostAction.SessionAnalysisTokenThreshold,
 			IdleTimeout:    cfg.PostAction.SessionAnalysisIdleTimeout.Duration,
+			HistoryTurns:   cfg.PostAction.SessionAnalysisHistoryTurns,
+			MaxInputTokens: cfg.PostAction.SessionAnalysisMaxInputTokens,
 		},
 		logger,
 	)
@@ -126,7 +128,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
 	reflection.Register(server)
 
-	shutdowns := []appports.Shutdowner{relational, vector}
+	shutdowns := []appports.Shutdowner{relational, vector, post}
 	return &Application{Config: cfg, Logger: logger, Server: server, Shutdowns: shutdowns}, nil
 }
 

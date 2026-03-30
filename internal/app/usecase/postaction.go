@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -50,10 +51,10 @@ type PostActionExecutor interface {
 	Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error)
 }
 
-// PostActionTurnAnalyzer is the tiny port used by post-action to run one structured per-turn extraction after the cleaned turn is durably written.
-// PostActionTurnAnalyzer 用于让 post-action 在清洗后的 turn 稳定落库后，执行一次结构化的逐轮提炼。
-type PostActionTurnAnalyzer interface {
-	Analyze(ctx context.Context, transcript string) (logicdomain.TurnAnalysis, error)
+// PostActionSessionBatchAnalyzer is the tiny port used by post-action workers to analyze one queued session window.
+// PostActionSessionBatchAnalyzer 用于让 post-action 工作器分析一份排队的 session 窗口。
+type PostActionSessionBatchAnalyzer interface {
+	Analyze(ctx context.Context, requestBody string) (logicdomain.SessionBatchAnalysis, error)
 }
 
 // PostActionProfileMerger is the tiny port used by post-action to batch-merge one turn's user/project profile evidence into durable profile blobs.
@@ -65,9 +66,12 @@ type PostActionProfileMerger interface {
 // PostActionAnalysisConfig carries the session-level thresholds that decide when post-action should fire one debug-stage LLM summary.
 // PostActionAnalysisConfig 用于承载 session 级阈值，并决定 post-action 何时触发一次调试阶段的 LLM 摘要。
 type PostActionAnalysisConfig struct {
-	TurnThreshold  int
-	TokenThreshold int
-	IdleTimeout    time.Duration
+	TurnThreshold     int
+	TokenThreshold    int
+	IdleTimeout       time.Duration
+	HistoryTurns      int
+	MaxInputTokens    int
+	QueueScanInterval time.Duration
 }
 
 // PostActionUseCase stores one cleaned turn record and applies the noise gate only to simple single-round flows.
@@ -77,15 +81,27 @@ type PostActionUseCase struct {
 	store       appports.RelationalStore
 	embedding   appports.EmbeddingClient
 	vector      appports.VectorStore
-	analyzer    PostActionTurnAnalyzer
+	analyzer    PostActionSessionBatchAnalyzer
 	profiles    PostActionProfileMerger
 	analysisCfg PostActionAnalysisConfig
 	logger      *logx.Logger
+	queueCtx    context.Context
+	queueCancel context.CancelFunc
+	queueWG     sync.WaitGroup
+	queueMu     sync.Mutex
+	queueCh     chan uint64
+	queueState  map[uint64]*postActionQueueState
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance.
 // NewPostActionUseCase 用于创建 PostActionUseCase 实例。
-func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionTurnAnalyzer, profiles PostActionProfileMerger, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
+func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionSessionBatchAnalyzer, profiles PostActionProfileMerger, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
+	return newPostActionUseCase(noiseGate, store, embedding, vector, analyzer, profiles, analysisCfg, logger, true)
+}
+
+// newPostActionUseCase builds the post-action use case and optionally starts the background queue worker.
+// newPostActionUseCase 用于构建 post-action 用例，并按需启动后台队列工作器。
+func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionSessionBatchAnalyzer, profiles PostActionProfileMerger, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -98,7 +114,16 @@ func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	if analysisCfg.IdleTimeout < 0 {
 		analysisCfg.IdleTimeout = 0
 	}
-	return &PostActionUseCase{
+	if analysisCfg.HistoryTurns < 0 {
+		analysisCfg.HistoryTurns = 0
+	}
+	if analysisCfg.MaxInputTokens < 0 {
+		analysisCfg.MaxInputTokens = 0
+	}
+	if analysisCfg.QueueScanInterval <= 0 {
+		analysisCfg.QueueScanInterval = 30 * time.Second
+	}
+	uc := &PostActionUseCase{
 		noiseGate:   noiseGate,
 		store:       store,
 		embedding:   embedding,
@@ -108,6 +133,10 @@ func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 		analysisCfg: analysisCfg,
 		logger:      logger,
 	}
+	if startWorker && store != nil && analyzer != nil {
+		uc.startQueueWorker()
+	}
+	return uc
 }
 
 // Execute persists one cleaned turn into the resolved session after optional noise screening.
@@ -153,14 +182,14 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 		AssistantContent: strings.TrimSpace(cmd.AssistantContent),
 		CreatedAt:        time.Now().UTC(),
 	}
-	persistedTurn, err := u.store.AppendTurnRecord(ctx, cmd.Session, turn)
+	_, err := u.store.AppendTurnRecord(ctx, cmd.Session, turn)
 	if err != nil {
 		return PostActionResult{}, err
 	}
 
-	// Trigger one debug-stage structured turn analysis only after the cleaned turn has been durably written.
-	// 只有在清洗后的 turn 已经稳定落库之后，才触发一次调试阶段的结构化逐轮分析。
-	u.runDebugTurnAnalysis(ctx, traceID, cmd, persistedTurn)
+	// Queue the heavier downstream analysis so post-action storage remains fast while later session-level extraction runs in the worker.
+	// 把更重的后续分析提交到队列，让 post-action 落库保持轻量，同时把后续 session 级提炼交给工作器处理。
+	u.enqueueSessionAnalysis(cmd.Session, false)
 	return PostActionResult{Accepted: true, TraceID: traceID}, nil
 }
 
@@ -192,121 +221,6 @@ func validatePostAction(cmd PostActionCommand) error {
 		}
 	}
 	return nil
-}
-
-// runDebugTurnAnalysis sends every persisted turn through the structured turn-analysis prompt during the current debug stage and persists the extracted result back into DuckDB.
-// runDebugTurnAnalysis 用于在当前调试阶段把每一条已落库 turn 都送入结构化逐轮分析提示词，并把提炼结果回写到 DuckDB。
-func (u *PostActionUseCase) runDebugTurnAnalysis(ctx context.Context, traceID string, cmd PostActionCommand, persistedTurn logicdomain.PersistedTurnRecord) {
-	if u == nil || u.analyzer == nil {
-		return
-	}
-
-	// Keep the evolving session counters in logs so debugging still shows how the current turn changes the session window.
-	// 在日志中继续保留 session 计数变化，方便调试时观察当前 turn 如何改变会话窗口。
-	state := captureSessionAnalysisState(cmd.Session, persistedTurn.DehydratedBudget)
-
-	// Feed the original dialogue content to the dedicated analyze_turn prompt so extracted details and node candidates come from the raw user-visible dialogue.
-	// 把原始对话内容送入专用 analyze_turn 提示词，让 details 和节点候选直接基于用户可见的原始对话生成。
-	transcript, err := buildPostActionAnalysisTranscript(rawTurnFromCommand(cmd))
-	if err != nil {
-		if u.logger != nil {
-			u.logger.Error("post-action analysis transcript build failed", "trace_id", traceID, "session_key", cmd.Session.SessionKey, "err", err)
-		}
-		return
-	}
-	analysis, err := u.analyzer.Analyze(ctx, transcript)
-	if err != nil {
-		if u.logger != nil {
-			u.logger.Error(
-				"post-action turn analysis failed",
-				"trace_id", traceID,
-				"session_key", cmd.Session.SessionKey,
-				"session_id", cmd.Session.SessionID,
-				"turn_id", persistedTurn.ID,
-				"analysis_mode", "always",
-				"next_turn_count", state.NextTurnCount,
-				"next_summarize_budget", state.NextSummarizeBudget,
-				"idle_gap_ms", state.IdleGap.Milliseconds(),
-				"err", err,
-			)
-		}
-		return
-	}
-
-	// Normalize fresh profile evidence into pending state first, then optionally upgrade it through one batched merge call.
-	// 先把新画像证据统一归一到 pending 状态，再按需通过一次批量合并调用升级其状态。
-	normalizeTurnProfileNodes(&analysis)
-	if err := u.mergeTurnProfiles(ctx, cmd.Session, &analysis); err != nil && u.logger != nil {
-		u.logger.Error(
-			"post-action profile merge failed",
-			"trace_id", traceID,
-			"session_key", cmd.Session.SessionKey,
-			"session_id", cmd.Session.SessionID,
-			"turn_id", persistedTurn.ID,
-			"err", err,
-		)
-	}
-	analysis.DetailsBudget = estimatePostActionTextBudget(analysis.Details)
-	vectorIDs, err := u.persistMemoryNodeVectors(ctx, cmd.Session, persistedTurn, &analysis)
-	if err != nil {
-		if u.logger != nil {
-			u.logger.Error(
-				"post-action memory vector persistence failed",
-				"trace_id", traceID,
-				"session_key", cmd.Session.SessionKey,
-				"session_id", cmd.Session.SessionID,
-				"turn_id", persistedTurn.ID,
-				"err", err,
-			)
-		}
-		return
-	}
-	if err := u.store.ApplyTurnAnalysis(ctx, cmd.Session, persistedTurn, analysis); err != nil {
-		if len(vectorIDs) > 0 && u.vector != nil {
-			if _, rollbackErr := u.vector.DeleteByIDs(ctx, vectorIDs); rollbackErr != nil && u.logger != nil {
-				u.logger.Error(
-					"post-action memory vector rollback failed",
-					"trace_id", traceID,
-					"session_key", cmd.Session.SessionKey,
-					"session_id", cmd.Session.SessionID,
-					"turn_id", persistedTurn.ID,
-					"vector_ids", strings.Join(vectorIDs, ","),
-					"err", rollbackErr,
-				)
-			}
-		}
-		if u.logger != nil {
-			u.logger.Error(
-				"post-action turn analysis persistence failed",
-				"trace_id", traceID,
-				"session_key", cmd.Session.SessionKey,
-				"session_id", cmd.Session.SessionID,
-				"turn_id", persistedTurn.ID,
-				"err", err,
-			)
-		}
-		return
-	}
-	analysisJSON, _ := json.Marshal(analysis)
-	if u.logger != nil {
-		u.logger.Info(
-			"post-action turn analysis result",
-			"trace_id", traceID,
-			"session_key", cmd.Session.SessionKey,
-			"session_id", cmd.Session.SessionID,
-			"turn_id", persistedTurn.ID,
-			"prompt_scene", "analyze_turn",
-			"analysis_mode", "always",
-			"next_turn_count", state.NextTurnCount,
-			"next_summarize_budget", state.NextSummarizeBudget,
-			"idle_gap_ms", state.IdleGap.Milliseconds(),
-			"details_budget", analysis.DetailsBudget,
-			"vector_count", len(vectorIDs),
-			"memory_node_count", len(analysis.MemoryNodes),
-			"profile_node_count", len(analysis.ProfileNodes),
-			"analysis", string(analysisJSON),
-		)
-	}
 }
 
 // normalizeTurnProfileNodes resets freshly extracted profile nodes to pending so a later merge step can deterministically flip only the chosen indexes.

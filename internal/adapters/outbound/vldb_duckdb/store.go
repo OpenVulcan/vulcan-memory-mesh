@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -679,6 +680,286 @@ func (s *Store) LoadProfileTargets(ctx context.Context, session logicdomain.Sess
 		UserProfile:    strings.TrimSpace(user.Profile),
 		ProjectProfile: strings.TrimSpace(project.Profile),
 	}, nil
+}
+
+// LoadPendingSessionTurns returns the oldest not-yet-extracted turn rows for one session so queued post-action workers can build a batch window.
+// LoadPendingSessionTurns 用于返回某个 session 中尚未提取的最早 turn 行，让排队的 post-action 工作器构建批处理窗口。
+func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error) {
+	if session.SessionID == 0 {
+		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	rows, err := queryRows[turnRecordRow](s, ctx, `
+SELECT id, session_id, project_id,
+       CAST(dehydrated_content AS VARCHAR) AS dehydrated_content,
+       dehydrated_budget, extracted_status, details, details_budget,
+       created_timestamp, updated_timestamp
+FROM vmm_turn_records
+WHERE session_id = ? AND extracted_status = ?
+ORDER BY id ASC
+`, session.SessionID, logicdomain.TurnExtractedStatusPending)
+	if err != nil {
+		return nil, fmt.Errorf("query pending session turns: %w", err)
+	}
+	turns := make([]logicdomain.SessionTurnRecord, 0, len(rows))
+	for _, row := range rows {
+		turns = append(turns, row.toDomain())
+	}
+	return turns, nil
+}
+
+// LoadRecentSessionHistory returns the latest extracted turn summaries for one session, ordered from oldest to newest for prompt assembly.
+// LoadRecentSessionHistory 用于返回某个 session 最近已提炼的 turn 精要，并按从旧到新的顺序排列，供提示词组装使用。
+func (s *Store) LoadRecentSessionHistory(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
+	if session.SessionID == 0 {
+		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if limit <= 0 {
+		return []logicdomain.SessionTurnRecord{}, nil
+	}
+	rows, err := queryRows[turnRecordRow](s, ctx, `
+SELECT id, session_id, project_id,
+       CAST(dehydrated_content AS VARCHAR) AS dehydrated_content,
+       dehydrated_budget, extracted_status, details, details_budget,
+       created_timestamp, updated_timestamp
+FROM vmm_turn_records
+WHERE session_id = ? AND extracted_status = ? AND LENGTH(TRIM(details)) > 0
+ORDER BY id DESC
+LIMIT ?
+`, session.SessionID, logicdomain.TurnExtractedStatusDone, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent session history: %w", err)
+	}
+	turns := make([]logicdomain.SessionTurnRecord, 0, len(rows))
+	for _, row := range rows {
+		turns = append(turns, row.toDomain())
+	}
+	for left, right := 0, len(turns)-1; left < right; left, right = left+1, right-1 {
+		turns[left], turns[right] = turns[right], turns[left]
+	}
+	return turns, nil
+}
+
+// LoadActiveSessionMemoryNodes returns the active memory-node anchors inside one session so the batch analyzer can decide which old memories to supersede.
+// LoadActiveSessionMemoryNodes 用于返回某个 session 内的活跃记忆节点锚点，让批处理分析器判断哪些旧记忆需要淘汰。
+func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
+	if session.SessionID == 0 {
+		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	rows, err := queryRows[memoryNodeRow](s, ctx, `
+SELECT mn.id, mn.project_id, mn.user_id, mn.turn_id,
+       CAST(mn.vector_id AS VARCHAR) AS vector_id,
+       mn.category, mn.abstract, mn.details, mn.node_status, mn.created_timestamp
+FROM vmm_memory_nodes mn
+JOIN vmm_turn_records tr ON tr.id = mn.turn_id
+WHERE tr.session_id = ? AND mn.node_status = ?
+ORDER BY mn.turn_id ASC, mn.id ASC
+`, session.SessionID, logicdomain.MemoryNodeStatusActive)
+	if err != nil {
+		return nil, fmt.Errorf("query active session memory nodes: %w", err)
+	}
+	nodes := make([]logicdomain.SessionMemoryNodeRecord, 0, len(rows))
+	for _, row := range rows {
+		nodes = append(nodes, row.toDomain())
+	}
+	return nodes, nil
+}
+
+// ListIdlePendingSessions returns sessions whose latest conversation activity is older than the idle timeout while still carrying pending turn rows.
+// ListIdlePendingSessions 用于返回“最后会话时间已超过空闲阈值且仍存在待处理 turn”的 session 列表。
+func (s *Store) ListIdlePendingSessions(ctx context.Context, idleTimeout time.Duration, limit int) ([]logicdomain.SessionRef, error) {
+	if idleTimeout <= 0 {
+		return []logicdomain.SessionRef{}, nil
+	}
+	if limit <= 0 {
+		limit = 128
+	}
+	cutoffMs := time.Now().UTC().Add(-idleTimeout).UnixMilli()
+	rows, err := queryRows[sessionRow](s, ctx, `
+SELECT id, session_key, user_id, team_id, space_id, project_id,
+       turn_count, last_summarized_id, summarize_content, summarize_budget,
+       created_timestamp, updated_timestamp
+FROM vmm_sessions
+WHERE updated_timestamp <= ?
+  AND EXISTS (
+    SELECT 1
+    FROM vmm_turn_records tr
+    WHERE tr.session_id = vmm_sessions.id AND tr.extracted_status = ?
+  )
+ORDER BY updated_timestamp ASC, id ASC
+LIMIT ?
+`, cutoffMs, logicdomain.TurnExtractedStatusPending, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query idle pending sessions: %w", err)
+	}
+	sessions := make([]logicdomain.SessionRef, 0, len(rows))
+	for _, row := range rows {
+		record := row.toDomain()
+		sessions = append(sessions, logicdomain.SessionRef{
+			SessionID:        record.ID,
+			SessionKey:       record.SessionKey,
+			UserID:           record.UserID,
+			TeamID:           record.TeamID,
+			SpaceID:          record.SpaceID,
+			ProjectID:        record.ProjectID,
+			TurnCount:        record.TurnCount,
+			LastSummarizedID: record.LastSummarizedID,
+			SummarizeContent: record.SummarizeContent,
+			SummarizeBudget:  record.SummarizeBudget,
+			CreatedAt:        record.CreatedAt,
+			UpdatedAt:        record.UpdatedAt,
+		})
+	}
+	return sessions, nil
+}
+
+// ApplySessionBatchAnalysis writes back a queued batch of turn summaries, inserts fresh memory/profile nodes, advances session summarize progress, and marks superseded memory turns.
+// ApplySessionBatchAnalysis 用于回写一批排队的 turn 摘要、插入新的 memory/profile 节点、推进 session 总结进度，并标记被淘汰的旧记忆 turn。
+func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis logicdomain.SessionBatchAnalysis) (logicdomain.SessionAnalysisApplyResult, error) {
+	if session.SessionID == 0 {
+		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if session.ProjectID == 0 {
+		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+	}
+	if session.UserID == 0 {
+		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+	}
+	if len(turns) == 0 {
+		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "turns", Message: "must contain at least one pending turn"}
+	}
+
+	// Serialize the full batch write so turn status flips, inserted nodes, and session progress remain consistent within one deterministic id window.
+	// 串行化整批写入，确保 turn 状态切换、节点插入和 session 进度推进在同一个确定性 ID 窗口内保持一致。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	turnByID := make(map[uint64]logicdomain.SessionTurnRecord, len(turns))
+	for _, turn := range turns {
+		turnByID[turn.ID] = turn
+	}
+	if len(analysis.Turns) != len(turnByID) {
+		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_session_batch", Message: fmt.Sprintf("turn_results count mismatch: got %d want %d", len(analysis.Turns), len(turnByID))}
+	}
+
+	now := time.Now().UTC()
+	nowMs := now.UnixMilli()
+	nowRFC3339 := now.Format(time.RFC3339Nano)
+	memoryNodeCount := 0
+	profileNodeCount := 0
+	processedBudget := 0
+	lastTurnID := uint64(0)
+	for idx := range analysis.Turns {
+		turnResult := &analysis.Turns[idx]
+		storedTurn, ok := turnByID[turnResult.TurnID]
+		if !ok {
+			return logicdomain.SessionAnalysisApplyResult{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_session_batch", Message: fmt.Sprintf("unexpected turn_id %d", turnResult.TurnID)}
+		}
+		if turnResult.DetailsBudget <= 0 {
+			turnResult.DetailsBudget = estimateTokenBudget(turnResult.Details)
+		}
+		memoryNodeCount += len(turnResult.MemoryNodes)
+		profileNodeCount += len(turnResult.ProfileNodes)
+		processedBudget += storedTurn.DehydratedBudget
+		if turnResult.TurnID > lastTurnID {
+			lastTurnID = turnResult.TurnID
+		}
+	}
+
+	memoryStartID := uint64(0)
+	profileStartID := uint64(0)
+	var err error
+	if memoryNodeCount > 0 {
+		memoryStartID, err = s.nextNumericID(ctx, "vmm_memory_nodes")
+		if err != nil {
+			return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("allocate memory node id: %w", err)
+		}
+	}
+	if profileNodeCount > 0 {
+		profileStartID, err = s.nextNumericID(ctx, "vmm_profile_nodes")
+		if err != nil {
+			return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("allocate profile node id: %w", err)
+		}
+	}
+
+	obsoleteTurnIDs := normalizeBatchTurnIDs(analysis.ObsoleteMemoryTurnIDs)
+	obsoleteVectorIDs, err := s.loadObsoleteVectorIDs(ctx, session.SessionID, obsoleteTurnIDs)
+	if err != nil {
+		return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("load obsolete vector ids: %w", err)
+	}
+
+	script := ""
+	memoryOffset := uint64(0)
+	profileOffset := uint64(0)
+	sort.Slice(analysis.Turns, func(i, j int) bool {
+		return analysis.Turns[i].TurnID < analysis.Turns[j].TurnID
+	})
+	for _, turnResult := range analysis.Turns {
+		script += buildTurnAnalysisUpdateSQL(turnResult.TurnID, strings.TrimSpace(turnResult.Details), turnResult.DetailsBudget, nowMs)
+		for idx, node := range turnResult.MemoryNodes {
+			if strings.TrimSpace(node.VectorID) == "" {
+				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
+			}
+			script += buildMemoryNodeInsertSQL(memoryStartID+memoryOffset, session.ProjectID, session.UserID, turnResult.TurnID, strings.TrimSpace(node.VectorID), node.Category, node.Abstract, node.Details, nowMs)
+			memoryOffset++
+		}
+		for idx, node := range turnResult.ProfileNodes {
+			if !logicdomain.ValidProfileType(node.ProfileType) {
+				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
+			}
+			if strings.TrimSpace(node.Content) == "" {
+				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
+			}
+			if !logicdomain.ValidProfileStatus(node.Status) {
+				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
+			}
+			bindID := session.ProjectID
+			if node.ProfileType == logicdomain.ProfileTypeUser {
+				bindID = session.UserID
+			}
+			script += buildProfileNodeInsertSQL(profileStartID+profileOffset, turnResult.TurnID, node.ProfileType, bindID, node.Content, node.Status, nowMs)
+			profileOffset++
+		}
+	}
+	if analysis.UserProfileMerged {
+		script += buildUserProfileUpdateSQL(session.UserID, analysis.MergedUserProfile, nowRFC3339)
+	}
+	if analysis.ProjectProfileMerged {
+		script += buildProjectProfileUpdateSQL(session.ProjectID, analysis.MergedProjectProfile, nowRFC3339)
+	}
+	if len(obsoleteTurnIDs) > 0 {
+		script += buildMemoryNodesSupersedeSQL(obsoleteTurnIDs)
+	}
+	script += buildSessionBatchProgressUpdateSQL(session.SessionID, processedBudget, lastTurnID)
+	if err := s.exec(ctx, script); err != nil {
+		return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("apply session batch analysis: %w", err)
+	}
+	return logicdomain.SessionAnalysisApplyResult{ObsoleteVectorIDs: obsoleteVectorIDs}, nil
+}
+
+// loadObsoleteVectorIDs loads the currently active vector ids for the obsolete turn anchors so the caller can delete those rows from LanceDB after DuckDB commits.
+// loadObsoleteVectorIDs 用于加载被淘汰 turn 锚点当前仍活跃的 vector_id，供调用方在 DuckDB 提交成功后删除 LanceDB 对应行。
+func (s *Store) loadObsoleteVectorIDs(ctx context.Context, sessionID uint64, turnIDs []uint64) ([]string, error) {
+	if sessionID == 0 || len(turnIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := queryRows[obsoleteVectorRow](s, ctx, fmt.Sprintf(`
+SELECT CAST(mn.vector_id AS VARCHAR) AS vector_id
+FROM vmm_memory_nodes mn
+JOIN vmm_turn_records tr ON tr.id = mn.turn_id
+WHERE tr.session_id = %d AND mn.node_status = %d AND mn.turn_id IN (%s)
+ORDER BY mn.turn_id ASC, mn.id ASC
+`, sessionID, logicdomain.MemoryNodeStatusActive, sqlUint64List(turnIDs)))
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.VectorID) == "" {
+			continue
+		}
+		ids = append(ids, strings.TrimSpace(row.VectorID))
+	}
+	return ids, nil
 }
 
 // loadUserByID resolves one durable user row by numeric id and converts absence into a stable domain not-found error.
@@ -1496,6 +1777,73 @@ WHERE id = %d;
 `, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), projectID)
 }
 
+// buildMemoryNodesSupersedeSQL renders the raw UPDATE used to mark obsolete active memory nodes as superseded after one newer batch replaces them.
+// buildMemoryNodesSupersedeSQL 用于渲染原始 UPDATE 语句，在较新的批次替换旧信息后把对应的活跃记忆节点标记为 superseded。
+func buildMemoryNodesSupersedeSQL(turnIDs []uint64) string {
+	if len(turnIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+UPDATE vmm_memory_nodes
+SET node_status = %d
+WHERE node_status = %d AND turn_id IN (%s);
+`, logicdomain.MemoryNodeStatusSuperseded, logicdomain.MemoryNodeStatusActive, sqlUint64List(turnIDs))
+}
+
+// buildSessionBatchProgressUpdateSQL renders the raw UPDATE used to advance last_summarized_id and subtract the processed pending budget after one queued batch succeeds.
+// buildSessionBatchProgressUpdateSQL 用于渲染原始 UPDATE 语句，在排队批处理成功后推进 last_summarized_id 并扣减已处理的待总结预算。
+func buildSessionBatchProgressUpdateSQL(sessionID uint64, processedBudget int, lastTurnID uint64) string {
+	return fmt.Sprintf(`
+UPDATE vmm_sessions
+SET last_summarized_id = CASE WHEN last_summarized_id < %d THEN %d ELSE last_summarized_id END,
+    summarize_budget = CASE WHEN summarize_budget - %d < 0 THEN 0 ELSE summarize_budget - %d END
+WHERE id = %d;
+`, lastTurnID, lastTurnID, processedBudget, processedBudget, sessionID)
+}
+
+// sqlUint64List converts one uint64 slice into a comma-separated SQL list for the debug-stage raw statement builders.
+// sqlUint64List 用于把 uint64 切片转换成逗号分隔的 SQL 列表，供调试阶段原始语句构建器使用。
+func sqlUint64List(values []uint64) string {
+	if len(values) == 0 {
+		return "0"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		parts = append(parts, strconv.FormatUint(value, 10))
+	}
+	if len(parts) == 0 {
+		return "0"
+	}
+	return strings.Join(parts, ",")
+}
+
+// normalizeBatchTurnIDs removes zeros and duplicates from one turn-id list while keeping a deterministic ascending order.
+// normalizeBatchTurnIDs 用于去掉 turn-id 列表中的零值和重复项，并保持确定性的升序。
+func normalizeBatchTurnIDs(values []uint64) []uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[uint64]struct{}{}
+	out := make([]uint64, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
+}
+
 // sqlStringLiteral escapes one string into a single-quoted SQL literal for debug-stage raw statement rendering.
 // sqlStringLiteral 用于把字符串转成单引号 SQL 字面量，服务调试阶段的原始语句渲染。
 func sqlStringLiteral(raw string) string {
@@ -1632,6 +1980,66 @@ func (r sessionRow) toDomain() logicdomain.SessionRecord {
 		CreatedAt:        unixMilliToTime(r.CreatedTimestamp),
 		UpdatedAt:        unixMilliToTime(r.UpdatedTimestamp),
 	}
+}
+
+type turnRecordRow struct {
+	ID                uint64 `json:"id"`
+	SessionID         uint64 `json:"session_id"`
+	ProjectID         uint64 `json:"project_id"`
+	DehydratedContent string `json:"dehydrated_content"`
+	DehydratedBudget  int    `json:"dehydrated_budget"`
+	ExtractedStatus   int    `json:"extracted_status"`
+	Details           string `json:"details"`
+	DetailsBudget     int    `json:"details_budget"`
+	CreatedTimestamp  int64  `json:"created_timestamp"`
+	UpdatedTimestamp  int64  `json:"updated_timestamp"`
+}
+
+func (r turnRecordRow) toDomain() logicdomain.SessionTurnRecord {
+	return logicdomain.SessionTurnRecord{
+		ID:                r.ID,
+		SessionID:         r.SessionID,
+		ProjectID:         r.ProjectID,
+		DehydratedContent: r.DehydratedContent,
+		DehydratedBudget:  r.DehydratedBudget,
+		ExtractedStatus:   r.ExtractedStatus,
+		Details:           r.Details,
+		DetailsBudget:     r.DetailsBudget,
+		CreatedAt:         unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:         unixMilliToTime(r.UpdatedTimestamp),
+	}
+}
+
+type memoryNodeRow struct {
+	ID               uint64 `json:"id"`
+	ProjectID        uint64 `json:"project_id"`
+	UserID           uint64 `json:"user_id"`
+	TurnID           uint64 `json:"turn_id"`
+	VectorID         string `json:"vector_id"`
+	Category         int    `json:"category"`
+	Abstract         string `json:"abstract"`
+	Details          string `json:"details"`
+	NodeStatus       int    `json:"node_status"`
+	CreatedTimestamp int64  `json:"created_timestamp"`
+}
+
+func (r memoryNodeRow) toDomain() logicdomain.SessionMemoryNodeRecord {
+	return logicdomain.SessionMemoryNodeRecord{
+		ID:         r.ID,
+		ProjectID:  r.ProjectID,
+		UserID:     r.UserID,
+		TurnID:     r.TurnID,
+		VectorID:   r.VectorID,
+		Category:   r.Category,
+		Abstract:   r.Abstract,
+		Details:    r.Details,
+		NodeStatus: r.NodeStatus,
+		CreatedAt:  unixMilliToTime(r.CreatedTimestamp),
+	}
+}
+
+type obsoleteVectorRow struct {
+	VectorID string `json:"vector_id"`
 }
 
 type memoryEntryRow struct {

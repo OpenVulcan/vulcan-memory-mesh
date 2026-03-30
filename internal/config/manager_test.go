@@ -108,6 +108,7 @@ func TestPromptManagerUsesLongestPrefixAndUserPriority(t *testing.T) {
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "extract_intent.md", "user flash extract")
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "assemble_context.md", "user flash assemble")
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "analyze_turn.md", "user flash analyze")
+	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "analyze_session_batch.md", "user flash batch analyze")
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "summarize_entry.md", "user flash summarize")
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "merge_profile.md", "user flash merge")
 

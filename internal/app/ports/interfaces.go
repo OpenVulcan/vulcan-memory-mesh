@@ -4,6 +4,7 @@ package ports
 
 import (
 	"context"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
@@ -49,8 +50,13 @@ type VectorStore interface {
 // RelationalStore 用于给 post-action 流程在某个已解析的 session 范围内持久化一条清洗后的 turn。
 type RelationalStore interface {
 	AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) (logicdomain.PersistedTurnRecord, error)
+	LoadPendingSessionTurns(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error)
+	LoadRecentSessionHistory(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error)
+	LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error)
+	ListIdlePendingSessions(ctx context.Context, idleTimeout time.Duration, limit int) ([]logicdomain.SessionRef, error)
 	LoadProfileTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error)
 	ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error
+	ApplySessionBatchAnalysis(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis logicdomain.SessionBatchAnalysis) (logicdomain.SessionAnalysisApplyResult, error)
 	Shutdowner
 }
 
