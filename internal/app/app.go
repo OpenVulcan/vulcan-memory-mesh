@@ -80,6 +80,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support workspace management")
 	}
+	profileStore, ok := relational.(appports.ProfileStore)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support profile management")
+	}
 	noiseGate, err := buildNoiseGate(cfg, layout, embedding, noiseCache, logger)
 	if err != nil {
 		return nil, err
@@ -88,6 +92,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
+	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
 	pre := usecase.NewPreCheckUseCase(logger)
 	post := usecase.NewPostActionUseCase(
 		noiseGate,
@@ -111,6 +116,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	deps := grpcapi.Dependencies{
 		IDs:               ids,
 		Workspace:         workspace,
+		Profiles:          profiles,
 		PreCheck:          pre,
 		PostAction:        post,
 		ScopeResolver:     scopeResolver,

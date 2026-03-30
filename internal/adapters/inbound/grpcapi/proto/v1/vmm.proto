@@ -45,6 +45,14 @@ service VMMService {
   // DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
 
+  // GetProfileNodes returns only active atomic profile nodes for one requested scope target.
+  // GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+  rpc GetProfileNodes(GetProfileNodesRequest) returns (GetProfileNodesResponse);
+
+  // ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
+  // ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
+  rpc ApplyProfileInstruction(ApplyProfileInstructionRequest) returns (ApplyProfileInstructionResponse);
+
   // PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
   // PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
   rpc PreCheck(PreCheckRequest) returns (PreCheckResponse);
@@ -208,6 +216,84 @@ message DeleteUserResponse {
   int64 deleted_memories = 7;
   uint64 deleted_vector_rows = 8;
   string trace_id = 9;
+}
+
+// ProfileTarget identifies the single scope whose profile nodes should be queried or updated.
+// ProfileTarget 用于标识应被查询或更新画像节点的单个目标 scope。
+enum ProfileTarget {
+  PROFILE_TARGET_UNSPECIFIED = 0;
+  PROFILE_TARGET_USER = 1;
+  PROFILE_TARGET_PROJECT = 2;
+  PROFILE_TARGET_TEAM = 3;
+  PROFILE_TARGET_SPACE = 4;
+}
+
+// ProfileNodeSourceKind describes where one durable profile node came from.
+// ProfileNodeSourceKind 用于描述一条长期画像节点的来源。
+enum ProfileNodeSourceKind {
+  PROFILE_NODE_SOURCE_KIND_UNSPECIFIED = 0;
+  PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT = 1;
+  PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION = 2;
+  PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED = 3;
+}
+
+// ProfileNodeEntry transports one active atomic profile node back to the caller.
+// ProfileNodeEntry 用于把一条 active 原子化画像节点返回给调用方。
+message ProfileNodeEntry {
+  uint64 profile_node_id = 1;
+  ProfileTarget target = 2;
+  uint64 bind_id = 3;
+  string content = 4;
+  string priority = 5;
+  string level = 6;
+  uint32 refresh_weight = 7;
+  string profile_date = 8;
+  int64 expires_timestamp = 9;
+  string level_reason = 10;
+  ProfileNodeSourceKind source_kind = 11;
+  uint64 source_id = 12;
+}
+
+// RetiredProfileNodeEntry transports one retired profile node plus the explicit reason attached during a manual instruction review.
+// RetiredProfileNodeEntry 用于承载一条被退役的画像节点，以及手工画像评审附带的明确原因。
+message RetiredProfileNodeEntry {
+  uint64 profile_node_id = 1;
+  string reason = 2;
+}
+
+// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target.
+// GetProfileNodesRequest 用于请求服务端返回单个目标下当前 active 的原子化画像节点。
+message GetProfileNodesRequest {
+  ProfileTarget target = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  uint32 limit = 4;
+}
+
+// GetProfileNodesResponse returns the active profile-node slice for the requested target plus trace metadata.
+// GetProfileNodesResponse 用于返回请求目标下的 active 画像节点切片和 trace 元数据。
+message GetProfileNodesResponse {
+  repeated ProfileNodeEntry nodes = 1;
+  string trace_id = 2;
+}
+
+// ApplyProfileInstructionRequest carries one explicit natural-language instruction that should update a single profile target.
+// ApplyProfileInstructionRequest 用于承载一条显式自然语言画像指令，并更新单个画像目标。
+message ApplyProfileInstructionRequest {
+  ProfileTarget target = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+  string instruction = 4;
+}
+
+// ApplyProfileInstructionResponse returns the accepted new nodes and retired old nodes after the reviewed manual instruction succeeds.
+// ApplyProfileInstructionResponse 用于在手工画像指令评审成功后，返回被接纳的新节点和被退役的旧节点。
+message ApplyProfileInstructionResponse {
+  uint64 instruction_id = 1;
+  repeated ProfileNodeEntry accepted_nodes = 2;
+  repeated RetiredProfileNodeEntry retired_nodes = 3;
+  string review_reason = 4;
+  string trace_id = 5;
 }
 
 // PreCheckRequest carries only the numeric project/user ids plus the current user text.

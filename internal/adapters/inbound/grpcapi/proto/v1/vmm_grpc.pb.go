@@ -20,17 +20,19 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	VMMService_Healthz_FullMethodName        = "/vmm.v1.VMMService/Healthz"
-	VMMService_ListProjects_FullMethodName   = "/vmm.v1.VMMService/ListProjects"
-	VMMService_ResolveProject_FullMethodName = "/vmm.v1.VMMService/ResolveProject"
-	VMMService_EnsureProject_FullMethodName  = "/vmm.v1.VMMService/EnsureProject"
-	VMMService_DeleteProject_FullMethodName  = "/vmm.v1.VMMService/DeleteProject"
-	VMMService_MigrateProject_FullMethodName = "/vmm.v1.VMMService/MigrateProject"
-	VMMService_ResolveUser_FullMethodName    = "/vmm.v1.VMMService/ResolveUser"
-	VMMService_ListUsers_FullMethodName      = "/vmm.v1.VMMService/ListUsers"
-	VMMService_DeleteUser_FullMethodName     = "/vmm.v1.VMMService/DeleteUser"
-	VMMService_PreCheck_FullMethodName       = "/vmm.v1.VMMService/PreCheck"
-	VMMService_PostAction_FullMethodName     = "/vmm.v1.VMMService/PostAction"
+	VMMService_Healthz_FullMethodName                 = "/vmm.v1.VMMService/Healthz"
+	VMMService_ListProjects_FullMethodName            = "/vmm.v1.VMMService/ListProjects"
+	VMMService_ResolveProject_FullMethodName          = "/vmm.v1.VMMService/ResolveProject"
+	VMMService_EnsureProject_FullMethodName           = "/vmm.v1.VMMService/EnsureProject"
+	VMMService_DeleteProject_FullMethodName           = "/vmm.v1.VMMService/DeleteProject"
+	VMMService_MigrateProject_FullMethodName          = "/vmm.v1.VMMService/MigrateProject"
+	VMMService_ResolveUser_FullMethodName             = "/vmm.v1.VMMService/ResolveUser"
+	VMMService_ListUsers_FullMethodName               = "/vmm.v1.VMMService/ListUsers"
+	VMMService_DeleteUser_FullMethodName              = "/vmm.v1.VMMService/DeleteUser"
+	VMMService_GetProfileNodes_FullMethodName         = "/vmm.v1.VMMService/GetProfileNodes"
+	VMMService_ApplyProfileInstruction_FullMethodName = "/vmm.v1.VMMService/ApplyProfileInstruction"
+	VMMService_PreCheck_FullMethodName                = "/vmm.v1.VMMService/PreCheck"
+	VMMService_PostAction_FullMethodName              = "/vmm.v1.VMMService/PostAction"
 )
 
 // VMMServiceClient is the client API for VMMService service.
@@ -67,6 +69,12 @@ type VMMServiceClient interface {
 	// DeleteUser removes one user and all SQL/vector data after the caller presents the generated confirmation code.
 	// DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
 	DeleteUser(ctx context.Context, in *DeleteUserRequest, opts ...grpc.CallOption) (*DeleteUserResponse, error)
+	// GetProfileNodes returns only active atomic profile nodes for one requested scope target.
+	// GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+	GetProfileNodes(ctx context.Context, in *GetProfileNodesRequest, opts ...grpc.CallOption) (*GetProfileNodesResponse, error)
+	// ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
+	// ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
+	ApplyProfileInstruction(ctx context.Context, in *ApplyProfileInstructionRequest, opts ...grpc.CallOption) (*ApplyProfileInstructionResponse, error)
 	// PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
 	// PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
 	PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error)
@@ -173,6 +181,26 @@ func (c *vMMServiceClient) DeleteUser(ctx context.Context, in *DeleteUserRequest
 	return out, nil
 }
 
+func (c *vMMServiceClient) GetProfileNodes(ctx context.Context, in *GetProfileNodesRequest, opts ...grpc.CallOption) (*GetProfileNodesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProfileNodesResponse)
+	err := c.cc.Invoke(ctx, VMMService_GetProfileNodes_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *vMMServiceClient) ApplyProfileInstruction(ctx context.Context, in *ApplyProfileInstructionRequest, opts ...grpc.CallOption) (*ApplyProfileInstructionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ApplyProfileInstructionResponse)
+	err := c.cc.Invoke(ctx, VMMService_ApplyProfileInstruction_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *vMMServiceClient) PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PreCheckResponse)
@@ -227,6 +255,12 @@ type VMMServiceServer interface {
 	// DeleteUser removes one user and all SQL/vector data after the caller presents the generated confirmation code.
 	// DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
 	DeleteUser(context.Context, *DeleteUserRequest) (*DeleteUserResponse, error)
+	// GetProfileNodes returns only active atomic profile nodes for one requested scope target.
+	// GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+	GetProfileNodes(context.Context, *GetProfileNodesRequest) (*GetProfileNodesResponse, error)
+	// ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
+	// ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
+	ApplyProfileInstruction(context.Context, *ApplyProfileInstructionRequest) (*ApplyProfileInstructionResponse, error)
 	// PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
 	// PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
 	PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error)
@@ -269,6 +303,12 @@ func (UnimplementedVMMServiceServer) ListUsers(context.Context, *emptypb.Empty) 
 }
 func (UnimplementedVMMServiceServer) DeleteUser(context.Context, *DeleteUserRequest) (*DeleteUserResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteUser not implemented")
+}
+func (UnimplementedVMMServiceServer) GetProfileNodes(context.Context, *GetProfileNodesRequest) (*GetProfileNodesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetProfileNodes not implemented")
+}
+func (UnimplementedVMMServiceServer) ApplyProfileInstruction(context.Context, *ApplyProfileInstructionRequest) (*ApplyProfileInstructionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ApplyProfileInstruction not implemented")
 }
 func (UnimplementedVMMServiceServer) PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PreCheck not implemented")
@@ -459,6 +499,42 @@ func _VMMService_DeleteUser_Handler(srv interface{}, ctx context.Context, dec fu
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VMMService_GetProfileNodes_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProfileNodesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).GetProfileNodes(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_GetProfileNodes_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).GetProfileNodes(ctx, req.(*GetProfileNodesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _VMMService_ApplyProfileInstruction_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ApplyProfileInstructionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).ApplyProfileInstruction(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_ApplyProfileInstruction_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).ApplyProfileInstruction(ctx, req.(*ApplyProfileInstructionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _VMMService_PreCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PreCheckRequest)
 	if err := dec(in); err != nil {
@@ -537,6 +613,14 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteUser",
 			Handler:    _VMMService_DeleteUser_Handler,
+		},
+		{
+			MethodName: "GetProfileNodes",
+			Handler:    _VMMService_GetProfileNodes_Handler,
+		},
+		{
+			MethodName: "ApplyProfileInstruction",
+			Handler:    _VMMService_ApplyProfileInstruction_Handler,
 		},
 		{
 			MethodName: "PreCheck",

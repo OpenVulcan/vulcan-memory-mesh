@@ -100,6 +100,23 @@ func NormalizeDeleteUserRequest(req *vmmv1.DeleteUserRequest) {
 	req.ConfirmationCode = strings.TrimSpace(req.GetConfirmationCode())
 }
 
+// NormalizeGetProfileNodesRequest normalizes the target-scoped profile query payload before the use case resolves one concrete target.
+// NormalizeGetProfileNodesRequest 用于在用例解析具体目标前，规范化目标化画像查询载荷。
+func NormalizeGetProfileNodesRequest(req *vmmv1.GetProfileNodesRequest) {
+	if req == nil {
+		return
+	}
+}
+
+// NormalizeApplyProfileInstructionRequest trims the explicit manual profile instruction before the reviewer flow begins.
+// NormalizeApplyProfileInstructionRequest 用于在手工画像评审流程开始前裁剪显式画像指令。
+func NormalizeApplyProfileInstructionRequest(req *vmmv1.ApplyProfileInstructionRequest) {
+	if req == nil {
+		return
+	}
+	req.Instruction = strings.TrimSpace(req.GetInstruction())
+}
+
 // ValidatePreCheck validates the pre-check RPC request before the scope resolver interceptor runs.
 // ValidatePreCheck 用于在范围解析拦截器执行前校验 pre-check RPC 请求。
 func (v *RequestValidator) ValidatePreCheck(req *vmmv1.PreCheckRequest) error {
@@ -211,6 +228,48 @@ func (v *RequestValidator) ValidateDeleteUser(req *vmmv1.DeleteUserRequest) erro
 		return logicdomain.ValidationError{Field: "delete_user", Message: "is required"}
 	}
 	return requireString("user_ref", req.GetUserRef(), 256)
+}
+
+// ValidateGetProfileNodes checks the single-target profile query contract and keeps the public RPC restricted to active-node lookups only.
+// ValidateGetProfileNodes 用于校验单目标画像查询契约，并保持公开 RPC 只暴露 active 节点查询能力。
+func (v *RequestValidator) ValidateGetProfileNodes(req *vmmv1.GetProfileNodesRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "get_profile_nodes", Message: "is required"}
+	}
+	if req.GetTarget() == vmmv1.ProfileTarget_PROFILE_TARGET_UNSPECIFIED {
+		return logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
+	}
+	switch req.GetTarget() {
+	case vmmv1.ProfileTarget_PROFILE_TARGET_USER:
+		if req.GetUserId() == 0 {
+			return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+		}
+	case vmmv1.ProfileTarget_PROFILE_TARGET_PROJECT,
+		vmmv1.ProfileTarget_PROFILE_TARGET_TEAM,
+		vmmv1.ProfileTarget_PROFILE_TARGET_SPACE:
+		if req.GetProjectId() == 0 {
+			return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+		}
+	default:
+		return logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
+	}
+	return nil
+}
+
+// ValidateApplyProfileInstruction checks the single-target manual profile instruction payload before one reviewer call starts.
+// ValidateApplyProfileInstruction 用于在单目标手工画像评审调用开始前校验输入载荷。
+func (v *RequestValidator) ValidateApplyProfileInstruction(req *vmmv1.ApplyProfileInstructionRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "apply_profile_instruction", Message: "is required"}
+	}
+	if err := v.ValidateGetProfileNodes(&vmmv1.GetProfileNodesRequest{
+		Target:    req.GetTarget(),
+		UserId:    req.GetUserId(),
+		ProjectId: req.GetProjectId(),
+	}); err != nil {
+		return err
+	}
+	return requireString("instruction", req.GetInstruction(), 16000)
 }
 
 // requireString enforces one non-empty bounded string field.

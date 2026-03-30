@@ -18,6 +18,9 @@ type ProfileActiveNodeRecord struct {
 	LevelReason    string
 	RefreshWeight  int
 	ProfileDate    string
+	SourceKind     int
+	SourceID       uint64
+	StatusReason   string
 	ExpiresAt      time.Time
 	SupersededByID uint64
 	CreatedAt      time.Time

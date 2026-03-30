@@ -42,6 +42,8 @@
 - `ResolveUser`
 - `ListUsers`
 - `DeleteUser`
+- `GetProfileNodes`
+- `ApplyProfileInstruction`
 
 ### 业务面
 
@@ -109,6 +111,47 @@
 - `VMM_GRPC_POST_ACTION_TIMEOUT`
 
 ## 七、业务接口约束
+
+### 0. Profile 接口
+
+当前画像相关能力拆成两条独立 RPC：
+
+- `GetProfileNodes`
+- `ApplyProfileInstruction`
+
+约束如下：
+
+- 只支持单目标请求
+- 不提供 `all` 过滤
+- `GetProfileNodes` 只返回当前 `active` 的原子化画像节点
+- `GetProfileNodes` 不返回渲染后的 profile Blob
+- `ApplyProfileInstruction` 会同步触发一次 LLM 评审并落库
+
+目标范围支持：
+
+- `USER`
+- `PROJECT`
+- `TEAM`
+- `SPACE`
+
+目标字段要求：
+
+- `USER`
+  - 必须传 `user_id`
+- `PROJECT`
+  - 必须传 `project_id`
+- `TEAM`
+  - 必须传 `project_id`
+  - 服务端通过 `project_id -> team_id`
+- `SPACE`
+  - 必须传 `project_id`
+  - 服务端通过 `project_id -> space_id`
+
+另外需要注意：
+
+- `TEAM / SPACE` 的手工画像指令会被视为最高权限规则
+- 后端会强制把它们钳制到最高权威语义
+- 它们不走 post-action 的自动画像提炼路径
 
 ### 1. PreCheck
 
@@ -243,6 +286,42 @@
 用途：
 
 - 通过确认码保护删除用户及其 SQL/向量数据
+
+### GetProfileNodes
+
+用途：
+
+- 读取单个目标下当前 `active` 的原子化画像节点
+
+返回内容特点：
+
+- 每条节点都带稳定 `id`
+- 返回 `content / priority / level / refresh_weight / profile_date`
+- 同时返回 `source_kind / source_id`
+- 方便插件按需挑选节点，再自行组织成大模型上下文
+
+### ApplyProfileInstruction
+
+用途：
+
+- 对单个目标提交一条显式自然语言画像修改指令
+
+执行方式：
+
+1. 服务端解析目标 scope
+2. 读取当前 active 节点
+3. 写入 `vmm_profile_instructions`
+4. 调用 `review_profile_instruction`
+5. 持久化新节点与退役节点
+6. 重建对应 scope 的 `profile`
+
+需要额外注意：
+
+- 这条链路不绑定 `turn_id`
+- DuckDB 中这类画像节点的 `vmm_profile_nodes.turn_id` 会保持 `NULL`
+- 新节点会记录 `source_kind = manual_instruction`
+- `source_id` 会指向对应的 `instruction_id`
+- `TEAM / SPACE` 的手工指令会被视为最高权限规则
 
 ### PreCheck
 

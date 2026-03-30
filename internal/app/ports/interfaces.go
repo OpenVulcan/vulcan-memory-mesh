@@ -57,10 +57,20 @@ type RelationalStore interface {
 	LoadProfileTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error)
 	LoadProfileReviewTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileReviewTargetsSnapshot, error)
 	ConvergeExpiredProfileNodes(ctx context.Context, limit int) ([]logicdomain.ProfileRenderTargetSnapshot, error)
-	ReplaceRenderedProfiles(ctx context.Context, userProfiles map[uint64]string, projectProfiles map[uint64]string) error
+	ReplaceRenderedProfiles(ctx context.Context, updates logicdomain.RenderedProfileSet) error
 	ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error
 	ApplySessionBatchAnalysis(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis logicdomain.SessionBatchAnalysis) (logicdomain.SessionAnalysisApplyResult, error)
 	Shutdowner
+}
+
+// ProfileStore is the port used by profile-query and manual profile-instruction RPCs to resolve targets, inspect active nodes, and persist reviewed updates.
+// ProfileStore 用于让画像查询与手工画像指令 RPC 解析目标、查看 active 节点并持久化评审后的更新结果。
+type ProfileStore interface {
+	ResolveProfileTarget(ctx context.Context, profileType int, userID, projectID uint64) (logicdomain.ProfileTargetRef, error)
+	ListActiveProfileNodes(ctx context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error)
+	CreateProfileInstruction(ctx context.Context, record logicdomain.ProfileInstructionRecord) (logicdomain.ProfileInstructionRecord, error)
+	FailProfileInstruction(ctx context.Context, instructionID uint64, failureReason, reviewResult string) error
+	ApplyManualProfileInstruction(ctx context.Context, target logicdomain.ProfileTargetRef, instruction logicdomain.ProfileInstructionRecord, nodes []logicdomain.ProfileNodeCandidate, retired []logicdomain.ProfileRetireDecision, renderedProfile, reviewResult string) (logicdomain.ManualProfileInstructionApplyResult, error)
 }
 
 // NoiseTurnFilter is the port used by post-action flows to drop noisy normalized turns before relational persistence.

@@ -50,20 +50,28 @@ func (u *PostActionUseCase) convergeExpiredProfiles() {
 		return
 	}
 
-	// Render the latest active-node snapshots back into durable user/project profile blobs so expired rows immediately disappear from future injections.
-	// 把最新 active 节点快照重新渲染成长期 user/project 画像文本，让过期行能立即从后续注入内容里消失。
-	userProfiles := map[uint64]string{}
-	projectProfiles := map[uint64]string{}
+	// Render the latest active-node snapshots back into durable scope profile blobs so expired rows immediately disappear from future injections.
+	// 把最新 active 节点快照重新渲染成长期 scope 画像文本，让过期行能立即从后续注入内容里消失。
+	rendered := logicdomain.RenderedProfileSet{
+		UserProfiles:    map[uint64]string{},
+		TeamProfiles:    map[uint64]string{},
+		SpaceProfiles:   map[uint64]string{},
+		ProjectProfiles: map[uint64]string{},
+	}
 	for _, target := range targets {
-		rendered := renderProfileTimeline(target.Nodes, nil, nil)
+		profileText := renderProfileTimeline(target.Nodes, nil, nil)
 		switch target.ProfileType {
 		case logicdomain.ProfileTypeUser:
-			userProfiles[target.BindID] = rendered
+			rendered.UserProfiles[target.BindID] = profileText
+		case logicdomain.ProfileTypeTeam:
+			rendered.TeamProfiles[target.BindID] = profileText
+		case logicdomain.ProfileTypeSpace:
+			rendered.SpaceProfiles[target.BindID] = profileText
 		case logicdomain.ProfileTypeProject:
-			projectProfiles[target.BindID] = rendered
+			rendered.ProjectProfiles[target.BindID] = profileText
 		}
 	}
-	if err := u.store.ReplaceRenderedProfiles(ctx, userProfiles, projectProfiles); err != nil {
+	if err := u.store.ReplaceRenderedProfiles(ctx, rendered); err != nil {
 		if u.logger != nil {
 			u.logger.Error("post-action expired profile render update failed", "err", err)
 		}
@@ -73,8 +81,10 @@ func (u *PostActionUseCase) convergeExpiredProfiles() {
 		u.logger.Info(
 			"post-action expired profiles converged",
 			"affected_targets", len(targets),
-			"user_profile_count", len(userProfiles),
-			"project_profile_count", len(projectProfiles),
+			"user_profile_count", len(rendered.UserProfiles),
+			"team_profile_count", len(rendered.TeamProfiles),
+			"space_profile_count", len(rendered.SpaceProfiles),
+			"project_profile_count", len(rendered.ProjectProfiles),
 		)
 	}
 }

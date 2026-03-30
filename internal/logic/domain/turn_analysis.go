@@ -70,6 +70,14 @@ const (
 	// ProfileTypeProject stores stable project-side constraints, stack choices, and working conventions.
 	// ProfileTypeProject 用于表示项目侧的稳定约束、技术选型和工作约定。
 	ProfileTypeProject = 1
+
+	// ProfileTypeTeam stores team-scoped conventions and defaults that should outlive one isolated project.
+	// ProfileTypeTeam 用于表示 team 级的长期约定和默认规则，它们应当跨越单个项目继续生效。
+	ProfileTypeTeam = 2
+
+	// ProfileTypeSpace stores space-scoped constraints and conventions shared by the projects under the same space.
+	// ProfileTypeSpace 用于表示 space 级共享的约束和工作约定，作用于同一 space 下的多个项目。
+	ProfileTypeSpace = 3
 )
 
 const (
@@ -98,6 +106,20 @@ const (
 	// ProfileStatusMerged keeps backward compatibility with older code paths that still refer to the previous "merged" name.
 	// ProfileStatusMerged 用于兼容仍然沿用旧“merged”命名的代码路径，它等价于当前的 active 状态。
 	ProfileStatusMerged = ProfileStatusActive
+)
+
+const (
+	// ProfileSourceKindTurnExtract marks nodes extracted from post-action turn analysis.
+	// ProfileSourceKindTurnExtract 用于表示画像节点来源于 post-action 的 turn 提炼流程。
+	ProfileSourceKindTurnExtract = 0
+
+	// ProfileSourceKindManualInstruction marks nodes created from one explicit manual profile instruction.
+	// ProfileSourceKindManualInstruction 用于表示画像节点来源于一次显式的手工画像指令。
+	ProfileSourceKindManualInstruction = 1
+
+	// ProfileSourceKindSystemSeed marks nodes inserted by deterministic system seeding or future admin imports.
+	// ProfileSourceKindSystemSeed 用于表示画像节点来源于系统种子数据或未来的管理导入流程。
+	ProfileSourceKindSystemSeed = 2
 )
 
 const (
@@ -177,6 +199,9 @@ type ProfileNodeCandidate struct {
 	RefreshWeight    int
 	ProfileDate      string
 	SourceTurnID     uint64
+	SourceKind       int
+	SourceID         uint64
+	StatusReason     string
 	ExpiresAt        time.Time
 	SupersedeNodeIDs []uint64
 }
@@ -190,7 +215,7 @@ func ValidMemoryNodeCategory(category int) bool {
 // ValidProfileType reports whether one profile type id belongs to the supported profile-node enum set.
 // ValidProfileType 用于判断某个画像类型 ID 是否属于当前支持的画像节点枚举集合。
 func ValidProfileType(profileType int) bool {
-	return profileType == ProfileTypeUser || profileType == ProfileTypeProject
+	return profileType >= ProfileTypeUser && profileType <= ProfileTypeSpace
 }
 
 // ValidProfileStatus reports whether one profile status id belongs to the supported profile-node status enum set.
@@ -209,4 +234,10 @@ func ValidProfilePriority(priority int) bool {
 // ValidProfileLevel 用于判断某个画像等级是否属于当前支持的生命周期枚举集合。
 func ValidProfileLevel(level int) bool {
 	return level >= ProfileLevelTransient && level <= ProfileLevelPersistent
+}
+
+// ValidProfileSourceKind reports whether one profile source kind belongs to the supported source enum set.
+// ValidProfileSourceKind 用于判断某个画像来源类型是否属于当前支持的来源枚举集合。
+func ValidProfileSourceKind(sourceKind int) bool {
+	return sourceKind >= ProfileSourceKindTurnExtract && sourceKind <= ProfileSourceKindSystemSeed
 }

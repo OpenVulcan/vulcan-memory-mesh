@@ -150,6 +150,98 @@ func TestListProjectsReturnsDisplayPath(t *testing.T) {
 	}
 }
 
+// TestGetProfileNodesReturnsActiveNodes verifies the profile query RPC returns only the active atomic nodes exposed by the profile use case.
+// TestGetProfileNodesReturnsActiveNodes 用于验证画像查询 RPC 会返回画像用例暴露的 active 原子节点。
+func TestGetProfileNodesReturnsActiveNodes(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		Profiles: &stubProfileExecutor{
+			queryResult: usecase.ProfileQueryResult{
+				Target: logicdomain.ProfileTargetRef{ProfileType: logicdomain.ProfileTypeProject, BindID: 9},
+				Nodes: []logicdomain.ProfileNodeRecord{
+					{
+						ID:            101,
+						ProfileType:   logicdomain.ProfileTypeProject,
+						BindID:        9,
+						Content:       "项目必须优先支持多种 AI 编程工具。",
+						Priority:      logicdomain.ProfilePriorityP0,
+						ProfileLevel:  logicdomain.ProfileLevelPersistent,
+						RefreshWeight: 2,
+						ProfileDate:   "2026-03-30",
+						SourceKind:    logicdomain.ProfileSourceKindManualInstruction,
+						SourceID:      77,
+					},
+				},
+			},
+		},
+	}, testBufSize)
+
+	resp, err := fixture.client.GetProfileNodes(context.Background(), &vmmv1.GetProfileNodesRequest{
+		Target:    vmmv1.ProfileTarget_PROFILE_TARGET_PROJECT,
+		ProjectId: 9,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("get profile nodes: %v", err)
+	}
+	if len(resp.GetNodes()) != 1 {
+		t.Fatalf("nodes len = %d", len(resp.GetNodes()))
+	}
+	if resp.GetNodes()[0].GetProfileNodeId() != 101 || resp.GetNodes()[0].GetPriority() != "P0" || resp.GetNodes()[0].GetLevel() != "L3" {
+		t.Fatalf("unexpected profile node entry: %+v", resp.GetNodes()[0])
+	}
+}
+
+// TestApplyProfileInstructionReturnsAcceptedAndRetired verifies the manual profile instruction RPC returns the synchronous reviewed writeback result.
+// TestApplyProfileInstructionReturnsAcceptedAndRetired 用于验证手工画像指令 RPC 会返回同步评审后的写回结果。
+func TestApplyProfileInstructionReturnsAcceptedAndRetired(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		Profiles: &stubProfileExecutor{
+			applyResult: usecase.ProfileInstructionResult{
+				Target:        logicdomain.ProfileTargetRef{ProfileType: logicdomain.ProfileTypeTeam, BindID: 3},
+				InstructionID: 77,
+				AcceptedNodes: []logicdomain.ProfileNodeRecord{
+					{
+						ID:            201,
+						ProfileType:   logicdomain.ProfileTypeTeam,
+						BindID:        3,
+						Content:       "团队服务端统一使用 Go 语言实现。",
+						Priority:      logicdomain.ProfilePriorityP0,
+						ProfileLevel:  logicdomain.ProfileLevelPersistent,
+						RefreshWeight: 3,
+						ProfileDate:   "2026-03-30",
+						SourceKind:    logicdomain.ProfileSourceKindManualInstruction,
+						SourceID:      77,
+					},
+				},
+				RetiredNodes: []logicdomain.ProfileRetireDecision{
+					{NodeID: 41, Reason: "新的团队级规范覆盖旧语言约定。"},
+				},
+				ReviewReason: "团队显式指令应作为最高权威规则。",
+			},
+		},
+	}, testBufSize)
+
+	resp, err := fixture.client.ApplyProfileInstruction(context.Background(), &vmmv1.ApplyProfileInstructionRequest{
+		Target:      vmmv1.ProfileTarget_PROFILE_TARGET_TEAM,
+		ProjectId:   9,
+		Instruction: "以后团队服务端统一使用 Go。",
+	})
+	if err != nil {
+		t.Fatalf("apply profile instruction: %v", err)
+	}
+	if resp.GetInstructionId() != 77 || len(resp.GetAcceptedNodes()) != 1 || len(resp.GetRetiredNodes()) != 1 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if resp.GetAcceptedNodes()[0].GetTarget() != vmmv1.ProfileTarget_PROFILE_TARGET_TEAM || resp.GetAcceptedNodes()[0].GetSourceKind() != vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION {
+		t.Fatalf("unexpected accepted node: %+v", resp.GetAcceptedNodes()[0])
+	}
+	if resp.GetRetiredNodes()[0].GetProfileNodeId() != 41 || resp.GetRetiredNodes()[0].GetReason() == "" {
+		t.Fatalf("unexpected retired node: %+v", resp.GetRetiredNodes()[0])
+	}
+}
+
 // TestPreCheckRejectsMissingUserContent verifies the latest transport contract rejects empty user content after scope resolution succeeds.
 // TestPreCheckRejectsMissingUserContent 用于验证在范围解析成功后，最新传输契约仍会拒绝空 user_content。
 func TestPreCheckRejectsMissingUserContent(t *testing.T) {
@@ -406,6 +498,27 @@ func (s *stubWorkspaceExecutor) ListUsers(context.Context) ([]logicdomain.UserRe
 // DeleteUser 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
 func (s *stubWorkspaceExecutor) DeleteUser(context.Context, string, string) (logicdomain.UserDeleteResult, error) {
 	return logicdomain.UserDeleteResult{}, nil
+}
+
+// stubProfileExecutor supplies just enough profile behavior for gRPC transport tests.
+// stubProfileExecutor 用于为 gRPC 传输测试提供最小但足够的画像行为。
+type stubProfileExecutor struct {
+	queryResult usecase.ProfileQueryResult
+	queryErr    error
+	applyResult usecase.ProfileInstructionResult
+	applyErr    error
+}
+
+// GetNodes returns the canned profile query result for deterministic transport assertions.
+// GetNodes 用于返回预设画像查询结果，保证传输层断言稳定。
+func (s *stubProfileExecutor) GetNodes(context.Context, usecase.ProfileQueryCommand) (usecase.ProfileQueryResult, error) {
+	return s.queryResult, s.queryErr
+}
+
+// ApplyInstruction returns the canned manual instruction result for deterministic transport assertions.
+// ApplyInstruction 用于返回预设手工画像指令结果，保证传输层断言稳定。
+func (s *stubProfileExecutor) ApplyInstruction(context.Context, usecase.ProfileInstructionCommand) (usecase.ProfileInstructionResult, error) {
+	return s.applyResult, s.applyErr
 }
 
 var _ appports.RequestScopeResolver = stubScopeResolver{}

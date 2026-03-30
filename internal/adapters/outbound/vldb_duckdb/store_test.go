@@ -124,7 +124,7 @@ func TestInitResetsManagedSchemaOnVersionMismatch(t *testing.T) {
 func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":5}]`,
+			"FROM vmm_version":    `[{"schema_version":8}]`,
 			"FROM vmm_users":      `[{"id":7,"name":"alice","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_sessions":   `[]`,
@@ -162,7 +162,7 @@ func TestResolveRequestScopeCreatesSession(t *testing.T) {
 func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":5}]`,
+			"FROM vmm_version":    `[{"schema_version":8}]`,
 			"FROM vmm_users":      `[{"id":8,"name":"bob","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_sessions":   `[{"id":41,"session_key":"sess-key-1","user_id":7,"team_id":3,"space_id":5,"project_id":9,"turn_count":2,"last_summarized_id":0,"summarize_content":"","summarize_budget":0,"created_timestamp":1710000000000,"updated_timestamp":1710000001000}]`,
@@ -197,7 +197,7 @@ func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
 func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":5}]`,
+			"FROM vmm_version": `[{"schema_version":8}]`,
 			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_turn_records": `[{"next_id":100}]`,
 		},
 	}
@@ -253,7 +253,7 @@ func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":5}]`,
+			"FROM vmm_version": `[{"schema_version":8}]`,
 			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_memory_nodes":  `[{"next_id":201}]`,
 			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_profile_nodes": `[{"next_id":301}]`,
 		},
@@ -329,7 +329,7 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 func TestLoadProfileTargetsReadsCurrentUserAndProjectProfiles(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":5}]`,
+			"FROM vmm_version":    `[{"schema_version":8}]`,
 			"FROM vmm_users":      `[{"id":7,"name":"alice","profile":"用户画像","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","profile":"项目画像","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 		},
@@ -348,12 +348,62 @@ func TestLoadProfileTargetsReadsCurrentUserAndProjectProfiles(t *testing.T) {
 	}
 }
 
+// TestApplyManualProfileInstructionLeavesTurnIDNull verifies explicit manual profile instructions persist profile nodes without fabricating a turn binding.
+// TestApplyManualProfileInstructionLeavesTurnIDNull 用于验证显式手工画像指令落库时不会伪造 turn 绑定，而是把 profile node 的 turn_id 留空。
+func TestApplyManualProfileInstructionLeavesTurnIDNull(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":8}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_profile_nodes": `[{"next_id":501}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	_, err := store.ApplyManualProfileInstruction(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+		ProjectID:   9,
+	}, logicdomain.ProfileInstructionRecord{
+		ID:          77,
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+		Status:      logicdomain.ProfileInstructionStatusPending,
+	}, []logicdomain.ProfileNodeCandidate{
+		{
+			ProfileType:      logicdomain.ProfileTypeProject,
+			Content:          "当前项目统一使用 Go 语言编写。",
+			Status:           logicdomain.ProfileStatusActive,
+			Priority:         logicdomain.ProfilePriorityP0,
+			ProfileLevel:     logicdomain.ProfileLevelStable,
+			LevelReason:      "显式项目指令。",
+			SourceKind:       logicdomain.ProfileSourceKindManualInstruction,
+			SourceID:         77,
+			ProfileDate:      "2026-03-30",
+			RefreshWeight:    0,
+			StatusReason:     "",
+			SupersedeNodeIDs: nil,
+		},
+	}, nil, "[Profile Legend]\n项目画像", `{"reason":"manual instruction"}`)
+	if err != nil {
+		t.Fatalf("apply manual profile instruction: %v", err)
+	}
+
+	execs := server.execRequests()
+	last := execs[len(execs)-1].Sql
+	if !strings.Contains(last, "INSERT INTO vmm_profile_nodes") {
+		t.Fatalf("expected profile node insert sql, got %s", last)
+	}
+	if !strings.Contains(last, "VALUES (501, NULL, 1, 9,") {
+		t.Fatalf("expected manual profile node turn_id to stay NULL, got %s", last)
+	}
+}
+
 // TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets verifies periodic expiry convergence flips due active nodes to expired and returns the remaining renderable nodes for the affected target.
 // TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets 用于验证周期性过期收敛会把到期 active 节点改为 expired，并返回受影响目标剩余可渲染节点。
 func TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":6}]`,
+			"FROM vmm_version": `[{"schema_version":8}]`,
 			"WHERE profile_status = ? AND expires_timestamp > 0 AND expires_timestamp <= ?":                                       `[{"id":41,"turn_id":501,"profile_type":0,"bind_id":7,"content":"旧的临时偏好","profile_status":2,"priority":2,"profile_level":0,"level_reason":"一次性上下文","refresh_weight":0,"expires_timestamp":1711785600000,"superseded_by_id":0,"profile_date":"2026-03-29","created_timestamp":1711700000000,"updated_timestamp":1711700000000}]`,
 			"WHERE profile_type = ? AND bind_id = ? AND profile_status = ? AND (expires_timestamp <= 0 OR expires_timestamp > ?)": `[{"id":42,"turn_id":502,"profile_type":0,"bind_id":7,"content":"用户偏好使用 Rust。","profile_status":2,"priority":1,"profile_level":2,"level_reason":"稳定偏好","refresh_weight":2,"expires_timestamp":0,"superseded_by_id":0,"profile_date":"2026-03-30","created_timestamp":1711800000000,"updated_timestamp":1711800000000}]`,
 		},
@@ -386,15 +436,18 @@ func TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets(t *tes
 func TestReplaceRenderedProfilesUpdatesUserAndProjectBlobs(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":6}]`,
+			"FROM vmm_version": `[{"schema_version":8}]`,
 		},
 	}
 	store := newDuckDBTestStore(t, server)
 
-	err := store.ReplaceRenderedProfiles(context.Background(), map[uint64]string{
-		7: "[Profile Legend]\n用户画像",
-	}, map[uint64]string{
-		9: "[Profile Legend]\n项目画像",
+	err := store.ReplaceRenderedProfiles(context.Background(), logicdomain.RenderedProfileSet{
+		UserProfiles: map[uint64]string{
+			7: "[Profile Legend]\n用户画像",
+		},
+		ProjectProfiles: map[uint64]string{
+			9: "[Profile Legend]\n项目画像",
+		},
 	})
 	if err != nil {
 		t.Fatalf("replace rendered profiles: %v", err)

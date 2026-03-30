@@ -22,6 +22,7 @@ var RequiredScenes = []string{
 	"summarize_entry.md",
 	"merge_profile.md",
 	"review_profile_nodes.md",
+	"review_profile_instruction.md",
 }
 
 // PromptLayout captures the resolved system/user prompt roots and the final configuration chain.

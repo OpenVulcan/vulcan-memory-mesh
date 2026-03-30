@@ -9,6 +9,7 @@
 - 画像节点事实层
 - LLM 节点评审层
 - 后端渲染层
+- 手工画像指令层
 
 ## 核心原则
 
@@ -30,7 +31,7 @@
 
 ## 画像节点字段设计
 
-`vmm_profile_nodes` 继续维持一张表，通过 `profile_type + bind_id` 区分 user/project，不拆成两张表。
+`vmm_profile_nodes` 继续维持一张表，通过 `profile_type + bind_id` 区分不同 scope，不拆成多张表。
 
 当前主线字段：
 
@@ -44,6 +45,9 @@
 - `profile_level`
 - `level_reason`
 - `refresh_weight`
+- `source_kind`
+- `source_id`
+- `status_reason`
 - `expires_timestamp`
 - `superseded_by_id`
 - `profile_date`
@@ -65,6 +69,15 @@
   - 记录 LLM 为什么把节点判成这个等级
 - `refresh_weight`
   - 表示同类记忆被刷新、续期、再次确认的次数
+- `source_kind`
+  - 表示节点来自 `turn_extract / manual_instruction / system_seed`
+- `source_id`
+  - 当来源是 `manual_instruction` 时，指向 `vmm_profile_instructions.id`
+- `turn_id`
+  - 对话提炼节点保留真实 turn 绑定
+  - 手工画像节点在 DuckDB 中保持 `NULL`，因为它们并不来自语义对话片段
+- `status_reason`
+  - 记录节点为什么进入 `invalid / superseded / expired`
 - `expires_timestamp`
   - 后端根据 `profile_level + refresh_weight` 计算得到
 - `superseded_by_id`
@@ -230,6 +243,54 @@ LLM 不再返回最终画像全文，而是返回“节点处理指令”。
   - 最大 `365d`
 - `L3 persistent`
   - 默认不过期或极长有效期
+
+## 手工画像指令层
+
+当前除了 post-action 自动提炼外，还新增了一条显式画像修改链路：
+
+- `GetProfileNodes`
+- `ApplyProfileInstruction`
+
+其中：
+
+- `GetProfileNodes`
+  - 只返回单个目标下当前 `active` 的原子化画像节点
+  - 不返回渲染后的 profile Blob
+- `ApplyProfileInstruction`
+  - 不绑定 `turn_id`
+  - 先写入 `vmm_profile_instructions`
+  - 再把 active 节点和显式指令交给 `review_profile_instruction`
+  - 由后端持久化节点结果并重建 profile
+
+这意味着当前画像系统除了 `vmm_profile_nodes`，还多了一张来源表：
+
+- `vmm_profile_instructions`
+
+它用于保存：
+
+- 原始指令文本
+- 指令状态
+- LLM 评审结果 JSON
+- 失败原因
+
+## team/space 的最高权限规则
+
+当前自动提炼仍只覆盖：
+
+- `USER`
+- `PROJECT`
+
+但手工画像接口已经支持：
+
+- `TEAM`
+- `SPACE`
+
+并且需要遵守额外规则：
+
+- `TEAM / SPACE` 的手工画像指令直接视为最高权限规则
+- 后端会强制把它们钳制到最高权威语义
+- 不允许降级成普通偏好或短期上下文
+- 它们不会由 post-action 自动画像流程生成
 
 这样：
 

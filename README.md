@@ -23,6 +23,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 - [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
+- [画像 gRPC 查询与手工指令接口（中文）](./docs/profile-grpc-interfaces_CN.md)
 
 ## 当前运行模型
 
@@ -43,6 +44,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `ResolveUser`
 - `ListUsers`
 - `DeleteUser`
+- `GetProfileNodes`
+- `ApplyProfileInstruction`
 - `PreCheck`
 - `PostAction`
 
@@ -141,7 +144,45 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
    - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
    - LanceDB 行里的 `session_id` 会保存真实来源 session
    - 如果 DuckDB 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
-   - `vmm_teams.profile / vmm_spaces.profile` 仍保留给后续显式配置，不做自动合并
+   - `vmm_teams.profile / vmm_spaces.profile` 不参与 post-action 自动合并，但现在支持通过显式手工画像指令重建
+
+### 画像接口
+
+当前画像相关 gRPC 能力拆成两条独立方法：
+
+- `GetProfileNodes`
+- `ApplyProfileInstruction`
+
+`GetProfileNodes` 的特点：
+
+- 只返回单个目标下当前 `active` 的原子化画像节点
+- 不提供 `all` 过滤
+- 不返回渲染后的 profile Blob
+- 返回内容以节点编号、内容、`P/L/W` 相关元数据和来源信息为主
+
+`ApplyProfileInstruction` 的特点：
+
+- 接收单个目标上的显式自然语言画像指令
+- 指令不会绑定 `turn_id`
+- DuckDB 中这类节点的 `vmm_profile_nodes.turn_id` 会保持 `NULL`
+- 服务端会先写入 `vmm_profile_instructions`
+- 再把当前 active 节点与这条显式指令交给 `review_profile_instruction`
+- 最后持久化新节点、退役旧节点，并重建对应 scope 的 profile 文本
+
+目标范围支持：
+
+- `USER`
+- `PROJECT`
+- `TEAM`
+- `SPACE`
+
+权限规则：
+
+- `USER / PROJECT`
+  - 手工指令属于高权威输入，但后端仍会按规则施加最低 `P / L` 地板
+- `TEAM / SPACE`
+  - 手工指令直接视为最高权限规则
+  - 后端会强制钳制到最高权威语义，不允许降级成普通偏好或短期上下文
 
 ## 构建与运行
 

@@ -24,6 +24,7 @@ import (
 type Dependencies struct {
 	IDs               appports.IDGenerator
 	Workspace         usecase.WorkspaceExecutor
+	Profiles          usecase.ProfileExecutor
 	PreCheck          usecase.PreCheckExecutor
 	PostAction        usecase.PostActionExecutor
 	ScopeResolver     appports.RequestScopeResolver
@@ -41,6 +42,7 @@ type Server struct {
 	vmmv1.UnimplementedVMMServiceServer
 
 	workspace        usecase.WorkspaceExecutor
+	profiles         usecase.ProfileExecutor
 	preCheck         usecase.PreCheckExecutor
 	postAction       usecase.PostActionExecutor
 	workspaceTimeout time.Duration
@@ -62,6 +64,7 @@ func NewServer(deps Dependencies) *Server {
 	}
 	return &Server{
 		workspace:        deps.Workspace,
+		profiles:         deps.Profiles,
 		preCheck:         deps.PreCheck,
 		postAction:       deps.PostAction,
 		workspaceTimeout: deps.WorkspaceTimeout,
@@ -296,6 +299,86 @@ func (s *Server) DeleteUser(ctx context.Context, req *vmmv1.DeleteUserRequest) (
 	}, nil
 }
 
+// GetProfileNodes resolves one concrete target and returns only its current active atomic profile nodes.
+// GetProfileNodes 用于解析一个具体目标，并只返回它当前 active 的原子化画像节点。
+func (s *Server) GetProfileNodes(ctx context.Context, req *vmmv1.GetProfileNodesRequest) (*vmmv1.GetProfileNodesResponse, error) {
+	if s.profiles == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeGetProfileNodesRequest(req)
+	if err := s.validate.ValidateGetProfileNodes(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	targetType, err := fromProtoProfileTarget(req.GetTarget())
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.profiles.GetNodes(ctx, usecase.ProfileQueryCommand{
+		ProfileType: targetType,
+		UserID:      req.GetUserId(),
+		ProjectID:   req.GetProjectId(),
+		Limit:       int(req.GetLimit()),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	nodes := make([]*vmmv1.ProfileNodeEntry, 0, len(result.Nodes))
+	for _, node := range result.Nodes {
+		nodes = append(nodes, toProfileNodeEntry(node))
+	}
+	return &vmmv1.GetProfileNodesResponse{
+		Nodes:   nodes,
+		TraceId: trace.IDFromContext(ctx),
+	}, nil
+}
+
+// ApplyProfileInstruction reviews one explicit manual instruction for one target and persists the resulting node mutations synchronously.
+// ApplyProfileInstruction 用于同步评审单个目标上的显式手工画像指令，并持久化得到的节点变更。
+func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyProfileInstructionRequest) (*vmmv1.ApplyProfileInstructionResponse, error) {
+	if s.profiles == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeApplyProfileInstructionRequest(req)
+	if err := s.validate.ValidateApplyProfileInstruction(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	targetType, err := fromProtoProfileTarget(req.GetTarget())
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.postTimeout)
+	defer cancel()
+	result, err := s.profiles.ApplyInstruction(ctx, usecase.ProfileInstructionCommand{
+		ProfileType: targetType,
+		UserID:      req.GetUserId(),
+		ProjectID:   req.GetProjectId(),
+		Instruction: req.GetInstruction(),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	acceptedNodes := make([]*vmmv1.ProfileNodeEntry, 0, len(result.AcceptedNodes))
+	for _, node := range result.AcceptedNodes {
+		acceptedNodes = append(acceptedNodes, toProfileNodeEntry(node))
+	}
+	retiredNodes := make([]*vmmv1.RetiredProfileNodeEntry, 0, len(result.RetiredNodes))
+	for _, decision := range result.RetiredNodes {
+		retiredNodes = append(retiredNodes, &vmmv1.RetiredProfileNodeEntry{
+			ProfileNodeId: decision.NodeID,
+			Reason:        decision.Reason,
+		})
+	}
+	return &vmmv1.ApplyProfileInstructionResponse{
+		InstructionId: result.InstructionID,
+		AcceptedNodes: acceptedNodes,
+		RetiredNodes:  retiredNodes,
+		ReviewReason:  result.ReviewReason,
+		TraceId:       trace.IDFromContext(ctx),
+	}, nil
+}
+
 // PreCheck validates the request, consumes the scope resolved by the interceptor, and returns the current deterministic no-injection response.
 // PreCheck 用于校验请求、消费拦截器解析出的范围，并返回当前确定性的“不注入”响应。
 func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmmv1.PreCheckResponse, error) {
@@ -411,6 +494,32 @@ func toUserEntry(user logicdomain.UserRecord) *vmmv1.UserEntry {
 	}
 }
 
+// toProfileNodeEntry converts one active profile node into the protobuf transport shape used by profile query and manual instruction RPCs.
+// toProfileNodeEntry 用于把一条 active 画像节点转换成画像查询与手工画像指令 RPC 使用的 protobuf 传输结构。
+func toProfileNodeEntry(node logicdomain.ProfileNodeRecord) *vmmv1.ProfileNodeEntry {
+	if node.ID == 0 {
+		return nil
+	}
+	expiresTimestamp := int64(0)
+	if !node.ExpiresAt.IsZero() {
+		expiresTimestamp = node.ExpiresAt.UTC().UnixMilli()
+	}
+	return &vmmv1.ProfileNodeEntry{
+		ProfileNodeId:    node.ID,
+		Target:           toProtoProfileTarget(node.ProfileType),
+		BindId:           node.BindID,
+		Content:          node.Content,
+		Priority:         profilePriorityLabel(node.Priority),
+		Level:            profileLevelLabel(node.ProfileLevel),
+		RefreshWeight:    uint32(maxInt(node.RefreshWeight, 0)),
+		ProfileDate:      node.ProfileDate,
+		ExpiresTimestamp: expiresTimestamp,
+		LevelReason:      node.LevelReason,
+		SourceKind:       toProtoProfileSourceKind(node.SourceKind),
+		SourceId:         node.SourceID,
+	}
+}
+
 // sanitizePostActionRequest clones the validated request into one storage-ready copy so raw logs and persisted text can diverge safely.
 // sanitizePostActionRequest 用于把已校验请求复制成一份面向存储的版本，让原始日志与入库文本可以安全分离。
 func (s *Server) sanitizePostActionRequest(req *vmmv1.PostActionRequest) *vmmv1.PostActionRequest {
@@ -490,4 +599,88 @@ func (s *Server) logPostActionReceipt(traceID, message string, req *vmmv1.PostAc
 		return
 	}
 	s.logger.Info(message, "trace_id", traceID, "session_id", req.GetSessionId(), "user_content", req.GetUserContent(), "assistant_content", req.GetAssistantContent(), "timeline", string(timelineJSON))
+}
+
+// fromProtoProfileTarget converts the protobuf profile target enum into the internal profile-type enum.
+// fromProtoProfileTarget 用于把 protobuf 的画像目标枚举转换成内部画像类型枚举。
+func fromProtoProfileTarget(target vmmv1.ProfileTarget) (int, error) {
+	switch target {
+	case vmmv1.ProfileTarget_PROFILE_TARGET_USER:
+		return logicdomain.ProfileTypeUser, nil
+	case vmmv1.ProfileTarget_PROFILE_TARGET_PROJECT:
+		return logicdomain.ProfileTypeProject, nil
+	case vmmv1.ProfileTarget_PROFILE_TARGET_TEAM:
+		return logicdomain.ProfileTypeTeam, nil
+	case vmmv1.ProfileTarget_PROFILE_TARGET_SPACE:
+		return logicdomain.ProfileTypeSpace, nil
+	default:
+		return 0, logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
+	}
+}
+
+// toProtoProfileTarget converts the internal profile-type enum back into the protobuf profile target enum.
+// toProtoProfileTarget 用于把内部画像类型枚举转换回 protobuf 的画像目标枚举。
+func toProtoProfileTarget(profileType int) vmmv1.ProfileTarget {
+	switch profileType {
+	case logicdomain.ProfileTypeUser:
+		return vmmv1.ProfileTarget_PROFILE_TARGET_USER
+	case logicdomain.ProfileTypeProject:
+		return vmmv1.ProfileTarget_PROFILE_TARGET_PROJECT
+	case logicdomain.ProfileTypeTeam:
+		return vmmv1.ProfileTarget_PROFILE_TARGET_TEAM
+	case logicdomain.ProfileTypeSpace:
+		return vmmv1.ProfileTarget_PROFILE_TARGET_SPACE
+	default:
+		return vmmv1.ProfileTarget_PROFILE_TARGET_UNSPECIFIED
+	}
+}
+
+// toProtoProfileSourceKind converts the internal source kind enum into the protobuf profile-node source enum.
+// toProtoProfileSourceKind 用于把内部来源类型枚举转换成 protobuf 的画像节点来源枚举。
+func toProtoProfileSourceKind(sourceKind int) vmmv1.ProfileNodeSourceKind {
+	switch sourceKind {
+	case logicdomain.ProfileSourceKindManualInstruction:
+		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION
+	case logicdomain.ProfileSourceKindSystemSeed:
+		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED
+	default:
+		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT
+	}
+}
+
+// profilePriorityLabel renders the compact P-label used by the profile query transport.
+// profilePriorityLabel 用于渲染画像查询传输层使用的紧凑 P 标签。
+func profilePriorityLabel(priority int) string {
+	switch priority {
+	case logicdomain.ProfilePriorityP0:
+		return "P0"
+	case logicdomain.ProfilePriorityP1:
+		return "P1"
+	default:
+		return "P2"
+	}
+}
+
+// profileLevelLabel renders the compact L-label used by the profile query transport.
+// profileLevelLabel 用于渲染画像查询传输层使用的紧凑 L 标签。
+func profileLevelLabel(level int) string {
+	switch level {
+	case logicdomain.ProfileLevelTransient:
+		return "L0"
+	case logicdomain.ProfileLevelSituational:
+		return "L1"
+	case logicdomain.ProfileLevelStable:
+		return "L2"
+	default:
+		return "L3"
+	}
+}
+
+// maxInt keeps small transport conversions readable when wire-level numeric fields should never go below one fixed floor.
+// maxInt 用于在传输层数值字段不应低于某个固定下限时，让小范围转换保持清晰可读。
+func maxInt(value, floor int) int {
+	if value < floor {
+		return floor
+	}
+	return value
 }

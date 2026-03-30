@@ -522,6 +522,8 @@ type testRelationalStore struct {
 	profileReviewTargets    logicdomain.ProfileReviewTargetsSnapshot
 	expiredProfileTargets   []logicdomain.ProfileRenderTargetSnapshot
 	renderedUserProfiles    map[uint64]string
+	renderedTeamProfiles    map[uint64]string
+	renderedSpaceProfiles   map[uint64]string
 	renderedProjectProfiles map[uint64]string
 	expiredProfileScanCalls int
 	analysisTurn            logicdomain.PersistedTurnRecord
@@ -592,18 +594,30 @@ func (s *testRelationalStore) ConvergeExpiredProfileNodes(_ context.Context, _ i
 	return append([]logicdomain.ProfileRenderTargetSnapshot(nil), s.expiredProfileTargets...), nil
 }
 
-// ReplaceRenderedProfiles records the rebuilt durable user/project profiles so maintenance tests can assert the final rendered blobs.
-// ReplaceRenderedProfiles 用于记录重建后的长期 user/project 画像，方便维护路径测试断言最终渲染结果。
-func (s *testRelationalStore) ReplaceRenderedProfiles(_ context.Context, userProfiles map[uint64]string, projectProfiles map[uint64]string) error {
-	if len(userProfiles) > 0 {
+// ReplaceRenderedProfiles records the rebuilt durable scope profiles so maintenance tests can assert the final rendered blobs.
+// ReplaceRenderedProfiles 用于记录重建后的长期 scope 画像，方便维护路径测试断言最终渲染结果。
+func (s *testRelationalStore) ReplaceRenderedProfiles(_ context.Context, updates logicdomain.RenderedProfileSet) error {
+	if len(updates.UserProfiles) > 0 {
 		s.renderedUserProfiles = map[uint64]string{}
-		for id, profile := range userProfiles {
+		for id, profile := range updates.UserProfiles {
 			s.renderedUserProfiles[id] = profile
 		}
 	}
-	if len(projectProfiles) > 0 {
+	if len(updates.TeamProfiles) > 0 {
+		s.renderedTeamProfiles = map[uint64]string{}
+		for id, profile := range updates.TeamProfiles {
+			s.renderedTeamProfiles[id] = profile
+		}
+	}
+	if len(updates.SpaceProfiles) > 0 {
+		s.renderedSpaceProfiles = map[uint64]string{}
+		for id, profile := range updates.SpaceProfiles {
+			s.renderedSpaceProfiles[id] = profile
+		}
+	}
+	if len(updates.ProjectProfiles) > 0 {
 		s.renderedProjectProfiles = map[uint64]string{}
-		for id, profile := range projectProfiles {
+		for id, profile := range updates.ProjectProfiles {
 			s.renderedProjectProfiles[id] = profile
 		}
 	}

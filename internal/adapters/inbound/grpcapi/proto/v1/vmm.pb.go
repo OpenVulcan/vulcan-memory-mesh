@@ -22,6 +22,117 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// ProfileTarget identifies the single scope whose profile nodes should be queried or updated.
+// ProfileTarget 用于标识应被查询或更新画像节点的单个目标 scope。
+type ProfileTarget int32
+
+const (
+	ProfileTarget_PROFILE_TARGET_UNSPECIFIED ProfileTarget = 0
+	ProfileTarget_PROFILE_TARGET_USER        ProfileTarget = 1
+	ProfileTarget_PROFILE_TARGET_PROJECT     ProfileTarget = 2
+	ProfileTarget_PROFILE_TARGET_TEAM        ProfileTarget = 3
+	ProfileTarget_PROFILE_TARGET_SPACE       ProfileTarget = 4
+)
+
+// Enum value maps for ProfileTarget.
+var (
+	ProfileTarget_name = map[int32]string{
+		0: "PROFILE_TARGET_UNSPECIFIED",
+		1: "PROFILE_TARGET_USER",
+		2: "PROFILE_TARGET_PROJECT",
+		3: "PROFILE_TARGET_TEAM",
+		4: "PROFILE_TARGET_SPACE",
+	}
+	ProfileTarget_value = map[string]int32{
+		"PROFILE_TARGET_UNSPECIFIED": 0,
+		"PROFILE_TARGET_USER":        1,
+		"PROFILE_TARGET_PROJECT":     2,
+		"PROFILE_TARGET_TEAM":        3,
+		"PROFILE_TARGET_SPACE":       4,
+	}
+)
+
+func (x ProfileTarget) Enum() *ProfileTarget {
+	p := new(ProfileTarget)
+	*p = x
+	return p
+}
+
+func (x ProfileTarget) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProfileTarget) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[0].Descriptor()
+}
+
+func (ProfileTarget) Type() protoreflect.EnumType {
+	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[0]
+}
+
+func (x ProfileTarget) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ProfileTarget.Descriptor instead.
+func (ProfileTarget) EnumDescriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{0}
+}
+
+// ProfileNodeSourceKind describes where one durable profile node came from.
+// ProfileNodeSourceKind 用于描述一条长期画像节点的来源。
+type ProfileNodeSourceKind int32
+
+const (
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_UNSPECIFIED        ProfileNodeSourceKind = 0
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT       ProfileNodeSourceKind = 1
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION ProfileNodeSourceKind = 2
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED        ProfileNodeSourceKind = 3
+)
+
+// Enum value maps for ProfileNodeSourceKind.
+var (
+	ProfileNodeSourceKind_name = map[int32]string{
+		0: "PROFILE_NODE_SOURCE_KIND_UNSPECIFIED",
+		1: "PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT",
+		2: "PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION",
+		3: "PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED",
+	}
+	ProfileNodeSourceKind_value = map[string]int32{
+		"PROFILE_NODE_SOURCE_KIND_UNSPECIFIED":        0,
+		"PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT":       1,
+		"PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION": 2,
+		"PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED":        3,
+	}
+)
+
+func (x ProfileNodeSourceKind) Enum() *ProfileNodeSourceKind {
+	p := new(ProfileNodeSourceKind)
+	*p = x
+	return p
+}
+
+func (x ProfileNodeSourceKind) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ProfileNodeSourceKind) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[1].Descriptor()
+}
+
+func (ProfileNodeSourceKind) Type() protoreflect.EnumType {
+	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[1]
+}
+
+func (x ProfileNodeSourceKind) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ProfileNodeSourceKind.Descriptor instead.
+func (ProfileNodeSourceKind) EnumDescriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{1}
+}
+
 // HealthzResponse returns the runtime status plus trace metadata.
 // HealthzResponse 用于返回运行状态和 trace 元数据。
 type HealthzResponse struct {
@@ -1236,6 +1347,466 @@ func (x *DeleteUserResponse) GetTraceId() string {
 	return ""
 }
 
+// ProfileNodeEntry transports one active atomic profile node back to the caller.
+// ProfileNodeEntry 用于把一条 active 原子化画像节点返回给调用方。
+type ProfileNodeEntry struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	ProfileNodeId    uint64                 `protobuf:"varint,1,opt,name=profile_node_id,json=profileNodeId,proto3" json:"profile_node_id,omitempty"`
+	Target           ProfileTarget          `protobuf:"varint,2,opt,name=target,proto3,enum=vmm.v1.ProfileTarget" json:"target,omitempty"`
+	BindId           uint64                 `protobuf:"varint,3,opt,name=bind_id,json=bindId,proto3" json:"bind_id,omitempty"`
+	Content          string                 `protobuf:"bytes,4,opt,name=content,proto3" json:"content,omitempty"`
+	Priority         string                 `protobuf:"bytes,5,opt,name=priority,proto3" json:"priority,omitempty"`
+	Level            string                 `protobuf:"bytes,6,opt,name=level,proto3" json:"level,omitempty"`
+	RefreshWeight    uint32                 `protobuf:"varint,7,opt,name=refresh_weight,json=refreshWeight,proto3" json:"refresh_weight,omitempty"`
+	ProfileDate      string                 `protobuf:"bytes,8,opt,name=profile_date,json=profileDate,proto3" json:"profile_date,omitempty"`
+	ExpiresTimestamp int64                  `protobuf:"varint,9,opt,name=expires_timestamp,json=expiresTimestamp,proto3" json:"expires_timestamp,omitempty"`
+	LevelReason      string                 `protobuf:"bytes,10,opt,name=level_reason,json=levelReason,proto3" json:"level_reason,omitempty"`
+	SourceKind       ProfileNodeSourceKind  `protobuf:"varint,11,opt,name=source_kind,json=sourceKind,proto3,enum=vmm.v1.ProfileNodeSourceKind" json:"source_kind,omitempty"`
+	SourceId         uint64                 `protobuf:"varint,12,opt,name=source_id,json=sourceId,proto3" json:"source_id,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ProfileNodeEntry) Reset() {
+	*x = ProfileNodeEntry{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ProfileNodeEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ProfileNodeEntry) ProtoMessage() {}
+
+func (x *ProfileNodeEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ProfileNodeEntry.ProtoReflect.Descriptor instead.
+func (*ProfileNodeEntry) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{17}
+}
+
+func (x *ProfileNodeEntry) GetProfileNodeId() uint64 {
+	if x != nil {
+		return x.ProfileNodeId
+	}
+	return 0
+}
+
+func (x *ProfileNodeEntry) GetTarget() ProfileTarget {
+	if x != nil {
+		return x.Target
+	}
+	return ProfileTarget_PROFILE_TARGET_UNSPECIFIED
+}
+
+func (x *ProfileNodeEntry) GetBindId() uint64 {
+	if x != nil {
+		return x.BindId
+	}
+	return 0
+}
+
+func (x *ProfileNodeEntry) GetContent() string {
+	if x != nil {
+		return x.Content
+	}
+	return ""
+}
+
+func (x *ProfileNodeEntry) GetPriority() string {
+	if x != nil {
+		return x.Priority
+	}
+	return ""
+}
+
+func (x *ProfileNodeEntry) GetLevel() string {
+	if x != nil {
+		return x.Level
+	}
+	return ""
+}
+
+func (x *ProfileNodeEntry) GetRefreshWeight() uint32 {
+	if x != nil {
+		return x.RefreshWeight
+	}
+	return 0
+}
+
+func (x *ProfileNodeEntry) GetProfileDate() string {
+	if x != nil {
+		return x.ProfileDate
+	}
+	return ""
+}
+
+func (x *ProfileNodeEntry) GetExpiresTimestamp() int64 {
+	if x != nil {
+		return x.ExpiresTimestamp
+	}
+	return 0
+}
+
+func (x *ProfileNodeEntry) GetLevelReason() string {
+	if x != nil {
+		return x.LevelReason
+	}
+	return ""
+}
+
+func (x *ProfileNodeEntry) GetSourceKind() ProfileNodeSourceKind {
+	if x != nil {
+		return x.SourceKind
+	}
+	return ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_UNSPECIFIED
+}
+
+func (x *ProfileNodeEntry) GetSourceId() uint64 {
+	if x != nil {
+		return x.SourceId
+	}
+	return 0
+}
+
+// RetiredProfileNodeEntry transports one retired profile node plus the explicit reason attached during a manual instruction review.
+// RetiredProfileNodeEntry 用于承载一条被退役的画像节点，以及手工画像评审附带的明确原因。
+type RetiredProfileNodeEntry struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ProfileNodeId uint64                 `protobuf:"varint,1,opt,name=profile_node_id,json=profileNodeId,proto3" json:"profile_node_id,omitempty"`
+	Reason        string                 `protobuf:"bytes,2,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *RetiredProfileNodeEntry) Reset() {
+	*x = RetiredProfileNodeEntry{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *RetiredProfileNodeEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*RetiredProfileNodeEntry) ProtoMessage() {}
+
+func (x *RetiredProfileNodeEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use RetiredProfileNodeEntry.ProtoReflect.Descriptor instead.
+func (*RetiredProfileNodeEntry) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{18}
+}
+
+func (x *RetiredProfileNodeEntry) GetProfileNodeId() uint64 {
+	if x != nil {
+		return x.ProfileNodeId
+	}
+	return 0
+}
+
+func (x *RetiredProfileNodeEntry) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target.
+// GetProfileNodesRequest 用于请求服务端返回单个目标下当前 active 的原子化画像节点。
+type GetProfileNodesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        ProfileTarget          `protobuf:"varint,1,opt,name=target,proto3,enum=vmm.v1.ProfileTarget" json:"target,omitempty"`
+	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	Limit         uint32                 `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfileNodesRequest) Reset() {
+	*x = GetProfileNodesRequest{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfileNodesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfileNodesRequest) ProtoMessage() {}
+
+func (x *GetProfileNodesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfileNodesRequest.ProtoReflect.Descriptor instead.
+func (*GetProfileNodesRequest) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{19}
+}
+
+func (x *GetProfileNodesRequest) GetTarget() ProfileTarget {
+	if x != nil {
+		return x.Target
+	}
+	return ProfileTarget_PROFILE_TARGET_UNSPECIFIED
+}
+
+func (x *GetProfileNodesRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *GetProfileNodesRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+func (x *GetProfileNodesRequest) GetLimit() uint32 {
+	if x != nil {
+		return x.Limit
+	}
+	return 0
+}
+
+// GetProfileNodesResponse returns the active profile-node slice for the requested target plus trace metadata.
+// GetProfileNodesResponse 用于返回请求目标下的 active 画像节点切片和 trace 元数据。
+type GetProfileNodesResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Nodes         []*ProfileNodeEntry    `protobuf:"bytes,1,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	TraceId       string                 `protobuf:"bytes,2,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *GetProfileNodesResponse) Reset() {
+	*x = GetProfileNodesResponse{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *GetProfileNodesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*GetProfileNodesResponse) ProtoMessage() {}
+
+func (x *GetProfileNodesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use GetProfileNodesResponse.ProtoReflect.Descriptor instead.
+func (*GetProfileNodesResponse) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{20}
+}
+
+func (x *GetProfileNodesResponse) GetNodes() []*ProfileNodeEntry {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+func (x *GetProfileNodesResponse) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
+}
+
+// ApplyProfileInstructionRequest carries one explicit natural-language instruction that should update a single profile target.
+// ApplyProfileInstructionRequest 用于承载一条显式自然语言画像指令，并更新单个画像目标。
+type ApplyProfileInstructionRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        ProfileTarget          `protobuf:"varint,1,opt,name=target,proto3,enum=vmm.v1.ProfileTarget" json:"target,omitempty"`
+	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	Instruction   string                 `protobuf:"bytes,4,opt,name=instruction,proto3" json:"instruction,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyProfileInstructionRequest) Reset() {
+	*x = ApplyProfileInstructionRequest{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyProfileInstructionRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyProfileInstructionRequest) ProtoMessage() {}
+
+func (x *ApplyProfileInstructionRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyProfileInstructionRequest.ProtoReflect.Descriptor instead.
+func (*ApplyProfileInstructionRequest) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{21}
+}
+
+func (x *ApplyProfileInstructionRequest) GetTarget() ProfileTarget {
+	if x != nil {
+		return x.Target
+	}
+	return ProfileTarget_PROFILE_TARGET_UNSPECIFIED
+}
+
+func (x *ApplyProfileInstructionRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ApplyProfileInstructionRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+func (x *ApplyProfileInstructionRequest) GetInstruction() string {
+	if x != nil {
+		return x.Instruction
+	}
+	return ""
+}
+
+// ApplyProfileInstructionResponse returns the accepted new nodes and retired old nodes after the reviewed manual instruction succeeds.
+// ApplyProfileInstructionResponse 用于在手工画像指令评审成功后，返回被接纳的新节点和被退役的旧节点。
+type ApplyProfileInstructionResponse struct {
+	state         protoimpl.MessageState     `protogen:"open.v1"`
+	InstructionId uint64                     `protobuf:"varint,1,opt,name=instruction_id,json=instructionId,proto3" json:"instruction_id,omitempty"`
+	AcceptedNodes []*ProfileNodeEntry        `protobuf:"bytes,2,rep,name=accepted_nodes,json=acceptedNodes,proto3" json:"accepted_nodes,omitempty"`
+	RetiredNodes  []*RetiredProfileNodeEntry `protobuf:"bytes,3,rep,name=retired_nodes,json=retiredNodes,proto3" json:"retired_nodes,omitempty"`
+	ReviewReason  string                     `protobuf:"bytes,4,opt,name=review_reason,json=reviewReason,proto3" json:"review_reason,omitempty"`
+	TraceId       string                     `protobuf:"bytes,5,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ApplyProfileInstructionResponse) Reset() {
+	*x = ApplyProfileInstructionResponse{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ApplyProfileInstructionResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ApplyProfileInstructionResponse) ProtoMessage() {}
+
+func (x *ApplyProfileInstructionResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ApplyProfileInstructionResponse.ProtoReflect.Descriptor instead.
+func (*ApplyProfileInstructionResponse) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{22}
+}
+
+func (x *ApplyProfileInstructionResponse) GetInstructionId() uint64 {
+	if x != nil {
+		return x.InstructionId
+	}
+	return 0
+}
+
+func (x *ApplyProfileInstructionResponse) GetAcceptedNodes() []*ProfileNodeEntry {
+	if x != nil {
+		return x.AcceptedNodes
+	}
+	return nil
+}
+
+func (x *ApplyProfileInstructionResponse) GetRetiredNodes() []*RetiredProfileNodeEntry {
+	if x != nil {
+		return x.RetiredNodes
+	}
+	return nil
+}
+
+func (x *ApplyProfileInstructionResponse) GetReviewReason() string {
+	if x != nil {
+		return x.ReviewReason
+	}
+	return ""
+}
+
+func (x *ApplyProfileInstructionResponse) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
+}
+
 // PreCheckRequest carries only the numeric project/user ids plus the current user text.
 // PreCheckRequest 用于只承载数字 project/user id，以及当前用户文本。
 type PreCheckRequest struct {
@@ -1250,7 +1821,7 @@ type PreCheckRequest struct {
 
 func (x *PreCheckRequest) Reset() {
 	*x = PreCheckRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1262,7 +1833,7 @@ func (x *PreCheckRequest) String() string {
 func (*PreCheckRequest) ProtoMessage() {}
 
 func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1275,7 +1846,7 @@ func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckRequest.ProtoReflect.Descriptor instead.
 func (*PreCheckRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{17}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *PreCheckRequest) GetSessionId() string {
@@ -1321,7 +1892,7 @@ type ContextItem struct {
 
 func (x *ContextItem) Reset() {
 	*x = ContextItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1333,7 +1904,7 @@ func (x *ContextItem) String() string {
 func (*ContextItem) ProtoMessage() {}
 
 func (x *ContextItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1346,7 +1917,7 @@ func (x *ContextItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextItem.ProtoReflect.Descriptor instead.
 func (*ContextItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{18}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ContextItem) GetKind() string {
@@ -1399,7 +1970,7 @@ type PreCheckResponse struct {
 
 func (x *PreCheckResponse) Reset() {
 	*x = PreCheckResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1411,7 +1982,7 @@ func (x *PreCheckResponse) String() string {
 func (*PreCheckResponse) ProtoMessage() {}
 
 func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1424,7 +1995,7 @@ func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckResponse.ProtoReflect.Descriptor instead.
 func (*PreCheckResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{19}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *PreCheckResponse) GetShouldInject() bool {
@@ -1474,7 +2045,7 @@ type PostActionTimelineItem struct {
 
 func (x *PostActionTimelineItem) Reset() {
 	*x = PostActionTimelineItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1486,7 +2057,7 @@ func (x *PostActionTimelineItem) String() string {
 func (*PostActionTimelineItem) ProtoMessage() {}
 
 func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1499,7 +2070,7 @@ func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionTimelineItem.ProtoReflect.Descriptor instead.
 func (*PostActionTimelineItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{20}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{26}
 }
 
 func (x *PostActionTimelineItem) GetType() string {
@@ -1532,7 +2103,7 @@ type PostActionRequest struct {
 
 func (x *PostActionRequest) Reset() {
 	*x = PostActionRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1544,7 +2115,7 @@ func (x *PostActionRequest) String() string {
 func (*PostActionRequest) ProtoMessage() {}
 
 func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1557,7 +2128,7 @@ func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionRequest.ProtoReflect.Descriptor instead.
 func (*PostActionRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{21}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *PostActionRequest) GetSessionId() string {
@@ -1614,7 +2185,7 @@ type PostActionResponse struct {
 
 func (x *PostActionResponse) Reset() {
 	*x = PostActionResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1626,7 +2197,7 @@ func (x *PostActionResponse) String() string {
 func (*PostActionResponse) ProtoMessage() {}
 
 func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1639,7 +2210,7 @@ func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionResponse.ProtoReflect.Descriptor instead.
 func (*PostActionResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{22}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *PostActionResponse) GetAccepted() bool {
@@ -1752,7 +2323,46 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x10deleted_messages\x18\x06 \x01(\x03R\x0fdeletedMessages\x12)\n" +
 	"\x10deleted_memories\x18\a \x01(\x03R\x0fdeletedMemories\x12.\n" +
 	"\x13deleted_vector_rows\x18\b \x01(\x04R\x11deletedVectorRows\x12\x19\n" +
-	"\btrace_id\x18\t \x01(\tR\atraceId\"\x8b\x01\n" +
+	"\btrace_id\x18\t \x01(\tR\atraceId\"\xc5\x03\n" +
+	"\x10ProfileNodeEntry\x12&\n" +
+	"\x0fprofile_node_id\x18\x01 \x01(\x04R\rprofileNodeId\x12-\n" +
+	"\x06target\x18\x02 \x01(\x0e2\x15.vmm.v1.ProfileTargetR\x06target\x12\x17\n" +
+	"\abind_id\x18\x03 \x01(\x04R\x06bindId\x12\x18\n" +
+	"\acontent\x18\x04 \x01(\tR\acontent\x12\x1a\n" +
+	"\bpriority\x18\x05 \x01(\tR\bpriority\x12\x14\n" +
+	"\x05level\x18\x06 \x01(\tR\x05level\x12%\n" +
+	"\x0erefresh_weight\x18\a \x01(\rR\rrefreshWeight\x12!\n" +
+	"\fprofile_date\x18\b \x01(\tR\vprofileDate\x12+\n" +
+	"\x11expires_timestamp\x18\t \x01(\x03R\x10expiresTimestamp\x12!\n" +
+	"\flevel_reason\x18\n" +
+	" \x01(\tR\vlevelReason\x12>\n" +
+	"\vsource_kind\x18\v \x01(\x0e2\x1d.vmm.v1.ProfileNodeSourceKindR\n" +
+	"sourceKind\x12\x1b\n" +
+	"\tsource_id\x18\f \x01(\x04R\bsourceId\"Y\n" +
+	"\x17RetiredProfileNodeEntry\x12&\n" +
+	"\x0fprofile_node_id\x18\x01 \x01(\x04R\rprofileNodeId\x12\x16\n" +
+	"\x06reason\x18\x02 \x01(\tR\x06reason\"\x95\x01\n" +
+	"\x16GetProfileNodesRequest\x12-\n" +
+	"\x06target\x18\x01 \x01(\x0e2\x15.vmm.v1.ProfileTargetR\x06target\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x03 \x01(\x04R\tprojectId\x12\x14\n" +
+	"\x05limit\x18\x04 \x01(\rR\x05limit\"d\n" +
+	"\x17GetProfileNodesResponse\x12.\n" +
+	"\x05nodes\x18\x01 \x03(\v2\x18.vmm.v1.ProfileNodeEntryR\x05nodes\x12\x19\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xa9\x01\n" +
+	"\x1eApplyProfileInstructionRequest\x12-\n" +
+	"\x06target\x18\x01 \x01(\x0e2\x15.vmm.v1.ProfileTargetR\x06target\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x03 \x01(\x04R\tprojectId\x12 \n" +
+	"\vinstruction\x18\x04 \x01(\tR\vinstruction\"\x8f\x02\n" +
+	"\x1fApplyProfileInstructionResponse\x12%\n" +
+	"\x0einstruction_id\x18\x01 \x01(\x04R\rinstructionId\x12?\n" +
+	"\x0eaccepted_nodes\x18\x02 \x03(\v2\x18.vmm.v1.ProfileNodeEntryR\racceptedNodes\x12D\n" +
+	"\rretired_nodes\x18\x03 \x03(\v2\x1f.vmm.v1.RetiredProfileNodeEntryR\fretiredNodes\x12#\n" +
+	"\rreview_reason\x18\x04 \x01(\tR\freviewReason\x12\x19\n" +
+	"\btrace_id\x18\x05 \x01(\tR\atraceId\"\x8b\x01\n" +
 	"\x0fPreCheckRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
@@ -1786,7 +2396,18 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\btimeline\x18\x06 \x03(\v2\x1e.vmm.v1.PostActionTimelineItemR\btimeline\"K\n" +
 	"\x12PostActionResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId2\x9d\x06\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId*\x97\x01\n" +
+	"\rProfileTarget\x12\x1e\n" +
+	"\x1aPROFILE_TARGET_UNSPECIFIED\x10\x00\x12\x17\n" +
+	"\x13PROFILE_TARGET_USER\x10\x01\x12\x1a\n" +
+	"\x16PROFILE_TARGET_PROJECT\x10\x02\x12\x17\n" +
+	"\x13PROFILE_TARGET_TEAM\x10\x03\x12\x18\n" +
+	"\x14PROFILE_TARGET_SPACE\x10\x04*\xc7\x01\n" +
+	"\x15ProfileNodeSourceKind\x12(\n" +
+	"$PROFILE_NODE_SOURCE_KIND_UNSPECIFIED\x10\x00\x12)\n" +
+	"%PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT\x10\x01\x12/\n" +
+	"+PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION\x10\x02\x12(\n" +
+	"$PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED\x10\x032\xdd\a\n" +
 	"\n" +
 	"VMMService\x12:\n" +
 	"\aHealthz\x12\x16.google.protobuf.Empty\x1a\x17.vmm.v1.HealthzResponse\x12D\n" +
@@ -1798,7 +2419,9 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\vResolveUser\x12\x1a.vmm.v1.ResolveUserRequest\x1a\x1b.vmm.v1.ResolveUserResponse\x12>\n" +
 	"\tListUsers\x12\x16.google.protobuf.Empty\x1a\x19.vmm.v1.ListUsersResponse\x12C\n" +
 	"\n" +
-	"DeleteUser\x12\x19.vmm.v1.DeleteUserRequest\x1a\x1a.vmm.v1.DeleteUserResponse\x12=\n" +
+	"DeleteUser\x12\x19.vmm.v1.DeleteUserRequest\x1a\x1a.vmm.v1.DeleteUserResponse\x12R\n" +
+	"\x0fGetProfileNodes\x12\x1e.vmm.v1.GetProfileNodesRequest\x1a\x1f.vmm.v1.GetProfileNodesResponse\x12j\n" +
+	"\x17ApplyProfileInstruction\x12&.vmm.v1.ApplyProfileInstructionRequest\x1a'.vmm.v1.ApplyProfileInstructionResponse\x12=\n" +
 	"\bPreCheck\x12\x17.vmm.v1.PreCheckRequest\x1a\x18.vmm.v1.PreCheckResponse\x12C\n" +
 	"\n" +
 	"PostAction\x12\x19.vmm.v1.PostActionRequest\x1a\x1a.vmm.v1.PostActionResponseBLZJgithub.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1;vmmv1b\x06proto3"
@@ -1815,72 +2438,92 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP() []b
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescData
 }
 
-var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 23)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 2)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 29)
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_goTypes = []any{
-	(*HealthzResponse)(nil),        // 0: vmm.v1.HealthzResponse
-	(*ProjectEntry)(nil),           // 1: vmm.v1.ProjectEntry
-	(*UserEntry)(nil),              // 2: vmm.v1.UserEntry
-	(*ListProjectsResponse)(nil),   // 3: vmm.v1.ListProjectsResponse
-	(*ResolveProjectRequest)(nil),  // 4: vmm.v1.ResolveProjectRequest
-	(*ResolveProjectResponse)(nil), // 5: vmm.v1.ResolveProjectResponse
-	(*EnsureProjectRequest)(nil),   // 6: vmm.v1.EnsureProjectRequest
-	(*EnsureProjectResponse)(nil),  // 7: vmm.v1.EnsureProjectResponse
-	(*DeleteProjectRequest)(nil),   // 8: vmm.v1.DeleteProjectRequest
-	(*DeleteProjectResponse)(nil),  // 9: vmm.v1.DeleteProjectResponse
-	(*MigrateProjectRequest)(nil),  // 10: vmm.v1.MigrateProjectRequest
-	(*MigrateProjectResponse)(nil), // 11: vmm.v1.MigrateProjectResponse
-	(*ResolveUserRequest)(nil),     // 12: vmm.v1.ResolveUserRequest
-	(*ResolveUserResponse)(nil),    // 13: vmm.v1.ResolveUserResponse
-	(*ListUsersResponse)(nil),      // 14: vmm.v1.ListUsersResponse
-	(*DeleteUserRequest)(nil),      // 15: vmm.v1.DeleteUserRequest
-	(*DeleteUserResponse)(nil),     // 16: vmm.v1.DeleteUserResponse
-	(*PreCheckRequest)(nil),        // 17: vmm.v1.PreCheckRequest
-	(*ContextItem)(nil),            // 18: vmm.v1.ContextItem
-	(*PreCheckResponse)(nil),       // 19: vmm.v1.PreCheckResponse
-	(*PostActionTimelineItem)(nil), // 20: vmm.v1.PostActionTimelineItem
-	(*PostActionRequest)(nil),      // 21: vmm.v1.PostActionRequest
-	(*PostActionResponse)(nil),     // 22: vmm.v1.PostActionResponse
-	(*emptypb.Empty)(nil),          // 23: google.protobuf.Empty
+	(ProfileTarget)(0),                      // 0: vmm.v1.ProfileTarget
+	(ProfileNodeSourceKind)(0),              // 1: vmm.v1.ProfileNodeSourceKind
+	(*HealthzResponse)(nil),                 // 2: vmm.v1.HealthzResponse
+	(*ProjectEntry)(nil),                    // 3: vmm.v1.ProjectEntry
+	(*UserEntry)(nil),                       // 4: vmm.v1.UserEntry
+	(*ListProjectsResponse)(nil),            // 5: vmm.v1.ListProjectsResponse
+	(*ResolveProjectRequest)(nil),           // 6: vmm.v1.ResolveProjectRequest
+	(*ResolveProjectResponse)(nil),          // 7: vmm.v1.ResolveProjectResponse
+	(*EnsureProjectRequest)(nil),            // 8: vmm.v1.EnsureProjectRequest
+	(*EnsureProjectResponse)(nil),           // 9: vmm.v1.EnsureProjectResponse
+	(*DeleteProjectRequest)(nil),            // 10: vmm.v1.DeleteProjectRequest
+	(*DeleteProjectResponse)(nil),           // 11: vmm.v1.DeleteProjectResponse
+	(*MigrateProjectRequest)(nil),           // 12: vmm.v1.MigrateProjectRequest
+	(*MigrateProjectResponse)(nil),          // 13: vmm.v1.MigrateProjectResponse
+	(*ResolveUserRequest)(nil),              // 14: vmm.v1.ResolveUserRequest
+	(*ResolveUserResponse)(nil),             // 15: vmm.v1.ResolveUserResponse
+	(*ListUsersResponse)(nil),               // 16: vmm.v1.ListUsersResponse
+	(*DeleteUserRequest)(nil),               // 17: vmm.v1.DeleteUserRequest
+	(*DeleteUserResponse)(nil),              // 18: vmm.v1.DeleteUserResponse
+	(*ProfileNodeEntry)(nil),                // 19: vmm.v1.ProfileNodeEntry
+	(*RetiredProfileNodeEntry)(nil),         // 20: vmm.v1.RetiredProfileNodeEntry
+	(*GetProfileNodesRequest)(nil),          // 21: vmm.v1.GetProfileNodesRequest
+	(*GetProfileNodesResponse)(nil),         // 22: vmm.v1.GetProfileNodesResponse
+	(*ApplyProfileInstructionRequest)(nil),  // 23: vmm.v1.ApplyProfileInstructionRequest
+	(*ApplyProfileInstructionResponse)(nil), // 24: vmm.v1.ApplyProfileInstructionResponse
+	(*PreCheckRequest)(nil),                 // 25: vmm.v1.PreCheckRequest
+	(*ContextItem)(nil),                     // 26: vmm.v1.ContextItem
+	(*PreCheckResponse)(nil),                // 27: vmm.v1.PreCheckResponse
+	(*PostActionTimelineItem)(nil),          // 28: vmm.v1.PostActionTimelineItem
+	(*PostActionRequest)(nil),               // 29: vmm.v1.PostActionRequest
+	(*PostActionResponse)(nil),              // 30: vmm.v1.PostActionResponse
+	(*emptypb.Empty)(nil),                   // 31: google.protobuf.Empty
 }
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_depIdxs = []int32{
-	1,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
-	1,  // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	1,  // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	1,  // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	1,  // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
-	1,  // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
-	2,  // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
-	2,  // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
-	2,  // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
-	18, // 9: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
-	20, // 10: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	23, // 11: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
-	23, // 12: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
-	4,  // 13: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
-	6,  // 14: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
-	8,  // 15: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
-	10, // 16: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
-	12, // 17: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
-	23, // 18: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
-	15, // 19: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
-	17, // 20: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
-	21, // 21: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
-	0,  // 22: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
-	3,  // 23: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
-	5,  // 24: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
-	7,  // 25: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
-	9,  // 26: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
-	11, // 27: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
-	13, // 28: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
-	14, // 29: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
-	16, // 30: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
-	19, // 31: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
-	22, // 32: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
-	22, // [22:33] is the sub-list for method output_type
-	11, // [11:22] is the sub-list for method input_type
-	11, // [11:11] is the sub-list for extension type_name
-	11, // [11:11] is the sub-list for extension extendee
-	0,  // [0:11] is the sub-list for field type_name
+	3,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
+	3,  // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	3,  // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	3,  // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	3,  // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
+	3,  // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
+	4,  // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
+	4,  // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
+	4,  // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
+	0,  // 9: vmm.v1.ProfileNodeEntry.target:type_name -> vmm.v1.ProfileTarget
+	1,  // 10: vmm.v1.ProfileNodeEntry.source_kind:type_name -> vmm.v1.ProfileNodeSourceKind
+	0,  // 11: vmm.v1.GetProfileNodesRequest.target:type_name -> vmm.v1.ProfileTarget
+	19, // 12: vmm.v1.GetProfileNodesResponse.nodes:type_name -> vmm.v1.ProfileNodeEntry
+	0,  // 13: vmm.v1.ApplyProfileInstructionRequest.target:type_name -> vmm.v1.ProfileTarget
+	19, // 14: vmm.v1.ApplyProfileInstructionResponse.accepted_nodes:type_name -> vmm.v1.ProfileNodeEntry
+	20, // 15: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
+	26, // 16: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
+	28, // 17: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	31, // 18: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
+	31, // 19: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
+	6,  // 20: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
+	8,  // 21: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
+	10, // 22: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
+	12, // 23: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
+	14, // 24: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
+	31, // 25: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
+	17, // 26: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
+	21, // 27: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
+	23, // 28: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
+	25, // 29: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
+	29, // 30: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
+	2,  // 31: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
+	5,  // 32: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
+	7,  // 33: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
+	9,  // 34: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
+	11, // 35: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
+	13, // 36: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
+	15, // 37: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
+	16, // 38: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
+	18, // 39: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
+	22, // 40: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
+	24, // 41: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
+	27, // 42: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
+	30, // 43: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
+	31, // [31:44] is the sub-list for method output_type
+	18, // [18:31] is the sub-list for method input_type
+	18, // [18:18] is the sub-list for extension type_name
+	18, // [18:18] is the sub-list for extension extendee
+	0,  // [0:18] is the sub-list for field type_name
 }
 
 func init() { file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() }
@@ -1893,13 +2536,14 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc), len(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   23,
+			NumEnums:      2,
+			NumMessages:   29,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_goTypes,
 		DependencyIndexes: file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_depIdxs,
+		EnumInfos:         file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes,
 		MessageInfos:      file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes,
 	}.Build()
 	File_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto = out.File
