@@ -1,0 +1,129 @@
+// turn_analyzer.go implements the per-turn extraction processor used by post-action to turn one raw dialogue round into structured details, memory nodes, and profile nodes.
+// turn_analyzer.go 用于实现 post-action 的逐轮提炼处理器，把一轮原始对话转成结构化的 details、memory 节点和 profile 节点。
+package processor
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	appports "github.com/openvulcan/vmm/internal/app/ports"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+)
+
+// TurnAnalyzer drives prompt lookup, LLM invocation, and JSON parsing for the turn-analysis scene.
+// TurnAnalyzer 用于驱动逐轮分析场景的提示词读取、LLM 调用和 JSON 解析。
+type TurnAnalyzer struct {
+	llm     appports.LLMClient
+	prompts appports.PromptSource
+	model   string
+}
+
+// NewTurnAnalyzer creates a TurnAnalyzer instance.
+// NewTurnAnalyzer 用于创建 TurnAnalyzer 实例。
+func NewTurnAnalyzer(llm appports.LLMClient, prompts appports.PromptSource, model string) *TurnAnalyzer {
+	return &TurnAnalyzer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
+}
+
+// Analyze runs one structured LLM extraction over the current raw turn transcript.
+// Analyze 用于针对当前原始 turn transcript 执行一次结构化 LLM 提炼。
+func (a *TurnAnalyzer) Analyze(ctx context.Context, transcript string) (logicdomain.TurnAnalysis, error) {
+	// Load the dedicated prompt scene and issue one JSON generation request for the current raw turn.
+	// 加载专用场景提示词，并针对当前原始 turn 发起一次 JSON 生成请求。
+	if a == nil || a.llm == nil {
+		return logicdomain.TurnAnalysis{}, fmt.Errorf("turn analyzer llm client is nil")
+	}
+	prompt, err := a.prompts.GetPrompt("analyze_turn", a.model)
+	if err != nil {
+		return logicdomain.TurnAnalysis{}, fmt.Errorf("load analyze_turn prompt: %w", err)
+	}
+	resp, err := a.llm.Generate(ctx, appports.LLMRequest{
+		Model:          a.model,
+		SystemPrompt:   prompt,
+		UserPrompt:     strings.TrimSpace(transcript),
+		ResponseFormat: appports.LLMResponseFormatJSON,
+	})
+	if err != nil {
+		return logicdomain.TurnAnalysis{}, err
+	}
+	return parseTurnAnalysisResponse(resp.Content)
+}
+
+// parseTurnAnalysisResponse normalizes the model output into the internal turn-analysis contract and rejects structurally invalid payloads.
+// parseTurnAnalysisResponse 用于把模型输出归一成内部逐轮分析契约，并拒绝结构上无效的载荷。
+func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
+	// Extract the first JSON object so markdown fences or provider wrappers do not break structured parsing.
+	// 抽取第一个 JSON 对象，避免 markdown 围栏或 provider 包装破坏结构化解析。
+	jsonBody, err := extractJSONObject(raw)
+	if err != nil {
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
+	}
+	var payload struct {
+		Details     string `json:"details"`
+		MemoryNodes []struct {
+			Category int    `json:"category"`
+			Abstract string `json:"abstract"`
+			Details  string `json:"details"`
+		} `json:"memory_nodes"`
+		ProfileNodes []struct {
+			ProfileType int    `json:"profile_type"`
+			Content     string `json:"content"`
+		} `json:"profile_nodes"`
+	}
+	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "json decode failed", Raw: raw}
+	}
+
+	// Validate and de-duplicate extracted items so the persistence layer only receives canonical node candidates.
+	// 校验并去重提炼项，让持久化层只接收规范化后的节点候选。
+	analysis := logicdomain.TurnAnalysis{
+		Details:      strings.TrimSpace(payload.Details),
+		MemoryNodes:  make([]logicdomain.MemoryNodeCandidate, 0, len(payload.MemoryNodes)),
+		ProfileNodes: make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
+	}
+	memorySeen := map[string]struct{}{}
+	for _, node := range payload.MemoryNodes {
+		node.Abstract = strings.TrimSpace(node.Abstract)
+		node.Details = strings.TrimSpace(node.Details)
+		if !logicdomain.ValidMemoryNodeCategory(node.Category) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory category %d", node.Category), Raw: raw}
+		}
+		if node.Abstract == "" {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "memory node abstract is required", Raw: raw}
+		}
+		if node.Details == "" {
+			node.Details = node.Abstract
+		}
+		key := fmt.Sprintf("%d|%s|%s", node.Category, node.Abstract, node.Details)
+		if _, ok := memorySeen[key]; ok {
+			continue
+		}
+		memorySeen[key] = struct{}{}
+		analysis.MemoryNodes = append(analysis.MemoryNodes, logicdomain.MemoryNodeCandidate{
+			Category: node.Category,
+			Abstract: node.Abstract,
+			Details:  node.Details,
+		})
+	}
+	profileSeen := map[string]struct{}{}
+	for _, node := range payload.ProfileNodes {
+		node.Content = strings.TrimSpace(node.Content)
+		if !logicdomain.ValidProfileType(node.ProfileType) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile_type %d", node.ProfileType), Raw: raw}
+		}
+		if node.Content == "" {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "profile node content is required", Raw: raw}
+		}
+		key := fmt.Sprintf("%d|%s", node.ProfileType, node.Content)
+		if _, ok := profileSeen[key]; ok {
+			continue
+		}
+		profileSeen[key] = struct{}{}
+		analysis.ProfileNodes = append(analysis.ProfileNodes, logicdomain.ProfileNodeCandidate{
+			ProfileType: node.ProfileType,
+			Content:     node.Content,
+		})
+	}
+	return analysis, nil
+}

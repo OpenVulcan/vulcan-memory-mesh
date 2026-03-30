@@ -48,10 +48,10 @@ type PostActionExecutor interface {
 	Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error)
 }
 
-// PostActionTurnSummarizer is the tiny port used by post-action to run one debug-stage single-turn LLM summary when the session window reaches analysis thresholds.
-// PostActionTurnSummarizer 用于给 post-action 在 session 窗口命中分析阈值后执行一次调试阶段的单轮 LLM 摘要。
-type PostActionTurnSummarizer interface {
-	Summarize(ctx context.Context, transcript string) (string, error)
+// PostActionTurnAnalyzer is the tiny port used by post-action to run one structured per-turn extraction after the cleaned turn is durably written.
+// PostActionTurnAnalyzer 用于让 post-action 在清洗后的 turn 稳定落库后，执行一次结构化的逐轮提炼。
+type PostActionTurnAnalyzer interface {
+	Analyze(ctx context.Context, transcript string) (logicdomain.TurnAnalysis, error)
 }
 
 // PostActionAnalysisConfig carries the session-level thresholds that decide when post-action should fire one debug-stage LLM summary.
@@ -67,14 +67,14 @@ type PostActionAnalysisConfig struct {
 type PostActionUseCase struct {
 	noiseGate   appports.NoiseTurnFilter
 	store       appports.RelationalStore
-	summarizer  PostActionTurnSummarizer
+	analyzer    PostActionTurnAnalyzer
 	analysisCfg PostActionAnalysisConfig
 	logger      *logx.Logger
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance.
 // NewPostActionUseCase 用于创建 PostActionUseCase 实例。
-func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, summarizer PostActionTurnSummarizer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
+func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, analyzer PostActionTurnAnalyzer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -90,7 +90,7 @@ func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	return &PostActionUseCase{
 		noiseGate:   noiseGate,
 		store:       store,
-		summarizer:  summarizer,
+		analyzer:    analyzer,
 		analysisCfg: analysisCfg,
 		logger:      logger,
 	}
@@ -139,13 +139,14 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 		AssistantContent: strings.TrimSpace(cmd.AssistantContent),
 		CreatedAt:        time.Now().UTC(),
 	}
-	if err := u.store.AppendTurnRecord(ctx, cmd.Session, turn); err != nil {
+	persistedTurn, err := u.store.AppendTurnRecord(ctx, cmd.Session, turn)
+	if err != nil {
 		return PostActionResult{}, err
 	}
 
-	// Trigger one debug-stage single-turn LLM summary only after the cleaned turn has been durably written.
-	// 只有在清洗后的 turn 已经稳定落库之后，才触发一次调试阶段的单轮 LLM 摘要。
-	u.runDebugSessionAnalysis(ctx, traceID, cmd, turn)
+	// Trigger one debug-stage structured turn analysis only after the cleaned turn has been durably written.
+	// 只有在清洗后的 turn 已经稳定落库之后，才触发一次调试阶段的结构化逐轮分析。
+	u.runDebugTurnAnalysis(ctx, traceID, cmd, persistedTurn)
 	return PostActionResult{Accepted: true, TraceID: traceID}, nil
 }
 
@@ -179,26 +180,19 @@ func validatePostAction(cmd PostActionCommand) error {
 	return nil
 }
 
-// runDebugSessionAnalysis sends every persisted turn through the existing single-turn summary prompt during the current debug stage so prompt behavior can be observed step by step.
-// runDebugSessionAnalysis 用于在当前调试阶段把每一条已落库 turn 都送入现有单轮摘要提示词，方便逐步观察 prompt 行为。
-func (u *PostActionUseCase) runDebugSessionAnalysis(ctx context.Context, traceID string, cmd PostActionCommand, persistedTurn logicdomain.TurnRecord) {
-	if u == nil || u.summarizer == nil {
+// runDebugTurnAnalysis sends every persisted turn through the structured turn-analysis prompt during the current debug stage and persists the extracted result back into DuckDB.
+// runDebugTurnAnalysis 用于在当前调试阶段把每一条已落库 turn 都送入结构化逐轮分析提示词，并把提炼结果回写到 DuckDB。
+func (u *PostActionUseCase) runDebugTurnAnalysis(ctx context.Context, traceID string, cmd PostActionCommand, persistedTurn logicdomain.PersistedTurnRecord) {
+	if u == nil || u.analyzer == nil {
 		return
 	}
 
-	// Reuse the same turn-payload budget estimation logic as relational persistence so the debug logs still show the evolving session counters.
-	// 复用与关系持久化一致的 turn 载荷预算估算方式，让调试日志仍能展示 session 计数和预算如何演进。
-	_, currentBudget, err := buildPostActionTurnPayload(persistedTurn)
-	if err != nil {
-		if u.logger != nil {
-			u.logger.Error("post-action analysis budget build failed", "trace_id", traceID, "session_key", cmd.Session.SessionKey, "err", err)
-		}
-		return
-	}
-	state := captureSessionAnalysisState(cmd.Session, currentBudget)
+	// Keep the evolving session counters in logs so debugging still shows how the current turn changes the session window.
+	// 在日志中继续保留 session 计数变化，方便调试时观察当前 turn 如何改变会话窗口。
+	state := captureSessionAnalysisState(cmd.Session, persistedTurn.DehydratedBudget)
 
-	// Feed the original dialogue content to the existing summarize_entry prompt so we can inspect whether the current single-turn extraction format is already usable.
-	// 把原始对话内容送入现有 summarize_entry 提示词，先观察当前单轮提炼格式是否已经足够可用。
+	// Feed the original dialogue content to the dedicated analyze_turn prompt so extracted details and node candidates come from the raw user-visible dialogue.
+	// 把原始对话内容送入专用 analyze_turn 提示词，让 details 和节点候选直接基于用户可见的原始对话生成。
 	transcript, err := buildPostActionAnalysisTranscript(rawTurnFromCommand(cmd))
 	if err != nil {
 		if u.logger != nil {
@@ -206,14 +200,15 @@ func (u *PostActionUseCase) runDebugSessionAnalysis(ctx context.Context, traceID
 		}
 		return
 	}
-	summary, err := u.summarizer.Summarize(ctx, transcript)
+	analysis, err := u.analyzer.Analyze(ctx, transcript)
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Error(
-				"post-action llm analysis failed",
+				"post-action turn analysis failed",
 				"trace_id", traceID,
 				"session_key", cmd.Session.SessionKey,
 				"session_id", cmd.Session.SessionID,
+				"turn_id", persistedTurn.ID,
 				"analysis_mode", "always",
 				"next_turn_count", state.NextTurnCount,
 				"next_summarize_budget", state.NextSummarizeBudget,
@@ -223,18 +218,37 @@ func (u *PostActionUseCase) runDebugSessionAnalysis(ctx context.Context, traceID
 		}
 		return
 	}
+	analysis.DetailsBudget = estimatePostActionTextBudget(analysis.Details)
+	if err := u.store.ApplyTurnAnalysis(ctx, cmd.Session, persistedTurn, analysis); err != nil {
+		if u.logger != nil {
+			u.logger.Error(
+				"post-action turn analysis persistence failed",
+				"trace_id", traceID,
+				"session_key", cmd.Session.SessionKey,
+				"session_id", cmd.Session.SessionID,
+				"turn_id", persistedTurn.ID,
+				"err", err,
+			)
+		}
+		return
+	}
+	analysisJSON, _ := json.Marshal(analysis)
 	if u.logger != nil {
 		u.logger.Info(
-			"post-action llm analysis result",
+			"post-action turn analysis result",
 			"trace_id", traceID,
 			"session_key", cmd.Session.SessionKey,
 			"session_id", cmd.Session.SessionID,
-			"prompt_scene", "summarize_entry",
+			"turn_id", persistedTurn.ID,
+			"prompt_scene", "analyze_turn",
 			"analysis_mode", "always",
 			"next_turn_count", state.NextTurnCount,
 			"next_summarize_budget", state.NextSummarizeBudget,
 			"idle_gap_ms", state.IdleGap.Milliseconds(),
-			"analysis", summary,
+			"details_budget", analysis.DetailsBudget,
+			"memory_node_count", len(analysis.MemoryNodes),
+			"profile_node_count", len(analysis.ProfileNodes),
+			"analysis", string(analysisJSON),
 		)
 	}
 }
@@ -320,6 +334,17 @@ func buildPostActionTurnPayload(turn logicdomain.TurnRecord) (string, int, error
 	}
 	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
 	return string(body), estimator.Estimate(string(body)), nil
+}
+
+// estimatePostActionTextBudget applies the local token estimator to one extracted text field so turn details use the same budget heuristic as stored turn payloads.
+// estimatePostActionTextBudget 用于对提炼文本应用本地 token 估算器，让 turn details 与落库 turn 载荷共享同一预算口径。
+func estimatePostActionTextBudget(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
+	return estimator.Estimate(text)
 }
 
 // buildPostActionAnalysisTranscript pretty-prints the current raw turn into a stable JSON transcript so the existing single-turn prompt can inspect the full dialogue structure.

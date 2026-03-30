@@ -172,10 +172,20 @@ message PostActionTimelineItem {
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
 15. 当前调试阶段每次写入 turn 成功后：
-    - 都会直接把“当前原始 turn”送到现有 `summarize_entry` prompt
-    - 仅把 LLM 返回 JSON 输出到日志
-    - 当前不会把该结果写回数据库
-    - 当前也不会拼接“历史 3 轮提炼文”
+    - 都会直接把“当前原始 turn”送到 `analyze_turn` prompt
+    - LLM 会返回结构化的：
+      - `details`
+      - `memory_nodes[]`
+      - `profile_nodes[]`
+    - 成功后会回写：
+      - `vmm_turn_records.details`
+      - `vmm_turn_records.details_budget`
+      - `vmm_turn_records.extracted_status = 1`
+    - 同步插入：
+      - `vmm_memory_nodes`
+      - `vmm_profile_nodes`
+    - 当前不做“历史 3 轮提炼文”拼装
+    - 当前不做 user/project profile blob 合并
 
 ## 清洗行为
 
@@ -221,10 +231,21 @@ message PostActionTimelineItem {
 
 - `vmm_sessions`
 - `vmm_turn_records`
+- `vmm_memory_nodes`
+- `vmm_profile_nodes`
 
 不会直接把原始请求 JSON 原样写入数据库。
 
 真正持久化的是清洗后的 turn 脱水 JSON。
+
+另外，以下层级表已经增加 `profile` 字段，用于为后续画像 Blob 合并预留结构：
+
+- `vmm_users`
+- `vmm_teams`
+- `vmm_spaces`
+- `vmm_projects`
+
+当前自动提取阶段只会写 `vmm_profile_nodes` 证据节点，不会自动更新这些 `profile` 字段。
 
 ## 响应结构
 
@@ -319,10 +340,11 @@ grpcurl -plaintext `
 
 当前已经接入的行为是：
 
-- 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”直接送入现有 `summarize_entry` prompt
-- 返回结果只打日志，方便调试观察
-- 不写回 DuckDB
-- 不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
+- 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”直接送入 `analyze_turn` prompt
+- 返回结果会写回 `vmm_turn_records.details / details_budget / extracted_status`
+- 同步插入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+- 仍然不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
+- 仍然不做 user/project profile blob 合并
 
 当前这三个阈值字段只是保留在配置层，暂未参与实际触发判断。
 
@@ -332,4 +354,5 @@ grpcurl -plaintext `
 - 当前主线不再支持 `team_id / space_id` 由客户端直接传入
 - 当前 `PostAction` 只接受纯文本字段，不接受原始消息节点对象
 - 当前 `PostAction` 返回的是“已接收”，不是“已写库完成”
-- 当前阈值触发后的 LLM 分析仍然只是调试模式，暂不写库
+- 当前阈值触发后的批量分析尚未接入，调试阶段是“每个 turn 都直接分析一次”
+- 当前画像只保存节点证据，尚未合并进 user/project profile blob

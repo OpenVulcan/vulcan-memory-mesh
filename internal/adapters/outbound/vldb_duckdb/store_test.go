@@ -47,6 +47,18 @@ func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	if !strings.Contains(execs[2].Sql, "CREATE TABLE IF NOT EXISTS vmm_turn_records") {
 		t.Fatalf("missing current schema turn table sql: %s", execs[2].Sql)
 	}
+	if !strings.Contains(execs[2].Sql, "CREATE TABLE IF NOT EXISTS vmm_memory_nodes") {
+		t.Fatalf("missing current schema memory node table sql: %s", execs[2].Sql)
+	}
+	if !strings.Contains(execs[2].Sql, "CREATE TABLE IF NOT EXISTS vmm_profile_nodes") {
+		t.Fatalf("missing current schema profile node table sql: %s", execs[2].Sql)
+	}
+	if !strings.Contains(execs[2].Sql, "profile TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("missing hierarchy profile columns in current schema sql: %s", execs[2].Sql)
+	}
+	if !strings.Contains(execs[2].Sql, "details TEXT NOT NULL DEFAULT ''") {
+		t.Fatalf("missing turn details column in current schema sql: %s", execs[2].Sql)
+	}
 	if !strings.Contains(execs[2].Sql, "turn_count INTEGER NOT NULL DEFAULT 0") {
 		t.Fatalf("missing current schema session turn counter sql: %s", execs[2].Sql)
 	}
@@ -100,7 +112,7 @@ func TestInitResetsManagedSchemaOnVersionMismatch(t *testing.T) {
 func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":4}]`,
+			"FROM vmm_version":    `[{"schema_version":5}]`,
 			"FROM vmm_users":      `[{"id":7,"name":"alice","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_sessions":   `[]`,
@@ -138,7 +150,7 @@ func TestResolveRequestScopeCreatesSession(t *testing.T) {
 func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":4}]`,
+			"FROM vmm_version":    `[{"schema_version":5}]`,
 			"FROM vmm_users":      `[{"id":8,"name":"bob","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_sessions":   `[{"id":41,"session_key":"sess-key-1","user_id":7,"team_id":3,"space_id":5,"project_id":9,"turn_count":2,"last_summarized_id":0,"summarize_content":"","summarize_budget":0,"created_timestamp":1710000000000,"updated_timestamp":1710000001000}]`,
@@ -173,13 +185,13 @@ func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
 func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":4}]`,
+			"FROM vmm_version": `[{"schema_version":5}]`,
 			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_turn_records": `[{"next_id":100}]`,
 		},
 	}
 	store := newDuckDBTestStore(t, server)
 
-	err := store.AppendTurnRecord(context.Background(), logicdomain.SessionRef{
+	persistedTurn, err := store.AppendTurnRecord(context.Background(), logicdomain.SessionRef{
 		SessionID:  41,
 		SessionKey: "sess-key-1",
 		UserID:     7,
@@ -196,6 +208,9 @@ func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("append turn record: %v", err)
+	}
+	if persistedTurn.ID != 100 || persistedTurn.SessionID != 41 || persistedTurn.ProjectID != 9 {
+		t.Fatalf("unexpected persisted turn metadata: %+v", persistedTurn)
 	}
 
 	execs := server.execRequests()
@@ -218,6 +233,63 @@ func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	}
 	if !strings.Contains(updateSQL, "summarize_budget = summarize_budget + ") {
 		t.Fatalf("expected session summarize budget update sql, got %s", updateSQL)
+	}
+}
+
+// TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes verifies one successful turn analysis updates the turn row and inserts both memory/profile node rows.
+// TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes 用于验证一次成功的 turn 分析会更新 turn 行，并插入 memory/profile 节点行。
+func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":5}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_memory_nodes":  `[{"next_id":201}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_profile_nodes": `[{"next_id":301}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	err := store.ApplyTurnAnalysis(context.Background(), logicdomain.SessionRef{
+		SessionID:  41,
+		SessionKey: "sess-key-1",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}, logicdomain.PersistedTurnRecord{
+		ID:               100,
+		SessionID:        41,
+		ProjectID:        9,
+		DehydratedBudget: 123,
+	}, logicdomain.TurnAnalysis{
+		Details:       "这轮对话明确需要先给出 AI 记忆子项目建议。",
+		DetailsBudget: 15,
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先形成 AI 记忆子项目建议。", Details: "用户当前诉求是获得该子项目的设计建议。"},
+		},
+		ProfileNodes: []logicdomain.ProfileNodeCandidate{
+			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目聚焦 AI 记忆能力设计。"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("apply turn analysis: %v", err)
+	}
+
+	execs := server.execRequests()
+	last := execs[len(execs)-1].Sql
+	if !strings.Contains(last, "UPDATE vmm_turn_records") {
+		t.Fatalf("expected turn analysis update sql, got %s", last)
+	}
+	if !strings.Contains(last, "details_budget = 15") {
+		t.Fatalf("expected details budget update, got %s", last)
+	}
+	if !strings.Contains(last, "INSERT INTO vmm_memory_nodes") {
+		t.Fatalf("expected memory node insert sql, got %s", last)
+	}
+	if !strings.Contains(last, "INSERT INTO vmm_profile_nodes") {
+		t.Fatalf("expected profile node insert sql, got %s", last)
+	}
+	if !strings.Contains(last, "CAST('") || !strings.Contains(last, "AS UUID") {
+		t.Fatalf("expected generated vector uuid cast in memory node insert, got %s", last)
 	}
 }
 

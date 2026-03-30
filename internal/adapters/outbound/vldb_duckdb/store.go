@@ -23,7 +23,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest DuckDB schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 DuckDB 表结构版本。
-	currentSchemaVersion = 4
+	currentSchemaVersion = 5
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -31,6 +31,8 @@ const (
 )
 
 const resetManagedSchemaSQL = `
+DROP TABLE IF EXISTS vmm_profile_nodes;
+DROP TABLE IF EXISTS vmm_memory_nodes;
 DROP TABLE IF EXISTS vmm_turn_records;
 DROP TABLE IF EXISTS vmm_chat_messages;
 DROP TABLE IF EXISTS vmm_memory_entries;
@@ -59,6 +61,7 @@ CREATE TABLE IF NOT EXISTS vmm_noise_embeddings (
 CREATE TABLE IF NOT EXISTS vmm_users (
   id BIGINT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
+  profile TEXT NOT NULL DEFAULT '',
   delete_confirm_code TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
@@ -67,6 +70,7 @@ CREATE TABLE IF NOT EXISTS vmm_users (
 CREATE TABLE IF NOT EXISTS vmm_teams (
   id BIGINT PRIMARY KEY,
   name TEXT NOT NULL UNIQUE,
+  profile TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL
 );
@@ -75,6 +79,7 @@ CREATE TABLE IF NOT EXISTS vmm_spaces (
   id BIGINT PRIMARY KEY,
   team_id BIGINT NOT NULL,
   name TEXT NOT NULL,
+  profile TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(team_id, name),
@@ -86,6 +91,7 @@ CREATE TABLE IF NOT EXISTS vmm_projects (
   team_id BIGINT NOT NULL,
   space_id BIGINT NOT NULL,
   name TEXT NOT NULL,
+  profile TEXT NOT NULL DEFAULT '',
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   UNIQUE(space_id, name),
@@ -120,12 +126,41 @@ CREATE TABLE IF NOT EXISTS vmm_turn_records (
   dehydrated_content JSON NOT NULL,
   dehydrated_budget INTEGER NOT NULL DEFAULT 0,
   extracted_status TINYINT NOT NULL DEFAULT 0,
+  details TEXT NOT NULL DEFAULT '',
+  details_budget INTEGER NOT NULL DEFAULT 0,
   created_timestamp BIGINT NOT NULL,
   updated_timestamp BIGINT NOT NULL,
   FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_session ON vmm_turn_records(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_project_status ON vmm_turn_records(project_id, extracted_status, id);
+
+CREATE TABLE IF NOT EXISTS vmm_memory_nodes (
+  id BIGINT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  turn_id BIGINT NOT NULL,
+  vector_id UUID NOT NULL,
+  category INTEGER NOT NULL,
+  abstract TEXT NOT NULL,
+  details TEXT NOT NULL,
+  node_status INTEGER NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_project_status ON vmm_memory_nodes(project_id, node_status, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_turn ON vmm_memory_nodes(turn_id, id);
+
+CREATE TABLE IF NOT EXISTS vmm_profile_nodes (
+  id BIGINT PRIMARY KEY,
+  turn_id BIGINT NOT NULL,
+  profile_type TINYINT NOT NULL,
+  bind_id BIGINT NOT NULL,
+  content TEXT NOT NULL,
+  profile_status TINYINT NOT NULL DEFAULT 1,
+  created_timestamp BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_bind_status ON vmm_profile_nodes(profile_type, bind_id, profile_status, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_turn ON vmm_profile_nodes(turn_id, id);
 
 CREATE TABLE IF NOT EXISTS vmm_memory_entries (
   id TEXT PRIMARY KEY,
@@ -350,6 +385,18 @@ func generateConfirmationCode() (string, error) {
 	return hex.EncodeToString(buf), nil
 }
 
+// generateUUID returns one random UUID string used as the temporary vector anchor before LanceDB syncing is wired in.
+// generateUUID 用于生成随机 UUID 字符串，在接通 LanceDB 同步前先作为临时向量锚点。
+func generateUUID() (string, error) {
+	buf := make([]byte, 16)
+	if _, err := rand.Read(buf); err != nil {
+		return "", fmt.Errorf("generate uuid: %w", err)
+	}
+	buf[6] = (buf[6] & 0x0f) | 0x40
+	buf[8] = (buf[8] & 0x3f) | 0x80
+	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
+}
+
 // LoadNoiseEmbeddingCache returns one persisted semantic prototype bundle keyed by scope, language, model, dimension, and rules hash.
 // LoadNoiseEmbeddingCache 用于返回按作用域、语言、模型、维度和规则哈希定位的一组语义原型缓存。
 func (s *Store) LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error) {
@@ -455,17 +502,17 @@ func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, user
 	}, nil
 }
 
-// AppendTurnRecord persists one cleaned turn into the resolved session and increments the session turn counter in the same write path.
-// AppendTurnRecord 用于把一条清洗后的 turn 写入已解析的 session，并在同一路径里递增会话 turn 计数。
-func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) error {
+// AppendTurnRecord persists one cleaned turn into the resolved session, increments the session turn counter, and returns the new turn identifier.
+// AppendTurnRecord 用于把一条清洗后的 turn 写入已解析的 session、递增会话 turn 计数，并返回新的 turn 标识。
+func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) (logicdomain.PersistedTurnRecord, error) {
 	if strings.TrimSpace(turn.UserContent) == "" && strings.TrimSpace(turn.AssistantContent) == "" && len(turn.Timeline) == 0 {
-		return nil
+		return logicdomain.PersistedTurnRecord{}, nil
 	}
 	if session.SessionID == 0 {
-		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+		return logicdomain.PersistedTurnRecord{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
 	if session.ProjectID == 0 {
-		return logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+		return logicdomain.PersistedTurnRecord{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
 
 	// Serialize turn writes so session counters and turn rows stay consistent inside one DuckDB transaction boundary.
@@ -475,11 +522,11 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 
 	nextID, err := s.nextNumericID(ctx, "vmm_turn_records")
 	if err != nil {
-		return fmt.Errorf("allocate turn record id: %w", err)
+		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("allocate turn record id: %w", err)
 	}
 	dehydratedContent, dehydratedBudget, err := buildDehydratedTurn(turn)
 	if err != nil {
-		return err
+		return logicdomain.PersistedTurnRecord{}, err
 	}
 	nowMs := time.Now().UTC().UnixMilli()
 	createdMs := nowMs
@@ -487,10 +534,76 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 		createdMs = turn.CreatedAt.UTC().UnixMilli()
 	}
 	if err := s.exec(ctx, buildTurnInsertSQL(nextID, session.SessionID, session.ProjectID, dehydratedContent, dehydratedBudget, createdMs, nowMs)); err != nil {
-		return fmt.Errorf("insert turn record: %w", err)
+		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("insert turn record: %w", err)
 	}
 	if err := s.exec(ctx, buildSessionTurnUpdateSQL(session.SessionID, dehydratedBudget, nowMs)); err != nil {
-		return fmt.Errorf("update session turn counters: %w", err)
+		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("update session turn counters: %w", err)
+	}
+	return logicdomain.PersistedTurnRecord{
+		ID:               nextID,
+		SessionID:        session.SessionID,
+		ProjectID:        session.ProjectID,
+		DehydratedBudget: dehydratedBudget,
+		CreatedAt:        unixMilliToTime(createdMs),
+		UpdatedAt:        unixMilliToTime(nowMs),
+	}, nil
+}
+
+// ApplyTurnAnalysis writes the extracted turn summary back to the turn row and inserts derived memory/profile nodes for later processing.
+// ApplyTurnAnalysis 用于把提炼出的 turn 总结回写到 turn 行，并插入后续处理所需的 memory/profile 节点。
+func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error {
+	if turn.ID == 0 {
+		return logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+	}
+	if session.ProjectID == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+	}
+	if session.UserID == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+	}
+
+	// Serialize analysis writes so the turn status flip and all derived node rows stay aligned under one deterministic id allocation window.
+	// 串行化分析结果写入，确保 turn 状态切换与全部衍生节点行在同一个确定性 ID 分配窗口内保持一致。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	if analysis.DetailsBudget <= 0 {
+		analysis.DetailsBudget = estimateTokenBudget(analysis.Details)
+	}
+	nowMs := time.Now().UTC().UnixMilli()
+	memoryStartID := uint64(0)
+	profileStartID := uint64(0)
+	var err error
+	if len(analysis.MemoryNodes) > 0 {
+		memoryStartID, err = s.nextNumericID(ctx, "vmm_memory_nodes")
+		if err != nil {
+			return fmt.Errorf("allocate memory node id: %w", err)
+		}
+	}
+	if len(analysis.ProfileNodes) > 0 {
+		profileStartID, err = s.nextNumericID(ctx, "vmm_profile_nodes")
+		if err != nil {
+			return fmt.Errorf("allocate profile node id: %w", err)
+		}
+	}
+
+	script := buildTurnAnalysisUpdateSQL(turn.ID, strings.TrimSpace(analysis.Details), analysis.DetailsBudget, nowMs)
+	for idx, node := range analysis.MemoryNodes {
+		vectorID, err := generateUUID()
+		if err != nil {
+			return err
+		}
+		script += buildMemoryNodeInsertSQL(memoryStartID+uint64(idx), session.ProjectID, session.UserID, turn.ID, vectorID, node.Category, node.Abstract, node.Details, nowMs)
+	}
+	for idx, node := range analysis.ProfileNodes {
+		bindID := session.ProjectID
+		if node.ProfileType == logicdomain.ProfileTypeUser {
+			bindID = session.UserID
+		}
+		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), turn.ID, node.ProfileType, bindID, node.Content, nowMs)
+	}
+	if err := s.exec(ctx, script); err != nil {
+		return fmt.Errorf("apply turn analysis: %w", err)
 	}
 	return nil
 }
@@ -499,7 +612,7 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 // loadUserByID 用于按数字 ID 解析长期用户记录，并把不存在情况转换成稳定的领域 not-found 错误。
 func (s *Store) loadUserByID(ctx context.Context, userID uint64) (logicdomain.UserRecord, error) {
 	rows, err := queryRows[userRow](s, ctx, `
-SELECT id, name, delete_confirm_code, created_at, updated_at
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
 FROM vmm_users
 WHERE id = ?
 LIMIT 1
@@ -517,7 +630,7 @@ LIMIT 1
 // loadProjectByID 用于解析单个项目，以及它对应的 team 和 space 名称。
 func (s *Store) loadProjectByID(ctx context.Context, projectID uint64) (logicdomain.ProjectRecord, error) {
 	rows, err := queryRows[projectJoinRow](s, ctx, `
-SELECT p.id, p.team_id, p.space_id, p.name, p.created_at, p.updated_at,
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, p.created_at, p.updated_at,
        t.name AS team_name,
        sp.name AS space_name
 FROM vmm_projects p
@@ -590,7 +703,7 @@ INSERT INTO vmm_sessions (
 // ListProjects 用于返回全部项目及其展示路径组成部分，并按稳定顺序输出。
 func (s *Store) ListProjects(ctx context.Context) ([]logicdomain.ProjectRecord, error) {
 	rows, err := queryRows[projectJoinRow](s, ctx, `
-SELECT p.id, p.team_id, p.space_id, p.name, p.created_at, p.updated_at,
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, p.created_at, p.updated_at,
        t.name AS team_name,
        sp.name AS space_name
 FROM vmm_projects p
@@ -623,7 +736,7 @@ func (s *Store) ResolveProjectRef(ctx context.Context, projectRef string) (logic
 		return logicdomain.ProjectRecord{}, err
 	}
 	rows, err := queryRows[projectJoinRow](s, ctx, `
-SELECT p.id, p.team_id, p.space_id, p.name, p.created_at, p.updated_at,
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, p.created_at, p.updated_at,
        t.name AS team_name,
        sp.name AS space_name
 FROM vmm_projects p
@@ -749,6 +862,15 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeProject, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project profile nodes by bind: %w", err)
+	}
+	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE turn_id IN (SELECT id FROM vmm_turn_records WHERE project_id = ?)`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project profile nodes by turn: %w", err)
+	}
+	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE project_id = ?`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project memory nodes: %w", err)
+	}
 	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE project_id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project turn records: %w", err)
 	}
@@ -814,6 +936,20 @@ WHERE project_id = %d
 `, target.ID, nowMs, source.ID)); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate turn records: %w", err)
 	}
+	if err := s.exec(ctx, fmt.Sprintf(`
+UPDATE vmm_memory_nodes
+SET project_id = %d
+WHERE project_id = %d
+`, target.ID, source.ID)); err != nil {
+		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate memory nodes: %w", err)
+	}
+	if err := s.exec(ctx, fmt.Sprintf(`
+UPDATE vmm_profile_nodes
+SET bind_id = %d
+WHERE profile_type = %d AND bind_id = %d
+`, target.ID, logicdomain.ProfileTypeProject, source.ID)); err != nil {
+		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate project profile nodes: %w", err)
+	}
 	if err := s.exec(ctx, `
 UPDATE vmm_memory_entries
 SET team_id = ?, space_id = ?, project_id = ?, updated_at = ?
@@ -842,7 +978,7 @@ func (s *Store) ResolveUserRef(ctx context.Context, userRef string) (logicdomain
 		return s.loadUserByID(ctx, userID)
 	}
 	rows, err := queryRows[userRow](s, ctx, `
-SELECT id, name, delete_confirm_code, created_at, updated_at
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
 FROM vmm_users
 WHERE name = ?
 LIMIT 1
@@ -896,7 +1032,7 @@ VALUES (?, ?, '', ?, ?)
 // ListUsers 用于按 id 稳定输出所有长期用户。
 func (s *Store) ListUsers(ctx context.Context) ([]logicdomain.UserRecord, error) {
 	rows, err := queryRows[userRow](s, ctx, `
-SELECT id, name, delete_confirm_code, created_at, updated_at
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
 FROM vmm_users
 ORDER BY id ASC
 `)
@@ -940,6 +1076,15 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, user.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by bind: %w", err)
+	}
+	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE turn_id IN (SELECT tr.id FROM vmm_turn_records tr JOIN vmm_sessions s ON s.id = tr.session_id WHERE s.user_id = ?)`, user.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by turn: %w", err)
+	}
+	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE user_id = ?`, user.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user memory nodes: %w", err)
+	}
 	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, user.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user turn records: %w", err)
 	}
@@ -965,7 +1110,7 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 // lookupTeamByName 用于解析单个 team 名称，并返回它是否已经存在。
 func (s *Store) lookupTeamByName(ctx context.Context, teamName string) (logicdomain.TeamRecord, bool, error) {
 	rows, err := queryRows[teamRow](s, ctx, `
-SELECT id, name, created_at, updated_at
+SELECT id, name, profile, created_at, updated_at
 FROM vmm_teams
 WHERE name = ?
 LIMIT 1
@@ -986,7 +1131,7 @@ func (s *Store) lookupSpaceByName(ctx context.Context, teamID uint64, spaceName 
 		return logicdomain.SpaceRecord{}, false, nil
 	}
 	rows, err := queryRows[spaceRow](s, ctx, `
-SELECT id, team_id, name, created_at, updated_at
+SELECT id, team_id, name, profile, created_at, updated_at
 FROM vmm_spaces
 WHERE team_id = ? AND name = ?
 LIMIT 1
@@ -1061,9 +1206,13 @@ func (s *Store) countProjectRows(ctx context.Context, projectID uint64) (int, in
 	}
 	memoryRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?`, projectID)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("count project memories: %w", err)
+		return 0, 0, 0, fmt.Errorf("count project sql memories: %w", err)
 	}
-	return sessionRows[0].Count, messageRows[0].Count, memoryRows[0].Count, nil
+	memoryNodeRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE project_id = ?`, projectID)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("count project memory nodes: %w", err)
+	}
+	return sessionRows[0].Count, messageRows[0].Count, memoryRows[0].Count + memoryNodeRows[0].Count, nil
 }
 
 // countUserRows returns user-scoped row counts so protected user deletion can explain what will be removed.
@@ -1079,9 +1228,13 @@ func (s *Store) countUserRows(ctx context.Context, userID uint64) (int, int, int
 	}
 	memoryRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE user_id = ?`, userID)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("count user memories: %w", err)
+		return 0, 0, 0, fmt.Errorf("count user sql memories: %w", err)
 	}
-	return sessionRows[0].Count, messageRows[0].Count, memoryRows[0].Count, nil
+	memoryNodeRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE user_id = ?`, userID)
+	if err != nil {
+		return 0, 0, 0, fmt.Errorf("count user memory nodes: %w", err)
+	}
+	return sessionRows[0].Count, messageRows[0].Count, memoryRows[0].Count + memoryNodeRows[0].Count, nil
 }
 
 // buildProjectConfirmMessage generates the stable confirmation text returned when missing Team/Space nodes require explicit confirmation.
@@ -1149,6 +1302,17 @@ func decodeStringMap(raw string) map[string]string {
 	return out
 }
 
+// estimateTokenBudget applies the local domestic estimator to one text blob so turn summaries and extracted payloads share one stable budget heuristic.
+// estimateTokenBudget 用于对文本载荷应用本地估算器，让 turn 总结和提炼结果共享同一套稳定的 token 预算口径。
+func estimateTokenBudget(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
+	return estimator.Estimate(text)
+}
+
 // dehydratedTurnPayload mirrors the JSON document persisted into vmm_turn_records after one cleaned turn is flattened into a stable analysis unit.
 // dehydratedTurnPayload 用于映射写入 vmm_turn_records 的 JSON 文档，此时一条清洗后的 turn 已经被压平成稳定分析单元。
 type dehydratedTurnPayload struct {
@@ -1209,6 +1373,36 @@ WHERE id = %d
 `, addedBudget, updatedMs, sessionID)
 }
 
+// buildTurnAnalysisUpdateSQL renders the raw UPDATE used to store the extracted turn summary and mark the turn as processed.
+// buildTurnAnalysisUpdateSQL 用于渲染原始 UPDATE 语句，把提炼出的 turn 总结写回并标记该 turn 已处理。
+func buildTurnAnalysisUpdateSQL(turnID uint64, details string, detailsBudget int, updatedMs int64) string {
+	return fmt.Sprintf(`
+UPDATE vmm_turn_records
+SET details = %s, details_budget = %d, extracted_status = %d, updated_timestamp = %d
+WHERE id = %d
+`, sqlStringLiteral(details), detailsBudget, logicdomain.TurnExtractedStatusDone, updatedMs, turnID)
+}
+
+// buildMemoryNodeInsertSQL renders the raw INSERT used for one extracted memory node so the debug-stage pipeline can persist node rows without parameter binding drift.
+// buildMemoryNodeInsertSQL 用于渲染单条记忆节点的原始 INSERT 语句，让调试阶段流水线在不依赖参数绑定的情况下稳定落库。
+func buildMemoryNodeInsertSQL(id, projectID, userID, turnID uint64, vectorID string, category int, abstract, details string, createdMs int64) string {
+	return fmt.Sprintf(`
+INSERT INTO vmm_memory_nodes (
+  id, project_id, user_id, turn_id, vector_id, category, abstract, details, node_status, created_timestamp
+) VALUES (%d, %d, %d, %d, CAST(%s AS UUID), %d, %s, %s, %d, %d)
+`, id, projectID, userID, turnID, sqlStringLiteral(vectorID), category, sqlStringLiteral(abstract), sqlStringLiteral(details), logicdomain.MemoryNodeStatusActive, createdMs)
+}
+
+// buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node while the merge pipeline is still pending.
+// buildProfileNodeInsertSQL 用于渲染单条画像节点的原始 INSERT 语句，服务尚未接通合并流水线时的待合并落库。
+func buildProfileNodeInsertSQL(id, turnID uint64, profileType int, bindID uint64, content string, createdMs int64) string {
+	return fmt.Sprintf(`
+INSERT INTO vmm_profile_nodes (
+  id, turn_id, profile_type, bind_id, content, profile_status, created_timestamp
+) VALUES (%d, %d, %d, %d, %s, %d, %d)
+`, id, turnID, profileType, bindID, sqlStringLiteral(content), logicdomain.ProfileStatusPending, createdMs)
+}
+
 // sqlStringLiteral escapes one string into a single-quoted SQL literal for debug-stage raw statement rendering.
 // sqlStringLiteral 用于把字符串转成单引号 SQL 字面量，服务调试阶段的原始语句渲染。
 func sqlStringLiteral(raw string) string {
@@ -1239,6 +1433,7 @@ type noiseEmbeddingRow struct {
 type userRow struct {
 	ID                uint64 `json:"id"`
 	Name              string `json:"name"`
+	Profile           string `json:"profile"`
 	DeleteConfirmCode string `json:"delete_confirm_code"`
 	CreatedAt         string `json:"created_at"`
 	UpdatedAt         string `json:"updated_at"`
@@ -1250,6 +1445,7 @@ func (r userRow) toDomain() logicdomain.UserRecord {
 	return logicdomain.UserRecord{
 		ID:                r.ID,
 		Name:              r.Name,
+		Profile:           r.Profile,
 		DeleteConfirmCode: r.DeleteConfirmCode,
 		CreatedAt:         createdAt,
 		UpdatedAt:         updatedAt,
@@ -1259,6 +1455,7 @@ func (r userRow) toDomain() logicdomain.UserRecord {
 type teamRow struct {
 	ID        uint64 `json:"id"`
 	Name      string `json:"name"`
+	Profile   string `json:"profile"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -1266,13 +1463,14 @@ type teamRow struct {
 func (r teamRow) toDomain() logicdomain.TeamRecord {
 	createdAt, _ := time.Parse(time.RFC3339Nano, r.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339Nano, r.UpdatedAt)
-	return logicdomain.TeamRecord{ID: r.ID, Name: r.Name, CreatedAt: createdAt, UpdatedAt: updatedAt}
+	return logicdomain.TeamRecord{ID: r.ID, Name: r.Name, Profile: r.Profile, CreatedAt: createdAt, UpdatedAt: updatedAt}
 }
 
 type spaceRow struct {
 	ID        uint64 `json:"id"`
 	TeamID    uint64 `json:"team_id"`
 	Name      string `json:"name"`
+	Profile   string `json:"profile"`
 	CreatedAt string `json:"created_at"`
 	UpdatedAt string `json:"updated_at"`
 }
@@ -1280,7 +1478,7 @@ type spaceRow struct {
 func (r spaceRow) toDomain() logicdomain.SpaceRecord {
 	createdAt, _ := time.Parse(time.RFC3339Nano, r.CreatedAt)
 	updatedAt, _ := time.Parse(time.RFC3339Nano, r.UpdatedAt)
-	return logicdomain.SpaceRecord{ID: r.ID, TeamID: r.TeamID, Name: r.Name, CreatedAt: createdAt, UpdatedAt: updatedAt}
+	return logicdomain.SpaceRecord{ID: r.ID, TeamID: r.TeamID, Name: r.Name, Profile: r.Profile, CreatedAt: createdAt, UpdatedAt: updatedAt}
 }
 
 type projectJoinRow struct {
@@ -1288,6 +1486,7 @@ type projectJoinRow struct {
 	TeamID    uint64 `json:"team_id"`
 	SpaceID   uint64 `json:"space_id"`
 	Name      string `json:"name"`
+	Profile   string `json:"profile"`
 	TeamName  string `json:"team_name"`
 	SpaceName string `json:"space_name"`
 	CreatedAt string `json:"created_at"`
@@ -1304,6 +1503,7 @@ func (r projectJoinRow) toDomain() logicdomain.ProjectRecord {
 		TeamName:  r.TeamName,
 		SpaceName: r.SpaceName,
 		Name:      r.Name,
+		Profile:   r.Profile,
 		CreatedAt: createdAt,
 		UpdatedAt: updatedAt,
 	}

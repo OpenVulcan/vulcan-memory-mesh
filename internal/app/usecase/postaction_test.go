@@ -119,13 +119,21 @@ func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
 }
 
-// TestPostActionUseCaseAlwaysRunsDebugSummary verifies the debug-stage analysis now sends every persisted turn through the existing single-turn summary prompt while persistence still uses the cleaned turn.
-// TestPostActionUseCaseAlwaysRunsDebugSummary 用于验证当前调试阶段会把每一条已落库 turn 都送入现有单轮摘要提示词，同时持久化仍使用清洗后的 turn。
-func TestPostActionUseCaseAlwaysRunsDebugSummary(t *testing.T) {
+// TestPostActionUseCaseAlwaysRunsTurnAnalysis verifies the debug-stage analysis now sends every persisted turn through the structured turn-analysis prompt and writes the extracted result back to the relational store.
+// TestPostActionUseCaseAlwaysRunsTurnAnalysis 用于验证当前调试阶段会把每一条已落库 turn 都送入结构化逐轮分析提示词，并把提炼结果回写到关系存储。
+func TestPostActionUseCaseAlwaysRunsTurnAnalysis(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
-	store := &testRelationalStore{}
-	summarizer := &stubPostActionSummarizer{result: `{"summary":"ok"}`}
-	uc := NewPostActionUseCase(filter, store, summarizer, PostActionAnalysisConfig{}, nil)
+	store := &testRelationalStore{persistedTurn: logicdomain.PersistedTurnRecord{ID: 501, SessionID: 91, ProjectID: 12, DehydratedBudget: 9}}
+	analyzer := &stubPostActionAnalyzer{result: logicdomain.TurnAnalysis{
+		Details: "这轮对话明确了 AI 记忆子项目的方向建议需求。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "当前对话需要先提供 AI 记忆子项目的方向建议。", Details: "用户当前诉求是先获得 AI 记忆子项目的设计建议。"},
+		},
+		ProfileNodes: []logicdomain.ProfileNodeCandidate{
+			{ProfileType: logicdomain.ProfileTypeProject, Content: "当前项目关注 AI 记忆能力设计。"},
+		},
+	}}
+	uc := NewPostActionUseCase(filter, store, analyzer, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -152,32 +160,44 @@ func TestPostActionUseCaseAlwaysRunsDebugSummary(t *testing.T) {
 		t.Fatal("expected accepted result")
 	}
 	assertPersistedTurn(t, store.turn, "clean-user", "clean-assistant", nil)
-	if summarizer.calls != 1 {
-		t.Fatalf("expected one debug summary call, got %d", summarizer.calls)
+	if analyzer.calls != 1 {
+		t.Fatalf("expected one turn analysis call, got %d", analyzer.calls)
 	}
-	if !strings.Contains(summarizer.transcript, `"user": "raw-user"`) {
-		t.Fatalf("expected raw user content in debug summary transcript, got %s", summarizer.transcript)
+	if !strings.Contains(analyzer.transcript, `"user": "raw-user"`) {
+		t.Fatalf("expected raw user content in analysis transcript, got %s", analyzer.transcript)
 	}
-	if !strings.Contains(summarizer.transcript, `"assistant": "raw-assistant"`) {
-		t.Fatalf("expected raw assistant content in debug summary transcript, got %s", summarizer.transcript)
+	if !strings.Contains(analyzer.transcript, `"assistant": "raw-assistant"`) {
+		t.Fatalf("expected raw assistant content in analysis transcript, got %s", analyzer.transcript)
 	}
-	if !strings.Contains(summarizer.transcript, `"content": "raw-middle"`) {
-		t.Fatalf("expected raw timeline content in debug summary transcript, got %s", summarizer.transcript)
+	if !strings.Contains(analyzer.transcript, `"content": "raw-middle"`) {
+		t.Fatalf("expected raw timeline content in analysis transcript, got %s", analyzer.transcript)
+	}
+	if store.analysisTurn.ID != 501 {
+		t.Fatalf("expected persisted turn id to flow into analysis persistence, got %+v", store.analysisTurn)
+	}
+	if got := store.analysis.Details; got != "这轮对话明确了 AI 记忆子项目的方向建议需求。" {
+		t.Fatalf("unexpected stored analysis details: %+v", store.analysis)
+	}
+	if store.analysis.DetailsBudget <= 0 {
+		t.Fatalf("expected computed details budget, got %+v", store.analysis)
+	}
+	if len(store.analysis.MemoryNodes) != 1 || len(store.analysis.ProfileNodes) != 1 {
+		t.Fatalf("unexpected stored analysis nodes: %+v", store.analysis)
 	}
 }
 
-// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenDebugSummaryFails verifies the new debug-only LLM probe never breaks the main post-action persistence flow.
-// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenDebugSummaryFails 用于验证新的调试型 LLM 探测即使失败，也绝不会破坏主 post-action 持久化链路。
-func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenDebugSummaryFails(t *testing.T) {
+// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails verifies the new debug-stage turn analysis never breaks the main post-action persistence flow.
+// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails 用于验证新的调试阶段逐轮分析即使失败，也绝不会破坏主 post-action 持久化链路。
+func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenTurnAnalysisFails(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
-	store := &testRelationalStore{}
-	summarizer := &stubPostActionSummarizer{err: errors.New("llm failed")}
+	store := &testRelationalStore{persistedTurn: logicdomain.PersistedTurnRecord{ID: 777, SessionID: 92, ProjectID: 12, DehydratedBudget: 11}}
+	analyzer := &stubPostActionAnalyzer{err: errors.New("llm failed")}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
 	uc := NewPostActionUseCase(
 		filter,
 		store,
-		summarizer,
+		analyzer,
 		PostActionAnalysisConfig{IdleTimeout: 15 * time.Minute},
 		logger,
 	)
@@ -205,11 +225,14 @@ func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenDebugSummaryFails(t *tes
 		t.Fatal("expected accepted result")
 	}
 	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
-	if summarizer.calls != 1 {
-		t.Fatalf("expected one debug summary attempt, got %d", summarizer.calls)
+	if analyzer.calls != 1 {
+		t.Fatalf("expected one turn analysis attempt, got %d", analyzer.calls)
 	}
-	if !strings.Contains(logBuf.String(), "post-action llm analysis failed") {
-		t.Fatalf("expected debug summary failure to be logged, got %s", logBuf.String())
+	if store.analysisTurn.ID != 0 {
+		t.Fatalf("did not expect failed analysis to be persisted, got %+v", store.analysisTurn)
+	}
+	if !strings.Contains(logBuf.String(), "post-action turn analysis failed") {
+		t.Fatalf("expected turn analysis failure to be logged, got %s", logBuf.String())
 	}
 }
 
@@ -247,13 +270,16 @@ func (s *stubNoiseTurnFilter) FilterPersistableTurns(_ context.Context, turns []
 // testRelationalStore is the minimal relational-store stub needed by post-action tests after the move to turn-level persistence.
 // testRelationalStore 用于在迁移到 turn 级持久化后，为 post-action 测试提供最小化关系存储桩。
 type testRelationalStore struct {
-	session logicdomain.SessionRef
-	turn    logicdomain.TurnRecord
+	session       logicdomain.SessionRef
+	turn          logicdomain.TurnRecord
+	persistedTurn logicdomain.PersistedTurnRecord
+	analysisTurn  logicdomain.PersistedTurnRecord
+	analysis      logicdomain.TurnAnalysis
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
 // AppendTurnRecord 用于记录最新的 session 范围和标准 turn 载荷，供测试断言使用。
-func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) error {
+func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) (logicdomain.PersistedTurnRecord, error) {
 	s.session = session
 	s.turn = logicdomain.TurnRecord{
 		UserContent:      turn.UserContent,
@@ -261,6 +287,14 @@ func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicd
 		CreatedAt:        turn.CreatedAt,
 		Timeline:         append([]logicdomain.TurnTimelineItem(nil), turn.Timeline...),
 	}
+	return s.persistedTurn, nil
+}
+
+// ApplyTurnAnalysis records the extracted turn-analysis payload so tests can verify the post-action chain writes back structured results.
+// ApplyTurnAnalysis 用于记录提炼后的 turn 分析载荷，方便测试验证 post-action 链路会回写结构化结果。
+func (s *testRelationalStore) ApplyTurnAnalysis(_ context.Context, _ logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error {
+	s.analysisTurn = turn
+	s.analysis = analysis
 	return nil
 }
 
@@ -268,22 +302,22 @@ func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicd
 // Shutdown 用于立即返回，因为该桩不持有外部资源。
 func (s *testRelationalStore) Shutdown(context.Context) error { return nil }
 
-// stubPostActionSummarizer records debug-summary invocations and returns one canned result or error.
-// stubPostActionSummarizer 用于记录调试摘要调用，并返回预设结果或错误。
-type stubPostActionSummarizer struct {
+// stubPostActionAnalyzer records debug turn-analysis invocations and returns one canned result or error.
+// stubPostActionAnalyzer 用于记录调试逐轮分析调用，并返回预设结果或错误。
+type stubPostActionAnalyzer struct {
 	calls      int
 	transcript string
-	result     string
+	result     logicdomain.TurnAnalysis
 	err        error
 }
 
-// Summarize captures the transcript so tests can assert the trigger path and payload shape.
-// Summarize 用于捕获传入 transcript，方便测试断言触发路径和载荷形态。
-func (s *stubPostActionSummarizer) Summarize(_ context.Context, transcript string) (string, error) {
+// Analyze captures the transcript so tests can assert the trigger path and payload shape.
+// Analyze 用于捕获传入 transcript，方便测试断言触发路径和载荷形态。
+func (s *stubPostActionAnalyzer) Analyze(_ context.Context, transcript string) (logicdomain.TurnAnalysis, error) {
 	s.calls++
 	s.transcript = transcript
 	if s.err != nil {
-		return "", s.err
+		return logicdomain.TurnAnalysis{}, s.err
 	}
 	return s.result, nil
 }

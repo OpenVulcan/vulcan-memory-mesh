@@ -17,6 +17,7 @@ import (
 var RequiredScenes = []string{
 	"extract_intent.md",
 	"assemble_context.md",
+	"analyze_turn.md",
 	"summarize_entry.md",
 	"merge_profile.md",
 }

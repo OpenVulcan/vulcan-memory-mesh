@@ -135,6 +135,7 @@ type MemoryHit struct {
 type UserRecord struct {
 	ID                uint64
 	Name              string
+	Profile           string
 	DeleteConfirmCode string
 	CreatedAt         time.Time
 	UpdatedAt         time.Time
@@ -145,6 +146,7 @@ type UserRecord struct {
 type TeamRecord struct {
 	ID        uint64
 	Name      string
+	Profile   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -155,6 +157,7 @@ type SpaceRecord struct {
 	ID        uint64
 	TeamID    uint64
 	Name      string
+	Profile   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }
@@ -168,6 +171,7 @@ type ProjectRecord struct {
 	TeamName  string
 	SpaceName string
 	Name      string
+	Profile   string
 	CreatedAt time.Time
 	UpdatedAt time.Time
 }

@@ -8,7 +8,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 当前运行时的定位是：
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
-- 用 DuckDB 保存层级、session、turn 记录与长期 SQL 数据
+- 用 DuckDB 保存层级、session、turn 记录、turn 提炼结果与长期 SQL 数据
 - 用 LanceDB 保存向量数据
 - 由 Caddy 等外部反向代理负责 TLS
 
@@ -106,7 +106,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
    - 按 `user / timeline / assistant` 组装一条脱水 turn 记录
    - 写入 `vmm_turn_records`
    - 当 `timeline` 为空时，先过 `NoiseGate`
-   - 把当前原始 turn 送入现有 `summarize_entry` prompt 做一次调试型 LLM 提炼，并只输出日志
+   - 把当前原始 turn 送入 `analyze_turn` prompt 做结构化 LLM 提炼
+   - 成功后回写 `vmm_turn_records.details / details_budget / extracted_status`
+   - 同步写入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+   - 当前只记录节点，不做 user/project profile blob 合并
 
 ## 构建与运行
 
@@ -193,9 +196,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 当前主线的行为是：
 
-- 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”送到现有 `summarize_entry` prompt
-- 返回结果只输出到运行日志
-- 不写回 DuckDB，也不做历史 3 轮提炼拼装
+- 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”送到 `analyze_turn` prompt
+- 成功返回后会写回 `vmm_turn_records.details / details_budget / extracted_status`
+- 同步写入 `vmm_memory_nodes` 和 `vmm_profile_nodes`
+- 当前不做历史 3 轮提炼拼装
+- 当前不做 user/project profile blob 合并
 
 另外，当前还有一批“已经声明但尚未接入主运行时”的配置参数，见：
 
