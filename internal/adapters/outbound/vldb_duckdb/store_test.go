@@ -50,6 +50,9 @@ func TestInitBootstrapsCurrentSchemaOnFreshInstall(t *testing.T) {
 	if !strings.Contains(execs[2].Sql, "turn_count INTEGER NOT NULL DEFAULT 0") {
 		t.Fatalf("missing current schema session turn counter sql: %s", execs[2].Sql)
 	}
+	if strings.Contains(execs[2].Sql, "FOREIGN KEY(session_id) REFERENCES vmm_sessions(id)") {
+		t.Fatalf("unexpected inbound session foreign key in current schema sql: %s", execs[2].Sql)
+	}
 	if strings.Contains(execs[2].Sql, "vmm_memories") {
 		t.Fatalf("unexpected legacy compatibility table in current schema sql: %s", execs[1].Sql)
 	}
@@ -97,7 +100,7 @@ func TestInitResetsManagedSchemaOnVersionMismatch(t *testing.T) {
 func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":3}]`,
+			"FROM vmm_version":    `[{"schema_version":4}]`,
 			"FROM vmm_users":      `[{"id":7,"name":"alice","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_sessions":   `[]`,
@@ -135,7 +138,7 @@ func TestResolveRequestScopeCreatesSession(t *testing.T) {
 func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":    `[{"schema_version":3}]`,
+			"FROM vmm_version":    `[{"schema_version":4}]`,
 			"FROM vmm_users":      `[{"id":8,"name":"bob","delete_confirm_code":"","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
 			"FROM vmm_sessions":   `[{"id":41,"session_key":"sess-key-1","user_id":7,"team_id":3,"space_id":5,"project_id":9,"turn_count":2,"last_summarized_id":0,"summarize_content":"","summarize_budget":0,"created_timestamp":1710000000000,"updated_timestamp":1710000001000}]`,
@@ -170,7 +173,7 @@ func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
 func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":3}]`,
+			"FROM vmm_version": `[{"schema_version":4}]`,
 			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_turn_records": `[{"next_id":100}]`,
 		},
 	}

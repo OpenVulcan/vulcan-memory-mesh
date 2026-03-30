@@ -171,8 +171,8 @@ message PostActionTimelineItem {
 14. 追加到 DuckDB：
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
-15. 当 `post_action.session_analysis_turn_threshold / token_threshold / idle_timeout` 任一命中时：
-    - 直接把“当前原始 turn”送到现有 `summarize_entry` prompt
+15. 当前调试阶段每次写入 turn 成功后：
+    - 都会直接把“当前原始 turn”送到现有 `summarize_entry` prompt
     - 仅把 LLM 返回 JSON 输出到日志
     - 当前不会把该结果写回数据库
     - 当前也不会拼接“历史 3 轮提炼文”
@@ -317,14 +317,14 @@ grpcurl -plaintext `
 - `post_action.session_analysis_idle_timeout`
   - 表示距离同一个 session 最后一次会话更新时间超过多久后，强制满足一次后续 LLM 分析条件
 
-当前三者的关系是“任一达到即可触发”。
-
 当前已经接入的行为是：
 
-- 命中阈值后，会把“当前原始 turn”直接送入现有 `summarize_entry` prompt
+- 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”直接送入现有 `summarize_entry` prompt
 - 返回结果只打日志，方便调试观察
 - 不写回 DuckDB
 - 不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
+
+当前这三个阈值字段只是保留在配置层，暂未参与实际触发判断。
 
 ## 当前限制
 

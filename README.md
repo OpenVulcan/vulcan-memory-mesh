@@ -106,7 +106,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
    - 按 `user / timeline / assistant` 组装一条脱水 turn 记录
    - 写入 `vmm_turn_records`
    - 当 `timeline` 为空时，先过 `NoiseGate`
-   - 当 session 命中 `turn / token / idle` 任一阈值时，把当前原始 turn 送入现有 `summarize_entry` prompt 做一次调试型 LLM 提炼，并只输出日志
+   - 把当前原始 turn 送入现有 `summarize_entry` prompt 做一次调试型 LLM 提炼，并只输出日志
 
 ## 构建与运行
 
@@ -182,7 +182,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `post_action.session_analysis_token_threshold`
 - `post_action.session_analysis_idle_timeout`
 
-`post_action` 下这三个阈值用于当前调试阶段的 session 级 LLM 分析触发：
+`post_action` 下这三个阈值已经保留在配置中，但当前调试阶段暂不参与触发判断：
 
 - `session_analysis_turn_threshold`
   - 同一个 session 累计达到多少条 `turn` 后，满足一次分析条件
@@ -191,11 +191,9 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `session_analysis_idle_timeout`
   - 距离同一个 session 最后一次会话更新时间超过多久后，强制满足一次分析条件
 
-当前三者的关系是“任一达到即可触发”。
-
 当前主线的行为是：
 
-- 命中阈值后，会把“当前原始 turn”送到现有 `summarize_entry` prompt
+- 每次 `PostAction` 成功写入 turn 后，都会把“当前原始 turn”送到现有 `summarize_entry` prompt
 - 返回结果只输出到运行日志
 - 不写回 DuckDB，也不做历史 3 轮提炼拼装
 

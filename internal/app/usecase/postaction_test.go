@@ -119,23 +119,23 @@ func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
 }
 
-// TestPostActionUseCaseRunsDebugSummaryAtTurnThreshold verifies threshold-triggered analysis sends the raw turn through the existing single-turn summary prompt while persistence still uses the cleaned turn.
-// TestPostActionUseCaseRunsDebugSummaryAtTurnThreshold 用于验证阈值命中后的调试分析会把原始 turn 送入现有单轮摘要提示词，同时持久化仍使用清洗后的 turn。
-func TestPostActionUseCaseRunsDebugSummaryAtTurnThreshold(t *testing.T) {
+// TestPostActionUseCaseAlwaysRunsDebugSummary verifies the debug-stage analysis now sends every persisted turn through the existing single-turn summary prompt while persistence still uses the cleaned turn.
+// TestPostActionUseCaseAlwaysRunsDebugSummary 用于验证当前调试阶段会把每一条已落库 turn 都送入现有单轮摘要提示词，同时持久化仍使用清洗后的 turn。
+func TestPostActionUseCaseAlwaysRunsDebugSummary(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
 	store := &testRelationalStore{}
 	summarizer := &stubPostActionSummarizer{result: `{"summary":"ok"}`}
-	uc := NewPostActionUseCase(filter, store, summarizer, PostActionAnalysisConfig{TurnThreshold: 3}, nil)
+	uc := NewPostActionUseCase(filter, store, summarizer, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
 			SessionID:  91,
-			SessionKey: "sess-threshold",
+			SessionKey: "sess-always",
 			UserID:     9,
 			TeamID:     4,
 			SpaceID:    6,
 			ProjectID:  12,
-			TurnCount:  2,
+			TurnCount:  0,
 		},
 		UserContent:         "clean-user",
 		AssistantContent:    "clean-assistant",

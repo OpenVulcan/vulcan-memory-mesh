@@ -179,15 +179,15 @@ func validatePostAction(cmd PostActionCommand) error {
 	return nil
 }
 
-// runDebugSessionAnalysis checks the configured thresholds and, when any of them fires, sends the current raw turn through the existing single-turn summary prompt for log-only inspection.
-// runDebugSessionAnalysis 用于检查配置化阈值；一旦任一命中，就把当前原始 turn 送入现有的单轮摘要提示词，并且仅输出日志方便观察。
+// runDebugSessionAnalysis sends every persisted turn through the existing single-turn summary prompt during the current debug stage so prompt behavior can be observed step by step.
+// runDebugSessionAnalysis 用于在当前调试阶段把每一条已落库 turn 都送入现有单轮摘要提示词，方便逐步观察 prompt 行为。
 func (u *PostActionUseCase) runDebugSessionAnalysis(ctx context.Context, traceID string, cmd PostActionCommand, persistedTurn logicdomain.TurnRecord) {
 	if u == nil || u.summarizer == nil {
 		return
 	}
 
-	// Reuse the same turn-payload budget estimation logic as relational persistence so token-threshold decisions stay aligned with the stored summarize_budget counter.
-	// 复用与关系持久化一致的 turn 载荷预算估算方式，让 token 阈值判断与落库后的 summarize_budget 计数保持一致。
+	// Reuse the same turn-payload budget estimation logic as relational persistence so the debug logs still show the evolving session counters.
+	// 复用与关系持久化一致的 turn 载荷预算估算方式，让调试日志仍能展示 session 计数和预算如何演进。
 	_, currentBudget, err := buildPostActionTurnPayload(persistedTurn)
 	if err != nil {
 		if u.logger != nil {
@@ -195,10 +195,7 @@ func (u *PostActionUseCase) runDebugSessionAnalysis(ctx context.Context, traceID
 		}
 		return
 	}
-	trigger := u.resolveSessionAnalysisTrigger(cmd.Session, currentBudget)
-	if len(trigger.Reasons) == 0 {
-		return
-	}
+	state := captureSessionAnalysisState(cmd.Session, currentBudget)
 
 	// Feed the original dialogue content to the existing summarize_entry prompt so we can inspect whether the current single-turn extraction format is already usable.
 	// 把原始对话内容送入现有 summarize_entry 提示词，先观察当前单轮提炼格式是否已经足够可用。
@@ -217,10 +214,10 @@ func (u *PostActionUseCase) runDebugSessionAnalysis(ctx context.Context, traceID
 				"trace_id", traceID,
 				"session_key", cmd.Session.SessionKey,
 				"session_id", cmd.Session.SessionID,
-				"trigger_reasons", strings.Join(trigger.Reasons, ","),
-				"next_turn_count", trigger.NextTurnCount,
-				"next_summarize_budget", trigger.NextSummarizeBudget,
-				"idle_gap_ms", trigger.IdleGap.Milliseconds(),
+				"analysis_mode", "always",
+				"next_turn_count", state.NextTurnCount,
+				"next_summarize_budget", state.NextSummarizeBudget,
+				"idle_gap_ms", state.IdleGap.Milliseconds(),
 				"err", err,
 			)
 		}
@@ -233,48 +230,34 @@ func (u *PostActionUseCase) runDebugSessionAnalysis(ctx context.Context, traceID
 			"session_key", cmd.Session.SessionKey,
 			"session_id", cmd.Session.SessionID,
 			"prompt_scene", "summarize_entry",
-			"trigger_reasons", strings.Join(trigger.Reasons, ","),
-			"next_turn_count", trigger.NextTurnCount,
-			"next_summarize_budget", trigger.NextSummarizeBudget,
-			"idle_gap_ms", trigger.IdleGap.Milliseconds(),
+			"analysis_mode", "always",
+			"next_turn_count", state.NextTurnCount,
+			"next_summarize_budget", state.NextSummarizeBudget,
+			"idle_gap_ms", state.IdleGap.Milliseconds(),
 			"analysis", summary,
 		)
 	}
 }
 
-// postActionAnalysisTrigger describes why one session window should run the debug-stage single-turn summary after the latest turn has landed.
-// postActionAnalysisTrigger 用于描述最新 turn 落库后，为什么当前 session 窗口应该执行一次调试阶段的单轮摘要。
-type postActionAnalysisTrigger struct {
-	Reasons             []string
+// postActionAnalysisState captures the evolving session counters after the latest turn is appended so debug logs can explain the current window shape.
+// postActionAnalysisState 用于记录最新 turn 追加后的 session 计数变化，方便调试日志解释当前窗口形态。
+type postActionAnalysisState struct {
 	NextTurnCount       int
 	NextSummarizeBudget int
 	IdleGap             time.Duration
 }
 
-// resolveSessionAnalysisTrigger evaluates the configured turn/token/idle thresholds against the current session window and the newest persisted turn budget.
-// resolveSessionAnalysisTrigger 用于结合当前 session 窗口状态和最新 turn 的预算，评估 turn/token/idle 三类阈值是否命中。
-func (u *PostActionUseCase) resolveSessionAnalysisTrigger(session logicdomain.SessionRef, currentTurnBudget int) postActionAnalysisTrigger {
-	trigger := postActionAnalysisTrigger{
-		Reasons:             []string{},
+// captureSessionAnalysisState derives the next turn count, next summarize budget, and idle gap from the current session state plus the newest persisted turn budget.
+// captureSessionAnalysisState 用于根据当前 session 状态和最新 turn 的预算，推导下一次 turn 数、下一次 summarize_budget 以及空闲间隔。
+func captureSessionAnalysisState(session logicdomain.SessionRef, currentTurnBudget int) postActionAnalysisState {
+	state := postActionAnalysisState{
 		NextTurnCount:       session.TurnCount + 1,
 		NextSummarizeBudget: session.SummarizeBudget + currentTurnBudget,
 	}
-	if u == nil {
-		return trigger
+	if session.TurnCount > 0 && !session.UpdatedAt.IsZero() {
+		state.IdleGap = time.Since(session.UpdatedAt)
 	}
-	if u.analysisCfg.TurnThreshold > 0 && trigger.NextTurnCount >= u.analysisCfg.TurnThreshold {
-		trigger.Reasons = append(trigger.Reasons, "turn_threshold")
-	}
-	if u.analysisCfg.TokenThreshold > 0 && trigger.NextSummarizeBudget >= u.analysisCfg.TokenThreshold {
-		trigger.Reasons = append(trigger.Reasons, "token_threshold")
-	}
-	if u.analysisCfg.IdleTimeout > 0 && session.TurnCount > 0 && !session.UpdatedAt.IsZero() {
-		trigger.IdleGap = time.Since(session.UpdatedAt)
-		if trigger.IdleGap >= u.analysisCfg.IdleTimeout {
-			trigger.Reasons = append(trigger.Reasons, "idle_timeout")
-		}
-	}
-	return trigger
+	return state
 }
 
 // rawTurnFromCommand rebuilds the current turn from the raw payload when available, while falling back to the cleaned payload so tests and older callers remain valid.

@@ -23,7 +23,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest DuckDB schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 DuckDB 表结构版本。
-	currentSchemaVersion = 3
+	currentSchemaVersion = 4
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -122,7 +122,6 @@ CREATE TABLE IF NOT EXISTS vmm_turn_records (
   extracted_status TINYINT NOT NULL DEFAULT 0,
   created_timestamp BIGINT NOT NULL,
   updated_timestamp BIGINT NOT NULL,
-  FOREIGN KEY(session_id) REFERENCES vmm_sessions(id),
   FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_session ON vmm_turn_records(session_id, id);
@@ -141,8 +140,7 @@ CREATE TABLE IF NOT EXISTS vmm_memory_entries (
   created_at TEXT NOT NULL,
   updated_at TEXT NOT NULL,
   FOREIGN KEY(user_id) REFERENCES vmm_users(id),
-  FOREIGN KEY(project_id) REFERENCES vmm_projects(id),
-  FOREIGN KEY(session_id) REFERENCES vmm_sessions(id)
+  FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_entries_scope ON vmm_memory_entries(user_id, team_id, space_id, project_id, session_id, updated_at);
 `
