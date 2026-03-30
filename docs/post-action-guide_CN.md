@@ -250,12 +250,16 @@ message PostActionTimelineItem {
       - `expires_timestamp`
       - `superseded_by_id`
       - `profile_date`
-25. 如果 LanceDB 已写入新向量，但 DuckDB 最终回写失败：
+25. 每次队列扫描还会额外做一次过期画像收敛：
+    - 会查找已经超过 `expires_timestamp` 的 `active` 画像节点
+    - 把这些节点批量标记成 `expired`
+    - 读取受影响 user/project 当前剩余的 `active` 节点
+    - 由后端重新渲染 `vmm_users.profile / vmm_projects.profile`
+26. 如果 LanceDB 已写入新向量，但 DuckDB 最终回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立新向量
-26. 当前限制：
+27. 当前限制：
     - 仍不自动更新 `vmm_teams.profile / vmm_spaces.profile`
-    - 当前只在读取和重建画像时过滤过期节点，后续还可以再补独立的 `expired` 扫描任务
 
 ## 清洗行为
 
@@ -446,6 +450,7 @@ grpcurl -plaintext `
 - `PostAction` 成功写入 turn 后，只负责入库并投递 `session` 队列任务
 - 队列优先消费显式入队内容
 - 同时每 30 秒扫描一次空闲超时且仍有待处理 turn 的 `session`
+- 同时每 30 秒扫描一次到期画像节点，并把它们收敛成 `expired`
 - 达到条数、token、空闲任一阈值，就会触发一次 `analyze_session_batch`
 - `analyze_session_batch` 会基于“历史精要 + 待处理原始 turn + 活跃记忆节点”返回整批结果
 - 如果批次里有 `profile_nodes`，会统一走一次 `review_profile_nodes`

@@ -130,6 +130,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
      - `vmm_profile_nodes`
      - `vmm_sessions.last_summarized_id / summarize_budget`
   - 画像评审完成后，会在 DuckDB 中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
+  - 队列扫描时还会同步做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本
    - 如果 LLM 判定旧记忆 turn 需要淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
    - 然后删除 LanceDB 中对应的旧向量行
    - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
@@ -234,6 +235,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 达到 turn / token / idle 任一阈值，就会触发一次 `analyze_session_batch` prompt
 - `analyze_session_batch` 会基于“历史精要 + 待处理原始 turn + 活跃记忆节点”返回整批结构化结果
 - 如果本批次有 `profile_nodes`，会统一走一次 `review_profile_nodes`，按 user/project 两侧分别评审新旧画像节点
+- 每次队列扫描还会额外收敛一次过期画像节点，并同步重建受影响的 `vmm_users.profile / vmm_projects.profile`
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
 - DuckDB 成功回写后，会更新：
   - `vmm_turn_records.details / details_budget / extracted_status`

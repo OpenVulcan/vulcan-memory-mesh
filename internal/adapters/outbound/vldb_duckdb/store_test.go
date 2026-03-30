@@ -348,6 +348,68 @@ func TestLoadProfileTargetsReadsCurrentUserAndProjectProfiles(t *testing.T) {
 	}
 }
 
+// TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets verifies periodic expiry convergence flips due active nodes to expired and returns the remaining renderable nodes for the affected target.
+// TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets 用于验证周期性过期收敛会把到期 active 节点改为 expired，并返回受影响目标剩余可渲染节点。
+func TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":6}]`,
+			"WHERE profile_status = ? AND expires_timestamp > 0 AND expires_timestamp <= ?":                                       `[{"id":41,"turn_id":501,"profile_type":0,"bind_id":7,"content":"旧的临时偏好","profile_status":2,"priority":2,"profile_level":0,"level_reason":"一次性上下文","refresh_weight":0,"expires_timestamp":1711785600000,"superseded_by_id":0,"profile_date":"2026-03-29","created_timestamp":1711700000000,"updated_timestamp":1711700000000}]`,
+			"WHERE profile_type = ? AND bind_id = ? AND profile_status = ? AND (expires_timestamp <= 0 OR expires_timestamp > ?)": `[{"id":42,"turn_id":502,"profile_type":0,"bind_id":7,"content":"用户偏好使用 Rust。","profile_status":2,"priority":1,"profile_level":2,"level_reason":"稳定偏好","refresh_weight":2,"expires_timestamp":0,"superseded_by_id":0,"profile_date":"2026-03-30","created_timestamp":1711800000000,"updated_timestamp":1711800000000}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	targets, err := store.ConvergeExpiredProfileNodes(context.Background(), 16)
+	if err != nil {
+		t.Fatalf("converge expired profile nodes: %v", err)
+	}
+	if len(targets) != 1 {
+		t.Fatalf("expected 1 affected target, got %+v", targets)
+	}
+	if targets[0].ProfileType != logicdomain.ProfileTypeUser || targets[0].BindID != 7 {
+		t.Fatalf("unexpected affected target: %+v", targets[0])
+	}
+	if len(targets[0].Nodes) != 1 || targets[0].Nodes[0].Content != "用户偏好使用 Rust。" {
+		t.Fatalf("unexpected remaining active nodes: %+v", targets[0].Nodes)
+	}
+
+	execs := server.execRequests()
+	last := execs[len(execs)-1].Sql
+	if !strings.Contains(last, "UPDATE vmm_profile_nodes") || !strings.Contains(last, "SET profile_status = 4") {
+		t.Fatalf("expected expired profile-node update sql, got %s", last)
+	}
+}
+
+// TestReplaceRenderedProfilesUpdatesUserAndProjectBlobs verifies the post-expiry render writeback path can update both durable user and project profile blobs in one SQL script.
+// TestReplaceRenderedProfilesUpdatesUserAndProjectBlobs 用于验证过期收敛后的渲染回写路径可以在一段 SQL 脚本里同时更新长期 user/project 画像 Blob。
+func TestReplaceRenderedProfilesUpdatesUserAndProjectBlobs(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":6}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	err := store.ReplaceRenderedProfiles(context.Background(), map[uint64]string{
+		7: "[Profile Legend]\n用户画像",
+	}, map[uint64]string{
+		9: "[Profile Legend]\n项目画像",
+	})
+	if err != nil {
+		t.Fatalf("replace rendered profiles: %v", err)
+	}
+
+	execs := server.execRequests()
+	last := execs[len(execs)-1].Sql
+	if !strings.Contains(last, "UPDATE vmm_users") || !strings.Contains(last, "用户画像") {
+		t.Fatalf("expected user profile update sql, got %s", last)
+	}
+	if !strings.Contains(last, "UPDATE vmm_projects") || !strings.Contains(last, "项目画像") {
+		t.Fatalf("expected project profile update sql, got %s", last)
+	}
+}
+
 // TestDebugCleanManagedSchemaExecutesDropScript verifies the debug-clean helper wipes the managed DuckDB schema through one execute call.
 // TestDebugCleanManagedSchemaExecutesDropScript 用于验证调试清理辅助逻辑会通过一次执行调用清空受管 DuckDB schema。
 func TestDebugCleanManagedSchemaExecutesDropScript(t *testing.T) {

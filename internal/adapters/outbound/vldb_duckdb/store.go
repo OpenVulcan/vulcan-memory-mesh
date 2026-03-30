@@ -704,8 +704,119 @@ func (s *Store) LoadProfileReviewTargets(ctx context.Context, session logicdomai
 		return logicdomain.ProfileReviewTargetsSnapshot{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	loadNodes := func(profileType int, bindID uint64) ([]logicdomain.ProfileActiveNodeRecord, error) {
-		rows, err := queryRows[profileNodeRow](s, ctx, `
+	userNodes, err := s.loadActiveProfileNodes(ctx, logicdomain.ProfileTypeUser, session.UserID, nowMs)
+	if err != nil {
+		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query user profile review targets: %w", err)
+	}
+	projectNodes, err := s.loadActiveProfileNodes(ctx, logicdomain.ProfileTypeProject, session.ProjectID, nowMs)
+	if err != nil {
+		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query project profile review targets: %w", err)
+	}
+	return logicdomain.ProfileReviewTargetsSnapshot{
+		UserNodes:    userNodes,
+		ProjectNodes: projectNodes,
+	}, nil
+}
+
+// ConvergeExpiredProfileNodes marks due active profile nodes as expired and returns the affected user/project targets with their remaining renderable active nodes.
+// ConvergeExpiredProfileNodes 用于把已到期的 active 画像节点收敛为 expired，并返回受影响的 user/project 目标及其剩余可渲染活跃节点。
+func (s *Store) ConvergeExpiredProfileNodes(ctx context.Context, limit int) ([]logicdomain.ProfileRenderTargetSnapshot, error) {
+	if limit <= 0 {
+		limit = 256
+	}
+	nowMs := time.Now().UTC().UnixMilli()
+
+	// Serialize expiry convergence so status flips and follow-up profile snapshots are observed from one deterministic SQL window.
+	// 串行化过期收敛，确保状态切换与后续画像快照都来自同一个确定性的 SQL 窗口。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	rows, err := queryRows[profileNodeRow](s, ctx, `
+SELECT id, turn_id, profile_type, bind_id, content, profile_status,
+       priority, profile_level, level_reason, refresh_weight,
+       expires_timestamp, superseded_by_id, profile_date,
+       created_timestamp, updated_timestamp
+FROM vmm_profile_nodes
+WHERE profile_status = ? AND expires_timestamp > 0 AND expires_timestamp <= ?
+ORDER BY expires_timestamp ASC, id ASC
+LIMIT ?
+`, logicdomain.ProfileStatusActive, nowMs, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query expired profile nodes: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil, nil
+	}
+
+	expiredIDs := make([]uint64, 0, len(rows))
+	targetIndex := map[string]int{}
+	targets := make([]logicdomain.ProfileRenderTargetSnapshot, 0)
+	for _, row := range rows {
+		expiredIDs = append(expiredIDs, row.ID)
+		key := strconv.Itoa(row.ProfileType) + ":" + strconv.FormatUint(row.BindID, 10)
+		if _, exists := targetIndex[key]; exists {
+			continue
+		}
+		targetIndex[key] = len(targets)
+		targets = append(targets, logicdomain.ProfileRenderTargetSnapshot{
+			ProfileType: row.ProfileType,
+			BindID:      row.BindID,
+		})
+	}
+	sort.Slice(targets, func(i, j int) bool {
+		if targets[i].ProfileType != targets[j].ProfileType {
+			return targets[i].ProfileType < targets[j].ProfileType
+		}
+		return targets[i].BindID < targets[j].BindID
+	})
+	if err := s.exec(ctx, buildProfileNodesExpireSQL(expiredIDs, nowMs)); err != nil {
+		return nil, fmt.Errorf("mark expired profile nodes: %w", err)
+	}
+	for idx := range targets {
+		nodes, err := s.loadActiveProfileNodes(ctx, targets[idx].ProfileType, targets[idx].BindID, nowMs)
+		if err != nil {
+			return nil, fmt.Errorf("load active profile nodes for render target: %w", err)
+		}
+		targets[idx].Nodes = nodes
+	}
+	return targets, nil
+}
+
+// ReplaceRenderedProfiles writes the already rendered user/project profile blobs back into DuckDB after lifecycle convergence or batch review.
+// ReplaceRenderedProfiles 用于在生命周期收敛或批量评审之后，把已经渲染好的 user/project 画像文本回写到 DuckDB。
+func (s *Store) ReplaceRenderedProfiles(ctx context.Context, userProfiles map[uint64]string, projectProfiles map[uint64]string) error {
+	if len(userProfiles) == 0 && len(projectProfiles) == 0 {
+		return nil
+	}
+
+	// Serialize durable profile-blob replacement so the cached profile text stays aligned with the lifecycle decisions already committed in SQL.
+	// 串行化长期 profile Blob 的替换，确保缓存画像文本与前面已经提交到 SQL 的生命周期决策保持一致。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	nowRFC3339 := time.Now().UTC().Format(time.RFC3339Nano)
+	var script strings.Builder
+	userIDs := sortedProfileBindingIDs(userProfiles)
+	for _, userID := range userIDs {
+		script.WriteString(buildUserProfileUpdateSQL(userID, userProfiles[userID], nowRFC3339))
+	}
+	projectIDs := sortedProfileBindingIDs(projectProfiles)
+	for _, projectID := range projectIDs {
+		script.WriteString(buildProjectProfileUpdateSQL(projectID, projectProfiles[projectID], nowRFC3339))
+	}
+	if script.Len() == 0 {
+		return nil
+	}
+	if err := s.exec(ctx, script.String()); err != nil {
+		return fmt.Errorf("replace rendered profiles: %w", err)
+	}
+	return nil
+}
+
+// loadActiveProfileNodes is the shared query helper used by profile review and expiry convergence to fetch only currently renderable active nodes.
+// loadActiveProfileNodes 用于作为画像评审和过期收敛共用查询助手，只加载当前仍可渲染的 active 节点。
+func (s *Store) loadActiveProfileNodes(ctx context.Context, profileType int, bindID uint64, nowMs int64) ([]logicdomain.ProfileActiveNodeRecord, error) {
+	rows, err := queryRows[profileNodeRow](s, ctx, `
 SELECT id, turn_id, profile_type, bind_id, content, profile_status,
        priority, profile_level, level_reason, refresh_weight,
        expires_timestamp, superseded_by_id, profile_date,
@@ -714,27 +825,14 @@ FROM vmm_profile_nodes
 WHERE profile_type = ? AND bind_id = ? AND profile_status = ? AND (expires_timestamp <= 0 OR expires_timestamp > ?)
 ORDER BY profile_date ASC, priority ASC, refresh_weight DESC, id ASC
 `, profileType, bindID, logicdomain.ProfileStatusActive, nowMs)
-		if err != nil {
-			return nil, err
-		}
-		nodes := make([]logicdomain.ProfileActiveNodeRecord, 0, len(rows))
-		for _, row := range rows {
-			nodes = append(nodes, row.toDomain())
-		}
-		return nodes, nil
-	}
-	userNodes, err := loadNodes(logicdomain.ProfileTypeUser, session.UserID)
 	if err != nil {
-		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query user profile review targets: %w", err)
+		return nil, err
 	}
-	projectNodes, err := loadNodes(logicdomain.ProfileTypeProject, session.ProjectID)
-	if err != nil {
-		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query project profile review targets: %w", err)
+	nodes := make([]logicdomain.ProfileActiveNodeRecord, 0, len(rows))
+	for _, row := range rows {
+		nodes = append(nodes, row.toDomain())
 	}
-	return logicdomain.ProfileReviewTargetsSnapshot{
-		UserNodes:    userNodes,
-		ProjectNodes: projectNodes,
-	}, nil
+	return nodes, nil
 }
 
 // LoadPendingSessionTurns returns the oldest not-yet-extracted turn rows for one session so queued post-action workers can build a batch window.
@@ -1886,6 +1984,19 @@ WHERE profile_status = %d AND id IN (%s);
 `, logicdomain.ProfileStatusSuperseded, updatedMs, logicdomain.ProfileStatusActive, sqlUint64List(nodeIDs))
 }
 
+// buildProfileNodesExpireSQL renders the raw UPDATE used by the periodic lifecycle convergence path to mark due active profile nodes as expired.
+// buildProfileNodesExpireSQL 用于渲染周期性生命周期收敛路径使用的原始 UPDATE 语句，把已到期的 active 画像节点标记为 expired。
+func buildProfileNodesExpireSQL(nodeIDs []uint64, updatedMs int64) string {
+	if len(nodeIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+UPDATE vmm_profile_nodes
+SET profile_status = %d, updated_timestamp = %d
+WHERE profile_status = %d AND id IN (%s);
+`, logicdomain.ProfileStatusExpired, updatedMs, logicdomain.ProfileStatusActive, sqlUint64List(nodeIDs))
+}
+
 // buildMemoryNodesSupersedeSQL renders the raw UPDATE used to mark obsolete active memory nodes as superseded after one newer batch replaces them.
 // buildMemoryNodesSupersedeSQL 用于渲染原始 UPDATE 语句，在较新的批次替换旧信息后把对应的活跃记忆节点标记为 superseded。
 func buildMemoryNodesSupersedeSQL(turnIDs []uint64) string {
@@ -1941,6 +2052,25 @@ func normalizeUint64List(values []uint64) []uint64 {
 		return out[i] < out[j]
 	})
 	return out
+}
+
+// sortedProfileBindingIDs returns one deterministic ascending id slice from a rendered-profile update map so SQL scripts remain stable in tests and logs.
+// sortedProfileBindingIDs 用于从渲染后画像更新 map 中返回确定性的升序 id 列表，确保 SQL 脚本在测试和日志里保持稳定。
+func sortedProfileBindingIDs(values map[uint64]string) []uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+	ids := make([]uint64, 0, len(values))
+	for id := range values {
+		if id == 0 {
+			continue
+		}
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		return ids[i] < ids[j]
+	})
+	return ids
 }
 
 // sqlUint64List converts one uint64 slice into a comma-separated SQL list for the debug-stage raw statement builders.

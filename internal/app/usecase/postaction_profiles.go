@@ -29,6 +29,56 @@ const profileLegendBlock = `[Profile Legend]
 [Profile Timeline]
 `
 
+// convergeExpiredProfiles runs the periodic profile-lifecycle convergence path so due active nodes are materialized as expired rows and cached profile blobs stay in sync.
+// convergeExpiredProfiles 用于执行周期性的画像生命周期收敛，让到期 active 节点真实落成 expired 行，并保持缓存 profile Blob 同步。
+func (u *PostActionUseCase) convergeExpiredProfiles() {
+	if u == nil || u.store == nil {
+		return
+	}
+	ctx := u.queueCtx
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	targets, err := u.store.ConvergeExpiredProfileNodes(ctx, 256)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Error("post-action expired profile convergence failed", "err", err)
+		}
+		return
+	}
+	if len(targets) == 0 {
+		return
+	}
+
+	// Render the latest active-node snapshots back into durable user/project profile blobs so expired rows immediately disappear from future injections.
+	// 把最新 active 节点快照重新渲染成长期 user/project 画像文本，让过期行能立即从后续注入内容里消失。
+	userProfiles := map[uint64]string{}
+	projectProfiles := map[uint64]string{}
+	for _, target := range targets {
+		rendered := renderProfileTimeline(target.Nodes, nil, nil)
+		switch target.ProfileType {
+		case logicdomain.ProfileTypeUser:
+			userProfiles[target.BindID] = rendered
+		case logicdomain.ProfileTypeProject:
+			projectProfiles[target.BindID] = rendered
+		}
+	}
+	if err := u.store.ReplaceRenderedProfiles(ctx, userProfiles, projectProfiles); err != nil {
+		if u.logger != nil {
+			u.logger.Error("post-action expired profile render update failed", "err", err)
+		}
+		return
+	}
+	if u.logger != nil {
+		u.logger.Info(
+			"post-action expired profiles converged",
+			"affected_targets", len(targets),
+			"user_profile_count", len(userProfiles),
+			"project_profile_count", len(projectProfiles),
+		)
+	}
+}
+
 // reviewSessionBatchProfiles reviews all fresh profile nodes across the selected batch, applies active/invalid/supersede decisions, and rebuilds the rendered user/project profiles.
 // reviewSessionBatchProfiles 用于评审所选批次中的全部新画像节点，应用 active/invalid/supersede 决策，并重建 user/project 的渲染画像文本。
 func (u *PostActionUseCase) reviewSessionBatchProfiles(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis *logicdomain.SessionBatchAnalysis) error {

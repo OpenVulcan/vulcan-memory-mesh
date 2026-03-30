@@ -31,6 +31,14 @@ type ProfileReviewTargetsSnapshot struct {
 	ProjectNodes []ProfileActiveNodeRecord
 }
 
+// ProfileRenderTargetSnapshot carries one profile target plus the active nodes that should be rendered into its durable profile blob after lifecycle convergence.
+// ProfileRenderTargetSnapshot 用于承载一个画像目标及其当前仍应渲染到长期 profile Blob 中的活跃节点，供生命周期收敛后重建画像文本。
+type ProfileRenderTargetSnapshot struct {
+	ProfileType int
+	BindID      uint64
+	Nodes       []ProfileActiveNodeRecord
+}
+
 // ProfileReviewAcceptedCandidate stores one accepted new candidate together with its normalized content and supersede targets.
 // ProfileReviewAcceptedCandidate 用于保存一条被接纳的新候选，以及其规范化内容和要替代的旧节点集合。
 type ProfileReviewAcceptedCandidate struct {

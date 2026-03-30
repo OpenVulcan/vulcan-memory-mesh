@@ -132,6 +132,7 @@ func (u *PostActionUseCase) queueWorkerLoop() {
 		case sessionID := <-u.queueCh:
 			u.handleQueuedSession(sessionID)
 		case <-ticker.C:
+			u.convergeExpiredProfiles()
 			u.scanIdlePendingSessions()
 		}
 	}

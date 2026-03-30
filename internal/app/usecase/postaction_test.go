@@ -317,6 +317,67 @@ func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {
 	}
 }
 
+// TestPostActionUseCaseConvergesExpiredProfiles verifies the periodic maintenance path marks due nodes as expired and rebuilds the durable user/project profile blobs from the remaining active nodes.
+// TestPostActionUseCaseConvergesExpiredProfiles 用于验证周期性维护路径会把到期节点收敛为 expired，并基于剩余 active 节点重建长期 user/project 画像文本。
+func TestPostActionUseCaseConvergesExpiredProfiles(t *testing.T) {
+	store := &testRelationalStore{
+		expiredProfileTargets: []logicdomain.ProfileRenderTargetSnapshot{
+			{
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      9,
+				Nodes: []logicdomain.ProfileActiveNodeRecord{
+					{
+						ID:            101,
+						ProfileType:   logicdomain.ProfileTypeUser,
+						BindID:        9,
+						ProfileDate:   "2026-03-29",
+						Priority:      logicdomain.ProfilePriorityP1,
+						ProfileLevel:  logicdomain.ProfileLevelStable,
+						RefreshWeight: 2,
+						Content:       "用户偏好使用 Rust 进行项目开发。",
+						CreatedAt:     time.Date(2026, 3, 29, 9, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+			{
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      12,
+				Nodes: []logicdomain.ProfileActiveNodeRecord{
+					{
+						ID:            202,
+						ProfileType:   logicdomain.ProfileTypeProject,
+						BindID:        12,
+						ProfileDate:   "2026-03-30",
+						Priority:      logicdomain.ProfilePriorityP0,
+						ProfileLevel:  logicdomain.ProfileLevelPersistent,
+						RefreshWeight: 1,
+						Content:       "项目必须优先支持多种 AI 编程工具。",
+						CreatedAt:     time.Date(2026, 3, 30, 10, 0, 0, 0, time.UTC),
+					},
+				},
+			},
+		},
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, logger, false)
+
+	uc.convergeExpiredProfiles()
+
+	if store.expiredProfileScanCalls != 1 {
+		t.Fatalf("expected one expired-profile convergence scan, got %d", store.expiredProfileScanCalls)
+	}
+	if len(store.renderedUserProfiles) != 1 || !strings.Contains(store.renderedUserProfiles[9], "[Profile Legend]") || !strings.Contains(store.renderedUserProfiles[9], "用户偏好使用 Rust 进行项目开发。") {
+		t.Fatalf("unexpected rendered user profiles: %#v", store.renderedUserProfiles)
+	}
+	if len(store.renderedProjectProfiles) != 1 || !strings.Contains(store.renderedProjectProfiles[12], "[P0][L3][W1] 项目必须优先支持多种 AI 编程工具。") {
+		t.Fatalf("unexpected rendered project profiles: %#v", store.renderedProjectProfiles)
+	}
+	if !strings.Contains(logBuf.String(), "post-action expired profiles converged") {
+		t.Fatalf("expected expired profile convergence log, got %s", logBuf.String())
+	}
+}
+
 // TestPostActionUseCaseSkipsBatchBelowThreshold verifies queued sessions remain pending when neither count threshold nor token threshold has been met.
 // TestPostActionUseCaseSkipsBatchBelowThreshold 用于验证当条数阈值和 token 阈值都未达到时，排队 session 会继续保持待处理状态。
 func TestPostActionUseCaseSkipsBatchBelowThreshold(t *testing.T) {
@@ -450,22 +511,26 @@ func (s *stubNoiseTurnFilter) FilterPersistableTurns(_ context.Context, turns []
 // testRelationalStore is the minimal relational-store stub needed by the queued post-action tests.
 // testRelationalStore 用于为排队式 post-action 测试提供最小化的关系存储桩。
 type testRelationalStore struct {
-	session              logicdomain.SessionRef
-	turn                 logicdomain.TurnRecord
-	persistedTurn        logicdomain.PersistedTurnRecord
-	pendingTurns         []logicdomain.SessionTurnRecord
-	historyTurns         []logicdomain.SessionTurnRecord
-	activeMemoryNodes    []logicdomain.SessionMemoryNodeRecord
-	idleSessions         []logicdomain.SessionRef
-	profileTargets       logicdomain.ProfileTargetsSnapshot
-	profileReviewTargets logicdomain.ProfileReviewTargetsSnapshot
-	analysisTurn         logicdomain.PersistedTurnRecord
-	analysis             logicdomain.TurnAnalysis
-	analysisErr          error
-	batchTurns           []logicdomain.SessionTurnRecord
-	batchAnalysis        logicdomain.SessionBatchAnalysis
-	batchApplyResult     logicdomain.SessionAnalysisApplyResult
-	batchApplyErr        error
+	session                 logicdomain.SessionRef
+	turn                    logicdomain.TurnRecord
+	persistedTurn           logicdomain.PersistedTurnRecord
+	pendingTurns            []logicdomain.SessionTurnRecord
+	historyTurns            []logicdomain.SessionTurnRecord
+	activeMemoryNodes       []logicdomain.SessionMemoryNodeRecord
+	idleSessions            []logicdomain.SessionRef
+	profileTargets          logicdomain.ProfileTargetsSnapshot
+	profileReviewTargets    logicdomain.ProfileReviewTargetsSnapshot
+	expiredProfileTargets   []logicdomain.ProfileRenderTargetSnapshot
+	renderedUserProfiles    map[uint64]string
+	renderedProjectProfiles map[uint64]string
+	expiredProfileScanCalls int
+	analysisTurn            logicdomain.PersistedTurnRecord
+	analysis                logicdomain.TurnAnalysis
+	analysisErr             error
+	batchTurns              []logicdomain.SessionTurnRecord
+	batchAnalysis           logicdomain.SessionBatchAnalysis
+	batchApplyResult        logicdomain.SessionAnalysisApplyResult
+	batchApplyErr           error
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
@@ -518,6 +583,31 @@ func (s *testRelationalStore) LoadProfileTargets(_ context.Context, _ logicdomai
 // LoadProfileReviewTargets 用于返回预设的活跃 user/project 画像节点，方便测试断言评审请求输入。
 func (s *testRelationalStore) LoadProfileReviewTargets(_ context.Context, _ logicdomain.SessionRef) (logicdomain.ProfileReviewTargetsSnapshot, error) {
 	return s.profileReviewTargets, nil
+}
+
+// ConvergeExpiredProfileNodes returns the canned expired-target snapshots so maintenance tests can verify lifecycle convergence behavior.
+// ConvergeExpiredProfileNodes 用于返回预设的过期目标快照，方便维护路径测试验证生命周期收敛行为。
+func (s *testRelationalStore) ConvergeExpiredProfileNodes(_ context.Context, _ int) ([]logicdomain.ProfileRenderTargetSnapshot, error) {
+	s.expiredProfileScanCalls++
+	return append([]logicdomain.ProfileRenderTargetSnapshot(nil), s.expiredProfileTargets...), nil
+}
+
+// ReplaceRenderedProfiles records the rebuilt durable user/project profiles so maintenance tests can assert the final rendered blobs.
+// ReplaceRenderedProfiles 用于记录重建后的长期 user/project 画像，方便维护路径测试断言最终渲染结果。
+func (s *testRelationalStore) ReplaceRenderedProfiles(_ context.Context, userProfiles map[uint64]string, projectProfiles map[uint64]string) error {
+	if len(userProfiles) > 0 {
+		s.renderedUserProfiles = map[uint64]string{}
+		for id, profile := range userProfiles {
+			s.renderedUserProfiles[id] = profile
+		}
+	}
+	if len(projectProfiles) > 0 {
+		s.renderedProjectProfiles = map[uint64]string{}
+		for id, profile := range projectProfiles {
+			s.renderedProjectProfiles[id] = profile
+		}
+	}
+	return nil
 }
 
 // ApplyTurnAnalysis keeps interface completeness for legacy tests that still compile against the expanded port.
