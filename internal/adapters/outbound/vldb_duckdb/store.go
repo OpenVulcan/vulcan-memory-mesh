@@ -438,16 +438,22 @@ func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, user
 		return logicdomain.SessionRef{}, err
 	}
 	return logicdomain.SessionRef{
-		SessionID:   session.ID,
-		SessionKey:  session.SessionKey,
-		UserID:      user.ID,
-		TeamID:      project.TeamID,
-		SpaceID:     project.SpaceID,
-		ProjectID:   project.ID,
-		UserName:    user.Name,
-		TeamName:    project.TeamName,
-		SpaceName:   project.SpaceName,
-		ProjectName: project.Name,
+		SessionID:        session.ID,
+		SessionKey:       session.SessionKey,
+		UserID:           user.ID,
+		TeamID:           project.TeamID,
+		SpaceID:          project.SpaceID,
+		ProjectID:        project.ID,
+		TurnCount:        session.TurnCount,
+		LastSummarizedID: session.LastSummarizedID,
+		SummarizeContent: session.SummarizeContent,
+		SummarizeBudget:  session.SummarizeBudget,
+		CreatedAt:        session.CreatedAt,
+		UpdatedAt:        session.UpdatedAt,
+		UserName:         user.Name,
+		TeamName:         project.TeamName,
+		SpaceName:        project.SpaceName,
+		ProjectName:      project.Name,
 	}, nil
 }
 
@@ -485,7 +491,7 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 	if err := s.exec(ctx, buildTurnInsertSQL(nextID, session.SessionID, session.ProjectID, dehydratedContent, dehydratedBudget, createdMs, nowMs)); err != nil {
 		return fmt.Errorf("insert turn record: %w", err)
 	}
-	if err := s.exec(ctx, buildSessionTurnUpdateSQL(session.SessionID, nowMs)); err != nil {
+	if err := s.exec(ctx, buildSessionTurnUpdateSQL(session.SessionID, dehydratedBudget, nowMs)); err != nil {
 		return fmt.Errorf("update session turn counters: %w", err)
 	}
 	return nil
@@ -1195,14 +1201,14 @@ INSERT INTO vmm_turn_records (
 `, id, sessionID, projectID, sqlStringLiteral(dehydratedContent), dehydratedBudget, createdMs, updatedMs)
 }
 
-// buildSessionTurnUpdateSQL renders one raw UPDATE that increments the turn counter after a turn row is inserted successfully.
-// buildSessionTurnUpdateSQL 用于渲染原始 UPDATE，在 turn 行成功插入后递增 turn 计数。
-func buildSessionTurnUpdateSQL(sessionID uint64, updatedMs int64) string {
+// buildSessionTurnUpdateSQL renders one raw UPDATE that increments the turn counter and the unsummarized token budget after a turn row is inserted successfully.
+// buildSessionTurnUpdateSQL 用于渲染原始 UPDATE，在 turn 行成功插入后同步递增 turn 计数和未总结 token 预算。
+func buildSessionTurnUpdateSQL(sessionID uint64, addedBudget int, updatedMs int64) string {
 	return fmt.Sprintf(`
 UPDATE vmm_sessions
-SET turn_count = turn_count + 1, updated_timestamp = %d
+SET turn_count = turn_count + 1, summarize_budget = summarize_budget + %d, updated_timestamp = %d
 WHERE id = %d
-`, updatedMs, sessionID)
+`, addedBudget, updatedMs, sessionID)
 }
 
 // sqlStringLiteral escapes one string into a single-quoted SQL literal for debug-stage raw statement rendering.

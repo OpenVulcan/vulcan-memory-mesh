@@ -119,6 +119,9 @@ func TestResolveRequestScopeCreatesSession(t *testing.T) {
 	if session.TeamName != "team-a" || session.SpaceName != "space-a" || session.ProjectName != "proj-a" || session.UserName != "alice" {
 		t.Fatalf("unexpected scope names: %+v", session)
 	}
+	if session.TurnCount != 0 || session.SummarizeBudget != 0 || !session.CreatedAt.Equal(session.UpdatedAt) {
+		t.Fatalf("unexpected new session analysis counters: %+v", session)
+	}
 
 	execs := server.execRequests()
 	last := execs[len(execs)-1]
@@ -149,6 +152,9 @@ func TestResolveRequestScopeReusesExistingSessionAfterUserSwitch(t *testing.T) {
 	}
 	if session.UserID != 8 || session.ProjectID != 9 || session.TeamID != 3 || session.SpaceID != 5 {
 		t.Fatalf("unexpected resolved scope after user switch: %+v", session)
+	}
+	if session.TurnCount != 2 || session.SummarizeBudget != 0 || session.UpdatedAt.IsZero() {
+		t.Fatalf("unexpected reused session counters: %+v", session)
 	}
 
 	execs := server.execRequests()
@@ -206,6 +212,9 @@ func TestAppendTurnRecordPersistsDehydratedPayload(t *testing.T) {
 	updateSQL := execs[len(execs)-1].Sql
 	if !strings.Contains(updateSQL, "SET turn_count = turn_count + 1") {
 		t.Fatalf("expected session turn counter update sql, got %s", updateSQL)
+	}
+	if !strings.Contains(updateSQL, "summarize_budget = summarize_budget + ") {
+		t.Fatalf("expected session summarize budget update sql, got %s", updateSQL)
 	}
 }
 

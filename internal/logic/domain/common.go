@@ -7,16 +7,22 @@ import "time"
 // SessionRef carries the resolved numeric hierarchy identifiers plus the external session key used by business RPCs.
 // SessionRef 用于承载业务 RPC 使用的外部 session_key，以及解析后的数字层级标识。
 type SessionRef struct {
-	SessionID   uint64
-	SessionKey  string
-	UserID      uint64
-	TeamID      uint64
-	SpaceID     uint64
-	ProjectID   uint64
-	UserName    string
-	TeamName    string
-	SpaceName   string
-	ProjectName string
+	SessionID        uint64
+	SessionKey       string
+	UserID           uint64
+	TeamID           uint64
+	SpaceID          uint64
+	ProjectID        uint64
+	TurnCount        int
+	LastSummarizedID uint64
+	SummarizeContent string
+	SummarizeBudget  int
+	CreatedAt        time.Time
+	UpdatedAt        time.Time
+	UserName         string
+	TeamName         string
+	SpaceName        string
+	ProjectName      string
 }
 
 // SearchFilter derives the concrete vector-scope coordinates used by recall and cleanup flows.

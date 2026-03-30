@@ -52,6 +52,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 
 	// Build outbound dependencies from the active configuration.
 	// 根据当前配置构建出站依赖。
+	llm, err := buildLLM(cfg)
+	if err != nil {
+		return nil, err
+	}
 	embedding, err := buildEmbedding(cfg)
 	if err != nil {
 		return nil, err
@@ -85,7 +89,17 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// 在处理器和出站端口之上装配用例层。
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
 	pre := usecase.NewPreCheckUseCase(logger)
-	post := usecase.NewPostActionUseCase(noiseGate, relational, logger)
+	post := usecase.NewPostActionUseCase(
+		noiseGate,
+		relational,
+		processor.NewEntrySummarizer(llm, prompts, cfg.LLM.Model),
+		usecase.PostActionAnalysisConfig{
+			TurnThreshold:  cfg.PostAction.SessionAnalysisTurnThreshold,
+			TokenThreshold: cfg.PostAction.SessionAnalysisTokenThreshold,
+			IdleTimeout:    cfg.PostAction.SessionAnalysisIdleTimeout.Duration,
+		},
+		logger,
+	)
 
 	// Wire gRPC handlers and shutdown dependencies into the application container.
 	// 将 gRPC 处理器和关闭依赖接入应用容器。
@@ -169,6 +183,17 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// buildLLM selects the configured generation backend used by the debug-stage post-action summary probe and future LLM-driven workflows.
+// buildLLM 用于选择当前配置的生成后端，服务调试阶段的 post-action 摘要探测以及未来的 LLM 工作流。
+func buildLLM(cfg config.Config) (appports.LLMClient, error) {
+	switch strings.ToLower(cfg.LLM.Provider) {
+	case "openai", "openai_native", "openai_go":
+		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project, cfg.LLM.Params, cfg.LLM.ModelParams), nil
+	default:
+		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
+	}
 }
 
 // buildEmbedding selects the configured real embedding adapter for recall and semantic filtering.

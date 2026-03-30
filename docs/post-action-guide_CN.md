@@ -138,6 +138,13 @@ message PostActionTimelineItem {
    - 反查 `team_id / space_id`
    - 必要时创建 `session`
    - 同一 `project_id + session_id` 已存在时直接复用，即使调试阶段上游手动切换过 `user_id` 也不会拦截
+   - 如果 `user_id = 0` 或 `project_id = 0`
+     - 会同步返回 `InvalidArgument`
+   - 如果 `user_id` 或 `project_id` 不存在
+     - 会同步返回 `NotFound`
+   - 这类错误发生在进入用例层之前
+     - 不会返回 `accepted=true`
+     - 不会进入后台 goroutine
 5. 记录原始请求日志
 6. 对待存储文本执行清洗：
    - `user_content`
@@ -153,7 +160,7 @@ message PostActionTimelineItem {
     - 经过噪声门判断是否值得入库
 11. 组装一条标准 turn：
     - 顶层 `user_content`
-    - 原始 `timeline[*]`
+    - 清洗后的 `timeline[*]`
     - 顶层 `assistant_content`
 12. 对 turn 做脱水：
     - 顶层 `user_content` 保留
@@ -163,7 +170,12 @@ message PostActionTimelineItem {
 13. 计算脱水 JSON 的 token 预算
 14. 追加到 DuckDB：
     - `vmm_turn_records`
-    - 同步更新 `vmm_sessions.turn_count / updated_timestamp`
+    - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
+15. 当 `post_action.session_analysis_turn_threshold / token_threshold / idle_timeout` 任一命中时：
+    - 直接把“当前原始 turn”送到现有 `summarize_entry` prompt
+    - 仅把 LLM 返回 JSON 输出到日志
+    - 当前不会把该结果写回数据库
+    - 当前也不会拼接“历史 3 轮提炼文”
 
 ## 清洗行为
 
@@ -239,6 +251,9 @@ message PostActionResponse {
 - `accepted=true` 只表示“请求已被接收”
 - 不表示后台一定已经写库完成
 - 如果后台写库失败，会体现在运行日志里，而不是同步响应里
+- 如果 `user_id / project_id` 在前置范围解析阶段就失败
+  - 则不会返回 `accepted=true`
+  - 而是直接返回同步 gRPC 错误
 
 ## grpcurl 示例
 
@@ -302,7 +317,14 @@ grpcurl -plaintext `
 - `post_action.session_analysis_idle_timeout`
   - 表示距离同一个 session 最后一次会话更新时间超过多久后，强制满足一次后续 LLM 分析条件
 
-当前三者的关系是“任一达到即可触发”。这次只增加了配置入口；真正的 LLM 分析触发与执行逻辑，会在后续实现中接入。
+当前三者的关系是“任一达到即可触发”。
+
+当前已经接入的行为是：
+
+- 命中阈值后，会把“当前原始 turn”直接送入现有 `summarize_entry` prompt
+- 返回结果只打日志，方便调试观察
+- 不写回 DuckDB
+- 不做你后续规划的“历史 3 轮提炼文 + 当前原始对话”组合分析
 
 ## 当前限制
 
@@ -310,3 +332,4 @@ grpcurl -plaintext `
 - 当前主线不再支持 `team_id / space_id` 由客户端直接传入
 - 当前 `PostAction` 只接受纯文本字段，不接受原始消息节点对象
 - 当前 `PostAction` 返回的是“已接收”，不是“已写库完成”
+- 当前阈值触发后的 LLM 分析仍然只是调试模式，暂不写库

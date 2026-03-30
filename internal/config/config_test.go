@@ -65,10 +65,10 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.Relational.Provider != "duckdb" {
 		t.Fatalf("relational provider = %q", cfg.Relational.Provider)
 	}
-	if cfg.DuckDB.Address != "127.0.0.1:50052" {
+	if cfg.DuckDB.Address != "127.0.0.1:19401" {
 		t.Fatalf("duckdb address = %q", cfg.DuckDB.Address)
 	}
-	if cfg.LanceDB.Address != "127.0.0.1:50051" {
+	if cfg.LanceDB.Address != "127.0.0.1:19301" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
 	}
 	if cfg.MemoryPipeline.MaxSearchKeywords != 5 {
@@ -237,8 +237,8 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 	}
 	configBody := `{
 		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"duckdb":{"address":"127.0.0.1:50052","timeout":"5s"},
-		"lancedb":{"address":"127.0.0.1:50051","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
+		"duckdb":{"address":"127.0.0.1:19401","timeout":"5s"},
+		"lancedb":{"address":"127.0.0.1:19301","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
 		"llm":{
 			"provider":"openai",
 			"endpoint":"https://api.openai.com/v1",
@@ -317,8 +317,8 @@ func restoreEnv(t *testing.T, key string) {
 func currentTestConfigBody(apiKeyExpr string) string {
 	return `{
 		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"duckdb":{"address":"127.0.0.1:50052","timeout":"5s"},
-		"lancedb":{"address":"127.0.0.1:50051","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
+		"duckdb":{"address":"127.0.0.1:19401","timeout":"5s"},
+		"lancedb":{"address":"127.0.0.1:19301","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"` + apiKeyExpr + `","model":"test-model"},
 		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"` + apiKeyExpr + `","model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"lancedb"},
@@ -338,7 +338,7 @@ func newValidConfigForTest() Config {
 	cfg.Embedding.Endpoint = "https://api.openai.com/v1"
 	cfg.Embedding.APIKey = "test-key"
 	cfg.Embedding.Dimension = 1024
-	cfg.DuckDB.Address = "127.0.0.1:50052"
-	cfg.LanceDB.Address = "127.0.0.1:50051"
+	cfg.DuckDB.Address = "127.0.0.1:19401"
+	cfg.LanceDB.Address = "127.0.0.1:19301"
 	return cfg
 }

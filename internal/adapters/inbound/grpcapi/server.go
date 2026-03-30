@@ -355,7 +355,7 @@ func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (
 	traceID := trace.IDFromContext(ctx)
 	rawReq := clonePostActionRequest(req)
 	cleanedReq := s.sanitizePostActionRequest(req)
-	cmd := toPostActionCommand(session, cleanedReq)
+	cmd := toPostActionCommand(session, rawReq, cleanedReq)
 	s.logPostActionReceipt(traceID, "post-action received raw", rawReq)
 	s.logPostActionReceipt(traceID, "post-action received cleaned", cleanedReq)
 
@@ -426,21 +426,31 @@ func (s *Server) sanitizePostActionRequest(req *vmmv1.PostActionRequest) *vmmv1.
 	return cloned
 }
 
-// toPostActionCommand converts the transport request plus the resolved session scope into the use-case command shape.
-// toPostActionCommand 用于把传输层请求和已解析的 session 范围转换成用例层命令。
-func toPostActionCommand(session logicdomain.SessionRef, req *vmmv1.PostActionRequest) usecase.PostActionCommand {
-	items := make([]usecase.PostActionTimelineItem, 0, len(req.GetTimeline()))
-	for _, item := range req.GetTimeline() {
+// toPostActionCommand converts both raw and cleaned transport requests plus the resolved session scope into the use-case command shape.
+// toPostActionCommand 用于把原始/清洗后的传输层请求，以及已解析的 session 范围，一起转换成用例层命令。
+func toPostActionCommand(session logicdomain.SessionRef, rawReq, cleanedReq *vmmv1.PostActionRequest) usecase.PostActionCommand {
+	items := make([]usecase.PostActionTimelineItem, 0, len(cleanedReq.GetTimeline()))
+	for _, item := range cleanedReq.GetTimeline() {
 		items = append(items, usecase.PostActionTimelineItem{
 			Type:    item.GetType(),
 			Content: item.GetContent(),
 		})
 	}
+	rawItems := make([]usecase.PostActionTimelineItem, 0, len(rawReq.GetTimeline()))
+	for _, item := range rawReq.GetTimeline() {
+		rawItems = append(rawItems, usecase.PostActionTimelineItem{
+			Type:    item.GetType(),
+			Content: item.GetContent(),
+		})
+	}
 	return usecase.PostActionCommand{
-		Session:          session,
-		UserContent:      req.GetUserContent(),
-		AssistantContent: req.GetAssistantContent(),
-		Timeline:         items,
+		Session:             session,
+		UserContent:         cleanedReq.GetUserContent(),
+		AssistantContent:    cleanedReq.GetAssistantContent(),
+		Timeline:            items,
+		RawUserContent:      rawReq.GetUserContent(),
+		RawAssistantContent: rawReq.GetAssistantContent(),
+		RawTimeline:         rawItems,
 	}
 }
 

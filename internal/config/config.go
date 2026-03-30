@@ -198,8 +198,8 @@ func DefaultLocal() Config {
 		Logging:    LoggingConfig{Level: "info", Format: "text"},
 		PII:        PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:      NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
-		DuckDB:     DuckDBConfig{Address: "127.0.0.1:50052", Timeout: Duration{5 * time.Second}},
-		LanceDB:    LanceDBConfig{Address: "127.0.0.1:50051", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
+		DuckDB:     DuckDBConfig{Address: "127.0.0.1:19401", Timeout: Duration{5 * time.Second}},
+		LanceDB:    LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
 		LLM:        LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
 		Embedding:  EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
 		Vector:     VectorConfig{Provider: "lancedb"},
@@ -415,13 +415,13 @@ func (c *Config) Normalize() {
 		c.Noise.SemanticThreshold = 0.88
 	}
 	if strings.TrimSpace(c.DuckDB.Address) == "" {
-		c.DuckDB.Address = "127.0.0.1:50052"
+		c.DuckDB.Address = "127.0.0.1:19401"
 	}
 	if c.DuckDB.Timeout.Duration <= 0 {
 		c.DuckDB.Timeout = Duration{5 * time.Second}
 	}
 	if strings.TrimSpace(c.LanceDB.Address) == "" {
-		c.LanceDB.Address = "127.0.0.1:50051"
+		c.LanceDB.Address = "127.0.0.1:19301"
 	}
 	if c.LanceDB.Timeout.Duration <= 0 {
 		c.LanceDB.Timeout = Duration{5 * time.Second}

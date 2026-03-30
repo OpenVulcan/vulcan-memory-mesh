@@ -3,10 +3,15 @@
 package usecase
 
 import (
+	"bytes"
 	"context"
+	"errors"
+	"strings"
 	"testing"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 )
 
 // TestPostActionUseCaseDropsSingleRoundNoise verifies simple user-assistant pairs can still be rejected by the noise gate.
@@ -14,7 +19,7 @@ import (
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil)
+	uc := NewPostActionUseCase(filter, store, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -50,7 +55,7 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil)
+	uc := NewPostActionUseCase(filter, store, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -88,7 +93,7 @@ func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
 	store := &testRelationalStore{}
-	uc := NewPostActionUseCase(filter, store, nil)
+	uc := NewPostActionUseCase(filter, store, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -112,6 +117,100 @@ func TestPostActionUseCasePersistsSingleRoundAfterNoiseApproval(t *testing.T) {
 		t.Fatalf("expected one normalized turn, got %d", len(filter.seen))
 	}
 	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
+}
+
+// TestPostActionUseCaseRunsDebugSummaryAtTurnThreshold verifies threshold-triggered analysis sends the raw turn through the existing single-turn summary prompt while persistence still uses the cleaned turn.
+// TestPostActionUseCaseRunsDebugSummaryAtTurnThreshold 用于验证阈值命中后的调试分析会把原始 turn 送入现有单轮摘要提示词，同时持久化仍使用清洗后的 turn。
+func TestPostActionUseCaseRunsDebugSummaryAtTurnThreshold(t *testing.T) {
+	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "clean-user", AssistantReply: "clean-assistant"}}}
+	store := &testRelationalStore{}
+	summarizer := &stubPostActionSummarizer{result: `{"summary":"ok"}`}
+	uc := NewPostActionUseCase(filter, store, summarizer, PostActionAnalysisConfig{TurnThreshold: 3}, nil)
+
+	result, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  91,
+			SessionKey: "sess-threshold",
+			UserID:     9,
+			TeamID:     4,
+			SpaceID:    6,
+			ProjectID:  12,
+			TurnCount:  2,
+		},
+		UserContent:         "clean-user",
+		AssistantContent:    "clean-assistant",
+		RawUserContent:      "raw-user",
+		RawAssistantContent: "raw-assistant",
+		RawTimeline: []PostActionTimelineItem{
+			{Type: "assistant", Content: "raw-middle"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("execute post-action with debug summary: %v", err)
+	}
+	if !result.Accepted {
+		t.Fatal("expected accepted result")
+	}
+	assertPersistedTurn(t, store.turn, "clean-user", "clean-assistant", nil)
+	if summarizer.calls != 1 {
+		t.Fatalf("expected one debug summary call, got %d", summarizer.calls)
+	}
+	if !strings.Contains(summarizer.transcript, `"user": "raw-user"`) {
+		t.Fatalf("expected raw user content in debug summary transcript, got %s", summarizer.transcript)
+	}
+	if !strings.Contains(summarizer.transcript, `"assistant": "raw-assistant"`) {
+		t.Fatalf("expected raw assistant content in debug summary transcript, got %s", summarizer.transcript)
+	}
+	if !strings.Contains(summarizer.transcript, `"content": "raw-middle"`) {
+		t.Fatalf("expected raw timeline content in debug summary transcript, got %s", summarizer.transcript)
+	}
+}
+
+// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenDebugSummaryFails verifies the new debug-only LLM probe never breaks the main post-action persistence flow.
+// TestPostActionUseCaseKeepsPersistenceSuccessfulWhenDebugSummaryFails 用于验证新的调试型 LLM 探测即使失败，也绝不会破坏主 post-action 持久化链路。
+func TestPostActionUseCaseKeepsPersistenceSuccessfulWhenDebugSummaryFails(t *testing.T) {
+	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
+	store := &testRelationalStore{}
+	summarizer := &stubPostActionSummarizer{err: errors.New("llm failed")}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := NewPostActionUseCase(
+		filter,
+		store,
+		summarizer,
+		PostActionAnalysisConfig{IdleTimeout: 15 * time.Minute},
+		logger,
+	)
+
+	result, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  92,
+			SessionKey: "sess-idle",
+			UserID:     9,
+			TeamID:     4,
+			SpaceID:    6,
+			ProjectID:  12,
+			TurnCount:  1,
+			UpdatedAt:  time.Now().Add(-20 * time.Minute),
+		},
+		UserContent:         "你好",
+		AssistantContent:    "收到",
+		RawUserContent:      "你好 raw",
+		RawAssistantContent: "收到 raw",
+	})
+	if err != nil {
+		t.Fatalf("execute post-action with failing debug summary: %v", err)
+	}
+	if !result.Accepted {
+		t.Fatal("expected accepted result")
+	}
+	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
+	if summarizer.calls != 1 {
+		t.Fatalf("expected one debug summary attempt, got %d", summarizer.calls)
+	}
+	if !strings.Contains(logBuf.String(), "post-action llm analysis failed") {
+		t.Fatalf("expected debug summary failure to be logged, got %s", logBuf.String())
+	}
 }
 
 // assertPersistedTurn keeps turn-level persistence assertions compact and readable.
@@ -168,3 +267,23 @@ func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicd
 // Shutdown returns immediately because the stub does not own external resources.
 // Shutdown 用于立即返回，因为该桩不持有外部资源。
 func (s *testRelationalStore) Shutdown(context.Context) error { return nil }
+
+// stubPostActionSummarizer records debug-summary invocations and returns one canned result or error.
+// stubPostActionSummarizer 用于记录调试摘要调用，并返回预设结果或错误。
+type stubPostActionSummarizer struct {
+	calls      int
+	transcript string
+	result     string
+	err        error
+}
+
+// Summarize captures the transcript so tests can assert the trigger path and payload shape.
+// Summarize 用于捕获传入 transcript，方便测试断言触发路径和载荷形态。
+func (s *stubPostActionSummarizer) Summarize(_ context.Context, transcript string) (string, error) {
+	s.calls++
+	s.transcript = transcript
+	if s.err != nil {
+		return "", s.err
+	}
+	return s.result, nil
+}

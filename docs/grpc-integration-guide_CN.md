@@ -173,6 +173,16 @@
 - `PreCheck` / `PostAction` 用例层看到的已经是完整 `SessionRef`
 - 业务层无需再处理 `team_id` / `space_id` 解析
 
+另外需要特别注意：
+
+- 如果 `user_id = 0` 或 `project_id = 0`
+  - 会直接返回 `InvalidArgument`
+- 如果 `user_id` 或 `project_id` 不是 0，但数据库里不存在对应记录
+  - 会直接返回 `NotFound`
+- 这类失败发生在拦截器阶段
+  - 不会进入 `PreCheck` / `PostAction` 用例层
+  - 不会自动创建 `session`
+
 ## 九、当前方法语义
 
 ### Healthz
@@ -241,6 +251,13 @@
 - 保守禁用
 - 固定返回不注入
 
+但有一个前提：
+
+- 只有 `session_id / user_id / project_id` 都通过前置范围解析时，才会进入 `PreCheck`
+- 如果 `user_id` 或 `project_id` 非法或不存在
+  - 会同步直接返回错误
+  - 不会返回降级版 `should_inject=false`
+
 ### PostAction
 
 当前状态：
@@ -250,6 +267,14 @@
 - 清洗 `user_content` / `timeline[].content` / `assistant_content`
 - 立即返回 `accepted=true`
 - 后台继续写入 DuckDB
+
+同样也有一个前提：
+
+- 只有 `session_id / user_id / project_id` 都通过前置范围解析时，才会进入 `PostAction`
+- 如果 `user_id` 或 `project_id` 非法或不存在
+  - 会同步直接返回错误
+  - 不会返回 `accepted=true`
+  - 也不会进入异步后台写入阶段
 
 ## 十、推荐对接顺序
 
