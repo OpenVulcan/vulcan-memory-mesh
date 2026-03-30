@@ -67,7 +67,11 @@
    - 不能重复
 7. 只有当新候选确实应进入长期画像时，才能放入 `accepted_candidates`
 8. `supersede_node_ids` 只能引用输入里的 `active_nodes.id`
-9. 如果某个 target 没有出现在输入里，就不要输出该 target 对应块
+9. 每条 `accepted_candidates[].normalized_content` 只能保留一个清晰且连贯的画像领域，不能把不同领域揉成一条综合画像。
+10. 不要把饮食偏好、生活习惯、沟通风格、编程语言偏好、项目技术栈等无关领域合并到同一个新节点里。
+11. 不要借着“刷新旧节点”把无关旧事实一起并入新节点；新的 `normalized_content` 只能表达与当前候选同领域的稳定事实。
+12. 如果输入里的多个新候选本身属于不同领域，应保持为多条独立 `accepted_candidates`，不要为了“更完整”而合并。
+13. 如果某个 target 没有出现在输入里，就不要输出该 target 对应块
 
 # Output
 只返回一个 json 对象，不要输出任何解释文字，不要输出 markdown，不要包围栏。

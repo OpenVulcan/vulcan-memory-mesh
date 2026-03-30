@@ -131,6 +131,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
    - 如果批次里有 `profile_nodes[]`：
      - 会把当前 user/project 下仍然 `active` 且未过期的画像节点，与本批次新画像候选一起送入 `review_profile_nodes`
      - 如果本批次只有 user 或只有 project 画像候选，则只把对应一侧送进 LLM，不会把缺失侧作为空块一起传入
+     - 自动提炼与画像评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
    - 对新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
    - 只有 LanceDB 成功后，才会批量回写 DuckDB：
      - `vmm_turn_records.details / details_budget / extracted_status`
@@ -168,6 +169,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 服务端会先写入 `vmm_profile_instructions`
 - 再把当前 active 节点与这条显式指令交给 `review_profile_instruction`
 - 最后持久化新节点、退役旧节点，并重建对应 scope 的 profile 文本
+- 如果一条手工指令同时涉及多个领域，也必须拆成多条画像节点，不能生成跨领域综合节点
 
 目标范围支持：
 

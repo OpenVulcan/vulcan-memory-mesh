@@ -203,6 +203,7 @@ message PostActionTimelineItem {
     - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
     - 把这些活跃节点与本批次新画像候选一起送入一次 `review_profile_nodes`
     - 如果本批次只有 user 或只有 project 候选，则只发送存在的一侧
+    - `analyze_session_batch` 与 `review_profile_nodes` 都要求按领域拆分画像节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
     - `review_profile_nodes` 会分别返回：
       - `user`
       - `project`

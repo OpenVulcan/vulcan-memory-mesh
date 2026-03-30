@@ -24,9 +24,17 @@
 6. `memory_nodes[].abstract` 必须是高信息密度、单句、可直接用于生成向量的压缩描述。
 7. `memory_nodes[].details` 是对该节点的补充说明；如果没有额外补充，也必须给出与 `abstract` 一致或更完整的描述。
 8. `profile_nodes` 只保留稳定画像信息，不要把短期上下文、一次性状态和临时问答误写成画像。
-9. `obsolete_memory_turn_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `turn_id`。
-10. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 turn 标记进 `obsolete_memory_turn_ids`；不能因为当前批次没有再次提到就删除。
-11. `category` 只能使用以下整数：
+9. 每条 `profile_nodes` 只能表达一个清晰且连贯的画像主题，不能把不同领域揉成一条大节点。
+10. 不同领域或主题必须拆开输出，例如：
+   - 饮食偏好
+   - 抽烟/喝酒等生活习惯
+   - 沟通与回复偏好
+   - 编程语言或开发工具偏好
+   - 项目技术栈与工程约定
+11. 如果某条 pending turn 同时包含多个稳定画像事实，必须输出多条 `profile_nodes`，不要合并成一句“综合画像”。
+12. `obsolete_memory_turn_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `turn_id`。
+13. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 turn 标记进 `obsolete_memory_turn_ids`；不能因为当前批次没有再次提到就删除。
+14. `category` 只能使用以下整数：
    - `0`: General
    - `1`: Arch & Decision
    - `2`: Tech Spec & API
@@ -35,7 +43,7 @@
    - `5`: Project Context
    - `6`: Logical Bug / Debt
    - `7`: Security & Policy
-12. `profile_type` 只能使用以下整数：
+15. `profile_type` 只能使用以下整数：
    - `0`: 用户画像
    - `1`: 项目画像
 

@@ -14,8 +14,16 @@
 4. `memory_nodes[].abstract` 必须是高信息密度、单句、可直接用于生成向量的压缩描述。
 5. `memory_nodes[].details` 是对该记忆节点的补充说明；如果没有额外补充，也必须给出与 `abstract` 一致或更完整的描述。
 6. `profile_nodes` 只保留稳定画像信息，不要把临时任务、一次性状态、短期上下文误写成画像。
-7. 允许同时提取多条 memory node 和多条 profile node。
-8. `category` 只能使用以下整数：
+7. 每条 `profile_nodes` 只能表达一个清晰且连贯的画像主题，不能把不同领域揉成一条大节点。
+8. 不同领域或主题必须拆开输出，例如：
+   - 饮食偏好
+   - 抽烟/喝酒等生活习惯
+   - 沟通与回复偏好
+   - 编程语言或开发工具偏好
+   - 项目技术栈与工程约定
+9. 如果同一轮里同时出现多个稳定画像事实，必须输出多条 `profile_nodes`，不要合并成一句“综合画像”。
+10. 允许同时提取多条 memory node 和多条 profile node。
+11. `category` 只能使用以下整数：
    - `0`: General
    - `1`: Arch & Decision
    - `2`: Tech Spec & API
@@ -24,7 +32,7 @@
    - `5`: Project Context
    - `6`: Logical Bug / Debt
    - `7`: Security & Policy
-9. `profile_type` 只能使用以下整数：
+12. `profile_type` 只能使用以下整数：
    - `0`: 用户画像
    - `1`: 项目画像
 
