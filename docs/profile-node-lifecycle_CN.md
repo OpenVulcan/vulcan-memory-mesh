@@ -2,9 +2,9 @@
 
 ## 文档目标
 
-这份文档用于固化 VMM 当前讨论中的画像系统改造方向，避免后续开发时再次退回到“直接维护一段大画像 Blob”的旧思路。
+这份文档用于说明 VMM 当前主线已经落地的画像节点生命周期与渲染方案，避免后续开发时再次退回到“直接维护一段大画像 Blob”的旧思路。
 
-这里的目标不是让 LLM 直接写最终画像文本，而是把画像系统拆成：
+当前实现里，画像系统已经拆成：
 
 - 画像节点事实层
 - LLM 节点评审层
@@ -32,7 +32,7 @@
 
 `vmm_profile_nodes` 继续维持一张表，通过 `profile_type + bind_id` 区分 user/project，不拆成两张表。
 
-建议字段：
+当前主线字段：
 
 - `id`
 - `turn_id`
@@ -74,7 +74,7 @@
 
 ## 画像状态机
 
-建议状态机如下：
+当前主线状态机如下：
 
 - `0 invalid`
 - `1 pending`
@@ -286,20 +286,34 @@ LLM 不再返回最终画像全文，而是返回“节点处理指令”。
   - `L` 表示生命周期等级
   - `W` 表示被重复确认的次数与当前新鲜度信号
 
-## 执行顺序建议
+## 当前执行顺序
 
-1. 先调整 `vmm_profile_nodes` schema 与状态机
-2. 新增独立的画像节点评审 prompt
-3. 把 `PostAction` 里的画像处理改为：
-   - 提炼候选
-   - 拉取 active 节点
-   - LLM 评审
-   - 持久化新节点 / 旧节点 supersede
-4. 最后由后端重建 `vmm_users.profile / vmm_projects.profile`
+当前 `PostAction` 批处理里的画像链路已经是：
+
+1. `analyze_session_batch` 为每条待处理 turn 产出 `profile_nodes[]`
+2. 后端按 user/project 两侧收集本批次新画像候选
+3. 读取当前目标下仍然 `active` 且未过期的画像节点
+4. 把“活跃旧节点 + 新候选”送入 `review_profile_nodes`
+5. LLM 返回：
+   - 哪些候选应接纳
+   - 哪些候选应无效
+   - 哪些旧节点应被替代
+   - 新节点的 `priority / level / level_reason`
+6. 后端根据评审结果：
+   - 插入新节点
+   - 标记旧节点 `superseded`
+   - 计算 `refresh_weight`
+   - 计算 `expires_timestamp`
+7. 最后由后端重建 `vmm_users.profile / vmm_projects.profile`
+
+另外，队列每 30 秒还会额外执行一次过期画像收敛：
+
+1. 把到期的 `active` 节点改成 `expired`
+2. 重新渲染受影响 user/project 的 profile 文本
 
 ## 最终结论
 
-以后：
+当前主线已经是：
 
 - `vmm_profile_nodes` 是事实层
 - `profile` 是渲染层

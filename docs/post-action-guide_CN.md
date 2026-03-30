@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及最终如何写入 DuckDB 与 LanceDB。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何通过后台队列把结果写入 DuckDB 与 LanceDB。
 
 当前相关方法只有：
 
@@ -260,6 +260,156 @@ message PostActionTimelineItem {
     - 避免 `extracted_status=0` 却残留孤立新向量
 27. 当前限制：
     - 仍不自动更新 `vmm_teams.profile / vmm_spaces.profile`
+
+## 队列处理细节
+
+当前后台队列是单 worker goroutine，不是多 worker 并行。
+
+它的职责分两类：
+
+1. 优先消费显式入队的 `session`
+2. 每 30 秒执行一次周期性维护
+
+队列的显式入队来自：
+
+- `PostAction` 成功写入 `vmm_turn_records` 后
+- 空闲超时扫描把待处理 session 强制提升为 `force=true`
+
+同一个 `session` 在队列里会做去重和状态合并：
+
+- 已经在排队，则只刷新 session 快照
+- 已经在处理中，则标记为 `dirty`
+- 强制任务会把 `force` 置位，保证下次处理时跳过阈值拦截
+
+### 显式队列消费顺序
+
+当队列开始处理一个 session 时，会按以下顺序执行：
+
+1. 读取该 session 下所有 `extracted_status = pending` 的 turn
+2. 计算 pending turn 的累计 `dehydrated_budget`
+3. 计算当前 session 的空闲时长 `idle_gap`
+4. 阈值判断：
+   - 如果不是 `force=true`
+   - 且 pending turn 条数未达到阈值
+   - 且 pending token 预算未达到阈值
+   - 则这次先跳过，不发起 LLM 分析
+5. 如果达到条件，则在 `session_analysis_max_input_tokens` 预算内，优先选择最早的 pending turn 进入本批次
+6. 剩余预算再用于回带历史 `details`
+7. 再加载当前 session 下仍然活跃的旧记忆节点
+8. 组装 `analyze_session_batch` 请求
+9. 调 LLM 批量返回：
+   - 每条待处理 turn 的 `details`
+   - `memory_nodes[]`
+   - `profile_nodes[]`
+   - `obsolete_memory_turn_ids`
+10. 如果有 `profile_nodes[]`，统一走一次 `review_profile_nodes`
+11. 如果有 `memory_nodes[]`，先写 LanceDB
+12. 然后批量回写 DuckDB
+13. 如果有旧记忆被淘汰，再删除 LanceDB 旧向量
+
+### 历史窗口与预算规则
+
+当前批处理组 prompt 的规则是：
+
+- 待处理 turn 使用原始脱水 JSON
+- 历史只使用已经提炼完成的 `details`
+- 历史默认最多回带 `session_analysis_history_turns`
+- 单次总输入预算上限由 `session_analysis_max_input_tokens` 控制
+- 历史预算的统计口径是历史 `details_budget`
+- 当前预算的统计口径是 pending turn 的 `dehydrated_budget`
+
+换句话说，当前 LLM 批处理不是“历史原文 + 当前原文”，而是：
+
+- 历史精要
+- 当前原始 turn
+- 旧记忆锚点
+
+## 定时监测流程
+
+当前队列 worker 每 30 秒会做两件事。
+
+### 1. 空闲超时扫描
+
+它会查找：
+
+- `vmm_sessions.updated_timestamp` 已经超过 `session_analysis_idle_timeout`
+- 且该 session 仍存在 `extracted_status = pending` 的 turn
+
+符合条件的 session 会被重新入队，并带 `force=true`。
+
+这意味着：
+
+- 即使 pending turn 条数还没到阈值
+- 或 pending token 预算还没到阈值
+- 只要空闲超时，也会被强制触发一次批处理
+
+### 2. 过期画像收敛
+
+它会查找：
+
+- `profile_status = active`
+- 且 `expires_timestamp <= now`
+
+的画像节点，并把它们真实落成 `expired`。
+
+完成后会：
+
+1. 读取受影响 user/project 当前剩余的 `active` 节点
+2. 由后端重新渲染对应的：
+   - `vmm_users.profile`
+   - `vmm_projects.profile`
+
+所以，画像过期不是只在读取时临时过滤，而是会被后台扫描真实收敛到数据库状态中。
+
+## 状态机速览
+
+### Turn 提取状态
+
+- `0 = pending`
+- `1 = done`
+
+语义：
+
+- `pending`
+  - turn 已写入 DuckDB，但还没完成 LLM 提炼
+- `done`
+  - `details / memory_nodes / profile_nodes` 已完成回写
+
+### Memory 节点状态
+
+- `0 = active`
+- `1 = superseded`
+- `2 = deleted`
+
+语义：
+
+- `active`
+  - 仍参与后续记忆检索与淘汰判断
+- `superseded`
+  - 已被更新记忆覆盖
+- `deleted`
+  - 被判定无效，不再使用
+
+### Profile 节点状态
+
+- `0 = invalid`
+- `1 = pending`
+- `2 = active`
+- `3 = superseded`
+- `4 = expired`
+
+语义：
+
+- `invalid`
+  - 新候选无长期价值，但保留备案
+- `pending`
+  - 等待评审或重试
+- `active`
+  - 当前有效，并参与画像渲染
+- `superseded`
+  - 被更近的新节点替代
+- `expired`
+  - 生命周期自然到期
 
 ## 清洗行为
 
