@@ -211,17 +211,21 @@ func TestPostActionUseCaseProcessesQueuedSessionBatch(t *testing.T) {
 	}
 }
 
-// TestPostActionUseCaseBatchesProfileMergeAcrossTurns verifies user/project profile evidence from multiple pending turns is merged in one batched merge call.
-// TestPostActionUseCaseBatchesProfileMergeAcrossTurns 用于验证来自多条待处理 turn 的 user/project 画像证据会通过一次批量合并调用统一处理。
+// TestPostActionUseCaseBatchesProfileReviewAcrossTurns verifies user/project profile evidence from multiple pending turns is reviewed in one batched call and then rendered back into durable profile text.
+// TestPostActionUseCaseBatchesProfileReviewAcrossTurns 用于验证来自多条待处理 turn 的 user/project 画像证据会通过一次批量评审调用统一处理，并回写成长期画像文本。
 func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {
 	store := &testRelationalStore{
 		pendingTurns: []logicdomain.SessionTurnRecord{
-			{ID: 601, SessionID: 91, ProjectID: 12, DehydratedContent: `{"user":"u1","timeline":[],"assistant":"a1"}`, DehydratedBudget: 50},
-			{ID: 602, SessionID: 91, ProjectID: 12, DehydratedContent: `{"user":"u2","timeline":[],"assistant":"a2"}`, DehydratedBudget: 50},
+			{ID: 601, SessionID: 91, ProjectID: 12, DehydratedContent: `{"user":"u1","timeline":[],"assistant":"a1"}`, DehydratedBudget: 50, CreatedAt: time.Date(2026, 3, 29, 9, 0, 0, 0, time.UTC)},
+			{ID: 602, SessionID: 91, ProjectID: 12, DehydratedContent: `{"user":"u2","timeline":[],"assistant":"a2"}`, DehydratedBudget: 50, CreatedAt: time.Date(2026, 3, 30, 10, 0, 0, 0, time.UTC)},
 		},
-		profileTargets: logicdomain.ProfileTargetsSnapshot{
-			UserProfile:    "旧用户画像",
-			ProjectProfile: "旧项目画像",
+		profileReviewTargets: logicdomain.ProfileReviewTargetsSnapshot{
+			UserNodes: []logicdomain.ProfileActiveNodeRecord{
+				{ID: 41, ProfileType: logicdomain.ProfileTypeUser, ProfileDate: "2026-03-20", Priority: logicdomain.ProfilePriorityP1, ProfileLevel: logicdomain.ProfileLevelStable, RefreshWeight: 1, Content: "用户偏好 Rust。"},
+			},
+			ProjectNodes: []logicdomain.ProfileActiveNodeRecord{
+				{ID: 52, ProfileType: logicdomain.ProfileTypeProject, ProfileDate: "2026-03-18", Priority: logicdomain.ProfilePriorityP2, ProfileLevel: logicdomain.ProfileLevelSituational, RefreshWeight: 0, Content: "项目当前没有代码。"},
+			},
 		},
 	}
 	analyzer := &stubPostActionBatchAnalyzer{result: logicdomain.SessionBatchAnalysis{
@@ -241,21 +245,44 @@ func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {
 			},
 		},
 	}}
-	merger := &stubPostActionProfileMerger{
-		result: logicdomain.TurnProfileMergeResult{
-			User: &logicdomain.ProfileMergeSection{
-				UpdatedProfile:          "合并后的用户画像",
-				MergedCandidateIndexes:  []int{0, 1},
+	reviewer := &stubPostActionProfileReviewer{
+		result: logicdomain.TurnProfileReviewResult{
+			User: &logicdomain.ProfileReviewSection{
+				AcceptedCandidates: []logicdomain.ProfileReviewAcceptedCandidate{
+					{
+						CandidateIndex:    0,
+						NormalizedContent: "用户偏好 Rust，并希望面向多个 AI 编程工具做记忆扩展。",
+						Priority:          logicdomain.ProfilePriorityP1,
+						ProfileLevel:      logicdomain.ProfileLevelStable,
+						LevelReason:       "这是稳定开发偏好与目标方向。",
+						SupersedeNodeIDs:  []uint64{41},
+					},
+					{
+						CandidateIndex:    1,
+						NormalizedContent: "用户希望产品支持多个 AI 编程工具。",
+						Priority:          logicdomain.ProfilePriorityP2,
+						ProfileLevel:      logicdomain.ProfileLevelSituational,
+						LevelReason:       "这是当前阶段的重要范围偏好。",
+					},
+				},
 				InvalidCandidateIndexes: []int{},
 			},
-			Project: &logicdomain.ProfileMergeSection{
-				UpdatedProfile:          "合并后的项目画像",
-				MergedCandidateIndexes:  []int{0},
+			Project: &logicdomain.ProfileReviewSection{
+				AcceptedCandidates: []logicdomain.ProfileReviewAcceptedCandidate{
+					{
+						CandidateIndex:    0,
+						NormalizedContent: "项目目前没有代码，仍处于早期设计阶段。",
+						Priority:          logicdomain.ProfilePriorityP1,
+						ProfileLevel:      logicdomain.ProfileLevelSituational,
+						LevelReason:       "这是当前阶段的重要项目背景。",
+						SupersedeNodeIDs:  []uint64{52},
+					},
+				},
 				InvalidCandidateIndexes: []int{},
 			},
 		},
 	}
-	uc := newPostActionUseCase(nil, store, nil, &stubVectorStore{}, analyzer, merger, PostActionAnalysisConfig{
+	uc := newPostActionUseCase(nil, store, nil, &stubVectorStore{}, analyzer, reviewer, PostActionAnalysisConfig{
 		TurnThreshold:  2,
 		TokenThreshold: 9999,
 		IdleTimeout:    15 * time.Minute,
@@ -273,17 +300,20 @@ func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {
 		UpdatedAt:  time.Now(),
 	}, false, "test")
 
-	if merger.calls != 1 {
-		t.Fatalf("expected one batched merge call, got %d", merger.calls)
+	if reviewer.calls != 1 {
+		t.Fatalf("expected one batched review call, got %d", reviewer.calls)
 	}
-	if len(merger.nodes) != 3 {
-		t.Fatalf("expected all profile nodes to flow into one merge call, got %+v", merger.nodes)
+	if len(reviewer.nodes) != 3 {
+		t.Fatalf("expected all profile nodes to flow into one review call, got %+v", reviewer.nodes)
 	}
-	if !store.batchAnalysis.UserProfileMerged || store.batchAnalysis.MergedUserProfile != "合并后的用户画像" {
+	if !strings.Contains(store.batchAnalysis.MergedUserProfile, "[Profile Legend]") || !strings.Contains(store.batchAnalysis.MergedUserProfile, "用户偏好 Rust，并希望面向多个 AI 编程工具做记忆扩展。") {
 		t.Fatalf("unexpected merged user profile state: %+v", store.batchAnalysis)
 	}
-	if !store.batchAnalysis.ProjectProfileMerged || store.batchAnalysis.MergedProjectProfile != "合并后的项目画像" {
+	if !strings.Contains(store.batchAnalysis.MergedProjectProfile, "[Profile Legend]") || !strings.Contains(store.batchAnalysis.MergedProjectProfile, "项目目前没有代码，仍处于早期设计阶段。") {
 		t.Fatalf("unexpected merged project profile state: %+v", store.batchAnalysis)
+	}
+	if len(store.batchAnalysis.RetiredProfileNodeIDs) != 2 || store.batchAnalysis.RetiredProfileNodeIDs[0] != 41 || store.batchAnalysis.RetiredProfileNodeIDs[1] != 52 {
+		t.Fatalf("unexpected retired profile node ids: %+v", store.batchAnalysis.RetiredProfileNodeIDs)
 	}
 }
 
@@ -420,21 +450,22 @@ func (s *stubNoiseTurnFilter) FilterPersistableTurns(_ context.Context, turns []
 // testRelationalStore is the minimal relational-store stub needed by the queued post-action tests.
 // testRelationalStore 用于为排队式 post-action 测试提供最小化的关系存储桩。
 type testRelationalStore struct {
-	session           logicdomain.SessionRef
-	turn              logicdomain.TurnRecord
-	persistedTurn     logicdomain.PersistedTurnRecord
-	pendingTurns      []logicdomain.SessionTurnRecord
-	historyTurns      []logicdomain.SessionTurnRecord
-	activeMemoryNodes []logicdomain.SessionMemoryNodeRecord
-	idleSessions      []logicdomain.SessionRef
-	profileTargets    logicdomain.ProfileTargetsSnapshot
-	analysisTurn      logicdomain.PersistedTurnRecord
-	analysis          logicdomain.TurnAnalysis
-	analysisErr       error
-	batchTurns        []logicdomain.SessionTurnRecord
-	batchAnalysis     logicdomain.SessionBatchAnalysis
-	batchApplyResult  logicdomain.SessionAnalysisApplyResult
-	batchApplyErr     error
+	session              logicdomain.SessionRef
+	turn                 logicdomain.TurnRecord
+	persistedTurn        logicdomain.PersistedTurnRecord
+	pendingTurns         []logicdomain.SessionTurnRecord
+	historyTurns         []logicdomain.SessionTurnRecord
+	activeMemoryNodes    []logicdomain.SessionMemoryNodeRecord
+	idleSessions         []logicdomain.SessionRef
+	profileTargets       logicdomain.ProfileTargetsSnapshot
+	profileReviewTargets logicdomain.ProfileReviewTargetsSnapshot
+	analysisTurn         logicdomain.PersistedTurnRecord
+	analysis             logicdomain.TurnAnalysis
+	analysisErr          error
+	batchTurns           []logicdomain.SessionTurnRecord
+	batchAnalysis        logicdomain.SessionBatchAnalysis
+	batchApplyResult     logicdomain.SessionAnalysisApplyResult
+	batchApplyErr        error
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
@@ -483,6 +514,12 @@ func (s *testRelationalStore) LoadProfileTargets(_ context.Context, _ logicdomai
 	return s.profileTargets, nil
 }
 
+// LoadProfileReviewTargets returns the canned active user/project profile nodes so tests can verify the review request input.
+// LoadProfileReviewTargets 用于返回预设的活跃 user/project 画像节点，方便测试断言评审请求输入。
+func (s *testRelationalStore) LoadProfileReviewTargets(_ context.Context, _ logicdomain.SessionRef) (logicdomain.ProfileReviewTargetsSnapshot, error) {
+	return s.profileReviewTargets, nil
+}
+
 // ApplyTurnAnalysis keeps interface completeness for legacy tests that still compile against the expanded port.
 // ApplyTurnAnalysis 用于补齐接口，让扩展后的端口在遗留测试场景下仍可编译。
 func (s *testRelationalStore) ApplyTurnAnalysis(_ context.Context, _ logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error {
@@ -526,24 +563,24 @@ func (s *stubPostActionBatchAnalyzer) Analyze(_ context.Context, requestBody str
 	return s.result, nil
 }
 
-// stubPostActionProfileMerger records batched profile merge calls and returns one canned result or error.
-// stubPostActionProfileMerger 用于记录批量画像合并调用，并返回预设结果或错误。
-type stubPostActionProfileMerger struct {
+// stubPostActionProfileReviewer records batched profile review calls and returns one canned result or error.
+// stubPostActionProfileReviewer 用于记录批量画像评审调用，并返回预设结果或错误。
+type stubPostActionProfileReviewer struct {
 	calls    int
-	snapshot logicdomain.ProfileTargetsSnapshot
+	snapshot logicdomain.ProfileReviewTargetsSnapshot
 	nodes    []logicdomain.ProfileNodeCandidate
-	result   logicdomain.TurnProfileMergeResult
+	result   logicdomain.TurnProfileReviewResult
 	err      error
 }
 
-// Merge captures the full batch input so tests can assert the use case sends user/project nodes together.
-// Merge 用于捕获完整批量输入，方便测试断言用例会把 user/project 节点一起送进合并器。
-func (s *stubPostActionProfileMerger) Merge(_ context.Context, snapshot logicdomain.ProfileTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileMergeResult, error) {
+// Review captures the full batch input so tests can assert the use case sends user/project nodes together.
+// Review 用于捕获完整批量输入，方便测试断言用例会把 user/project 节点一起送进评审器。
+func (s *stubPostActionProfileReviewer) Review(_ context.Context, snapshot logicdomain.ProfileReviewTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileReviewResult, error) {
 	s.calls++
 	s.snapshot = snapshot
 	s.nodes = append([]logicdomain.ProfileNodeCandidate(nil), nodes...)
 	if s.err != nil {
-		return logicdomain.TurnProfileMergeResult{}, s.err
+		return logicdomain.TurnProfileReviewResult{}, s.err
 	}
 	return s.result, nil
 }

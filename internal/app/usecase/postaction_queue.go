@@ -305,11 +305,18 @@ func (u *PostActionUseCase) processQueuedSession(session logicdomain.SessionRef,
 		return
 	}
 
-	// Normalize all fresh profile evidence into pending first, then fold the whole batch into user/project profile blobs with one merge call.
-	// 先把本批次的全部画像证据统一归一到 pending，再通过一次合并调用折叠进 user/project 画像 Blob。
-	normalizeSessionBatchProfileNodes(&analysis)
-	if err := u.mergeSessionBatchProfiles(workerCtx, session, &analysis); err != nil && u.logger != nil {
-		u.logger.Error("post-action session profile merge failed", "session_key", session.SessionKey, "session_id", session.SessionID, "err", err)
+	// Review the fresh atomic profile candidates against current active nodes, then let the backend rebuild the final user/project profile text from data.
+	// 先把新的原子化画像候选与当前活跃节点做评审，再由后端基于数据重建最终 user/project 画像文本。
+	if err := u.reviewSessionBatchProfiles(workerCtx, session, selectedPending, &analysis); err != nil && u.logger != nil {
+		u.logger.Error("post-action session profile review failed", "session_key", session.SessionKey, "session_id", session.SessionID, "err", err)
+		for turnIdx := range analysis.Turns {
+			analysis.Turns[turnIdx].ProfileNodes = nil
+		}
+		analysis.RetiredProfileNodeIDs = nil
+		analysis.UserProfileMerged = false
+		analysis.MergedUserProfile = ""
+		analysis.ProjectProfileMerged = false
+		analysis.MergedProjectProfile = ""
 	}
 
 	vectorIDs, err := u.persistSessionBatchVectors(workerCtx, session, selectedPending, &analysis)
@@ -516,91 +523,6 @@ func validateSessionBatchAnalysis(pendingTurns []logicdomain.SessionTurnRecord, 
 		if _, ok := activeTurnIDs[turnID]; !ok {
 			return logicdomain.InvalidLLMOutputError{Scene: "analyze_session_batch", Message: fmt.Sprintf("obsolete_memory_turn_ids contains unknown turn_id %d", turnID)}
 		}
-	}
-	return nil
-}
-
-// normalizeSessionBatchProfileNodes resets every fresh profile node to pending so the later merge step can deterministically flip only selected indexes.
-// normalizeSessionBatchProfileNodes 用于把每条新画像节点重置为 pending，方便后续合并步骤确定性地只修改被选中的索引。
-func normalizeSessionBatchProfileNodes(analysis *logicdomain.SessionBatchAnalysis) {
-	if analysis == nil {
-		return
-	}
-	for turnIdx := range analysis.Turns {
-		for nodeIdx := range analysis.Turns[turnIdx].ProfileNodes {
-			analysis.Turns[turnIdx].ProfileNodes[nodeIdx].Status = logicdomain.ProfileStatusPending
-		}
-	}
-}
-
-// mergeSessionBatchProfiles folds every profile node across the selected batch into one batched user/project merge call.
-// mergeSessionBatchProfiles 用于把所选批次里的全部画像节点折叠进一次 user/project 批量合并调用。
-func (u *PostActionUseCase) mergeSessionBatchProfiles(ctx context.Context, session logicdomain.SessionRef, analysis *logicdomain.SessionBatchAnalysis) error {
-	if u == nil || u.store == nil || u.profiles == nil || analysis == nil {
-		return nil
-	}
-	nodes := make([]logicdomain.ProfileNodeCandidate, 0)
-	userRefs := make([]postActionProfileNodeRef, 0)
-	projectRefs := make([]postActionProfileNodeRef, 0)
-	for turnIdx := range analysis.Turns {
-		for nodeIdx, node := range analysis.Turns[turnIdx].ProfileNodes {
-			nodes = append(nodes, node)
-			switch node.ProfileType {
-			case logicdomain.ProfileTypeUser:
-				userRefs = append(userRefs, postActionProfileNodeRef{TurnIndex: turnIdx, NodeIndex: nodeIdx})
-			case logicdomain.ProfileTypeProject:
-				projectRefs = append(projectRefs, postActionProfileNodeRef{TurnIndex: turnIdx, NodeIndex: nodeIdx})
-			}
-		}
-	}
-	if len(nodes) == 0 {
-		return nil
-	}
-
-	snapshot, err := u.store.LoadProfileTargets(ctx, session)
-	if err != nil {
-		return fmt.Errorf("load profile targets: %w", err)
-	}
-	merged, err := u.profiles.Merge(ctx, snapshot, nodes)
-	if err != nil {
-		return err
-	}
-	if err := applySessionBatchProfileMergeSection(analysis, userRefs, merged.User, "user"); err != nil {
-		return err
-	}
-	if err := applySessionBatchProfileMergeSection(analysis, projectRefs, merged.Project, "project"); err != nil {
-		return err
-	}
-	return nil
-}
-
-// applySessionBatchProfileMergeSection maps one validated user/project merge section back onto the original turn-local profile-node coordinates.
-// applySessionBatchProfileMergeSection 用于把已校验的 user/project 合并结果映射回原始的 turn 局部画像节点坐标。
-func applySessionBatchProfileMergeSection(analysis *logicdomain.SessionBatchAnalysis, refs []postActionProfileNodeRef, section *logicdomain.ProfileMergeSection, label string) error {
-	if analysis == nil || len(refs) == 0 || section == nil {
-		return nil
-	}
-	for _, idx := range section.MergedCandidateIndexes {
-		if idx < 0 || idx >= len(refs) {
-			return logicdomain.InvalidLLMOutputError{Scene: "merge_profile", Message: fmt.Sprintf("%s merged index %d is out of range", label, idx)}
-		}
-		ref := refs[idx]
-		analysis.Turns[ref.TurnIndex].ProfileNodes[ref.NodeIndex].Status = logicdomain.ProfileStatusMerged
-	}
-	for _, idx := range section.InvalidCandidateIndexes {
-		if idx < 0 || idx >= len(refs) {
-			return logicdomain.InvalidLLMOutputError{Scene: "merge_profile", Message: fmt.Sprintf("%s invalid index %d is out of range", label, idx)}
-		}
-		ref := refs[idx]
-		analysis.Turns[ref.TurnIndex].ProfileNodes[ref.NodeIndex].Status = logicdomain.ProfileStatusInvalid
-	}
-	switch label {
-	case "user":
-		analysis.UserProfileMerged = true
-		analysis.MergedUserProfile = strings.TrimSpace(section.UpdatedProfile)
-	case "project":
-		analysis.ProjectProfileMerged = true
-		analysis.MergedProjectProfile = strings.TrimSpace(section.UpdatedProfile)
 	}
 	return nil
 }

@@ -24,7 +24,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest DuckDB schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 DuckDB 表结构版本。
-	currentSchemaVersion = 5
+	currentSchemaVersion = 6
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -178,9 +178,18 @@ CREATE TABLE IF NOT EXISTS vmm_profile_nodes (
   bind_id BIGINT NOT NULL,
   content TEXT NOT NULL,
   profile_status TINYINT NOT NULL DEFAULT 1,
-  created_timestamp BIGINT NOT NULL
+  priority TINYINT NOT NULL DEFAULT 2,
+  profile_level TINYINT NOT NULL DEFAULT 0,
+  level_reason TEXT NOT NULL DEFAULT '',
+  refresh_weight INTEGER NOT NULL DEFAULT 0,
+  expires_timestamp BIGINT NOT NULL DEFAULT 0,
+  superseded_by_id BIGINT NOT NULL DEFAULT 0,
+  profile_date TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_bind_status ON vmm_profile_nodes(profile_type, bind_id, profile_status, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_active_window ON vmm_profile_nodes(profile_type, bind_id, profile_status, expires_timestamp, id);
 CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_turn ON vmm_profile_nodes(turn_id, id);
 
 CREATE TABLE IF NOT EXISTS vmm_memory_entries (
@@ -651,7 +660,10 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		if node.ProfileType == logicdomain.ProfileTypeUser {
 			bindID = session.UserID
 		}
-		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), turn.ID, node.ProfileType, bindID, node.Content, node.Status, nowMs)
+		if strings.TrimSpace(node.ProfileDate) == "" {
+			node.ProfileDate = turn.CreatedAt.UTC().Format("2006-01-02")
+		}
+		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), turn.ID, node.ProfileType, bindID, node, nowMs)
 	}
 	if err := s.exec(ctx, script); err != nil {
 		return fmt.Errorf("apply turn analysis: %w", err)
@@ -679,6 +691,49 @@ func (s *Store) LoadProfileTargets(ctx context.Context, session logicdomain.Sess
 	return logicdomain.ProfileTargetsSnapshot{
 		UserProfile:    strings.TrimSpace(user.Profile),
 		ProjectProfile: strings.TrimSpace(project.Profile),
+	}, nil
+}
+
+// LoadProfileReviewTargets loads the currently active and non-expired user/project profile nodes so post-action can review new candidates against factual atomic records.
+// LoadProfileReviewTargets 用于加载当前活跃且未过期的 user/project 画像节点，让 post-action 可以基于原子事实记录评审新候选。
+func (s *Store) LoadProfileReviewTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileReviewTargetsSnapshot, error) {
+	if session.UserID == 0 {
+		return logicdomain.ProfileReviewTargetsSnapshot{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+	}
+	if session.ProjectID == 0 {
+		return logicdomain.ProfileReviewTargetsSnapshot{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+	}
+	nowMs := time.Now().UTC().UnixMilli()
+	loadNodes := func(profileType int, bindID uint64) ([]logicdomain.ProfileActiveNodeRecord, error) {
+		rows, err := queryRows[profileNodeRow](s, ctx, `
+SELECT id, turn_id, profile_type, bind_id, content, profile_status,
+       priority, profile_level, level_reason, refresh_weight,
+       expires_timestamp, superseded_by_id, profile_date,
+       created_timestamp, updated_timestamp
+FROM vmm_profile_nodes
+WHERE profile_type = ? AND bind_id = ? AND profile_status = ? AND (expires_timestamp <= 0 OR expires_timestamp > ?)
+ORDER BY profile_date ASC, priority ASC, refresh_weight DESC, id ASC
+`, profileType, bindID, logicdomain.ProfileStatusActive, nowMs)
+		if err != nil {
+			return nil, err
+		}
+		nodes := make([]logicdomain.ProfileActiveNodeRecord, 0, len(rows))
+		for _, row := range rows {
+			nodes = append(nodes, row.toDomain())
+		}
+		return nodes, nil
+	}
+	userNodes, err := loadNodes(logicdomain.ProfileTypeUser, session.UserID)
+	if err != nil {
+		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query user profile review targets: %w", err)
+	}
+	projectNodes, err := loadNodes(logicdomain.ProfileTypeProject, session.ProjectID)
+	if err != nil {
+		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query project profile review targets: %w", err)
+	}
+	return logicdomain.ProfileReviewTargetsSnapshot{
+		UserNodes:    userNodes,
+		ProjectNodes: projectNodes,
 	}, nil
 }
 
@@ -886,6 +941,7 @@ func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdoma
 	if err != nil {
 		return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("load obsolete vector ids: %w", err)
 	}
+	retiredProfileNodeIDs := normalizeUint64List(analysis.RetiredProfileNodeIDs)
 
 	script := ""
 	memoryOffset := uint64(0)
@@ -912,11 +968,29 @@ func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdoma
 			if !logicdomain.ValidProfileStatus(node.Status) {
 				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
 			}
+			if node.RefreshWeight < 0 {
+				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].refresh_weight", Message: "must be >= 0"}
+			}
+			if node.Status == logicdomain.ProfileStatusActive {
+				if !logicdomain.ValidProfilePriority(node.Priority) {
+					return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].priority", Message: "must be one supported profile priority"}
+				}
+				if !logicdomain.ValidProfileLevel(node.ProfileLevel) {
+					return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_level", Message: "must be one supported profile level"}
+				}
+			}
 			bindID := session.ProjectID
 			if node.ProfileType == logicdomain.ProfileTypeUser {
 				bindID = session.UserID
 			}
-			script += buildProfileNodeInsertSQL(profileStartID+profileOffset, turnResult.TurnID, node.ProfileType, bindID, node.Content, node.Status, nowMs)
+			if strings.TrimSpace(node.ProfileDate) == "" {
+				node.ProfileDate = chooseProfileDateFromTurn(turnByID[turnResult.TurnID], now)
+			}
+			insertedProfileID := profileStartID + profileOffset
+			script += buildProfileNodeInsertSQL(insertedProfileID, turnResult.TurnID, node.ProfileType, bindID, node, nowMs)
+			if node.Status == logicdomain.ProfileStatusActive && len(node.SupersedeNodeIDs) > 0 {
+				script += buildProfileNodesSupersedeSQL(normalizeUint64List(node.SupersedeNodeIDs), insertedProfileID, nowMs)
+			}
 			profileOffset++
 		}
 	}
@@ -925,6 +999,9 @@ func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdoma
 	}
 	if analysis.ProjectProfileMerged {
 		script += buildProjectProfileUpdateSQL(session.ProjectID, analysis.MergedProjectProfile, nowRFC3339)
+	}
+	if len(retiredProfileNodeIDs) > 0 {
+		script += buildProfileNodesRetireSQL(retiredProfileNodeIDs, nowMs)
 	}
 	if len(obsoleteTurnIDs) > 0 {
 		script += buildMemoryNodesSupersedeSQL(obsoleteTurnIDs)
@@ -1747,14 +1824,20 @@ INSERT INTO vmm_memory_nodes (
 `, id, projectID, userID, turnID, sqlStringLiteral(vectorID), category, sqlStringLiteral(abstract), sqlStringLiteral(details), logicdomain.MemoryNodeStatusActive, createdMs)
 }
 
-// buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node together with its final merge status.
-// buildProfileNodeInsertSQL 用于渲染单条画像节点的原始 INSERT 语句，并携带最终合并状态。
-func buildProfileNodeInsertSQL(id, turnID uint64, profileType int, bindID uint64, content string, profileStatus int, createdMs int64) string {
+// buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node together with its lifecycle metadata and final status.
+// buildProfileNodeInsertSQL 用于渲染单条画像节点的原始 INSERT 语句，并携带生命周期元数据和最终状态。
+func buildProfileNodeInsertSQL(id, turnID uint64, profileType int, bindID uint64, node logicdomain.ProfileNodeCandidate, createdMs int64) string {
+	expiresMs := int64(0)
+	if !node.ExpiresAt.IsZero() {
+		expiresMs = node.ExpiresAt.UTC().UnixMilli()
+	}
 	return fmt.Sprintf(`
 INSERT INTO vmm_profile_nodes (
-  id, turn_id, profile_type, bind_id, content, profile_status, created_timestamp
-) VALUES (%d, %d, %d, %d, %s, %d, %d);
-`, id, turnID, profileType, bindID, sqlStringLiteral(content), profileStatus, createdMs)
+  id, turn_id, profile_type, bind_id, content, profile_status,
+  priority, profile_level, level_reason, refresh_weight, expires_timestamp,
+  superseded_by_id, profile_date, created_timestamp, updated_timestamp
+) VALUES (%d, %d, %d, %d, %s, %d, %d, %d, %s, %d, %d, 0, %s, %d, %d);
+`, id, turnID, profileType, bindID, sqlStringLiteral(strings.TrimSpace(node.Content)), node.Status, node.Priority, node.ProfileLevel, sqlStringLiteral(strings.TrimSpace(node.LevelReason)), node.RefreshWeight, expiresMs, sqlStringLiteral(strings.TrimSpace(node.ProfileDate)), createdMs, createdMs)
 }
 
 // buildUserProfileUpdateSQL renders the raw UPDATE used to replace the durable user profile blob once the merge scene has accepted the latest evidence.
@@ -1775,6 +1858,32 @@ UPDATE vmm_projects
 SET profile = %s, updated_at = %s
 WHERE id = %d;
 `, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), projectID)
+}
+
+// buildProfileNodesSupersedeSQL renders the raw UPDATE used to retire older profile nodes once a fresher node has replaced them.
+// buildProfileNodesSupersedeSQL 用于渲染原始 UPDATE 语句，在较新的画像节点替代旧节点后把旧节点标成 superseded。
+func buildProfileNodesSupersedeSQL(nodeIDs []uint64, supersededByID uint64, updatedMs int64) string {
+	if len(nodeIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+UPDATE vmm_profile_nodes
+SET profile_status = %d, superseded_by_id = %d, updated_timestamp = %d
+WHERE profile_status = %d AND id IN (%s);
+`, logicdomain.ProfileStatusSuperseded, supersededByID, updatedMs, logicdomain.ProfileStatusActive, sqlUint64List(nodeIDs))
+}
+
+// buildProfileNodesRetireSQL renders the raw UPDATE used to retire active profile nodes without attaching them to one newly inserted replacement node.
+// buildProfileNodesRetireSQL 用于渲染原始 UPDATE 语句，在没有新替代节点时把活跃画像节点直接退役。
+func buildProfileNodesRetireSQL(nodeIDs []uint64, updatedMs int64) string {
+	if len(nodeIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+UPDATE vmm_profile_nodes
+SET profile_status = %d, updated_timestamp = %d
+WHERE profile_status = %d AND id IN (%s);
+`, logicdomain.ProfileStatusSuperseded, updatedMs, logicdomain.ProfileStatusActive, sqlUint64List(nodeIDs))
 }
 
 // buildMemoryNodesSupersedeSQL renders the raw UPDATE used to mark obsolete active memory nodes as superseded after one newer batch replaces them.
@@ -1799,6 +1908,39 @@ SET last_summarized_id = CASE WHEN last_summarized_id < %d THEN %d ELSE last_sum
     summarize_budget = CASE WHEN summarize_budget - %d < 0 THEN 0 ELSE summarize_budget - %d END
 WHERE id = %d;
 `, lastTurnID, lastTurnID, processedBudget, processedBudget, sessionID)
+}
+
+// chooseProfileDateFromTurn derives the rendered profile date from one persisted turn and falls back to the current time when needed.
+// chooseProfileDateFromTurn 用于从已持久化 turn 推导画像展示日期，并在必要时回退到当前时间。
+func chooseProfileDateFromTurn(turn logicdomain.SessionTurnRecord, fallback time.Time) string {
+	if !turn.CreatedAt.IsZero() {
+		return turn.CreatedAt.UTC().Format("2006-01-02")
+	}
+	return fallback.UTC().Format("2006-01-02")
+}
+
+// normalizeUint64List removes zeros and duplicates from generic uint64 id lists while keeping a deterministic ascending order.
+// normalizeUint64List 用于从通用 uint64 id 列表中去掉零值和重复项，并保持确定性的升序。
+func normalizeUint64List(values []uint64) []uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[uint64]struct{}{}
+	out := make([]uint64, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
 }
 
 // sqlUint64List converts one uint64 slice into a comma-separated SQL list for the debug-stage raw statement builders.
@@ -2035,6 +2177,44 @@ func (r memoryNodeRow) toDomain() logicdomain.SessionMemoryNodeRecord {
 		Details:    r.Details,
 		NodeStatus: r.NodeStatus,
 		CreatedAt:  unixMilliToTime(r.CreatedTimestamp),
+	}
+}
+
+type profileNodeRow struct {
+	ID               uint64 `json:"id"`
+	TurnID           uint64 `json:"turn_id"`
+	ProfileType      int    `json:"profile_type"`
+	BindID           uint64 `json:"bind_id"`
+	Content          string `json:"content"`
+	ProfileStatus    int    `json:"profile_status"`
+	Priority         int    `json:"priority"`
+	ProfileLevel     int    `json:"profile_level"`
+	LevelReason      string `json:"level_reason"`
+	RefreshWeight    int    `json:"refresh_weight"`
+	ExpiresTimestamp int64  `json:"expires_timestamp"`
+	SupersededByID   uint64 `json:"superseded_by_id"`
+	ProfileDate      string `json:"profile_date"`
+	CreatedTimestamp int64  `json:"created_timestamp"`
+	UpdatedTimestamp int64  `json:"updated_timestamp"`
+}
+
+func (r profileNodeRow) toDomain() logicdomain.ProfileActiveNodeRecord {
+	return logicdomain.ProfileActiveNodeRecord{
+		ID:             r.ID,
+		TurnID:         r.TurnID,
+		ProfileType:    r.ProfileType,
+		BindID:         r.BindID,
+		Content:        r.Content,
+		Status:         r.ProfileStatus,
+		Priority:       r.Priority,
+		ProfileLevel:   r.ProfileLevel,
+		LevelReason:    r.LevelReason,
+		RefreshWeight:  r.RefreshWeight,
+		ProfileDate:    r.ProfileDate,
+		ExpiresAt:      unixMilliToTime(r.ExpiresTimestamp),
+		SupersededByID: r.SupersededByID,
+		CreatedAt:      unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:      unixMilliToTime(r.UpdatedTimestamp),
 	}
 }
 

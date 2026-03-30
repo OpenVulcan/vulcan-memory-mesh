@@ -57,10 +57,10 @@ type PostActionSessionBatchAnalyzer interface {
 	Analyze(ctx context.Context, requestBody string) (logicdomain.SessionBatchAnalysis, error)
 }
 
-// PostActionProfileMerger is the tiny port used by post-action to batch-merge one turn's user/project profile evidence into durable profile blobs.
-// PostActionProfileMerger 用于让 post-action 把单次 turn 的 user/project 画像证据批量合并进长期画像 Blob。
-type PostActionProfileMerger interface {
-	Merge(ctx context.Context, snapshot logicdomain.ProfileTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileMergeResult, error)
+// PostActionProfileReviewer is the tiny port used by post-action to review fresh profile candidates against the current active user/project profile nodes.
+// PostActionProfileReviewer 用于让 post-action 把新的画像候选与当前活跃的 user/project 画像节点进行评审。
+type PostActionProfileReviewer interface {
+	Review(ctx context.Context, snapshot logicdomain.ProfileReviewTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileReviewResult, error)
 }
 
 // PostActionAnalysisConfig carries the session-level thresholds that decide when post-action should fire one debug-stage LLM summary.
@@ -82,7 +82,7 @@ type PostActionUseCase struct {
 	embedding   appports.EmbeddingClient
 	vector      appports.VectorStore
 	analyzer    PostActionSessionBatchAnalyzer
-	profiles    PostActionProfileMerger
+	profiles    PostActionProfileReviewer
 	analysisCfg PostActionAnalysisConfig
 	logger      *logx.Logger
 	queueCtx    context.Context
@@ -95,13 +95,13 @@ type PostActionUseCase struct {
 
 // NewPostActionUseCase creates a PostActionUseCase instance.
 // NewPostActionUseCase 用于创建 PostActionUseCase 实例。
-func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionSessionBatchAnalyzer, profiles PostActionProfileMerger, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
+func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionSessionBatchAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
 	return newPostActionUseCase(noiseGate, store, embedding, vector, analyzer, profiles, analysisCfg, logger, true)
 }
 
 // newPostActionUseCase builds the post-action use case and optionally starts the background queue worker.
 // newPostActionUseCase 用于构建 post-action 用例，并按需启动后台队列工作器。
-func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionSessionBatchAnalyzer, profiles PostActionProfileMerger, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
+func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, analyzer PostActionSessionBatchAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -232,73 +232,6 @@ func normalizeTurnProfileNodes(analysis *logicdomain.TurnAnalysis) {
 	for idx := range analysis.ProfileNodes {
 		analysis.ProfileNodes[idx].Status = logicdomain.ProfileStatusPending
 	}
-}
-
-// mergeTurnProfiles loads the current durable user/project profile blobs, sends all current-turn profile evidence through one batched merge call, and maps the result back onto analysis fields.
-// mergeTurnProfiles 用于加载当前长期 user/project 画像 Blob，把本轮全部画像证据送入一次批量合并调用，并把结果回写到 analysis 字段。
-func (u *PostActionUseCase) mergeTurnProfiles(ctx context.Context, session logicdomain.SessionRef, analysis *logicdomain.TurnAnalysis) error {
-	if u == nil || u.store == nil || u.profiles == nil || analysis == nil || len(analysis.ProfileNodes) == 0 {
-		return nil
-	}
-
-	// Load the current durable blobs first so the merge scene can reason over the full before/after profile state.
-	// 先加载当前长期画像 Blob，让合并场景可以基于完整的前后状态进行判断。
-	snapshot, err := u.store.LoadProfileTargets(ctx, session)
-	if err != nil {
-		return fmt.Errorf("load profile targets: %w", err)
-	}
-	merged, err := u.profiles.Merge(ctx, snapshot, analysis.ProfileNodes)
-	if err != nil {
-		return err
-	}
-
-	// Apply the optional user/project blocks independently so one successful target still lands even if the other side had no candidates.
-	// 独立应用可选的 user/project 结果块，确保一侧成功时不会因为另一侧没有候选而受影响。
-	if err := applyProfileMergeSection(analysis, logicdomain.ProfileTypeUser, merged.User, "user"); err != nil {
-		return err
-	}
-	if err := applyProfileMergeSection(analysis, logicdomain.ProfileTypeProject, merged.Project, "project"); err != nil {
-		return err
-	}
-	return nil
-}
-
-// applyProfileMergeSection maps one validated merge section back onto the flat profile-node slice and stores the final merged profile blob on the analysis payload.
-// applyProfileMergeSection 用于把一个已校验的合并结果块映射回扁平画像节点切片，并把最终画像 Blob 存回 analysis 载荷。
-func applyProfileMergeSection(analysis *logicdomain.TurnAnalysis, profileType int, section *logicdomain.ProfileMergeSection, label string) error {
-	if analysis == nil || section == nil {
-		return nil
-	}
-	sourceIndexes := make([]int, 0, len(analysis.ProfileNodes))
-	for idx, node := range analysis.ProfileNodes {
-		if node.ProfileType == profileType {
-			sourceIndexes = append(sourceIndexes, idx)
-		}
-	}
-	if len(sourceIndexes) == 0 {
-		return nil
-	}
-	for _, idx := range section.MergedCandidateIndexes {
-		if idx < 0 || idx >= len(sourceIndexes) {
-			return logicdomain.InvalidLLMOutputError{Scene: "merge_profile", Message: fmt.Sprintf("%s merged index %d is out of range", label, idx)}
-		}
-		analysis.ProfileNodes[sourceIndexes[idx]].Status = logicdomain.ProfileStatusMerged
-	}
-	for _, idx := range section.InvalidCandidateIndexes {
-		if idx < 0 || idx >= len(sourceIndexes) {
-			return logicdomain.InvalidLLMOutputError{Scene: "merge_profile", Message: fmt.Sprintf("%s invalid index %d is out of range", label, idx)}
-		}
-		analysis.ProfileNodes[sourceIndexes[idx]].Status = logicdomain.ProfileStatusInvalid
-	}
-	switch profileType {
-	case logicdomain.ProfileTypeUser:
-		analysis.UserProfileMerged = true
-		analysis.MergedUserProfile = strings.TrimSpace(section.UpdatedProfile)
-	case logicdomain.ProfileTypeProject:
-		analysis.ProjectProfileMerged = true
-		analysis.MergedProjectProfile = strings.TrimSpace(section.UpdatedProfile)
-	}
-	return nil
 }
 
 // persistMemoryNodeVectors embeds the extracted memory-node abstracts, writes them to LanceDB, and attaches the resulting vector ids back onto the analysis payload.

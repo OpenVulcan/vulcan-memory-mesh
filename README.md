@@ -22,6 +22,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - [DuckDB Schema 版本管理说明（中文）](./docs/duckdb-schema-versioning_CN.md)
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
+- [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
 
 ## 当前运行模型
 
@@ -120,15 +121,15 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
      - 每条待处理 turn 的 `memory_nodes[]`
      - 每条待处理 turn 的 `profile_nodes[]`
      - 需要淘汰的旧记忆 `turn_id` 列表
-   - 如果有 `profile_nodes[]`，会把整批 user/project 画像证据一起送入一次 `merge_profile` prompt
-   - 如果本批次只有 user 或只有 project 画像候选，则只把对应那一侧送进 LLM，不会把缺失侧作为空块一起传入
+  - 如果有 `profile_nodes[]`，会把整批 user/project 新画像候选和当前活跃画像节点一起送入一次 `review_profile_nodes` prompt
+  - 如果本批次只有 user 或只有 project 画像候选，则只把对应那一侧送进 LLM，不会把缺失侧作为空块一起传入
    - 对新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
    - 只有 LanceDB 成功后，才会批量回写 DuckDB：
      - `vmm_turn_records.details / details_budget / extracted_status`
      - `vmm_memory_nodes`
      - `vmm_profile_nodes`
      - `vmm_sessions.last_summarized_id / summarize_budget`
-   - 如果画像合并成功，会同步更新 `vmm_users.profile / vmm_projects.profile`
+  - 画像评审完成后，会在 DuckDB 中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
    - 如果 LLM 判定旧记忆 turn 需要淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
    - 然后删除 LanceDB 中对应的旧向量行
    - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
@@ -232,13 +233,22 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 同时每 30 秒扫描一次空闲超时且仍有待处理 turn 的 session
 - 达到 turn / token / idle 任一阈值，就会触发一次 `analyze_session_batch` prompt
 - `analyze_session_batch` 会基于“历史精要 + 待处理原始 turn + 活跃记忆节点”返回整批结构化结果
-- 如果本批次有 `profile_nodes`，会统一走一次 `merge_profile`，并按 user/project 两侧整体合并
+- 如果本批次有 `profile_nodes`，会统一走一次 `review_profile_nodes`，按 user/project 两侧分别评审新旧画像节点
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
 - DuckDB 成功回写后，会更新：
   - `vmm_turn_records.details / details_budget / extracted_status`
   - `vmm_memory_nodes`
   - `vmm_profile_nodes`
   - `vmm_sessions.last_summarized_id / summarize_budget`
+- `vmm_profile_nodes` 现在保存原子化画像事实节点，包含：
+  - `priority`
+  - `profile_level`
+  - `level_reason`
+  - `refresh_weight`
+  - `expires_timestamp`
+  - `superseded_by_id`
+  - `profile_date`
+- `vmm_users.profile / vmm_projects.profile` 不再作为画像合并输入，而是由当前有效画像节点自动重建的渲染结果
 - 如果 LLM 判定旧记忆 turn 已被覆盖，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`，并删除 LanceDB 旧向量
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
 - 如果 DuckDB 回写失败，会尝试回滚这次新增的 LanceDB 向量

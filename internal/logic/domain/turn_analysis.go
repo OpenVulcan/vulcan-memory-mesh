@@ -77,13 +77,59 @@ const (
 	// ProfileStatusInvalid 用于表示一条画像证据已被判定为无效。
 	ProfileStatusInvalid = 0
 
-	// ProfileStatusPending marks profile evidence waiting for a future merge into the profile blob.
-	// ProfileStatusPending 用于表示一条画像证据等待后续合并进画像 Blob。
+	// ProfileStatusPending marks profile evidence waiting for one reviewer decision or a later retry.
+	// ProfileStatusPending 用于表示一条画像证据正在等待评审决定或后续重试。
 	ProfileStatusPending = 1
 
-	// ProfileStatusMerged marks profile evidence that has already been merged into the profile blob.
-	// ProfileStatusMerged 用于表示一条画像证据已经合并进画像 Blob。
-	ProfileStatusMerged = 2
+	// ProfileStatusActive marks one profile node that is still considered valid and should participate in profile rendering.
+	// ProfileStatusActive 用于表示一条画像节点当前仍然有效，并应参与画像渲染。
+	ProfileStatusActive = 2
+
+	// ProfileStatusSuperseded marks one profile node that has been replaced by a fresher node.
+	// ProfileStatusSuperseded 用于表示一条画像节点已经被更新的节点替代。
+	ProfileStatusSuperseded = 3
+
+	// ProfileStatusExpired marks one profile node that has naturally aged out of the active profile window.
+	// ProfileStatusExpired 用于表示一条画像节点已因生命周期到期而失效。
+	ProfileStatusExpired = 4
+)
+
+const (
+	// ProfileStatusMerged keeps backward compatibility with older code paths that still refer to the previous "merged" name.
+	// ProfileStatusMerged 用于兼容仍然沿用旧“merged”命名的代码路径，它等价于当前的 active 状态。
+	ProfileStatusMerged = ProfileStatusActive
+)
+
+const (
+	// ProfilePriorityP0 marks a non-negotiable rule or hard boundary that should be surfaced before any softer preference.
+	// ProfilePriorityP0 用于表示硬约束或不可协商边界，应优先于较软的偏好展示。
+	ProfilePriorityP0 = 0
+
+	// ProfilePriorityP1 marks an important preference or working rule that should remain highly visible but can still be superseded later.
+	// ProfilePriorityP1 用于表示重要偏好或工作规则，需保持较高可见度，但后续仍可能被更新。
+	ProfilePriorityP1 = 1
+
+	// ProfilePriorityP2 marks a lower-priority reference item that is still useful but not foundational.
+	// ProfilePriorityP2 用于表示较低优先级的参考信息，仍有价值，但不属于基础约束。
+	ProfilePriorityP2 = 2
+)
+
+const (
+	// ProfileLevelTransient marks a short-lived conversational context that should expire quickly unless refreshed.
+	// ProfileLevelTransient 用于表示短时会话上下文，除非被刷新，否则应快速过期。
+	ProfileLevelTransient = 0
+
+	// ProfileLevelSituational marks a phase-specific preference or working assumption that may remain valid for one bounded period.
+	// ProfileLevelSituational 用于表示阶段性偏好或工作假设，通常只在一段有限时期内有效。
+	ProfileLevelSituational = 1
+
+	// ProfileLevelStable marks a long-lived preference or habit that should outlast one isolated discussion.
+	// ProfileLevelStable 用于表示稳定偏好或习惯，应当跨越单次讨论继续生效。
+	ProfileLevelStable = 2
+
+	// ProfileLevelPersistent marks a durable rule, identity trait, or hard requirement that should rarely expire automatically.
+	// ProfileLevelPersistent 用于表示长期规则、身份特征或强约束，通常不应自动过期。
+	ProfileLevelPersistent = 3
 )
 
 // PersistedTurnRecord stores the durable identifiers returned right after one cleaned turn is appended into DuckDB.
@@ -122,9 +168,17 @@ type MemoryNodeCandidate struct {
 // ProfileNodeCandidate stores one profile feature extracted from a turn before it is bound to a user or project row.
 // ProfileNodeCandidate 用于保存一条从 turn 中提炼出的画像特征，等待绑定到用户或项目。
 type ProfileNodeCandidate struct {
-	ProfileType int
-	Content     string
-	Status      int
+	ProfileType      int
+	Content          string
+	Status           int
+	Priority         int
+	ProfileLevel     int
+	LevelReason      string
+	RefreshWeight    int
+	ProfileDate      string
+	SourceTurnID     uint64
+	ExpiresAt        time.Time
+	SupersedeNodeIDs []uint64
 }
 
 // ValidMemoryNodeCategory reports whether one category id belongs to the supported memory-node enum set.
@@ -142,5 +196,17 @@ func ValidProfileType(profileType int) bool {
 // ValidProfileStatus reports whether one profile status id belongs to the supported profile-node status enum set.
 // ValidProfileStatus 用于判断某个画像状态 ID 是否属于当前支持的画像节点状态枚举集合。
 func ValidProfileStatus(status int) bool {
-	return status >= ProfileStatusInvalid && status <= ProfileStatusMerged
+	return status >= ProfileStatusInvalid && status <= ProfileStatusExpired
+}
+
+// ValidProfilePriority reports whether one profile priority belongs to the supported priority enum set.
+// ValidProfilePriority 用于判断某个画像优先级是否属于当前支持的优先级枚举集合。
+func ValidProfilePriority(priority int) bool {
+	return priority >= ProfilePriorityP0 && priority <= ProfilePriorityP2
+}
+
+// ValidProfileLevel reports whether one profile level belongs to the supported lifecycle enum set.
+// ValidProfileLevel 用于判断某个画像等级是否属于当前支持的生命周期枚举集合。
+func ValidProfileLevel(level int) bool {
+	return level >= ProfileLevelTransient && level <= ProfileLevelPersistent
 }

@@ -58,6 +58,7 @@ type SessionBatchTurnAnalysis struct {
 type SessionBatchAnalysis struct {
 	Turns                 []SessionBatchTurnAnalysis
 	ObsoleteMemoryTurnIDs []uint64
+	RetiredProfileNodeIDs []uint64
 	UserProfileMerged     bool
 	MergedUserProfile     string
 	ProjectProfileMerged  bool

@@ -200,16 +200,20 @@ message PostActionTimelineItem {
     - 以及：
       - `obsolete_memory_turn_ids`
 20. 如果批次里有 `profile_nodes[]`：
-    - 会先加载当前 `vmm_users.profile / vmm_projects.profile`
-    - 把整批 user/project 画像证据一起送入一次 `merge_profile`
+    - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
+    - 把这些活跃节点与本批次新画像候选一起送入一次 `review_profile_nodes`
     - 如果本批次只有 user 或只有 project 候选，则只发送存在的一侧
-    - `merge_profile` 会分别返回：
+    - `review_profile_nodes` 会分别返回：
       - `user`
       - `project`
     - 每个结果块都会给出：
-      - 完整更新后的画像文本
-      - 哪些候选 index 被 `merged`
-      - 哪些候选 index 被 `invalid`
+      - 哪些候选应接纳为新画像节点
+      - 哪些候选应判定为 `invalid`
+      - 哪些旧画像节点需要 `superseded`
+      - 每条新画像节点的：
+        - `priority`
+        - `profile_level`
+        - `level_reason`
 21. 如果批次里有新的 `memory_nodes[]`：
     - 会先对每条 `memory_nodes[].abstract` 做 embedding
     - 先把新向量写入 LanceDB
@@ -227,14 +231,31 @@ message PostActionTimelineItem {
       - `vmm_projects.profile`
       - `vmm_sessions.last_summarized_id`
       - `vmm_sessions.summarize_budget`
+    - 这里的 `vmm_users.profile / vmm_projects.profile` 不再是 LLM 直接输出的大 Blob
+      - 而是后端根据当前有效画像节点自动重建的时间轴文本
+      - 每条记录会带：
+        - `P`
+        - `L`
+        - `W`
 23. 如果 `obsolete_memory_turn_ids` 不为空：
     - 会把这些 turn 对应的 `vmm_memory_nodes.node_status` 标成 `superseded`
     - DuckDB 提交成功后，再删除 LanceDB 对应的旧向量
-24. 如果 LanceDB 已写入新向量，但 DuckDB 最终回写失败：
+24. 如果画像评审中有旧画像节点需要被替代：
+    - 会把旧画像节点标成 `superseded`
+    - 新画像节点会写入：
+      - `priority`
+      - `profile_level`
+      - `level_reason`
+      - `refresh_weight`
+      - `expires_timestamp`
+      - `superseded_by_id`
+      - `profile_date`
+25. 如果 LanceDB 已写入新向量，但 DuckDB 最终回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立新向量
-25. 当前限制：
+26. 当前限制：
     - 仍不自动更新 `vmm_teams.profile / vmm_spaces.profile`
+    - 当前只在读取和重建画像时过滤过期节点，后续还可以再补独立的 `expired` 扫描任务
 
 ## 清洗行为
 
@@ -283,7 +304,7 @@ message PostActionTimelineItem {
 - `vmm_memory_nodes`
 - `vmm_profile_nodes`
 
-其中，当前自动合并会额外更新：
+其中，当前自动重建会额外更新：
 
 - `vmm_users.profile`
 - `vmm_projects.profile`
@@ -314,7 +335,7 @@ message PostActionTimelineItem {
 
 当前主线的行为是：
 
-- 自动合并并更新：
+- 自动重建并更新：
   - `vmm_users.profile`
   - `vmm_projects.profile`
 - 暂不自动合并：
@@ -427,10 +448,18 @@ grpcurl -plaintext `
 - 同时每 30 秒扫描一次空闲超时且仍有待处理 turn 的 `session`
 - 达到条数、token、空闲任一阈值，就会触发一次 `analyze_session_batch`
 - `analyze_session_batch` 会基于“历史精要 + 待处理原始 turn + 活跃记忆节点”返回整批结果
-- 如果批次里有 `profile_nodes`，会统一走一次 `merge_profile`
-- `merge_profile` 仍然会分开返回 user/project 两块 JSON 结果
-- 合并成功后会更新 `vmm_users.profile / vmm_projects.profile`
-- `vmm_profile_nodes.profile_status` 会记录当前节点是 `merged / invalid / pending`
+- 如果批次里有 `profile_nodes`，会统一走一次 `review_profile_nodes`
+- `review_profile_nodes` 会分开返回 user/project 两块 JSON 结果
+- 后端会把新候选落成原子化画像节点，并自动重建 `vmm_users.profile / vmm_projects.profile`
+- `vmm_profile_nodes.profile_status` 会记录当前节点是 `active / invalid / superseded / pending / expired`
+- `vmm_profile_nodes` 会额外记录：
+  - `priority`
+  - `profile_level`
+  - `level_reason`
+  - `refresh_weight`
+  - `expires_timestamp`
+  - `superseded_by_id`
+  - `profile_date`
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
 - DuckDB 成功回写后会更新：
   - `vmm_turn_records.details / details_budget / extracted_status`
@@ -442,6 +471,7 @@ grpcurl -plaintext `
 - 如果旧记忆 turn 被判定淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
 - DuckDB 成功提交后，会删除 LanceDB 中对应的旧向量
 - 如果 DuckDB 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
+- `profile` 渲染文本顶部会固定带有 `P / L / W` 说明头，便于后续再次喂给 LLM
 - 仍然不自动更新 `vmm_teams.profile / vmm_spaces.profile`
 
 ## 当前限制
