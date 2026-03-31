@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -68,6 +69,9 @@ type ProfileUseCase struct {
 	store    appports.ProfileStore
 	reviewer ManualProfileInstructionReviewer
 	logger   *logx.Logger
+	mu       sync.Mutex
+	flights  map[string]*profileInstructionFlight
+	gates    map[string]*profileInstructionGate
 }
 
 // NewProfileUseCase creates a ProfileUseCase instance.
@@ -76,7 +80,30 @@ func NewProfileUseCase(store appports.ProfileStore, reviewer ManualProfileInstru
 	if logger == nil {
 		logger = logx.Default()
 	}
-	return &ProfileUseCase{store: store, reviewer: reviewer, logger: logger}
+	return &ProfileUseCase{
+		store:    store,
+		reviewer: reviewer,
+		logger:   logger,
+		flights:  map[string]*profileInstructionFlight{},
+		gates:    map[string]*profileInstructionGate{},
+	}
+}
+
+// profileInstructionFlight stores one in-flight ApplyProfileInstruction result so duplicate concurrent gRPC calls
+// can reuse the first LLM review instead of triggering the same reviewer flow twice.
+// profileInstructionFlight 用于保存一条正在进行中的 ApplyProfileInstruction 结果，
+// 让重复的并发 gRPC 调用能够复用第一次 LLM 评审，而不是把同样的流程触发两次。
+type profileInstructionFlight struct {
+	done   chan struct{}
+	result ProfileInstructionResult
+	err    error
+}
+
+// profileInstructionGate serializes manual profile instructions per concrete target so different instructions
+// never inspect and mutate the same active-node set concurrently.
+// profileInstructionGate 用于按具体目标串行化手工画像指令，避免不同指令并发读取和改写同一批 active 节点。
+type profileInstructionGate struct {
+	mu sync.Mutex
 }
 
 // GetNodes resolves the requested target and returns only its current active nodes in a bounded deterministic order.
@@ -115,6 +142,30 @@ func (u *ProfileUseCase) ApplyInstruction(ctx context.Context, cmd ProfileInstru
 	if err != nil {
 		return ProfileInstructionResult{}, err
 	}
+	instruction := strings.TrimSpace(cmd.Instruction)
+	flightKey := u.profileInstructionFlightKey(target, instruction)
+	if flight, shared := u.loadOrCreateProfileInstructionFlight(flightKey); shared {
+		return u.waitProfileInstructionFlight(ctx, flight)
+	} else {
+		gate := u.profileInstructionGate(target)
+		gate.mu.Lock()
+		defer gate.mu.Unlock()
+
+		// Serialize per-target manual instructions and reuse identical in-flight calls so overlapping plugin retries
+		// do not launch duplicate LLM reviews or race on the same DuckDB profile rows.
+		// 按目标串行化手工画像指令，并复用相同的并发调用结果，避免插件重试时重复触发 LLM 评审，
+		// 或在同一批 DuckDB 画像行上发生竞争。
+		result, err := u.applyInstructionLocked(ctx, target, instruction)
+		u.finishProfileInstructionFlight(flightKey, flight, result, err)
+		return result, err
+	}
+}
+
+// applyInstructionLocked runs the reviewed manual profile-instruction writeback while the caller already holds
+// the per-target gate, ensuring the active-node snapshot stays stable for this target during one review.
+// applyInstructionLocked 用于在调用方已经持有目标级串行闸门后执行手工画像指令写回，
+// 确保该目标在一次评审期间看到的 active 节点快照保持稳定。
+func (u *ProfileUseCase) applyInstructionLocked(ctx context.Context, target logicdomain.ProfileTargetRef, instruction string) (ProfileInstructionResult, error) {
 	activeNodes, err := u.store.ListActiveProfileNodes(ctx, target, 256)
 	if err != nil {
 		return ProfileInstructionResult{}, err
@@ -125,15 +176,15 @@ func (u *ProfileUseCase) ApplyInstruction(ctx context.Context, cmd ProfileInstru
 	instructionRecord, err := u.store.CreateProfileInstruction(ctx, logicdomain.ProfileInstructionRecord{
 		ProfileType: target.ProfileType,
 		BindID:      target.BindID,
-		Instruction: strings.TrimSpace(cmd.Instruction),
+		Instruction: instruction,
 		Status:      logicdomain.ProfileInstructionStatusPending,
 	})
 	if err != nil {
 		return ProfileInstructionResult{}, err
 	}
 
-	floorPriority, floorLevel := manualInstructionFloors(target.ProfileType, cmd.Instruction)
-	review, err := u.reviewer.Review(ctx, target, activeNodes, cmd.Instruction, floorPriority, floorLevel)
+	floorPriority, floorLevel := manualInstructionFloors(target.ProfileType, instruction)
+	review, err := u.reviewer.Review(ctx, target, activeNodes, instruction, floorPriority, floorLevel)
 	if err != nil {
 		u.failProfileInstruction(ctx, instructionRecord.ID, err.Error(), "")
 		return ProfileInstructionResult{}, err
@@ -159,6 +210,66 @@ func (u *ProfileUseCase) ApplyInstruction(ctx context.Context, cmd ProfileInstru
 		RetiredNodes:  applied.RetiredNodes,
 		ReviewReason:  strings.TrimSpace(review.Reason),
 	}, nil
+}
+
+// profileInstructionFlightKey builds the dedupe key for one explicit instruction against one resolved target.
+// profileInstructionFlightKey 用于构建单个已解析目标上的显式画像指令去重键。
+func (u *ProfileUseCase) profileInstructionFlightKey(target logicdomain.ProfileTargetRef, instruction string) string {
+	return fmt.Sprintf("%d:%d:%s", target.ProfileType, target.BindID, strings.TrimSpace(instruction))
+}
+
+// profileInstructionGate returns the stable per-target mutex used to serialize manual instructions for that target.
+// profileInstructionGate 用于返回某个目标对应的稳定互斥锁，以串行化该目标上的手工画像指令。
+func (u *ProfileUseCase) profileInstructionGate(target logicdomain.ProfileTargetRef) *profileInstructionGate {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	key := fmt.Sprintf("%d:%d", target.ProfileType, target.BindID)
+	gate, ok := u.gates[key]
+	if ok {
+		return gate
+	}
+	gate = &profileInstructionGate{}
+	u.gates[key] = gate
+	return gate
+}
+
+// loadOrCreateProfileInstructionFlight registers one in-flight instruction call or returns the existing
+// shared flight when an identical target+instruction call is already running.
+// loadOrCreateProfileInstructionFlight 用于登记一条正在执行中的画像指令调用；
+// 如果相同目标+相同指令已经在运行，则直接返回现有共享 flight。
+func (u *ProfileUseCase) loadOrCreateProfileInstructionFlight(key string) (*profileInstructionFlight, bool) {
+	u.mu.Lock()
+	defer u.mu.Unlock()
+	if flight, ok := u.flights[key]; ok {
+		return flight, true
+	}
+	flight := &profileInstructionFlight{done: make(chan struct{})}
+	u.flights[key] = flight
+	return flight, false
+}
+
+// waitProfileInstructionFlight waits for one identical in-flight instruction call to finish and reuses its result.
+// waitProfileInstructionFlight 用于等待一条相同的进行中画像指令完成，并复用它的结果。
+func (u *ProfileUseCase) waitProfileInstructionFlight(ctx context.Context, flight *profileInstructionFlight) (ProfileInstructionResult, error) {
+	select {
+	case <-ctx.Done():
+		return ProfileInstructionResult{}, ctx.Err()
+	case <-flight.done:
+		return flight.result, flight.err
+	}
+}
+
+// finishProfileInstructionFlight publishes the final result for one in-flight instruction and removes the dedupe slot.
+// finishProfileInstructionFlight 用于发布一条进行中画像指令的最终结果，并移除对应的去重槽位。
+func (u *ProfileUseCase) finishProfileInstructionFlight(key string, flight *profileInstructionFlight, result ProfileInstructionResult, err error) {
+	u.mu.Lock()
+	if current, ok := u.flights[key]; ok && current == flight {
+		delete(u.flights, key)
+	}
+	flight.result = result
+	flight.err = err
+	close(flight.done)
+	u.mu.Unlock()
 }
 
 // materializeManualInstructionReview enforces authority floors, derives refresh/expiry metadata, and renders the updated profile text from active plus fresh nodes.

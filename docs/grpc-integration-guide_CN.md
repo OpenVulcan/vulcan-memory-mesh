@@ -126,6 +126,8 @@
 - `GetProfileNodes` 只返回当前 `active` 的原子化画像节点
 - `GetProfileNodes` 不返回渲染后的 profile Blob
 - `ApplyProfileInstruction` 会同步触发一次 LLM 评审并落库
+- `ApplyProfileInstruction` 对同目标同指令的并发调用会复用第一次进行中的结果
+- `ApplyProfileInstruction` 对同一目标上的不同指令会串行执行，避免同一批旧节点并发写回
 
 目标范围支持：
 

@@ -925,7 +925,6 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 	nowMs := now.UnixMilli()
 	nowRFC3339 := now.Format(time.RFC3339Nano)
 
-	var script strings.Builder
 	accepted := make([]logicdomain.ProfileNodeRecord, 0, len(nodes))
 	for idx, node := range nodes {
 		if strings.TrimSpace(node.Content) == "" {
@@ -950,9 +949,19 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 			node.ProfileDate = now.Format("2006-01-02")
 		}
 		insertedID := profileStartID + uint64(idx)
-		script.WriteString(buildProfileNodeInsertSQL(insertedID, nil, target.ProfileType, target.BindID, node, nowMs))
+		// Persist the new active node first so later retire/supersede updates can point at a durable replacement id.
+		// 先持久化新的 active 节点，让后续退役或 supersede 更新能够引用已经存在的替代节点 id。
+		if err := s.exec(ctx, buildProfileNodeInsertSQL(insertedID, nil, target.ProfileType, target.BindID, node, nowMs)); err != nil {
+			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("insert manual profile node %d: %w", insertedID, err)
+		}
 		if len(node.SupersedeNodeIDs) > 0 {
-			script.WriteString(buildProfileNodesSupersedeSQL(normalizeUint64List(node.SupersedeNodeIDs), insertedID, strings.TrimSpace(node.StatusReason), nowMs))
+			// Retire the superseded nodes in a separate execute call because DuckDB's shared-connection batch path
+			// can enter a resource-deadlock state when one script both inserts and updates the same hot table.
+			// 单独执行 supersede 更新，因为 DuckDB 的共享连接批量路径在同一脚本里同时插入并更新热点表时，
+			// 可能进入 resource deadlock 状态。
+			if err := s.exec(ctx, buildProfileNodesSupersedeSQL(normalizeUint64List(node.SupersedeNodeIDs), insertedID, strings.TrimSpace(node.StatusReason), nowMs)); err != nil {
+				return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("supersede manual profile nodes for %d: %w", insertedID, err)
+			}
 		}
 		accepted = append(accepted, logicdomain.ProfileNodeRecord{
 			ID:            insertedID,
@@ -978,12 +987,20 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 		if decision.NodeID == 0 {
 			continue
 		}
-		script.WriteString(buildSingleProfileNodeRetireSQL(decision.NodeID, decision.Reason, nowMs))
+		// Apply standalone retire decisions after inserts so reviewer-directed removals stay explicit and debuggable.
+		// 在插入完成后再应用独立退役决策，让评审器给出的移除动作保持明确且可调试。
+		if err := s.exec(ctx, buildSingleProfileNodeRetireSQL(decision.NodeID, decision.Reason, nowMs)); err != nil {
+			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("retire manual profile node %d: %w", decision.NodeID, err)
+		}
 	}
-	script.WriteString(buildProfileInstructionAppliedSQL(instruction.ID, reviewResult, nowMs))
-	script.WriteString(buildProfileTargetUpdateSQL(target.ProfileType, target.BindID, renderedProfile, nowRFC3339))
-	if err := s.exec(ctx, script.String()); err != nil {
-		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("apply manual profile instruction: %w", err)
+
+	// Mark the instruction as applied only after every node mutation has succeeded, then refresh the rendered scope blob last.
+	// 只有在全部节点变更都成功后，才把指令标记为 applied，并把 scope 画像 Blob 的回写放在最后。
+	if err := s.exec(ctx, buildProfileInstructionAppliedSQL(instruction.ID, reviewResult, nowMs)); err != nil {
+		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("mark manual profile instruction applied: %w", err)
+	}
+	if err := s.exec(ctx, buildProfileTargetUpdateSQL(target.ProfileType, target.BindID, renderedProfile, nowRFC3339)); err != nil {
+		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("update rendered manual profile target: %w", err)
 	}
 	return logicdomain.ManualProfileInstructionApplyResult{
 		InstructionID: instruction.ID,

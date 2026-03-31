@@ -389,12 +389,79 @@ func TestApplyManualProfileInstructionLeavesTurnIDNull(t *testing.T) {
 	}
 
 	execs := server.execRequests()
-	last := execs[len(execs)-1].Sql
-	if !strings.Contains(last, "INSERT INTO vmm_profile_nodes") {
-		t.Fatalf("expected profile node insert sql, got %s", last)
+	joined := ""
+	for _, req := range execs {
+		joined += req.Sql + "\n"
 	}
-	if !strings.Contains(last, "VALUES (501, NULL, 1, 9,") {
-		t.Fatalf("expected manual profile node turn_id to stay NULL, got %s", last)
+	if !strings.Contains(joined, "INSERT INTO vmm_profile_nodes") {
+		t.Fatalf("expected profile node insert sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "VALUES (501, NULL, 1, 9,") {
+		t.Fatalf("expected manual profile node turn_id to stay NULL, got %s", joined)
+	}
+}
+
+// TestApplyManualProfileInstructionExecutesSeparateStatements verifies manual profile persistence no longer
+// batches profile-node inserts and follow-up retire/applied updates into one large script, which would trigger
+// DuckDB shared-connection deadlocks on the hot vmm_profile_nodes table.
+// TestApplyManualProfileInstructionExecutesSeparateStatements 用于验证手工画像持久化不再把 profile-node 插入和后续退役、
+// applied 更新揉成一大段脚本，以避免 DuckDB 在热点 vmm_profile_nodes 表上触发共享连接死锁。
+func TestApplyManualProfileInstructionExecutesSeparateStatements(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":8}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_profile_nodes": `[{"next_id":601}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	_, err := store.ApplyManualProfileInstruction(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+		ProjectID:   9,
+	}, logicdomain.ProfileInstructionRecord{
+		ID:          88,
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+		Status:      logicdomain.ProfileInstructionStatusPending,
+	}, []logicdomain.ProfileNodeCandidate{
+		{
+			ProfileType:      logicdomain.ProfileTypeProject,
+			Content:          "项目统一使用 Go 语言。",
+			Status:           logicdomain.ProfileStatusActive,
+			Priority:         logicdomain.ProfilePriorityP0,
+			ProfileLevel:     logicdomain.ProfileLevelStable,
+			LevelReason:      "显式项目指令。",
+			SourceKind:       logicdomain.ProfileSourceKindManualInstruction,
+			SourceID:         88,
+			ProfileDate:      "2026-03-31",
+			SupersedeNodeIDs: []uint64{41},
+		},
+	}, []logicdomain.ProfileRetireDecision{
+		{NodeID: 42, Reason: "旧约束已被新指令替代。"},
+	}, "[Profile Legend]\n项目画像", `{"reason":"manual instruction"}`)
+	if err != nil {
+		t.Fatalf("apply manual profile instruction with split statements: %v", err)
+	}
+
+	execs := server.execRequests()
+	joined := ""
+	for _, req := range execs {
+		joined += req.Sql + "\n"
+	}
+	if !strings.Contains(joined, "INSERT INTO vmm_profile_nodes") {
+		t.Fatalf("expected manual profile node insert sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "UPDATE vmm_profile_nodes") {
+		t.Fatalf("expected follow-up profile retire/supersede sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "UPDATE vmm_profile_instructions") {
+		t.Fatalf("expected applied instruction update sql, got %s", joined)
+	}
+	for _, req := range execs {
+		if strings.Contains(req.Sql, "INSERT INTO vmm_profile_nodes") && strings.Contains(req.Sql, "UPDATE vmm_profile_instructions") {
+			t.Fatalf("did not expect one execute script to batch profile insert and instruction update together: %s", req.Sql)
+		}
 	}
 }
 
@@ -463,12 +530,12 @@ func TestDeleteUserRefWrongConfirmationCodeReturnsExistingCode(t *testing.T) {
 func TestDeleteUserRefKeepsSharedScopeProfileNodes(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version":                        `[{"schema_version":8}]`,
-			"FROM vmm_users":                          `[{"id":7,"name":"alice","profile":"","delete_confirm_code":"keep-code","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
-			"COUNT(*) AS count FROM vmm_sessions":     `[{"count":1}]`,
-			"COUNT(*) AS count FROM vmm_turn_records": `[{"count":2}]`,
+			"FROM vmm_version":                          `[{"schema_version":8}]`,
+			"FROM vmm_users":                            `[{"id":7,"name":"alice","profile":"","delete_confirm_code":"keep-code","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"COUNT(*) AS count FROM vmm_sessions":       `[{"count":1}]`,
+			"COUNT(*) AS count FROM vmm_turn_records":   `[{"count":2}]`,
 			"COUNT(*) AS count FROM vmm_memory_entries": `[{"count":3}]`,
-			"COUNT(*) AS count FROM vmm_memory_nodes": `[{"count":4}]`,
+			"COUNT(*) AS count FROM vmm_memory_nodes":   `[{"count":4}]`,
 			"COUNT(*) AS count FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?": `[{"count":5}]`,
 		},
 	}
@@ -510,14 +577,14 @@ func TestDeleteUserRefKeepsSharedScopeProfileNodes(t *testing.T) {
 func TestDeleteProjectPathCountsProfilesAndCascadesEmptyParents(t *testing.T) {
 	server := &fakeDuckDBServer{
 		queryJSON: map[string]string{
-			"FROM vmm_version": `[{"schema_version":8}]`,
+			"FROM vmm_version":    `[{"schema_version":8}]`,
 			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","profile":"","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
-			"COUNT(*) AS count FROM vmm_sessions WHERE project_id = ?": `[{"count":2}]`,
-			"COUNT(*) AS count FROM vmm_turn_records WHERE project_id = ?": `[{"count":4}]`,
-			"COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?": `[{"count":3}]`,
-			"COUNT(*) AS count FROM vmm_memory_nodes WHERE project_id = ?": `[{"count":5}]`,
-			"COUNT(*) AS count FROM vmm_projects WHERE space_id = ? AND id <> ?": `[{"count":0}]`,
-			"COUNT(*) AS count FROM vmm_spaces WHERE team_id = ? AND id <> ?": `[{"count":0}]`,
+			"COUNT(*) AS count FROM vmm_sessions WHERE project_id = ?":                                 `[{"count":2}]`,
+			"COUNT(*) AS count FROM vmm_turn_records WHERE project_id = ?":                             `[{"count":4}]`,
+			"COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?":                           `[{"count":3}]`,
+			"COUNT(*) AS count FROM vmm_memory_nodes WHERE project_id = ?":                             `[{"count":5}]`,
+			"COUNT(*) AS count FROM vmm_projects WHERE space_id = ? AND id <> ?":                       `[{"count":0}]`,
+			"COUNT(*) AS count FROM vmm_spaces WHERE team_id = ? AND id <> ?":                          `[{"count":0}]`,
 			"SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE (profile_type = 1 AND bind_id = 9)": `[{"count":6}]`,
 		},
 	}
