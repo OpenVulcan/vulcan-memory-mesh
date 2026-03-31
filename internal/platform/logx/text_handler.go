@@ -211,24 +211,15 @@ func (h *multilineTextHandler) prefixedKey(key string) string {
 // detectRenderedFieldMode 用于选择最能保留当前值可读性的显示模式。
 func detectRenderedFieldMode(value slog.Value) renderedFieldMode {
 	value = value.Resolve()
+	if value.Kind() == slog.KindAny {
+		if errValue, ok := value.Any().(error); ok && errValue != nil {
+			return detectRenderedTextMode(errValue.Error())
+		}
+	}
 	if value.Kind() != slog.KindString {
 		return renderedFieldModeScalar
 	}
-	text := strings.TrimSpace(value.String())
-	if pretty, ok := tryPrettyJSON(text); ok && pretty != "" {
-		return renderedFieldModeJSON
-	}
-	runeCount := utf8.RuneCountInString(text)
-	if strings.Contains(text, "\n") || strings.Contains(text, "\r") {
-		return renderedFieldModeText
-	}
-	if containsCJK(text) && runeCount > 24 {
-		return renderedFieldModeText
-	}
-	if strings.ContainsAny(text, " \t") && runeCount > 48 {
-		return renderedFieldModeText
-	}
-	return renderedFieldModeScalar
+	return detectRenderedTextMode(value.String())
 }
 
 // renderAttrValue converts one slog value into the textual payload written by the multiline handler.
@@ -262,6 +253,9 @@ func renderAttrValue(value slog.Value) string {
 		if anyValue == nil {
 			return "<nil>"
 		}
+		if errValue, ok := anyValue.(error); ok {
+			return errValue.Error()
+		}
 		if body, err := json.MarshalIndent(anyValue, "", "  "); err == nil {
 			trimmed := strings.TrimSpace(string(body))
 			if strings.HasPrefix(trimmed, "{") || strings.HasPrefix(trimmed, "[") {
@@ -272,6 +266,26 @@ func renderAttrValue(value slog.Value) string {
 	default:
 		return value.String()
 	}
+}
+
+// detectRenderedTextMode classifies one already-materialized string payload so errors and regular strings share the same readability rules.
+// detectRenderedTextMode 用于对已经物化成字符串的载荷做显示模式分类，让错误和值字符串共享同一套可读性规则。
+func detectRenderedTextMode(raw string) renderedFieldMode {
+	text := strings.TrimSpace(raw)
+	if pretty, ok := tryPrettyJSON(text); ok && pretty != "" {
+		return renderedFieldModeJSON
+	}
+	runeCount := utf8.RuneCountInString(text)
+	if strings.Contains(text, "\n") || strings.Contains(text, "\r") {
+		return renderedFieldModeText
+	}
+	if containsCJK(text) && runeCount > 24 {
+		return renderedFieldModeText
+	}
+	if strings.ContainsAny(text, " \t") && runeCount > 48 {
+		return renderedFieldModeText
+	}
+	return renderedFieldModeScalar
 }
 
 // writeRenderedField renders one flattened field according to its chosen mode.

@@ -41,6 +41,7 @@ func (u *PostActionUseCase) convergeExpiredProfiles() {
 	}
 	targets, err := u.store.ConvergeExpiredProfileNodes(ctx, 256)
 	if err != nil {
+		u.markQueueMaintenanceBackoff("expired profile convergence", err)
 		if u.logger != nil {
 			u.logger.Error("post-action expired profile convergence failed", "err", err)
 		}
@@ -72,6 +73,7 @@ func (u *PostActionUseCase) convergeExpiredProfiles() {
 		}
 	}
 	if err := u.store.ReplaceRenderedProfiles(ctx, rendered); err != nil {
+		u.markQueueMaintenanceBackoff("expired profile render update", err)
 		if u.logger != nil {
 			u.logger.Error("post-action expired profile render update failed", "err", err)
 		}

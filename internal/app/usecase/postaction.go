@@ -77,20 +77,22 @@ type PostActionAnalysisConfig struct {
 // PostActionUseCase stores one cleaned turn record and applies the noise gate only to simple single-round flows.
 // PostActionUseCase 用于存储一条清洗后的 turn 记录，并只在简单单轮流程上执行噪声门。
 type PostActionUseCase struct {
-	noiseGate   appports.NoiseTurnFilter
-	store       appports.RelationalStore
-	embedding   appports.EmbeddingClient
-	vector      appports.VectorStore
-	analyzer    PostActionSessionBatchAnalyzer
-	profiles    PostActionProfileReviewer
-	analysisCfg PostActionAnalysisConfig
-	logger      *logx.Logger
-	queueCtx    context.Context
-	queueCancel context.CancelFunc
-	queueWG     sync.WaitGroup
-	queueMu     sync.Mutex
-	queueCh     chan uint64
-	queueState  map[uint64]*postActionQueueState
+	noiseGate               appports.NoiseTurnFilter
+	store                   appports.RelationalStore
+	embedding               appports.EmbeddingClient
+	vector                  appports.VectorStore
+	analyzer                PostActionSessionBatchAnalyzer
+	profiles                PostActionProfileReviewer
+	analysisCfg             PostActionAnalysisConfig
+	logger                  *logx.Logger
+	queueCtx                context.Context
+	queueCancel             context.CancelFunc
+	queueWG                 sync.WaitGroup
+	queueMu                 sync.Mutex
+	maintenanceMu           sync.Mutex
+	maintenanceBackoffUntil time.Time
+	queueCh                 chan uint64
+	queueState              map[uint64]*postActionQueueState
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance.

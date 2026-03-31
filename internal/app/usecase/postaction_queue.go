@@ -132,6 +132,9 @@ func (u *PostActionUseCase) queueWorkerLoop() {
 		case sessionID := <-u.queueCh:
 			u.handleQueuedSession(sessionID)
 		case <-ticker.C:
+			if u.queueMaintenanceBackoffActive(time.Now()) {
+				continue
+			}
 			u.convergeExpiredProfiles()
 			u.scanIdlePendingSessions()
 		}
@@ -198,6 +201,7 @@ func (u *PostActionUseCase) scanIdlePendingSessions() {
 	}
 	sessions, err := u.store.ListIdlePendingSessions(u.queueCtx, u.analysisCfg.IdleTimeout, 128)
 	if err != nil {
+		u.markQueueMaintenanceBackoff("idle session scan", err)
 		if u.logger != nil {
 			u.logger.Error("post-action idle session scan failed", "err", err)
 		}
@@ -206,6 +210,74 @@ func (u *PostActionUseCase) scanIdlePendingSessions() {
 	for _, session := range sessions {
 		u.enqueueSessionAnalysis(session, true)
 	}
+}
+
+// queueMaintenanceBackoffActive reports whether the periodic maintenance ticker should temporarily stand down after a fatal storage-side deadlock symptom.
+// queueMaintenanceBackoffActive 用于判断周期性维护 ticker 是否应在存储侧出现致命死锁症状后暂时退避。
+func (u *PostActionUseCase) queueMaintenanceBackoffActive(now time.Time) bool {
+	if u == nil {
+		return false
+	}
+	u.maintenanceMu.Lock()
+	defer u.maintenanceMu.Unlock()
+	return now.Before(u.maintenanceBackoffUntil)
+}
+
+// markQueueMaintenanceBackoff pauses low-priority maintenance scans for one short window after the shared DuckDB connection starts reporting poisoned-state errors.
+// markQueueMaintenanceBackoff 用于在共享 DuckDB 连接开始报“污染态”错误后，暂时暂停低优先级维护扫描，避免持续撞击坏连接。
+func (u *PostActionUseCase) markQueueMaintenanceBackoff(operation string, err error) {
+	if u == nil || err == nil || !shouldPauseQueueMaintenance(err) {
+		return
+	}
+
+	backoff := u.analysisCfg.QueueScanInterval * 2
+	if backoff < time.Minute {
+		backoff = time.Minute
+	}
+	now := time.Now()
+	until := now.Add(backoff)
+
+	u.maintenanceMu.Lock()
+	extended := until.After(u.maintenanceBackoffUntil)
+	if extended {
+		u.maintenanceBackoffUntil = until
+	}
+	u.maintenanceMu.Unlock()
+
+	if extended && u.logger != nil {
+		u.logger.Warn(
+			"post-action queue maintenance paused",
+			"operation", operation,
+			"backoff_until", until.Format(time.RFC3339Nano),
+			"err", err,
+		)
+	}
+}
+
+// shouldPauseQueueMaintenance classifies the gateway failures that indicate the shared DuckDB connection is already poisoned and periodic scans should stand down briefly.
+// shouldPauseQueueMaintenance 用于识别这类网关失败：它表明共享 DuckDB 连接已经进入污染态，周期性扫描应暂时退避。
+func shouldPauseQueueMaintenance(err error) bool {
+	if err == nil {
+		return false
+	}
+	if logicdomain.IsOutcomeUncertain(err) {
+		return true
+	}
+	text := strings.ToLower(err.Error())
+	markers := []string{
+		"resource deadlock would occur",
+		"failed to commit",
+		"prepare failed",
+		"waiting for the shared connection",
+		"stream terminated by rst_stream",
+		"transactioncontext error",
+	}
+	for _, marker := range markers {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // processQueuedSession loads the current batch window, checks thresholds, runs the batch analyzer, merges profiles once, persists vectors, and writes results back into DuckDB.

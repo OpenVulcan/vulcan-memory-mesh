@@ -378,6 +378,32 @@ func TestPostActionUseCaseConvergesExpiredProfiles(t *testing.T) {
 	}
 }
 
+// TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock verifies periodic maintenance stops retrying immediately once the storage layer starts reporting poisoned-connection deadlock symptoms.
+// TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock 用于验证当存储层开始报告“连接污染式”的死锁症状后，周期性维护会先进入退避，而不是继续立刻重试。
+func TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock(t *testing.T) {
+	store := &testRelationalStore{
+		expiredProfileErr: errors.New("duckdb prepare failed: Invalid Error: resource deadlock would occur: resource deadlock would occur"),
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, PostActionAnalysisConfig{
+		QueueScanInterval: 30 * time.Second,
+	}, logger, false)
+
+	uc.convergeExpiredProfiles()
+
+	if !uc.queueMaintenanceBackoffActive(time.Now()) {
+		t.Fatalf("expected queue maintenance to enter backoff after deadlock symptom")
+	}
+	output := logBuf.String()
+	if !strings.Contains(output, "post-action queue maintenance paused") {
+		t.Fatalf("expected maintenance backoff log, got %s", output)
+	}
+	if !strings.Contains(output, "resource deadlock would occur") {
+		t.Fatalf("expected deadlock reason to stay visible in logs, got %s", output)
+	}
+}
+
 // TestPostActionUseCaseSkipsBatchBelowThreshold verifies queued sessions remain pending when neither count threshold nor token threshold has been met.
 // TestPostActionUseCaseSkipsBatchBelowThreshold 用于验证当条数阈值和 token 阈值都未达到时，排队 session 会继续保持待处理状态。
 func TestPostActionUseCaseSkipsBatchBelowThreshold(t *testing.T) {
@@ -518,9 +544,12 @@ type testRelationalStore struct {
 	historyTurns            []logicdomain.SessionTurnRecord
 	activeMemoryNodes       []logicdomain.SessionMemoryNodeRecord
 	idleSessions            []logicdomain.SessionRef
+	idleSessionsErr         error
 	profileTargets          logicdomain.ProfileTargetsSnapshot
 	profileReviewTargets    logicdomain.ProfileReviewTargetsSnapshot
 	expiredProfileTargets   []logicdomain.ProfileRenderTargetSnapshot
+	expiredProfileErr       error
+	replaceRenderedErr      error
 	renderedUserProfiles    map[uint64]string
 	renderedTeamProfiles    map[uint64]string
 	renderedSpaceProfiles   map[uint64]string
@@ -572,6 +601,9 @@ func (s *testRelationalStore) LoadActiveSessionMemoryNodes(_ context.Context, _ 
 // ListIdlePendingSessions returns the canned idle sessions used by queue-scan tests.
 // ListIdlePendingSessions 用于返回队列扫描测试中预设的空闲 session。
 func (s *testRelationalStore) ListIdlePendingSessions(_ context.Context, _ time.Duration, _ int) ([]logicdomain.SessionRef, error) {
+	if s.idleSessionsErr != nil {
+		return nil, s.idleSessionsErr
+	}
 	return append([]logicdomain.SessionRef(nil), s.idleSessions...), nil
 }
 
@@ -591,12 +623,18 @@ func (s *testRelationalStore) LoadProfileReviewTargets(_ context.Context, _ logi
 // ConvergeExpiredProfileNodes 用于返回预设的过期目标快照，方便维护路径测试验证生命周期收敛行为。
 func (s *testRelationalStore) ConvergeExpiredProfileNodes(_ context.Context, _ int) ([]logicdomain.ProfileRenderTargetSnapshot, error) {
 	s.expiredProfileScanCalls++
+	if s.expiredProfileErr != nil {
+		return nil, s.expiredProfileErr
+	}
 	return append([]logicdomain.ProfileRenderTargetSnapshot(nil), s.expiredProfileTargets...), nil
 }
 
 // ReplaceRenderedProfiles records the rebuilt durable scope profiles so maintenance tests can assert the final rendered blobs.
 // ReplaceRenderedProfiles 用于记录重建后的长期 scope 画像，方便维护路径测试断言最终渲染结果。
 func (s *testRelationalStore) ReplaceRenderedProfiles(_ context.Context, updates logicdomain.RenderedProfileSet) error {
+	if s.replaceRenderedErr != nil {
+		return s.replaceRenderedErr
+	}
 	if len(updates.UserProfiles) > 0 {
 		s.renderedUserProfiles = map[uint64]string{}
 		for id, profile := range updates.UserProfiles {

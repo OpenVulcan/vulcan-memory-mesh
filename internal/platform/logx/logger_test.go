@@ -4,6 +4,7 @@ package logx
 
 import (
 	"bytes"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -68,5 +69,24 @@ func TestTextLoggerPreservesWithAttrs(t *testing.T) {
 	}
 	if !strings.Contains(output, "code：\"OK\"") {
 		t.Fatalf("expected record attribute, got %s", output)
+	}
+}
+
+// TestTextLoggerRendersErrorsAsMessages verifies error values are rendered through Error() instead of being marshaled into empty JSON objects.
+// TestTextLoggerRendersErrorsAsMessages 用于验证 error 值会通过 Error() 文本输出，而不是被错误地序列化成空 JSON 对象。
+func TestTextLoggerRendersErrorsAsMessages(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := New(logBuf, Config{Level: "info", Format: "text"})
+
+	// Emit one realistic error value so the formatter proves it keeps the original error message visible for operator troubleshooting.
+	// 输出一条真实 error 值，验证格式器会保留原始错误文本，便于运维定位问题。
+	logger.Error("maintenance failed", "err", errors.New("duckdb prepare failed: resource deadlock would occur"))
+
+	output := logBuf.String()
+	if strings.Contains(output, "err：{}") {
+		t.Fatalf("expected error message instead of empty JSON object, got %s", output)
+	}
+	if !strings.Contains(output, "TEXT(err)：\nduckdb prepare failed: resource deadlock would occur\n") {
+		t.Fatalf("expected error string output, got %s", output)
 	}
 }
