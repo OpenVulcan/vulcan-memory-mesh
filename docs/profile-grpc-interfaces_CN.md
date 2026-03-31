@@ -160,12 +160,15 @@
   - `turn_extract`
   - `manual_instruction`
   - `system_seed`
+  - `retained_after_user_delete`
 - `source_id`
   - 当 `turn_extract` 时指向 `turn_id`
   - 当 `manual_instruction` 时指向 `instruction_id`
+  - 当 `retained_after_user_delete` 时指向原用户 ID
 - `turn_id`
   - 对 `turn_extract` 保留真实来源 turn
   - 对 `manual_instruction` 为空，不再伪造 `0`
+  - 对 `retained_after_user_delete` 也为空，因为原始 turn 已被清理
 - `status_reason`
   - 记录节点为什么被判定为 `invalid / superseded / expired`
 

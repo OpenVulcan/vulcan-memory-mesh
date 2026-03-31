@@ -88,12 +88,14 @@
 - `refresh_weight`
   - 表示同类记忆被刷新、续期、再次确认的次数
 - `source_kind`
-  - 表示节点来自 `turn_extract / manual_instruction / system_seed`
+  - 表示节点来自 `turn_extract / manual_instruction / system_seed / retained_after_user_delete`
 - `source_id`
   - 当来源是 `manual_instruction` 时，指向 `vmm_profile_instructions.id`
+  - 当来源是 `retained_after_user_delete` 时，指向被删除的原用户 ID
 - `turn_id`
   - 对话提炼节点保留真实 turn 绑定
   - 手工画像节点在 DuckDB 中保持 `NULL`，因为它们并不来自语义对话片段
+  - 如果共享范围画像来自某个用户历史 turn，但该用户后来被删除，则节点会被保留并把 `turn_id` 置为 `NULL`
 - `status_reason`
   - 记录节点为什么进入 `invalid / superseded / expired`
 - `expires_timestamp`

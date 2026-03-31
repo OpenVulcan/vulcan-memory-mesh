@@ -456,6 +456,49 @@ func TestDeleteUserRefWrongConfirmationCodeReturnsExistingCode(t *testing.T) {
 	}
 }
 
+// TestDeleteUserRefKeepsSharedScopeProfileNodes verifies user deletion only removes user-owned profile facts and
+// leaves shared project/team/space profile nodes untouched even when they were extracted from this user's turns.
+// TestDeleteUserRefKeepsSharedScopeProfileNodes 用于验证删除用户时只清理用户拥有的画像事实；即使 project/team/space 的共享画像
+// 曾经来自该用户 turn，也不能被连带删除。
+func TestDeleteUserRefKeepsSharedScopeProfileNodes(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version":                        `[{"schema_version":8}]`,
+			"FROM vmm_users":                          `[{"id":7,"name":"alice","profile":"","delete_confirm_code":"keep-code","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"COUNT(*) AS count FROM vmm_sessions":     `[{"count":1}]`,
+			"COUNT(*) AS count FROM vmm_turn_records": `[{"count":2}]`,
+			"COUNT(*) AS count FROM vmm_memory_entries": `[{"count":3}]`,
+			"COUNT(*) AS count FROM vmm_memory_nodes": `[{"count":4}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	result, err := store.DeleteUserRef(context.Background(), "7", "keep-code")
+	if err != nil {
+		t.Fatalf("delete user with valid confirmation code: %v", err)
+	}
+	if result.RequiresConfirmation {
+		t.Fatalf("did not expect confirmation requirement after supplying the durable code, got %+v", result)
+	}
+
+	joined := ""
+	for _, req := range server.execRequests() {
+		joined += req.Sql + "\n"
+	}
+	if !strings.Contains(joined, "DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?") {
+		t.Fatalf("expected user-bound profile node delete sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "UPDATE vmm_profile_nodes") || !strings.Contains(joined, "SET turn_id = NULL") {
+		t.Fatalf("expected surviving shared profile nodes to be detached from deleted user turns, got %s", joined)
+	}
+	if !strings.Contains(joined, "source_kind = ?") || !strings.Contains(joined, "profile_type <> ? AND turn_id IN") {
+		t.Fatalf("expected shared-scope detachment sql to target non-user profile nodes, got %s", joined)
+	}
+	if strings.Contains(joined, "DELETE FROM vmm_profile_nodes WHERE turn_id IN") {
+		t.Fatalf("did not expect turn-derived shared profile delete sql during user removal, got %s", joined)
+	}
+}
+
 // TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets verifies periodic expiry convergence flips due active nodes to expired and returns the remaining renderable nodes for the affected target.
 // TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets 用于验证周期性过期收敛会把到期 active 节点改为 expired，并返回受影响目标剩余可渲染节点。
 func TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets(t *testing.T) {

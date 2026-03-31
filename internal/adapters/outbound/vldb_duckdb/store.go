@@ -1905,11 +1905,28 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
+	nowMs := time.Now().UTC().UnixMilli()
 	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by bind: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE turn_id IN (SELECT tr.id FROM vmm_turn_records tr JOIN vmm_sessions s ON s.id = tr.session_id WHERE s.user_id = ?)`, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by turn: %w", err)
+	// Detach surviving shared-scope profile facts from the user's historical turns before those turn rows disappear.
+	// These nodes must keep living under project/team/space scope, but they can no longer point at deleted turn ids.
+	// 在删除用户历史 turn 前，先把仍应保留的共享范围画像节点与原 turn 脱钩。
+	// 这些节点继续归属于 project/team/space，但不能再指向即将被删除的 turn id。
+	if err := s.exec(ctx, `
+UPDATE vmm_profile_nodes
+SET turn_id = NULL,
+    source_kind = ?,
+    source_id = ?,
+    status_reason = ?,
+    updated_timestamp = ?
+WHERE profile_type <> ? AND turn_id IN (
+  SELECT tr.id
+  FROM vmm_turn_records tr
+  JOIN vmm_sessions s ON s.id = tr.session_id
+  WHERE s.user_id = ?
+)`, logicdomain.ProfileSourceKindRetainedAfterUserDelete, currentUser.ID, "source user deleted; shared scope node retained without original turn binding", nowMs, logicdomain.ProfileTypeUser, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, fmt.Errorf("detach surviving shared profile nodes from deleted user turns: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE user_id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user memory nodes: %w", err)

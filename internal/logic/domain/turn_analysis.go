@@ -120,6 +120,12 @@ const (
 	// ProfileSourceKindSystemSeed marks nodes inserted by deterministic system seeding or future admin imports.
 	// ProfileSourceKindSystemSeed 用于表示画像节点来源于系统种子数据或未来的管理导入流程。
 	ProfileSourceKindSystemSeed = 2
+
+	// ProfileSourceKindRetainedAfterUserDelete marks shared scope nodes whose original turn source disappeared
+	// because the source user was deleted, while the shared profile fact itself still had to survive.
+	// ProfileSourceKindRetainedAfterUserDelete 用于表示一条共享范围画像节点在源用户被删除后仍需保留，
+	// 因而脱离了原始 turn 来源。
+	ProfileSourceKindRetainedAfterUserDelete = 3
 )
 
 const (
@@ -239,5 +245,5 @@ func ValidProfileLevel(level int) bool {
 // ValidProfileSourceKind reports whether one profile source kind belongs to the supported source enum set.
 // ValidProfileSourceKind 用于判断某个画像来源类型是否属于当前支持的来源枚举集合。
 func ValidProfileSourceKind(sourceKind int) bool {
-	return sourceKind >= ProfileSourceKindTurnExtract && sourceKind <= ProfileSourceKindSystemSeed
+	return sourceKind >= ProfileSourceKindTurnExtract && sourceKind <= ProfileSourceKindRetainedAfterUserDelete
 }
