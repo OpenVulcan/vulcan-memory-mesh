@@ -84,10 +84,11 @@ func (ProfileTarget) EnumDescriptor() ([]byte, []int) {
 type ProfileNodeSourceKind int32
 
 const (
-	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_UNSPECIFIED        ProfileNodeSourceKind = 0
-	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT       ProfileNodeSourceKind = 1
-	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION ProfileNodeSourceKind = 2
-	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED        ProfileNodeSourceKind = 3
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_UNSPECIFIED                ProfileNodeSourceKind = 0
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT               ProfileNodeSourceKind = 1
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION         ProfileNodeSourceKind = 2
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED                ProfileNodeSourceKind = 3
+	ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE ProfileNodeSourceKind = 4
 )
 
 // Enum value maps for ProfileNodeSourceKind.
@@ -97,12 +98,14 @@ var (
 		1: "PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT",
 		2: "PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION",
 		3: "PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED",
+		4: "PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE",
 	}
 	ProfileNodeSourceKind_value = map[string]int32{
-		"PROFILE_NODE_SOURCE_KIND_UNSPECIFIED":        0,
-		"PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT":       1,
-		"PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION": 2,
-		"PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED":        3,
+		"PROFILE_NODE_SOURCE_KIND_UNSPECIFIED":                0,
+		"PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT":               1,
+		"PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION":         2,
+		"PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED":                3,
+		"PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE": 4,
 	}
 )
 
@@ -735,6 +738,10 @@ type DeleteProjectResponse struct {
 	DeletedMemories   int64                  `protobuf:"varint,6,opt,name=deleted_memories,json=deletedMemories,proto3" json:"deleted_memories,omitempty"`
 	DeletedVectorRows uint64                 `protobuf:"varint,7,opt,name=deleted_vector_rows,json=deletedVectorRows,proto3" json:"deleted_vector_rows,omitempty"`
 	TraceId           string                 `protobuf:"bytes,8,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	DeletedProjects   int64                  `protobuf:"varint,9,opt,name=deleted_projects,json=deletedProjects,proto3" json:"deleted_projects,omitempty"`
+	DeletedSpaces     int64                  `protobuf:"varint,10,opt,name=deleted_spaces,json=deletedSpaces,proto3" json:"deleted_spaces,omitempty"`
+	DeletedTeams      int64                  `protobuf:"varint,11,opt,name=deleted_teams,json=deletedTeams,proto3" json:"deleted_teams,omitempty"`
+	DeletedProfiles   int64                  `protobuf:"varint,12,opt,name=deleted_profiles,json=deletedProfiles,proto3" json:"deleted_profiles,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -823,6 +830,34 @@ func (x *DeleteProjectResponse) GetTraceId() string {
 		return x.TraceId
 	}
 	return ""
+}
+
+func (x *DeleteProjectResponse) GetDeletedProjects() int64 {
+	if x != nil {
+		return x.DeletedProjects
+	}
+	return 0
+}
+
+func (x *DeleteProjectResponse) GetDeletedSpaces() int64 {
+	if x != nil {
+		return x.DeletedSpaces
+	}
+	return 0
+}
+
+func (x *DeleteProjectResponse) GetDeletedTeams() int64 {
+	if x != nil {
+		return x.DeletedTeams
+	}
+	return 0
+}
+
+func (x *DeleteProjectResponse) GetDeletedProfiles() int64 {
+	if x != nil {
+		return x.DeletedProfiles
+	}
+	return 0
 }
 
 // MigrateProjectRequest identifies the source and target project paths plus the explicit migration confirmation flag.
@@ -1250,6 +1285,8 @@ type DeleteUserResponse struct {
 	DeletedMemories      int64                  `protobuf:"varint,7,opt,name=deleted_memories,json=deletedMemories,proto3" json:"deleted_memories,omitempty"`
 	DeletedVectorRows    uint64                 `protobuf:"varint,8,opt,name=deleted_vector_rows,json=deletedVectorRows,proto3" json:"deleted_vector_rows,omitempty"`
 	TraceId              string                 `protobuf:"bytes,9,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	DeletedUsers         int64                  `protobuf:"varint,10,opt,name=deleted_users,json=deletedUsers,proto3" json:"deleted_users,omitempty"`
+	DeletedProfiles      int64                  `protobuf:"varint,11,opt,name=deleted_profiles,json=deletedProfiles,proto3" json:"deleted_profiles,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -1345,6 +1382,20 @@ func (x *DeleteUserResponse) GetTraceId() string {
 		return x.TraceId
 	}
 	return ""
+}
+
+func (x *DeleteUserResponse) GetDeletedUsers() int64 {
+	if x != nil {
+		return x.DeletedUsers
+	}
+	return 0
+}
+
+func (x *DeleteUserResponse) GetDeletedProfiles() int64 {
+	if x != nil {
+		return x.DeletedProfiles
+	}
+	return 0
 }
 
 // ProfileNodeEntry transports one active atomic profile node back to the caller.
@@ -2275,7 +2326,7 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	" \x01(\tR\atraceId\"`\n" +
 	"\x14DeleteProjectRequest\x12!\n" +
 	"\fproject_path\x18\x01 \x01(\tR\vprojectPath\x12%\n" +
-	"\x0econfirm_delete\x18\x02 \x01(\bR\rconfirmDelete\"\xd2\x02\n" +
+	"\x0econfirm_delete\x18\x02 \x01(\bR\rconfirmDelete\"\xf4\x03\n" +
 	"\x15DeleteProjectResponse\x12.\n" +
 	"\aproject\x18\x01 \x01(\v2\x14.vmm.v1.ProjectEntryR\aproject\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x12#\n" +
@@ -2284,7 +2335,12 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x10deleted_messages\x18\x05 \x01(\x03R\x0fdeletedMessages\x12)\n" +
 	"\x10deleted_memories\x18\x06 \x01(\x03R\x0fdeletedMemories\x12.\n" +
 	"\x13deleted_vector_rows\x18\a \x01(\x04R\x11deletedVectorRows\x12\x19\n" +
-	"\btrace_id\x18\b \x01(\tR\atraceId\"\xa0\x01\n" +
+	"\btrace_id\x18\b \x01(\tR\atraceId\x12)\n" +
+	"\x10deleted_projects\x18\t \x01(\x03R\x0fdeletedProjects\x12%\n" +
+	"\x0edeleted_spaces\x18\n" +
+	" \x01(\x03R\rdeletedSpaces\x12#\n" +
+	"\rdeleted_teams\x18\v \x01(\x03R\fdeletedTeams\x12)\n" +
+	"\x10deleted_profiles\x18\f \x01(\x03R\x0fdeletedProfiles\"\xa0\x01\n" +
 	"\x15MigrateProjectRequest\x12.\n" +
 	"\x13source_project_path\x18\x01 \x01(\tR\x11sourceProjectPath\x12.\n" +
 	"\x13target_project_path\x18\x02 \x01(\tR\x11targetProjectPath\x12'\n" +
@@ -2313,7 +2369,7 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\btrace_id\x18\x02 \x01(\tR\atraceId\"[\n" +
 	"\x11DeleteUserRequest\x12\x19\n" +
 	"\buser_ref\x18\x01 \x01(\tR\auserRef\x12+\n" +
-	"\x11confirmation_code\x18\x02 \x01(\tR\x10confirmationCode\"\x83\x03\n" +
+	"\x11confirmation_code\x18\x02 \x01(\tR\x10confirmationCode\"\xd3\x03\n" +
 	"\x12DeleteUserResponse\x12%\n" +
 	"\x04user\x18\x01 \x01(\v2\x11.vmm.v1.UserEntryR\x04user\x12\x18\n" +
 	"\amessage\x18\x02 \x01(\tR\amessage\x123\n" +
@@ -2323,7 +2379,10 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x10deleted_messages\x18\x06 \x01(\x03R\x0fdeletedMessages\x12)\n" +
 	"\x10deleted_memories\x18\a \x01(\x03R\x0fdeletedMemories\x12.\n" +
 	"\x13deleted_vector_rows\x18\b \x01(\x04R\x11deletedVectorRows\x12\x19\n" +
-	"\btrace_id\x18\t \x01(\tR\atraceId\"\xc5\x03\n" +
+	"\btrace_id\x18\t \x01(\tR\atraceId\x12#\n" +
+	"\rdeleted_users\x18\n" +
+	" \x01(\x03R\fdeletedUsers\x12)\n" +
+	"\x10deleted_profiles\x18\v \x01(\x03R\x0fdeletedProfiles\"\xc5\x03\n" +
 	"\x10ProfileNodeEntry\x12&\n" +
 	"\x0fprofile_node_id\x18\x01 \x01(\x04R\rprofileNodeId\x12-\n" +
 	"\x06target\x18\x02 \x01(\x0e2\x15.vmm.v1.ProfileTargetR\x06target\x12\x17\n" +
@@ -2402,12 +2461,13 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x13PROFILE_TARGET_USER\x10\x01\x12\x1a\n" +
 	"\x16PROFILE_TARGET_PROJECT\x10\x02\x12\x17\n" +
 	"\x13PROFILE_TARGET_TEAM\x10\x03\x12\x18\n" +
-	"\x14PROFILE_TARGET_SPACE\x10\x04*\xc7\x01\n" +
+	"\x14PROFILE_TARGET_SPACE\x10\x04*\x80\x02\n" +
 	"\x15ProfileNodeSourceKind\x12(\n" +
 	"$PROFILE_NODE_SOURCE_KIND_UNSPECIFIED\x10\x00\x12)\n" +
 	"%PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT\x10\x01\x12/\n" +
 	"+PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION\x10\x02\x12(\n" +
-	"$PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED\x10\x032\xdd\a\n" +
+	"$PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED\x10\x03\x127\n" +
+	"3PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE\x10\x042\xdd\a\n" +
 	"\n" +
 	"VMMService\x12:\n" +
 	"\aHealthz\x12\x16.google.protobuf.Empty\x1a\x17.vmm.v1.HealthzResponse\x12D\n" +

@@ -22,9 +22,13 @@ type ProjectDeleteResult struct {
 	Project           ProjectRecord
 	Message           string
 	NeedsConfirm      bool
+	DeletedProjects   int
+	DeletedSpaces     int
+	DeletedTeams      int
 	DeletedSessions   int
 	DeletedMessages   int
 	DeletedMemories   int
+	DeletedProfiles   int
 	DeletedVectorRows uint64
 }
 
@@ -57,8 +61,10 @@ type UserDeleteResult struct {
 	Message              string
 	RequiresConfirmation bool
 	ConfirmationCode     string
+	DeletedUsers         int
 	DeletedSessions      int
 	DeletedMessages      int
 	DeletedMemories      int
+	DeletedProfiles      int
 	DeletedVectorRows    uint64
 }

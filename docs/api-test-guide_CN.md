@@ -112,6 +112,13 @@ grpcurl -plaintext `
   vmm.v1.VMMService/DeleteProject
 ```
 
+返回里的删除统计会额外包含：
+
+- `deletedProjects`
+- `deletedSpaces`
+- `deletedTeams`
+- `deletedProfiles`
+
 ## 六、MigrateProject
 
 ### 先校验
@@ -200,6 +207,11 @@ grpcurl -plaintext `
   127.0.0.1:17625 `
   vmm.v1.VMMService/DeleteUser
 ```
+
+返回里的删除统计会额外包含：
+
+- `deletedUsers`
+- `deletedProfiles`
 
 ## 十、PreCheck
 

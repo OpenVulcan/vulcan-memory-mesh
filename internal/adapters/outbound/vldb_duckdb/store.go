@@ -1674,17 +1674,22 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 		}, nil
 	}
 
-	sessions, messages, memories, err := s.countProjectRows(ctx, project.ID)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	// Plan all row counts and hierarchy cascades under the same write lock so the reported numbers
+	// match the concrete delete path seen by this runtime instance.
+	// 在同一把写锁下规划删除计数和层级级联条件，确保当前运行时返回的统计与实际删除路径一致。
+	deletePlan, err := s.planProjectDelete(ctx, project)
 	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, err
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeProject, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project profile nodes by bind: %w", err)
-	}
-	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE turn_id IN (SELECT id FROM vmm_turn_records WHERE project_id = ?)`, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project profile nodes by turn: %w", err)
+
+	// Remove all profile nodes that belong to the project itself, were derived from its turns,
+	// or belong to one now-empty parent scope that will be deleted together with the project.
+	// 删除项目自身、其 turn 派生、以及随空父级一并删除的 scope 所关联的画像节点。
+	if err := s.exec(ctx, buildProjectProfileNodesDeleteSQL(project.ID, project.SpaceID, project.TeamID, deletePlan.DeletedSpaces > 0, deletePlan.DeletedTeams > 0)); err != nil {
+		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project profile nodes: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE project_id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project memory nodes: %w", err)
@@ -1701,12 +1706,26 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	if err := s.exec(ctx, `DELETE FROM vmm_projects WHERE id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project row: %w", err)
 	}
+	if deletePlan.DeletedSpaces > 0 {
+		if err := s.exec(ctx, `DELETE FROM vmm_spaces WHERE id = ?`, project.SpaceID); err != nil {
+			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete empty project space row: %w", err)
+		}
+	}
+	if deletePlan.DeletedTeams > 0 {
+		if err := s.exec(ctx, `DELETE FROM vmm_teams WHERE id = ?`, project.TeamID); err != nil {
+			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete empty project team row: %w", err)
+		}
+	}
 	return logicdomain.ProjectDeleteResult{
 		Project:         project,
 		Message:         fmt.Sprintf("project %s deleted", project.Path()),
-		DeletedSessions: sessions,
-		DeletedMessages: messages,
-		DeletedMemories: memories,
+		DeletedProjects: deletePlan.DeletedProjects,
+		DeletedSpaces:   deletePlan.DeletedSpaces,
+		DeletedTeams:    deletePlan.DeletedTeams,
+		DeletedSessions: deletePlan.DeletedSessions,
+		DeletedMessages: deletePlan.DeletedMessages,
+		DeletedMemories: deletePlan.DeletedMemories,
+		DeletedProfiles: deletePlan.DeletedProfiles,
 	}, nil
 }
 
@@ -1899,12 +1918,12 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 		}, nil
 	}
 
-	sessions, messages, memories, err := s.countUserRows(ctx, currentUser.ID)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+	deletePlan, err := s.planUserDelete(ctx, currentUser.ID)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 	nowMs := time.Now().UTC().UnixMilli()
 	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by bind: %w", err)
@@ -1946,9 +1965,11 @@ WHERE profile_type <> ? AND turn_id IN (
 	return logicdomain.UserDeleteResult{
 		User:            currentUser,
 		Message:         fmt.Sprintf("user %s deleted", currentUser.Name),
-		DeletedSessions: sessions,
-		DeletedMessages: messages,
-		DeletedMemories: memories,
+		DeletedUsers:    deletePlan.DeletedUsers,
+		DeletedSessions: deletePlan.DeletedSessions,
+		DeletedMessages: deletePlan.DeletedMessages,
+		DeletedMemories: deletePlan.DeletedMemories,
+		DeletedProfiles: deletePlan.DeletedProfiles,
 	}, nil
 }
 
@@ -2077,45 +2098,175 @@ func (s *Store) insertProject(ctx context.Context, team logicdomain.TeamRecord, 
 // countProjectRows returns project-scoped row counts so delete and migrate operations can report meaningful summaries.
 // countProjectRows 用于返回项目范围内的行计数，让删除和迁移操作能够输出有意义的结果摘要。
 func (s *Store) countProjectRows(ctx context.Context, projectID uint64) (int, int, int, error) {
-	sessionRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_sessions WHERE project_id = ?`, projectID)
+	sessionCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_sessions WHERE project_id = ?`, projectID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count project sessions: %w", err)
 	}
-	messageRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_turn_records WHERE project_id = ?`, projectID)
+	messageCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_turn_records WHERE project_id = ?`, projectID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count project turn records: %w", err)
 	}
-	memoryRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?`, projectID)
+	memoryEntryCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?`, projectID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count project sql memories: %w", err)
 	}
-	memoryNodeRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE project_id = ?`, projectID)
+	memoryNodeCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE project_id = ?`, projectID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count project memory nodes: %w", err)
 	}
-	return sessionRows[0].Count, messageRows[0].Count, memoryRows[0].Count + memoryNodeRows[0].Count, nil
+	return sessionCount, messageCount, memoryEntryCount + memoryNodeCount, nil
 }
 
 // countUserRows returns user-scoped row counts so protected user deletion can explain what will be removed.
 // countUserRows 用于返回用户范围内的行计数，让受保护的用户删除能够说明将要删除的内容。
 func (s *Store) countUserRows(ctx context.Context, userID uint64) (int, int, int, error) {
-	sessionRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_sessions WHERE user_id = ?`, userID)
+	sessionCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_sessions WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count user sessions: %w", err)
 	}
-	messageRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, userID)
+	messageCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, userID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count user turn records: %w", err)
 	}
-	memoryRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE user_id = ?`, userID)
+	memoryEntryCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count user sql memories: %w", err)
 	}
-	memoryNodeRows, err := queryRows[countRow](s, ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE user_id = ?`, userID)
+	memoryNodeCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count user memory nodes: %w", err)
 	}
-	return sessionRows[0].Count, messageRows[0].Count, memoryRows[0].Count + memoryNodeRows[0].Count, nil
+	return sessionCount, messageCount, memoryEntryCount + memoryNodeCount, nil
+}
+
+// countRows keeps the admin delete and migrate paths concise by centralizing the one-row COUNT(*) query pattern.
+// countRows 用于集中处理单行 COUNT(*) 查询模式，让管理类删除和迁移路径保持简洁。
+func (s *Store) countRows(ctx context.Context, sql string, params ...any) (int, error) {
+	rows, err := queryRows[countRow](s, ctx, sql, params...)
+	if err != nil {
+		return 0, err
+	}
+	if len(rows) == 0 {
+		return 0, nil
+	}
+	return rows[0].Count, nil
+}
+
+// projectDeletePlan records the exact row categories that one project deletion will remove,
+// including hierarchy parents that become empty after the project disappears.
+// projectDeletePlan 用于记录一次项目删除将真正移除的行类别，
+// 包括项目删除后因变空而需要级联删除的父级层级节点。
+type projectDeletePlan struct {
+	DeletedProjects int
+	DeletedSpaces   int
+	DeletedTeams    int
+	DeletedSessions int
+	DeletedMessages int
+	DeletedMemories int
+	DeletedProfiles int
+}
+
+// userDeletePlan records the exact row categories that one user deletion will remove.
+// userDeletePlan 用于记录一次用户删除将真正移除的行类别。
+type userDeletePlan struct {
+	DeletedUsers    int
+	DeletedSessions int
+	DeletedMessages int
+	DeletedMemories int
+	DeletedProfiles int
+}
+
+// planProjectDelete computes the concrete delete counts and empty-parent cascade decisions for one resolved project.
+// planProjectDelete 用于为一个已解析项目计算实际删除计数，以及空父级的级联删除决策。
+func (s *Store) planProjectDelete(ctx context.Context, project logicdomain.ProjectRecord) (projectDeletePlan, error) {
+	sessions, messages, memories, err := s.countProjectRows(ctx, project.ID)
+	if err != nil {
+		return projectDeletePlan{}, err
+	}
+	remainingProjectsInSpace, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_projects WHERE space_id = ? AND id <> ?`, project.SpaceID, project.ID)
+	if err != nil {
+		return projectDeletePlan{}, fmt.Errorf("count remaining projects in project space: %w", err)
+	}
+	deleteSpace := remainingProjectsInSpace == 0
+	deleteTeam := false
+	if deleteSpace {
+		remainingSpacesInTeam, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_spaces WHERE team_id = ? AND id <> ?`, project.TeamID, project.SpaceID)
+		if err != nil {
+			return projectDeletePlan{}, fmt.Errorf("count remaining spaces in project team: %w", err)
+		}
+		deleteTeam = remainingSpacesInTeam == 0
+	}
+	deletedProfiles, err := s.countRows(ctx, buildProjectProfileNodesCountSQL(project.ID, project.SpaceID, project.TeamID, deleteSpace, deleteTeam))
+	if err != nil {
+		return projectDeletePlan{}, fmt.Errorf("count project profile nodes: %w", err)
+	}
+	plan := projectDeletePlan{
+		DeletedProjects: 1,
+		DeletedSessions: sessions,
+		DeletedMessages: messages,
+		DeletedMemories: memories,
+		DeletedProfiles: deletedProfiles,
+	}
+	if deleteSpace {
+		plan.DeletedSpaces = 1
+	}
+	if deleteTeam {
+		plan.DeletedTeams = 1
+	}
+	return plan, nil
+}
+
+// planUserDelete computes the concrete delete counts for one resolved user while excluding shared-scope profile nodes
+// that are retained after the user and their turns disappear.
+// planUserDelete 用于为一个已解析用户计算实际删除计数，并排除那些会在用户和其 turn 删除后仍被保留的共享范围画像节点。
+func (s *Store) planUserDelete(ctx context.Context, userID uint64) (userDeletePlan, error) {
+	sessions, messages, memories, err := s.countUserRows(ctx, userID)
+	if err != nil {
+		return userDeletePlan{}, err
+	}
+	deletedProfiles, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, userID)
+	if err != nil {
+		return userDeletePlan{}, fmt.Errorf("count user profile nodes: %w", err)
+	}
+	return userDeletePlan{
+		DeletedUsers:    1,
+		DeletedSessions: sessions,
+		DeletedMessages: messages,
+		DeletedMemories: memories,
+		DeletedProfiles: deletedProfiles,
+	}, nil
+}
+
+// buildProjectProfileNodesDeleteSQL renders one raw DELETE that removes every profile node
+// actually owned by the project-delete path, including optional empty-parent scopes.
+// buildProjectProfileNodesDeleteSQL 用于渲染一条原始 DELETE，
+// 删除项目删除路径真正负责的全部画像节点，并在需要时覆盖变空的父级 scope。
+func buildProjectProfileNodesDeleteSQL(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) string {
+	return fmt.Sprintf("DELETE FROM vmm_profile_nodes WHERE %s", buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID, deleteSpace, deleteTeam))
+}
+
+// buildProjectProfileNodesCountSQL renders one raw COUNT query that matches the same profile-node scope deleted by project removal.
+// buildProjectProfileNodesCountSQL 用于渲染一条原始 COUNT 查询，并与项目删除时的画像节点删除范围保持完全一致。
+func buildProjectProfileNodesCountSQL(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) string {
+	return fmt.Sprintf("SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE %s", buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID, deleteSpace, deleteTeam))
+}
+
+// buildProjectProfileNodesDeleteWhere centralizes the delete/count predicate used by project deletion
+// so statistics and actual row removal stay locked to the same scope definition.
+// buildProjectProfileNodesDeleteWhere 用于集中维护项目删除时的画像节点条件，
+// 让删除统计与实际删行始终共享同一套范围定义。
+func buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) string {
+	conditions := []string{
+		fmt.Sprintf("(profile_type = %d AND bind_id = %d)", logicdomain.ProfileTypeProject, projectID),
+		fmt.Sprintf("(turn_id IN (SELECT id FROM vmm_turn_records WHERE project_id = %d))", projectID),
+	}
+	if deleteSpace {
+		conditions = append(conditions, fmt.Sprintf("(profile_type = %d AND bind_id = %d)", logicdomain.ProfileTypeSpace, spaceID))
+	}
+	if deleteTeam {
+		conditions = append(conditions, fmt.Sprintf("(profile_type = %d AND bind_id = %d)", logicdomain.ProfileTypeTeam, teamID))
+	}
+	return strings.Join(conditions, " OR ")
 }
 
 // buildProjectConfirmMessage generates the stable confirmation text returned when missing Team/Space nodes require explicit confirmation.

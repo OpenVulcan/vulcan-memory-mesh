@@ -149,6 +149,10 @@ message DeleteProjectResponse {
   int64 deleted_memories = 6;
   uint64 deleted_vector_rows = 7;
   string trace_id = 8;
+  int64 deleted_projects = 9;
+  int64 deleted_spaces = 10;
+  int64 deleted_teams = 11;
+  int64 deleted_profiles = 12;
 }
 
 // MigrateProjectRequest identifies the source and target project paths plus the explicit migration confirmation flag.
@@ -216,6 +220,8 @@ message DeleteUserResponse {
   int64 deleted_memories = 7;
   uint64 deleted_vector_rows = 8;
   string trace_id = 9;
+  int64 deleted_users = 10;
+  int64 deleted_profiles = 11;
 }
 
 // ProfileTarget identifies the single scope whose profile nodes should be queried or updated.
@@ -235,6 +241,7 @@ enum ProfileNodeSourceKind {
   PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT = 1;
   PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION = 2;
   PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED = 3;
+  PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE = 4;
 }
 
 // ProfileNodeEntry transports one active atomic profile node back to the caller.

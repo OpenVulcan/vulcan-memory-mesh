@@ -420,10 +420,26 @@ message PostActionTimelineItem {
 2. 如果 `confirm_delete=false`：
    - 返回 `needs_confirm=true`
 3. 如果确认删除：
-   - 先删 DuckDB 中的：
+   - 先统计将要删除的：
+      - `project`
+      - `profile_nodes`
+      - `sessions`
+      - `turn_records`
+      - `memory_entries`
+      - `memory_nodes`
+   - 再删 DuckDB 中的：
+      - 项目自身与项目 turn 派生的 `vmm_profile_nodes`
+      - `vmm_memory_nodes`
       - `vmm_turn_records`
       - `vmm_sessions`
       - `vmm_memory_entries`
+      - `vmm_projects`
+   - 如果该项目删除后 `space` 下已无任何项目：
+      - 删除该 `space` 绑定的画像节点
+      - 删除该 `space`
+   - 如果级联删除 `space` 后 `team` 下已无任何 space：
+      - 删除该 `team` 绑定的画像节点
+      - 删除该 `team`
    - 再按扁平化过滤条件清理 LanceDB
 
 ### 4. `MigrateProject`
@@ -474,10 +490,15 @@ message PostActionTimelineItem {
    - 返回 `requires_confirmation=true`
 2. 第二次带正确确认码后：
    - 删 DuckDB 中该用户的：
+      - 用户自身 `vmm_profile_nodes`
       - `vmm_turn_records`
       - `vmm_sessions`
       - `vmm_memory_entries`
+      - `vmm_memory_nodes`
       - `vmm_users`
+   - 如果有 `project/team/space` 共享画像节点来自该用户 turn：
+      - 先把这些节点的 `turn_id` 清空
+      - 再把来源改成“用户删除后保留”
    - 再删 LanceDB 中该用户向量
 
 ### 7. `PreCheck`

@@ -189,9 +189,13 @@ func (s *Server) DeleteProject(ctx context.Context, req *vmmv1.DeleteProjectRequ
 		Project:           toProjectEntry(result.Project),
 		Message:           result.Message,
 		NeedsConfirm:      result.NeedsConfirm,
+		DeletedProjects:   int64(result.DeletedProjects),
+		DeletedSpaces:     int64(result.DeletedSpaces),
+		DeletedTeams:      int64(result.DeletedTeams),
 		DeletedSessions:   int64(result.DeletedSessions),
 		DeletedMessages:   int64(result.DeletedMessages),
 		DeletedMemories:   int64(result.DeletedMemories),
+		DeletedProfiles:   int64(result.DeletedProfiles),
 		DeletedVectorRows: result.DeletedVectorRows,
 		TraceId:           trace.IDFromContext(ctx),
 	}, nil
@@ -291,9 +295,11 @@ func (s *Server) DeleteUser(ctx context.Context, req *vmmv1.DeleteUserRequest) (
 		Message:              result.Message,
 		RequiresConfirmation: result.RequiresConfirmation,
 		ConfirmationCode:     result.ConfirmationCode,
+		DeletedUsers:         int64(result.DeletedUsers),
 		DeletedSessions:      int64(result.DeletedSessions),
 		DeletedMessages:      int64(result.DeletedMessages),
 		DeletedMemories:      int64(result.DeletedMemories),
+		DeletedProfiles:      int64(result.DeletedProfiles),
 		DeletedVectorRows:    result.DeletedVectorRows,
 		TraceId:              trace.IDFromContext(ctx),
 	}, nil
@@ -643,6 +649,8 @@ func toProtoProfileSourceKind(sourceKind int) vmmv1.ProfileNodeSourceKind {
 		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION
 	case logicdomain.ProfileSourceKindSystemSeed:
 		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED
+	case logicdomain.ProfileSourceKindRetainedAfterUserDelete:
+		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE
 	default:
 		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT
 	}

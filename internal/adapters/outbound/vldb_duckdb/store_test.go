@@ -469,6 +469,7 @@ func TestDeleteUserRefKeepsSharedScopeProfileNodes(t *testing.T) {
 			"COUNT(*) AS count FROM vmm_turn_records": `[{"count":2}]`,
 			"COUNT(*) AS count FROM vmm_memory_entries": `[{"count":3}]`,
 			"COUNT(*) AS count FROM vmm_memory_nodes": `[{"count":4}]`,
+			"COUNT(*) AS count FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?": `[{"count":5}]`,
 		},
 	}
 	store := newDuckDBTestStore(t, server)
@@ -479,6 +480,9 @@ func TestDeleteUserRefKeepsSharedScopeProfileNodes(t *testing.T) {
 	}
 	if result.RequiresConfirmation {
 		t.Fatalf("did not expect confirmation requirement after supplying the durable code, got %+v", result)
+	}
+	if result.DeletedUsers != 1 || result.DeletedProfiles != 5 {
+		t.Fatalf("expected user/profile delete counts to be surfaced, got %+v", result)
 	}
 
 	joined := ""
@@ -496,6 +500,58 @@ func TestDeleteUserRefKeepsSharedScopeProfileNodes(t *testing.T) {
 	}
 	if strings.Contains(joined, "DELETE FROM vmm_profile_nodes WHERE turn_id IN") {
 		t.Fatalf("did not expect turn-derived shared profile delete sql during user removal, got %s", joined)
+	}
+}
+
+// TestDeleteProjectPathCountsProfilesAndCascadesEmptyParents verifies project deletion now reports
+// the actual deleted project/profile counts and removes empty parent space/team rows when the project was their last child.
+// TestDeleteProjectPathCountsProfilesAndCascadesEmptyParents 用于验证项目删除现在会返回真实的项目/画像删除统计，
+// 并在该项目是父级最后子项时级联删除变空的 space 和 team 行。
+func TestDeleteProjectPathCountsProfilesAndCascadesEmptyParents(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":8}]`,
+			"FROM vmm_projects p": `[{"id":9,"team_id":3,"space_id":5,"name":"proj-a","profile":"","team_name":"team-a","space_name":"space-a","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+			"COUNT(*) AS count FROM vmm_sessions WHERE project_id = ?": `[{"count":2}]`,
+			"COUNT(*) AS count FROM vmm_turn_records WHERE project_id = ?": `[{"count":4}]`,
+			"COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?": `[{"count":3}]`,
+			"COUNT(*) AS count FROM vmm_memory_nodes WHERE project_id = ?": `[{"count":5}]`,
+			"COUNT(*) AS count FROM vmm_projects WHERE space_id = ? AND id <> ?": `[{"count":0}]`,
+			"COUNT(*) AS count FROM vmm_spaces WHERE team_id = ? AND id <> ?": `[{"count":0}]`,
+			"SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE (profile_type = 1 AND bind_id = 9)": `[{"count":6}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	result, err := store.DeleteProjectPath(context.Background(), "team-a/space-a/proj-a", true)
+	if err != nil {
+		t.Fatalf("delete project path: %v", err)
+	}
+	if result.DeletedProjects != 1 || result.DeletedSpaces != 1 || result.DeletedTeams != 1 {
+		t.Fatalf("expected project delete cascade counts, got %+v", result)
+	}
+	if result.DeletedSessions != 2 || result.DeletedMessages != 4 || result.DeletedMemories != 8 || result.DeletedProfiles != 6 {
+		t.Fatalf("expected project delete row counts, got %+v", result)
+	}
+
+	joined := ""
+	for _, req := range server.execRequests() {
+		joined += req.Sql + "\n"
+	}
+	if !strings.Contains(joined, "DELETE FROM vmm_profile_nodes WHERE (profile_type = 1 AND bind_id = 9)") {
+		t.Fatalf("expected project profile delete sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "(profile_type = 3 AND bind_id = 5)") {
+		t.Fatalf("expected empty-space profile delete sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "(profile_type = 2 AND bind_id = 3)") {
+		t.Fatalf("expected empty-team profile delete sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "DELETE FROM vmm_spaces WHERE id = ?") {
+		t.Fatalf("expected empty space delete sql, got %s", joined)
+	}
+	if !strings.Contains(joined, "DELETE FROM vmm_teams WHERE id = ?") {
+		t.Fatalf("expected empty team delete sql, got %s", joined)
 	}
 }
 
