@@ -200,7 +200,11 @@ func (u *ProfileUseCase) applyInstructionLocked(ctx context.Context, target logi
 	}
 	applied, err := u.store.ApplyManualProfileInstruction(ctx, target, instructionRecord, candidates, retired, renderedProfile, reviewJSON)
 	if err != nil {
-		u.failProfileInstruction(ctx, instructionRecord.ID, err.Error(), reviewJSON)
+		if !logicdomain.IsOutcomeUncertain(err) {
+			u.failProfileInstruction(ctx, instructionRecord.ID, err.Error(), reviewJSON)
+		} else if u.logger != nil {
+			u.logger.Warn("manual profile instruction outcome uncertain", "instruction_id", instructionRecord.ID, "err", err)
+		}
 		return ProfileInstructionResult{}, err
 	}
 	return ProfileInstructionResult{

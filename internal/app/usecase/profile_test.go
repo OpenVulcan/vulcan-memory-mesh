@@ -263,6 +263,50 @@ func TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget(t *tes
 	}
 }
 
+// TestProfileUseCaseApplyInstructionSkipsFailureWritebackOnOutcomeUncertain verifies the use case does not
+// append an extra "failed" update when the store reports one storage outcome as uncertain.
+// TestProfileUseCaseApplyInstructionSkipsFailureWritebackOnOutcomeUncertain 用于验证当存储层报告“结果不确定”时，
+// 用例层不会再追加一条失败回写，避免在坏连接上继续放大状态污染。
+func TestProfileUseCaseApplyInstructionSkipsFailureWritebackOnOutcomeUncertain(t *testing.T) {
+	store := &stubProfileStore{
+		target: logicdomain.ProfileTargetRef{
+			ProfileType: logicdomain.ProfileTypeProject,
+			BindID:      9,
+			ProjectID:   9,
+		},
+		applyErr: logicdomain.OutcomeUncertainError{
+			Operation: "apply manual profile instruction",
+			Message:   "gateway returned deadlock after commit result became ambiguous",
+		},
+	}
+	reviewer := &stubManualProfileReviewer{
+		review: logicdomain.ManualProfileInstructionReview{
+			AcceptedNodes: []logicdomain.ManualProfileAcceptedNode{
+				{
+					NormalizedContent: "项目统一使用 Go 语言实现。",
+					Priority:          logicdomain.ProfilePriorityP0,
+					ProfileLevel:      logicdomain.ProfileLevelStable,
+					LevelReason:       "显式项目指令。",
+				},
+			},
+			Reason: "先完成评审，再由存储层回写。",
+		},
+	}
+	uc := NewProfileUseCase(store, reviewer, nil)
+
+	_, err := uc.ApplyInstruction(context.Background(), ProfileInstructionCommand{
+		ProfileType: logicdomain.ProfileTypeProject,
+		ProjectID:   9,
+		Instruction: "项目统一使用 Go 语言实现。",
+	})
+	if err == nil || !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain error, got %v", err)
+	}
+	if store.failInstructionCount() != 0 {
+		t.Fatalf("did not expect failure writeback for uncertain outcome, got %d fail calls", store.failInstructionCount())
+	}
+}
+
 // stubProfileStore supplies the profile store behavior needed by profile use case tests.
 // stubProfileStore 用于为画像用例测试提供所需的画像存储行为。
 type stubProfileStore struct {
@@ -274,8 +318,10 @@ type stubProfileStore struct {
 	appliedNodes       []logicdomain.ProfileNodeCandidate
 	appliedRetired     []logicdomain.ProfileRetireDecision
 	appliedProfile     string
+	applyErr           error
 	createCalls        int
 	applyCalls         int
+	failCalls          int
 }
 
 // ResolveProfileTarget returns the canned target binding for deterministic test assertions.
@@ -310,6 +356,9 @@ func (s *stubProfileStore) CreateProfileInstruction(_ context.Context, record lo
 // FailProfileInstruction keeps the stub interface-complete while the success-path tests do not exercise failure persistence.
 // FailProfileInstruction 用于补齐测试替身接口，而当前成功路径测试不会走到失败持久化。
 func (s *stubProfileStore) FailProfileInstruction(context.Context, uint64, string, string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.failCalls++
 	return nil
 }
 
@@ -319,6 +368,9 @@ func (s *stubProfileStore) ApplyManualProfileInstruction(_ context.Context, _ lo
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.applyCalls++
+	if s.applyErr != nil {
+		return logicdomain.ManualProfileInstructionApplyResult{}, s.applyErr
+	}
 	s.appliedNodes = append([]logicdomain.ProfileNodeCandidate(nil), nodes...)
 	s.appliedRetired = append([]logicdomain.ProfileRetireDecision(nil), retired...)
 	s.appliedProfile = renderedProfile
@@ -360,6 +412,14 @@ func (s *stubProfileStore) applyInstructionCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.applyCalls
+}
+
+// failInstructionCount returns how many times the use case tried to mark one instruction as failed.
+// failInstructionCount 用于返回用例层尝试把 instruction 标记为失败的次数。
+func (s *stubProfileStore) failInstructionCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.failCalls
 }
 
 // stubManualProfileReviewer returns a canned manual review result while recording the enforced floors.

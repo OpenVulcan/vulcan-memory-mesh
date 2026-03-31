@@ -423,6 +423,28 @@ func marshalParams(params []any) (string, error) {
 	return string(body), nil
 }
 
+// isDuckDBOutcomeUncertainError detects gateway failures whose text indicates the commit result may already have happened even though the RPC returned an error.
+// isDuckDBOutcomeUncertainError 用于识别这类网关失败：虽然 RPC 返回报错，但错误文本表明提交结果本身可能已经发生。
+func isDuckDBOutcomeUncertainError(err error) bool {
+	if err == nil {
+		return false
+	}
+	lowered := strings.ToLower(strings.TrimSpace(err.Error()))
+	fragments := []string{
+		"resource deadlock would occur",
+		"failed to commit",
+		"transactioncontext error",
+		"commit outcome unknown",
+		"outcome uncertain",
+	}
+	for _, fragment := range fragments {
+		if strings.Contains(lowered, fragment) {
+			return true
+		}
+	}
+	return false
+}
+
 // versionRow mirrors the tiny schema-version query payload returned by the gateway.
 // versionRow 用于映射网关返回的 schema 版本查询结果。
 type versionRow struct {
@@ -842,6 +864,188 @@ LIMIT ?
 	return out, nil
 }
 
+// loadProfileInstructionByID fetches one manual profile-instruction row by its durable numeric id so uncertain commits can be reconciled before retrying.
+// loadProfileInstructionByID 用于按长期数字 id 读取一条手工画像指令，让“不确定提交”在重试前先做状态对账。
+func (s *Store) loadProfileInstructionByID(ctx context.Context, instructionID uint64) (logicdomain.ProfileInstructionRecord, bool, error) {
+	rows, err := queryRows[profileInstructionRow](s, ctx, fmt.Sprintf(`
+SELECT id, profile_type, bind_id, instruction, instruction_status,
+       review_result_json, failure_reason, created_timestamp, updated_timestamp
+FROM vmm_profile_instructions
+WHERE id = %d
+LIMIT 1
+`, instructionID))
+	if err != nil {
+		return logicdomain.ProfileInstructionRecord{}, false, err
+	}
+	if len(rows) == 0 {
+		return logicdomain.ProfileInstructionRecord{}, false, nil
+	}
+	return rows[0].toDomain(), true, nil
+}
+
+// loadProfileNodeByID fetches one durable profile node by id so manual-instruction persistence can verify whether a supposedly failed insert already landed.
+// loadProfileNodeByID 用于按 id 读取一条长期画像节点，让手工画像持久化能判断一个“看似失败”的插入是否其实已经落库。
+func (s *Store) loadProfileNodeByID(ctx context.Context, nodeID uint64) (logicdomain.ProfileNodeRecord, bool, error) {
+	rows, err := queryRows[profileNodeRow](s, ctx, fmt.Sprintf(`
+SELECT id, turn_id, profile_type, bind_id, content, profile_status,
+       priority, profile_level, level_reason, refresh_weight,
+       source_kind, source_id, status_reason,
+       expires_timestamp, superseded_by_id, profile_date,
+       created_timestamp, updated_timestamp
+FROM vmm_profile_nodes
+WHERE id = %d
+LIMIT 1
+`, nodeID))
+	if err != nil {
+		return logicdomain.ProfileNodeRecord{}, false, err
+	}
+	if len(rows) == 0 {
+		return logicdomain.ProfileNodeRecord{}, false, nil
+	}
+	return rows[0].toRecord(), true, nil
+}
+
+// loadProfileNodeStatusesByIDs fetches the lightweight retirement state for a small node-id set so uncertain supersede/retire updates can be reconciled.
+// loadProfileNodeStatusesByIDs 用于读取一小批节点的轻量状态，让“不确定”的 supersede 或 retire 更新能够做状态对账。
+func (s *Store) loadProfileNodeStatusesByIDs(ctx context.Context, nodeIDs []uint64) ([]profileNodeStatusRow, error) {
+	nodeIDs = normalizeUint64List(nodeIDs)
+	if len(nodeIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := queryRows[profileNodeStatusRow](s, ctx, fmt.Sprintf(`
+SELECT id, profile_status, superseded_by_id
+FROM vmm_profile_nodes
+WHERE id IN (%s)
+ORDER BY id ASC
+`, sqlUint64List(nodeIDs)))
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
+}
+
+// loadRenderedProfileByTarget reads the durable scope blob after one uncertain update so callers can verify whether the final profile text already committed.
+// loadRenderedProfileByTarget 用于在 scope 画像更新不确定后读取长期 Blob，让调用方验证最终画像文本是否已经提交成功。
+func (s *Store) loadRenderedProfileByTarget(ctx context.Context, profileType int, bindID uint64) (string, error) {
+	query := ""
+	switch profileType {
+	case logicdomain.ProfileTypeUser:
+		query = fmt.Sprintf(`SELECT profile FROM vmm_users WHERE id = %d LIMIT 1`, bindID)
+	case logicdomain.ProfileTypeTeam:
+		query = fmt.Sprintf(`SELECT profile FROM vmm_teams WHERE id = %d LIMIT 1`, bindID)
+	case logicdomain.ProfileTypeSpace:
+		query = fmt.Sprintf(`SELECT profile FROM vmm_spaces WHERE id = %d LIMIT 1`, bindID)
+	case logicdomain.ProfileTypeProject:
+		query = fmt.Sprintf(`SELECT profile FROM vmm_projects WHERE id = %d LIMIT 1`, bindID)
+	default:
+		return "", logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile target"}
+	}
+	rows, err := queryRows[profileBlobRow](s, ctx, query)
+	if err != nil {
+		return "", err
+	}
+	if len(rows) == 0 {
+		return "", nil
+	}
+	return rows[0].Profile, nil
+}
+
+// reconcileProfileInstructionCreate checks whether one insert that returned a commit-uncertain error has already materialized in DuckDB.
+// reconcileProfileInstructionCreate 用于检查一条返回“提交结果不确定”错误的插入，是否实际上已经在 DuckDB 中落库。
+func (s *Store) reconcileProfileInstructionCreate(ctx context.Context, expected logicdomain.ProfileInstructionRecord) (logicdomain.ProfileInstructionRecord, bool, error) {
+	stored, found, err := s.loadProfileInstructionByID(ctx, expected.ID)
+	if err != nil || !found {
+		return logicdomain.ProfileInstructionRecord{}, false, err
+	}
+	if stored.ProfileType != expected.ProfileType || stored.BindID != expected.BindID || strings.TrimSpace(stored.Instruction) != strings.TrimSpace(expected.Instruction) {
+		return logicdomain.ProfileInstructionRecord{}, false, nil
+	}
+	return stored, true, nil
+}
+
+// reconcileManualProfileNodeInsert checks whether one node insert already committed even though the gateway returned an uncertain failure.
+// reconcileManualProfileNodeInsert 用于检查某条节点插入是否已经提交，即便网关对这次写入返回了“不确定失败”。
+func (s *Store) reconcileManualProfileNodeInsert(ctx context.Context, target logicdomain.ProfileTargetRef, expected logicdomain.ProfileNodeCandidate, expectedID uint64) (logicdomain.ProfileNodeRecord, bool, error) {
+	stored, found, err := s.loadProfileNodeByID(ctx, expectedID)
+	if err != nil || !found {
+		return logicdomain.ProfileNodeRecord{}, false, err
+	}
+	if stored.ProfileType != target.ProfileType ||
+		stored.BindID != target.BindID ||
+		strings.TrimSpace(stored.Content) != strings.TrimSpace(expected.Content) ||
+		stored.SourceKind != expected.SourceKind ||
+		stored.SourceID != expected.SourceID {
+		return logicdomain.ProfileNodeRecord{}, false, nil
+	}
+	return stored, true, nil
+}
+
+// reconcileProfileNodesSuperseded verifies whether all target nodes already reached the desired superseded state after one uncertain update error.
+// reconcileProfileNodesSuperseded 用于验证在一次不确定更新报错后，目标节点是否已经全部进入期望的 superseded 状态。
+func (s *Store) reconcileProfileNodesSuperseded(ctx context.Context, nodeIDs []uint64, supersededByID uint64) (bool, error) {
+	rows, err := s.loadProfileNodeStatusesByIDs(ctx, nodeIDs)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != len(normalizeUint64List(nodeIDs)) {
+		return false, nil
+	}
+	for _, row := range rows {
+		if row.ProfileStatus != logicdomain.ProfileStatusSuperseded || row.SupersededByID != supersededByID {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// reconcileProfileNodesRetired verifies whether all target nodes already left the active set after one uncertain retire update.
+// reconcileProfileNodesRetired 用于验证在一次不确定退役更新后，目标节点是否已经全部离开 active 集合。
+func (s *Store) reconcileProfileNodesRetired(ctx context.Context, nodeIDs []uint64) (bool, error) {
+	rows, err := s.loadProfileNodeStatusesByIDs(ctx, nodeIDs)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != len(normalizeUint64List(nodeIDs)) {
+		return false, nil
+	}
+	for _, row := range rows {
+		if row.ProfileStatus == logicdomain.ProfileStatusActive {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// reconcileProfileInstructionApplied verifies whether the instruction row already moved to the applied state after one uncertain update.
+// reconcileProfileInstructionApplied 用于验证一条 instruction 行在不确定更新后是否已经进入 applied 状态。
+func (s *Store) reconcileProfileInstructionApplied(ctx context.Context, instructionID uint64) (bool, error) {
+	stored, found, err := s.loadProfileInstructionByID(ctx, instructionID)
+	if err != nil || !found {
+		return false, err
+	}
+	return stored.Status == logicdomain.ProfileInstructionStatusApplied, nil
+}
+
+// reconcileProfileInstructionFailed verifies whether the instruction row already moved to the failed state after one uncertain failure-mark update.
+// reconcileProfileInstructionFailed 用于验证一条 instruction 行在不确定失败回写后是否已经进入 failed 状态。
+func (s *Store) reconcileProfileInstructionFailed(ctx context.Context, instructionID uint64) (bool, error) {
+	stored, found, err := s.loadProfileInstructionByID(ctx, instructionID)
+	if err != nil || !found {
+		return false, err
+	}
+	return stored.Status == logicdomain.ProfileInstructionStatusFailed, nil
+}
+
+// reconcileRenderedProfileTarget verifies whether the durable scope profile blob already contains the final rendered text after one uncertain update.
+// reconcileRenderedProfileTarget 用于验证在一次不确定更新后，长期 scope 画像 Blob 是否已经包含最终渲染文本。
+func (s *Store) reconcileRenderedProfileTarget(ctx context.Context, profileType int, bindID uint64, renderedProfile string) (bool, error) {
+	stored, err := s.loadRenderedProfileByTarget(ctx, profileType, bindID)
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(stored) == strings.TrimSpace(renderedProfile), nil
+}
+
 // CreateProfileInstruction inserts one pending manual profile instruction so later review results can reference a durable instruction id.
 // CreateProfileInstruction 用于插入一条 pending 的手工画像指令，让后续评审结果能够引用稳定的 instruction id。
 func (s *Store) CreateProfileInstruction(ctx context.Context, record logicdomain.ProfileInstructionRecord) (logicdomain.ProfileInstructionRecord, error) {
@@ -867,16 +1071,32 @@ func (s *Store) CreateProfileInstruction(ctx context.Context, record logicdomain
 	}
 	now := time.Now().UTC()
 	nowMs := now.UnixMilli()
+	record.ID = nextID
+	record.CreatedAt = now
+	record.UpdatedAt = now
 	if err := s.exec(ctx, fmt.Sprintf(`
 INSERT INTO vmm_profile_instructions (
   id, profile_type, bind_id, instruction, instruction_status, review_result_json, failure_reason, created_timestamp, updated_timestamp
 ) VALUES (%d, %d, %d, %s, %d, %s, %s, %d, %d);
 `, nextID, record.ProfileType, record.BindID, sqlStringLiteral(strings.TrimSpace(record.Instruction)), record.Status, sqlStringLiteral(strings.TrimSpace(record.ReviewResult)), sqlStringLiteral(strings.TrimSpace(record.FailureReason)), nowMs, nowMs)); err != nil {
+		if isDuckDBOutcomeUncertainError(err) {
+			recovered, ok, reconcileErr := s.reconcileProfileInstructionCreate(ctx, record)
+			if reconcileErr == nil && ok {
+				return recovered, nil
+			}
+			if reconcileErr != nil {
+				return logicdomain.ProfileInstructionRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "insert profile instruction",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			return logicdomain.ProfileInstructionRecord{}, logicdomain.OutcomeUncertainError{
+				Operation: "insert profile instruction",
+				Message:   err.Error(),
+			}
+		}
 		return logicdomain.ProfileInstructionRecord{}, fmt.Errorf("insert profile instruction: %w", err)
 	}
-	record.ID = nextID
-	record.CreatedAt = now
-	record.UpdatedAt = now
 	return record, nil
 }
 
@@ -887,18 +1107,39 @@ func (s *Store) FailProfileInstruction(ctx context.Context, instructionID uint64
 		return logicdomain.ValidationError{Field: "instruction_id", Message: "must be one persisted profile instruction id"}
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	return s.exec(ctx, fmt.Sprintf(`
+	if err := s.exec(ctx, fmt.Sprintf(`
 UPDATE vmm_profile_instructions
 SET instruction_status = %d,
     review_result_json = %s,
     failure_reason = %s,
     updated_timestamp = %d
 WHERE id = %d;
-`, logicdomain.ProfileInstructionStatusFailed, sqlStringLiteral(strings.TrimSpace(reviewResult)), sqlStringLiteral(strings.TrimSpace(failureReason)), nowMs, instructionID))
+`, logicdomain.ProfileInstructionStatusFailed, sqlStringLiteral(strings.TrimSpace(reviewResult)), sqlStringLiteral(strings.TrimSpace(failureReason)), nowMs, instructionID)); err != nil {
+		if isDuckDBOutcomeUncertainError(err) {
+			recovered, reconcileErr := s.reconcileProfileInstructionFailed(ctx, instructionID)
+			if reconcileErr == nil && recovered {
+				return nil
+			}
+			if reconcileErr != nil {
+				return logicdomain.OutcomeUncertainError{
+					Operation: "mark profile instruction failed",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			return logicdomain.OutcomeUncertainError{
+				Operation: "mark profile instruction failed",
+				Message:   err.Error(),
+			}
+		}
+		return err
+	}
+	return nil
 }
 
-// ApplyManualProfileInstruction persists the reviewed manual profile instruction atomically so new nodes, retired nodes, instruction status, and rendered profile text stay in sync.
-// ApplyManualProfileInstruction 用于原子化持久化手工画像评审结果，确保新节点、退役节点、指令状态和渲染后的 profile 文本保持一致。
+// ApplyManualProfileInstruction persists the reviewed manual profile instruction inside one serialized write section and
+// reconciles "commit outcome uncertain" failures before giving up, so duplicate retries are less likely to create extra nodes.
+// ApplyManualProfileInstruction 用于在单个串行写入区间内持久化手工画像评审结果，
+// 并在遇到“提交结果不确定”错误时先做状态对账，从而降低重复重试制造额外节点的概率。
 func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicdomain.ProfileTargetRef, instruction logicdomain.ProfileInstructionRecord, nodes []logicdomain.ProfileNodeCandidate, retired []logicdomain.ProfileRetireDecision, renderedProfile, reviewResult string) (logicdomain.ManualProfileInstructionApplyResult, error) {
 	if !logicdomain.ValidProfileType(target.ProfileType) {
 		return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
@@ -949,21 +1190,7 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 			node.ProfileDate = now.Format("2006-01-02")
 		}
 		insertedID := profileStartID + uint64(idx)
-		// Persist the new active node first so later retire/supersede updates can point at a durable replacement id.
-		// 先持久化新的 active 节点，让后续退役或 supersede 更新能够引用已经存在的替代节点 id。
-		if err := s.exec(ctx, buildProfileNodeInsertSQL(insertedID, nil, target.ProfileType, target.BindID, node, nowMs)); err != nil {
-			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("insert manual profile node %d: %w", insertedID, err)
-		}
-		if len(node.SupersedeNodeIDs) > 0 {
-			// Retire the superseded nodes in a separate execute call because DuckDB's shared-connection batch path
-			// can enter a resource-deadlock state when one script both inserts and updates the same hot table.
-			// 单独执行 supersede 更新，因为 DuckDB 的共享连接批量路径在同一脚本里同时插入并更新热点表时，
-			// 可能进入 resource deadlock 状态。
-			if err := s.exec(ctx, buildProfileNodesSupersedeSQL(normalizeUint64List(node.SupersedeNodeIDs), insertedID, strings.TrimSpace(node.StatusReason), nowMs)); err != nil {
-				return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("supersede manual profile nodes for %d: %w", insertedID, err)
-			}
-		}
-		accepted = append(accepted, logicdomain.ProfileNodeRecord{
+		acceptedRecord := logicdomain.ProfileNodeRecord{
 			ID:            insertedID,
 			TurnID:        0,
 			ProfileType:   target.ProfileType,
@@ -981,7 +1208,56 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 			ExpiresAt:     node.ExpiresAt.UTC(),
 			CreatedAt:     now,
 			UpdatedAt:     now,
-		})
+		}
+		// Persist the new active node first so later retire/supersede updates can point at a durable replacement id.
+		// 先持久化新的 active 节点，让后续退役或 supersede 更新能够引用已经存在的替代节点 id。
+		if err := s.exec(ctx, buildProfileNodeInsertSQL(insertedID, nil, target.ProfileType, target.BindID, node, nowMs)); err != nil {
+			if isDuckDBOutcomeUncertainError(err) {
+				recovered, ok, reconcileErr := s.reconcileManualProfileNodeInsert(ctx, target, node, insertedID)
+				if reconcileErr == nil && ok {
+					acceptedRecord = recovered
+				} else if reconcileErr != nil {
+					return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation: fmt.Sprintf("insert manual profile node %d", insertedID),
+						Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+					}
+				} else {
+					return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation: fmt.Sprintf("insert manual profile node %d", insertedID),
+						Message:   err.Error(),
+					}
+				}
+			} else {
+				return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("insert manual profile node %d: %w", insertedID, err)
+			}
+		}
+		if len(node.SupersedeNodeIDs) > 0 {
+			// Retire the superseded nodes in a separate execute call because DuckDB's shared-connection batch path
+			// can enter a resource-deadlock state when one script both inserts and updates the same hot table.
+			// 单独执行 supersede 更新，因为 DuckDB 的共享连接批量路径在同一脚本里同时插入并更新热点表时，
+			// 可能进入 resource deadlock 状态。
+			if err := s.exec(ctx, buildProfileNodesSupersedeSQL(normalizeUint64List(node.SupersedeNodeIDs), insertedID, strings.TrimSpace(node.StatusReason), nowMs)); err != nil {
+				if isDuckDBOutcomeUncertainError(err) {
+					recovered, reconcileErr := s.reconcileProfileNodesSuperseded(ctx, node.SupersedeNodeIDs, insertedID)
+					if reconcileErr == nil && recovered {
+						accepted = append(accepted, acceptedRecord)
+						continue
+					}
+					if reconcileErr != nil {
+						return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation: fmt.Sprintf("supersede manual profile nodes for %d", insertedID),
+							Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+						}
+					}
+					return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation: fmt.Sprintf("supersede manual profile nodes for %d", insertedID),
+						Message:   err.Error(),
+					}
+				}
+				return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("supersede manual profile nodes for %d: %w", insertedID, err)
+			}
+		}
+		accepted = append(accepted, acceptedRecord)
 	}
 	for _, decision := range retired {
 		if decision.NodeID == 0 {
@@ -990,6 +1266,22 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 		// Apply standalone retire decisions after inserts so reviewer-directed removals stay explicit and debuggable.
 		// 在插入完成后再应用独立退役决策，让评审器给出的移除动作保持明确且可调试。
 		if err := s.exec(ctx, buildSingleProfileNodeRetireSQL(decision.NodeID, decision.Reason, nowMs)); err != nil {
+			if isDuckDBOutcomeUncertainError(err) {
+				recovered, reconcileErr := s.reconcileProfileNodesRetired(ctx, []uint64{decision.NodeID})
+				if reconcileErr == nil && recovered {
+					continue
+				}
+				if reconcileErr != nil {
+					return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation: fmt.Sprintf("retire manual profile node %d", decision.NodeID),
+						Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+					}
+				}
+				return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+					Operation: fmt.Sprintf("retire manual profile node %d", decision.NodeID),
+					Message:   err.Error(),
+				}
+			}
 			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("retire manual profile node %d: %w", decision.NodeID, err)
 		}
 	}
@@ -997,9 +1289,46 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 	// Mark the instruction as applied only after every node mutation has succeeded, then refresh the rendered scope blob last.
 	// 只有在全部节点变更都成功后，才把指令标记为 applied，并把 scope 画像 Blob 的回写放在最后。
 	if err := s.exec(ctx, buildProfileInstructionAppliedSQL(instruction.ID, reviewResult, nowMs)); err != nil {
+		if isDuckDBOutcomeUncertainError(err) {
+			recovered, reconcileErr := s.reconcileProfileInstructionApplied(ctx, instruction.ID)
+			if reconcileErr == nil && recovered {
+				goto updateRenderedProfile
+			}
+			if reconcileErr != nil {
+				return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "mark manual profile instruction applied",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+				Operation: "mark manual profile instruction applied",
+				Message:   err.Error(),
+			}
+		}
 		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("mark manual profile instruction applied: %w", err)
 	}
+updateRenderedProfile:
 	if err := s.exec(ctx, buildProfileTargetUpdateSQL(target.ProfileType, target.BindID, renderedProfile, nowRFC3339)); err != nil {
+		if isDuckDBOutcomeUncertainError(err) {
+			recovered, reconcileErr := s.reconcileRenderedProfileTarget(ctx, target.ProfileType, target.BindID, renderedProfile)
+			if reconcileErr == nil && recovered {
+				return logicdomain.ManualProfileInstructionApplyResult{
+					InstructionID: instruction.ID,
+					AcceptedNodes: accepted,
+					RetiredNodes:  retired,
+				}, nil
+			}
+			if reconcileErr != nil {
+				return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "update rendered manual profile target",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+				Operation: "update rendered manual profile target",
+				Message:   err.Error(),
+			}
+		}
 		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("update rendered manual profile target: %w", err)
 	}
 	return logicdomain.ManualProfileInstructionApplyResult{
@@ -2951,6 +3280,31 @@ type profileNodeRow struct {
 	UpdatedTimestamp int64   `json:"updated_timestamp"`
 }
 
+// toRecord converts one SQL row into the public profile-node record shape returned by query RPCs and manual profile writebacks.
+// toRecord 用于把一条 SQL 行转换成查询 RPC 与手工画像写回返回的公开画像节点结构。
+func (r profileNodeRow) toRecord() logicdomain.ProfileNodeRecord {
+	return logicdomain.ProfileNodeRecord{
+		ID:             r.ID,
+		TurnID:         optionalUint64Value(r.TurnID),
+		ProfileType:    r.ProfileType,
+		BindID:         r.BindID,
+		Content:        r.Content,
+		Status:         r.ProfileStatus,
+		Priority:       r.Priority,
+		ProfileLevel:   r.ProfileLevel,
+		LevelReason:    r.LevelReason,
+		RefreshWeight:  r.RefreshWeight,
+		ProfileDate:    r.ProfileDate,
+		SourceKind:     r.SourceKind,
+		SourceID:       r.SourceID,
+		StatusReason:   r.StatusReason,
+		ExpiresAt:      unixMilliToTime(r.ExpiresTimestamp),
+		SupersededByID: r.SupersededByID,
+		CreatedAt:      unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:      unixMilliToTime(r.UpdatedTimestamp),
+	}
+}
+
 func (r profileNodeRow) toDomain() logicdomain.ProfileActiveNodeRecord {
 	return logicdomain.ProfileActiveNodeRecord{
 		ID:             r.ID,
@@ -2972,6 +3326,12 @@ func (r profileNodeRow) toDomain() logicdomain.ProfileActiveNodeRecord {
 		CreatedAt:      unixMilliToTime(r.CreatedTimestamp),
 		UpdatedAt:      unixMilliToTime(r.UpdatedTimestamp),
 	}
+}
+
+type profileNodeStatusRow struct {
+	ID             uint64 `json:"id"`
+	ProfileStatus  int    `json:"profile_status"`
+	SupersededByID uint64 `json:"superseded_by_id"`
 }
 
 type profileInstructionRow struct {
@@ -2998,6 +3358,10 @@ func (r profileInstructionRow) toDomain() logicdomain.ProfileInstructionRecord {
 		CreatedAt:     unixMilliToTime(r.CreatedTimestamp),
 		UpdatedAt:     unixMilliToTime(r.UpdatedTimestamp),
 	}
+}
+
+type profileBlobRow struct {
+	Profile string `json:"profile"`
 }
 
 type obsoleteVectorRow struct {

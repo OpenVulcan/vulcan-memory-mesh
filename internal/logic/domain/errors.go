@@ -11,11 +11,12 @@ import (
 // Variables expose reusable sentinel errors that higher layers can match without string parsing.
 // Variables 用于暴露可复用的哨兵错误，方便上层在不解析字符串的情况下做匹配。
 var (
-	ErrValidation = errors.New("validation failed")
-	ErrTimeout    = errors.New("request timeout")
-	ErrNotFound   = errors.New("resource not found")
-	ErrConflict   = errors.New("resource conflict")
-	ErrConfirm    = errors.New("confirmation required")
+	ErrValidation       = errors.New("validation failed")
+	ErrTimeout          = errors.New("request timeout")
+	ErrNotFound         = errors.New("resource not found")
+	ErrConflict         = errors.New("resource conflict")
+	ErrConfirm          = errors.New("confirmation required")
+	ErrOutcomeUncertain = errors.New("storage outcome uncertain")
 )
 
 // ValidationError marks one concrete field-level validation failure coming from domain or use-case checks.
@@ -123,6 +124,33 @@ func (e ConfirmationRequiredError) Unwrap() error { return ErrConfirm }
 // IsConfirmationRequired reports whether the condition is true.
 // IsConfirmationRequired 用于返回条件是否成立。
 func IsConfirmationRequired(err error) bool { return errors.Is(err, ErrConfirm) }
+
+// OutcomeUncertainError marks one persistence step whose upstream storage engine reported an error after the commit outcome became ambiguous.
+// OutcomeUncertainError 用于标记一次持久化步骤在上游存储引擎报错后进入“提交结果不确定”的状态。
+type OutcomeUncertainError struct {
+	Operation string
+	Message   string
+}
+
+// Error executes the Error logic.
+// Error 用于执行 Error 逻辑。
+func (e OutcomeUncertainError) Error() string {
+	if strings.TrimSpace(e.Operation) == "" {
+		return "storage outcome uncertain"
+	}
+	if strings.TrimSpace(e.Message) == "" {
+		return fmt.Sprintf("%s: storage outcome uncertain", e.Operation)
+	}
+	return fmt.Sprintf("%s: storage outcome uncertain: %s", e.Operation, strings.TrimSpace(e.Message))
+}
+
+// Unwrap executes the Unwrap logic.
+// Unwrap 用于执行 Unwrap 逻辑。
+func (e OutcomeUncertainError) Unwrap() error { return ErrOutcomeUncertain }
+
+// IsOutcomeUncertain reports whether the condition is true.
+// IsOutcomeUncertain 用于返回条件是否成立。
+func IsOutcomeUncertain(err error) bool { return errors.Is(err, ErrOutcomeUncertain) }
 
 // InvalidLLMOutputError captures malformed model output when processors expect structured JSON.
 // InvalidLLMOutputError 用于在处理器期望结构化 JSON 时记录模型输出格式错误。

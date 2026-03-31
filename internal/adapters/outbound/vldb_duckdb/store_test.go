@@ -465,6 +465,89 @@ func TestApplyManualProfileInstructionExecutesSeparateStatements(t *testing.T) {
 	}
 }
 
+// TestCreateProfileInstructionReconcilesCommitUncertainInsert verifies one deadlock-style gateway error
+// is treated as success when the instruction row can already be read back by its deterministic id.
+// TestCreateProfileInstructionReconcilesCommitUncertainInsert 用于验证当网关返回类似 deadlock 的不确定提交错误时，
+// 如果 instruction 行已经能按确定性 id 读回，就应把这次创建收敛成成功。
+func TestCreateProfileInstructionReconcilesCommitUncertainInsert(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":8}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_profile_instructions": `[{"next_id":901}]`,
+			"FROM vmm_profile_instructions\nWHERE id = 901":                            `[{"id":901,"profile_type":1,"bind_id":9,"instruction":"项目统一使用 Go。","instruction_status":0,"review_result_json":"","failure_reason":"","created_timestamp":1774962000000,"updated_timestamp":1774962000000}]`,
+		},
+		execErrors: map[string]string{
+			"INSERT INTO vmm_profile_instructions": "duckdb execute_batch failed: TransactionContext Error: Failed to commit: resource deadlock would occur: resource deadlock would occur",
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	record, err := store.CreateProfileInstruction(context.Background(), logicdomain.ProfileInstructionRecord{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+		Instruction: "项目统一使用 Go。",
+		Status:      logicdomain.ProfileInstructionStatusPending,
+	})
+	if err != nil {
+		t.Fatalf("create profile instruction with uncertain commit: %v", err)
+	}
+	if record.ID != 901 || record.ProfileType != logicdomain.ProfileTypeProject || record.BindID != 9 {
+		t.Fatalf("unexpected reconciled instruction record: %+v", record)
+	}
+}
+
+// TestApplyManualProfileInstructionReconcilesCommitUncertainWrites verifies manual profile persistence
+// can recover from "reported failed but already committed" insert/applied-update errors without duplicating nodes.
+// TestApplyManualProfileInstructionReconcilesCommitUncertainWrites 用于验证手工画像持久化在遇到“报错但已提交”的
+// 节点插入和 instruction applied 更新时，能够做状态对账并成功收敛，而不会重复制造节点。
+func TestApplyManualProfileInstructionReconcilesCommitUncertainWrites(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":8}]`,
+			"SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_profile_nodes": `[{"next_id":701}]`,
+			"FROM vmm_profile_nodes\nWHERE id = 701":                            `[{"id":701,"turn_id":null,"profile_type":1,"bind_id":9,"content":"项目全称为 VulcanMemoryMesh，简称 VMM。","profile_status":2,"priority":1,"profile_level":2,"level_reason":"显式项目指令。","refresh_weight":0,"source_kind":1,"source_id":88,"status_reason":"","expires_timestamp":0,"superseded_by_id":0,"profile_date":"2026-03-31","created_timestamp":1774962100000,"updated_timestamp":1774962100000}]`,
+			"FROM vmm_profile_instructions\nWHERE id = 88":                      `[{"id":88,"profile_type":1,"bind_id":9,"instruction":"项目名称改为 VulcanMemoryMesh，简称 VMM。","instruction_status":1,"review_result_json":"{\"reason\":\"manual instruction\"}","failure_reason":"","created_timestamp":1774962090000,"updated_timestamp":1774962100000}]`,
+		},
+		execErrors: map[string]string{
+			"INSERT INTO vmm_profile_nodes":       "duckdb execute_batch failed: TransactionContext Error: Failed to commit: resource deadlock would occur: resource deadlock would occur",
+			"UPDATE vmm_profile_instructions SET": "duckdb execute_batch failed: Invalid Error: resource deadlock would occur: resource deadlock would occur",
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	result, err := store.ApplyManualProfileInstruction(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+		ProjectID:   9,
+	}, logicdomain.ProfileInstructionRecord{
+		ID:          88,
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+		Status:      logicdomain.ProfileInstructionStatusPending,
+	}, []logicdomain.ProfileNodeCandidate{
+		{
+			ProfileType:   logicdomain.ProfileTypeProject,
+			Content:       "项目全称为 VulcanMemoryMesh，简称 VMM。",
+			Status:        logicdomain.ProfileStatusActive,
+			Priority:      logicdomain.ProfilePriorityP1,
+			ProfileLevel:  logicdomain.ProfileLevelStable,
+			LevelReason:   "显式项目指令。",
+			SourceKind:    logicdomain.ProfileSourceKindManualInstruction,
+			SourceID:      88,
+			ProfileDate:   "2026-03-31",
+			ExpiresAt:     time.Time{},
+			StatusReason:  "",
+			RefreshWeight: 0,
+		},
+	}, nil, "[Profile Legend]\n项目画像", `{"reason":"manual instruction"}`)
+	if err != nil {
+		t.Fatalf("apply manual profile instruction with uncertain writes: %v", err)
+	}
+	if result.InstructionID != 88 || len(result.AcceptedNodes) != 1 || result.AcceptedNodes[0].ID != 701 {
+		t.Fatalf("unexpected reconciled manual instruction result: %+v", result)
+	}
+}
+
 // TestDeleteUserRefReusesExistingConfirmationCode verifies duplicate first-step delete requests do not rewrite the same user row once one confirmation code already exists.
 // TestDeleteUserRefReusesExistingConfirmationCode 用于验证删除第一步在确认码已存在时会直接复用，而不会重复改写同一用户行。
 func TestDeleteUserRefReusesExistingConfirmationCode(t *testing.T) {

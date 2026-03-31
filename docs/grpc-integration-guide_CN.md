@@ -128,6 +128,10 @@
 - `ApplyProfileInstruction` 会同步触发一次 LLM 评审并落库
 - `ApplyProfileInstruction` 对同目标同指令的并发调用会复用第一次进行中的结果
 - `ApplyProfileInstruction` 对同一目标上的不同指令会串行执行，避免同一批旧节点并发写回
+- 如果手工画像持久化阶段遇到 DuckDB 网关返回的“提交结果不确定”错误：
+  - 服务端会先回查 instruction 行、profile node 行、退役状态和最终 profile Blob
+  - 如果副作用其实已经存在，则会把这次请求收敛成成功
+  - 只有回查也无法确认最终状态时，才返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`
 
 目标范围支持：
 
@@ -330,6 +334,9 @@
 - 新节点会记录 `source_kind = manual_instruction`
 - `source_id` 会指向对应的 `instruction_id`
 - `TEAM / SPACE` 的手工指令会被视为最高权限规则
+- 如果 DuckDB 网关返回“提交结果不确定”：
+  - 服务端会先做状态回查，再决定是否把本次请求视为成功
+  - 只有回查也无法确认最终状态时，才会返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`
 
 ### PreCheck
 

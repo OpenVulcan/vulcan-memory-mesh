@@ -173,6 +173,12 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 最后持久化新节点、退役旧节点，并重建对应 scope 的 profile 文本
 - 如果一条手工指令同时涉及多个领域，也必须拆成多条画像节点，不能生成跨领域综合节点
 - 但“按领域拆分”不等于“一个名词一条节点”：同领域、同语义方向、同生命周期层级的并列事实可以合并进一条节点
+- 当 DuckDB 网关返回类似 `resource deadlock would occur` / `Failed to commit` 的“提交结果不确定”错误时：
+  - 服务端会先回查 `vmm_profile_instructions`、`vmm_profile_nodes`、退役状态和最终 profile Blob
+  - 如果副作用其实已经落库，则会把这次请求收敛成成功
+  - 只有回查也无法确认最终状态时，才会向客户端返回 `STORAGE_OUTCOME_UNCERTAIN`
+- 当出现 `STORAGE_OUTCOME_UNCERTAIN` 时，服务端不会立刻把该 instruction 再补写成 `failed`
+  - 目的是避免在坏连接或污染连接上继续追加状态写入，把一次不确定提交放大成重复节点或脏状态
 
 目标范围支持：
 

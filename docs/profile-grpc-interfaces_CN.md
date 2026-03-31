@@ -110,6 +110,19 @@
 - 同目标 + 同指令 的并发调用会复用第一次进行中的结果，不会重复发起第二次 LLM 评审
 - 同一目标上的不同手工画像指令会按目标串行执行，避免两条指令基于同一批 active 节点并发写回
 
+另外，为了降低 `vldb-duckdb` 在“报错但副作用已经发生”场景下放大重复节点的风险：
+
+- 如果 DuckDB 网关返回类似 `resource deadlock would occur`、`Failed to commit` 的提交结果不确定错误
+- 服务端会先回查：
+  - `vmm_profile_instructions`
+  - `vmm_profile_nodes`
+  - 被 supersede / retire 的节点状态
+  - 目标 scope 的最终 `profile` Blob
+- 如果这些状态已经满足预期，则本次请求仍会收敛成成功
+- 只有回查也无法确认最终状态时，才向客户端返回 `STORAGE_OUTCOME_UNCERTAIN`
+- 遇到这类“不确定结果”时，服务端不会立刻再补写一条 `failed` instruction 状态
+  - 目的是避免在坏连接或污染连接上继续追加写入，把一次不确定提交放大成重复节点或脏状态
+
 这里的“原子化”口径需要特别注意：
 
 - 要按领域原子化，而不是按单个名词原子化
