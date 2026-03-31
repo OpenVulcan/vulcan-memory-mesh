@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何通过后台队列把结果写入 DuckDB 与 LanceDB。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何通过后台队列把结果写入 SQLite（默认）/DuckDB（兼容）与 LanceDB。
 
 当前相关方法只有：
 
@@ -25,7 +25,7 @@
 3. 清洗待存储文本
 4. 记录清洗后日志
 5. 立即返回 `accepted=true`
-6. 后台继续把脱水后的 turn 记录写入 DuckDB，并把后续 LLM 分析转交给 session 队列
+6. 后台继续把脱水后的 turn 记录写入关系库存储（默认 SQLite，兼容 DuckDB），并把后续 LLM 分析转交给 session 队列
 
 ## 请求结构
 

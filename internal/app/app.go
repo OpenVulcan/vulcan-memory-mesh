@@ -17,6 +17,7 @@ import (
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/config"
@@ -233,6 +234,8 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 // buildRelational 用于选择当前配置的长期 SQL 后端，服务层级、session 和 turn 持久化。
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	switch strings.ToLower(cfg.Relational.Provider) {
+	case "sqlite":
+		return vldb_sqlite.NewStore(cfg.SQLite.Address, cfg.SQLite.Timeout.Duration)
 	case "duckdb":
 		return vldb_duckdb.NewStore(cfg.DuckDB.Address, cfg.DuckDB.Timeout.Duration)
 	default:

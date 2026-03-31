@@ -9,8 +9,8 @@ import (
 	"strings"
 	"testing"
 
-	duckdbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb/proto/v1"
 	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
+	sqlitev1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite/proto/v1"
 	"github.com/openvulcan/vmm/internal/config"
 	"google.golang.org/grpc"
 )
@@ -41,13 +41,13 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 
 	// Start local fake gateways on loopback TCP so NewLocal can dial them through the normal gRPC clients.
 	// 在本机回环地址启动假的网关，让 NewLocal 可以通过正常 gRPC 客户端拨号。
-	dockAddr, stopDock := startFakeDuckDBGateway(t)
-	defer stopDock()
+	sqliteAddr, stopSQLite := startFakeSQLiteGateway(t)
+	defer stopSQLite()
 	lanceAddr, stopLance := startFakeLanceDBGateway(t)
 	defer stopLance()
 
 	cfg := config.DefaultLocal()
-	cfg.DuckDB.Address = dockAddr
+	cfg.SQLite.Address = sqliteAddr
 	cfg.LanceDB.Address = lanceAddr
 	cfg.LLM.Endpoint = "https://example.com/v1"
 	cfg.LLM.APIKey = "test-key"
@@ -70,16 +70,16 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 	}
 }
 
-// startFakeDuckDBGateway serves the minimal DuckDB RPC surface needed by runtime composition tests.
-// startFakeDuckDBGateway 用于提供运行时装配测试所需的最小 DuckDB RPC 面。
-func startFakeDuckDBGateway(t *testing.T) (string, func()) {
+// startFakeSQLiteGateway serves the minimal SQLite RPC surface needed by runtime composition tests.
+// startFakeSQLiteGateway 用于提供运行时装配测试所需的最小 SQLite RPC 面。
+func startFakeSQLiteGateway(t *testing.T) (string, func()) {
 	t.Helper()
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		t.Fatalf("listen fake duckdb: %v", err)
+		t.Fatalf("listen fake sqlite: %v", err)
 	}
 	server := grpc.NewServer()
-	duckdbv1.RegisterDuckDbServiceServer(server, fakeDuckDBGateway{})
+	sqlitev1.RegisterSqliteServiceServer(server, fakeSQLiteGateway{})
 	go func() { _ = server.Serve(listener) }()
 	return listener.Addr().String(), func() {
 		server.Stop()
@@ -104,35 +104,35 @@ func startFakeLanceDBGateway(t *testing.T) (string, func()) {
 	}
 }
 
-// fakeDuckDBGateway implements the tiny subset of DuckDB calls exercised while bootstrapping the local runtime.
-// fakeDuckDBGateway 用于实现本地运行时启动时会触发的最小 DuckDB 调用集合。
-type fakeDuckDBGateway struct {
-	duckdbv1.UnimplementedDuckDbServiceServer
+// fakeSQLiteGateway implements the tiny subset of SQLite calls exercised while bootstrapping the local runtime.
+// fakeSQLiteGateway 用于实现本地运行时启动时会触发的最小 SQLite 调用集合。
+type fakeSQLiteGateway struct {
+	sqlitev1.UnimplementedSqliteServiceServer
 }
 
 // ExecuteScript always succeeds because this test only cares about successful schema bootstrap wiring.
 // ExecuteScript 总是返回成功，因为这个测试只关心 schema 引导接线是否成功。
-func (fakeDuckDBGateway) ExecuteScript(context.Context, *duckdbv1.ExecuteRequest) (*duckdbv1.ExecuteResponse, error) {
-	return &duckdbv1.ExecuteResponse{Success: true, Message: "ok"}, nil
+func (fakeSQLiteGateway) ExecuteScript(context.Context, *sqlitev1.ExecuteRequest) (*sqlitev1.ExecuteResponse, error) {
+	return &sqlitev1.ExecuteResponse{Success: true, Message: "ok"}, nil
 }
 
 // QueryJson returns canned rows for version and noise-cache lookups used during startup.
 // QueryJson 用于返回启动期 schema 版本和噪声缓存查询需要的预置结果。
-func (fakeDuckDBGateway) QueryJson(_ context.Context, req *duckdbv1.QueryRequest) (*duckdbv1.QueryJsonResponse, error) {
+func (fakeSQLiteGateway) QueryJson(_ context.Context, req *sqlitev1.QueryRequest) (*sqlitev1.QueryJsonResponse, error) {
 	sql := strings.TrimSpace(req.GetSql())
 	switch {
 	case strings.Contains(sql, "FROM vmm_version"):
-		return &duckdbv1.QueryJsonResponse{JsonData: `[{"schema_version":3}]`}, nil
+		return &sqlitev1.QueryJsonResponse{JsonData: `[{"schema_version":3}]`}, nil
 	case strings.Contains(sql, "FROM vmm_noise_embeddings"):
-		return &duckdbv1.QueryJsonResponse{JsonData: `[]`}, nil
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
 	default:
-		return &duckdbv1.QueryJsonResponse{JsonData: `[]`}, nil
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
 	}
 }
 
 // QueryStream stays unused in this focused runtime composition test.
 // QueryStream 在这个聚焦的运行时装配测试里保持未使用状态。
-func (fakeDuckDBGateway) QueryStream(*duckdbv1.QueryRequest, grpc.ServerStreamingServer[duckdbv1.QueryResponse]) error {
+func (fakeSQLiteGateway) QueryStream(*sqlitev1.QueryRequest, grpc.ServerStreamingServer[sqlitev1.QueryResponse]) error {
 	return nil
 }
 

@@ -13,6 +13,11 @@ func TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets(t *testing.T) {
 		expected debugCleanSelection
 	}{
 		{
+			name:     "sqlite only",
+			raw:      "sqlite",
+			expected: debugCleanSelection{SQLite: true},
+		},
+		{
 			name:     "duckdb only",
 			raw:      "duckdb",
 			expected: debugCleanSelection{DuckDB: true},
@@ -25,17 +30,17 @@ func TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets(t *testing.T) {
 		{
 			name:     "all keyword",
 			raw:      "all",
-			expected: debugCleanSelection{DuckDB: true, LanceDB: true},
+			expected: debugCleanSelection{All: true, LanceDB: true},
 		},
 		{
 			name:     "comma separated",
-			raw:      "duckdb,lancedb",
-			expected: debugCleanSelection{DuckDB: true, LanceDB: true},
+			raw:      "sqlite,lancedb",
+			expected: debugCleanSelection{SQLite: true, LanceDB: true},
 		},
 		{
 			name:     "plus separated with spaces",
-			raw:      " duckdb + lancedb ",
-			expected: debugCleanSelection{DuckDB: true, LanceDB: true},
+			raw:      " sqlite + duckdb ",
+			expected: debugCleanSelection{SQLite: true, DuckDB: true},
 		},
 	}
 
@@ -59,8 +64,7 @@ func TestParseDebugCleanSelectionRejectsUnsupportedTargets(t *testing.T) {
 	cases := []string{
 		"",
 		"   ",
-		"sqlite",
-		"duckdb,sqlite",
+		"duckdb,postgres",
 	}
 
 	for _, raw := range cases {

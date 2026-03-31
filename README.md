@@ -8,7 +8,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 当前运行时的定位是：
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
-- 用 DuckDB 保存层级、session、turn 记录、turn 提炼结果与长期 SQL 数据
+- 默认用 SQLite 保存层级、session、turn 记录、turn 提炼结果与长期 SQL 数据
+- 保留 DuckDB 兼容关系库存储接口，便于调试和迁移期对照
 - 用 LanceDB 保存向量数据
 - 由 Caddy 等外部反向代理负责 TLS
 
@@ -51,16 +52,19 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 ### 数据后端
 
-当前只保留两条本地数据线：
+当前主线默认保留两条本地数据线：
 
-- DuckDB：层级、用户、session、turn 记录、长期 SQL 记录
+- SQLite：默认关系库存储，负责层级、用户、session、turn 记录和长期 SQL 记录
 - LanceDB：向量写入、检索和删除
+
+当前也保留一条兼容关系库存储路径：
+
+- DuckDB：兼容 provider，可在配置中显式切换
 
 运行时已经移除：
 
 - HTTP 服务
 - 应用内 TLS
-- SQLite 运行时支持
 - 内存关系库存根 / 内存向量库存根回退
 
 ## 核心约束
@@ -245,7 +249,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 说明：
 
 - `make` 只负责透传参数，不在脚本里直接做数据库清理
-- `vmm-local --debug-clean ...` 会只连接对应的 DuckDB / LanceDB gRPC 网关
+- `vmm-local --debug-clean ...` 会只连接对应的 SQLite / DuckDB / LanceDB gRPC 网关
 - 清理完成后立即退出，不会启动 VMM gRPC 服务
 
 ## 配置说明
@@ -257,6 +261,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `grpc.request_timeout.workspace`
 - `grpc.request_timeout.pre_check`
 - `grpc.request_timeout.post_action`
+- `relational.provider`
+- `sqlite.address`
 - `duckdb.address`
 - `lancedb.address`
 - `lancedb.table_name`

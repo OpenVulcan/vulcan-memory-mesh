@@ -26,6 +26,10 @@
     "address": "${VMM_DUCKDB_ADDRESS}",
     "timeout": "5s"
   },
+  "sqlite": {
+    "address": "${VMM_SQLITE_ADDRESS}",
+    "timeout": "5s"
+  },
   "lancedb": {
     "address": "${VMM_LANCEDB_ADDRESS}",
     "timeout": "5s",

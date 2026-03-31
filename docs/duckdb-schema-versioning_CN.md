@@ -13,7 +13,9 @@
 
 ## 当前背景
 
-VMM 当前已经取消 SQLite 运行时支持，长期 SQL 数据通过 DuckDB 网关落地。
+VMM 当前主线默认通过 SQLite 网关落地长期 SQL 数据，同时保留 DuckDB 兼容 provider。
+
+这份说明只覆盖 DuckDB 兼容 provider 自身的 schema 版本管理。
 
 相关代码在：
 

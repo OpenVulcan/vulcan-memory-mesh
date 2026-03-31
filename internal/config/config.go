@@ -57,6 +57,7 @@ type Config struct {
 	PII            PIIConfig            `json:"pii"`
 	Noise          NoiseConfig          `json:"noise"`
 	DuckDB         DuckDBConfig         `json:"duckdb"`
+	SQLite         SQLiteConfig         `json:"sqlite"`
 	LanceDB        LanceDBConfig        `json:"lancedb"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
@@ -109,6 +110,13 @@ type NoiseConfig struct {
 // DuckDBConfig holds the gRPC endpoint used by the local DuckDB gateway for durable SQL-backed data.
 // DuckDBConfig 用于保存本地 DuckDB 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
 type DuckDBConfig struct {
+	Address string   `json:"address"`
+	Timeout Duration `json:"timeout"`
+}
+
+// SQLiteConfig holds the gRPC endpoint used by the local SQLite gateway for durable SQL-backed data.
+// SQLiteConfig 用于保存本地 SQLite 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
+type SQLiteConfig struct {
 	Address string   `json:"address"`
 	Timeout Duration `json:"timeout"`
 }
@@ -201,11 +209,12 @@ func DefaultLocal() Config {
 		PII:        PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:      NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		DuckDB:     DuckDBConfig{Address: "127.0.0.1:19401", Timeout: Duration{5 * time.Second}},
+		SQLite:     SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
 		LanceDB:    LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
 		LLM:        LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
 		Embedding:  EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
 		Vector:     VectorConfig{Provider: "lancedb"},
-		Relational: RelationalConfig{Provider: "duckdb"},
+		Relational: RelationalConfig{Provider: "sqlite"},
 		PostAction: PostActionConfig{
 			InputMode:                     "compat",
 			SessionAnalysisTurnThreshold:  2,
@@ -430,6 +439,12 @@ func (c *Config) Normalize() {
 	if c.DuckDB.Timeout.Duration <= 0 {
 		c.DuckDB.Timeout = Duration{5 * time.Second}
 	}
+	if strings.TrimSpace(c.SQLite.Address) == "" {
+		c.SQLite.Address = "127.0.0.1:19501"
+	}
+	if c.SQLite.Timeout.Duration <= 0 {
+		c.SQLite.Timeout = Duration{5 * time.Second}
+	}
 	if strings.TrimSpace(c.LanceDB.Address) == "" {
 		c.LanceDB.Address = "127.0.0.1:19301"
 	}
@@ -450,10 +465,11 @@ func (c *Config) Normalize() {
 		c.PostAction.InputMode = "compat"
 	}
 
-	// Default durable local data paths to the gateway-backed DuckDB implementation.
-	// 为本地持久化数据路径默认归一到基于网关的 DuckDB 实现。
+	// Default durable local data paths to the gateway-backed SQLite implementation while
+	// keeping DuckDB available as one compatibility provider.
+	// 为本地持久化数据路径默认归一到基于网关的 SQLite 实现，同时保留 DuckDB 兼容 provider。
 	if strings.TrimSpace(c.Relational.Provider) == "" {
-		c.Relational.Provider = "duckdb"
+		c.Relational.Provider = "sqlite"
 	}
 }
 
@@ -470,9 +486,6 @@ func (c Config) Validate() error {
 	}
 	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
 		return errors.New("noise.default_language is required")
-	}
-	if strings.TrimSpace(c.DuckDB.Address) == "" {
-		return errors.New("duckdb.address is required")
 	}
 	if strings.TrimSpace(c.LanceDB.Address) == "" {
 		return errors.New("lancedb.address is required")
@@ -524,9 +537,16 @@ func (c Config) Validate() error {
 		return errors.New("vector.provider must be lancedb")
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
+	case "sqlite":
+		if strings.TrimSpace(c.SQLite.Address) == "" {
+			return errors.New("sqlite.address is required")
+		}
 	case "duckdb":
+		if strings.TrimSpace(c.DuckDB.Address) == "" {
+			return errors.New("duckdb.address is required")
+		}
 	default:
-		return errors.New("relational.provider must be duckdb")
+		return errors.New("relational.provider must be sqlite or duckdb")
 	}
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
@@ -633,6 +653,8 @@ func applyEnvOverrides(cfg *Config) {
 	setFloat("VMM_NOISE_SEMANTIC_THRESHOLD", &cfg.Noise.SemanticThreshold)
 	setString("VMM_DUCKDB_ADDRESS", &cfg.DuckDB.Address)
 	setDuration("VMM_DUCKDB_TIMEOUT", &cfg.DuckDB.Timeout)
+	setString("VMM_SQLITE_ADDRESS", &cfg.SQLite.Address)
+	setDuration("VMM_SQLITE_TIMEOUT", &cfg.SQLite.Timeout)
 	setString("VMM_LANCEDB_ADDRESS", &cfg.LanceDB.Address)
 	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
 	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
