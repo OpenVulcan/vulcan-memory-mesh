@@ -24,7 +24,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest DuckDB schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 DuckDB 表结构版本。
-	currentSchemaVersion = 8
+	currentSchemaVersion = 9
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -145,7 +145,7 @@ CREATE TABLE IF NOT EXISTS vmm_turn_records (
   id BIGINT PRIMARY KEY,
   session_id BIGINT NOT NULL,
   project_id BIGINT NOT NULL,
-  dehydrated_content JSON NOT NULL,
+  dehydrated_content TEXT NOT NULL,
   dehydrated_budget INTEGER NOT NULL DEFAULT 0,
   extracted_status TINYINT NOT NULL DEFAULT 0,
   details TEXT NOT NULL DEFAULT '',
@@ -1473,7 +1473,7 @@ func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain
 	}
 	rows, err := queryRows[turnRecordRow](s, ctx, `
 SELECT id, session_id, project_id,
-       CAST(dehydrated_content AS VARCHAR) AS dehydrated_content,
+       dehydrated_content,
        dehydrated_budget, extracted_status, details, details_budget,
        created_timestamp, updated_timestamp
 FROM vmm_turn_records
@@ -1501,7 +1501,7 @@ func (s *Store) LoadRecentSessionHistory(ctx context.Context, session logicdomai
 	}
 	rows, err := queryRows[turnRecordRow](s, ctx, `
 SELECT id, session_id, project_id,
-       CAST(dehydrated_content AS VARCHAR) AS dehydrated_content,
+       dehydrated_content,
        dehydrated_budget, extracted_status, details, details_budget,
        created_timestamp, updated_timestamp
 FROM vmm_turn_records
@@ -2733,11 +2733,13 @@ func buildDehydratedTurn(turn logicdomain.TurnRecord) (string, int, error) {
 
 // buildTurnInsertSQL renders one raw INSERT statement so the gateway avoids the buggy optional-pointer update path seen during debug runs.
 // buildTurnInsertSQL 用于渲染原始 INSERT 语句，让网关绕开调试阶段已出现过的 optional-pointer 更新故障路径。
+// The dehydrated payload stays as JSON text on purpose so OSS-local boot no longer depends on DuckDB's json extension.
+// 脱水载荷会刻意以 JSON 文本形式保存，避免 OSS 本地版启动继续依赖 DuckDB 的 json 扩展。
 func buildTurnInsertSQL(id, sessionID, projectID uint64, dehydratedContent string, dehydratedBudget int, createdMs, updatedMs int64) string {
 	return fmt.Sprintf(`
 INSERT INTO vmm_turn_records (
   id, session_id, project_id, dehydrated_content, dehydrated_budget, extracted_status, created_timestamp, updated_timestamp
-) VALUES (%d, %d, %d, CAST(%s AS JSON), %d, 0, %d, %d)
+) VALUES (%d, %d, %d, %s, %d, 0, %d, %d)
 `, id, sessionID, projectID, sqlStringLiteral(dehydratedContent), dehydratedBudget, createdMs, updatedMs)
 }
 

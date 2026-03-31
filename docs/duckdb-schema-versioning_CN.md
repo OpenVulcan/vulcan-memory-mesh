@@ -155,7 +155,7 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 
 其中：
 
-- `dehydrated_content` 存的是 JSON
+- `dehydrated_content` 存的是 JSON 文本
 - `dehydrated_budget` 是对脱水 JSON 计算出来的 token 预算
 - `extracted_status` 当前使用：
   - `0 = 未提取`

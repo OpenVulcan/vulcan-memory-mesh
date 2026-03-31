@@ -160,7 +160,7 @@ CREATE TABLE IF NOT EXISTS vmm_turn_records (
     id                 BIGINT PRIMARY KEY,
     session_id         BIGINT  NOT NULL,
     project_id         BIGINT  NOT NULL,
-    dehydrated_content JSON    NOT NULL,
+    dehydrated_content TEXT    NOT NULL,
     dehydrated_budget  INTEGER NOT NULL DEFAULT 0,
     extracted_status   TINYINT NOT NULL DEFAULT 0,
     created_timestamp  BIGINT  NOT NULL,
@@ -172,7 +172,7 @@ CREATE TABLE IF NOT EXISTS vmm_turn_records (
 
 当前 `PostAction` 按 turn 级存储，而不是再拆成多条消息行。
 
-当前会保存一条脱水 JSON：
+当前会保存一条脱水 JSON 文本：
 
 1. 顶层 `user_content`
 2. 原始 `timeline[]`
