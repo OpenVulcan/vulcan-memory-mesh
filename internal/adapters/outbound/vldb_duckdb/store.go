@@ -1871,56 +1871,102 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
-	if strings.TrimSpace(confirmationCode) == "" || strings.TrimSpace(confirmationCode) != strings.TrimSpace(user.DeleteConfirmCode) {
-		code, err := generateConfirmationCode()
-		if err != nil {
-			return logicdomain.UserDeleteResult{}, err
-		}
-		if err := s.exec(ctx, `UPDATE vmm_users SET delete_confirm_code = ?, updated_at = ? WHERE id = ?`, code, time.Now().UTC().Format(time.RFC3339Nano), user.ID); err != nil {
-			return logicdomain.UserDeleteResult{}, fmt.Errorf("persist user delete confirmation code: %w", err)
-		}
-		user.DeleteConfirmCode = code
+
+	// Keep the first-phase confirmation idempotent so duplicate admin clicks reuse one stable confirmation code
+	// instead of issuing concurrent row updates that can conflict inside the DuckDB gateway.
+	// 把删除确认第一阶段做成幂等流程，让重复的管理端点击复用同一确认码，
+	// 避免在 DuckDB 网关里对同一行发起并发更新而相互冲突。
+	confirmationCode = strings.TrimSpace(confirmationCode)
+	if confirmationCode == "" {
+		return s.ensureUserDeleteConfirmation(ctx, user)
+	}
+
+	// Reload the latest durable code before destructive work so stale callers do not rotate the confirmation token.
+	// 在真正删除前重新加载最新确认码，避免陈旧调用方把确认令牌无谓轮换。
+	currentUser, err := s.loadUserByID(ctx, user.ID)
+	if err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	if strings.TrimSpace(currentUser.DeleteConfirmCode) == "" {
+		return s.ensureUserDeleteConfirmation(ctx, currentUser)
+	}
+	if confirmationCode != strings.TrimSpace(currentUser.DeleteConfirmCode) {
 		return logicdomain.UserDeleteResult{
-			User:                 user,
-			Message:              fmt.Sprintf("confirm deletion of user %s with the provided confirmation code", user.Name),
+			User:                 currentUser,
+			Message:              fmt.Sprintf("confirm deletion of user %s with the provided confirmation code", currentUser.Name),
 			RequiresConfirmation: true,
-			ConfirmationCode:     code,
+			ConfirmationCode:     strings.TrimSpace(currentUser.DeleteConfirmCode),
 		}, nil
 	}
 
-	sessions, messages, memories, err := s.countUserRows(ctx, user.ID)
+	sessions, messages, memories, err := s.countUserRows(ctx, currentUser.ID)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, user.ID); err != nil {
+	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by bind: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE turn_id IN (SELECT tr.id FROM vmm_turn_records tr JOIN vmm_sessions s ON s.id = tr.session_id WHERE s.user_id = ?)`, user.ID); err != nil {
+	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE turn_id IN (SELECT tr.id FROM vmm_turn_records tr JOIN vmm_sessions s ON s.id = tr.session_id WHERE s.user_id = ?)`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by turn: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE user_id = ?`, user.ID); err != nil {
+	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE user_id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user memory nodes: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, user.ID); err != nil {
+	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user turn records: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE user_id = ?`, user.ID); err != nil {
+	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE user_id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user sessions: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_memory_entries WHERE user_id = ?`, user.ID); err != nil {
+	if err := s.exec(ctx, `DELETE FROM vmm_memory_entries WHERE user_id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user memories: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_users WHERE id = ?`, user.ID); err != nil {
+	if err := s.exec(ctx, `DELETE FROM vmm_users WHERE id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user row: %w", err)
 	}
 	return logicdomain.UserDeleteResult{
-		User:            user,
-		Message:         fmt.Sprintf("user %s deleted", user.Name),
+		User:            currentUser,
+		Message:         fmt.Sprintf("user %s deleted", currentUser.Name),
 		DeletedSessions: sessions,
 		DeletedMessages: messages,
 		DeletedMemories: memories,
+	}, nil
+}
+
+// ensureUserDeleteConfirmation makes the first delete step idempotent by generating one confirmation code only when the durable row still has none.
+// ensureUserDeleteConfirmation 用于让删除第一步保持幂等：只有当长期行里还没有确认码时才生成新的确认码。
+func (s *Store) ensureUserDeleteConfirmation(ctx context.Context, user logicdomain.UserRecord) (logicdomain.UserDeleteResult, error) {
+	if user.ID == 0 {
+		return logicdomain.UserDeleteResult{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+	}
+
+	// Serialize confirmation-code generation so duplicate delete requests cannot race on the same user row.
+	// 串行化确认码生成，避免重复删除请求在同一用户行上发生竞争更新。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	currentUser, err := s.loadUserByID(ctx, user.ID)
+	if err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	code := strings.TrimSpace(currentUser.DeleteConfirmCode)
+	if code == "" {
+		code, err = generateConfirmationCode()
+		if err != nil {
+			return logicdomain.UserDeleteResult{}, err
+		}
+		if err := s.exec(ctx, buildUserDeleteConfirmationSQL(currentUser.ID, code, time.Now().UTC().Format(time.RFC3339Nano))); err != nil {
+			return logicdomain.UserDeleteResult{}, fmt.Errorf("persist user delete confirmation code: %w", err)
+		}
+		currentUser.DeleteConfirmCode = code
+	}
+	return logicdomain.UserDeleteResult{
+		User:                 currentUser,
+		Message:              fmt.Sprintf("confirm deletion of user %s with the provided confirmation code", currentUser.Name),
+		RequiresConfirmation: true,
+		ConfirmationCode:     code,
 	}, nil
 }
 
@@ -2289,6 +2335,16 @@ UPDATE vmm_projects
 SET profile = %s, updated_at = %s
 WHERE id = %d;
 `, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), projectID)
+}
+
+// buildUserDeleteConfirmationSQL renders the guarded UPDATE used by the first phase of user deletion so duplicate confirmation requests reuse one stable code instead of racing on the same row.
+// buildUserDeleteConfirmationSQL 用于渲染用户删除第一阶段的受保护 UPDATE，让重复确认请求复用同一确认码，而不是在同一行上并发竞争。
+func buildUserDeleteConfirmationSQL(userID uint64, confirmationCode, updatedAt string) string {
+	return fmt.Sprintf(`
+UPDATE vmm_users
+SET delete_confirm_code = %s, updated_at = %s
+WHERE id = %d AND delete_confirm_code = '';
+`, sqlStringLiteral(strings.TrimSpace(confirmationCode)), sqlStringLiteral(strings.TrimSpace(updatedAt)), userID)
 }
 
 // buildProfileNodesSupersedeSQL renders the raw UPDATE used to retire older profile nodes once a fresher node has replaced them.

@@ -398,6 +398,64 @@ func TestApplyManualProfileInstructionLeavesTurnIDNull(t *testing.T) {
 	}
 }
 
+// TestDeleteUserRefReusesExistingConfirmationCode verifies duplicate first-step delete requests do not rewrite the same user row once one confirmation code already exists.
+// TestDeleteUserRefReusesExistingConfirmationCode 用于验证删除第一步在确认码已存在时会直接复用，而不会重复改写同一用户行。
+func TestDeleteUserRefReusesExistingConfirmationCode(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":8}]`,
+			"FROM vmm_users":   `[{"id":7,"name":"alice","profile":"","delete_confirm_code":"keep-code","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	result, err := store.DeleteUserRef(context.Background(), "7", "")
+	if err != nil {
+		t.Fatalf("delete user first phase with existing code: %v", err)
+	}
+	if !result.RequiresConfirmation {
+		t.Fatalf("expected confirmation requirement, got %+v", result)
+	}
+	if result.ConfirmationCode != "keep-code" {
+		t.Fatalf("expected existing confirmation code, got %+v", result)
+	}
+
+	for _, req := range server.execRequests() {
+		if strings.Contains(req.Sql, "UPDATE vmm_users") && strings.Contains(req.Sql, "delete_confirm_code") {
+			t.Fatalf("did not expect confirmation code rewrite, got %s", req.Sql)
+		}
+	}
+}
+
+// TestDeleteUserRefWrongConfirmationCodeReturnsExistingCode verifies stale or wrong confirmation codes do not rotate the durable token.
+// TestDeleteUserRefWrongConfirmationCodeReturnsExistingCode 用于验证陈旧或错误的确认码不会导致长期令牌被重新生成。
+func TestDeleteUserRefWrongConfirmationCodeReturnsExistingCode(t *testing.T) {
+	server := &fakeDuckDBServer{
+		queryJSON: map[string]string{
+			"FROM vmm_version": `[{"schema_version":8}]`,
+			"FROM vmm_users":   `[{"id":7,"name":"alice","profile":"","delete_confirm_code":"keep-code","created_at":"2026-03-27T00:00:00Z","updated_at":"2026-03-27T00:00:00Z"}]`,
+		},
+	}
+	store := newDuckDBTestStore(t, server)
+
+	result, err := store.DeleteUserRef(context.Background(), "7", "wrong-code")
+	if err != nil {
+		t.Fatalf("delete user with wrong confirmation code: %v", err)
+	}
+	if !result.RequiresConfirmation {
+		t.Fatalf("expected confirmation requirement, got %+v", result)
+	}
+	if result.ConfirmationCode != "keep-code" {
+		t.Fatalf("expected existing confirmation code to be reused, got %+v", result)
+	}
+
+	for _, req := range server.execRequests() {
+		if strings.Contains(req.Sql, "UPDATE vmm_users") && strings.Contains(req.Sql, "delete_confirm_code") {
+			t.Fatalf("did not expect confirmation code rewrite, got %s", req.Sql)
+		}
+	}
+}
+
 // TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets verifies periodic expiry convergence flips due active nodes to expired and returns the remaining renderable nodes for the affected target.
 // TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets 用于验证周期性过期收敛会把到期 active 节点改为 expired，并返回受影响目标剩余可渲染节点。
 func TestConvergeExpiredProfileNodesMarksDueRowsAndReturnsAffectedTargets(t *testing.T) {
