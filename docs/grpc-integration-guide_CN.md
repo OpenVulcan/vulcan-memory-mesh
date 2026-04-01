@@ -46,6 +46,8 @@
 - `GetProfileNodes`
 - `GetProfileBundle`
 - `ApplyProfileInstruction`
+- `SearchMemoryEvents`
+- `GetTurnDetails`
 
 ### 业务面
 
@@ -132,6 +134,8 @@
 - `ApplyProfileInstruction` 会同步触发一次 LLM 评审并落库
 - `ApplyProfileInstruction` 对同目标同指令的并发调用会复用第一次进行中的结果
 - `ApplyProfileInstruction` 对同一目标上的不同指令会串行执行，避免同一批旧节点并发写回
+- `SearchMemoryEvents` 用于按 `project_id + user_id + query_json` 主动搜索向量记忆
+- `GetTurnDetails` 用于按 `turn_ids[]` 回查脱水 turn 原文
 - 如果默认 SQLite provider 返回 `SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA`，并通过 trailer 标记为可重试：
   - 服务端适配层会先做有界指数退避重试
 - 如果手工画像持久化阶段遇到关系库存储 provider 返回的“提交结果不确定”错误：
@@ -396,6 +400,78 @@
 - 如果关系库存储 provider 返回“提交结果不确定”：
   - 服务端会先做状态回查，再决定是否把本次请求视为成功
   - 只有回查也无法确认最终状态时，才会返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`
+
+### SearchMemoryEvents
+
+用途：
+
+- 主动发起一次面向向量记忆的检索
+
+请求字段：
+
+- `project_id`
+- `user_id`
+- `query_json`
+- `top_k`
+
+其中 `query_json` 必须是 JSON 数组，每项结构为：
+
+```json
+[
+  {
+    "background": "用户最近一直在讨论水果和饮品。",
+    "query": "喜欢的水果"
+  }
+]
+```
+
+服务端行为：
+
+- 先通过 `project_id + user_id` 解析当前检索 scope
+- 对每条查询项做 embedding
+- 在当前 `team / space / project / user` 范围内检索 LanceDB
+- 原样回显每条查询项的：
+  - `background`
+  - `query`
+
+返回命中字段：
+
+- `memory_id`
+- `turn_id`
+- `session_id`
+- `content`
+- `details`
+- `category`
+- `score`
+
+### GetTurnDetails
+
+用途：
+
+- 按 `turn_ids[]` 读取一条或多条脱水 turn 原文
+
+请求字段：
+
+- `turn_ids[]`
+
+返回字段：
+
+- `turn_id`
+- `session_id`
+- `project_id`
+- `dehydrated_content`
+- `dehydrated_budget`
+- `extracted_status`
+- `details`
+- `details_budget`
+- `created_timestamp`
+- `updated_timestamp`
+
+典型联动方式：
+
+1. 先调用 `SearchMemoryEvents`
+2. 从命中结果中拿到 `turn_id`
+3. 再调用 `GetTurnDetails` 回查脱水原文
 
 ### PreCheck
 

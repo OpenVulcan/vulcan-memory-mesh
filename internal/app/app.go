@@ -85,6 +85,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support profile management")
 	}
+	turnLookup, ok := relational.(appports.TurnLookupStore)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support turn detail lookup")
+	}
 	noiseGate, err := buildNoiseGate(cfg, layout, embedding, noiseCache, logger)
 	if err != nil {
 		return nil, err
@@ -94,6 +98,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// 在处理器和出站端口之上装配用例层。
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
+	memory := usecase.NewMemoryUseCase(profileStore, turnLookup, embedding, vector, logger)
 	pre := usecase.NewPreCheckUseCase(logger)
 	post := usecase.NewPostActionUseCase(
 		noiseGate,
@@ -118,6 +123,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		IDs:               ids,
 		Workspace:         workspace,
 		Profiles:          profiles,
+		Memory:            memory,
 		PreCheck:          pre,
 		PostAction:        post,
 		ScopeResolver:     scopeResolver,

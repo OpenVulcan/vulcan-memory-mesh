@@ -48,6 +48,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `GetProfileNodes`
 - `GetProfileBundle`
 - `ApplyProfileInstruction`
+- `SearchMemoryEvents`
+- `GetTurnDetails`
 - `PreCheck`
 - `PostAction`
 
@@ -233,6 +235,56 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `TEAM / SPACE`
   - 手工指令直接视为最高权限规则
   - 后端会强制钳制到最高权威语义，不允许降级成普通偏好或短期上下文
+
+### 记忆查询接口
+
+当前主动记忆查询相关 gRPC 能力拆成两条独立方法：
+
+- `SearchMemoryEvents`
+- `GetTurnDetails`
+
+`SearchMemoryEvents` 的特点：
+
+- 输入固定是：
+  - `project_id`
+  - `user_id`
+  - `query_json`
+  - `top_k`
+- `query_json` 必须是 JSON 数组，每项结构为：
+  - `background`
+  - `query`
+- 服务端会：
+  - 先解析 `project_id + user_id`
+  - 对每条 JSON 查询做 embedding
+  - 在当前 `team / space / project / user` 范围内搜索向量记忆
+- 返回内容会原样回显：
+  - `background`
+  - `query`
+- 每条命中都至少包含：
+  - `memory_id`
+  - `turn_id`
+  - `session_id`
+  - `content`
+  - `details`
+  - `category`
+  - `score`
+
+`GetTurnDetails` 的特点：
+
+- 输入固定是：
+  - `turn_ids[]`
+- 支持单条或多条查询
+- 返回的是数据库里保存的脱水 turn 原文：
+  - `dehydrated_content`
+  - `dehydrated_budget`
+  - `extracted_status`
+  - `details`
+  - `details_budget`
+  - `created_timestamp`
+  - `updated_timestamp`
+- 适合和 `SearchMemoryEvents` 联动：
+  - 先通过向量记忆查询拿到 `turn_id`
+  - 再按 `turn_id` 回查脱水原文
 
 ## 构建与运行
 

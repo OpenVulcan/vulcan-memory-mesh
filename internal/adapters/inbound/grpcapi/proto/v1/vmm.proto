@@ -57,6 +57,14 @@ service VMMService {
   // ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
   rpc ApplyProfileInstruction(ApplyProfileInstructionRequest) returns (ApplyProfileInstructionResponse);
 
+  // SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns hits with turn anchors.
+  // SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回带 turn 锚点的命中结果。
+  rpc SearchMemoryEvents(SearchMemoryEventsRequest) returns (SearchMemoryEventsResponse);
+
+  // GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted dialogue payloads.
+  // GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方查看原始持久化对话载荷。
+  rpc GetTurnDetails(GetTurnDetailsRequest) returns (GetTurnDetailsResponse);
+
   // PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
   // PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
   rpc PreCheck(PreCheckRequest) returns (PreCheckResponse);
@@ -337,6 +345,71 @@ message ApplyProfileInstructionResponse {
   repeated RetiredProfileNodeEntry retired_nodes = 3;
   string review_reason = 4;
   string trace_id = 5;
+}
+
+// SearchMemoryEventsRequest carries one grouped JSON query payload together with the resolved user/project selectors.
+// SearchMemoryEventsRequest 用于承载一份分组 JSON 查询载荷，以及解析范围所需的 user/project 选择参数。
+message SearchMemoryEventsRequest {
+  uint64 user_id = 1;
+  uint64 project_id = 2;
+  string query_json = 3;
+  uint32 top_k = 4;
+}
+
+// MemorySearchHit transports one vector-memory hit plus the turn anchor used by later detail lookup RPCs.
+// MemorySearchHit 用于承载一条向量记忆命中结果，以及后续详情读取 RPC 使用的 turn 锚点。
+message MemorySearchHit {
+  string memory_id = 1;
+  uint64 turn_id = 2;
+  uint64 session_id = 3;
+  string content = 4;
+  string details = 5;
+  int32 category = 6;
+  double score = 7;
+}
+
+// MemorySearchGroupResult echoes one grouped JSON query item and returns the hit list produced for that item.
+// MemorySearchGroupResult 用于原样回显一条分组 JSON 查询项，并返回针对该项生成的命中列表。
+message MemorySearchGroupResult {
+  uint32 query_index = 1;
+  string background = 2;
+  string query = 3;
+  repeated MemorySearchHit hits = 4;
+}
+
+// SearchMemoryEventsResponse returns all grouped vector-search results plus trace metadata.
+// SearchMemoryEventsResponse 用于返回全部分组向量检索结果和 trace 元数据。
+message SearchMemoryEventsResponse {
+  repeated MemorySearchGroupResult results = 1;
+  string trace_id = 2;
+}
+
+// GetTurnDetailsRequest carries one or more turn ids whose dehydrated payloads should be read back exactly as stored.
+// GetTurnDetailsRequest 用于承载一条或多条 turn id，让服务端按原样回读脱水持久化内容。
+message GetTurnDetailsRequest {
+  repeated uint64 turn_ids = 1;
+}
+
+// TurnDetailEntry transports one dehydrated turn row back to the caller for exact-detail inspection.
+// TurnDetailEntry 用于把一条脱水 turn 行返回给调用方，供精确查看详情。
+message TurnDetailEntry {
+  uint64 turn_id = 1;
+  uint64 session_id = 2;
+  uint64 project_id = 3;
+  string dehydrated_content = 4;
+  int32 dehydrated_budget = 5;
+  int32 extracted_status = 6;
+  string details = 7;
+  int32 details_budget = 8;
+  int64 created_timestamp = 9;
+  int64 updated_timestamp = 10;
+}
+
+// GetTurnDetailsResponse returns the requested dehydrated turn rows plus trace metadata.
+// GetTurnDetailsResponse 用于返回请求的脱水 turn 行和 trace 元数据。
+message GetTurnDetailsResponse {
+  repeated TurnDetailEntry turns = 1;
+  string trace_id = 2;
 }
 
 // PreCheckRequest carries only the numeric project/user ids plus the current user text.

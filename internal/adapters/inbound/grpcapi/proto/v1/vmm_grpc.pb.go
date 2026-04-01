@@ -32,6 +32,8 @@ const (
 	VMMService_GetProfileNodes_FullMethodName         = "/vmm.v1.VMMService/GetProfileNodes"
 	VMMService_GetProfileBundle_FullMethodName        = "/vmm.v1.VMMService/GetProfileBundle"
 	VMMService_ApplyProfileInstruction_FullMethodName = "/vmm.v1.VMMService/ApplyProfileInstruction"
+	VMMService_SearchMemoryEvents_FullMethodName      = "/vmm.v1.VMMService/SearchMemoryEvents"
+	VMMService_GetTurnDetails_FullMethodName          = "/vmm.v1.VMMService/GetTurnDetails"
 	VMMService_PreCheck_FullMethodName                = "/vmm.v1.VMMService/PreCheck"
 	VMMService_PostAction_FullMethodName              = "/vmm.v1.VMMService/PostAction"
 )
@@ -79,6 +81,12 @@ type VMMServiceClient interface {
 	// ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
 	// ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
 	ApplyProfileInstruction(ctx context.Context, in *ApplyProfileInstructionRequest, opts ...grpc.CallOption) (*ApplyProfileInstructionResponse, error)
+	// SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns hits with turn anchors.
+	// SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回带 turn 锚点的命中结果。
+	SearchMemoryEvents(ctx context.Context, in *SearchMemoryEventsRequest, opts ...grpc.CallOption) (*SearchMemoryEventsResponse, error)
+	// GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted dialogue payloads.
+	// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方查看原始持久化对话载荷。
+	GetTurnDetails(ctx context.Context, in *GetTurnDetailsRequest, opts ...grpc.CallOption) (*GetTurnDetailsResponse, error)
 	// PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
 	// PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
 	PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error)
@@ -215,6 +223,26 @@ func (c *vMMServiceClient) ApplyProfileInstruction(ctx context.Context, in *Appl
 	return out, nil
 }
 
+func (c *vMMServiceClient) SearchMemoryEvents(ctx context.Context, in *SearchMemoryEventsRequest, opts ...grpc.CallOption) (*SearchMemoryEventsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(SearchMemoryEventsResponse)
+	err := c.cc.Invoke(ctx, VMMService_SearchMemoryEvents_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *vMMServiceClient) GetTurnDetails(ctx context.Context, in *GetTurnDetailsRequest, opts ...grpc.CallOption) (*GetTurnDetailsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetTurnDetailsResponse)
+	err := c.cc.Invoke(ctx, VMMService_GetTurnDetails_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *vMMServiceClient) PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PreCheckResponse)
@@ -278,6 +306,12 @@ type VMMServiceServer interface {
 	// ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
 	// ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
 	ApplyProfileInstruction(context.Context, *ApplyProfileInstructionRequest) (*ApplyProfileInstructionResponse, error)
+	// SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns hits with turn anchors.
+	// SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回带 turn 锚点的命中结果。
+	SearchMemoryEvents(context.Context, *SearchMemoryEventsRequest) (*SearchMemoryEventsResponse, error)
+	// GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted dialogue payloads.
+	// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方查看原始持久化对话载荷。
+	GetTurnDetails(context.Context, *GetTurnDetailsRequest) (*GetTurnDetailsResponse, error)
 	// PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
 	// PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
 	PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error)
@@ -329,6 +363,12 @@ func (UnimplementedVMMServiceServer) GetProfileBundle(context.Context, *GetProfi
 }
 func (UnimplementedVMMServiceServer) ApplyProfileInstruction(context.Context, *ApplyProfileInstructionRequest) (*ApplyProfileInstructionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ApplyProfileInstruction not implemented")
+}
+func (UnimplementedVMMServiceServer) SearchMemoryEvents(context.Context, *SearchMemoryEventsRequest) (*SearchMemoryEventsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method SearchMemoryEvents not implemented")
+}
+func (UnimplementedVMMServiceServer) GetTurnDetails(context.Context, *GetTurnDetailsRequest) (*GetTurnDetailsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetTurnDetails not implemented")
 }
 func (UnimplementedVMMServiceServer) PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PreCheck not implemented")
@@ -573,6 +613,42 @@ func _VMMService_ApplyProfileInstruction_Handler(srv interface{}, ctx context.Co
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VMMService_SearchMemoryEvents_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(SearchMemoryEventsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).SearchMemoryEvents(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_SearchMemoryEvents_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).SearchMemoryEvents(ctx, req.(*SearchMemoryEventsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _VMMService_GetTurnDetails_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetTurnDetailsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).GetTurnDetails(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_GetTurnDetails_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).GetTurnDetails(ctx, req.(*GetTurnDetailsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _VMMService_PreCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PreCheckRequest)
 	if err := dec(in); err != nil {
@@ -663,6 +739,14 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ApplyProfileInstruction",
 			Handler:    _VMMService_ApplyProfileInstruction_Handler,
+		},
+		{
+			MethodName: "SearchMemoryEvents",
+			Handler:    _VMMService_SearchMemoryEvents_Handler,
+		},
+		{
+			MethodName: "GetTurnDetails",
+			Handler:    _VMMService_GetTurnDetails_Handler,
 		},
 		{
 			MethodName: "PreCheck",

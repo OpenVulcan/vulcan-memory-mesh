@@ -25,6 +25,7 @@ type Dependencies struct {
 	IDs               appports.IDGenerator
 	Workspace         usecase.WorkspaceExecutor
 	Profiles          usecase.ProfileExecutor
+	Memory            usecase.MemoryExecutor
 	PreCheck          usecase.PreCheckExecutor
 	PostAction        usecase.PostActionExecutor
 	ScopeResolver     appports.RequestScopeResolver
@@ -43,6 +44,7 @@ type Server struct {
 
 	workspace        usecase.WorkspaceExecutor
 	profiles         usecase.ProfileExecutor
+	memory           usecase.MemoryExecutor
 	preCheck         usecase.PreCheckExecutor
 	postAction       usecase.PostActionExecutor
 	workspaceTimeout time.Duration
@@ -65,6 +67,7 @@ func NewServer(deps Dependencies) *Server {
 	return &Server{
 		workspace:        deps.Workspace,
 		profiles:         deps.Profiles,
+		memory:           deps.Memory,
 		preCheck:         deps.PreCheck,
 		postAction:       deps.PostAction,
 		workspaceTimeout: deps.WorkspaceTimeout,
@@ -424,6 +427,80 @@ func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyPr
 	}, nil
 }
 
+// SearchMemoryEvents parses one grouped JSON payload, embeds each query item, searches vector memories inside the resolved scope, and returns hits with turn anchors.
+// SearchMemoryEvents 用于解析分组 JSON 载荷、对每条查询做 embedding、在已解析范围内搜索向量记忆，并返回带 turn 锚点的命中结果。
+func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemoryEventsRequest) (*vmmv1.SearchMemoryEventsResponse, error) {
+	if s.memory == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeSearchMemoryEventsRequest(req)
+	if err := s.validate.ValidateSearchMemoryEvents(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.memory.Search(ctx, usecase.MemoryQueryCommand{
+		UserID:    req.GetUserId(),
+		ProjectID: req.GetProjectId(),
+		QueryJSON: req.GetQueryJson(),
+		TopK:      int(req.GetTopK()),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	groups := make([]*vmmv1.MemorySearchGroupResult, 0, len(result.Results))
+	for _, group := range result.Results {
+		hits := make([]*vmmv1.MemorySearchHit, 0, len(group.Hits))
+		for _, hit := range group.Hits {
+			hits = append(hits, &vmmv1.MemorySearchHit{
+				MemoryId:  hit.MemoryID,
+				TurnId:    hit.TurnID,
+				SessionId: hit.SessionID,
+				Content:   hit.Content,
+				Details:   hit.Details,
+				Category:  int32(hit.Category),
+				Score:     hit.Score,
+			})
+		}
+		groups = append(groups, &vmmv1.MemorySearchGroupResult{
+			QueryIndex: uint32(group.QueryIndex),
+			Background: group.Background,
+			Query:      group.Query,
+			Hits:       hits,
+		})
+	}
+	return &vmmv1.SearchMemoryEventsResponse{
+		Results: groups,
+		TraceId: trace.IDFromContext(ctx),
+	}, nil
+}
+
+// GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted payloads exactly as stored.
+// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方按原样查看持久化载荷。
+func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRequest) (*vmmv1.GetTurnDetailsResponse, error) {
+	if s.memory == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeGetTurnDetailsRequest(req)
+	if err := s.validate.ValidateGetTurnDetails(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.memory.GetTurns(ctx, usecase.TurnDetailCommand{TurnIDs: req.GetTurnIds()})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	turns := make([]*vmmv1.TurnDetailEntry, 0, len(result.Turns))
+	for _, turn := range result.Turns {
+		turns = append(turns, toTurnDetailEntry(turn))
+	}
+	return &vmmv1.GetTurnDetailsResponse{
+		Turns:   turns,
+		TraceId: trace.IDFromContext(ctx),
+	}, nil
+}
+
 // PreCheck validates the request, consumes the scope resolved by the interceptor, and returns the current deterministic no-injection response.
 // PreCheck 用于校验请求、消费拦截器解析出的范围，并返回当前确定性的“不注入”响应。
 func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmmv1.PreCheckResponse, error) {
@@ -562,6 +639,26 @@ func toProfileNodeEntry(node logicdomain.ProfileNodeRecord) *vmmv1.ProfileNodeEn
 		LevelReason:      node.LevelReason,
 		SourceKind:       toProtoProfileSourceKind(node.SourceKind),
 		SourceId:         node.SourceID,
+	}
+}
+
+// toTurnDetailEntry converts one durable turn row into the protobuf transport shape used by the turn-detail lookup RPC.
+// toTurnDetailEntry 用于把一条长期 turn 行转换成 turn 详情查询 RPC 使用的 protobuf 传输结构。
+func toTurnDetailEntry(turn logicdomain.SessionTurnRecord) *vmmv1.TurnDetailEntry {
+	if turn.ID == 0 {
+		return nil
+	}
+	return &vmmv1.TurnDetailEntry{
+		TurnId:            turn.ID,
+		SessionId:         turn.SessionID,
+		ProjectId:         turn.ProjectID,
+		DehydratedContent: turn.DehydratedContent,
+		DehydratedBudget:  int32(turn.DehydratedBudget),
+		ExtractedStatus:   int32(turn.ExtractedStatus),
+		Details:           turn.Details,
+		DetailsBudget:     int32(turn.DetailsBudget),
+		CreatedTimestamp:  turn.CreatedAt.UTC().UnixMilli(),
+		UpdatedTimestamp:  turn.UpdatedAt.UTC().UnixMilli(),
 	}
 }
 

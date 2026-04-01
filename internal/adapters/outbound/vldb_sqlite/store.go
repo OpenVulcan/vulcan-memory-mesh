@@ -1806,6 +1806,32 @@ LIMIT ?
 	return turns, nil
 }
 
+// LoadTurnsByIDs returns one explicit set of dehydrated turn rows so memory-detail RPCs can inspect the exact persisted payloads behind recalled turn ids.
+// LoadTurnsByIDs 用于返回一组明确指定的脱水 turn 行，让记忆详情 RPC 可以查看召回 turn id 背后的精确持久化载荷。
+func (s *Store) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdomain.SessionTurnRecord, error) {
+	turnIDs = normalizeUint64List(turnIDs)
+	if len(turnIDs) == 0 {
+		return []logicdomain.SessionTurnRecord{}, nil
+	}
+	rows, err := queryRows[turnRecordRow](s, ctx, fmt.Sprintf(`
+SELECT id, session_id, project_id,
+       dehydrated_content,
+       dehydrated_budget, extracted_status, details, details_budget,
+       created_timestamp, updated_timestamp
+FROM vmm_turn_records
+WHERE id IN (%s)
+ORDER BY id ASC
+`, sqlUint64List(turnIDs)))
+	if err != nil {
+		return nil, fmt.Errorf("query turns by ids: %w", err)
+	}
+	turns := make([]logicdomain.SessionTurnRecord, 0, len(rows))
+	for _, row := range rows {
+		turns = append(turns, row.toDomain())
+	}
+	return turns, nil
+}
+
 // LoadActiveSessionMemoryNodes returns the active memory-node anchors inside one session so the batch analyzer can decide which old memories to supersede.
 // LoadActiveSessionMemoryNodes 用于返回某个 session 内的活跃记忆节点锚点，让批处理分析器判断哪些旧记忆需要淘汰。
 func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {

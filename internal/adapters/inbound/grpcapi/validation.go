@@ -125,6 +125,23 @@ func NormalizeApplyProfileInstructionRequest(req *vmmv1.ApplyProfileInstructionR
 	req.Instruction = strings.TrimSpace(req.GetInstruction())
 }
 
+// NormalizeSearchMemoryEventsRequest trims the grouped JSON payload before the memory-query use case validates and parses it.
+// NormalizeSearchMemoryEventsRequest 用于在记忆查询用例校验和解析前裁剪分组 JSON 载荷。
+func NormalizeSearchMemoryEventsRequest(req *vmmv1.SearchMemoryEventsRequest) {
+	if req == nil {
+		return
+	}
+	req.QueryJson = strings.TrimSpace(req.GetQueryJson())
+}
+
+// NormalizeGetTurnDetailsRequest keeps the turn-detail lookup hook in place even though the current request only carries numeric ids.
+// NormalizeGetTurnDetailsRequest 用于为 turn 详情查询保留规范化入口，虽然当前请求只包含数字 id。
+func NormalizeGetTurnDetailsRequest(req *vmmv1.GetTurnDetailsRequest) {
+	if req == nil {
+		return
+	}
+}
+
 // ValidatePreCheck validates the pre-check RPC request before the scope resolver interceptor runs.
 // ValidatePreCheck 用于在范围解析拦截器执行前校验 pre-check RPC 请求。
 func (v *RequestValidator) ValidatePreCheck(req *vmmv1.PreCheckRequest) error {
@@ -299,6 +316,47 @@ func (v *RequestValidator) ValidateApplyProfileInstruction(req *vmmv1.ApplyProfi
 		return err
 	}
 	return requireString("instruction", req.GetInstruction(), 16000)
+}
+
+// ValidateSearchMemoryEvents checks the grouped JSON vector-search payload before hierarchy resolution, embedding, and vector recall begin.
+// ValidateSearchMemoryEvents 用于在层级解析、embedding 和向量召回开始前校验分组 JSON 检索载荷。
+func (v *RequestValidator) ValidateSearchMemoryEvents(req *vmmv1.SearchMemoryEventsRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "search_memory_events", Message: "is required"}
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	if err := requireString("query_json", req.GetQueryJson(), 64000); err != nil {
+		return err
+	}
+	if req.GetTopK() > 64 {
+		return logicdomain.ValidationError{Field: "top_k", Message: "must be <= 64"}
+	}
+	return nil
+}
+
+// ValidateGetTurnDetails checks the turn-detail lookup payload before relational reads begin.
+// ValidateGetTurnDetails 用于在关系读取开始前校验 turn 详情查询载荷。
+func (v *RequestValidator) ValidateGetTurnDetails(req *vmmv1.GetTurnDetailsRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "get_turn_details", Message: "is required"}
+	}
+	if len(req.GetTurnIds()) == 0 {
+		return logicdomain.ValidationError{Field: "turn_ids", Message: "must contain at least one id"}
+	}
+	if len(req.GetTurnIds()) > 256 {
+		return logicdomain.ValidationError{Field: "turn_ids", Message: "must contain at most 256 ids"}
+	}
+	for idx, turnID := range req.GetTurnIds() {
+		if turnID == 0 {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("turn_ids[%d]", idx), Message: "must be a numeric id"}
+		}
+	}
+	return nil
 }
 
 // requireString enforces one non-empty bounded string field.

@@ -242,6 +242,88 @@ func TestApplyProfileInstructionReturnsAcceptedAndRetired(t *testing.T) {
 	}
 }
 
+// TestSearchMemoryEventsReturnsHits verifies the grouped memory-search RPC echoes the query items and returns turn-anchored vector hits.
+// TestSearchMemoryEventsReturnsHits 用于验证分组记忆检索 RPC 会回显查询项，并返回带 turn 锚点的向量命中。
+func TestSearchMemoryEventsReturnsHits(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		Memory: &stubMemoryExecutor{
+			searchResult: usecase.MemoryQueryResult{
+				Results: []usecase.MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Background: "用户最近一直在讨论水果。",
+						Query:      "喜欢的水果",
+						Hits: []usecase.MemoryQueryHit{
+							{
+								MemoryID:  "vec-1",
+								TurnID:    41,
+								SessionID: 12,
+								Content:   "用户喜欢吃香蕉。",
+								Details:   "来自近期饮食偏好提炼。",
+								Category:  3,
+								Score:     0.91,
+							},
+						},
+					},
+				},
+			},
+		},
+	}, testBufSize)
+
+	resp, err := fixture.client.SearchMemoryEvents(context.Background(), &vmmv1.SearchMemoryEventsRequest{
+		UserId:    7,
+		ProjectId: 9,
+		QueryJson: `[{"background":"用户最近一直在讨论水果。","query":"喜欢的水果"}]`,
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events: %v", err)
+	}
+	if len(resp.GetResults()) != 1 || len(resp.GetResults()[0].GetHits()) != 1 {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if resp.GetResults()[0].GetHits()[0].GetTurnId() != 41 {
+		t.Fatalf("unexpected turn id: %+v", resp.GetResults()[0].GetHits()[0])
+	}
+}
+
+// TestGetTurnDetailsReturnsRows verifies the turn-detail RPC returns dehydrated turn rows unchanged.
+// TestGetTurnDetailsReturnsRows 用于验证 turn 详情 RPC 会原样返回脱水 turn 行。
+func TestGetTurnDetailsReturnsRows(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		Memory: &stubMemoryExecutor{
+			turnResult: usecase.TurnDetailResult{
+				Turns: []logicdomain.SessionTurnRecord{
+					{
+						ID:                41,
+						SessionID:         12,
+						ProjectID:         9,
+						DehydratedContent: `{"user":"我喜欢香蕉"}`,
+						DehydratedBudget:  32,
+						ExtractedStatus:   1,
+						Details:           "近期饮食偏好提炼。",
+						DetailsBudget:     9,
+						CreatedAt:         time.UnixMilli(1775000000000),
+						UpdatedAt:         time.UnixMilli(1775000001000),
+					},
+				},
+			},
+		},
+	}, testBufSize)
+
+	resp, err := fixture.client.GetTurnDetails(context.Background(), &vmmv1.GetTurnDetailsRequest{
+		TurnIds: []uint64{41},
+	})
+	if err != nil {
+		t.Fatalf("get turn details: %v", err)
+	}
+	if len(resp.GetTurns()) != 1 || resp.GetTurns()[0].GetTurnId() != 41 || resp.GetTurns()[0].GetDehydratedContent() == "" {
+		t.Fatalf("unexpected response: %+v", resp)
+	}
+}
+
 // TestGetProfileBundleReturnsCombinedPrompt verifies the bundle RPC returns the authoritative combined prompt text in full mode.
 // TestGetProfileBundleReturnsCombinedPrompt 用于验证 bundle RPC 在 full 模式下返回权威的组合提示词文本。
 func TestGetProfileBundleReturnsCombinedPrompt(t *testing.T) {
@@ -249,9 +331,9 @@ func TestGetProfileBundleReturnsCombinedPrompt(t *testing.T) {
 		IDs: xid.NewGenerator(),
 		Profiles: &stubProfileExecutor{
 			bundleResult: usecase.ProfileBundleResult{
-				Mode:                usecase.ProfileBundleModeFull,
-				IncludeExplanation:  true,
-				CombinedText:        "以下内容是结合用户历史习惯、偏好、设定总结的画像。\n\n以下是等级与偏好权重说明：\n...\n\n以下是你当前所处的项目环境约束（优先级：Project > Space > Team）：\n[TEAM]\n团队画像\n\n[PROJECT]\n项目画像\n\n以下是你当前正在服务的目标用户偏好（请在不违反环境约束的前提下，尽量迎合用户）：\n[USER]\n用户画像",
+				Mode:               usecase.ProfileBundleModeFull,
+				IncludeExplanation: true,
+				CombinedText:       "以下内容是结合用户历史习惯、偏好、设定总结的画像。\n\n以下是等级与偏好权重说明：\n...\n\n以下是你当前所处的项目环境约束（优先级：Project > Space > Team）：\n[TEAM]\n团队画像\n\n[PROJECT]\n项目画像\n\n以下是你当前正在服务的目标用户偏好（请在不违反环境约束的前提下，尽量迎合用户）：\n[USER]\n用户画像",
 			},
 		},
 	}, testBufSize)
@@ -540,12 +622,12 @@ func (s *stubWorkspaceExecutor) DeleteUser(context.Context, string, string) (log
 // stubProfileExecutor supplies just enough profile behavior for gRPC transport tests.
 // stubProfileExecutor 用于为 gRPC 传输测试提供最小但足够的画像行为。
 type stubProfileExecutor struct {
-	queryResult usecase.ProfileQueryResult
-	queryErr    error
+	queryResult  usecase.ProfileQueryResult
+	queryErr     error
 	bundleResult usecase.ProfileBundleResult
 	bundleErr    error
-	applyResult usecase.ProfileInstructionResult
-	applyErr    error
+	applyResult  usecase.ProfileInstructionResult
+	applyErr     error
 }
 
 // GetNodes returns the canned profile query result for deterministic transport assertions.
@@ -564,6 +646,27 @@ func (s *stubProfileExecutor) GetBundle(context.Context, usecase.ProfileBundleCo
 // ApplyInstruction 用于返回预设手工画像指令结果，保证传输层断言稳定。
 func (s *stubProfileExecutor) ApplyInstruction(context.Context, usecase.ProfileInstructionCommand) (usecase.ProfileInstructionResult, error) {
 	return s.applyResult, s.applyErr
+}
+
+// stubMemoryExecutor supplies just enough memory-query behavior for gRPC transport tests.
+// stubMemoryExecutor 用于为 gRPC 传输测试提供最小但足够的记忆查询行为。
+type stubMemoryExecutor struct {
+	searchResult usecase.MemoryQueryResult
+	searchErr    error
+	turnResult   usecase.TurnDetailResult
+	turnErr      error
+}
+
+// Search returns the canned grouped memory-query result for deterministic transport assertions.
+// Search 用于返回预设的分组记忆查询结果，保证传输层断言稳定。
+func (s *stubMemoryExecutor) Search(context.Context, usecase.MemoryQueryCommand) (usecase.MemoryQueryResult, error) {
+	return s.searchResult, s.searchErr
+}
+
+// GetTurns returns the canned turn-detail result for deterministic transport assertions.
+// GetTurns 用于返回预设的 turn 详情结果，保证传输层断言稳定。
+func (s *stubMemoryExecutor) GetTurns(context.Context, usecase.TurnDetailCommand) (usecase.TurnDetailResult, error) {
+	return s.turnResult, s.turnErr
 }
 
 var _ appports.RequestScopeResolver = stubScopeResolver{}
