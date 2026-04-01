@@ -403,6 +403,11 @@ message TurnDetailEntry {
   int32 details_budget = 8;
   int64 created_timestamp = 9;
   int64 updated_timestamp = 10;
+  string user_content = 11;
+  repeated PostActionTimelineItem timeline = 12;
+  string assistant_content = 13;
+  repeated uint64 previous_turn_ids = 14;
+  repeated uint64 next_turn_ids = 15;
 }
 
 // GetTurnDetailsResponse returns the requested dehydrated turn rows plus trace metadata.

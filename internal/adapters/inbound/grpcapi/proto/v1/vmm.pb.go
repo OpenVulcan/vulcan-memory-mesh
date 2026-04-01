@@ -2434,17 +2434,22 @@ func (x *GetTurnDetailsRequest) GetTurnIds() []uint64 {
 // TurnDetailEntry transports one dehydrated turn row back to the caller for exact-detail inspection.
 // TurnDetailEntry 用于把一条脱水 turn 行返回给调用方，供精确查看详情。
 type TurnDetailEntry struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	TurnId            uint64                 `protobuf:"varint,1,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	SessionId         uint64                 `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	ProjectId         uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	DehydratedContent string                 `protobuf:"bytes,4,opt,name=dehydrated_content,json=dehydratedContent,proto3" json:"dehydrated_content,omitempty"`
-	DehydratedBudget  int32                  `protobuf:"varint,5,opt,name=dehydrated_budget,json=dehydratedBudget,proto3" json:"dehydrated_budget,omitempty"`
-	ExtractedStatus   int32                  `protobuf:"varint,6,opt,name=extracted_status,json=extractedStatus,proto3" json:"extracted_status,omitempty"`
-	Details           string                 `protobuf:"bytes,7,opt,name=details,proto3" json:"details,omitempty"`
-	DetailsBudget     int32                  `protobuf:"varint,8,opt,name=details_budget,json=detailsBudget,proto3" json:"details_budget,omitempty"`
-	CreatedTimestamp  int64                  `protobuf:"varint,9,opt,name=created_timestamp,json=createdTimestamp,proto3" json:"created_timestamp,omitempty"`
-	UpdatedTimestamp  int64                  `protobuf:"varint,10,opt,name=updated_timestamp,json=updatedTimestamp,proto3" json:"updated_timestamp,omitempty"`
+	state             protoimpl.MessageState    `protogen:"open.v1"`
+	TurnId            uint64                    `protobuf:"varint,1,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	SessionId         uint64                    `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	ProjectId         uint64                    `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	DehydratedContent string                    `protobuf:"bytes,4,opt,name=dehydrated_content,json=dehydratedContent,proto3" json:"dehydrated_content,omitempty"`
+	DehydratedBudget  int32                     `protobuf:"varint,5,opt,name=dehydrated_budget,json=dehydratedBudget,proto3" json:"dehydrated_budget,omitempty"`
+	ExtractedStatus   int32                     `protobuf:"varint,6,opt,name=extracted_status,json=extractedStatus,proto3" json:"extracted_status,omitempty"`
+	Details           string                    `protobuf:"bytes,7,opt,name=details,proto3" json:"details,omitempty"`
+	DetailsBudget     int32                     `protobuf:"varint,8,opt,name=details_budget,json=detailsBudget,proto3" json:"details_budget,omitempty"`
+	CreatedTimestamp  int64                     `protobuf:"varint,9,opt,name=created_timestamp,json=createdTimestamp,proto3" json:"created_timestamp,omitempty"`
+	UpdatedTimestamp  int64                     `protobuf:"varint,10,opt,name=updated_timestamp,json=updatedTimestamp,proto3" json:"updated_timestamp,omitempty"`
+	UserContent       string                    `protobuf:"bytes,11,opt,name=user_content,json=userContent,proto3" json:"user_content,omitempty"`
+	Timeline          []*PostActionTimelineItem `protobuf:"bytes,12,rep,name=timeline,proto3" json:"timeline,omitempty"`
+	AssistantContent  string                    `protobuf:"bytes,13,opt,name=assistant_content,json=assistantContent,proto3" json:"assistant_content,omitempty"`
+	PreviousTurnIds   []uint64                  `protobuf:"varint,14,rep,packed,name=previous_turn_ids,json=previousTurnIds,proto3" json:"previous_turn_ids,omitempty"`
+	NextTurnIds       []uint64                  `protobuf:"varint,15,rep,packed,name=next_turn_ids,json=nextTurnIds,proto3" json:"next_turn_ids,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -2547,6 +2552,41 @@ func (x *TurnDetailEntry) GetUpdatedTimestamp() int64 {
 		return x.UpdatedTimestamp
 	}
 	return 0
+}
+
+func (x *TurnDetailEntry) GetUserContent() string {
+	if x != nil {
+		return x.UserContent
+	}
+	return ""
+}
+
+func (x *TurnDetailEntry) GetTimeline() []*PostActionTimelineItem {
+	if x != nil {
+		return x.Timeline
+	}
+	return nil
+}
+
+func (x *TurnDetailEntry) GetAssistantContent() string {
+	if x != nil {
+		return x.AssistantContent
+	}
+	return ""
+}
+
+func (x *TurnDetailEntry) GetPreviousTurnIds() []uint64 {
+	if x != nil {
+		return x.PreviousTurnIds
+	}
+	return nil
+}
+
+func (x *TurnDetailEntry) GetNextTurnIds() []uint64 {
+	if x != nil {
+		return x.NextTurnIds
+	}
+	return nil
 }
 
 // GetTurnDetailsResponse returns the requested dehydrated turn rows plus trace metadata.
@@ -3213,7 +3253,7 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\aresults\x18\x01 \x03(\v2\x1f.vmm.v1.MemorySearchGroupResultR\aresults\x12\x19\n" +
 	"\btrace_id\x18\x02 \x01(\tR\atraceId\"2\n" +
 	"\x15GetTurnDetailsRequest\x12\x19\n" +
-	"\bturn_ids\x18\x01 \x03(\x04R\aturnIds\"\x8a\x03\n" +
+	"\bturn_ids\x18\x01 \x03(\x04R\aturnIds\"\xe6\x04\n" +
 	"\x0fTurnDetailEntry\x12\x17\n" +
 	"\aturn_id\x18\x01 \x01(\x04R\x06turnId\x12\x1d\n" +
 	"\n" +
@@ -3227,7 +3267,12 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x0edetails_budget\x18\b \x01(\x05R\rdetailsBudget\x12+\n" +
 	"\x11created_timestamp\x18\t \x01(\x03R\x10createdTimestamp\x12+\n" +
 	"\x11updated_timestamp\x18\n" +
-	" \x01(\x03R\x10updatedTimestamp\"b\n" +
+	" \x01(\x03R\x10updatedTimestamp\x12!\n" +
+	"\fuser_content\x18\v \x01(\tR\vuserContent\x12:\n" +
+	"\btimeline\x18\f \x03(\v2\x1e.vmm.v1.PostActionTimelineItemR\btimeline\x12+\n" +
+	"\x11assistant_content\x18\r \x01(\tR\x10assistantContent\x12*\n" +
+	"\x11previous_turn_ids\x18\x0e \x03(\x04R\x0fpreviousTurnIds\x12\"\n" +
+	"\rnext_turn_ids\x18\x0f \x03(\x04R\vnextTurnIds\"b\n" +
 	"\x16GetTurnDetailsResponse\x12-\n" +
 	"\x05turns\x18\x01 \x03(\v2\x17.vmm.v1.TurnDetailEntryR\x05turns\x12\x19\n" +
 	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\x8b\x01\n" +
@@ -3381,46 +3426,47 @@ var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_depIdxs = []int32{
 	21, // 17: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
 	29, // 18: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
 	30, // 19: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
-	33, // 20: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
-	36, // 21: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
-	38, // 22: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	41, // 23: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
-	41, // 24: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
-	7,  // 25: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
-	9,  // 26: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
-	11, // 27: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
-	13, // 28: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
-	15, // 29: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
-	41, // 30: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
-	18, // 31: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
-	22, // 32: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
-	24, // 33: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
-	26, // 34: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
-	28, // 35: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
-	32, // 36: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
-	35, // 37: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
-	39, // 38: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
-	3,  // 39: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
-	6,  // 40: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
-	8,  // 41: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
-	10, // 42: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
-	12, // 43: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
-	14, // 44: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
-	16, // 45: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
-	17, // 46: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
-	19, // 47: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
-	23, // 48: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
-	25, // 49: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
-	27, // 50: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
-	31, // 51: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
-	34, // 52: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
-	37, // 53: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
-	40, // 54: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
-	39, // [39:55] is the sub-list for method output_type
-	23, // [23:39] is the sub-list for method input_type
-	23, // [23:23] is the sub-list for extension type_name
-	23, // [23:23] is the sub-list for extension extendee
-	0,  // [0:23] is the sub-list for field type_name
+	38, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	33, // 21: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
+	36, // 22: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
+	38, // 23: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	41, // 24: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
+	41, // 25: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
+	7,  // 26: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
+	9,  // 27: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
+	11, // 28: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
+	13, // 29: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
+	15, // 30: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
+	41, // 31: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
+	18, // 32: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
+	22, // 33: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
+	24, // 34: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
+	26, // 35: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
+	28, // 36: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
+	32, // 37: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
+	35, // 38: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
+	39, // 39: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
+	3,  // 40: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
+	6,  // 41: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
+	8,  // 42: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
+	10, // 43: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
+	12, // 44: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
+	14, // 45: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
+	16, // 46: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
+	17, // 47: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
+	19, // 48: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
+	23, // 49: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
+	25, // 50: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
+	27, // 51: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
+	31, // 52: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
+	34, // 53: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
+	37, // 54: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
+	40, // 55: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
+	40, // [40:56] is the sub-list for method output_type
+	24, // [24:40] is the sub-list for method input_type
+	24, // [24:24] is the sub-list for extension type_name
+	24, // [24:24] is the sub-list for extension extendee
+	0,  // [0:24] is the sub-list for field type_name
 }
 
 func init() { file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() }

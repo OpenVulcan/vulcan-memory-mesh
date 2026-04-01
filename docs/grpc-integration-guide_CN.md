@@ -449,6 +449,7 @@
 用途：
 
 - 按 `turn_ids[]` 读取一条或多条脱水 turn 原文
+- 同时返回服务端已经拆好的具体对话字段，以及当前 turn 前后各 `3` 轮的编号
 
 请求字段：
 
@@ -460,18 +461,23 @@
 - `session_id`
 - `project_id`
 - `dehydrated_content`
+- `user_content`
+- `timeline`
+- `assistant_content`
 - `dehydrated_budget`
 - `extracted_status`
 - `details`
 - `details_budget`
 - `created_timestamp`
 - `updated_timestamp`
+- `previous_turn_ids`
+- `next_turn_ids`
 
 典型联动方式：
 
 1. 先调用 `SearchMemoryEvents`
 2. 从命中结果中拿到 `turn_id`
-3. 再调用 `GetTurnDetails` 回查脱水原文
+3. 再调用 `GetTurnDetails` 回查脱水原文、解析后的具体对话内容，以及前后相邻 turn 编号
 
 ### PreCheck
 

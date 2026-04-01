@@ -93,8 +93,12 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {
 	uc := NewMemoryUseCase(nil, &stubTurnLookupStore{
 		rows: []logicdomain.SessionTurnRecord{
-			{ID: 7, SessionID: 1, ProjectID: 9, DehydratedContent: `{"user":"a"}`, CreatedAt: time.UnixMilli(1000), UpdatedAt: time.UnixMilli(2000)},
-			{ID: 9, SessionID: 1, ProjectID: 9, DehydratedContent: `{"user":"b"}`, CreatedAt: time.UnixMilli(3000), UpdatedAt: time.UnixMilli(4000)},
+			{ID: 7, SessionID: 1, ProjectID: 9, DehydratedContent: `{"user":"a","timeline":[{"type":"assistant","content":"mid-a"}],"assistant":"aa"}`, CreatedAt: time.UnixMilli(1000), UpdatedAt: time.UnixMilli(2000)},
+			{ID: 9, SessionID: 1, ProjectID: 9, DehydratedContent: `{"user":"b","timeline":[],"assistant":"bb"}`, CreatedAt: time.UnixMilli(3000), UpdatedAt: time.UnixMilli(4000)},
+		},
+		windows: map[uint64]logicdomain.TurnDetailWindow{
+			7: {TurnID: 7, PreviousTurnIDs: []uint64{4, 5, 6}, NextTurnIDs: []uint64{8, 9, 10}},
+			9: {TurnID: 9, PreviousTurnIDs: []uint64{6, 7, 8}, NextTurnIDs: []uint64{10, 11, 12}},
 		},
 	}, nil, nil, nil)
 
@@ -102,8 +106,14 @@ func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get turns: %v", err)
 	}
-	if len(result.Turns) != 2 || result.Turns[0].ID != 9 || result.Turns[1].ID != 7 {
+	if len(result.Turns) != 2 || result.Turns[0].Turn.ID != 9 || result.Turns[1].Turn.ID != 7 {
 		t.Fatalf("unexpected turn order: %+v", result.Turns)
+	}
+	if result.Turns[0].UserContent != "b" || result.Turns[0].AssistantContent != "bb" {
+		t.Fatalf("unexpected parsed turn content: %+v", result.Turns[0])
+	}
+	if len(result.Turns[0].PreviousTurnIDs) != 3 || result.Turns[0].PreviousTurnIDs[0] != 6 || len(result.Turns[1].Timeline) != 1 {
+		t.Fatalf("unexpected turn windows or timeline: %+v %+v", result.Turns[0], result.Turns[1])
 	}
 }
 
@@ -112,6 +122,7 @@ func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {
 type stubTurnLookupStore struct {
 	turnIDs []uint64
 	rows    []logicdomain.SessionTurnRecord
+	windows map[uint64]logicdomain.TurnDetailWindow
 	err     error
 }
 
@@ -123,4 +134,24 @@ func (s *stubTurnLookupStore) LoadTurnsByIDs(_ context.Context, turnIDs []uint64
 		return nil, s.err
 	}
 	return append([]logicdomain.SessionTurnRecord(nil), s.rows...), nil
+}
+
+// LoadTurnWindows returns canned neighboring turn ids for deterministic turn-detail assertions.
+// LoadTurnWindows 用于返回预设的相邻 turn 编号，保证 turn 详情断言稳定。
+func (s *stubTurnLookupStore) LoadTurnWindows(_ context.Context, _ []uint64, _ int) (map[uint64]logicdomain.TurnDetailWindow, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	if s.windows == nil {
+		return map[uint64]logicdomain.TurnDetailWindow{}, nil
+	}
+	cloned := make(map[uint64]logicdomain.TurnDetailWindow, len(s.windows))
+	for key, value := range s.windows {
+		cloned[key] = logicdomain.TurnDetailWindow{
+			TurnID:          value.TurnID,
+			PreviousTurnIDs: append([]uint64(nil), value.PreviousTurnIDs...),
+			NextTurnIDs:     append([]uint64(nil), value.NextTurnIDs...),
+		}
+	}
+	return cloned, nil
 }

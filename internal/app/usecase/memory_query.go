@@ -30,6 +30,10 @@ const (
 	// maxTurnDetailLookup limits how many turn ids one detail query can request at once to keep relational reads bounded.
 	// maxTurnDetailLookup 用于限制一次详情查询最多请求多少个 turn id，保持关系读取的规模可控。
 	maxTurnDetailLookup = 256
+
+	// turnDetailContextRadius keeps three turns before and after each anchor so callers can continue finer follow-up lookups without fetching entire sessions.
+	// turnDetailContextRadius 用于固定返回每个锚点 turn 前后各三轮编号，让调用方无需拉取整条 session 也能继续做更细的后续查询。
+	turnDetailContextRadius = 3
 )
 
 // MemoryQueryCommand carries one grouped JSON search payload together with the resolved user/project selectors.
@@ -83,10 +87,21 @@ type TurnDetailCommand struct {
 	TurnIDs []uint64
 }
 
-// TurnDetailResult returns the requested turns in the same order as the caller supplied ids whenever the rows exist.
-// TurnDetailResult 用于返回调用方请求的 turn，并在存在记录时尽量保持与输入 id 相同的顺序。
+// TurnDetailRecord returns one durable turn row together with parsed dialogue fields and neighboring turn ids.
+// TurnDetailRecord 用于返回一条长期 turn 行，以及解析后的对话字段和相邻 turn 编号。
+type TurnDetailRecord struct {
+	Turn             logicdomain.SessionTurnRecord
+	UserContent      string
+	Timeline         []logicdomain.TurnDetailTimelineItem
+	AssistantContent string
+	PreviousTurnIDs  []uint64
+	NextTurnIDs      []uint64
+}
+
+// TurnDetailResult returns the requested turns in caller order together with parsed dialogue fields and neighboring turn ids.
+// TurnDetailResult 用于按调用方顺序返回请求的 turn，以及解析后的对话字段和相邻 turn 编号。
 type TurnDetailResult struct {
-	Turns []logicdomain.SessionTurnRecord
+	Turns []TurnDetailRecord
 }
 
 // MemoryExecutor groups the active memory-search and turn-detail lookup flows exposed by the inbound gRPC adapter.
@@ -212,14 +227,27 @@ func (u *MemoryUseCase) GetTurns(ctx context.Context, cmd TurnDetailCommand) (Tu
 	if err != nil {
 		return TurnDetailResult{}, err
 	}
+	windows, err := u.turns.LoadTurnWindows(ctx, requested, turnDetailContextRadius)
+	if err != nil {
+		return TurnDetailResult{}, err
+	}
 	byID := make(map[uint64]logicdomain.SessionTurnRecord, len(rows))
 	for _, row := range rows {
 		byID[row.ID] = row
 	}
-	ordered := make([]logicdomain.SessionTurnRecord, 0, len(rows))
+	ordered := make([]TurnDetailRecord, 0, len(rows))
 	for _, turnID := range requested {
 		if row, ok := byID[turnID]; ok {
-			ordered = append(ordered, row)
+			userContent, timeline, assistantContent := parseDehydratedTurnContent(row.DehydratedContent)
+			window := windows[turnID]
+			ordered = append(ordered, TurnDetailRecord{
+				Turn:             row,
+				UserContent:      userContent,
+				Timeline:         timeline,
+				AssistantContent: assistantContent,
+				PreviousTurnIDs:  append([]uint64(nil), window.PreviousTurnIDs...),
+				NextTurnIDs:      append([]uint64(nil), window.NextTurnIDs...),
+			})
 		}
 	}
 	return TurnDetailResult{Turns: ordered}, nil
@@ -369,4 +397,31 @@ func normalizeTurnIDList(values []uint64) []uint64 {
 		normalized = append(normalized, value)
 	}
 	return normalized
+}
+
+// parseDehydratedTurnContent expands the stored dehydrated JSON into direct user/assistant/timeline fields so callers do not have to decode it client-side.
+// parseDehydratedTurnContent 用于把存储中的脱水 JSON 展开成直接可用的 user/assistant/timeline 字段，避免调用方再自行解码。
+func parseDehydratedTurnContent(raw string) (string, []logicdomain.TurnDetailTimelineItem, string) {
+	type dehydratedTurnTimelineItem struct {
+		Type    string `json:"type"`
+		Content string `json:"content"`
+	}
+	type dehydratedTurnPayload struct {
+		User      string                       `json:"user"`
+		Timeline  []dehydratedTurnTimelineItem `json:"timeline"`
+		Assistant string                       `json:"assistant"`
+	}
+
+	payload := dehydratedTurnPayload{}
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &payload); err != nil {
+		return "", nil, ""
+	}
+	timeline := make([]logicdomain.TurnDetailTimelineItem, 0, len(payload.Timeline))
+	for _, item := range payload.Timeline {
+		timeline = append(timeline, logicdomain.TurnDetailTimelineItem{
+			Type:    strings.TrimSpace(item.Type),
+			Content: item.Content,
+		})
+	}
+	return payload.User, timeline, payload.Assistant
 }

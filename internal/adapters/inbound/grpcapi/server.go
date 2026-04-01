@@ -475,8 +475,8 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 	}, nil
 }
 
-// GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted payloads exactly as stored.
-// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方按原样查看持久化载荷。
+// GetTurnDetails loads one or more dehydrated turn rows by turn id and expands them with parsed dialogue fields plus nearby turn ids.
+// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，并补充解析后的对话字段和相邻 turn 编号。
 func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRequest) (*vmmv1.GetTurnDetailsResponse, error) {
 	if s.memory == nil {
 		return nil, toStatus(errRouteDisabled)
@@ -642,23 +642,35 @@ func toProfileNodeEntry(node logicdomain.ProfileNodeRecord) *vmmv1.ProfileNodeEn
 	}
 }
 
-// toTurnDetailEntry converts one durable turn row into the protobuf transport shape used by the turn-detail lookup RPC.
-// toTurnDetailEntry 用于把一条长期 turn 行转换成 turn 详情查询 RPC 使用的 protobuf 传输结构。
-func toTurnDetailEntry(turn logicdomain.SessionTurnRecord) *vmmv1.TurnDetailEntry {
-	if turn.ID == 0 {
+// toTurnDetailEntry converts one detailed turn result into the protobuf transport shape used by the turn-detail lookup RPC.
+// toTurnDetailEntry 用于把一条补齐内容和相邻编号的 turn 详情结果转换成 turn 查询 RPC 使用的 protobuf 传输结构。
+func toTurnDetailEntry(turn usecase.TurnDetailRecord) *vmmv1.TurnDetailEntry {
+	if turn.Turn.ID == 0 {
 		return nil
 	}
+	timeline := make([]*vmmv1.PostActionTimelineItem, 0, len(turn.Timeline))
+	for _, item := range turn.Timeline {
+		timeline = append(timeline, &vmmv1.PostActionTimelineItem{
+			Type:    item.Type,
+			Content: item.Content,
+		})
+	}
 	return &vmmv1.TurnDetailEntry{
-		TurnId:            turn.ID,
-		SessionId:         turn.SessionID,
-		ProjectId:         turn.ProjectID,
-		DehydratedContent: turn.DehydratedContent,
-		DehydratedBudget:  int32(turn.DehydratedBudget),
-		ExtractedStatus:   int32(turn.ExtractedStatus),
-		Details:           turn.Details,
-		DetailsBudget:     int32(turn.DetailsBudget),
-		CreatedTimestamp:  turn.CreatedAt.UTC().UnixMilli(),
-		UpdatedTimestamp:  turn.UpdatedAt.UTC().UnixMilli(),
+		TurnId:            turn.Turn.ID,
+		SessionId:         turn.Turn.SessionID,
+		ProjectId:         turn.Turn.ProjectID,
+		DehydratedContent: turn.Turn.DehydratedContent,
+		DehydratedBudget:  int32(turn.Turn.DehydratedBudget),
+		ExtractedStatus:   int32(turn.Turn.ExtractedStatus),
+		Details:           turn.Turn.Details,
+		DetailsBudget:     int32(turn.Turn.DetailsBudget),
+		CreatedTimestamp:  turn.Turn.CreatedAt.UTC().UnixMilli(),
+		UpdatedTimestamp:  turn.Turn.UpdatedAt.UTC().UnixMilli(),
+		UserContent:       turn.UserContent,
+		Timeline:          timeline,
+		AssistantContent:  turn.AssistantContent,
+		PreviousTurnIds:   append([]uint64(nil), turn.PreviousTurnIDs...),
+		NextTurnIds:       append([]uint64(nil), turn.NextTurnIDs...),
 	}
 }
 

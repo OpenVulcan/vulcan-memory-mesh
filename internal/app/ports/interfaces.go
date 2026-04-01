@@ -67,6 +67,7 @@ type RelationalStore interface {
 // TurnLookupStore 用于给记忆查询 RPC 提供按 turn id 读取脱水 turn 行的窄关系读端口。
 type TurnLookupStore interface {
 	LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdomain.SessionTurnRecord, error)
+	LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius int) (map[uint64]logicdomain.TurnDetailWindow, error)
 }
 
 // ProfileStore is the port used by profile-query and manual profile-instruction RPCs to resolve targets, inspect active nodes, and persist reviewed updates.

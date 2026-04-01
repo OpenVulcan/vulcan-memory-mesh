@@ -19,6 +19,21 @@ type SessionTurnRecord struct {
 	UpdatedAt         time.Time
 }
 
+// TurnDetailTimelineItem stores one parsed middle timeline message extracted from the dehydrated turn payload.
+// TurnDetailTimelineItem 用于保存从脱水 turn 载荷中解析出来的一条中间 timeline 消息。
+type TurnDetailTimelineItem struct {
+	Type    string
+	Content string
+}
+
+// TurnDetailWindow stores the neighboring turn ids around one anchor turn so callers can continue finer-grained follow-up queries.
+// TurnDetailWindow 用于保存某个锚点 turn 周围的相邻 turn id，方便调用方继续发起更细粒度的后续查询。
+type TurnDetailWindow struct {
+	TurnID          uint64
+	PreviousTurnIDs []uint64
+	NextTurnIDs     []uint64
+}
+
 // SessionMemoryNodeRecord stores one active memory node row that the batch analyzer can reference when deciding what to supersede.
 // SessionMemoryNodeRecord 用于保存一条活跃记忆节点记录，让批处理分析器在判断哪些旧记忆需要淘汰时可以引用它。
 type SessionMemoryNodeRecord struct {

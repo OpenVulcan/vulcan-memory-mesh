@@ -1832,6 +1832,53 @@ ORDER BY id ASC
 	return turns, nil
 }
 
+// LoadTurnWindows returns the previous and next turn ids around each requested anchor turn inside the same session.
+// LoadTurnWindows 用于返回每个请求锚点 turn 在同一 session 内前后相邻的 turn id。
+func (s *Store) LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius int) (map[uint64]logicdomain.TurnDetailWindow, error) {
+	turnIDs = normalizeUint64List(turnIDs)
+	if len(turnIDs) == 0 || radius <= 0 {
+		return map[uint64]logicdomain.TurnDetailWindow{}, nil
+	}
+	rows, err := queryRows[turnWindowRow](s, ctx, fmt.Sprintf(`
+WITH ordered_turns AS (
+  SELECT id, session_id,
+         ROW_NUMBER() OVER (PARTITION BY session_id ORDER BY id ASC) AS rn
+  FROM vmm_turn_records
+),
+target_turns AS (
+  SELECT id AS target_id, session_id, rn AS target_rn
+  FROM ordered_turns
+  WHERE id IN (%s)
+)
+SELECT t.target_id,
+       o.id AS turn_id,
+       CAST(o.rn - t.target_rn AS INTEGER) AS relative_pos
+FROM target_turns t
+JOIN ordered_turns o
+  ON o.session_id = t.session_id
+ AND o.rn BETWEEN t.target_rn - %d AND t.target_rn + %d
+ AND o.id <> t.target_id
+ORDER BY t.target_id ASC, o.rn ASC
+`, sqlUint64List(turnIDs), radius, radius))
+	if err != nil {
+		return nil, fmt.Errorf("query turn windows: %w", err)
+	}
+	windows := make(map[uint64]logicdomain.TurnDetailWindow, len(turnIDs))
+	for _, turnID := range turnIDs {
+		windows[turnID] = logicdomain.TurnDetailWindow{TurnID: turnID}
+	}
+	for _, row := range rows {
+		window := windows[row.TargetID]
+		if row.RelativePos < 0 {
+			window.PreviousTurnIDs = append(window.PreviousTurnIDs, row.TurnID)
+		} else if row.RelativePos > 0 {
+			window.NextTurnIDs = append(window.NextTurnIDs, row.TurnID)
+		}
+		windows[row.TargetID] = window
+	}
+	return windows, nil
+}
+
 // LoadActiveSessionMemoryNodes returns the active memory-node anchors inside one session so the batch analyzer can decide which old memories to supersede.
 // LoadActiveSessionMemoryNodes 用于返回某个 session 内的活跃记忆节点锚点，让批处理分析器判断哪些旧记忆需要淘汰。
 func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
@@ -3526,6 +3573,14 @@ type turnRecordRow struct {
 	DetailsBudget     int    `json:"details_budget"`
 	CreatedTimestamp  int64  `json:"created_timestamp"`
 	UpdatedTimestamp  int64  `json:"updated_timestamp"`
+}
+
+// turnWindowRow stores one neighboring turn id plus its relative position around one requested anchor turn.
+// turnWindowRow 用于保存某个请求锚点 turn 周围的一条相邻 turn id 及其相对位置。
+type turnWindowRow struct {
+	TargetID    uint64 `json:"target_id"`
+	TurnID      uint64 `json:"turn_id"`
+	RelativePos int    `json:"relative_pos"`
 }
 
 func (r turnRecordRow) toDomain() logicdomain.SessionTurnRecord {

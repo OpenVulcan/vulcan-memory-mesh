@@ -295,18 +295,25 @@ func TestGetTurnDetailsReturnsRows(t *testing.T) {
 		IDs: xid.NewGenerator(),
 		Memory: &stubMemoryExecutor{
 			turnResult: usecase.TurnDetailResult{
-				Turns: []logicdomain.SessionTurnRecord{
+				Turns: []usecase.TurnDetailRecord{
 					{
-						ID:                41,
-						SessionID:         12,
-						ProjectID:         9,
-						DehydratedContent: `{"user":"我喜欢香蕉"}`,
-						DehydratedBudget:  32,
-						ExtractedStatus:   1,
-						Details:           "近期饮食偏好提炼。",
-						DetailsBudget:     9,
-						CreatedAt:         time.UnixMilli(1775000000000),
-						UpdatedAt:         time.UnixMilli(1775000001000),
+						Turn: logicdomain.SessionTurnRecord{
+							ID:                41,
+							SessionID:         12,
+							ProjectID:         9,
+							DehydratedContent: `{"user":"我喜欢香蕉"}`,
+							DehydratedBudget:  32,
+							ExtractedStatus:   1,
+							Details:           "近期饮食偏好提炼。",
+							DetailsBudget:     9,
+							CreatedAt:         time.UnixMilli(1775000000000),
+							UpdatedAt:         time.UnixMilli(1775000001000),
+						},
+						UserContent:      "我喜欢香蕉",
+						Timeline:         []logicdomain.TurnDetailTimelineItem{{Type: "assistant", Content: "中间确认"}},
+						AssistantContent: "收到",
+						PreviousTurnIDs:  []uint64{38, 39, 40},
+						NextTurnIDs:      []uint64{42, 43, 44},
 					},
 				},
 			},
@@ -321,6 +328,12 @@ func TestGetTurnDetailsReturnsRows(t *testing.T) {
 	}
 	if len(resp.GetTurns()) != 1 || resp.GetTurns()[0].GetTurnId() != 41 || resp.GetTurns()[0].GetDehydratedContent() == "" {
 		t.Fatalf("unexpected response: %+v", resp)
+	}
+	if resp.GetTurns()[0].GetUserContent() != "我喜欢香蕉" || resp.GetTurns()[0].GetAssistantContent() != "收到" {
+		t.Fatalf("expected parsed conversation content, got %+v", resp.GetTurns()[0])
+	}
+	if len(resp.GetTurns()[0].GetPreviousTurnIds()) != 3 || len(resp.GetTurns()[0].GetNextTurnIds()) != 3 || len(resp.GetTurns()[0].GetTimeline()) != 1 {
+		t.Fatalf("expected neighboring turn ids and timeline, got %+v", resp.GetTurns()[0])
 	}
 }
 

@@ -274,17 +274,24 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 输入固定是：
   - `turn_ids[]`
 - 支持单条或多条查询
-- 返回的是数据库里保存的脱水 turn 原文：
+- 返回的是数据库里保存的脱水 turn 原文，以及服务端已经拆好的具体对话字段：
   - `dehydrated_content`
+  - `user_content`
+  - `timeline`
+  - `assistant_content`
   - `dehydrated_budget`
   - `extracted_status`
   - `details`
   - `details_budget`
   - `created_timestamp`
   - `updated_timestamp`
+- 同时还会补充当前 turn 在同一 session 中的上下文编号：
+  - `previous_turn_ids`
+  - `next_turn_ids`
+- 默认返回当前 turn 前后各 `3` 轮的编号，方便上层 AI 继续按 id 发起更细的详情查询
 - 适合和 `SearchMemoryEvents` 联动：
   - 先通过向量记忆查询拿到 `turn_id`
-  - 再按 `turn_id` 回查脱水原文
+  - 再按 `turn_id` 回查脱水原文和相邻编号
 
 ## 构建与运行
 
