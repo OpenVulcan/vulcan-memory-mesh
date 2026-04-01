@@ -210,6 +210,10 @@ message PostActionTimelineItem {
     - 把这些活跃节点与本批次新画像候选一起送入一次 `review_profile_nodes`
     - 如果本批次只有 user 或只有 project 候选，则只发送存在的一侧
     - `analyze_session_batch` 与 `review_profile_nodes` 都要求按领域拆分画像节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
+    - 如果当前 turn 只是“用户询问 AI 自己的喜好/习惯/画像是什么”，而回答只是助手基于上下文做的复述、猜测或迎合性总结：
+      - 不应提炼成长期记忆
+      - 也不应提炼成画像节点
+      - 只有当用户自己明确确认、补充、纠正或直接陈述这些偏好时，才允许进入长期画像系统
     - `review_profile_nodes` 会分别返回：
       - `user`
       - `project`

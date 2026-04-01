@@ -39,10 +39,14 @@
    - 它们存在不同的优先级或生命周期
    - 其中一部分被明确否定、另一部分仍然成立
    - 它们虽然同领域，但后续检索与替代应独立处理
-13. 如果某条 pending turn 同时包含多个稳定画像事实，必须按领域输出多条 `profile_nodes`，不要合并成一句“综合画像”。
-14. `obsolete_memory_turn_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `turn_id`。
-15. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 turn 标记进 `obsolete_memory_turn_ids`；不能因为当前批次没有再次提到就删除。
-16. `category` 只能使用以下整数：
+13. 如果某条 pending turn 只是“用户询问 AI 自己的喜好 / 习惯 / 画像是什么”，而回答内容只是助手基于当前上下文做的复述、猜测、总结或迎合性回答：
+   - 不要把这类内容提取成 `memory_nodes`
+   - 也不要把这类内容提取成 `profile_nodes`
+   - 只有当用户自己明确确认、补充、纠正或直接陈述这些偏好时，才可以进入长期记忆或画像
+14. 如果某条 pending turn 同时包含多个稳定画像事实，必须按领域输出多条 `profile_nodes`，不要合并成一句“综合画像”。
+15. `obsolete_memory_turn_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `turn_id`。
+16. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 turn 标记进 `obsolete_memory_turn_ids`；不能因为当前批次没有再次提到就删除。
+17. `category` 只能使用以下整数：
    - `0`: General
    - `1`: Arch & Decision
    - `2`: Tech Spec & API
@@ -51,7 +55,7 @@
    - `5`: Project Context
    - `6`: Logical Bug / Debt
    - `7`: Security & Policy
-17. `profile_type` 只能使用以下整数：
+18. `profile_type` 只能使用以下整数：
    - `0`: 用户画像
    - `1`: 项目画像
 
