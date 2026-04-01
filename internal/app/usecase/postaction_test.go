@@ -306,10 +306,10 @@ func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {
 	if len(reviewer.nodes) != 3 {
 		t.Fatalf("expected all profile nodes to flow into one review call, got %+v", reviewer.nodes)
 	}
-	if !strings.Contains(store.batchAnalysis.MergedUserProfile, "[Profile Legend]") || !strings.Contains(store.batchAnalysis.MergedUserProfile, "用户偏好 Rust，并希望面向多个 AI 编程工具做记忆扩展。") {
+	if strings.Contains(store.batchAnalysis.MergedUserProfile, "[Profile Legend]") || !strings.Contains(store.batchAnalysis.MergedUserProfile, "用户偏好 Rust，并希望面向多个 AI 编程工具做记忆扩展。") {
 		t.Fatalf("unexpected merged user profile state: %+v", store.batchAnalysis)
 	}
-	if !strings.Contains(store.batchAnalysis.MergedProjectProfile, "[Profile Legend]") || !strings.Contains(store.batchAnalysis.MergedProjectProfile, "项目目前没有代码，仍处于早期设计阶段。") {
+	if strings.Contains(store.batchAnalysis.MergedProjectProfile, "[Profile Legend]") || !strings.Contains(store.batchAnalysis.MergedProjectProfile, "项目目前没有代码，仍处于早期设计阶段。") {
 		t.Fatalf("unexpected merged project profile state: %+v", store.batchAnalysis)
 	}
 	if len(store.batchAnalysis.RetiredProfileNodeIDs) != 2 || store.batchAnalysis.RetiredProfileNodeIDs[0] != 41 || store.batchAnalysis.RetiredProfileNodeIDs[1] != 52 {
@@ -367,7 +367,7 @@ func TestPostActionUseCaseConvergesExpiredProfiles(t *testing.T) {
 	if store.expiredProfileScanCalls != 1 {
 		t.Fatalf("expected one expired-profile convergence scan, got %d", store.expiredProfileScanCalls)
 	}
-	if len(store.renderedUserProfiles) != 1 || !strings.Contains(store.renderedUserProfiles[9], "[Profile Legend]") || !strings.Contains(store.renderedUserProfiles[9], "用户偏好使用 Rust 进行项目开发。") {
+	if len(store.renderedUserProfiles) != 1 || strings.Contains(store.renderedUserProfiles[9], "[Profile Legend]") || !strings.Contains(store.renderedUserProfiles[9], "用户偏好使用 Rust 进行项目开发。") {
 		t.Fatalf("unexpected rendered user profiles: %#v", store.renderedUserProfiles)
 	}
 	if len(store.renderedProjectProfiles) != 1 || !strings.Contains(store.renderedProjectProfiles[12], "[P0][L3][W1] 项目必须优先支持多种 AI 编程工具。") {

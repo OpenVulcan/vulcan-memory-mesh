@@ -4,6 +4,8 @@ package usecase
 
 import (
 	"context"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -37,6 +39,133 @@ func TestProfileUseCaseGetNodesReturnsActiveSlice(t *testing.T) {
 	}
 	if result.Target.BindID != 7 || len(result.Nodes) != 1 || result.Nodes[0].ID != 11 {
 		t.Fatalf("unexpected query result: %+v", result)
+	}
+}
+
+// TestProfileUseCaseGetBundleBuildsCombinedPrompt verifies the bundle flow reuses the rendered scope profiles,
+// strips any legacy legend wrapper, and emits the deterministic TEAM/PROJECT/USER combined text.
+// TestProfileUseCaseGetBundleBuildsCombinedPrompt 用于验证 bundle 流程会复用已渲染的 scope 画像，
+// 去掉遗留 legend 包装，并输出确定性的 TEAM/PROJECT/USER 组合文本。
+func TestProfileUseCaseGetBundleBuildsCombinedPrompt(t *testing.T) {
+	store := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+				UserName:    "alice",
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+				TeamName:    "TeamA",
+				SpaceName:   "SpaceA",
+				ProjectName: "ProjectA",
+			},
+		},
+		renderedProfiles: map[string]string{
+			profileRenderKey(logicdomain.ProfileTypeTeam, 3): `[Profile Legend]
+- P = Priority
+
+[Profile Timeline]
+2026-03-29:
+[P0][L3][W1] 团队统一使用英文提交信息。`,
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): "2026-03-30:\n[P0][L3][W0] 项目必须支持多种 AI 编程工具。",
+			profileRenderKey(logicdomain.ProfileTypeUser, 7):    "2026-03-31:\n[P1][L2][W2] 用户偏好使用 Rust。",
+		},
+	}
+	uc := NewProfileUseCase(store, nil, nil)
+
+	result, err := uc.GetBundle(context.Background(), ProfileBundleCommand{
+		UserID:             7,
+		ProjectID:          9,
+		Mode:               ProfileBundleModeFull,
+		IncludeExplanation: true,
+	})
+	if err != nil {
+		t.Fatalf("get profile bundle: %v", err)
+	}
+	if result.CombinedText == "" {
+		t.Fatal("expected combined bundle text")
+	}
+	if !strings.Contains(result.CombinedText, "P/L/W 说明") || !strings.Contains(result.CombinedText, "结构说明") {
+		t.Fatalf("expected explanation text in combined bundle, got %q", result.CombinedText)
+	}
+	if !strings.Contains(result.CombinedText, "[TEAM]\n2026-03-29:\n[P0][L3][W1] 团队统一使用英文提交信息。") {
+		t.Fatalf("expected team section in combined bundle, got %q", result.CombinedText)
+	}
+	if strings.Contains(result.CombinedText, "[Profile Legend]") {
+		t.Fatalf("expected legacy legend to be stripped, got %q", result.CombinedText)
+	}
+	if strings.Contains(result.CombinedText, "\n[SPACE]\n2026-") {
+		t.Fatalf("did not expect empty space section, got %q", result.CombinedText)
+	}
+	if !strings.Contains(result.CombinedText, "[PROJECT]\n2026-03-30:\n[P0][L3][W0] 项目必须支持多种 AI 编程工具。") {
+		t.Fatalf("expected project section in combined bundle, got %q", result.CombinedText)
+	}
+	if !strings.Contains(result.CombinedText, "[USER]\n2026-03-31:\n[P1][L2][W2] 用户偏好使用 Rust。") {
+		t.Fatalf("expected user section in combined bundle, got %q", result.CombinedText)
+	}
+	if result.ExplanationText != "" || result.EnvironmentPriority != "" {
+		t.Fatalf("expected helper fields to stay empty in full mode, got %+v", result)
+	}
+	if result.TeamProfile != "" || result.SpaceProfile != "" || result.ProjectProfile != "" || result.UserProfile != "" {
+		t.Fatalf("expected split sections to stay empty in full mode, got %+v", result)
+	}
+}
+
+// TestProfileUseCaseGetBundleReturnsSplitSections verifies split mode returns the body-only scope texts without forcing one combined prompt string.
+// TestProfileUseCaseGetBundleReturnsSplitSections 用于验证 split 模式会返回仅正文的 scope 文本，而不会强制组装成一段完整提示词。
+func TestProfileUseCaseGetBundleReturnsSplitSections(t *testing.T) {
+	store := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+		renderedProfiles: map[string]string{
+			profileRenderKey(logicdomain.ProfileTypeTeam, 3):    "2026-03-29:\n[P0][L3][W1] 团队统一使用英文提交信息。",
+			profileRenderKey(logicdomain.ProfileTypeSpace, 5):   "2026-03-29:\n[P0][L3][W0] 空间默认开启严格审查。",
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): "2026-03-30:\n[P0][L3][W0] 项目必须支持多种 AI 编程工具。",
+			profileRenderKey(logicdomain.ProfileTypeUser, 7):    "2026-03-31:\n[P1][L2][W2] 用户偏好使用 Rust。",
+		},
+	}
+	uc := NewProfileUseCase(store, nil, nil)
+
+	result, err := uc.GetBundle(context.Background(), ProfileBundleCommand{
+		UserID:             7,
+		ProjectID:          9,
+		Mode:               ProfileBundleModeSplit,
+		IncludeExplanation: true,
+	})
+	if err != nil {
+		t.Fatalf("get split profile bundle: %v", err)
+	}
+	if result.CombinedText != "" {
+		t.Fatalf("expected empty combined text in split mode, got %q", result.CombinedText)
+	}
+	if !strings.Contains(result.ExplanationText, "P/L/W 说明") || !strings.Contains(result.ExplanationText, "[TEAM]") {
+		t.Fatalf("expected explanation text in split mode, got %q", result.ExplanationText)
+	}
+	if result.EnvironmentPriority != "Project > Space > Team" {
+		t.Fatalf("unexpected environment priority text: %q", result.EnvironmentPriority)
+	}
+	if result.TeamProfile == "" || result.SpaceProfile == "" || result.ProjectProfile == "" || result.UserProfile == "" {
+		t.Fatalf("expected all split scope texts, got %+v", result)
 	}
 }
 
@@ -312,7 +441,9 @@ func TestProfileUseCaseApplyInstructionSkipsFailureWritebackOnOutcomeUncertain(t
 type stubProfileStore struct {
 	mu                 sync.Mutex
 	target             logicdomain.ProfileTargetRef
+	targets            map[int]logicdomain.ProfileTargetRef
 	nodes              []logicdomain.ProfileNodeRecord
+	renderedProfiles   map[string]string
 	createdInstruction logicdomain.ProfileInstructionRecord
 	nextInstructionID  uint64
 	appliedNodes       []logicdomain.ProfileNodeCandidate
@@ -326,7 +457,12 @@ type stubProfileStore struct {
 
 // ResolveProfileTarget returns the canned target binding for deterministic test assertions.
 // ResolveProfileTarget 用于返回预设目标绑定，保证测试断言稳定。
-func (s *stubProfileStore) ResolveProfileTarget(context.Context, int, uint64, uint64) (logicdomain.ProfileTargetRef, error) {
+func (s *stubProfileStore) ResolveProfileTarget(_ context.Context, profileType int, _ uint64, _ uint64) (logicdomain.ProfileTargetRef, error) {
+	if s.targets != nil {
+		if target, ok := s.targets[profileType]; ok {
+			return target, nil
+		}
+	}
 	return s.target, nil
 }
 
@@ -336,6 +472,17 @@ func (s *stubProfileStore) ListActiveProfileNodes(context.Context, logicdomain.P
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]logicdomain.ProfileNodeRecord(nil), s.nodes...), nil
+}
+
+// LoadRenderedProfile returns the canned rendered scope text so bundle tests can assert composition behavior without touching SQL adapters.
+// LoadRenderedProfile 用于返回预设的 scope 渲染文本，让 bundle 测试无需依赖 SQL 适配器也能断言组合行为。
+func (s *stubProfileStore) LoadRenderedProfile(_ context.Context, target logicdomain.ProfileTargetRef) (string, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.renderedProfiles == nil {
+		return "", nil
+	}
+	return s.renderedProfiles[profileRenderKey(target.ProfileType, target.BindID)], nil
 }
 
 // CreateProfileInstruction records the inserted instruction and returns a deterministic instruction id.
@@ -420,6 +567,12 @@ func (s *stubProfileStore) failInstructionCount() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.failCalls
+}
+
+// profileRenderKey builds the deterministic scope key used by the rendered-profile stub map.
+// profileRenderKey 用于构建测试替身渲染画像映射使用的确定性 scope 键。
+func profileRenderKey(profileType int, bindID uint64) string {
+	return strings.Join([]string{strconv.Itoa(profileType), strconv.FormatUint(bindID, 10)}, ":")
 }
 
 // stubManualProfileReviewer returns a canned manual review result while recording the enforced floors.

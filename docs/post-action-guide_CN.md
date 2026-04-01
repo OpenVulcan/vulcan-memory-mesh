@@ -239,11 +239,12 @@ message PostActionTimelineItem {
       - `vmm_sessions.last_summarized_id`
       - `vmm_sessions.summarize_budget`
     - 这里的 `vmm_users.profile / vmm_projects.profile` 不再是 LLM 直接输出的大 Blob
-      - 而是后端根据当前有效画像节点自动重建的时间轴文本
+      - 而是后端根据当前有效画像节点自动重建的正文时间轴文本
       - 每条记录会带：
         - `P`
         - `L`
         - `W`
+      - 但不会把 `P / L / W` 说明头长期存入 scope 字段
 23. 如果 `obsolete_memory_turn_ids` 不为空：
     - 会把这些 turn 对应的 `vmm_memory_nodes.node_status` 标成 `superseded`
     - DuckDB 提交成功后，再删除 LanceDB 对应的旧向量
@@ -633,7 +634,8 @@ grpcurl -plaintext `
 - 如果旧记忆 turn 被判定淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
 - DuckDB 成功提交后，会删除 LanceDB 中对应的旧向量
 - 如果 DuckDB 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
-- `profile` 渲染文本顶部会固定带有 `P / L / W` 说明头，便于后续再次喂给 LLM
+- `profile` 渲染文本现在只保存正文时间轴，不再固定带 `P / L / W` 说明头
+- 如果调用方需要组合后的帮助说明，应通过 `GetProfileBundle.include_explanation=true` 让服务端在输出层附加
 - 仍然不自动更新 `vmm_teams.profile / vmm_spaces.profile`
 
 ## 当前限制

@@ -46,6 +46,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `ListUsers`
 - `DeleteUser`
 - `GetProfileNodes`
+- `GetProfileBundle`
 - `ApplyProfileInstruction`
 - `PreCheck`
 - `PostAction`
@@ -154,9 +155,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 ### 画像接口
 
-当前画像相关 gRPC 能力拆成两条独立方法：
+当前画像相关 gRPC 能力拆成三条独立方法：
 
 - `GetProfileNodes`
+- `GetProfileBundle`
 - `ApplyProfileInstruction`
 
 `GetProfileNodes` 的特点：
@@ -165,6 +167,36 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 不提供 `all` 过滤
 - 不返回渲染后的 profile Blob
 - 返回内容以节点编号、内容、`P/L/W` 相关元数据和来源信息为主
+
+`GetProfileBundle` 的特点：
+
+- 输入固定是：
+  - `project_id`
+  - `user_id`
+- 输出模式支持：
+  - `full`
+    - 服务端直接返回可注入的组合提示词
+    - 这是权威输出，调用方应直接消费 `combined_text`
+    - 为避免重复拼接，辅助说明字段和拆分字段会留空
+  - `split`
+    - 服务端分别返回 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 四段正文
+    - 同时可按需返回 `P/L/W` 说明与原始优先级串
+- 支持 `include_explanation`
+  - 打开时，会在组合结果里附加 `P/L/W` 说明
+  - 关闭时，只返回正文结构
+- 组合文本固定强调环境约束优先级：
+  - `Project > Space > Team`
+- 组合结果始终显式保留结构标签：
+  - `[TEAM]`
+  - `[SPACE]`
+  - `[PROJECT]`
+  - `[USER]`
+- 可选说明里会明确解释：
+  - `[TEAM]` = 团队级画像
+  - `[SPACE]` = 空间级画像
+  - `[PROJECT]` = 当前项目画像
+  - `[USER]` = 当前目标用户偏好
+- 这条接口不触发 LLM，只做确定性拼接
 
 `ApplyProfileInstruction` 的特点：
 
@@ -317,7 +349,9 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - `superseded_by_id`
   - `profile_date`
 - `vmm_users.profile / vmm_projects.profile` 不再作为画像合并输入，而是由当前有效画像节点自动重建的渲染结果
-- 自动重建出来的 `profile` 文本会固定带 `[Profile Legend]` 说明头，并在正文中显示 `[P?][L?][W?]`
+- 自动重建出来的 scope `profile` 文本现在只保存正文时间轴，不再带 `[Profile Legend]` 说明头
+- 正文仍然按日期输出，并在每条记录上显示 `[P?][L?][W?]`
+- 如果调用方需要 `P/L/W` 说明，应通过 `GetProfileBundle.include_explanation=true` 在输出层按需附加
 - 如果 LLM 判定旧记忆 turn 已被覆盖，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`，并删除 LanceDB 旧向量
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
 - 如果 DuckDB 回写失败，会尝试回滚这次新增的 LanceDB 向量

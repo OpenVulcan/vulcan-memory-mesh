@@ -1114,6 +1114,18 @@ LIMIT ?
 	return out, nil
 }
 
+// LoadRenderedProfile returns the durable scope-level rendered profile body stored on the resolved target row.
+// LoadRenderedProfile 用于返回已解析目标行上持久化的 scope 级渲染画像正文。
+func (s *Store) LoadRenderedProfile(ctx context.Context, target logicdomain.ProfileTargetRef) (string, error) {
+	if !logicdomain.ValidProfileType(target.ProfileType) {
+		return "", logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
+	}
+	if target.BindID == 0 {
+		return "", logicdomain.ValidationError{Field: "bind_id", Message: "must resolve to one persisted target"}
+	}
+	return s.loadRenderedProfileByTarget(ctx, target.ProfileType, target.BindID)
+}
+
 // loadProfileInstructionByID fetches one manual profile-instruction row by its durable numeric id so uncertain commits can be reconciled before retrying.
 // loadProfileInstructionByID 用于按长期数字 id 读取一条手工画像指令，让“不确定提交”在重试前先做状态对账。
 func (s *Store) loadProfileInstructionByID(ctx context.Context, instructionID uint64) (logicdomain.ProfileInstructionRecord, bool, error) {

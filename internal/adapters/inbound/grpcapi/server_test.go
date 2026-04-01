@@ -242,6 +242,43 @@ func TestApplyProfileInstructionReturnsAcceptedAndRetired(t *testing.T) {
 	}
 }
 
+// TestGetProfileBundleReturnsCombinedPrompt verifies the bundle RPC returns the authoritative combined prompt text in full mode.
+// TestGetProfileBundleReturnsCombinedPrompt 用于验证 bundle RPC 在 full 模式下返回权威的组合提示词文本。
+func TestGetProfileBundleReturnsCombinedPrompt(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		Profiles: &stubProfileExecutor{
+			bundleResult: usecase.ProfileBundleResult{
+				Mode:                usecase.ProfileBundleModeFull,
+				IncludeExplanation:  true,
+				CombinedText:        "以下内容是结合用户历史习惯、偏好、设定总结的画像。\n\n以下是等级与偏好权重说明：\n...\n\n以下是你当前所处的项目环境约束（优先级：Project > Space > Team）：\n[TEAM]\n团队画像\n\n[PROJECT]\n项目画像\n\n以下是你当前正在服务的目标用户偏好（请在不违反环境约束的前提下，尽量迎合用户）：\n[USER]\n用户画像",
+			},
+		},
+	}, testBufSize)
+
+	resp, err := fixture.client.GetProfileBundle(context.Background(), &vmmv1.GetProfileBundleRequest{
+		UserId:             7,
+		ProjectId:          9,
+		Mode:               vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL,
+		IncludeExplanation: true,
+	})
+	if err != nil {
+		t.Fatalf("get profile bundle: %v", err)
+	}
+	if resp.GetMode() != vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL || !resp.GetIncludeExplanation() {
+		t.Fatalf("unexpected mode flags: %+v", resp)
+	}
+	if !strings.Contains(resp.GetCombinedText(), "[TEAM]") || !strings.Contains(resp.GetCombinedText(), "[PROJECT]") || !strings.Contains(resp.GetCombinedText(), "[USER]") {
+		t.Fatalf("unexpected combined text: %q", resp.GetCombinedText())
+	}
+	if resp.GetEnvironmentPriorityText() != "" || resp.GetExplanationText() != "" {
+		t.Fatalf("expected helper texts to stay empty in full mode, got %+v", resp)
+	}
+	if resp.GetTeamProfile() != "" || resp.GetProjectProfile() != "" || resp.GetUserProfile() != "" || resp.GetSpaceProfile() != "" {
+		t.Fatalf("expected split scope fields to stay empty in full mode, got %+v", resp)
+	}
+}
+
 // TestPreCheckRejectsMissingUserContent verifies the latest transport contract rejects empty user content after scope resolution succeeds.
 // TestPreCheckRejectsMissingUserContent 用于验证在范围解析成功后，最新传输契约仍会拒绝空 user_content。
 func TestPreCheckRejectsMissingUserContent(t *testing.T) {
@@ -505,6 +542,8 @@ func (s *stubWorkspaceExecutor) DeleteUser(context.Context, string, string) (log
 type stubProfileExecutor struct {
 	queryResult usecase.ProfileQueryResult
 	queryErr    error
+	bundleResult usecase.ProfileBundleResult
+	bundleErr    error
 	applyResult usecase.ProfileInstructionResult
 	applyErr    error
 }
@@ -513,6 +552,12 @@ type stubProfileExecutor struct {
 // GetNodes 用于返回预设画像查询结果，保证传输层断言稳定。
 func (s *stubProfileExecutor) GetNodes(context.Context, usecase.ProfileQueryCommand) (usecase.ProfileQueryResult, error) {
 	return s.queryResult, s.queryErr
+}
+
+// GetBundle returns the canned profile bundle result for deterministic transport assertions.
+// GetBundle 用于返回预设画像 bundle 结果，保证传输层断言稳定。
+func (s *stubProfileExecutor) GetBundle(context.Context, usecase.ProfileBundleCommand) (usecase.ProfileBundleResult, error) {
+	return s.bundleResult, s.bundleErr
 }
 
 // ApplyInstruction returns the canned manual instruction result for deterministic transport assertions.

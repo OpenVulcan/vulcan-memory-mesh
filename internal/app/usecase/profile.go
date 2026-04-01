@@ -60,6 +60,7 @@ type ProfileInstructionResult struct {
 // ProfileExecutor 用于聚合入站 gRPC 适配层对外暴露的画像查询和手工画像指令流程。
 type ProfileExecutor interface {
 	GetNodes(ctx context.Context, cmd ProfileQueryCommand) (ProfileQueryResult, error)
+	GetBundle(ctx context.Context, cmd ProfileBundleCommand) (ProfileBundleResult, error)
 	ApplyInstruction(ctx context.Context, cmd ProfileInstructionCommand) (ProfileInstructionResult, error)
 }
 

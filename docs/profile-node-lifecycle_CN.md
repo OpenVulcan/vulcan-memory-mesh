@@ -331,28 +331,13 @@ LLM 不再返回最终画像全文，而是返回“节点处理指令”。
 渲染规则：
 
 1. 只取 `active` 且未过期节点
-2. 顶部固定输出 legend
-3. 正文按日期分组
-4. 每条显示：
+2. 正文按日期分组
+3. 每条显示：
    - `[P?][L?][W?]`
 
 渲染示例：
 
 ```text
-[Profile Legend]
-- P = Priority
-  - P0: Hard requirement / non-negotiable rule
-  - P1: Important preference / important working rule
-  - P2: General reference / lower-priority preference
-- L = Lifetime Level
-  - L0: Transient, short-lived context
-  - L1: Situational, phase-specific preference or context
-  - L2: Stable, long-lived preference or habit
-  - L3: Persistent, durable rule / identity / hard constraint
-- W = Refresh Weight
-  - Higher W means this memory has been reaffirmed or refreshed more times.
-
-[Profile Timeline]
 2026-03-29:
 [P1][L2][W0] 偏好使用 Rust 作为主要开发语言
 
@@ -361,17 +346,23 @@ LLM 不再返回最终画像全文，而是返回“节点处理指令”。
 [P1][L1][W0] 当前阶段优先考虑技术成熟方案
 ```
 
-## LLM 视角下的通用说明
+## Bundle 输出层的通用说明
 
-今后所有自动生成的 profile 文本，固定带上 `P / L / W` 的说明头。
+scope `profile` 正文不再长期保存 `P / L / W` 的说明头。
 
 原因：
 
-- 后续这些 profile 文本还会作为上下文再喂给 LLM
-- 必须让 LLM 清楚：
-  - `P` 表示优先级
-  - `L` 表示生命周期等级
-  - `W` 表示被重复确认的次数与当前新鲜度信号
+- 这些正文既可能被直接拼接注入，也可能被用于再组合
+- 如果把说明头长期存入 scope 字段，会带来重复 token 成本
+- 说明文本应由输出层按需附加，而不是写死在存储层
+
+当前主线中：
+
+- `vmm_users.profile / vmm_projects.profile / vmm_teams.profile / vmm_spaces.profile`
+  - 保存正文时间轴
+- `GetProfileBundle`
+  - 负责在需要时为组合结果附加 `P / L / W` 说明
+  - 并输出固定的 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 结构
 
 ## 当前执行顺序
 

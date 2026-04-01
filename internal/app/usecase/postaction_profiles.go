@@ -13,22 +13,6 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
-const profileLegendBlock = `[Profile Legend]
-- P = Priority
-  - P0: Hard requirement / non-negotiable rule
-  - P1: Important preference / important working rule
-  - P2: General reference / lower-priority preference
-- L = Lifetime Level
-  - L0: Transient, short-lived context
-  - L1: Situational, phase-specific preference or context
-  - L2: Stable, long-lived preference or habit
-  - L3: Persistent, durable rule / identity / hard constraint
-- W = Refresh Weight
-  - Higher W means this memory has been reaffirmed or refreshed more times.
-
-[Profile Timeline]
-`
-
 // convergeExpiredProfiles runs the periodic profile-lifecycle convergence path so due active nodes are materialized as expired rows and cached profile blobs stay in sync.
 // convergeExpiredProfiles 用于执行周期性的画像生命周期收敛，让到期 active 节点真实落成 expired 行，并保持缓存 profile Blob 同步。
 func (u *PostActionUseCase) convergeExpiredProfiles() {
@@ -255,8 +239,8 @@ func collectReviewedProfileNodes(analysis *logicdomain.SessionBatchAnalysis, pro
 	return out
 }
 
-// renderProfileTimeline rebuilds one durable profile blob from remaining active historical nodes plus the fresh active nodes accepted in the current batch.
-// renderProfileTimeline 用于根据仍保留的历史 active 节点和当前批次新接纳的 active 节点，重建一个长期画像 Blob。
+// renderProfileTimeline rebuilds one durable profile body from remaining active historical nodes plus the fresh active nodes accepted in the current batch.
+// renderProfileTimeline 用于根据仍保留的历史 active 节点和当前批次新接纳的 active 节点，重建一个仅包含正文的长期画像文本。
 func renderProfileTimeline(existing []logicdomain.ProfileActiveNodeRecord, fresh []logicdomain.ProfileNodeCandidate, retiredIDs []uint64) string {
 	retiredSet := map[uint64]struct{}{}
 	for _, nodeID := range retiredIDs {
@@ -309,7 +293,6 @@ func renderProfileTimeline(existing []logicdomain.ProfileActiveNodeRecord, fresh
 	})
 
 	var builder strings.Builder
-	builder.WriteString(profileLegendBlock)
 	currentDate := ""
 	for idx, node := range renderNodes {
 		if node.Date != currentDate {

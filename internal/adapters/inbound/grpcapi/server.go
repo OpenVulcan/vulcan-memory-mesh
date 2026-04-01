@@ -340,6 +340,45 @@ func (s *Server) GetProfileNodes(ctx context.Context, req *vmmv1.GetProfileNodes
 	}, nil
 }
 
+// GetProfileBundle resolves one user/project pair and returns either one combined prompt bundle or split TEAM/SPACE/PROJECT/USER sections.
+// GetProfileBundle 用于解析一个 user/project 组合，并返回完整组合提示词或拆分后的 TEAM/SPACE/PROJECT/USER 段落。
+func (s *Server) GetProfileBundle(ctx context.Context, req *vmmv1.GetProfileBundleRequest) (*vmmv1.GetProfileBundleResponse, error) {
+	if s.profiles == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeGetProfileBundleRequest(req)
+	if err := s.validate.ValidateGetProfileBundle(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	mode, err := fromProtoProfileBundleMode(req.GetMode())
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.profiles.GetBundle(ctx, usecase.ProfileBundleCommand{
+		UserID:             req.GetUserId(),
+		ProjectID:          req.GetProjectId(),
+		Mode:               mode,
+		IncludeExplanation: req.GetIncludeExplanation(),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.GetProfileBundleResponse{
+		Mode:                    toProtoProfileBundleMode(result.Mode),
+		IncludeExplanation:      result.IncludeExplanation,
+		ExplanationText:         result.ExplanationText,
+		EnvironmentPriorityText: result.EnvironmentPriority,
+		CombinedText:            result.CombinedText,
+		TeamProfile:             result.TeamProfile,
+		SpaceProfile:            result.SpaceProfile,
+		ProjectProfile:          result.ProjectProfile,
+		UserProfile:             result.UserProfile,
+		TraceId:                 trace.IDFromContext(ctx),
+	}, nil
+}
+
 // ApplyProfileInstruction reviews one explicit manual instruction for one target and persists the resulting node mutations synchronously.
 // ApplyProfileInstruction 用于同步评审单个目标上的显式手工画像指令，并持久化得到的节点变更。
 func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyProfileInstructionRequest) (*vmmv1.ApplyProfileInstructionResponse, error) {
@@ -624,6 +663,19 @@ func fromProtoProfileTarget(target vmmv1.ProfileTarget) (int, error) {
 	}
 }
 
+// fromProtoProfileBundleMode converts the protobuf bundle mode enum into the internal profile-bundle mode used by the use case.
+// fromProtoProfileBundleMode 用于把 protobuf 的 bundle 模式枚举转换成用例层使用的内部模式。
+func fromProtoProfileBundleMode(mode vmmv1.ProfileBundleMode) (int, error) {
+	switch mode {
+	case vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL:
+		return usecase.ProfileBundleModeFull, nil
+	case vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_SPLIT:
+		return usecase.ProfileBundleModeSplit, nil
+	default:
+		return 0, logicdomain.ValidationError{Field: "mode", Message: "must be full or split"}
+	}
+}
+
 // toProtoProfileTarget converts the internal profile-type enum back into the protobuf profile target enum.
 // toProtoProfileTarget 用于把内部画像类型枚举转换回 protobuf 的画像目标枚举。
 func toProtoProfileTarget(profileType int) vmmv1.ProfileTarget {
@@ -638,6 +690,19 @@ func toProtoProfileTarget(profileType int) vmmv1.ProfileTarget {
 		return vmmv1.ProfileTarget_PROFILE_TARGET_SPACE
 	default:
 		return vmmv1.ProfileTarget_PROFILE_TARGET_UNSPECIFIED
+	}
+}
+
+// toProtoProfileBundleMode converts the internal bundle mode back into the protobuf enum used by the transport response.
+// toProtoProfileBundleMode 用于把内部 bundle 模式转换回传输层响应使用的 protobuf 枚举。
+func toProtoProfileBundleMode(mode int) vmmv1.ProfileBundleMode {
+	switch mode {
+	case usecase.ProfileBundleModeFull:
+		return vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL
+	case usecase.ProfileBundleModeSplit:
+		return vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_SPLIT
+	default:
+		return vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_UNSPECIFIED
 	}
 }
 

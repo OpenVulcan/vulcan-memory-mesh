@@ -108,6 +108,14 @@ func NormalizeGetProfileNodesRequest(req *vmmv1.GetProfileNodesRequest) {
 	}
 }
 
+// NormalizeGetProfileBundleRequest keeps the deterministic bundle query payload hook in place even though the current request only carries numeric selectors and flags.
+// NormalizeGetProfileBundleRequest 用于为确定性 bundle 查询保留规范化入口，虽然当前请求只包含数字选择参数和布尔开关。
+func NormalizeGetProfileBundleRequest(req *vmmv1.GetProfileBundleRequest) {
+	if req == nil {
+		return
+	}
+}
+
 // NormalizeApplyProfileInstructionRequest trims the explicit manual profile instruction before the reviewer flow begins.
 // NormalizeApplyProfileInstructionRequest 用于在手工画像评审流程开始前裁剪显式画像指令。
 func NormalizeApplyProfileInstructionRequest(req *vmmv1.ApplyProfileInstructionRequest) {
@@ -254,6 +262,27 @@ func (v *RequestValidator) ValidateGetProfileNodes(req *vmmv1.GetProfileNodesReq
 		return logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
 	}
 	return nil
+}
+
+// ValidateGetProfileBundle checks the user/project bundle contract and keeps the public RPC restricted to deterministic scope composition only.
+// ValidateGetProfileBundle 用于校验 user/project 组合画像契约，并保持公开 RPC 只暴露确定性的 scope 拼接能力。
+func (v *RequestValidator) ValidateGetProfileBundle(req *vmmv1.GetProfileBundleRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "get_profile_bundle", Message: "is required"}
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	switch req.GetMode() {
+	case vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL,
+		vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_SPLIT:
+		return nil
+	default:
+		return logicdomain.ValidationError{Field: "mode", Message: "must be full or split"}
+	}
 }
 
 // ValidateApplyProfileInstruction checks the single-target manual profile instruction payload before one reviewer call starts.

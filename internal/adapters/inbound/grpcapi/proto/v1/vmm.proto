@@ -49,6 +49,10 @@ service VMMService {
   // GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
   rpc GetProfileNodes(GetProfileNodesRequest) returns (GetProfileNodesResponse);
 
+  // GetProfileBundle assembles one deterministic TEAM/SPACE/PROJECT/USER prompt bundle for the requested user/project pair.
+  // GetProfileBundle 用于为指定 user/project 组合组装一份确定性的 TEAM/SPACE/PROJECT/USER 提示词 bundle。
+  rpc GetProfileBundle(GetProfileBundleRequest) returns (GetProfileBundleResponse);
+
   // ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
   // ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
   rpc ApplyProfileInstruction(ApplyProfileInstructionRequest) returns (ApplyProfileInstructionResponse);
@@ -282,6 +286,38 @@ message GetProfileNodesRequest {
 message GetProfileNodesResponse {
   repeated ProfileNodeEntry nodes = 1;
   string trace_id = 2;
+}
+
+// ProfileBundleMode selects whether callers want one combined prompt text or the split TEAM/SPACE/PROJECT/USER sections.
+// ProfileBundleMode 用于选择调用方希望返回一段组合提示词，还是拆分后的 TEAM/SPACE/PROJECT/USER 段落。
+enum ProfileBundleMode {
+  PROFILE_BUNDLE_MODE_UNSPECIFIED = 0;
+  PROFILE_BUNDLE_MODE_FULL = 1;
+  PROFILE_BUNDLE_MODE_SPLIT = 2;
+}
+
+// GetProfileBundleRequest asks the server to assemble one deterministic profile bundle for the current project/user pair.
+// GetProfileBundleRequest 用于请求服务端为当前 project/user 组合组装一份确定性的画像 bundle。
+message GetProfileBundleRequest {
+  uint64 user_id = 1;
+  uint64 project_id = 2;
+  ProfileBundleMode mode = 3;
+  bool include_explanation = 4;
+}
+
+// GetProfileBundleResponse returns both the split scope texts and the optional fully assembled prompt bundle.
+// GetProfileBundleResponse 用于返回拆分后的 scope 文本，以及按需提供的完整组合提示词。
+message GetProfileBundleResponse {
+  ProfileBundleMode mode = 1;
+  bool include_explanation = 2;
+  string explanation_text = 3;
+  string environment_priority_text = 4;
+  string combined_text = 5;
+  string team_profile = 6;
+  string space_profile = 7;
+  string project_profile = 8;
+  string user_profile = 9;
+  string trace_id = 10;
 }
 
 // ApplyProfileInstructionRequest carries one explicit natural-language instruction that should update a single profile target.

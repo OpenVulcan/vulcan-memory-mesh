@@ -68,6 +68,7 @@ type RelationalStore interface {
 type ProfileStore interface {
 	ResolveProfileTarget(ctx context.Context, profileType int, userID, projectID uint64) (logicdomain.ProfileTargetRef, error)
 	ListActiveProfileNodes(ctx context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error)
+	LoadRenderedProfile(ctx context.Context, target logicdomain.ProfileTargetRef) (string, error)
 	CreateProfileInstruction(ctx context.Context, record logicdomain.ProfileInstructionRecord) (logicdomain.ProfileInstructionRecord, error)
 	FailProfileInstruction(ctx context.Context, instructionID uint64, failureReason, reviewResult string) error
 	ApplyManualProfileInstruction(ctx context.Context, target logicdomain.ProfileTargetRef, instruction logicdomain.ProfileInstructionRecord, nodes []logicdomain.ProfileNodeCandidate, retired []logicdomain.ProfileRetireDecision, renderedProfile, reviewResult string) (logicdomain.ManualProfileInstructionApplyResult, error)

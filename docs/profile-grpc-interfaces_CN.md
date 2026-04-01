@@ -11,14 +11,16 @@
 
 ## 接口拆分原则
 
-画像相关的 gRPC 能力拆成两条独立 RPC：
+画像相关的 gRPC 能力拆成三条独立 RPC：
 
 1. `GetProfileNodes`
-2. `ApplyProfileInstruction`
+2. `GetProfileBundle`
+3. `ApplyProfileInstruction`
 
 拆分原因：
 
 - 查询链路应尽量轻量，只返回当前有效节点
+- 组合链路应复用服务端已有的 scope 渲染结果，而不是让客户端每次重新组织四层 prompt
 - 修改链路会触发 LLM 评审与关系库存储状态更新，不应和查询混在一起
 - 插件并不总是需要一次性拿到全部画像内容
 
@@ -79,6 +81,77 @@
 - `expires_timestamp`
 
 接口本身只返回事实节点，不返回最终渲染好的 `profile` Blob。
+
+## GetProfileBundle 目标
+
+`GetProfileBundle` 用于按 `project_id + user_id` 读取当前最新的四层 scope 画像正文，并由服务端做一次确定性拼接。
+
+它解决的不是“节点查询”，而是“给插件一份可直接注入、或可直接交给上层 LLM 二次裁剪的组合文本”。
+
+## GetProfileBundle 请求约束
+
+请求必须包含：
+
+- `project_id`
+- `user_id`
+- `mode`
+
+其中 `mode` 只支持：
+
+- `FULL`
+  - 服务端直接返回完整组合文本
+  - 这是权威输出，调用方应直接消费 `combined_text`
+  - 为避免重复拼接，辅助说明字段和拆分字段保持为空
+- `SPLIT`
+  - 服务端分别返回 `TEAM / SPACE / PROJECT / USER` 四段正文
+
+另外支持：
+
+- `include_explanation`
+  - `true` 时返回 `P/L/W` 说明
+  - 也会明确说明 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 分别代表什么
+  - `false` 时隐藏说明
+
+## GetProfileBundle 输出原则
+
+组合文本固定遵守：
+
+- 环境约束优先级：
+  - `Project > Space > Team`
+- 正文结构显式保留：
+  - `[TEAM]`
+  - `[SPACE]`
+  - `[PROJECT]`
+  - `[USER]`
+
+说明：
+
+- 如果某个 scope 当前没有正文内容，则 `FULL` 模式下该段可以不显示
+- `SPLIT` 模式下仍会通过独立字段返回，空内容保持空字符串
+- 这条接口不触发 LLM
+- 它只读取数据库中已自动重建好的 scope `profile`
+- `SPLIT` 模式下返回的 `environment_priority_text` 只保留原始优先级串：
+  - `Project > Space > Team`
+
+## scope profile 的存储口径
+
+当前 `user / project / team / space.profile` 字段保存的是“纯正文时间轴”，而不是带帮助说明头的长文本。
+
+也就是说，数据库里的 scope `profile` 只保留类似：
+
+```text
+2026-03-29:
+[P1][L2][W3] 偏好使用 Rust
+```
+
+不会把：
+
+- `P/L/W` 说明文字
+- 面向模型的引导文案
+
+长期存入这些 scope 表字段。
+
+需要这些说明时，由 `GetProfileBundle` 在输出层按需补充。
 
 ## ApplyProfileInstruction 目标
 
@@ -275,6 +348,7 @@ team/space 只通过手工画像指令写入，并按最高权限规则处理。
 1. 新增文档并固化方案
 2. 扩展 proto：
    - `GetProfileNodes`
+   - `GetProfileBundle`
    - `ApplyProfileInstruction`
 3. 扩展 domain / ports / 关系库存储 schema
 4. 新增手工画像评审 prompt

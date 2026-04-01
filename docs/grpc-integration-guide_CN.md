@@ -44,6 +44,7 @@
 - `ListUsers`
 - `DeleteUser`
 - `GetProfileNodes`
+- `GetProfileBundle`
 - `ApplyProfileInstruction`
 
 ### 业务面
@@ -115,9 +116,10 @@
 
 ### 0. Profile 接口
 
-当前画像相关能力拆成两条独立 RPC：
+当前画像相关能力拆成三条独立 RPC：
 
 - `GetProfileNodes`
+- `GetProfileBundle`
 - `ApplyProfileInstruction`
 
 约束如下：
@@ -126,6 +128,7 @@
 - 不提供 `all` 过滤
 - `GetProfileNodes` 只返回当前 `active` 的原子化画像节点
 - `GetProfileNodes` 不返回渲染后的 profile Blob
+- `GetProfileBundle` 用于按 `project_id + user_id` 读取并组装最终组合画像结果
 - `ApplyProfileInstruction` 会同步触发一次 LLM 评审并落库
 - `ApplyProfileInstruction` 对同目标同指令的并发调用会复用第一次进行中的结果
 - `ApplyProfileInstruction` 对同一目标上的不同指令会串行执行，避免同一批旧节点并发写回
@@ -314,6 +317,59 @@
 - 返回 `content / priority / level / refresh_weight / profile_date`
 - 同时返回 `source_kind / source_id`
 - 方便插件按需挑选节点，再自行组织成大模型上下文
+
+### GetProfileBundle
+
+用途：
+
+- 按 `project_id + user_id` 读取当前四层 scope 的已渲染画像正文，并由服务端做一次确定性组合
+
+请求字段：
+
+- `project_id`
+- `user_id`
+- `mode`
+  - `PROFILE_BUNDLE_MODE_FULL`
+  - `PROFILE_BUNDLE_MODE_SPLIT`
+- `include_explanation`
+
+返回特点：
+
+- `FULL`
+  - 返回一段可直接注入的大模型提示词
+  - 这是权威输出，调用方应直接消费 `combined_text`
+  - 为避免重复拼接，辅助说明字段和拆分字段会保持为空
+  - 结果中显式保留：
+    - `[TEAM]`
+    - `[SPACE]`
+    - `[PROJECT]`
+    - `[USER]`
+  - 环境约束头固定写明：
+    - `Project > Space > Team`
+- `SPLIT`
+  - 不返回完整合并文本
+  - 分别返回：
+    - `team_profile`
+    - `space_profile`
+    - `project_profile`
+    - `user_profile`
+- `include_explanation=true`
+  - 会补充 `P/L/W` 的帮助说明文本
+  - 也会明确说明：
+    - `[TEAM]` 表示团队级画像
+    - `[SPACE]` 表示空间级画像
+    - `[PROJECT]` 表示当前项目画像
+    - `[USER]` 表示当前目标用户偏好
+- `include_explanation=false`
+  - 只返回正文结果
+
+额外说明：
+
+- 这条接口不会触发 LLM
+- 它依赖当前数据库里已经自动重建好的 scope `profile` 正文
+- scope `profile` 本身不再保存说明头，说明头只在 bundle 输出里按需附加
+- `SPLIT` 模式下返回的 `environment_priority_text` 只保留原始优先级串：
+  - `Project > Space > Team`
 
 ### ApplyProfileInstruction
 
