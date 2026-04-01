@@ -29,10 +29,6 @@ const (
 	// profileBundleEnvironmentHeader 用于说明环境约束来自 TEAM/SPACE/PROJECT，并强调项目级规则会覆盖更宽 scope。
 	profileBundleEnvironmentHeader = "以下是你当前所处的项目环境约束（优先级：Project > Space > Team）："
 
-	// profileBundleEnvironmentPriorityText keeps the raw precedence string available for split-mode callers that need metadata without a duplicated full sentence.
-	// profileBundleEnvironmentPriorityText 用于为 split 模式提供原始优先级串，避免再返回一整句完整标题造成重复拼接。
-	profileBundleEnvironmentPriorityText = "Project > Space > Team"
-
 	// profileBundleUserHeader explains that USER preferences should be respected only after environment constraints have been satisfied.
 	// profileBundleUserHeader 用于说明 USER 偏好需要在不违反环境约束的前提下尽量满足。
 	profileBundleUserHeader = "以下是你当前正在服务的目标用户偏好（请在不违反环境约束的前提下，尽量迎合用户）："
@@ -150,17 +146,19 @@ func (u *ProfileUseCase) GetBundle(ctx context.Context, cmd ProfileBundleCommand
 	}
 
 	result := ProfileBundleResult{
-		UserTarget:          userTarget,
-		ProjectTarget:       projectTarget,
-		Mode:                cmd.Mode,
-		IncludeExplanation:  cmd.IncludeExplanation,
-		EnvironmentPriority: profileBundleEnvironmentPriorityText,
-		TeamProfile:         teamProfile,
-		SpaceProfile:        spaceProfile,
-		ProjectProfile:      projectProfile,
-		UserProfile:         userProfile,
+		UserTarget:         userTarget,
+		ProjectTarget:      projectTarget,
+		Mode:               cmd.Mode,
+		IncludeExplanation: cmd.IncludeExplanation,
+		TeamProfile:        teamProfile,
+		SpaceProfile:       spaceProfile,
+		ProjectProfile:     projectProfile,
+		UserProfile:        userProfile,
 	}
-	if cmd.IncludeExplanation {
+	if cmd.Mode != ProfileBundleModeFull {
+		result.IncludeExplanation = false
+	}
+	if cmd.Mode == ProfileBundleModeFull && cmd.IncludeExplanation {
 		result.ExplanationText = profileBundleExplanationText
 	}
 	if cmd.Mode == ProfileBundleModeFull {

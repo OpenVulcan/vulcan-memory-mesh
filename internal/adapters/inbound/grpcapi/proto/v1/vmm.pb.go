@@ -1768,7 +1768,7 @@ type GetProfileBundleRequest struct {
 	UserId             uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	ProjectId          uint64                 `protobuf:"varint,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	Mode               ProfileBundleMode      `protobuf:"varint,3,opt,name=mode,proto3,enum=vmm.v1.ProfileBundleMode" json:"mode,omitempty"`
-	IncludeExplanation bool                   `protobuf:"varint,4,opt,name=include_explanation,json=includeExplanation,proto3" json:"include_explanation,omitempty"`
+	IncludeExplanation *bool                  `protobuf:"varint,4,opt,name=include_explanation,json=includeExplanation,proto3,oneof" json:"include_explanation,omitempty"`
 	unknownFields      protoimpl.UnknownFields
 	sizeCache          protoimpl.SizeCache
 }
@@ -1825,8 +1825,8 @@ func (x *GetProfileBundleRequest) GetMode() ProfileBundleMode {
 }
 
 func (x *GetProfileBundleRequest) GetIncludeExplanation() bool {
-	if x != nil {
-		return x.IncludeExplanation
+	if x != nil && x.IncludeExplanation != nil {
+		return *x.IncludeExplanation
 	}
 	return false
 }
@@ -3194,13 +3194,14 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x05limit\x18\x04 \x01(\rR\x05limit\"d\n" +
 	"\x17GetProfileNodesResponse\x12.\n" +
 	"\x05nodes\x18\x01 \x03(\v2\x18.vmm.v1.ProfileNodeEntryR\x05nodes\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xb1\x01\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xce\x01\n" +
 	"\x17GetProfileBundleRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x02 \x01(\x04R\tprojectId\x12-\n" +
-	"\x04mode\x18\x03 \x01(\x0e2\x19.vmm.v1.ProfileBundleModeR\x04mode\x12/\n" +
-	"\x13include_explanation\x18\x04 \x01(\bR\x12includeExplanation\"\xb5\x03\n" +
+	"\x04mode\x18\x03 \x01(\x0e2\x19.vmm.v1.ProfileBundleModeR\x04mode\x124\n" +
+	"\x13include_explanation\x18\x04 \x01(\bH\x00R\x12includeExplanation\x88\x01\x01B\x16\n" +
+	"\x14_include_explanation\"\xb5\x03\n" +
 	"\x18GetProfileBundleResponse\x12-\n" +
 	"\x04mode\x18\x01 \x01(\x0e2\x19.vmm.v1.ProfileBundleModeR\x04mode\x12/\n" +
 	"\x13include_explanation\x18\x02 \x01(\bR\x12includeExplanation\x12)\n" +
@@ -3474,6 +3475,7 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() {
 	if File_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto != nil {
 		return
 	}
+	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{

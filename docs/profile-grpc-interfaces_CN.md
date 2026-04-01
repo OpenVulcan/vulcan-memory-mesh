@@ -102,15 +102,18 @@
   - 服务端直接返回完整组合文本
   - 这是权威输出，调用方应直接消费 `combined_text`
   - 为避免重复拼接，辅助说明字段和拆分字段保持为空
+  - `include_explanation`
+    - 省略时默认开启
+    - 打开时，把 `P/L/W` 与 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 的含义直接内嵌到 `combined_text`
+    - 关闭时，只返回正文结构
 - `SPLIT`
   - 服务端分别返回 `TEAM / SPACE / PROJECT / USER` 四段正文
-
-另外支持：
-
-- `include_explanation`
-  - `true` 时返回 `P/L/W` 说明
-  - 也会明确说明 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 分别代表什么
-  - `false` 时隐藏说明
+  - 只返回：
+    - `team_profile`
+    - `space_profile`
+    - `project_profile`
+    - `user_profile`
+  - `include_explanation` 在该模式下不会额外返回说明字段
 
 ## GetProfileBundle 输出原则
 
@@ -130,8 +133,6 @@
 - `SPLIT` 模式下仍会通过独立字段返回，空内容保持空字符串
 - 这条接口不触发 LLM
 - 它只读取数据库中已自动重建好的 scope `profile`
-- `SPLIT` 模式下返回的 `environment_priority_text` 只保留原始优先级串：
-  - `Project > Space > Team`
 
 ## scope profile 的存储口径
 

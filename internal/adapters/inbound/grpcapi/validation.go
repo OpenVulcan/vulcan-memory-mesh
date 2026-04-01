@@ -9,6 +9,7 @@ import (
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
+	"google.golang.org/protobuf/proto"
 )
 
 // RequestValidator performs lightweight transport validation without introducing a heavy generic validator.
@@ -108,11 +109,20 @@ func NormalizeGetProfileNodesRequest(req *vmmv1.GetProfileNodesRequest) {
 	}
 }
 
-// NormalizeGetProfileBundleRequest keeps the deterministic bundle query payload hook in place even though the current request only carries numeric selectors and flags.
-// NormalizeGetProfileBundleRequest 用于为确定性 bundle 查询保留规范化入口，虽然当前请求只包含数字选择参数和布尔开关。
+// NormalizeGetProfileBundleRequest fills the default explanation behavior so FULL mode includes P/L/W help text unless callers explicitly disable it.
+// NormalizeGetProfileBundleRequest 用于补齐 bundle 请求的默认说明行为，让 FULL 模式在调用方未显式关闭时默认带上 P/L/W 帮助说明。
 func NormalizeGetProfileBundleRequest(req *vmmv1.GetProfileBundleRequest) {
 	if req == nil {
 		return
+	}
+	if req.IncludeExplanation != nil {
+		return
+	}
+	switch req.GetMode() {
+	case vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL:
+		req.IncludeExplanation = proto.Bool(true)
+	case vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_SPLIT:
+		req.IncludeExplanation = proto.Bool(false)
 	}
 }
 

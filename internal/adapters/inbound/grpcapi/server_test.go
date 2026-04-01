@@ -23,6 +23,7 @@ import (
 	"google.golang.org/grpc/metadata"
 	"google.golang.org/grpc/status"
 	"google.golang.org/grpc/test/bufconn"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -355,7 +356,7 @@ func TestGetProfileBundleReturnsCombinedPrompt(t *testing.T) {
 		UserId:             7,
 		ProjectId:          9,
 		Mode:               vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL,
-		IncludeExplanation: true,
+		IncludeExplanation: proto.Bool(true),
 	})
 	if err != nil {
 		t.Fatalf("get profile bundle: %v", err)
@@ -371,6 +372,37 @@ func TestGetProfileBundleReturnsCombinedPrompt(t *testing.T) {
 	}
 	if resp.GetTeamProfile() != "" || resp.GetProjectProfile() != "" || resp.GetUserProfile() != "" || resp.GetSpaceProfile() != "" {
 		t.Fatalf("expected split scope fields to stay empty in full mode, got %+v", resp)
+	}
+}
+
+// TestGetProfileBundleDefaultsExplanationForFullMode verifies transport normalization enables the inline P/L/W explanation by default for full bundles.
+// TestGetProfileBundleDefaultsExplanationForFullMode 用于验证传输层规范化会为 full bundle 默认开启内联的 P/L/W 说明。
+func TestGetProfileBundleDefaultsExplanationForFullMode(t *testing.T) {
+	profiles := &stubProfileExecutor{
+		bundleResult: usecase.ProfileBundleResult{
+			Mode:               usecase.ProfileBundleModeFull,
+			IncludeExplanation: true,
+			CombinedText:       "组合结果",
+		},
+	}
+	fixture := newTestFixture(t, Dependencies{
+		IDs:      xid.NewGenerator(),
+		Profiles: profiles,
+	}, testBufSize)
+
+	resp, err := fixture.client.GetProfileBundle(context.Background(), &vmmv1.GetProfileBundleRequest{
+		UserId:    7,
+		ProjectId: 9,
+		Mode:      vmmv1.ProfileBundleMode_PROFILE_BUNDLE_MODE_FULL,
+	})
+	if err != nil {
+		t.Fatalf("get profile bundle with default explanation: %v", err)
+	}
+	if !profiles.bundleCmd.IncludeExplanation {
+		t.Fatalf("expected full mode to default include_explanation=true, got %+v", profiles.bundleCmd)
+	}
+	if !resp.GetIncludeExplanation() {
+		t.Fatalf("expected response include_explanation=true, got %+v", resp)
 	}
 }
 
@@ -592,43 +624,43 @@ func (s *stubWorkspaceExecutor) ListProjects(context.Context) ([]logicdomain.Pro
 
 // ResolveProject keeps the test double interface-complete while focused tests only cover project listing.
 // ResolveProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
-func (s *stubWorkspaceExecutor) ResolveProject(context.Context, string) (logicdomain.ProjectRecord, error) {
+func (s *stubWorkspaceExecutor) ResolveProject(_ context.Context, _ string) (logicdomain.ProjectRecord, error) {
 	return logicdomain.ProjectRecord{}, nil
 }
 
 // EnsureProject keeps the test double interface-complete while focused tests only cover project listing.
 // EnsureProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
-func (s *stubWorkspaceExecutor) EnsureProject(context.Context, string, bool) (logicdomain.ProjectMutationResult, error) {
+func (s *stubWorkspaceExecutor) EnsureProject(_ context.Context, _ string, _ bool) (logicdomain.ProjectMutationResult, error) {
 	return logicdomain.ProjectMutationResult{}, nil
 }
 
 // DeleteProject keeps the test double interface-complete while focused tests only cover project listing.
 // DeleteProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
-func (s *stubWorkspaceExecutor) DeleteProject(context.Context, string, bool) (logicdomain.ProjectDeleteResult, error) {
+func (s *stubWorkspaceExecutor) DeleteProject(_ context.Context, _ string, _ bool) (logicdomain.ProjectDeleteResult, error) {
 	return logicdomain.ProjectDeleteResult{}, nil
 }
 
 // MigrateProject keeps the test double interface-complete while focused tests only cover project listing.
 // MigrateProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
-func (s *stubWorkspaceExecutor) MigrateProject(context.Context, string, string, bool) (logicdomain.ProjectMigrationResult, error) {
+func (s *stubWorkspaceExecutor) MigrateProject(_ context.Context, _ string, _ string, _ bool) (logicdomain.ProjectMigrationResult, error) {
 	return logicdomain.ProjectMigrationResult{}, nil
 }
 
 // ResolveUser keeps the test double interface-complete while focused tests only cover project listing.
 // ResolveUser 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
-func (s *stubWorkspaceExecutor) ResolveUser(context.Context, string, bool) (logicdomain.UserResolveResult, error) {
+func (s *stubWorkspaceExecutor) ResolveUser(_ context.Context, _ string, _ bool) (logicdomain.UserResolveResult, error) {
 	return logicdomain.UserResolveResult{}, nil
 }
 
 // ListUsers keeps the test double interface-complete while focused tests only cover project listing.
 // ListUsers 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
-func (s *stubWorkspaceExecutor) ListUsers(context.Context) ([]logicdomain.UserRecord, error) {
+func (s *stubWorkspaceExecutor) ListUsers(_ context.Context) ([]logicdomain.UserRecord, error) {
 	return nil, nil
 }
 
 // DeleteUser keeps the test double interface-complete while focused tests only cover project listing.
 // DeleteUser 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
-func (s *stubWorkspaceExecutor) DeleteUser(context.Context, string, string) (logicdomain.UserDeleteResult, error) {
+func (s *stubWorkspaceExecutor) DeleteUser(_ context.Context, _ string, _ string) (logicdomain.UserDeleteResult, error) {
 	return logicdomain.UserDeleteResult{}, nil
 }
 
@@ -639,25 +671,27 @@ type stubProfileExecutor struct {
 	queryErr     error
 	bundleResult usecase.ProfileBundleResult
 	bundleErr    error
+	bundleCmd    usecase.ProfileBundleCommand
 	applyResult  usecase.ProfileInstructionResult
 	applyErr     error
 }
 
 // GetNodes returns the canned profile query result for deterministic transport assertions.
 // GetNodes 用于返回预设画像查询结果，保证传输层断言稳定。
-func (s *stubProfileExecutor) GetNodes(context.Context, usecase.ProfileQueryCommand) (usecase.ProfileQueryResult, error) {
+func (s *stubProfileExecutor) GetNodes(_ context.Context, _ usecase.ProfileQueryCommand) (usecase.ProfileQueryResult, error) {
 	return s.queryResult, s.queryErr
 }
 
 // GetBundle returns the canned profile bundle result for deterministic transport assertions.
 // GetBundle 用于返回预设画像 bundle 结果，保证传输层断言稳定。
-func (s *stubProfileExecutor) GetBundle(context.Context, usecase.ProfileBundleCommand) (usecase.ProfileBundleResult, error) {
+func (s *stubProfileExecutor) GetBundle(_ context.Context, cmd usecase.ProfileBundleCommand) (usecase.ProfileBundleResult, error) {
+	s.bundleCmd = cmd
 	return s.bundleResult, s.bundleErr
 }
 
 // ApplyInstruction returns the canned manual instruction result for deterministic transport assertions.
 // ApplyInstruction 用于返回预设手工画像指令结果，保证传输层断言稳定。
-func (s *stubProfileExecutor) ApplyInstruction(context.Context, usecase.ProfileInstructionCommand) (usecase.ProfileInstructionResult, error) {
+func (s *stubProfileExecutor) ApplyInstruction(_ context.Context, _ usecase.ProfileInstructionCommand) (usecase.ProfileInstructionResult, error) {
 	return s.applyResult, s.applyErr
 }
 
@@ -672,13 +706,13 @@ type stubMemoryExecutor struct {
 
 // Search returns the canned grouped memory-query result for deterministic transport assertions.
 // Search 用于返回预设的分组记忆查询结果，保证传输层断言稳定。
-func (s *stubMemoryExecutor) Search(context.Context, usecase.MemoryQueryCommand) (usecase.MemoryQueryResult, error) {
+func (s *stubMemoryExecutor) Search(_ context.Context, _ usecase.MemoryQueryCommand) (usecase.MemoryQueryResult, error) {
 	return s.searchResult, s.searchErr
 }
 
 // GetTurns returns the canned turn-detail result for deterministic transport assertions.
 // GetTurns 用于返回预设的 turn 详情结果，保证传输层断言稳定。
-func (s *stubMemoryExecutor) GetTurns(context.Context, usecase.TurnDetailCommand) (usecase.TurnDetailResult, error) {
+func (s *stubMemoryExecutor) GetTurns(_ context.Context, _ usecase.TurnDetailCommand) (usecase.TurnDetailResult, error) {
 	return s.turnResult, s.turnErr
 }
 

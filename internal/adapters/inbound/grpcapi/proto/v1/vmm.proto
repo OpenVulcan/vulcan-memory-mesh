@@ -310,7 +310,7 @@ message GetProfileBundleRequest {
   uint64 user_id = 1;
   uint64 project_id = 2;
   ProfileBundleMode mode = 3;
-  bool include_explanation = 4;
+  optional bool include_explanation = 4;
 }
 
 // GetProfileBundleResponse returns both the split scope texts and the optional fully assembled prompt bundle.

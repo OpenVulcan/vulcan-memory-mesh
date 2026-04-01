@@ -158,11 +158,11 @@ func TestProfileUseCaseGetBundleReturnsSplitSections(t *testing.T) {
 	if result.CombinedText != "" {
 		t.Fatalf("expected empty combined text in split mode, got %q", result.CombinedText)
 	}
-	if !strings.Contains(result.ExplanationText, "P/L/W 说明") || !strings.Contains(result.ExplanationText, "[TEAM]") {
-		t.Fatalf("expected explanation text in split mode, got %q", result.ExplanationText)
+	if result.IncludeExplanation {
+		t.Fatalf("expected split mode to suppress explanation flag, got %+v", result)
 	}
-	if result.EnvironmentPriority != "Project > Space > Team" {
-		t.Fatalf("unexpected environment priority text: %q", result.EnvironmentPriority)
+	if result.ExplanationText != "" || result.EnvironmentPriority != "" {
+		t.Fatalf("expected split mode to keep helper texts empty, got %+v", result)
 	}
 	if result.TeamProfile == "" || result.SpaceProfile == "" || result.ProjectProfile == "" || result.UserProfile == "" {
 		t.Fatalf("expected all split scope texts, got %+v", result)

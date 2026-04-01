@@ -350,30 +350,24 @@
     - `[USER]`
   - 环境约束头固定写明：
     - `Project > Space > Team`
+  - `include_explanation`
+    - 省略时默认开启
+    - 打开时，会把 `P/L/W` 与 `[TEAM]/[SPACE]/[PROJECT]/[USER]` 的含义直接内嵌到 `combined_text`
+    - 关闭时，只返回正文结构
 - `SPLIT`
   - 不返回完整合并文本
-  - 分别返回：
+  - 只分别返回：
     - `team_profile`
     - `space_profile`
     - `project_profile`
     - `user_profile`
-- `include_explanation=true`
-  - 会补充 `P/L/W` 的帮助说明文本
-  - 也会明确说明：
-    - `[TEAM]` 表示团队级画像
-    - `[SPACE]` 表示空间级画像
-    - `[PROJECT]` 表示当前项目画像
-    - `[USER]` 表示当前目标用户偏好
-- `include_explanation=false`
-  - 只返回正文结果
+  - `include_explanation` 在该模式下不会额外返回说明字段
 
 额外说明：
 
 - 这条接口不会触发 LLM
 - 它依赖当前数据库里已经自动重建好的 scope `profile` 正文
 - scope `profile` 本身不再保存说明头，说明头只在 bundle 输出里按需附加
-- `SPLIT` 模式下返回的 `environment_priority_text` 只保留原始优先级串：
-  - `Project > Space > Team`
 
 ### ApplyProfileInstruction
 
