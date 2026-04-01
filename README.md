@@ -55,11 +55,12 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 当前主线默认保留两条本地数据线：
 
 - SQLite：默认关系库存储，负责层级、用户、session、turn 记录和长期 SQL 记录
+  - 适配层优先使用 typed params、`ExecuteBatch` 和 sqlite 网关声明的可重试 trailer 语义
 - LanceDB：向量写入、检索和删除
 
 当前也保留一条兼容关系库存储路径：
 
-- DuckDB：兼容 provider，可在配置中显式切换
+- DuckDB：兼容 provider，可在配置中显式切换，用于迁移期对照和兼容转换
 
 运行时已经移除：
 
@@ -137,12 +138,12 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
      - 如果本批次只有 user 或只有 project 画像候选，则只把对应一侧送进 LLM，不会把缺失侧作为空块一起传入
      - 自动提炼与画像评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
    - 对新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
-   - 只有 LanceDB 成功后，才会批量回写 DuckDB：
+  - 只有 LanceDB 成功后，才会批量回写关系库存储（默认 SQLite，兼容 DuckDB）：
      - `vmm_turn_records.details / details_budget / extracted_status`
      - `vmm_memory_nodes`
      - `vmm_profile_nodes`
      - `vmm_sessions.last_summarized_id / summarize_budget`
-   - 画像评审完成后，会在 DuckDB 中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
+  - 画像评审完成后，会在关系库存储中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
    - 队列扫描时还会同步做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本
    - 如果 LLM 判定旧记忆 turn 需要淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
    - DuckDB 成功提交后，会删除 LanceDB 中对应的旧向量行
@@ -169,7 +170,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 - 接收单个目标上的显式自然语言画像指令
 - 指令不会绑定 `turn_id`
-- DuckDB 中这类节点的 `vmm_profile_nodes.turn_id` 会保持 `NULL`
+- 关系库存储中这类节点的 `vmm_profile_nodes.turn_id` 会保持 `NULL`
 - 服务端会先写入 `vmm_profile_instructions`
 - 再把当前 active 节点与这条显式指令交给 `review_profile_instruction`
 - 同目标同指令的并发调用会复用第一次进行中的结果，不会重复触发第二次 LLM 评审
@@ -177,7 +178,9 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 最后持久化新节点、退役旧节点，并重建对应 scope 的 profile 文本
 - 如果一条手工指令同时涉及多个领域，也必须拆成多条画像节点，不能生成跨领域综合节点
 - 但“按领域拆分”不等于“一个名词一条节点”：同领域、同语义方向、同生命周期层级的并列事实可以合并进一条节点
-- 当 DuckDB 网关返回类似 `resource deadlock would occur` / `Failed to commit` 的“提交结果不确定”错误时：
+- 当默认 SQLite provider 返回 `SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA` 且网关通过 trailer 标记为可重试时：
+  - 适配层会先做有界指数退避重试
+- 当关系库存储 provider 返回类似 `resource deadlock would occur` / `Failed to commit` 的“提交结果不确定”错误时：
   - 服务端会先回查 `vmm_profile_instructions`、`vmm_profile_nodes`、退役状态和最终 profile Blob
   - 如果副作用其实已经落库，则会把这次请求收敛成成功
   - 只有回查也无法确认最终状态时，才会向客户端返回 `STORAGE_OUTCOME_UNCERTAIN`

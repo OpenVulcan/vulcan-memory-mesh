@@ -129,7 +129,9 @@
 - `ApplyProfileInstruction` 会同步触发一次 LLM 评审并落库
 - `ApplyProfileInstruction` 对同目标同指令的并发调用会复用第一次进行中的结果
 - `ApplyProfileInstruction` 对同一目标上的不同指令会串行执行，避免同一批旧节点并发写回
-- 如果手工画像持久化阶段遇到 DuckDB 网关返回的“提交结果不确定”错误：
+- 如果默认 SQLite provider 返回 `SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA`，并通过 trailer 标记为可重试：
+  - 服务端适配层会先做有界指数退避重试
+- 如果手工画像持久化阶段遇到关系库存储 provider 返回的“提交结果不确定”错误：
   - 服务端会先回查 instruction 行、profile node 行、退役状态和最终 profile Blob
   - 如果副作用其实已经存在，则会把这次请求收敛成成功
   - 只有回查也无法确认最终状态时，才返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`
@@ -267,7 +269,7 @@
 
 用途：
 
-- 显式确认后删除某个项目及其 DuckDB/LanceDB 数据
+- 显式确认后删除某个项目及其关系库存储/LanceDB 数据
 - 返回真正删除的项目、画像、session、turn、memory 计数
 - 如果该项目删除后其 `space` 变空，会级联删除该 `space`
 - 如果级联删除 `space` 后其 `team` 也变空，会继续级联删除该 `team`
@@ -331,11 +333,11 @@
 需要额外注意：
 
 - 这条链路不绑定 `turn_id`
-- DuckDB 中这类画像节点的 `vmm_profile_nodes.turn_id` 会保持 `NULL`
+- 关系库存储中这类画像节点的 `vmm_profile_nodes.turn_id` 会保持 `NULL`
 - 新节点会记录 `source_kind = manual_instruction`
 - `source_id` 会指向对应的 `instruction_id`
 - `TEAM / SPACE` 的手工指令会被视为最高权限规则
-- 如果 DuckDB 网关返回“提交结果不确定”：
+- 如果关系库存储 provider 返回“提交结果不确定”：
   - 服务端会先做状态回查，再决定是否把本次请求视为成功
   - 只有回查也无法确认最终状态时，才会返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`
 
@@ -361,7 +363,7 @@
 - 记录原始日志和清洗后日志
 - 清洗 `user_content` / `timeline[].content` / `assistant_content`
 - 立即返回 `accepted=true`
-- 后台继续写入 DuckDB
+- 后台继续写入关系库存储（默认 SQLite，兼容 DuckDB）
 
 同样也有一个前提：
 

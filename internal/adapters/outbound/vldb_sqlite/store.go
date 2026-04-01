@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -18,7 +19,10 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/credentials/insecure"
+	"google.golang.org/grpc/metadata"
+	"google.golang.org/grpc/status"
 )
 
 const (
@@ -49,6 +53,14 @@ const (
 	// debugSeedDefaultName is reused across the default debug user/team/space/project rows so the initial hierarchy is predictable after every reset.
 	// debugSeedDefaultName 用于复用默认调试 user/team/space/project 的名称，保证每次重置后的初始层级可预测。
 	debugSeedDefaultName = "default"
+
+	// sqliteRetryMaxAttempts keeps retryable SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA responses bounded so callers do not spin forever.
+	// sqliteRetryMaxAttempts 用于限制 SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA 这类可重试响应的最大重试次数，避免调用方无限自旋。
+	sqliteRetryMaxAttempts = 3
+
+	// sqliteRetryBaseDelay is the small exponential-backoff seed used after the gateway marks one SQLite response as retryable.
+	// sqliteRetryBaseDelay 用于在网关把某次 SQLite 响应标记为可重试后，提供一个较小的指数退避起始值。
+	sqliteRetryBaseDelay = 50 * time.Millisecond
 )
 
 const resetManagedSchemaSQL = `
@@ -355,22 +367,21 @@ VALUES (%d, %d, %d, %s, '', %s, %s);
 		debugSeedProjectID, debugSeedTeamID, debugSeedSpaceID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339))
 }
 
-// exec sends one SQL script to the SQLite gateway with optional JSON parameters.
-// exec 用于把一段 SQL 脚本和可选 JSON 参数发送给 SQLite 网关。
+// exec sends one SQL statement or script to the SQLite gateway and prefers native typed params for the sqlite-first runtime path.
+// exec 用于把单条 SQL 或脚本发送给 SQLite 网关，并在 sqlite-first 运行路径里优先使用原生强类型参数。
 func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
-	payload, err := marshalParams(params)
+	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
 		return err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := s.client.ExecuteScript(callCtx, &sqlitev1.ExecuteRequest{
-		Sql:        strings.TrimSpace(sql),
-		ParamsJson: payload,
-	})
+	req := &sqlitev1.ExecuteRequest{
+		Sql: strings.TrimSpace(sql),
+	}
+	applySQLiteExecParams(req, prepared)
+	resp, err := s.executeScript(ctx, req)
 	if err != nil {
 		return fmt.Errorf("sqlite execute: %w", err)
 	}
@@ -380,22 +391,51 @@ func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 	return nil
 }
 
-// queryRows decodes one JSON query response into a typed slice so higher-level methods can stay small and explicit.
-// queryRows 用于把 JSON 查询结果解码为强类型切片，让上层方法保持小而明确。
+// execBatch sends one repeated-shape write workload through SQLite's native ExecuteBatch RPC so sqlite-first storage avoids one-RPC-per-row churn.
+// execBatch 用于通过 SQLite 原生 ExecuteBatch RPC 发送同构写入，避免 sqlite-first 存储退化成“一行一次 RPC”。
+func (s *Store) execBatch(ctx context.Context, sql string, items [][]any) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("sqlite store is not initialized")
+	}
+	if len(items) == 0 {
+		return nil
+	}
+	batchItems := make([]*sqlitev1.ExecuteBatchItem, 0, len(items))
+	for idx, item := range items {
+		values, err := prepareSQLiteBatchParams(item)
+		if err != nil {
+			return fmt.Errorf("prepare sqlite batch item %d: %w", idx, err)
+		}
+		batchItems = append(batchItems, &sqlitev1.ExecuteBatchItem{Params: values})
+	}
+	resp, err := s.executeBatch(ctx, &sqlitev1.ExecuteBatchRequest{
+		Sql:   strings.TrimSpace(sql),
+		Items: batchItems,
+	})
+	if err != nil {
+		return fmt.Errorf("sqlite execute batch: %w", err)
+	}
+	if !resp.GetSuccess() {
+		return fmt.Errorf("sqlite execute batch: %s", strings.TrimSpace(resp.GetMessage()))
+	}
+	return nil
+}
+
+// queryRows decodes one JSON query response into a typed slice so higher-level methods can stay small and explicit while still preferring native sqlite params.
+// queryRows 用于把 JSON 查询结果解码为强类型切片，在保持上层逻辑简洁的同时优先使用 sqlite 原生参数。
 func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) ([]T, error) {
 	if s == nil || s.client == nil {
 		return nil, fmt.Errorf("sqlite store is not initialized")
 	}
-	payload, err := marshalParams(params)
+	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
 		return nil, err
 	}
-	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := s.client.QueryJson(callCtx, &sqlitev1.QueryRequest{
-		Sql:        strings.TrimSpace(sql),
-		ParamsJson: payload,
-	})
+	req := &sqlitev1.QueryRequest{
+		Sql: strings.TrimSpace(sql),
+	}
+	applySQLiteQueryParams(req, prepared)
+	resp, err := s.queryJSON(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite query: %w", err)
 	}
@@ -410,17 +450,212 @@ func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) 
 	return rows, nil
 }
 
-// marshalParams encodes positional SQL parameters into the JSON form expected by the gateway.
-// marshalParams 用于把位置参数编码成网关期望的 JSON 形式。
-func marshalParams(params []any) (string, error) {
+// sqlitePreparedParams stores the normalized parameter payload that can be attached to ExecuteScript / QueryJson requests.
+// sqlitePreparedParams 用于保存标准化后的参数载荷，便于附加到 ExecuteScript / QueryJson 请求。
+type sqlitePreparedParams struct {
+	Values       []*sqlitev1.SqliteValue
+	FallbackJSON string
+}
+
+// prepareSQLiteParams converts Go scalar values into the typed sqlite gRPC payload expected by the sqlite-first gateway path.
+// prepareSQLiteParams 用于把 Go 标量参数转换成 sqlite-first 网关期望的强类型 gRPC 载荷。
+func prepareSQLiteParams(params []any) (sqlitePreparedParams, error) {
 	if len(params) == 0 {
-		return "", nil
+		return sqlitePreparedParams{}, nil
 	}
-	body, err := json.Marshal(params)
+	values := make([]*sqlitev1.SqliteValue, 0, len(params))
+	for idx, param := range params {
+		value, err := toSQLiteValue(param)
+		if err != nil {
+			return sqlitePreparedParams{}, fmt.Errorf("convert sqlite param %d: %w", idx, err)
+		}
+		values = append(values, value)
+	}
+	return sqlitePreparedParams{Values: values}, nil
+}
+
+// prepareSQLiteBatchParams converts one ExecuteBatch item into native sqlite gRPC values so repeated writes never fall back to JSON strings.
+// prepareSQLiteBatchParams 用于把单个 ExecuteBatch item 转成原生 sqlite gRPC 值，确保重复写入不会退回 JSON 兼容模式。
+func prepareSQLiteBatchParams(params []any) ([]*sqlitev1.SqliteValue, error) {
+	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
-		return "", fmt.Errorf("marshal sqlite params: %w", err)
+		return nil, err
 	}
-	return string(body), nil
+	if strings.TrimSpace(prepared.FallbackJSON) != "" {
+		return nil, fmt.Errorf("sqlite batch params do not support JSON fallback")
+	}
+	return prepared.Values, nil
+}
+
+// applySQLiteExecParams attaches either native typed params or the compatibility JSON payload to one ExecuteScript request.
+// applySQLiteExecParams 用于把原生强类型参数或兼容 JSON 参数附加到单个 ExecuteScript 请求。
+func applySQLiteExecParams(req *sqlitev1.ExecuteRequest, prepared sqlitePreparedParams) {
+	if req == nil {
+		return
+	}
+	req.Params = prepared.Values
+	req.ParamsJson = strings.TrimSpace(prepared.FallbackJSON)
+}
+
+// applySQLiteQueryParams attaches either native typed params or the compatibility JSON payload to one QueryJson request.
+// applySQLiteQueryParams 用于把原生强类型参数或兼容 JSON 参数附加到单个 QueryJson 请求。
+func applySQLiteQueryParams(req *sqlitev1.QueryRequest, prepared sqlitePreparedParams) {
+	if req == nil {
+		return
+	}
+	req.Params = prepared.Values
+	req.ParamsJson = strings.TrimSpace(prepared.FallbackJSON)
+}
+
+// toSQLiteValue maps one Go scalar to the sqlite gateway's typed protobuf value so the adapter can stay sqlite-native by default.
+// toSQLiteValue 用于把单个 Go 标量映射为 sqlite 网关的强类型 protobuf 值，让适配器默认保持 sqlite 原生风格。
+func toSQLiteValue(param any) (*sqlitev1.SqliteValue, error) {
+	switch value := param.(type) {
+	case nil:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_NullValue{NullValue: &sqlitev1.NullValue{}}}, nil
+	case bool:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_BoolValue{BoolValue: value}}, nil
+	case string:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_StringValue{StringValue: value}}, nil
+	case []byte:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_BytesValue{BytesValue: value}}, nil
+	case json.RawMessage:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_StringValue{StringValue: string(value)}}, nil
+	case int:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case int8:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case int16:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case int32:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case int64:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: value}}, nil
+	case uint:
+		if uint64(value) > math.MaxInt64 {
+			return nil, fmt.Errorf("uint %d overflows sqlite int64 binding", value)
+		}
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case uint8:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case uint16:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case uint32:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case uint64:
+		if value > math.MaxInt64 {
+			return nil, fmt.Errorf("uint64 %d overflows sqlite int64 binding", value)
+		}
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+	case float32:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Float64Value{Float64Value: float64(value)}}, nil
+	case float64:
+		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Float64Value{Float64Value: value}}, nil
+	default:
+		return nil, fmt.Errorf("unsupported sqlite param type %T", param)
+	}
+}
+
+// executeScript performs one ExecuteScript RPC with bounded retry logic for gateway-declared retryable SQLite errors.
+// executeScript 用于执行单次 ExecuteScript RPC，并在网关声明可重试的 SQLite 错误上做有界重试。
+func (s *Store) executeScript(ctx context.Context, req *sqlitev1.ExecuteRequest) (*sqlitev1.ExecuteResponse, error) {
+	var response *sqlitev1.ExecuteResponse
+	err := s.withSQLiteRetry(ctx, func(callCtx context.Context, trailer *metadata.MD) error {
+		var err error
+		response, err = s.client.ExecuteScript(callCtx, req, grpc.Trailer(trailer))
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// executeBatch performs one ExecuteBatch RPC with bounded retry logic so SQLITE_BUSY / SQLITE_LOCKED do not immediately bubble up to the caller.
+// executeBatch 用于执行单次 ExecuteBatch RPC，并对 SQLITE_BUSY / SQLITE_LOCKED 之类错误做有界重试，避免立刻上抛给调用方。
+func (s *Store) executeBatch(ctx context.Context, req *sqlitev1.ExecuteBatchRequest) (*sqlitev1.ExecuteBatchResponse, error) {
+	var response *sqlitev1.ExecuteBatchResponse
+	err := s.withSQLiteRetry(ctx, func(callCtx context.Context, trailer *metadata.MD) error {
+		var err error
+		response, err = s.client.ExecuteBatch(callCtx, req, grpc.Trailer(trailer))
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// queryJSON performs one QueryJson RPC with the same retry contract used by writes so retryable SQLITE_SCHEMA / SQLITE_BUSY failures can self-heal.
+// queryJSON 用于执行单次 QueryJson RPC，并复用与写请求一致的重试契约，让 SQLITE_SCHEMA / SQLITE_BUSY 这类可重试错误有机会自行恢复。
+func (s *Store) queryJSON(ctx context.Context, req *sqlitev1.QueryRequest) (*sqlitev1.QueryJsonResponse, error) {
+	var response *sqlitev1.QueryJsonResponse
+	err := s.withSQLiteRetry(ctx, func(callCtx context.Context, trailer *metadata.MD) error {
+		var err error
+		response, err = s.client.QueryJson(callCtx, req, grpc.Trailer(trailer))
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	return response, nil
+}
+
+// withSQLiteRetry wraps one sqlite RPC so retryable trailer-signaled errors are retried with a tiny exponential backoff inside the caller deadline.
+// withSQLiteRetry 用于包裹单个 sqlite RPC，在调用方 deadline 内对 trailer 标记为可重试的错误做一个很小的指数退避重试。
+func (s *Store) withSQLiteRetry(ctx context.Context, call func(context.Context, *metadata.MD) error) error {
+	var lastErr error
+	for attempt := 0; attempt < sqliteRetryMaxAttempts; attempt++ {
+		callCtx, cancel := context.WithTimeout(ctx, s.timeout)
+		trailer := metadata.MD{}
+		err := call(callCtx, &trailer)
+		cancel()
+		if err == nil {
+			return nil
+		}
+		lastErr = err
+		if !isSQLiteRetryableRPCError(err, trailer) || attempt == sqliteRetryMaxAttempts-1 {
+			return lastErr
+		}
+		if err := waitSQLiteRetry(ctx, attempt); err != nil {
+			return lastErr
+		}
+	}
+	return lastErr
+}
+
+// isSQLiteRetryableRPCError checks the sqlite gateway retry trailer first, then falls back to the documented gRPC status codes used for SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA.
+// isSQLiteRetryableRPCError 用于优先检查 sqlite 网关的重试 trailer，再回退到文档里为 SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA 定义的 gRPC 状态码。
+func isSQLiteRetryableRPCError(err error, trailer metadata.MD) bool {
+	if err == nil {
+		return false
+	}
+	if values := trailer.Get("x-vldb-retryable"); len(values) > 0 && strings.EqualFold(strings.TrimSpace(values[0]), "true") {
+		return true
+	}
+	switch status.Code(err) {
+	case codes.Unavailable, codes.Aborted:
+		lowered := strings.ToLower(strings.TrimSpace(err.Error()))
+		return strings.Contains(lowered, "sqlite_busy") ||
+			strings.Contains(lowered, "sqlite_locked") ||
+			strings.Contains(lowered, "sqlite_schema")
+	default:
+		return false
+	}
+}
+
+// waitSQLiteRetry sleeps for a tiny exponential backoff while still honoring the parent context deadline.
+// waitSQLiteRetry 用于执行一个很小的指数退避等待，同时继续遵守父 context 的截止时间。
+func waitSQLiteRetry(ctx context.Context, attempt int) error {
+	delay := sqliteRetryBaseDelay * time.Duration(1<<attempt)
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // isSQLiteOutcomeUncertainError detects gateway failures whose text indicates the commit result may already have happened even though the RPC returned an error.
@@ -510,8 +745,8 @@ ORDER BY category_name ASC, phrase ASC
 	return entries, nil
 }
 
-// ReplaceNoiseEmbeddingCache rewrites one semantic prototype bundle atomically by deleting the old rows and inserting the new set.
-// ReplaceNoiseEmbeddingCache 用于通过“先删后插”原子重写一组语义原型缓存。
+// ReplaceNoiseEmbeddingCache rewrites one semantic prototype bundle atomically by deleting the old rows and batch-inserting the refreshed set.
+// ReplaceNoiseEmbeddingCache 用于通过“先删后批量插入”原子重写一组语义原型缓存。
 func (s *Store) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -522,18 +757,33 @@ WHERE scope = ? AND language = ? AND model = ? AND dimension = ? AND rules_hash 
 `, strings.TrimSpace(query.Scope), strings.TrimSpace(query.Language), strings.TrimSpace(query.Model), query.Dimension, strings.TrimSpace(query.RulesHash)); err != nil {
 		return fmt.Errorf("clear noise embedding cache: %w", err)
 	}
+	if len(entries) == 0 {
+		return nil
+	}
+	batchItems := make([][]any, 0, len(entries))
 	for _, entry := range entries {
 		vectorJSON, err := json.Marshal(entry.Vector)
 		if err != nil {
 			return fmt.Errorf("encode noise embedding cache vector: %w", err)
 		}
-		if err := s.exec(ctx, `
+		batchItems = append(batchItems, []any{
+			strings.TrimSpace(entry.Scope),
+			strings.TrimSpace(entry.Language),
+			strings.TrimSpace(entry.CategoryName),
+			strings.TrimSpace(entry.Phrase),
+			strings.TrimSpace(entry.Model),
+			entry.Dimension,
+			strings.TrimSpace(entry.RulesHash),
+			string(vectorJSON),
+			entry.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		})
+	}
+	if err := s.execBatch(ctx, `
 INSERT INTO vmm_noise_embeddings (
   scope, language, category_name, phrase, model, dimension, rules_hash, vector_json, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-`, strings.TrimSpace(entry.Scope), strings.TrimSpace(entry.Language), strings.TrimSpace(entry.CategoryName), strings.TrimSpace(entry.Phrase), strings.TrimSpace(entry.Model), entry.Dimension, strings.TrimSpace(entry.RulesHash), string(vectorJSON), entry.UpdatedAt.UTC().Format(time.RFC3339Nano)); err != nil {
-			return fmt.Errorf("insert noise embedding cache row: %w", err)
-		}
+`, batchItems); err != nil {
+		return fmt.Errorf("insert noise embedding cache rows: %w", err)
 	}
 	return nil
 }
@@ -1416,30 +1666,52 @@ func (s *Store) ReplaceRenderedProfiles(ctx context.Context, updates logicdomain
 	defer s.writeMu.Unlock()
 
 	nowRFC3339 := time.Now().UTC().Format(time.RFC3339Nano)
-	var script strings.Builder
 	userIDs := sortedProfileBindingIDs(updates.UserProfiles)
-	for _, userID := range userIDs {
-		script.WriteString(buildUserProfileUpdateSQL(userID, updates.UserProfiles[userID], nowRFC3339))
+	if err := s.replaceRenderedProfileBatch(ctx, `
+UPDATE vmm_users
+SET profile = ?, updated_at = ?
+WHERE id = ?
+`, userIDs, updates.UserProfiles, nowRFC3339); err != nil {
+		return fmt.Errorf("replace rendered user profiles: %w", err)
 	}
 	teamIDs := sortedProfileBindingIDs(updates.TeamProfiles)
-	for _, teamID := range teamIDs {
-		script.WriteString(buildTeamProfileUpdateSQL(teamID, updates.TeamProfiles[teamID], nowRFC3339))
+	if err := s.replaceRenderedProfileBatch(ctx, `
+UPDATE vmm_teams
+SET profile = ?, updated_at = ?
+WHERE id = ?
+`, teamIDs, updates.TeamProfiles, nowRFC3339); err != nil {
+		return fmt.Errorf("replace rendered team profiles: %w", err)
 	}
 	spaceIDs := sortedProfileBindingIDs(updates.SpaceProfiles)
-	for _, spaceID := range spaceIDs {
-		script.WriteString(buildSpaceProfileUpdateSQL(spaceID, updates.SpaceProfiles[spaceID], nowRFC3339))
+	if err := s.replaceRenderedProfileBatch(ctx, `
+UPDATE vmm_spaces
+SET profile = ?, updated_at = ?
+WHERE id = ?
+`, spaceIDs, updates.SpaceProfiles, nowRFC3339); err != nil {
+		return fmt.Errorf("replace rendered space profiles: %w", err)
 	}
 	projectIDs := sortedProfileBindingIDs(updates.ProjectProfiles)
-	for _, projectID := range projectIDs {
-		script.WriteString(buildProjectProfileUpdateSQL(projectID, updates.ProjectProfiles[projectID], nowRFC3339))
-	}
-	if script.Len() == 0 {
-		return nil
-	}
-	if err := s.exec(ctx, script.String()); err != nil {
-		return fmt.Errorf("replace rendered profiles: %w", err)
+	if err := s.replaceRenderedProfileBatch(ctx, `
+UPDATE vmm_projects
+SET profile = ?, updated_at = ?
+WHERE id = ?
+`, projectIDs, updates.ProjectProfiles, nowRFC3339); err != nil {
+		return fmt.Errorf("replace rendered project profiles: %w", err)
 	}
 	return nil
+}
+
+// replaceRenderedProfileBatch reuses SQLite ExecuteBatch for one scope table so repeated profile-blob updates stay in the sqlite-native transport path.
+// replaceRenderedProfileBatch 用于对单个 scope 表复用 SQLite ExecuteBatch，让重复的 profile Blob 更新保持在 sqlite 原生传输路径内。
+func (s *Store) replaceRenderedProfileBatch(ctx context.Context, sql string, ids []uint64, profiles map[uint64]string, nowRFC3339 string) error {
+	if len(ids) == 0 {
+		return nil
+	}
+	items := make([][]any, 0, len(ids))
+	for _, id := range ids {
+		items = append(items, []any{profiles[id], nowRFC3339, id})
+	}
+	return s.execBatch(ctx, sql, items)
 }
 
 // loadActiveProfileNodes is the shared query helper used by profile review and expiry convergence to fetch only currently renderable active nodes.

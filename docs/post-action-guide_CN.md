@@ -4,6 +4,12 @@
 
 这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何通过后台队列把结果写入 SQLite（默认）/DuckDB（兼容）与 LanceDB。
 
+当前默认的 SQLite 关系库存储适配层会优先使用：
+
+- typed params
+- `ExecuteBatch`
+- sqlite 网关标记为可重试错误时的有界退避
+
 当前相关方法只有：
 
 - `vmm.v1.VMMService/PostAction`

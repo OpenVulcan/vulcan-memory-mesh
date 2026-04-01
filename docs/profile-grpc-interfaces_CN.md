@@ -19,7 +19,7 @@
 拆分原因：
 
 - 查询链路应尽量轻量，只返回当前有效节点
-- 修改链路会触发 LLM 评审与 DuckDB 状态更新，不应和查询混在一起
+- 修改链路会触发 LLM 评审与关系库存储状态更新，不应和查询混在一起
 - 插件并不总是需要一次性拿到全部画像内容
 
 ## GetProfileNodes 目标
@@ -102,7 +102,7 @@
    - 如果旧节点只在局部上与新指令冲突，LLM 不能把整条旧节点剩余有效事实一起丢掉
    - 对未冲突的旧事实，应通过新的替代节点继续保留，必要时拆成多个更原子化的新节点
    - 如果用户指令同时涉及多个领域，LLM 必须拆成多条画像节点，不能输出跨领域综合节点
-4. 由后端把结果写入 DuckDB
+4. 由后端把结果写入关系库存储（默认 SQLite，兼容 DuckDB）
 5. 最后重建目标对象的 `profile` 文本
 
 另外，为了避免插件在超短时间内重复触发同一条指令：
@@ -110,9 +110,11 @@
 - 同目标 + 同指令 的并发调用会复用第一次进行中的结果，不会重复发起第二次 LLM 评审
 - 同一目标上的不同手工画像指令会按目标串行执行，避免两条指令基于同一批 active 节点并发写回
 
-另外，为了降低 `vldb-duckdb` 在“报错但副作用已经发生”场景下放大重复节点的风险：
+另外，为了降低关系库存储网关在“报错但副作用已经发生”场景下放大重复节点的风险：
 
-- 如果 DuckDB 网关返回类似 `resource deadlock would occur`、`Failed to commit` 的提交结果不确定错误
+- 如果默认 SQLite provider 返回 `SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA`，并通过 trailer 标记为可重试
+  - 服务端适配层会先做有界指数退避重试
+- 如果关系库存储 provider 返回类似 `resource deadlock would occur`、`Failed to commit` 的提交结果不确定错误
 - 服务端会先回查：
   - `vmm_profile_instructions`
   - `vmm_profile_nodes`
@@ -141,7 +143,7 @@
 - 它来自用户显式配置，不属于对话轮次提炼结果
 - 用 `turn_id=0` 或伪造 turn 都会让来源语义变脏
 
-在 DuckDB 中，这类节点会把：
+在关系库存储中，这类节点会把：
 
 - `vmm_profile_nodes.turn_id = NULL`
 
@@ -274,7 +276,7 @@ team/space 只通过手工画像指令写入，并按最高权限规则处理。
 2. 扩展 proto：
    - `GetProfileNodes`
    - `ApplyProfileInstruction`
-3. 扩展 domain / ports / DuckDB schema
+3. 扩展 domain / ports / 关系库存储 schema
 4. 新增手工画像评审 prompt
-5. 实现 gRPC server、usecase、DuckDB 写入与 profile 重建
+5. 实现 gRPC server、usecase、关系库存储写入与 profile 重建
 6. 同步 README、gRPC 文档和 post-action 文档
