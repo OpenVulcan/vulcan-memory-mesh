@@ -553,7 +553,7 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 								DetailsPreview:             "适用于 local oss。",
 								Category:                   logicdomain.MemoryNodeCategoryArchitectureDecision,
 								Score:                      0.92,
-								Origin:                     "hybrid_rrf",
+								Origin:                     "vector_search",
 								MatchedContextValues:       []string{"deployment_mode=local oss"},
 								MatchedContextSupportCount: 1,
 								MatchedContextScoreDelta:   0.03,
@@ -573,7 +573,7 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 								DetailsPreview:             "适用于 phase4 当前环境。",
 								Category:                   logicdomain.MemoryNodeCategoryArchitectureDecision,
 								Score:                      0.92,
-								Origin:                     "hybrid_rrf",
+								Origin:                     "hybrid_rrf_rerank_mmr",
 								MatchedContextValues:       []string{"task_stage=phase4"},
 								MatchedContextSupportCount: 2,
 								MatchedContextScoreDelta:   0.05,
@@ -626,6 +626,12 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 	}
 	if candidate.MatchedContextScoreDelta != 0.05 {
 		t.Fatalf("expected strongest matched delta to survive merge, got %#v", candidate)
+	}
+	if candidate.Origin != "hybrid_rrf_rerank_mmr" || candidate.OriginLabel != "Hybrid RRF + Rerank + MMR" {
+		t.Fatalf("expected stronger origin explanation to survive merge, got %#v", candidate)
+	}
+	if candidate.ScoreLabel != "Very Strong Match" || !strings.Contains(candidate.ScoreExplanation, "0.050") {
+		t.Fatalf("expected stronger score explanation to survive merge, got %#v", candidate)
 	}
 }
 

@@ -12,43 +12,50 @@ import (
 // mergePreCheckCandidate combines repeated hits for the same memory so reviewer-facing evidence is preserved across multiple query groups instead of being silently overwritten by the first equal-scored hit.
 // mergePreCheckCandidate 用于合并同一 memory 的重复命中，避免多个 query group 的 reviewer 证据在分数相等时被第一条记录静默覆盖。
 func mergePreCheckCandidate(existing, incoming logicdomain.PreCheckMemoryCandidate) logicdomain.PreCheckMemoryCandidate {
-	merged := existing
-	if incoming.Score > merged.Score {
-		merged.Score = incoming.Score
-		merged.ScoreLabel = incoming.ScoreLabel
-		merged.ScoreExplanation = incoming.ScoreExplanation
+	primary := existing
+	secondary := incoming
+	if shouldPreferIncomingPreCheckCandidate(existing, incoming) {
+		primary = incoming
+		secondary = existing
 	}
-	if strings.TrimSpace(merged.Abstract) == "" && strings.TrimSpace(incoming.Abstract) != "" {
-		merged.Abstract = incoming.Abstract
+	merged := primary
+	if strings.TrimSpace(merged.Abstract) == "" && strings.TrimSpace(secondary.Abstract) != "" {
+		merged.Abstract = secondary.Abstract
 	}
-	if strings.TrimSpace(merged.Details) == "" && strings.TrimSpace(incoming.Details) != "" {
-		merged.Details = incoming.Details
+	if strings.TrimSpace(merged.Details) == "" && strings.TrimSpace(secondary.Details) != "" {
+		merged.Details = secondary.Details
 	}
-	if strings.TrimSpace(merged.SourceKind) == "" && strings.TrimSpace(incoming.SourceKind) != "" {
-		merged.SourceKind = incoming.SourceKind
+	if strings.TrimSpace(merged.SourceKind) == "" && strings.TrimSpace(secondary.SourceKind) != "" {
+		merged.SourceKind = secondary.SourceKind
 	}
-	if strings.TrimSpace(merged.ScopeLevel) == "" && strings.TrimSpace(incoming.ScopeLevel) != "" {
-		merged.ScopeLevel = incoming.ScopeLevel
+	if strings.TrimSpace(merged.ScopeLevel) == "" && strings.TrimSpace(secondary.ScopeLevel) != "" {
+		merged.ScopeLevel = secondary.ScopeLevel
 	}
-	if merged.SourceTurnID == 0 && incoming.SourceTurnID > 0 {
-		merged.SourceTurnID = incoming.SourceTurnID
+	if merged.SourceTurnID == 0 && secondary.SourceTurnID > 0 {
+		merged.SourceTurnID = secondary.SourceTurnID
 	}
-	if merged.Category == 0 && incoming.Category != 0 {
-		merged.Category = incoming.Category
+	if merged.Category == 0 && secondary.Category != 0 {
+		merged.Category = secondary.Category
 	}
-	if strings.TrimSpace(merged.Origin) == "" && strings.TrimSpace(incoming.Origin) != "" {
-		merged.Origin = incoming.Origin
+	if strings.TrimSpace(merged.ScoreLabel) == "" && strings.TrimSpace(secondary.ScoreLabel) != "" {
+		merged.ScoreLabel = secondary.ScoreLabel
 	}
-	if strings.TrimSpace(merged.OriginLabel) == "" && strings.TrimSpace(incoming.OriginLabel) != "" {
-		merged.OriginLabel = incoming.OriginLabel
+	if strings.TrimSpace(merged.ScoreExplanation) == "" && strings.TrimSpace(secondary.ScoreExplanation) != "" {
+		merged.ScoreExplanation = secondary.ScoreExplanation
 	}
-	if strings.TrimSpace(merged.OriginExplanation) == "" && strings.TrimSpace(incoming.OriginExplanation) != "" {
-		merged.OriginExplanation = incoming.OriginExplanation
+	if strings.TrimSpace(merged.Origin) == "" && strings.TrimSpace(secondary.Origin) != "" {
+		merged.Origin = secondary.Origin
+	}
+	if strings.TrimSpace(merged.OriginLabel) == "" && strings.TrimSpace(secondary.OriginLabel) != "" {
+		merged.OriginLabel = secondary.OriginLabel
+	}
+	if strings.TrimSpace(merged.OriginExplanation) == "" && strings.TrimSpace(secondary.OriginExplanation) != "" {
+		merged.OriginExplanation = secondary.OriginExplanation
 	}
 
 	// Preserve the broadest reviewer-facing context view by unioning matched values while avoiding count inflation across repeated groups.
 	// 通过合并命中的 context 值来保留最广的 reviewer 视图，同时避免跨重复 group 直接累加计数导致夸大。
-	merged.MatchedContextValues = appendSortedUniquePreCheckValues(merged.MatchedContextValues, incoming.MatchedContextValues...)
+	merged.MatchedContextValues = appendSortedUniquePreCheckValues(existing.MatchedContextValues, incoming.MatchedContextValues...)
 	if incoming.MatchedContextSupportCount > merged.MatchedContextSupportCount {
 		merged.MatchedContextSupportCount = incoming.MatchedContextSupportCount
 	}
@@ -65,6 +72,52 @@ func mergePreCheckCandidate(existing, incoming logicdomain.PreCheckMemoryCandida
 		merged.RebuttalCount = incoming.RebuttalCount
 	}
 	return merged
+}
+
+// shouldPreferIncomingPreCheckCandidate chooses which repeated hit should act as the representative explanation source when the same memory appears in multiple query groups.
+// shouldPreferIncomingPreCheckCandidate 用于在同一 memory 出现在多个 query group 时，决定哪条命中应充当说明字段的代表来源。
+func shouldPreferIncomingPreCheckCandidate(existing, incoming logicdomain.PreCheckMemoryCandidate) bool {
+	if incoming.Score != existing.Score {
+		return incoming.Score > existing.Score
+	}
+	if absFloat64(incoming.MatchedContextScoreDelta) != absFloat64(existing.MatchedContextScoreDelta) {
+		return absFloat64(incoming.MatchedContextScoreDelta) > absFloat64(existing.MatchedContextScoreDelta)
+	}
+	if len(incoming.MatchedContextValues) != len(existing.MatchedContextValues) {
+		return len(incoming.MatchedContextValues) > len(existing.MatchedContextValues)
+	}
+	if scorePreCheckOriginRichness(incoming.Origin) != scorePreCheckOriginRichness(existing.Origin) {
+		return scorePreCheckOriginRichness(incoming.Origin) > scorePreCheckOriginRichness(existing.Origin)
+	}
+	if len(strings.TrimSpace(incoming.Details)) != len(strings.TrimSpace(existing.Details)) {
+		return len(strings.TrimSpace(incoming.Details)) > len(strings.TrimSpace(existing.Details))
+	}
+	if len(strings.TrimSpace(incoming.Abstract)) != len(strings.TrimSpace(existing.Abstract)) {
+		return len(strings.TrimSpace(incoming.Abstract)) > len(strings.TrimSpace(existing.Abstract))
+	}
+	return false
+}
+
+// scorePreCheckOriginRichness ranks retrieval-origin codes by how much reviewer-facing explanation value they carry when repeated hits tie on score.
+// scorePreCheckOriginRichness 用于按 reviewer 说明价值给检索来源代码排序，在重复命中分数相等时选择信息更丰富的来源。
+func scorePreCheckOriginRichness(origin string) int {
+	origin = strings.TrimSpace(origin)
+	if origin == "" {
+		return 0
+	}
+	score := 1
+	if strings.Contains(origin, "hybrid_rrf") {
+		score += 4
+	} else if strings.Contains(origin, "lexical") || strings.Contains(origin, "vector") {
+		score += 2
+	}
+	if strings.Contains(origin, "rerank") {
+		score += 2
+	}
+	if strings.HasSuffix(origin, "_mmr") {
+		score++
+	}
+	return score
 }
 
 // appendSortedUniquePreCheckValues deduplicates and sorts reviewer-facing string lists so merged candidate explanations stay stable across map iteration and query-group order.
