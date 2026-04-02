@@ -1,13 +1,17 @@
-// memory_query.go implements the vector-memory search and turn-detail lookup use cases exposed by the gRPC memory query surface.
-// memory_query.go 用于实现 gRPC 记忆查询接口暴露的向量记忆检索与 turn 详情读取用例。
+// memory_query.go implements unified memory search, detail lookup, and direct-write flows exposed by the gRPC memory surface.
+// memory_query.go 用于实现 gRPC 记忆接口暴露的统一记忆检索、详情查询和主动写入流程。
 package usecase
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -31,9 +35,35 @@ const (
 	// maxTurnDetailLookup 用于限制一次详情查询最多请求多少个 turn id，保持关系读取的规模可控。
 	maxTurnDetailLookup = 256
 
+	// maxMemoryDetailLookup limits how many unified memory refs one detail query can request at once.
+	// maxMemoryDetailLookup 用于限制一次统一记忆详情查询最多请求多少个引用。
+	maxMemoryDetailLookup = 256
+
+	// maxWriteMemoryItems limits one direct-write call so a single tools request cannot fan out into unbounded embedding work.
+	// maxWriteMemoryItems 用于限制一次主动写入调用最多能写多少条记忆，避免单次工具调用扩散成无限 embedding 工作量。
+	maxWriteMemoryItems = 32
+
 	// turnDetailContextRadius keeps three turns before and after each anchor so callers can continue finer follow-up lookups without fetching entire sessions.
 	// turnDetailContextRadius 用于固定返回每个锚点 turn 前后各三轮编号，让调用方无需拉取整条 session 也能继续做更细的后续查询。
 	turnDetailContextRadius = 3
+
+	// directMemoryDedupeWindow keeps the soft-idempotency window short enough to block accidental duplicate writes without freezing later updates forever.
+	// directMemoryDedupeWindow 用于限定主动写记忆的软幂等时间窗，既阻止误重复写入，又避免长期锁死后续更新。
+	directMemoryDedupeWindow = 24 * time.Hour
+)
+
+var (
+	// defaultSessionMemoryTTL keeps session-scoped direct writes alive long enough for short-term workflows while still allowing idle cleanup later.
+	// defaultSessionMemoryTTL 用于让 session 级主动记忆在短期工作流中足够持久，同时仍允许后续 idle 清理。
+	defaultSessionMemoryTTL = 15 * 24 * time.Hour
+
+	// defaultProjectMemoryTTL keeps project-scoped direct writes much longer than profile memory by default.
+	// defaultProjectMemoryTTL 用于让 project 级主动记忆默认寿命明显长于画像记忆。
+	defaultProjectMemoryTTL = 180 * 24 * time.Hour
+
+	// defaultUserMemoryTTL keeps user-scoped direct writes longest by default because they should survive across multiple tasks.
+	// defaultUserMemoryTTL 用于让 user 级主动记忆默认拥有最长寿命，因为它们应跨多个任务继续存在。
+	defaultUserMemoryTTL = 365 * 24 * time.Hour
 )
 
 // MemoryQueryCommand carries one grouped JSON search payload together with the resolved user/project selectors.
@@ -52,16 +82,18 @@ type MemoryQueryItem struct {
 	Query      string `json:"query"`
 }
 
-// MemoryQueryHit returns one recalled vector-memory candidate plus the turn anchor needed for later detail lookup.
-// MemoryQueryHit 用于返回一条召回的向量记忆候选，以及后续详情读取所需的 turn 锚点。
+// MemoryQueryHit returns one unified recalled memory candidate together with its durable refs and preview fields.
+// MemoryQueryHit 用于返回一条统一召回的记忆候选，以及它的长期引用和预览字段。
 type MemoryQueryHit struct {
-	MemoryID  string
-	TurnID    uint64
-	SessionID uint64
-	Content   string
-	Details   string
-	Category  int
-	Score     float64
+	MemoryRef      logicdomain.MemoryRef
+	SourceRef      logicdomain.MemoryRef
+	SourceKind     int
+	ScopeLevel     int
+	SessionID      uint64
+	Abstract       string
+	DetailsPreview string
+	Category       int
+	Score          float64
 }
 
 // MemoryQueryGroupResult returns the echoed JSON query item together with the hit list produced for that item.
@@ -104,18 +136,74 @@ type TurnDetailResult struct {
 	Turns []TurnDetailRecord
 }
 
-// MemoryExecutor groups the active memory-search and turn-detail lookup flows exposed by the inbound gRPC adapter.
-// MemoryExecutor 用于聚合入站 gRPC 适配层对外暴露的主动记忆检索和 turn 详情读取流程。
+// MemoryDetailCommand carries one ordered ref list that may mix unified memory refs and turn refs.
+// MemoryDetailCommand 用于承载一个有序引用列表，列表中可混合统一记忆引用和 turn 引用。
+type MemoryDetailCommand struct {
+	Refs []logicdomain.MemoryRef
+}
+
+// MemoryDetailItem returns either one unified memory record or one turn detail record according to the requested ref type.
+// MemoryDetailItem 用于按请求引用类型返回统一记忆记录或 turn 详情记录中的一种。
+type MemoryDetailItem struct {
+	Ref    logicdomain.MemoryRef
+	Memory *logicdomain.MemoryNodeRecord
+	Turn   *TurnDetailRecord
+}
+
+// MemoryDetailResult returns the requested mixed refs in caller order.
+// MemoryDetailResult 用于按调用方顺序返回请求的混合引用详情。
+type MemoryDetailResult struct {
+	Items []MemoryDetailItem
+}
+
+// WriteMemoryItem stores one direct-write candidate before soft idempotency, embedding, and relational persistence begin.
+// WriteMemoryItem 用于保存一条主动写入候选，在软幂等、embedding 和关系持久化开始前使用。
+type WriteMemoryItem struct {
+	ScopeLevel  int
+	Abstract    string
+	Details     string
+	Category    int
+	Priority    int
+	MemoryLevel int
+	ExpiresAt   time.Time
+}
+
+// WriteMemoriesCommand carries one resolved session scope plus the direct memory items that should be persisted immediately.
+// WriteMemoriesCommand 用于承载一个已解析 session 范围，以及需要立刻持久化的主动记忆条目。
+type WriteMemoriesCommand struct {
+	Session logicdomain.SessionRef
+	Items   []WriteMemoryItem
+}
+
+// WriteMemoryResultItem returns the ref and write mode for one accepted direct memory item.
+// WriteMemoryResultItem 用于返回一条已接受主动记忆项的引用和写入模式。
+type WriteMemoryResultItem struct {
+	Ref        logicdomain.MemoryRef
+	SourceKind int
+	ScopeLevel int
+	Deduped    bool
+}
+
+// WriteMemoriesResult returns the ordered direct-write results for the caller.
+// WriteMemoriesResult 用于按调用方顺序返回主动写记忆结果。
+type WriteMemoriesResult struct {
+	Items []WriteMemoryResultItem
+}
+
+// MemoryExecutor groups the active memory-search, detail lookup, and direct-write flows exposed by the inbound gRPC adapter.
+// MemoryExecutor 用于聚合入站 gRPC 适配层对外暴露的主动记忆检索、详情查询和直接写入流程。
 type MemoryExecutor interface {
 	Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error)
 	GetTurns(ctx context.Context, cmd TurnDetailCommand) (TurnDetailResult, error)
+	GetDetails(ctx context.Context, cmd MemoryDetailCommand) (MemoryDetailResult, error)
+	Write(ctx context.Context, cmd WriteMemoriesCommand) (WriteMemoriesResult, error)
 }
 
-// MemoryUseCase orchestrates grouped memory search on top of profile-target resolution, embeddings, vector recall, and turn detail lookups.
-// MemoryUseCase 用于在画像目标解析、embedding、向量召回和 turn 详情读取之上编排分组记忆查询流程。
+// MemoryUseCase orchestrates grouped memory search, mixed detail lookup, and direct AI memory writes on top of profile-target resolution and unified relational memory rows.
+// MemoryUseCase 用于在画像目标解析和统一关系记忆行之上，编排分组记忆检索、混合详情查询以及 AI 主动写记忆流程。
 type MemoryUseCase struct {
 	profiles  appports.ProfileStore
-	turns     appports.TurnLookupStore
+	memories  appports.MemoryStore
 	embedding appports.EmbeddingClient
 	vector    appports.VectorStore
 	logger    *logx.Logger
@@ -123,24 +211,27 @@ type MemoryUseCase struct {
 
 // NewMemoryUseCase creates a MemoryUseCase instance.
 // NewMemoryUseCase 用于创建 MemoryUseCase 实例。
-func NewMemoryUseCase(profiles appports.ProfileStore, turns appports.TurnLookupStore, embedding appports.EmbeddingClient, vector appports.VectorStore, logger *logx.Logger) *MemoryUseCase {
+func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemoryStore, embedding appports.EmbeddingClient, vector appports.VectorStore, logger *logx.Logger) *MemoryUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
 	return &MemoryUseCase{
 		profiles:  profiles,
-		turns:     turns,
+		memories:  memories,
 		embedding: embedding,
 		vector:    vector,
 		logger:    logger,
 	}
 }
 
-// Search resolves the concrete project/user scope, parses the grouped JSON payload, embeds each item, and echoes grouped vector hits with turn anchors.
-// Search 用于解析具体的 project/user 范围、解析分组 JSON 载荷、对每条输入做 embedding，并返回带 turn 锚点的分组向量命中结果。
+// Search resolves the concrete project/user scope, parses the grouped JSON payload, embeds each item, and returns enriched unified memory refs.
+// Search 用于解析具体的 project/user 范围、解析分组 JSON 载荷、对每条输入做 embedding，并返回补全后的统一记忆引用。
 func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error) {
 	if u == nil || u.profiles == nil {
 		return MemoryQueryResult{}, fmt.Errorf("profile store is nil")
+	}
+	if u.memories == nil {
+		return MemoryQueryResult{}, fmt.Errorf("memory store is nil")
 	}
 	if u.embedding == nil {
 		return MemoryQueryResult{}, fmt.Errorf("embedding client is nil")
@@ -181,8 +272,8 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		return MemoryQueryResult{}, fmt.Errorf("embedding result count mismatch: got %d want %d", len(embedResp.Vectors), len(items))
 	}
 
-	// Keep vector recall inside the resolved project hierarchy while allowing user-owned and shared rows to participate.
-	// 将向量召回限制在已解析项目层级内，同时允许用户私有和共享行共同参与检索。
+	// Keep vector recall inside the resolved project hierarchy and enrich the returned vector rows with relational memory refs.
+	// 将向量召回限制在已解析项目层级内，并使用关系记忆行补全向量结果中的长期引用。
 	filter := logicdomain.SearchFilter{
 		UserID:    userTarget.UserID,
 		TeamID:    projectTarget.TeamID,
@@ -196,11 +287,15 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
+		mapped, err := u.mapSearchHits(ctx, hits)
+		if err != nil {
+			return MemoryQueryResult{}, err
+		}
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
 			Background: item.Background,
 			Query:      item.Query,
-			Hits:       mapMemoryHits(hits),
+			Hits:       mapped,
 		})
 	}
 	return MemoryQueryResult{
@@ -213,44 +308,202 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 // GetTurns loads the requested dehydrated turn rows and reorders them to match the caller-supplied turn id sequence.
 // GetTurns 用于读取请求的脱水 turn 行，并按调用方传入的 turn id 顺序重新排序返回。
 func (u *MemoryUseCase) GetTurns(ctx context.Context, cmd TurnDetailCommand) (TurnDetailResult, error) {
-	if u == nil || u.turns == nil {
-		return TurnDetailResult{}, fmt.Errorf("turn lookup store is nil")
+	if u == nil || u.memories == nil {
+		return TurnDetailResult{}, fmt.Errorf("memory store is nil")
 	}
 	if err := validateTurnDetailCommand(cmd); err != nil {
 		return TurnDetailResult{}, err
 	}
+	return u.loadTurnDetails(ctx, normalizeTurnIDList(cmd.TurnIDs))
+}
 
-	// Normalize the id list before querying so relational adapters can use deterministic IN lists without duplicate ids.
-	// 在查询前先规范化 id 列表，让关系适配层可以使用确定性的 IN 列表并消除重复 id。
-	requested := normalizeTurnIDList(cmd.TurnIDs)
-	rows, err := u.turns.LoadTurnsByIDs(ctx, requested)
-	if err != nil {
-		return TurnDetailResult{}, err
+// GetDetails resolves one mixed ref list into ordered memory-detail and turn-detail payloads.
+// GetDetails 用于把一组混合引用解析成有序的记忆详情和 turn 详情载荷。
+func (u *MemoryUseCase) GetDetails(ctx context.Context, cmd MemoryDetailCommand) (MemoryDetailResult, error) {
+	if u == nil || u.memories == nil {
+		return MemoryDetailResult{}, fmt.Errorf("memory store is nil")
 	}
-	windows, err := u.turns.LoadTurnWindows(ctx, requested, turnDetailContextRadius)
-	if err != nil {
-		return TurnDetailResult{}, err
+	if err := validateMemoryDetailCommand(cmd); err != nil {
+		return MemoryDetailResult{}, err
 	}
-	byID := make(map[uint64]logicdomain.SessionTurnRecord, len(rows))
-	for _, row := range rows {
-		byID[row.ID] = row
-	}
-	ordered := make([]TurnDetailRecord, 0, len(rows))
-	for _, turnID := range requested {
-		if row, ok := byID[turnID]; ok {
-			userContent, timeline, assistantContent := parseDehydratedTurnContent(row.DehydratedContent)
-			window := windows[turnID]
-			ordered = append(ordered, TurnDetailRecord{
-				Turn:             row,
-				UserContent:      userContent,
-				Timeline:         timeline,
-				AssistantContent: assistantContent,
-				PreviousTurnIDs:  append([]uint64(nil), window.PreviousTurnIDs...),
-				NextTurnIDs:      append([]uint64(nil), window.NextTurnIDs...),
-			})
+
+	// Group refs by kind so the relational store can batch load memory rows and turn rows separately, then restore caller order afterward.
+	// 按类型把引用分组，让关系存储分别批量读取 memory 行和 turn 行，再在最后恢复调用方顺序。
+	refs := normalizeMemoryRefs(cmd.Refs)
+	memoryIDs := make([]uint64, 0, len(refs))
+	turnIDs := make([]uint64, 0, len(refs))
+	for _, ref := range refs {
+		switch ref.Type {
+		case logicdomain.MemoryRefTypeMemory:
+			memoryIDs = append(memoryIDs, ref.ID)
+		case logicdomain.MemoryRefTypeTurn:
+			turnIDs = append(turnIDs, ref.ID)
 		}
 	}
-	return TurnDetailResult{Turns: ordered}, nil
+
+	memoryRows := map[uint64]logicdomain.MemoryNodeRecord{}
+	if len(memoryIDs) > 0 {
+		rows, err := u.memories.LoadMemoryNodesByIDs(ctx, memoryIDs)
+		if err != nil {
+			return MemoryDetailResult{}, err
+		}
+		for _, row := range rows {
+			memoryRows[row.ID] = row
+		}
+	}
+
+	turnRows := map[uint64]TurnDetailRecord{}
+	if len(turnIDs) > 0 {
+		loaded, err := u.loadTurnDetails(ctx, turnIDs)
+		if err != nil {
+			return MemoryDetailResult{}, err
+		}
+		for _, row := range loaded.Turns {
+			turnRows[row.Turn.ID] = row
+		}
+	}
+
+	items := make([]MemoryDetailItem, 0, len(refs))
+	for _, ref := range refs {
+		item := MemoryDetailItem{Ref: ref}
+		switch ref.Type {
+		case logicdomain.MemoryRefTypeMemory:
+			if row, ok := memoryRows[ref.ID]; ok {
+				copied := row
+				item.Memory = &copied
+			}
+		case logicdomain.MemoryRefTypeTurn:
+			if row, ok := turnRows[ref.ID]; ok {
+				copied := row
+				item.Turn = &copied
+			}
+		}
+		items = append(items, item)
+	}
+	return MemoryDetailResult{Items: items}, nil
+}
+
+// Write validates direct memory items, applies soft idempotency, embeds new rows, writes vectors, and persists unified memory records.
+// Write 用于校验主动记忆条目、执行软幂等、向量化新记录、写入向量，并持久化统一记忆行。
+func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (WriteMemoriesResult, error) {
+	if u == nil || u.memories == nil {
+		return WriteMemoriesResult{}, fmt.Errorf("memory store is nil")
+	}
+	if u.embedding == nil {
+		return WriteMemoriesResult{}, fmt.Errorf("embedding client is nil")
+	}
+	if u.vector == nil {
+		return WriteMemoriesResult{}, fmt.Errorf("vector store is nil")
+	}
+	if err := validateWriteMemoriesCommand(cmd); err != nil {
+		return WriteMemoriesResult{}, err
+	}
+
+	// Normalize defaults item-by-item so direct-write callers can omit optional lifecycle fields without triggering a second reviewer model call.
+	// 逐条补齐默认值，让主动写记忆的调用方可以省略可选生命周期字段，而无需再触发第二个评审模型。
+	now := time.Now().UTC()
+	items := make([]WriteMemoryItem, 0, len(cmd.Items))
+	for _, item := range cmd.Items {
+		items = append(items, normalizeWriteMemoryItem(item, now))
+	}
+
+	results := make([]WriteMemoryResultItem, 0, len(items))
+	for _, item := range items {
+		dedupeHash := buildDirectMemoryDedupeHash(cmd.Session, item)
+		existing, ok, err := u.memories.FindRecentActiveMemoryByDedupe(
+			ctx,
+			cmd.Session,
+			logicdomain.MemorySourceKindGRPCAIWrite,
+			item.ScopeLevel,
+			dedupeHash,
+			now.Add(-directMemoryDedupeWindow),
+		)
+		if err != nil {
+			return WriteMemoriesResult{}, err
+		}
+		if ok {
+			results = append(results, WriteMemoryResultItem{
+				Ref: logicdomain.MemoryRef{
+					Type: logicdomain.MemoryRefTypeMemory,
+					ID:   existing.ID,
+				},
+				SourceKind: existing.SourceKind,
+				ScopeLevel: existing.ScopeLevel,
+				Deduped:    true,
+			})
+			continue
+		}
+
+		vectors, err := embedPostActionTexts(ctx, u.embedding, []string{item.Abstract})
+		if err != nil {
+			return WriteMemoriesResult{}, err
+		}
+		if len(vectors) != 1 {
+			return WriteMemoriesResult{}, fmt.Errorf("embedding result count mismatch: got %d want 1", len(vectors))
+		}
+		vectorID, err := generatePostActionUUID()
+		if err != nil {
+			return WriteMemoriesResult{}, err
+		}
+
+		record := logicdomain.MemoryRecord{
+			ID:     vectorID,
+			Text:   item.Abstract,
+			Vector: vectors[0],
+			Filter: buildDirectMemoryFilter(cmd.Session, item.ScopeLevel),
+			Metadata: map[string]string{
+				"category":     strconv.Itoa(item.Category),
+				"details":      item.Details,
+				"source_kind":  logicdomain.MemorySourceKindLabel(logicdomain.MemorySourceKindGRPCAIWrite),
+				"scope_level":  logicdomain.MemoryScopeLevelLabel(item.ScopeLevel),
+				"priority":     strconv.Itoa(item.Priority),
+				"memory_level": strconv.Itoa(item.MemoryLevel),
+			},
+			CreatedAt: now,
+		}
+		if err := u.vector.Upsert(ctx, record); err != nil {
+			return WriteMemoriesResult{}, err
+		}
+
+		created, err := u.memories.CreateDirectMemoryNode(ctx, cmd.Session, logicdomain.MemoryNodeRecord{
+			TeamID:          cmd.Session.TeamID,
+			SpaceID:         cmd.Session.SpaceID,
+			ProjectID:       cmd.Session.ProjectID,
+			UserID:          cmd.Session.UserID,
+			OriginSessionID: cmd.Session.SessionID,
+			VectorID:        vectorID,
+			Vector:          append([]float32(nil), vectors[0]...),
+			SourceKind:      logicdomain.MemorySourceKindGRPCAIWrite,
+			ScopeLevel:      item.ScopeLevel,
+			Category:        item.Category,
+			Abstract:        item.Abstract,
+			Details:         item.Details,
+			Status:          logicdomain.MemoryStatusActive,
+			Priority:        item.Priority,
+			MemoryLevel:     item.MemoryLevel,
+			RefreshWeight:   1,
+			ExpiresAt:       item.ExpiresAt,
+			DedupeHash:      dedupeHash,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		})
+		if err != nil {
+			if _, rollbackErr := u.vector.DeleteByIDs(ctx, []string{vectorID}); rollbackErr != nil && u.logger != nil {
+				u.logger.Error("direct memory vector rollback failed", "vector_id", vectorID, "session_id", cmd.Session.SessionID, "err", rollbackErr)
+			}
+			return WriteMemoriesResult{}, err
+		}
+		results = append(results, WriteMemoryResultItem{
+			Ref: logicdomain.MemoryRef{
+				Type: logicdomain.MemoryRefTypeMemory,
+				ID:   created.ID,
+			},
+			SourceKind: created.SourceKind,
+			ScopeLevel: created.ScopeLevel,
+			Deduped:    false,
+		})
+	}
+	return WriteMemoriesResult{Items: results}, nil
 }
 
 // validateMemoryQueryCommand checks the grouped vector-search request before any hierarchy, embedding, or vector work begins.
@@ -283,6 +536,67 @@ func validateTurnDetailCommand(cmd TurnDetailCommand) error {
 	for idx, turnID := range cmd.TurnIDs {
 		if turnID == 0 {
 			return logicdomain.ValidationError{Field: "turn_ids[" + strconv.Itoa(idx) + "]", Message: "must be a numeric id"}
+		}
+	}
+	return nil
+}
+
+// validateMemoryDetailCommand checks the mixed detail lookup request before relational reads begin.
+// validateMemoryDetailCommand 用于在关系读取开始前校验混合详情查询请求。
+func validateMemoryDetailCommand(cmd MemoryDetailCommand) error {
+	if len(cmd.Refs) == 0 {
+		return logicdomain.ValidationError{Field: "refs", Message: "must contain at least one ref"}
+	}
+	if len(cmd.Refs) > maxMemoryDetailLookup {
+		return logicdomain.ValidationError{Field: "refs", Message: fmt.Sprintf("must contain at most %d refs", maxMemoryDetailLookup)}
+	}
+	for idx, ref := range cmd.Refs {
+		if !logicdomain.ValidMemoryRefType(ref.Type) {
+			return logicdomain.ValidationError{Field: "refs[" + strconv.Itoa(idx) + "].type", Message: "must be one supported ref type"}
+		}
+		if ref.ID == 0 {
+			return logicdomain.ValidationError{Field: "refs[" + strconv.Itoa(idx) + "].id", Message: "must be a numeric id"}
+		}
+	}
+	return nil
+}
+
+// validateWriteMemoriesCommand checks the resolved scope and direct-write candidates before soft idempotency and embedding begin.
+// validateWriteMemoriesCommand 用于在软幂等和 embedding 开始前校验已解析范围与主动写入候选。
+func validateWriteMemoriesCommand(cmd WriteMemoriesCommand) error {
+	if cmd.Session.SessionID == 0 || strings.TrimSpace(cmd.Session.SessionKey) == "" {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if cmd.Session.UserID == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+	}
+	if cmd.Session.ProjectID == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+	}
+	if len(cmd.Items) == 0 {
+		return logicdomain.ValidationError{Field: "items", Message: "must contain at least one item"}
+	}
+	if len(cmd.Items) > maxWriteMemoryItems {
+		return logicdomain.ValidationError{Field: "items", Message: fmt.Sprintf("must contain at most %d items", maxWriteMemoryItems)}
+	}
+	for idx, item := range cmd.Items {
+		if strings.TrimSpace(item.Abstract) == "" {
+			return logicdomain.ValidationError{Field: "items[" + strconv.Itoa(idx) + "].abstract", Message: "is required"}
+		}
+		if strings.TrimSpace(item.Details) == "" {
+			return logicdomain.ValidationError{Field: "items[" + strconv.Itoa(idx) + "].details", Message: "is required"}
+		}
+		if !logicdomain.ValidMemoryNodeCategory(item.Category) {
+			return logicdomain.ValidationError{Field: "items[" + strconv.Itoa(idx) + "].category", Message: "must be one supported memory category"}
+		}
+		if item.ScopeLevel >= 0 && !logicdomain.ValidMemoryScopeLevel(item.ScopeLevel) {
+			return logicdomain.ValidationError{Field: "items[" + strconv.Itoa(idx) + "].scope_level", Message: "must be one supported memory scope"}
+		}
+		if item.Priority >= 0 && !logicdomain.ValidMemoryPriority(item.Priority) {
+			return logicdomain.ValidationError{Field: "items[" + strconv.Itoa(idx) + "].priority", Message: "must be one supported memory priority"}
+		}
+		if item.MemoryLevel >= 0 && !logicdomain.ValidMemoryLevel(item.MemoryLevel) {
+			return logicdomain.ValidationError{Field: "items[" + strconv.Itoa(idx) + "].memory_level", Message: "must be one supported memory level"}
 		}
 	}
 	return nil
@@ -332,50 +646,141 @@ func normalizeMemorySearchTopK(topK int) int {
 	return topK
 }
 
-// mapMemoryHits converts vector-store hits into the gRPC-facing query result shape while preserving turn anchors and auxiliary metadata.
-// mapMemoryHits 用于把向量存储命中结果转换成 gRPC 查询结果结构，同时保留 turn 锚点和辅助元数据。
-func mapMemoryHits(hits []logicdomain.MemoryHit) []MemoryQueryHit {
+// mapSearchHits enriches vector hits with relational unified-memory rows so the search response can return durable memory refs instead of bare turn anchors.
+// mapSearchHits 用于用关系层统一记忆行补全向量命中，从而让搜索响应返回长期 memory ref，而不是裸 turn 锚点。
+func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.MemoryHit) ([]MemoryQueryHit, error) {
+	vectorIDs := collectVectorIDs(hits)
+	if len(vectorIDs) == 0 {
+		return []MemoryQueryHit{}, nil
+	}
+	rows, err := u.memories.LoadMemoryNodesByVectorIDs(ctx, vectorIDs)
+	if err != nil {
+		return nil, err
+	}
+	byVectorID := make(map[string]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		byVectorID[strings.TrimSpace(row.VectorID)] = row
+	}
 	mapped := make([]MemoryQueryHit, 0, len(hits))
 	for _, hit := range hits {
-		mapped = append(mapped, MemoryQueryHit{
-			MemoryID:  strings.TrimSpace(hit.ID),
-			TurnID:    parseUint64Metadata(hit.Metadata, "turn_id"),
-			SessionID: hit.Filter.SessionID,
-			Content:   strings.TrimSpace(hit.Text),
-			Details:   strings.TrimSpace(hit.Metadata["details"]),
-			Category:  parseIntMetadata(hit.Metadata, "category"),
-			Score:     hit.Score,
-		})
+		row, ok := byVectorID[strings.TrimSpace(hit.ID)]
+		if !ok {
+			continue
+		}
+		mappedHit := MemoryQueryHit{
+			MemoryRef: logicdomain.MemoryRef{
+				Type: logicdomain.MemoryRefTypeMemory,
+				ID:   row.ID,
+			},
+			SourceKind:     row.SourceKind,
+			ScopeLevel:     row.ScopeLevel,
+			SessionID:      chooseSearchSessionID(hit, row),
+			Abstract:       strings.TrimSpace(row.Abstract),
+			DetailsPreview: strings.TrimSpace(row.Details),
+			Category:       row.Category,
+			Score:          hit.Score,
+		}
+		if row.SourceTurnID > 0 {
+			mappedHit.SourceRef = logicdomain.MemoryRef{
+				Type: logicdomain.MemoryRefTypeTurn,
+				ID:   row.SourceTurnID,
+			}
+		}
+		mapped = append(mapped, mappedHit)
 	}
-	return mapped
+	sort.SliceStable(mapped, func(i, j int) bool {
+		if mapped[i].Score == mapped[j].Score {
+			return mapped[i].MemoryRef.ID < mapped[j].MemoryRef.ID
+		}
+		return mapped[i].Score > mapped[j].Score
+	})
+	return mapped, nil
 }
 
-// parseUint64Metadata extracts one uint64 metadata value while keeping malformed values from crashing the memory query path.
-// parseUint64Metadata 用于提取单个 uint64 元数据值，同时避免格式异常把记忆查询链路打断。
-func parseUint64Metadata(metadata map[string]string, key string) uint64 {
-	value := strings.TrimSpace(metadata[key])
-	if value == "" {
-		return 0
-	}
-	parsed, err := strconv.ParseUint(value, 10, 64)
+// loadTurnDetails batches one turn-id list into ordered turn-detail records plus neighboring turn ids.
+// loadTurnDetails 用于把一组 turn id 批量读取成有序的 turn 详情记录，并补齐相邻 turn 编号。
+func (u *MemoryUseCase) loadTurnDetails(ctx context.Context, requested []uint64) (TurnDetailResult, error) {
+	rows, err := u.memories.LoadTurnsByIDs(ctx, requested)
 	if err != nil {
-		return 0
+		return TurnDetailResult{}, err
 	}
-	return parsed
+	windows, err := u.memories.LoadTurnWindows(ctx, requested, turnDetailContextRadius)
+	if err != nil {
+		return TurnDetailResult{}, err
+	}
+	byID := make(map[uint64]logicdomain.SessionTurnRecord, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	ordered := make([]TurnDetailRecord, 0, len(rows))
+	for _, turnID := range requested {
+		if row, ok := byID[turnID]; ok {
+			userContent, timeline, assistantContent := parseDehydratedTurnContent(row.DehydratedContent)
+			window := windows[turnID]
+			ordered = append(ordered, TurnDetailRecord{
+				Turn:             row,
+				UserContent:      userContent,
+				Timeline:         timeline,
+				AssistantContent: assistantContent,
+				PreviousTurnIDs:  append([]uint64(nil), window.PreviousTurnIDs...),
+				NextTurnIDs:      append([]uint64(nil), window.NextTurnIDs...),
+			})
+		}
+	}
+	return TurnDetailResult{Turns: ordered}, nil
 }
 
-// parseIntMetadata extracts one int metadata value while keeping malformed values from crashing the memory query path.
-// parseIntMetadata 用于提取单个 int 元数据值，同时避免格式异常把记忆查询链路打断。
-func parseIntMetadata(metadata map[string]string, key string) int {
-	value := strings.TrimSpace(metadata[key])
-	if value == "" {
-		return 0
+// normalizeMemoryRefs removes duplicate refs while preserving caller order so mixed detail lookups stay deterministic.
+// normalizeMemoryRefs 用于在保持调用方顺序的同时去掉重复引用，确保混合详情查询保持确定性。
+func normalizeMemoryRefs(refs []logicdomain.MemoryRef) []logicdomain.MemoryRef {
+	if len(refs) == 0 {
+		return nil
 	}
-	parsed, err := strconv.Atoi(value)
-	if err != nil {
-		return 0
+	seen := make(map[string]struct{}, len(refs))
+	normalized := make([]logicdomain.MemoryRef, 0, len(refs))
+	for _, ref := range refs {
+		if ref.ID == 0 || !logicdomain.ValidMemoryRefType(ref.Type) {
+			continue
+		}
+		key := strconv.Itoa(ref.Type) + ":" + strconv.FormatUint(ref.ID, 10)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, ref)
 	}
-	return parsed
+	return normalized
+}
+
+// collectVectorIDs removes empty and duplicate vector ids before the relational enrichment query starts.
+// collectVectorIDs 用于在关系补全查询开始前去掉空值和重复的 vector id。
+func collectVectorIDs(hits []logicdomain.MemoryHit) []string {
+	if len(hits) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(hits))
+	ids := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		id := strings.TrimSpace(hit.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+// chooseSearchSessionID prefers the vector hit session id and falls back to the relational origin session when needed.
+// chooseSearchSessionID 用于优先返回向量命中的 session id，并在缺失时回退到关系层 origin session。
+func chooseSearchSessionID(hit logicdomain.MemoryHit, row logicdomain.MemoryNodeRecord) uint64 {
+	if hit.Filter.SessionID > 0 {
+		return hit.Filter.SessionID
+	}
+	return row.OriginSessionID
 }
 
 // normalizeTurnIDList removes duplicates while preserving input order so turn-detail lookups remain deterministic for callers.
@@ -424,4 +829,78 @@ func parseDehydratedTurnContent(raw string) (string, []logicdomain.TurnDetailTim
 		})
 	}
 	return payload.User, timeline, payload.Assistant
+}
+
+// normalizeWriteMemoryItem fills direct-write defaults so tool callers can omit optional lifecycle controls without losing deterministic persistence behavior.
+// normalizeWriteMemoryItem 用于补齐主动写记忆默认值，让工具调用方即使省略可选生命周期字段，也不会丢失确定性的持久化行为。
+func normalizeWriteMemoryItem(item WriteMemoryItem, now time.Time) WriteMemoryItem {
+	item.Abstract = strings.TrimSpace(item.Abstract)
+	item.Details = strings.TrimSpace(item.Details)
+	if !logicdomain.ValidMemoryScopeLevel(item.ScopeLevel) {
+		item.ScopeLevel = logicdomain.MemoryScopeLevelProject
+	}
+	if !logicdomain.ValidMemoryPriority(item.Priority) {
+		item.Priority = logicdomain.MemoryPriorityP2
+	}
+	if !logicdomain.ValidMemoryLevel(item.MemoryLevel) {
+		switch item.ScopeLevel {
+		case logicdomain.MemoryScopeLevelSession:
+			item.MemoryLevel = logicdomain.MemoryLevelSession
+		default:
+			item.MemoryLevel = logicdomain.MemoryLevelStable
+		}
+	}
+	if item.ExpiresAt.IsZero() {
+		item.ExpiresAt = now.Add(defaultMemoryTTL(item.ScopeLevel))
+	}
+	return item
+}
+
+// defaultMemoryTTL returns the default retention window for one direct-write scope.
+// defaultMemoryTTL 用于返回某个主动写记忆作用域的默认保留时长。
+func defaultMemoryTTL(scopeLevel int) time.Duration {
+	switch scopeLevel {
+	case logicdomain.MemoryScopeLevelSession:
+		return defaultSessionMemoryTTL
+	case logicdomain.MemoryScopeLevelUser:
+		return defaultUserMemoryTTL
+	default:
+		return defaultProjectMemoryTTL
+	}
+}
+
+// buildDirectMemoryDedupeHash builds one stable hash from the fields that define “same direct write in the same short window”.
+// buildDirectMemoryDedupeHash 用于从定义“同一短时间窗口内相同主动写入”的字段构造稳定哈希。
+func buildDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemoryItem) string {
+	body := strings.Join([]string{
+		strconv.Itoa(logicdomain.MemorySourceKindGRPCAIWrite),
+		strconv.Itoa(item.ScopeLevel),
+		strconv.FormatUint(session.SessionID, 10),
+		normalizeHashText(item.Abstract),
+		normalizeHashText(item.Details),
+	}, "\n")
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// normalizeHashText keeps soft-idempotency stable across harmless whitespace drift while still distinguishing materially different content.
+// normalizeHashText 用于在软幂等中吸收无害的空白差异，同时保留对实质内容变化的区分能力。
+func normalizeHashText(text string) string {
+	fields := strings.Fields(strings.TrimSpace(strings.ToLower(text)))
+	return strings.Join(fields, " ")
+}
+
+// buildDirectMemoryFilter derives the vector filter written onto direct-memory rows according to their declared scope level.
+// buildDirectMemoryFilter 用于根据主动记忆声明的作用域等级，推导写入向量行时携带的过滤条件。
+func buildDirectMemoryFilter(session logicdomain.SessionRef, scopeLevel int) logicdomain.SearchFilter {
+	filter := logicdomain.SearchFilter{
+		UserID:    session.UserID,
+		TeamID:    session.TeamID,
+		SpaceID:   session.SpaceID,
+		ProjectID: session.ProjectID,
+	}
+	if scopeLevel == logicdomain.MemoryScopeLevelSession {
+		filter.SessionID = session.SessionID
+	}
+	return filter
 }

@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何通过后台队列把结果写入 SQLite（默认）/DuckDB（兼容）与 LanceDB。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何在单轮写入后立即完成 LLM 提炼，并把结果写入 SQLite（默认）/DuckDB（兼容）与 LanceDB。
 
 当前默认的 SQLite 关系库存储适配层会优先使用：
 
@@ -177,39 +177,26 @@ message PostActionTimelineItem {
 14. 追加到 DuckDB：
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
-15. turn 写入成功后：
-    - 不在主写链路里直接调 LLM
-    - 而是把当前 `session` 投递到后台队列
-16. 后台队列有两条工作线：
-    - 优先消费显式入队的 `session`
-    - 每 30 秒扫描一次“超过空闲阈值且仍有待处理 turn”的 `session`
-17. 当满足任一条件时，会触发一次批量分析：
-    - 待处理 turn 数达到 `session_analysis_turn_threshold`
-    - 待处理 turn 的累计 token 预算达到 `session_analysis_token_threshold`
-    - 距离最后一次会话更新时间超过 `session_analysis_idle_timeout`
-18. 触发后会组装一份 `analyze_session_batch` 请求：
+15. turn 写入成功后，会立刻在主写链路里发起一次单轮 `analyze_turn`
+16. `analyze_turn` 请求会包含：
     - 最近若干条已提炼历史 `details`
-    - 当前仍未提炼的原始 turn
+    - 当前 turn 的原始脱水 JSON
     - 当前 session 下仍然活跃的旧记忆节点
     - 其中：
       - 历史部分只用于参考
-      - 待处理部分必须逐条输出对应结果
-      - 活跃记忆节点会带：
-        - `turn_id`
-        - `memory_node_id`
-        - `vector_id`
-19. `analyze_session_batch` 会返回：
-    - 每条待处理 turn 的：
-      - `details`
-      - `memory_nodes[]`
-      - `profile_nodes[]`
-    - 以及：
-      - `obsolete_memory_turn_ids`
-20. 如果批次里有 `profile_nodes[]`：
+      - 当前 turn 是唯一允许输出新 `details / memory_nodes / profile_nodes` 的目标
+      - 活跃记忆节点用于去重与覆盖判断
+17. `analyze_turn` 会返回：
+    - 当前 turn 的 `turn_id`
+    - 当前 turn 的 `details`
+    - 当前 turn 的 `memory_nodes[]`
+    - 当前 turn 的 `profile_nodes[]`
+    - 供后续统一记忆模型接入的 `superseded_memory_ids`
+18. 如果当前 turn 有 `profile_nodes[]`：
     - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
-    - 把这些活跃节点与本批次新画像候选一起送入一次 `review_profile_nodes`
-    - 如果本批次只有 user 或只有 project 候选，则只发送存在的一侧
-    - `analyze_session_batch` 与 `review_profile_nodes` 都要求按领域拆分画像节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
+    - 把这些活跃节点与本轮新画像候选一起送入一次 `review_profile_nodes`
+    - 如果本轮只有 user 或只有 project 候选，则只发送存在的一侧
+    - `analyze_turn` 与 `review_profile_nodes` 都要求按领域拆分画像节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
     - 如果当前 turn 只是“用户询问 AI 自己的喜好/习惯/画像是什么”，而回答只是助手基于上下文做的复述、猜测或迎合性总结：
       - 不应提炼成长期记忆
       - 也不应提炼成画像节点
@@ -225,12 +212,12 @@ message PostActionTimelineItem {
         - `priority`
         - `profile_level`
         - `level_reason`
-21. 如果批次里有新的 `memory_nodes[]`：
+19. 如果当前 turn 有新的 `memory_nodes[]`：
     - 会先对每条 `memory_nodes[].abstract` 做 embedding
     - 先把新向量写入 LanceDB
     - LanceDB 行 `id` 会回填成对应 `memory_nodes[].vector_id`
-22. 只有新向量写入成功后，才会批量回写 DuckDB：
-    - 更新每条待处理 turn：
+20. 只有新向量写入成功后，才会回写 DuckDB / SQLite：
+    - 更新当前 turn：
       - `details`
       - `details_budget`
       - `extracted_status = 1`
@@ -240,8 +227,6 @@ message PostActionTimelineItem {
     - 同步更新：
       - `vmm_users.profile`
       - `vmm_projects.profile`
-      - `vmm_sessions.last_summarized_id`
-      - `vmm_sessions.summarize_budget`
     - 这里的 `vmm_users.profile / vmm_projects.profile` 不再是 LLM 直接输出的大 Blob
       - 而是后端根据当前有效画像节点自动重建的正文时间轴文本
       - 每条记录会带：
@@ -249,10 +234,7 @@ message PostActionTimelineItem {
         - `L`
         - `W`
       - 但不会把 `P / L / W` 说明头长期存入 scope 字段
-23. 如果 `obsolete_memory_turn_ids` 不为空：
-    - 会把这些 turn 对应的 `vmm_memory_nodes.node_status` 标成 `superseded`
-    - DuckDB 提交成功后，再删除 LanceDB 对应的旧向量
-24. 如果画像评审中有旧画像节点需要被替代：
+21. 如果画像评审中有旧画像节点需要被替代：
     - 会把旧画像节点标成 `superseded`
     - 新画像节点会写入：
       - `priority`
@@ -262,75 +244,38 @@ message PostActionTimelineItem {
       - `expires_timestamp`
       - `superseded_by_id`
       - `profile_date`
-25. 每次队列扫描还会额外做一次过期画像收敛：
+22. 后台定时维护还会额外做一次过期画像收敛：
     - 会查找已经超过 `expires_timestamp` 的 `active` 画像节点
     - 把这些节点批量标记成 `expired`
     - 读取受影响 user/project 当前剩余的 `active` 节点
     - 由后端重新渲染 `vmm_users.profile / vmm_projects.profile`
-26. 如果 LanceDB 已写入新向量，但 DuckDB 最终回写失败：
+23. 如果 LanceDB 已写入新向量，但 DuckDB / SQLite 最终回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立新向量
 27. 当前限制：
     - 仍不自动更新 `vmm_teams.profile / vmm_spaces.profile`
 
-## 队列处理细节
+## 后台维护细节
 
-当前后台队列是单 worker goroutine，不是多 worker 并行。
+当前后台维护仍然是单 worker goroutine，不是多 worker 并行。
 
-它的职责分两类：
+它现在只负责周期性维护，不再承担延后的 turn 提炼：
 
-1. 优先消费显式入队的 `session`
-2. 每 30 秒执行一次周期性维护
-
-队列的显式入队来自：
-
-- `PostAction` 成功写入 `vmm_turn_records` 后
-- 空闲超时扫描把待处理 session 强制提升为 `force=true`
-
-同一个 `session` 在队列里会做去重和状态合并：
-
-- 已经在排队，则只刷新 session 快照
-- 已经在处理中，则标记为 `dirty`
-- 强制任务会把 `force` 置位，保证下次处理时跳过阈值拦截
-
-### 显式队列消费顺序
-
-当队列开始处理一个 session 时，会按以下顺序执行：
-
-1. 读取该 session 下所有 `extracted_status = pending` 的 turn
-2. 计算 pending turn 的累计 `dehydrated_budget`
-3. 计算当前 session 的空闲时长 `idle_gap`
-4. 阈值判断：
-   - 如果不是 `force=true`
-   - 且 pending turn 条数未达到阈值
-   - 且 pending token 预算未达到阈值
-   - 则这次先跳过，不发起 LLM 分析
-5. 如果达到条件，则在 `session_analysis_max_input_tokens` 预算内，优先选择最早的 pending turn 进入本批次
-6. 剩余预算再用于回带历史 `details`
-7. 再加载当前 session 下仍然活跃的旧记忆节点
-8. 组装 `analyze_session_batch` 请求
-9. 调 LLM 批量返回：
-   - 每条待处理 turn 的 `details`
-   - `memory_nodes[]`
-   - `profile_nodes[]`
-   - `obsolete_memory_turn_ids`
-10. 如果有 `profile_nodes[]`，统一走一次 `review_profile_nodes`
-11. 如果有 `memory_nodes[]`，先写 LanceDB
-12. 然后批量回写 DuckDB
-13. 如果有旧记忆被淘汰，再删除 LanceDB 旧向量
+1. 每 30 秒执行一次过期画像收敛
+2. 在共享存储连接出现死锁/污染症状时进入短暂退避
 
 ### 历史窗口与预算规则
 
-当前批处理组 prompt 的规则是：
+当前单轮 prompt 的规则是：
 
-- 待处理 turn 使用原始脱水 JSON
+- 当前 turn 使用原始脱水 JSON
 - 历史只使用已经提炼完成的 `details`
 - 历史默认最多回带 `session_analysis_history_turns`
 - 单次总输入预算上限由 `session_analysis_max_input_tokens` 控制
 - 历史预算的统计口径是历史 `details_budget`
-- 当前预算的统计口径是 pending turn 的 `dehydrated_budget`
+- 当前预算的统计口径是目标 turn 的 `dehydrated_budget`
 
-换句话说，当前 LLM 批处理不是“历史原文 + 当前原文”，而是：
+换句话说，当前 LLM 单轮提炼不是“历史原文 + 当前原文”，而是：
 
 - 历史精要
 - 当前原始 turn
@@ -338,24 +283,9 @@ message PostActionTimelineItem {
 
 ## 定时监测流程
 
-当前队列 worker 每 30 秒会做两件事。
+当前后台维护 worker 每 30 秒会做一件事。
 
-### 1. 空闲超时扫描
-
-它会查找：
-
-- `vmm_sessions.updated_timestamp` 已经超过 `session_analysis_idle_timeout`
-- 且该 session 仍存在 `extracted_status = pending` 的 turn
-
-符合条件的 session 会被重新入队，并带 `force=true`。
-
-这意味着：
-
-- 即使 pending turn 条数还没到阈值
-- 或 pending token 预算还没到阈值
-- 只要空闲超时，也会被强制触发一次批处理
-
-### 2. 过期画像收敛
+### 1. 过期画像收敛
 
 它会查找：
 
@@ -600,25 +530,21 @@ grpcurl -plaintext `
 其中：
 
 - `post_action.session_analysis_turn_threshold`
-  - 表示同一个 session 在后台累计达到多少条 `turn` 后，满足一次后续 LLM 分析条件
+  - 兼容保留参数，当前主线不再按累计待处理 turn 数触发延后提炼
 - `post_action.session_analysis_token_threshold`
-  - 表示同一个 session 在后台累计达到多少 token 预算后，满足一次后续 LLM 分析条件
+  - 兼容保留参数，当前主线不再按累计待处理 token 触发延后提炼
 - `post_action.session_analysis_idle_timeout`
-  - 表示距离同一个 session 最后一次会话更新时间超过多久后，强制满足一次后续 LLM 分析条件
+  - 兼容保留参数，当前主线不再按 idle timeout 强制触发延后提炼
 - `post_action.session_analysis_history_turns`
-  - 表示每次批处理最多回带多少条历史 `details` 精要
+  - 表示每次单轮 `analyze_turn` 最多回带多少条历史 `details` 精要
 - `post_action.session_analysis_max_input_tokens`
-  - 表示单次批处理允许送给 LLM 的总输入预算上限
+  - 表示单次 `analyze_turn` 允许送给 LLM 的总输入预算上限
 
 当前已经接入的行为是：
 
-- `PostAction` 成功写入 turn 后，只负责入库并投递 `session` 队列任务
-- 队列优先消费显式入队内容
-- 同时每 30 秒扫描一次空闲超时且仍有待处理 turn 的 `session`
-- 同时每 30 秒扫描一次到期画像节点，并把它们收敛成 `expired`
-- 达到条数、token、空闲任一阈值，就会触发一次 `analyze_session_batch`
-- `analyze_session_batch` 会基于“历史精要 + 待处理原始 turn + 活跃记忆节点”返回整批结果
-- 如果批次里有 `profile_nodes`，会统一走一次 `review_profile_nodes`
+- `PostAction` 成功写入 turn 后，会立刻触发一次 `analyze_turn`
+- `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结果
+- 如果本轮有 `profile_nodes`，会统一走一次 `review_profile_nodes`
 - `review_profile_nodes` 会分开返回 user/project 两块 JSON 结果
 - 后端会把新候选落成原子化画像节点，并自动重建 `vmm_users.profile / vmm_projects.profile`
 - `vmm_profile_nodes.profile_status` 会记录当前节点是 `active / invalid / superseded / pending / expired`
@@ -631,16 +557,13 @@ grpcurl -plaintext `
   - `superseded_by_id`
   - `profile_date`
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
-- DuckDB 成功回写后会更新：
+- DuckDB / SQLite 成功回写后会更新：
   - `vmm_turn_records.details / details_budget / extracted_status`
   - `vmm_memory_nodes`
   - `vmm_profile_nodes`
-  - `vmm_sessions.last_summarized_id / summarize_budget`
 - `vmm_memory_nodes.vector_id` 会关联 LanceDB 行 `id`
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
-- 如果旧记忆 turn 被判定淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
-- DuckDB 成功提交后，会删除 LanceDB 中对应的旧向量
-- 如果 DuckDB 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
+- 如果 DuckDB / SQLite 最后回写失败，会尝试回滚这次新增的 LanceDB 向量
 - `profile` 渲染文本现在只保存正文时间轴，不再固定带 `P / L / W` 说明头
 - 如果调用方需要组合后的帮助说明，应通过 `GetProfileBundle.include_explanation=true` 让服务端在输出层附加
 - 仍然不自动更新 `vmm_teams.profile / vmm_spaces.profile`
@@ -650,6 +573,6 @@ grpcurl -plaintext `
 - 当前主线不再支持旧的 `raw_messages_snapshot` 契约
 - 当前主线不再支持 `team_id / space_id` 由客户端直接传入
 - 当前 `PostAction` 只接受纯文本字段，不接受原始消息节点对象
-- 当前 `PostAction` 返回的是“已接收”，不是“已写库完成”
-- 当前 session 批处理已经接入，但 `vmm_sessions.summarize_content` 仍未开始维护宏观会话总结正文
+- 当前 `PostAction` 会在返回前完成 turn 落库、单轮提炼和结果回写；但这条链路仍可能因为下游 LLM / 向量 / 数据库错误而失败
+- 当前 `vmm_sessions.summarize_content` 仍未开始维护宏观会话总结正文
 - 当前只会自动合并 user/project 画像，team/space 画像仍需后续显式配置

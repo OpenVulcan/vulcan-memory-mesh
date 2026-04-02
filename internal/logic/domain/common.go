@@ -7,22 +7,24 @@ import "time"
 // SessionRef carries the resolved numeric hierarchy identifiers plus the external session key used by business RPCs.
 // SessionRef 用于承载业务 RPC 使用的外部 session_key，以及解析后的数字层级标识。
 type SessionRef struct {
-	SessionID        uint64
-	SessionKey       string
-	UserID           uint64
-	TeamID           uint64
-	SpaceID          uint64
-	ProjectID        uint64
-	TurnCount        int
-	LastSummarizedID uint64
-	SummarizeContent string
-	SummarizeBudget  int
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
-	UserName         string
-	TeamName         string
-	SpaceName        string
-	ProjectName      string
+	SessionID               uint64
+	SessionKey              string
+	UserID                  uint64
+	TeamID                  uint64
+	SpaceID                 uint64
+	ProjectID               uint64
+	TurnCount               int
+	LastSummarizedID        uint64
+	SummarizeContent        string
+	SummarizeBudget         int
+	LastExtractObservedAt   time.Time
+	LastExtractCompletedAt  time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
+	UserName                string
+	TeamName                string
+	SpaceName               string
+	ProjectName             string
 }
 
 // SearchFilter derives the concrete vector-scope coordinates used by recall and cleanup flows.
@@ -185,18 +187,20 @@ func (p ProjectRecord) Path() string {
 // SessionRecord stores one durable session row that binds an external session key to concrete hierarchy coordinates.
 // SessionRecord 用于保存一条长期 session 记录，把外部 session_key 绑定到具体层级坐标。
 type SessionRecord struct {
-	ID               uint64
-	SessionKey       string
-	UserID           uint64
-	TeamID           uint64
-	SpaceID          uint64
-	ProjectID        uint64
-	TurnCount        int
-	LastSummarizedID uint64
-	SummarizeContent string
-	SummarizeBudget  int
-	CreatedAt        time.Time
-	UpdatedAt        time.Time
+	ID                      uint64
+	SessionKey              string
+	UserID                  uint64
+	TeamID                  uint64
+	SpaceID                 uint64
+	ProjectID               uint64
+	TurnCount               int
+	LastSummarizedID        uint64
+	SummarizeContent        string
+	SummarizeBudget         int
+	LastExtractObservedAt   time.Time
+	LastExtractCompletedAt  time.Time
+	CreatedAt               time.Time
+	UpdatedAt               time.Time
 }
 
 // ContextItem represents one final context fragment returned to plugins after assembly.

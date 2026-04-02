@@ -427,8 +427,8 @@ func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyPr
 	}, nil
 }
 
-// SearchMemoryEvents parses one grouped JSON payload, embeds each query item, searches vector memories inside the resolved scope, and returns hits with turn anchors.
-// SearchMemoryEvents 用于解析分组 JSON 载荷、对每条查询做 embedding、在已解析范围内搜索向量记忆，并返回带 turn 锚点的命中结果。
+// SearchMemoryEvents parses one grouped JSON payload, embeds each query item, searches vector memories inside the resolved scope, and returns unified memory refs plus optional source-turn refs.
+// SearchMemoryEvents 用于解析分组 JSON 载荷、对每条查询做 embedding、在已解析范围内搜索向量记忆，并返回统一 memory ref 以及可选来源 turn ref。
 func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemoryEventsRequest) (*vmmv1.SearchMemoryEventsResponse, error) {
 	if s.memory == nil {
 		return nil, toStatus(errRouteDisabled)
@@ -453,13 +453,15 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 		hits := make([]*vmmv1.MemorySearchHit, 0, len(group.Hits))
 		for _, hit := range group.Hits {
 			hits = append(hits, &vmmv1.MemorySearchHit{
-				MemoryId:  hit.MemoryID,
-				TurnId:    hit.TurnID,
-				SessionId: hit.SessionID,
-				Content:   hit.Content,
-				Details:   hit.Details,
-				Category:  int32(hit.Category),
-				Score:     hit.Score,
+				MemoryRef:      toProtoMemoryRef(hit.MemoryRef),
+				SourceRef:      toProtoMemoryRef(hit.SourceRef),
+				SourceKind:     toProtoMemorySourceKind(hit.SourceKind),
+				ScopeLevel:     toProtoMemoryScopeLevel(hit.ScopeLevel),
+				SessionId:      hit.SessionID,
+				Abstract:       hit.Abstract,
+				DetailsPreview: hit.DetailsPreview,
+				Category:       int32(hit.Category),
+				Score:          hit.Score,
 			})
 		}
 		groups = append(groups, &vmmv1.MemorySearchGroupResult{
@@ -501,8 +503,103 @@ func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRe
 	}, nil
 }
 
-// PreCheck validates the request, consumes the scope resolved by the interceptor, and returns the current deterministic no-injection response.
-// PreCheck 用于校验请求、消费拦截器解析出的范围，并返回当前确定性的“不注入”响应。
+// GetMemoryDetails loads one ordered `TYPE + ID` ref list and returns mixed unified memory or turn details.
+// GetMemoryDetails 用于按顺序读取一组 `TYPE + ID` 引用，并返回混合的统一记忆详情或 turn 详情。
+func (s *Server) GetMemoryDetails(ctx context.Context, req *vmmv1.GetMemoryDetailsRequest) (*vmmv1.GetMemoryDetailsResponse, error) {
+	if s.memory == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeGetMemoryDetailsRequest(req)
+	if err := s.validate.ValidateGetMemoryDetails(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+
+	// Convert the transport `TYPE + ID` references into domain refs so the use case can batch load memories and turns separately.
+	// 先把传输层 `TYPE + ID` 引用转换成领域层 ref，让用例可以分别批量读取 memory 和 turn。
+	refs := make([]logicdomain.MemoryRef, 0, len(req.GetRefs()))
+	for _, ref := range req.GetRefs() {
+		refs = append(refs, fromProtoMemoryRef(ref))
+	}
+	result, err := s.memory.GetDetails(ctx, usecase.MemoryDetailCommand{Refs: refs})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+
+	items := make([]*vmmv1.MemoryDetailItem, 0, len(result.Items))
+	for _, item := range result.Items {
+		entry := &vmmv1.MemoryDetailItem{Ref: toProtoMemoryRef(item.Ref)}
+		if item.Memory != nil {
+			entry.Payload = &vmmv1.MemoryDetailItem_Memory{Memory: toMemoryDetailEntry(*item.Memory)}
+		}
+		if item.Turn != nil {
+			entry.Payload = &vmmv1.MemoryDetailItem_Turn{Turn: toTurnDetailEntry(*item.Turn)}
+		}
+		items = append(items, entry)
+	}
+	return &vmmv1.GetMemoryDetailsResponse{
+		Items:   items,
+		TraceId: trace.IDFromContext(ctx),
+	}, nil
+}
+
+// WriteMemories persists one batch of direct AI-written memory items inside the resolved session scope and returns unified refs.
+// WriteMemories 用于在已解析 session 范围内持久化一批 AI 主动写入的记忆项，并返回统一引用。
+func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequest) (*vmmv1.WriteMemoriesResponse, error) {
+	if s.memory == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeWriteMemoriesRequest(req)
+	if err := s.validate.ValidateWriteMemories(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	session, ok := resolvedSessionRefFromContext(ctx)
+	if !ok {
+		return nil, toStatus(withMessage(errInternal, "resolved request scope is missing"))
+	}
+	ctx, cancel := withTimeout(ctx, s.postTimeout)
+	defer cancel()
+
+	// Keep the transport layer focused on enum and timestamp conversion so write defaults still live in the use case.
+	// 让传输层只负责枚举和时间戳转换，写入默认值仍由用例层统一决定。
+	items := make([]usecase.WriteMemoryItem, 0, len(req.GetItems()))
+	for _, item := range req.GetItems() {
+		items = append(items, usecase.WriteMemoryItem{
+			ScopeLevel:  fromProtoMemoryScopeLevel(item.GetScopeLevel()),
+			Abstract:    item.GetAbstract(),
+			Details:     item.GetDetails(),
+			Category:    int(item.GetCategory()),
+			Priority:    fromProtoMemoryPriority(item.GetPriority()),
+			MemoryLevel: fromProtoMemoryLevel(item.GetMemoryLevel()),
+			ExpiresAt:   fromUnixMillis(item.GetExpiresTimestamp()),
+		})
+	}
+	result, err := s.memory.Write(ctx, usecase.WriteMemoriesCommand{
+		Session: session,
+		Items:   items,
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+
+	entries := make([]*vmmv1.WriteMemoryResultItem, 0, len(result.Items))
+	for _, item := range result.Items {
+		entries = append(entries, &vmmv1.WriteMemoryResultItem{
+			MemoryRef:  toProtoMemoryRef(item.Ref),
+			SourceKind: toProtoMemorySourceKind(item.SourceKind),
+			ScopeLevel: toProtoMemoryScopeLevel(item.ScopeLevel),
+			Deduped:    item.Deduped,
+		})
+	}
+	return &vmmv1.WriteMemoriesResponse{
+		Items:   entries,
+		TraceId: trace.IDFromContext(ctx),
+	}, nil
+}
+
+// PreCheck validates the request, consumes the scope resolved by the interceptor, and returns the live assembled pre-check context.
+// PreCheck 用于校验请求、消费拦截器解析出的范围，并返回实时组装完成的 pre-check 上下文。
 func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmmv1.PreCheckResponse, error) {
 	if s.preCheck == nil {
 		return nil, toStatus(errRouteDisabled)
@@ -543,8 +640,8 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	}, nil
 }
 
-// PostAction validates the request, logs raw and cleaned payloads, returns immediately, and continues persistence in the background.
-// PostAction 用于校验请求、记录原始与清洗后载荷、立即返回，并在后台继续持久化。
+// PostAction validates the request, logs raw and cleaned payloads, then completes synchronous persistence before returning.
+// PostAction 用于校验请求、记录原始与清洗后载荷，并在返回前完成同步持久化。
 func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (*vmmv1.PostActionResponse, error) {
 	if s.postAction == nil {
 		return nil, toStatus(errRouteDisabled)
@@ -564,18 +661,19 @@ func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (
 	s.logPostActionReceipt(traceID, "post-action received raw", rawReq)
 	s.logPostActionReceipt(traceID, "post-action received cleaned", cleanedReq)
 
-	// Acknowledge first so upstream plugins are not blocked by downstream persistence work.
-	// 先返回确认，避免上游插件被下游持久化工作阻塞。
-	go func(cmd usecase.PostActionCommand, traceID string) {
-		bgctx, cancel := withTimeout(context.Background(), s.postTimeout)
-		defer cancel()
-		bgctx = trace.WithTraceID(bgctx, traceID)
-		if _, err := s.postAction.Execute(bgctx, cmd); err != nil && s.logger != nil {
-			s.logger.Error("async post-action failed", "trace_id", traceID, "session_key", cmd.Session.SessionKey, "err", err)
-		}
-	}(cmd, traceID)
-
-	return &vmmv1.PostActionResponse{Accepted: true, TraceId: traceID}, nil
+	// Run the post-action flow synchronously so the transport contract matches the immediate extraction mainline.
+	// 同步执行 post-action 流程，让传输契约和即时提炼主链保持一致。
+	ctx, cancel := withTimeout(ctx, s.postTimeout)
+	defer cancel()
+	ctx = trace.WithTraceID(ctx, traceID)
+	result, err := s.postAction.Execute(ctx, cmd)
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.PostActionResponse{
+		Accepted: result.Accepted,
+		TraceId:  traceID,
+	}, nil
 }
 
 // withTimeout wraps one RPC context with a configured timeout when the timeout is positive.
@@ -671,6 +769,41 @@ func toTurnDetailEntry(turn usecase.TurnDetailRecord) *vmmv1.TurnDetailEntry {
 		AssistantContent:  turn.AssistantContent,
 		PreviousTurnIds:   append([]uint64(nil), turn.PreviousTurnIDs...),
 		NextTurnIds:       append([]uint64(nil), turn.NextTurnIDs...),
+	}
+}
+
+// toMemoryDetailEntry converts one unified durable memory row into the protobuf transport shape used by the mixed detail RPC.
+// toMemoryDetailEntry 用于把一条统一长期记忆行转换成混合详情 RPC 使用的 protobuf 传输结构。
+func toMemoryDetailEntry(memory logicdomain.MemoryNodeRecord) *vmmv1.MemoryDetailEntry {
+	if memory.ID == 0 {
+		return nil
+	}
+	return &vmmv1.MemoryDetailEntry{
+		MemoryId:                 memory.ID,
+		SourceKind:               toProtoMemorySourceKind(memory.SourceKind),
+		ScopeLevel:               toProtoMemoryScopeLevel(memory.ScopeLevel),
+		MemoryStatus:             toProtoMemoryStatus(memory.Status),
+		TeamId:                   memory.TeamID,
+		SpaceId:                  memory.SpaceID,
+		ProjectId:                memory.ProjectID,
+		UserId:                   memory.UserID,
+		OriginSessionId:          memory.OriginSessionID,
+		SourceTurnId:             memory.SourceTurnID,
+		Category:                 int32(memory.Category),
+		Abstract:                 memory.Abstract,
+		Details:                  memory.Details,
+		Priority:                 toProtoMemoryPriority(memory.Priority),
+		MemoryLevel:              toProtoMemoryLevel(memory.MemoryLevel),
+		RefreshWeight:            uint32(maxInt(memory.RefreshWeight, 0)),
+		StatusReason:             memory.StatusReason,
+		ExpiresTimestamp:         toUnixMillis(memory.ExpiresAt),
+		LastRecalledTimestamp:    toUnixMillis(memory.LastRecalledAt),
+		LastAdoptedTimestamp:     toUnixMillis(memory.LastAdoptedAt),
+		RecalledCount:            uint32(maxInt(memory.RecalledCount, 0)),
+		AdoptedCount:             uint32(maxInt(memory.AdoptedCount, 0)),
+		CrossSessionAdoptedCount: uint32(maxInt(memory.CrossSessionAdoptedCount, 0)),
+		CreatedTimestamp:         toUnixMillis(memory.CreatedAt),
+		UpdatedTimestamp:         toUnixMillis(memory.UpdatedAt),
 	}
 }
 
@@ -828,6 +961,202 @@ func toProtoProfileSourceKind(sourceKind int) vmmv1.ProfileNodeSourceKind {
 	default:
 		return vmmv1.ProfileNodeSourceKind_PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT
 	}
+}
+
+// toProtoMemoryRef converts one internal memory ref into the protobuf `TYPE + ID` transport shape.
+// toProtoMemoryRef 用于把内部 memory ref 转换成 protobuf 的 `TYPE + ID` 传输结构。
+func toProtoMemoryRef(ref logicdomain.MemoryRef) *vmmv1.MemoryRef {
+	if ref.Empty() {
+		return nil
+	}
+	return &vmmv1.MemoryRef{
+		Type: toProtoMemoryRefType(ref.Type),
+		Id:   ref.ID,
+	}
+}
+
+// fromProtoMemoryRef converts one protobuf `TYPE + ID` pair into the internal memory-ref model.
+// fromProtoMemoryRef 用于把 protobuf 的 `TYPE + ID` 组合转换成内部 memory-ref 模型。
+func fromProtoMemoryRef(ref *vmmv1.MemoryRef) logicdomain.MemoryRef {
+	if ref == nil {
+		return logicdomain.MemoryRef{}
+	}
+	return logicdomain.MemoryRef{
+		Type: fromProtoMemoryRefType(ref.GetType()),
+		ID:   ref.GetId(),
+	}
+}
+
+// toProtoMemoryRefType converts the internal memory-ref type into the protobuf enum.
+// toProtoMemoryRefType 用于把内部 memory-ref 类型转换成 protobuf 枚举。
+func toProtoMemoryRefType(refType int) vmmv1.MemoryRefType {
+	switch refType {
+	case logicdomain.MemoryRefTypeTurn:
+		return vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN
+	case logicdomain.MemoryRefTypeMemory:
+		return vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY
+	default:
+		return vmmv1.MemoryRefType_MEMORY_REF_TYPE_UNSPECIFIED
+	}
+}
+
+// fromProtoMemoryRefType converts the protobuf memory-ref enum into the internal ref type.
+// fromProtoMemoryRefType 用于把 protobuf 的 memory-ref 枚举转换成内部 ref 类型。
+func fromProtoMemoryRefType(refType vmmv1.MemoryRefType) int {
+	switch refType {
+	case vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN:
+		return logicdomain.MemoryRefTypeTurn
+	case vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY:
+		return logicdomain.MemoryRefTypeMemory
+	default:
+		return 0
+	}
+}
+
+// toProtoMemorySourceKind converts the internal unified-memory source kind into the protobuf enum.
+// toProtoMemorySourceKind 用于把内部统一记忆来源类型转换成 protobuf 枚举。
+func toProtoMemorySourceKind(sourceKind int) vmmv1.MemorySourceKind {
+	switch sourceKind {
+	case logicdomain.MemorySourceKindGRPCAIWrite:
+		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_GRPC_AI_WRITE
+	case logicdomain.MemorySourceKindSystemSeed:
+		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_SYSTEM_SEED
+	case logicdomain.MemorySourceKindLegacyEntry:
+		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_LEGACY_ENTRY
+	case logicdomain.MemorySourceKindTurnExtract:
+		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_TURN_EXTRACT
+	default:
+		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_UNSPECIFIED
+	}
+}
+
+// toProtoMemoryScopeLevel converts the internal unified-memory scope level into the protobuf enum.
+// toProtoMemoryScopeLevel 用于把内部统一记忆作用域等级转换成 protobuf 枚举。
+func toProtoMemoryScopeLevel(scopeLevel int) vmmv1.MemoryScopeLevel {
+	switch scopeLevel {
+	case logicdomain.MemoryScopeLevelSession:
+		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION
+	case logicdomain.MemoryScopeLevelUser:
+		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_USER
+	case logicdomain.MemoryScopeLevelProject:
+		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT
+	default:
+		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED
+	}
+}
+
+// fromProtoMemoryScopeLevel converts the protobuf scope enum into the internal unified-memory scope level.
+// fromProtoMemoryScopeLevel 用于把 protobuf 的作用域枚举转换成内部统一记忆作用域等级。
+func fromProtoMemoryScopeLevel(scopeLevel vmmv1.MemoryScopeLevel) int {
+	switch scopeLevel {
+	case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION:
+		return logicdomain.MemoryScopeLevelSession
+	case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT:
+		return logicdomain.MemoryScopeLevelProject
+	case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_USER:
+		return logicdomain.MemoryScopeLevelUser
+	default:
+		return -1
+	}
+}
+
+// toProtoMemoryStatus converts the internal durable-memory status into the protobuf enum.
+// toProtoMemoryStatus 用于把内部长期记忆状态转换成 protobuf 枚举。
+func toProtoMemoryStatus(status int) vmmv1.MemoryStatus {
+	switch status {
+	case logicdomain.MemoryStatusSuperseded:
+		return vmmv1.MemoryStatus_MEMORY_STATUS_SUPERSEDED
+	case logicdomain.MemoryStatusDeleted:
+		return vmmv1.MemoryStatus_MEMORY_STATUS_DELETED
+	case logicdomain.MemoryStatusExpired:
+		return vmmv1.MemoryStatus_MEMORY_STATUS_EXPIRED
+	case logicdomain.MemoryStatusActive:
+		return vmmv1.MemoryStatus_MEMORY_STATUS_ACTIVE
+	default:
+		return vmmv1.MemoryStatus_MEMORY_STATUS_UNSPECIFIED
+	}
+}
+
+// toProtoMemoryPriority converts the internal memory priority into the protobuf enum.
+// toProtoMemoryPriority 用于把内部记忆优先级转换成 protobuf 枚举。
+func toProtoMemoryPriority(priority int) vmmv1.MemoryPriority {
+	switch priority {
+	case logicdomain.MemoryPriorityP0:
+		return vmmv1.MemoryPriority_MEMORY_PRIORITY_P0
+	case logicdomain.MemoryPriorityP1:
+		return vmmv1.MemoryPriority_MEMORY_PRIORITY_P1
+	case logicdomain.MemoryPriorityP2:
+		return vmmv1.MemoryPriority_MEMORY_PRIORITY_P2
+	default:
+		return vmmv1.MemoryPriority_MEMORY_PRIORITY_UNSPECIFIED
+	}
+}
+
+// fromProtoMemoryPriority converts the protobuf memory priority into the internal value, returning -1 for unspecified transport defaults.
+// fromProtoMemoryPriority 用于把 protobuf 记忆优先级转换成内部值；若传输层未指定则返回 -1 以便用例层补默认值。
+func fromProtoMemoryPriority(priority vmmv1.MemoryPriority) int {
+	switch priority {
+	case vmmv1.MemoryPriority_MEMORY_PRIORITY_P0:
+		return logicdomain.MemoryPriorityP0
+	case vmmv1.MemoryPriority_MEMORY_PRIORITY_P1:
+		return logicdomain.MemoryPriorityP1
+	case vmmv1.MemoryPriority_MEMORY_PRIORITY_P2:
+		return logicdomain.MemoryPriorityP2
+	default:
+		return -1
+	}
+}
+
+// toProtoMemoryLevel converts the internal memory lifecycle level into the protobuf enum.
+// toProtoMemoryLevel 用于把内部记忆生命周期等级转换成 protobuf 枚举。
+func toProtoMemoryLevel(level int) vmmv1.MemoryLevel {
+	switch level {
+	case logicdomain.MemoryLevelSession:
+		return vmmv1.MemoryLevel_MEMORY_LEVEL_L0
+	case logicdomain.MemoryLevelPhase:
+		return vmmv1.MemoryLevel_MEMORY_LEVEL_L1
+	case logicdomain.MemoryLevelStable:
+		return vmmv1.MemoryLevel_MEMORY_LEVEL_L2
+	case logicdomain.MemoryLevelPersistent:
+		return vmmv1.MemoryLevel_MEMORY_LEVEL_L3
+	default:
+		return vmmv1.MemoryLevel_MEMORY_LEVEL_UNSPECIFIED
+	}
+}
+
+// fromProtoMemoryLevel converts the protobuf memory lifecycle enum into the internal value, returning -1 when callers omit the field.
+// fromProtoMemoryLevel 用于把 protobuf 记忆生命周期枚举转换成内部值；调用方省略字段时返回 -1。
+func fromProtoMemoryLevel(level vmmv1.MemoryLevel) int {
+	switch level {
+	case vmmv1.MemoryLevel_MEMORY_LEVEL_L0:
+		return logicdomain.MemoryLevelSession
+	case vmmv1.MemoryLevel_MEMORY_LEVEL_L1:
+		return logicdomain.MemoryLevelPhase
+	case vmmv1.MemoryLevel_MEMORY_LEVEL_L2:
+		return logicdomain.MemoryLevelStable
+	case vmmv1.MemoryLevel_MEMORY_LEVEL_L3:
+		return logicdomain.MemoryLevelPersistent
+	default:
+		return -1
+	}
+}
+
+// toUnixMillis converts one UTC time into transport milliseconds and keeps zero-values empty on the wire.
+// toUnixMillis 用于把 UTC 时间转换成传输层毫秒时间戳，并保持零值时间在传输层为空。
+func toUnixMillis(value time.Time) int64 {
+	if value.IsZero() {
+		return 0
+	}
+	return value.UTC().UnixMilli()
+}
+
+// fromUnixMillis converts one transport millisecond timestamp into UTC time, preserving zero as the empty time.
+// fromUnixMillis 用于把传输层毫秒时间戳转换成 UTC 时间，并把零值保留为空时间。
+func fromUnixMillis(value int64) time.Time {
+	if value <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(value).UTC()
 }
 
 // profilePriorityLabel renders the compact P-label used by the profile query transport.

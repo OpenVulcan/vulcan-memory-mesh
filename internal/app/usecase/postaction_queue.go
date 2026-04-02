@@ -193,10 +193,10 @@ func (u *PostActionUseCase) handleQueuedSession(sessionID uint64) {
 	}
 }
 
-// scanIdlePendingSessions periodically promotes stale sessions into forced analysis attempts so low-frequency dialogues are not blocked forever by thresholds.
-// scanIdlePendingSessions 用于周期性地把空闲过久的 session 提升为强制分析，避免低频对话永远卡在阈值之外。
+// scanIdlePendingSessions periodically promotes stale sessions into forced legacy batch attempts when that compatibility path is still enabled.
+// scanIdlePendingSessions 用于在兼容批处理路径仍启用时，周期性地把空闲过久的 session 提升为强制分析。
 func (u *PostActionUseCase) scanIdlePendingSessions() {
-	if u == nil || u.store == nil || u.analysisCfg.IdleTimeout <= 0 {
+	if u == nil || u.store == nil || u.batchAnalyzer == nil || u.analysisCfg.IdleTimeout <= 0 {
 		return
 	}
 	sessions, err := u.store.ListIdlePendingSessions(u.queueCtx, u.analysisCfg.IdleTimeout, 128)
@@ -280,10 +280,10 @@ func shouldPauseQueueMaintenance(err error) bool {
 	return false
 }
 
-// processQueuedSession loads the current batch window, checks thresholds, runs the batch analyzer, merges profiles once, persists vectors, and writes results back into DuckDB.
-// processQueuedSession 用于加载当前批处理窗口、检查阈值、执行批量分析、统一合并画像、持久化向量，并把结果回写到 DuckDB。
+// processQueuedSession loads the legacy batch window, checks thresholds, runs the compatibility analyzer, merges profiles once, persists vectors, and writes results back into DuckDB.
+// processQueuedSession 用于加载旧的批处理窗口、检查阈值、执行兼容分析器、统一合并画像、持久化向量，并把结果回写到 DuckDB。
 func (u *PostActionUseCase) processQueuedSession(session logicdomain.SessionRef, force bool, source string) {
-	if u == nil || u.store == nil || u.analyzer == nil || session.SessionID == 0 {
+	if u == nil || u.store == nil || u.batchAnalyzer == nil || session.SessionID == 0 {
 		return
 	}
 	workerCtx := u.queueCtx
@@ -356,7 +356,7 @@ func (u *PostActionUseCase) processQueuedSession(session logicdomain.SessionRef,
 		}
 		return
 	}
-	analysis, err := u.analyzer.Analyze(workerCtx, requestBody)
+	analysis, err := u.batchAnalyzer.Analyze(workerCtx, requestBody)
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Error(

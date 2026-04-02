@@ -75,6 +75,38 @@ func (u *PostActionUseCase) convergeExpiredProfiles() {
 	}
 }
 
+// reviewTurnProfiles reuses the batch profile-review pipeline for one immediate turn so the synchronous post-action path can keep profile decisions aligned with the existing reviewer contract.
+// reviewTurnProfiles 用于把批量画像评审流水线复用到单条即时 turn 上，让同步 post-action 路径继续遵守现有 reviewer 契约。
+func (u *PostActionUseCase) reviewTurnProfiles(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis *logicdomain.TurnAnalysis) error {
+	if u == nil || analysis == nil || len(analysis.ProfileNodes) == 0 {
+		return nil
+	}
+	batch := logicdomain.SessionBatchAnalysis{
+		Turns: []logicdomain.SessionBatchTurnAnalysis{{
+			TurnID:        turn.ID,
+			Details:       analysis.Details,
+			DetailsBudget: analysis.DetailsBudget,
+			ProfileNodes:  append([]logicdomain.ProfileNodeCandidate(nil), analysis.ProfileNodes...),
+		}},
+	}
+	err := u.reviewSessionBatchProfiles(ctx, session, []logicdomain.SessionTurnRecord{{
+		ID:        turn.ID,
+		SessionID: turn.SessionID,
+		ProjectID: turn.ProjectID,
+		CreatedAt: choosePostActionCreatedAt(turn),
+		UpdatedAt: turn.UpdatedAt,
+	}}, &batch)
+	if err != nil {
+		return err
+	}
+	analysis.ProfileNodes = append([]logicdomain.ProfileNodeCandidate(nil), batch.Turns[0].ProfileNodes...)
+	analysis.UserProfileMerged = batch.UserProfileMerged
+	analysis.MergedUserProfile = batch.MergedUserProfile
+	analysis.ProjectProfileMerged = batch.ProjectProfileMerged
+	analysis.MergedProjectProfile = batch.MergedProjectProfile
+	return nil
+}
+
 // reviewSessionBatchProfiles reviews all fresh profile nodes across the selected batch, applies active/invalid/supersede decisions, and rebuilds the rendered user/project profiles.
 // reviewSessionBatchProfiles 用于评审所选批次中的全部新画像节点，应用 active/invalid/supersede 决策，并重建 user/project 的渲染画像文本。
 func (u *PostActionUseCase) reviewSessionBatchProfiles(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis *logicdomain.SessionBatchAnalysis) error {

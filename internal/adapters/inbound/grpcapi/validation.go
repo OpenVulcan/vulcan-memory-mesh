@@ -152,6 +152,27 @@ func NormalizeGetTurnDetailsRequest(req *vmmv1.GetTurnDetailsRequest) {
 	}
 }
 
+// NormalizeGetMemoryDetailsRequest keeps the mixed detail lookup hook in place even though the current request only carries numeric refs.
+// NormalizeGetMemoryDetailsRequest 用于为混合详情查询保留规范化入口，虽然当前请求只包含数字引用。
+func NormalizeGetMemoryDetailsRequest(req *vmmv1.GetMemoryDetailsRequest) {
+	if req == nil {
+		return
+	}
+}
+
+// NormalizeWriteMemoriesRequest trims the direct-write payload before the use case applies soft idempotency and lifecycle defaults.
+// NormalizeWriteMemoriesRequest 用于在用例执行软幂等和生命周期补齐前，裁剪主动写记忆载荷。
+func NormalizeWriteMemoriesRequest(req *vmmv1.WriteMemoriesRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionId = strings.TrimSpace(req.GetSessionId())
+	for _, item := range req.GetItems() {
+		item.Abstract = strings.TrimSpace(item.GetAbstract())
+		item.Details = strings.TrimSpace(item.GetDetails())
+	}
+}
+
 // ValidatePreCheck validates the pre-check RPC request before the scope resolver interceptor runs.
 // ValidatePreCheck 用于在范围解析拦截器执行前校验 pre-check RPC 请求。
 func (v *RequestValidator) ValidatePreCheck(req *vmmv1.PreCheckRequest) error {
@@ -173,8 +194,8 @@ func (v *RequestValidator) ValidatePreCheck(req *vmmv1.PreCheckRequest) error {
 	return nil
 }
 
-// ValidatePostAction validates the new text-only post-action request before asynchronous background persistence begins.
-// ValidatePostAction 用于在异步后台持久化开始前校验新的纯文本 post-action 请求。
+// ValidatePostAction validates the new text-only post-action request before synchronous persistence begins.
+// ValidatePostAction 用于在同步持久化开始前校验新的纯文本 post-action 请求。
 func (v *RequestValidator) ValidatePostAction(req *vmmv1.PostActionRequest) error {
 	if req == nil {
 		return logicdomain.ValidationError{Field: "post_action", Message: "is required"}
@@ -364,6 +385,91 @@ func (v *RequestValidator) ValidateGetTurnDetails(req *vmmv1.GetTurnDetailsReque
 	for idx, turnID := range req.GetTurnIds() {
 		if turnID == 0 {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("turn_ids[%d]", idx), Message: "must be a numeric id"}
+		}
+	}
+	return nil
+}
+
+// ValidateGetMemoryDetails checks the mixed detail lookup payload before relational reads begin.
+// ValidateGetMemoryDetails 用于在关系读取开始前校验混合详情查询载荷。
+func (v *RequestValidator) ValidateGetMemoryDetails(req *vmmv1.GetMemoryDetailsRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "get_memory_details", Message: "is required"}
+	}
+	if len(req.GetRefs()) == 0 {
+		return logicdomain.ValidationError{Field: "refs", Message: "must contain at least one ref"}
+	}
+	if len(req.GetRefs()) > 256 {
+		return logicdomain.ValidationError{Field: "refs", Message: "must contain at most 256 refs"}
+	}
+	for idx, ref := range req.GetRefs() {
+		switch ref.GetType() {
+		case vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY, vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN:
+		default:
+			return logicdomain.ValidationError{Field: fmt.Sprintf("refs[%d].type", idx), Message: "must be one supported ref type"}
+		}
+		if ref.GetId() == 0 {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("refs[%d].id", idx), Message: "must be a numeric id"}
+		}
+	}
+	return nil
+}
+
+// ValidateWriteMemories checks the direct-write memory payload before scope resolution and embedding begin.
+// ValidateWriteMemories 用于在范围解析和 embedding 开始前校验主动写记忆载荷。
+func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "write_memories", Message: "is required"}
+	}
+	if err := requireString("session_id", req.GetSessionId(), 128); err != nil {
+		return err
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	if len(req.GetItems()) == 0 {
+		return logicdomain.ValidationError{Field: "items", Message: "must contain at least one item"}
+	}
+	if len(req.GetItems()) > 32 {
+		return logicdomain.ValidationError{Field: "items", Message: "must contain at most 32 items"}
+	}
+	for idx, item := range req.GetItems() {
+		switch item.GetScopeLevel() {
+		case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED,
+			vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION,
+			vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT,
+			vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_USER:
+		default:
+			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].scope_level", idx), Message: "must be one supported memory scope"}
+		}
+		if err := requireString(fmt.Sprintf("items[%d].abstract", idx), item.GetAbstract(), 16000); err != nil {
+			return err
+		}
+		if err := requireString(fmt.Sprintf("items[%d].details", idx), item.GetDetails(), 64000); err != nil {
+			return err
+		}
+		if item.GetCategory() < 0 {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].category", idx), Message: "must be >= 0"}
+		}
+		switch item.GetPriority() {
+		case vmmv1.MemoryPriority_MEMORY_PRIORITY_UNSPECIFIED,
+			vmmv1.MemoryPriority_MEMORY_PRIORITY_P0,
+			vmmv1.MemoryPriority_MEMORY_PRIORITY_P1,
+			vmmv1.MemoryPriority_MEMORY_PRIORITY_P2:
+		default:
+			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].priority", idx), Message: "must be one supported memory priority"}
+		}
+		switch item.GetMemoryLevel() {
+		case vmmv1.MemoryLevel_MEMORY_LEVEL_UNSPECIFIED,
+			vmmv1.MemoryLevel_MEMORY_LEVEL_L0,
+			vmmv1.MemoryLevel_MEMORY_LEVEL_L1,
+			vmmv1.MemoryLevel_MEMORY_LEVEL_L2,
+			vmmv1.MemoryLevel_MEMORY_LEVEL_L3:
+		default:
+			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].memory_level", idx), Message: "must be one supported memory level"}
 		}
 	}
 	return nil

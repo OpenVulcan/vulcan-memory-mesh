@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 9
+	currentSchemaVersion = 10
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -144,6 +144,8 @@ CREATE TABLE IF NOT EXISTS vmm_sessions (
   last_summarized_id BIGINT NOT NULL DEFAULT 0,
   summarize_content TEXT NOT NULL DEFAULT '',
   summarize_budget INTEGER NOT NULL DEFAULT 0,
+  last_extract_observed_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_extract_completed_timestamp BIGINT NOT NULL DEFAULT 0,
   created_timestamp BIGINT NOT NULL,
   updated_timestamp BIGINT NOT NULL,
   UNIQUE(project_id, session_key),
@@ -171,18 +173,39 @@ CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_project_status ON vmm_turn_recor
 
 CREATE TABLE IF NOT EXISTS vmm_memory_nodes (
   id BIGINT PRIMARY KEY,
+  team_id BIGINT NOT NULL,
+  space_id BIGINT NOT NULL,
   project_id BIGINT NOT NULL,
   user_id BIGINT NOT NULL,
-  turn_id BIGINT NOT NULL,
-  vector_id UUID NOT NULL,
+  origin_session_id BIGINT NOT NULL DEFAULT 0,
+  source_turn_id BIGINT,
+  vector_id TEXT NOT NULL,
+  vector_json TEXT NOT NULL DEFAULT '[]',
+  source_kind INTEGER NOT NULL DEFAULT 0,
+  scope_level INTEGER NOT NULL DEFAULT 1,
   category INTEGER NOT NULL,
   abstract TEXT NOT NULL,
   details TEXT NOT NULL,
-  node_status INTEGER NOT NULL DEFAULT 0,
-  created_timestamp BIGINT NOT NULL
+  memory_status INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 2,
+  memory_level INTEGER NOT NULL DEFAULT 2,
+  refresh_weight INTEGER NOT NULL DEFAULT 0,
+  status_reason TEXT NOT NULL DEFAULT '',
+  expires_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_recalled_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_adopted_timestamp BIGINT NOT NULL DEFAULT 0,
+  recalled_count INTEGER NOT NULL DEFAULT 0,
+  adopted_count INTEGER NOT NULL DEFAULT 0,
+  cross_session_adopted_count INTEGER NOT NULL DEFAULT 0,
+  dedupe_hash TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_project_status ON vmm_memory_nodes(project_id, node_status, id);
-CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_turn ON vmm_memory_nodes(turn_id, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_project_status ON vmm_memory_nodes(project_id, memory_status, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_source_turn ON vmm_memory_nodes(source_turn_id, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_origin_session ON vmm_memory_nodes(origin_session_id, memory_status, id);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_memory_nodes_vector ON vmm_memory_nodes(vector_id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_dedupe ON vmm_memory_nodes(origin_session_id, source_kind, scope_level, dedupe_hash, memory_status, created_timestamp);
 
 CREATE TABLE IF NOT EXISTS vmm_profile_nodes (
   id BIGINT PRIMARY KEY,
@@ -221,22 +244,6 @@ CREATE TABLE IF NOT EXISTS vmm_profile_instructions (
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_profile_instructions_target ON vmm_profile_instructions(profile_type, bind_id, id);
 
-CREATE TABLE IF NOT EXISTS vmm_memory_entries (
-  id TEXT PRIMARY KEY,
-  team_id BIGINT NOT NULL,
-  space_id BIGINT NOT NULL,
-  project_id BIGINT NOT NULL,
-  session_id BIGINT NOT NULL,
-  user_id BIGINT NOT NULL,
-  content TEXT NOT NULL,
-  vector_json TEXT NOT NULL DEFAULT '[]',
-  metadata_json TEXT NOT NULL DEFAULT '{}',
-  created_at TEXT NOT NULL,
-  updated_at TEXT NOT NULL,
-  FOREIGN KEY(user_id) REFERENCES vmm_users(id),
-  FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
-);
-CREATE INDEX IF NOT EXISTS idx_vmm_memory_entries_scope ON vmm_memory_entries(user_id, team_id, space_id, project_id, session_id, updated_at);
 `
 
 // Store is the SQLite-gateway adapter used for hierarchy metadata, session/turn persistence, and cache storage.
@@ -816,22 +823,24 @@ func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, user
 		return logicdomain.SessionRef{}, err
 	}
 	return logicdomain.SessionRef{
-		SessionID:        session.ID,
-		SessionKey:       session.SessionKey,
-		UserID:           user.ID,
-		TeamID:           project.TeamID,
-		SpaceID:          project.SpaceID,
-		ProjectID:        project.ID,
-		TurnCount:        session.TurnCount,
-		LastSummarizedID: session.LastSummarizedID,
-		SummarizeContent: session.SummarizeContent,
-		SummarizeBudget:  session.SummarizeBudget,
-		CreatedAt:        session.CreatedAt,
-		UpdatedAt:        session.UpdatedAt,
-		UserName:         user.Name,
-		TeamName:         project.TeamName,
-		SpaceName:        project.SpaceName,
-		ProjectName:      project.Name,
+		SessionID:              session.ID,
+		SessionKey:             session.SessionKey,
+		UserID:                 user.ID,
+		TeamID:                 project.TeamID,
+		SpaceID:                project.SpaceID,
+		ProjectID:              project.ID,
+		TurnCount:              session.TurnCount,
+		LastSummarizedID:       session.LastSummarizedID,
+		SummarizeContent:       session.SummarizeContent,
+		SummarizeBudget:        session.SummarizeBudget,
+		LastExtractObservedAt:  session.LastExtractObservedAt,
+		LastExtractCompletedAt: session.LastExtractCompletedAt,
+		CreatedAt:              session.CreatedAt,
+		UpdatedAt:              session.UpdatedAt,
+		UserName:               user.Name,
+		TeamName:               project.TeamName,
+		SpaceName:              project.SpaceName,
+		ProjectName:            project.Name,
 	}, nil
 }
 
@@ -882,21 +891,21 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 	}, nil
 }
 
-// ApplyTurnAnalysis writes the extracted turn summary back to the turn row and inserts derived memory/profile nodes for later processing.
-// ApplyTurnAnalysis 用于把提炼出的 turn 总结回写到 turn 行，并插入后续处理所需的 memory/profile 节点。
-func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error {
+// ApplyTurnAnalysis writes the extracted turn summary back to the turn row, inserts unified memory/profile nodes, and returns follow-up vector cleanup coordinates.
+// ApplyTurnAnalysis 用于把提炼出的 turn 总结回写到 turn 行、插入统一记忆和画像节点，并返回后续向量清理坐标。
+func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error) {
 	if turn.ID == 0 {
-		return logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
 	}
 	if session.ProjectID == 0 {
-		return logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
 	if session.UserID == 0 {
-		return logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
 	}
 
-	// Serialize analysis writes so the turn status flip and all derived node rows stay aligned under one deterministic id allocation window.
-	// 串行化分析结果写入，确保 turn 状态切换与全部衍生节点行在同一个确定性 ID 分配窗口内保持一致。
+	// Serialize analysis writes so the turn status flip, unified memory inserts, and profile writes stay aligned under one deterministic id allocation window.
+	// 串行化分析结果写入，确保 turn 状态切换、统一记忆插入和画像写入在同一个确定性 ID 分配窗口内保持一致。
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -912,14 +921,22 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	if len(analysis.MemoryNodes) > 0 {
 		memoryStartID, err = s.nextNumericID(ctx, "vmm_memory_nodes")
 		if err != nil {
-			return fmt.Errorf("allocate memory node id: %w", err)
+			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("allocate memory node id: %w", err)
 		}
 	}
 	if len(analysis.ProfileNodes) > 0 {
 		profileStartID, err = s.nextNumericID(ctx, "vmm_profile_nodes")
 		if err != nil {
-			return fmt.Errorf("allocate profile node id: %w", err)
+			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("allocate profile node id: %w", err)
 		}
+	}
+
+	// Resolve the vector ids for superseded memory rows before the status flip so the caller can delete those vector rows after SQL commits.
+	// 在状态切换前先解析被覆盖记忆的 vector_id，供调用方在 SQL 提交后删除对应向量行。
+	supersededMemoryIDs := normalizeUint64List(analysis.SupersededMemoryIDs)
+	supersededVectorIDs, err := s.loadActiveMemoryVectorIDs(ctx, supersededMemoryIDs)
+	if err != nil {
+		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load superseded vector ids: %w", err)
 	}
 
 	script := buildTurnAnalysisUpdateSQL(turn.ID, strings.TrimSpace(analysis.Details), analysis.DetailsBudget, nowMs)
@@ -929,21 +946,27 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	if analysis.ProjectProfileMerged {
 		script += buildProjectProfileUpdateSQL(session.ProjectID, analysis.MergedProjectProfile, nowRFC3339)
 	}
+	insertedMemoryNodes := make([]logicdomain.MemoryNodeRecord, 0, len(analysis.MemoryNodes))
 	for idx, node := range analysis.MemoryNodes {
 		if strings.TrimSpace(node.VectorID) == "" {
-			return logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
 		}
-		script += buildMemoryNodeInsertSQL(memoryStartID+uint64(idx), session.ProjectID, session.UserID, turn.ID, strings.TrimSpace(node.VectorID), node.Category, node.Abstract, node.Details, nowMs)
+		if !logicdomain.ValidMemoryNodeCategory(node.Category) {
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].category", Message: "must be one supported memory category"}
+		}
+		record := normalizeTurnMemoryNodeRecord(session, turn, node, memoryStartID+uint64(idx), now)
+		script += buildMemoryNodeInsertSQL(record)
+		insertedMemoryNodes = append(insertedMemoryNodes, record)
 	}
 	for idx, node := range analysis.ProfileNodes {
 		if !logicdomain.ValidProfileType(node.ProfileType) {
-			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
 		}
 		if strings.TrimSpace(node.Content) == "" {
-			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
 		}
 		if !logicdomain.ValidProfileStatus(node.Status) {
-			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
 		}
 		bindID := session.ProjectID
 		if node.ProfileType == logicdomain.ProfileTypeUser {
@@ -954,10 +977,16 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		}
 		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), uint64Ptr(turn.ID), node.ProfileType, bindID, node, nowMs)
 	}
-	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("apply turn analysis: %w", err)
+	if len(supersededMemoryIDs) > 0 {
+		script += buildMemoryNodesSupersedeSQL(supersededMemoryIDs, nowMs)
 	}
-	return nil
+	if err := s.exec(ctx, script); err != nil {
+		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("apply turn analysis: %w", err)
+	}
+	return logicdomain.TurnAnalysisApplyResult{
+		InsertedMemoryNodes: insertedMemoryNodes,
+		SupersededVectorIDs: supersededVectorIDs,
+	}, nil
 }
 
 // LoadProfileTargets loads the current durable user/project profile blobs so post-action can merge fresh profile evidence before persistence.
@@ -1879,21 +1908,144 @@ ORDER BY t.target_id ASC, o.rn ASC
 	return windows, nil
 }
 
-// LoadActiveSessionMemoryNodes returns the active memory-node anchors inside one session so the batch analyzer can decide which old memories to supersede.
-// LoadActiveSessionMemoryNodes 用于返回某个 session 内的活跃记忆节点锚点，让批处理分析器判断哪些旧记忆需要淘汰。
+// LoadMemoryNodesByIDs loads one mixed batch of unified durable memory rows by numeric ids and returns them in ascending id order.
+// LoadMemoryNodesByIDs 用于按数字 id 批量读取统一长期记忆行，并按升序返回。
+func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+	memoryIDs = normalizeUint64List(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return []logicdomain.MemoryNodeRecord{}, nil
+	}
+	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
+       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE id IN (%s)
+ORDER BY id ASC
+`, sqlUint64List(memoryIDs)))
+	if err != nil {
+		return nil, fmt.Errorf("query memory nodes by ids: %w", err)
+	}
+	out := make([]logicdomain.MemoryNodeRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.toMemoryNodeRecord())
+	}
+	return out, nil
+}
+
+// LoadMemoryNodesByVectorIDs loads unified durable memory rows by vector ids so vector search hits can be enriched with relational refs.
+// LoadMemoryNodesByVectorIDs 用于按 vector id 读取统一长期记忆行，让向量召回结果补全为关系层 ref。
+func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
+	vectorIDs = normalizeStringList(vectorIDs)
+	if len(vectorIDs) == 0 {
+		return []logicdomain.MemoryNodeRecord{}, nil
+	}
+	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
+       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE vector_id IN (%s)
+ORDER BY created_timestamp ASC, id ASC
+`, sqlStringList(vectorIDs)))
+	if err != nil {
+		return nil, fmt.Errorf("query memory nodes by vector ids: %w", err)
+	}
+	out := make([]logicdomain.MemoryNodeRecord, 0, len(rows))
+	for _, row := range rows {
+		out = append(out, row.toMemoryNodeRecord())
+	}
+	return out, nil
+}
+
+// FindRecentActiveMemoryByDedupe finds one recent active direct-write memory row inside the same resolved session scope and soft-idempotency window.
+// FindRecentActiveMemoryByDedupe 用于在同一已解析 session 范围和软幂等窗口内查找最近的 active 主动写记忆行。
+func (s *Store) FindRecentActiveMemoryByDedupe(ctx context.Context, session logicdomain.SessionRef, sourceKind, scopeLevel int, dedupeHash string, notBefore time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
+	if session.SessionID == 0 {
+		return logicdomain.MemoryNodeRecord{}, false, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if strings.TrimSpace(dedupeHash) == "" {
+		return logicdomain.MemoryNodeRecord{}, false, logicdomain.ValidationError{Field: "dedupe_hash", Message: "is required"}
+	}
+	rows, err := queryRows[memoryNodeRow](s, ctx, `
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
+       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE origin_session_id = ?
+  AND project_id = ?
+  AND user_id = ?
+  AND source_kind = ?
+  AND scope_level = ?
+  AND dedupe_hash = ?
+  AND memory_status = ?
+  AND created_timestamp >= ?
+ORDER BY created_timestamp DESC, id DESC
+LIMIT 1
+`, session.SessionID, session.ProjectID, session.UserID, sourceKind, scopeLevel, strings.TrimSpace(dedupeHash), logicdomain.MemoryStatusActive, notBefore.UTC().UnixMilli())
+	if err != nil {
+		return logicdomain.MemoryNodeRecord{}, false, fmt.Errorf("query memory dedupe row: %w", err)
+	}
+	if len(rows) == 0 {
+		return logicdomain.MemoryNodeRecord{}, false, nil
+	}
+	return rows[0].toMemoryNodeRecord(), true, nil
+}
+
+// CreateDirectMemoryNode inserts one unified direct-write memory row after the vector row has already been persisted successfully.
+// CreateDirectMemoryNode 用于在向量行已经成功持久化后，插入一条统一的主动写记忆行。
+func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
+	if session.SessionID == 0 {
+		return logicdomain.MemoryNodeRecord{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if strings.TrimSpace(record.VectorID) == "" {
+		return logicdomain.MemoryNodeRecord{}, logicdomain.ValidationError{Field: "vector_id", Message: "is required"}
+	}
+	if !logicdomain.ValidMemoryNodeCategory(record.Category) {
+		return logicdomain.MemoryNodeRecord{}, logicdomain.ValidationError{Field: "category", Message: "must be one supported memory category"}
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	nextID, err := s.nextNumericID(ctx, "vmm_memory_nodes")
+	if err != nil {
+		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("allocate direct memory node id: %w", err)
+	}
+	now := time.Now().UTC()
+	record = normalizeDirectMemoryNodeRecord(session, record, nextID, now)
+	if err := s.exec(ctx, buildMemoryNodeInsertSQL(record)); err != nil {
+		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("insert direct memory node: %w", err)
+	}
+	return record, nil
+}
+
+// LoadActiveSessionMemoryNodes returns the active unified memory rows anchored to one origin session so analyzers can reason about duplicates and supersedes.
+// LoadActiveSessionMemoryNodes 用于返回绑定到同一个 origin session 的活跃统一记忆行，让分析器可以判断重复和覆盖关系。
 func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
 	if session.SessionID == 0 {
 		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
-SELECT mn.id, mn.project_id, mn.user_id, mn.turn_id,
-       CAST(mn.vector_id AS VARCHAR) AS vector_id,
-       mn.category, mn.abstract, mn.details, mn.node_status, mn.created_timestamp
-FROM vmm_memory_nodes mn
-JOIN vmm_turn_records tr ON tr.id = mn.turn_id
-WHERE tr.session_id = ? AND mn.node_status = ?
-ORDER BY mn.turn_id ASC, mn.id ASC
-`, session.SessionID, logicdomain.MemoryNodeStatusActive)
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
+       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE origin_session_id = ? AND memory_status = ?
+ORDER BY COALESCE(source_turn_id, 0) ASC, id ASC
+`, session.SessionID, logicdomain.MemoryStatusActive)
 	if err != nil {
 		return nil, fmt.Errorf("query active session memory nodes: %w", err)
 	}
@@ -1902,6 +2054,94 @@ ORDER BY mn.turn_id ASC, mn.id ASC
 		nodes = append(nodes, row.toDomain())
 	}
 	return nodes, nil
+}
+
+// LoadRecentDirectMemoryWrites returns the direct AI-written memory rows created inside one exclusion window so the turn analyzer can avoid duplicate extraction.
+// LoadRecentDirectMemoryWrites 用于返回某个排斥窗口内新建的 AI 主动写记忆行，让 turn analyzer 避免重复提炼。
+func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicdomain.SessionRef, observedAfter, observedBefore time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {
+	if session.SessionID == 0 {
+		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if observedBefore.IsZero() {
+		return []logicdomain.TurnAnalysisDirectWrite{}, nil
+	}
+	rows, err := queryRows[memoryNodeRow](s, ctx, `
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
+       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE origin_session_id = ?
+  AND source_kind = ?
+  AND memory_status = ?
+  AND created_timestamp > ?
+  AND created_timestamp <= ?
+ORDER BY created_timestamp ASC, id ASC
+`, session.SessionID, logicdomain.MemorySourceKindGRPCAIWrite, logicdomain.MemoryStatusActive, observedAfter.UTC().UnixMilli(), observedBefore.UTC().UnixMilli())
+	if err != nil {
+		return nil, fmt.Errorf("query recent direct memory writes: %w", err)
+	}
+	items := make([]logicdomain.TurnAnalysisDirectWrite, 0, len(rows))
+	for _, row := range rows {
+		items = append(items, logicdomain.TurnAnalysisDirectWrite{
+			MemoryID:         row.ID,
+			ScopeLevel:       logicdomain.MemoryScopeLevelLabel(row.ScopeLevel),
+			Abstract:         strings.TrimSpace(row.Abstract),
+			Details:          strings.TrimSpace(row.Details),
+			CreatedTimestamp: row.CreatedTimestamp,
+		})
+	}
+	return items, nil
+}
+
+// ApplyMemoryAdoption increments lifecycle counters for the memory rows selected by pre-check and promotes hot session facts when they prove useful across sessions.
+// ApplyMemoryAdoption 用于为被 pre-check 采纳的记忆行递增生命周期计数，并在 session 级事实跨会话多次命中后将其升级。
+func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+	if session.SessionID == 0 {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	memoryIDs = normalizeUint64List(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	if adoptedAt.IsZero() {
+		adoptedAt = time.Now().UTC()
+	} else {
+		adoptedAt = adoptedAt.UTC()
+	}
+
+	// Load the current durable rows first so the lifecycle update can respect each row's current scope, counters, and expiry horizon.
+	// 先加载当前长期行，确保生命周期更新能够尊重每条记录已有的作用域、计数器和过期时间。
+	rows, err := s.LoadMemoryNodesByIDs(ctx, memoryIDs)
+	if err != nil {
+		return fmt.Errorf("load memory adoption targets: %w", err)
+	}
+	if len(rows) == 0 {
+		return nil
+	}
+
+	// Serialize the write-back so counter evolution and session-to-project promotion stay deterministic under concurrent pre-check traffic.
+	// 串行化这次回写，确保在并发 pre-check 流量下，计数递增和 session->project 提升保持确定性。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	script := ""
+	for _, row := range rows {
+		if row.ID == 0 || row.Status != logicdomain.MemoryStatusActive {
+			continue
+		}
+		evolved := evolveAdoptedMemoryRecord(session, row, adoptedAt)
+		script += buildMemoryAdoptionUpdateSQL(evolved)
+	}
+	if strings.TrimSpace(script) == "" {
+		return nil
+	}
+	if err := s.exec(ctx, script); err != nil {
+		return fmt.Errorf("apply memory adoption: %w", err)
+	}
+	return nil
 }
 
 // ListIdlePendingSessions returns sessions whose latest conversation activity is older than the idle timeout while still carrying pending turn rows.
@@ -1917,6 +2157,7 @@ func (s *Store) ListIdlePendingSessions(ctx context.Context, idleTimeout time.Du
 	rows, err := queryRows[sessionRow](s, ctx, `
 SELECT id, session_key, user_id, team_id, space_id, project_id,
        turn_count, last_summarized_id, summarize_content, summarize_budget,
+       last_extract_observed_timestamp, last_extract_completed_timestamp,
        created_timestamp, updated_timestamp
 FROM vmm_sessions
 WHERE updated_timestamp <= ?
@@ -1935,21 +2176,58 @@ LIMIT ?
 	for _, row := range rows {
 		record := row.toDomain()
 		sessions = append(sessions, logicdomain.SessionRef{
-			SessionID:        record.ID,
-			SessionKey:       record.SessionKey,
-			UserID:           record.UserID,
-			TeamID:           record.TeamID,
-			SpaceID:          record.SpaceID,
-			ProjectID:        record.ProjectID,
-			TurnCount:        record.TurnCount,
-			LastSummarizedID: record.LastSummarizedID,
-			SummarizeContent: record.SummarizeContent,
-			SummarizeBudget:  record.SummarizeBudget,
-			CreatedAt:        record.CreatedAt,
-			UpdatedAt:        record.UpdatedAt,
+			SessionID:              record.ID,
+			SessionKey:             record.SessionKey,
+			UserID:                 record.UserID,
+			TeamID:                 record.TeamID,
+			SpaceID:                record.SpaceID,
+			ProjectID:              record.ProjectID,
+			TurnCount:              record.TurnCount,
+			LastSummarizedID:       record.LastSummarizedID,
+			SummarizeContent:       record.SummarizeContent,
+			SummarizeBudget:        record.SummarizeBudget,
+			LastExtractObservedAt:  record.LastExtractObservedAt,
+			LastExtractCompletedAt: record.LastExtractCompletedAt,
+			CreatedAt:              record.CreatedAt,
+			UpdatedAt:              record.UpdatedAt,
 		})
 	}
 	return sessions, nil
+}
+
+// AdvanceSessionExtractWindow stores the latest direct-memory observation window after one immediate turn analysis succeeds.
+// AdvanceSessionExtractWindow 用于在一次即时 turn 分析成功后，记录最新的主动记忆观察窗口。
+func (s *Store) AdvanceSessionExtractWindow(ctx context.Context, sessionID uint64, observedAt, completedAt time.Time) error {
+	if sessionID == 0 {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if observedAt.IsZero() && completedAt.IsZero() {
+		return nil
+	}
+	observedMs := int64(0)
+	completedMs := int64(0)
+	if !observedAt.IsZero() {
+		observedMs = observedAt.UTC().UnixMilli()
+	}
+	if !completedAt.IsZero() {
+		completedMs = completedAt.UTC().UnixMilli()
+	}
+	if err := s.exec(ctx, `
+UPDATE vmm_sessions
+SET last_extract_observed_timestamp = CASE
+      WHEN last_extract_observed_timestamp < ? THEN ? ELSE last_extract_observed_timestamp
+    END,
+    last_extract_completed_timestamp = CASE
+      WHEN last_extract_completed_timestamp < ? THEN ? ELSE last_extract_completed_timestamp
+    END,
+    updated_timestamp = CASE
+      WHEN updated_timestamp < ? THEN ? ELSE updated_timestamp
+    END
+WHERE id = ?
+`, observedMs, observedMs, completedMs, completedMs, completedMs, completedMs, sessionID); err != nil {
+		return fmt.Errorf("advance session extract window: %w", err)
+	}
+	return nil
 }
 
 // ApplySessionBatchAnalysis writes back a queued batch of turn summaries, inserts fresh memory/profile nodes, advances session summarize progress, and marks superseded memory turns.
@@ -2040,7 +2318,14 @@ func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdoma
 			if strings.TrimSpace(node.VectorID) == "" {
 				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
 			}
-			script += buildMemoryNodeInsertSQL(memoryStartID+memoryOffset, session.ProjectID, session.UserID, turnResult.TurnID, strings.TrimSpace(node.VectorID), node.Category, node.Abstract, node.Details, nowMs)
+			record := normalizeTurnMemoryNodeRecord(session, logicdomain.PersistedTurnRecord{
+				ID:        turnResult.TurnID,
+				SessionID: session.SessionID,
+				ProjectID: session.ProjectID,
+				CreatedAt: turnByID[turnResult.TurnID].CreatedAt,
+				UpdatedAt: now,
+			}, node, memoryStartID+memoryOffset, now)
+			script += buildMemoryNodeInsertSQL(record)
 			memoryOffset++
 		}
 		for idx, node := range turnResult.ProfileNodes {
@@ -2094,7 +2379,7 @@ func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdoma
 		script += buildProfileNodesRetireSQL(retiredProfileNodeIDs, "", nowMs)
 	}
 	if len(obsoleteTurnIDs) > 0 {
-		script += buildMemoryNodesSupersedeSQL(obsoleteTurnIDs)
+		script += buildMemoryNodesSupersedeBySourceTurnSQL(obsoleteTurnIDs, nowMs)
 	}
 	script += buildSessionBatchProgressUpdateSQL(session.SessionID, processedBudget, lastTurnID)
 	if err := s.exec(ctx, script); err != nil {
@@ -2103,19 +2388,44 @@ func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdoma
 	return logicdomain.SessionAnalysisApplyResult{ObsoleteVectorIDs: obsoleteVectorIDs}, nil
 }
 
-// loadObsoleteVectorIDs loads the currently active vector ids for the obsolete turn anchors so the caller can delete those rows from LanceDB after SQLite commits.
-// loadObsoleteVectorIDs 用于加载被淘汰 turn 锚点当前仍活跃的 vector_id，供调用方在 SQLite 提交成功后删除 LanceDB 对应行。
+// loadObsoleteVectorIDs loads the currently active vector ids for the obsolete source-turn anchors so the caller can delete those rows from LanceDB after SQLite commits.
+// loadObsoleteVectorIDs 用于加载被淘汰 source-turn 锚点当前仍活跃的 vector_id，供调用方在 SQLite 提交成功后删除 LanceDB 对应行。
 func (s *Store) loadObsoleteVectorIDs(ctx context.Context, sessionID uint64, turnIDs []uint64) ([]string, error) {
 	if sessionID == 0 || len(turnIDs) == 0 {
 		return nil, nil
 	}
 	rows, err := queryRows[obsoleteVectorRow](s, ctx, fmt.Sprintf(`
-SELECT CAST(mn.vector_id AS VARCHAR) AS vector_id
-FROM vmm_memory_nodes mn
-JOIN vmm_turn_records tr ON tr.id = mn.turn_id
-WHERE tr.session_id = %d AND mn.node_status = %d AND mn.turn_id IN (%s)
-ORDER BY mn.turn_id ASC, mn.id ASC
-`, sessionID, logicdomain.MemoryNodeStatusActive, sqlUint64List(turnIDs)))
+SELECT vector_id
+FROM vmm_memory_nodes
+WHERE origin_session_id = %d AND memory_status = %d AND source_turn_id IN (%s)
+ORDER BY source_turn_id ASC, id ASC
+`, sessionID, logicdomain.MemoryStatusActive, sqlUint64List(turnIDs)))
+	if err != nil {
+		return nil, err
+	}
+	ids := make([]string, 0, len(rows))
+	for _, row := range rows {
+		if strings.TrimSpace(row.VectorID) == "" {
+			continue
+		}
+		ids = append(ids, strings.TrimSpace(row.VectorID))
+	}
+	return ids, nil
+}
+
+// loadActiveMemoryVectorIDs loads the vector ids of active unified memory rows by memory id so callers can clean those vector rows after a supersede update commits.
+// loadActiveMemoryVectorIDs 用于按记忆 id 读取 active 统一记忆行的 vector_id，供调用方在 supersede 提交后清理对应向量行。
+func (s *Store) loadActiveMemoryVectorIDs(ctx context.Context, memoryIDs []uint64) ([]string, error) {
+	memoryIDs = normalizeUint64List(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return nil, nil
+	}
+	rows, err := queryRows[obsoleteVectorRow](s, ctx, fmt.Sprintf(`
+SELECT vector_id
+FROM vmm_memory_nodes
+WHERE memory_status = %d AND id IN (%s)
+ORDER BY id ASC
+`, logicdomain.MemoryStatusActive, sqlUint64List(memoryIDs)))
 	if err != nil {
 		return nil, err
 	}
@@ -2173,7 +2483,10 @@ LIMIT 1
 // ensureSession 用于在目标项目内按外部 session_key 读取 session；如果还不存在，则在已解析层级下创建一条新 session。
 func (s *Store) ensureSession(ctx context.Context, sessionKey string, userID uint64, project logicdomain.ProjectRecord) (logicdomain.SessionRecord, error) {
 	rows, err := queryRows[sessionRow](s, ctx, `
-SELECT id, session_key, user_id, team_id, space_id, project_id, turn_count, last_summarized_id, summarize_content, summarize_budget, created_timestamp, updated_timestamp
+SELECT id, session_key, user_id, team_id, space_id, project_id, turn_count,
+       last_summarized_id, summarize_content, summarize_budget,
+       last_extract_observed_timestamp, last_extract_completed_timestamp,
+       created_timestamp, updated_timestamp
 FROM vmm_sessions
 WHERE project_id = ? AND session_key = ?
 LIMIT 1
@@ -2199,24 +2512,29 @@ LIMIT 1
 	nowMs := now.UnixMilli()
 	if err := s.exec(ctx, `
 INSERT INTO vmm_sessions (
-  id, session_key, user_id, team_id, space_id, project_id, turn_count, last_summarized_id, summarize_content, summarize_budget, created_timestamp, updated_timestamp
-) VALUES (?, ?, ?, ?, ?, ?, 0, 0, '', 0, ?, ?)
+  id, session_key, user_id, team_id, space_id, project_id,
+  turn_count, last_summarized_id, summarize_content, summarize_budget,
+  last_extract_observed_timestamp, last_extract_completed_timestamp,
+  created_timestamp, updated_timestamp
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, '', 0, 0, 0, ?, ?)
 `, nextID, sessionKey, userID, project.TeamID, project.SpaceID, project.ID, nowMs, nowMs); err != nil {
 		return logicdomain.SessionRecord{}, fmt.Errorf("insert session: %w", err)
 	}
 	return logicdomain.SessionRecord{
-		ID:               nextID,
-		SessionKey:       sessionKey,
-		UserID:           userID,
-		TeamID:           project.TeamID,
-		SpaceID:          project.SpaceID,
-		ProjectID:        project.ID,
-		TurnCount:        0,
-		LastSummarizedID: 0,
-		SummarizeContent: "",
-		SummarizeBudget:  0,
-		CreatedAt:        now,
-		UpdatedAt:        now,
+		ID:                     nextID,
+		SessionKey:             sessionKey,
+		UserID:                 userID,
+		TeamID:                 project.TeamID,
+		SpaceID:                project.SpaceID,
+		ProjectID:              project.ID,
+		TurnCount:              0,
+		LastSummarizedID:       0,
+		SummarizeContent:       "",
+		SummarizeBudget:        0,
+		LastExtractObservedAt:  time.Time{},
+		LastExtractCompletedAt: time.Time{},
+		CreatedAt:              now,
+		UpdatedAt:              now,
 	}, nil
 }
 
@@ -2275,21 +2593,50 @@ LIMIT 1
 	return rows[0].toDomain(), nil
 }
 
-// ListProjectMemories returns memory rows under one project so migrations can rebuild vector rows from durable SQL data.
-// ListProjectMemories 用于返回某个项目下的记忆条目，让迁移流程可以从长期 SQL 数据重建向量行。
+// ListProjectMemories returns unified durable memory rows under one project so migrations can rebuild vector rows directly from the main memory table.
+// ListProjectMemories 用于返回某个项目下的统一长期记忆行，让迁移流程可以直接从主记忆表重建向量行。
 func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
-	rows, err := queryRows[memoryEntryRow](s, ctx, `
-SELECT id, team_id, space_id, project_id, session_id, user_id, content, vector_json, metadata_json, created_at
-FROM vmm_memory_entries
-WHERE project_id = ?
-ORDER BY updated_at ASC, id ASC
-`, projectID)
+	rows, err := queryRows[memoryNodeRow](s, ctx, `
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
+       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE project_id = ? AND memory_status = ?
+ORDER BY created_timestamp ASC, id ASC
+`, projectID, logicdomain.MemoryStatusActive)
 	if err != nil {
 		return nil, fmt.Errorf("list project memories: %w", err)
 	}
 	out := make([]logicdomain.MemoryRecord, 0, len(rows))
 	for _, row := range rows {
-		out = append(out, row.toDomain())
+		record := row.toMemoryNodeRecord()
+		filter := logicdomain.SearchFilter{
+			UserID:    record.UserID,
+			TeamID:    record.TeamID,
+			SpaceID:   record.SpaceID,
+			ProjectID: record.ProjectID,
+		}
+		if record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
+			filter.SessionID = record.OriginSessionID
+		}
+		out = append(out, logicdomain.MemoryRecord{
+			ID:     record.VectorID,
+			Text:   record.Abstract,
+			Vector: append([]float32(nil), record.Vector...),
+			Filter: filter,
+			Metadata: map[string]string{
+				"category":     strconv.Itoa(record.Category),
+				"details":      record.Details,
+				"source_kind":  logicdomain.MemorySourceKindLabel(record.SourceKind),
+				"scope_level":  logicdomain.MemoryScopeLevelLabel(record.ScopeLevel),
+				"priority":     strconv.Itoa(record.Priority),
+				"memory_level": strconv.Itoa(record.MemoryLevel),
+			},
+			CreatedAt: record.CreatedAt,
+		})
 	}
 	return out, nil
 }
@@ -2403,9 +2750,6 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE project_id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project sessions: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_memory_entries WHERE project_id = ?`, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project memories: %w", err)
-	}
 	if err := s.exec(ctx, `DELETE FROM vmm_projects WHERE id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project row: %w", err)
 	}
@@ -2478,9 +2822,9 @@ WHERE project_id = %d
 	}
 	if err := s.exec(ctx, fmt.Sprintf(`
 UPDATE vmm_memory_nodes
-SET project_id = %d
+SET team_id = %d, space_id = %d, project_id = %d, updated_timestamp = %d
 WHERE project_id = %d
-`, target.ID, source.ID)); err != nil {
+`, target.TeamID, target.SpaceID, target.ID, nowMs, source.ID)); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate memory nodes: %w", err)
 	}
 	if err := s.exec(ctx, fmt.Sprintf(`
@@ -2489,13 +2833,6 @@ SET bind_id = %d
 WHERE profile_type = %d AND bind_id = %d
 `, target.ID, logicdomain.ProfileTypeProject, source.ID)); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate project profile nodes: %w", err)
-	}
-	if err := s.exec(ctx, `
-UPDATE vmm_memory_entries
-SET team_id = ?, space_id = ?, project_id = ?, updated_at = ?
-WHERE project_id = ?
-`, target.TeamID, target.SpaceID, target.ID, time.Now().UTC().Format(time.RFC3339Nano), source.ID); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate memories: %w", err)
 	}
 	return logicdomain.ProjectMigrationResult{
 		Source:           source,
@@ -2659,9 +2996,6 @@ WHERE profile_type <> ? AND turn_id IN (
 	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE user_id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user sessions: %w", err)
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_memory_entries WHERE user_id = ?`, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user memories: %w", err)
-	}
 	if err := s.exec(ctx, `DELETE FROM vmm_users WHERE id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user row: %w", err)
 	}
@@ -2809,15 +3143,11 @@ func (s *Store) countProjectRows(ctx context.Context, projectID uint64) (int, in
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count project turn records: %w", err)
 	}
-	memoryEntryCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE project_id = ?`, projectID)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("count project sql memories: %w", err)
-	}
 	memoryNodeCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE project_id = ?`, projectID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count project memory nodes: %w", err)
 	}
-	return sessionCount, messageCount, memoryEntryCount + memoryNodeCount, nil
+	return sessionCount, messageCount, memoryNodeCount, nil
 }
 
 // countUserRows returns user-scoped row counts so protected user deletion can explain what will be removed.
@@ -2831,15 +3161,11 @@ func (s *Store) countUserRows(ctx context.Context, userID uint64) (int, int, int
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count user turn records: %w", err)
 	}
-	memoryEntryCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_entries WHERE user_id = ?`, userID)
-	if err != nil {
-		return 0, 0, 0, fmt.Errorf("count user sql memories: %w", err)
-	}
 	memoryNodeCount, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_memory_nodes WHERE user_id = ?`, userID)
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count user memory nodes: %w", err)
 	}
-	return sessionCount, messageCount, memoryEntryCount + memoryNodeCount, nil
+	return sessionCount, messageCount, memoryNodeCount, nil
 }
 
 // countRows keeps the admin delete and migrate paths concise by centralizing the one-row COUNT(*) query pattern.
@@ -3011,6 +3337,19 @@ func parseUint64(raw string) (uint64, bool) {
 	return value, true
 }
 
+// encodeFloat32Slice stores one vector payload as JSON text so unified memory rows can be rebuilt into vector rows later.
+// encodeFloat32Slice 用于把向量载荷保存成 JSON 文本，让统一记忆行后续可以重建回向量行。
+func encodeFloat32Slice(values []float32) string {
+	if len(values) == 0 {
+		return "[]"
+	}
+	data, err := json.Marshal(values)
+	if err != nil {
+		return "[]"
+	}
+	return string(data)
+}
+
 // decodeFloat32Slice restores one vector payload from JSON and falls back to an empty slice on malformed data.
 // decodeFloat32Slice 用于从 JSON 还原向量载荷，并在数据损坏时退回空切片。
 func decodeFloat32Slice(raw string) []float32 {
@@ -3120,14 +3459,70 @@ WHERE id = %d;
 `, sqlStringLiteral(details), detailsBudget, logicdomain.TurnExtractedStatusDone, updatedMs, turnID)
 }
 
-// buildMemoryNodeInsertSQL renders the raw INSERT used for one extracted memory node so the debug-stage pipeline can persist node rows without parameter binding drift.
-// buildMemoryNodeInsertSQL 用于渲染单条记忆节点的原始 INSERT 语句，让调试阶段流水线在不依赖参数绑定的情况下稳定落库。
-func buildMemoryNodeInsertSQL(id, projectID, userID, turnID uint64, vectorID string, category int, abstract, details string, createdMs int64) string {
+// buildMemoryNodeInsertSQL renders the raw INSERT used for one unified durable memory row so turn extraction and direct-write paths share the same relational schema.
+// buildMemoryNodeInsertSQL 用于渲染统一长期记忆行的原始 INSERT 语句，让 turn 提炼和主动写入共用同一套关系表结构。
+func buildMemoryNodeInsertSQL(record logicdomain.MemoryNodeRecord) string {
+	expiresMs := int64(0)
+	if !record.ExpiresAt.IsZero() {
+		expiresMs = record.ExpiresAt.UTC().UnixMilli()
+	}
+	lastRecalledMs := int64(0)
+	if !record.LastRecalledAt.IsZero() {
+		lastRecalledMs = record.LastRecalledAt.UTC().UnixMilli()
+	}
+	lastAdoptedMs := int64(0)
+	if !record.LastAdoptedAt.IsZero() {
+		lastAdoptedMs = record.LastAdoptedAt.UTC().UnixMilli()
+	}
+	vectorJSON := encodeFloat32Slice(record.Vector)
 	return fmt.Sprintf(`
 INSERT INTO vmm_memory_nodes (
-  id, project_id, user_id, turn_id, vector_id, category, abstract, details, node_status, created_timestamp
-) VALUES (%d, %d, %d, %d, CAST(%s AS UUID), %d, %s, %s, %d, %d);
-`, id, projectID, userID, turnID, sqlStringLiteral(vectorID), category, sqlStringLiteral(abstract), sqlStringLiteral(details), logicdomain.MemoryNodeStatusActive, createdMs)
+  id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+  vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+  memory_status, priority, memory_level, refresh_weight, status_reason,
+  expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
+  recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+  created_timestamp, updated_timestamp
+) VALUES (%d, %d, %d, %d, %d, %d, %s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %s, %d, %d, %d, %d, %d, %d, %s, %d, %d);
+`, record.ID, record.TeamID, record.SpaceID, record.ProjectID, record.UserID, record.OriginSessionID, sqlNullableUint64(nullableUint64(record.SourceTurnID)),
+		sqlStringLiteral(strings.TrimSpace(record.VectorID)), sqlStringLiteral(vectorJSON), record.SourceKind, record.ScopeLevel, record.Category,
+		sqlStringLiteral(strings.TrimSpace(record.Abstract)), sqlStringLiteral(strings.TrimSpace(record.Details)),
+		record.Status, record.Priority, record.MemoryLevel, record.RefreshWeight, sqlStringLiteral(strings.TrimSpace(record.StatusReason)),
+		expiresMs, lastRecalledMs, lastAdoptedMs, record.RecalledCount, record.AdoptedCount, record.CrossSessionAdoptedCount,
+		sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
+}
+
+// buildMemoryAdoptionUpdateSQL renders one raw UPDATE for a memory row that has just been adopted by pre-check.
+// buildMemoryAdoptionUpdateSQL 用于渲染一条刚被 pre-check 采纳的记忆行更新语句。
+func buildMemoryAdoptionUpdateSQL(record logicdomain.MemoryNodeRecord) string {
+	expiresMs := int64(0)
+	if !record.ExpiresAt.IsZero() {
+		expiresMs = record.ExpiresAt.UTC().UnixMilli()
+	}
+	lastRecalledMs := int64(0)
+	if !record.LastRecalledAt.IsZero() {
+		lastRecalledMs = record.LastRecalledAt.UTC().UnixMilli()
+	}
+	lastAdoptedMs := int64(0)
+	if !record.LastAdoptedAt.IsZero() {
+		lastAdoptedMs = record.LastAdoptedAt.UTC().UnixMilli()
+	}
+	return fmt.Sprintf(`
+UPDATE vmm_memory_nodes
+SET scope_level = %d,
+    memory_status = %d,
+    memory_level = %d,
+    refresh_weight = %d,
+    expires_timestamp = %d,
+    last_recalled_timestamp = %d,
+    last_adopted_timestamp = %d,
+    recalled_count = %d,
+    adopted_count = %d,
+    cross_session_adopted_count = %d,
+    updated_timestamp = %d
+WHERE id = %d;
+`, record.ScopeLevel, record.Status, record.MemoryLevel, record.RefreshWeight, expiresMs, lastRecalledMs, lastAdoptedMs,
+		record.RecalledCount, record.AdoptedCount, record.CrossSessionAdoptedCount, record.UpdatedAt.UTC().UnixMilli(), record.ID)
 }
 
 // buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node together with its lifecycle metadata and final status.
@@ -3305,17 +3700,199 @@ func buildProfileTargetUpdateSQL(profileType int, bindID uint64, profile, update
 	}
 }
 
-// buildMemoryNodesSupersedeSQL renders the raw UPDATE used to mark obsolete active memory nodes as superseded after one newer batch replaces them.
-// buildMemoryNodesSupersedeSQL 用于渲染原始 UPDATE 语句，在较新的批次替换旧信息后把对应的活跃记忆节点标记为 superseded。
-func buildMemoryNodesSupersedeSQL(turnIDs []uint64) string {
+// buildMemoryNodesSupersedeSQL renders the raw UPDATE used to mark obsolete active memory rows as superseded by id.
+// buildMemoryNodesSupersedeSQL 用于渲染原始 UPDATE 语句，按记忆 id 把过时的 active 记忆行标记为 superseded。
+func buildMemoryNodesSupersedeSQL(memoryIDs []uint64, updatedMs int64) string {
+	if len(memoryIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+UPDATE vmm_memory_nodes
+SET memory_status = %d, updated_timestamp = %d
+WHERE memory_status = %d AND id IN (%s);
+`, logicdomain.MemoryStatusSuperseded, updatedMs, logicdomain.MemoryStatusActive, sqlUint64List(memoryIDs))
+}
+
+// buildMemoryNodesSupersedeBySourceTurnSQL renders the raw UPDATE used by the legacy batch path to supersede active memory rows anchored to obsolete source turns.
+// buildMemoryNodesSupersedeBySourceTurnSQL 用于渲染旧 batch 兼容路径使用的原始 UPDATE，按废弃 source turn 把 active 记忆行标记为 superseded。
+func buildMemoryNodesSupersedeBySourceTurnSQL(turnIDs []uint64, updatedMs int64) string {
 	if len(turnIDs) == 0 {
 		return ""
 	}
 	return fmt.Sprintf(`
 UPDATE vmm_memory_nodes
-SET node_status = %d
-WHERE node_status = %d AND turn_id IN (%s);
-`, logicdomain.MemoryNodeStatusSuperseded, logicdomain.MemoryNodeStatusActive, sqlUint64List(turnIDs))
+SET memory_status = %d, updated_timestamp = %d
+WHERE memory_status = %d AND source_turn_id IN (%s);
+`, logicdomain.MemoryStatusSuperseded, updatedMs, logicdomain.MemoryStatusActive, sqlUint64List(turnIDs))
+}
+
+// normalizeTurnMemoryNodeRecord fills unified-memory defaults for one turn-extracted node before it is persisted.
+// normalizeTurnMemoryNodeRecord 用于在持久化前，为一条 turn 提炼记忆补齐统一记忆表默认值。
+func normalizeTurnMemoryNodeRecord(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, node logicdomain.MemoryNodeCandidate, id uint64, now time.Time) logicdomain.MemoryNodeRecord {
+	record := logicdomain.MemoryNodeRecord{
+		ID:              id,
+		TeamID:          session.TeamID,
+		SpaceID:         session.SpaceID,
+		ProjectID:       session.ProjectID,
+		UserID:          session.UserID,
+		OriginSessionID: session.SessionID,
+		SourceTurnID:    turn.ID,
+		VectorID:        strings.TrimSpace(node.VectorID),
+		Vector:          append([]float32(nil), node.Vector...),
+		SourceKind:      node.SourceKind,
+		ScopeLevel:      node.ScopeLevel,
+		Category:        node.Category,
+		Abstract:        strings.TrimSpace(node.Abstract),
+		Details:         strings.TrimSpace(node.Details),
+		Status:          logicdomain.MemoryStatusActive,
+		Priority:        node.Priority,
+		MemoryLevel:     node.MemoryLevel,
+		RefreshWeight:   node.RefreshWeight,
+		DedupeHash:      strings.TrimSpace(node.DedupeHash),
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+	if !logicdomain.ValidMemorySourceKind(record.SourceKind) {
+		record.SourceKind = logicdomain.MemorySourceKindTurnExtract
+	}
+	if !logicdomain.ValidMemoryScopeLevel(record.ScopeLevel) {
+		record.ScopeLevel = logicdomain.MemoryScopeLevelProject
+	}
+	if !logicdomain.ValidMemoryPriority(record.Priority) {
+		record.Priority = logicdomain.MemoryPriorityP2
+	}
+	if !logicdomain.ValidMemoryLevel(record.MemoryLevel) {
+		if record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
+			record.MemoryLevel = logicdomain.MemoryLevelSession
+		} else {
+			record.MemoryLevel = logicdomain.MemoryLevelStable
+		}
+	}
+	if record.RefreshWeight <= 0 {
+		record.RefreshWeight = 1
+	}
+	if record.ExpiresAt.IsZero() {
+		record.ExpiresAt = defaultUnifiedMemoryExpiry(record.ScopeLevel, now)
+	} else {
+		record.ExpiresAt = record.ExpiresAt.UTC()
+	}
+	return record
+}
+
+// normalizeDirectMemoryNodeRecord fills unified-memory defaults for one direct AI-written row before it is persisted.
+// normalizeDirectMemoryNodeRecord 用于在持久化前，为一条 AI 主动写记忆补齐统一记忆表默认值。
+func normalizeDirectMemoryNodeRecord(session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, id uint64, now time.Time) logicdomain.MemoryNodeRecord {
+	record.ID = id
+	record.TeamID = session.TeamID
+	record.SpaceID = session.SpaceID
+	record.ProjectID = session.ProjectID
+	record.UserID = session.UserID
+	if record.OriginSessionID == 0 {
+		record.OriginSessionID = session.SessionID
+	}
+	record.VectorID = strings.TrimSpace(record.VectorID)
+	record.Abstract = strings.TrimSpace(record.Abstract)
+	record.Details = strings.TrimSpace(record.Details)
+	record.DedupeHash = strings.TrimSpace(record.DedupeHash)
+	record.CreatedAt = chooseNonZeroTime(record.CreatedAt, now)
+	record.UpdatedAt = chooseNonZeroTime(record.UpdatedAt, now)
+	if !logicdomain.ValidMemorySourceKind(record.SourceKind) {
+		record.SourceKind = logicdomain.MemorySourceKindGRPCAIWrite
+	}
+	if !logicdomain.ValidMemoryScopeLevel(record.ScopeLevel) {
+		record.ScopeLevel = logicdomain.MemoryScopeLevelProject
+	}
+	if !logicdomain.ValidMemoryPriority(record.Priority) {
+		record.Priority = logicdomain.MemoryPriorityP2
+	}
+	if !logicdomain.ValidMemoryLevel(record.MemoryLevel) {
+		if record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
+			record.MemoryLevel = logicdomain.MemoryLevelSession
+		} else {
+			record.MemoryLevel = logicdomain.MemoryLevelStable
+		}
+	}
+	if !logicdomain.ValidMemoryStatus(record.Status) {
+		record.Status = logicdomain.MemoryStatusActive
+	}
+	if record.RefreshWeight <= 0 {
+		record.RefreshWeight = 1
+	}
+	if record.ExpiresAt.IsZero() {
+		record.ExpiresAt = defaultUnifiedMemoryExpiry(record.ScopeLevel, now)
+	} else {
+		record.ExpiresAt = record.ExpiresAt.UTC()
+	}
+	return record
+}
+
+// defaultUnifiedMemoryExpiry derives the default retention horizon for unified durable memory rows when callers omit an explicit expiry.
+// defaultUnifiedMemoryExpiry 用于在调用方省略显式过期时间时，为统一长期记忆推导默认保留时长。
+func defaultUnifiedMemoryExpiry(scopeLevel int, now time.Time) time.Time {
+	switch scopeLevel {
+	case logicdomain.MemoryScopeLevelSession:
+		return now.UTC().Add(15 * 24 * time.Hour)
+	case logicdomain.MemoryScopeLevelUser:
+		return now.UTC().Add(365 * 24 * time.Hour)
+	default:
+		return now.UTC().Add(180 * 24 * time.Hour)
+	}
+}
+
+// evolveAdoptedMemoryRecord computes the post-adoption lifecycle state for one active unified memory row.
+// evolveAdoptedMemoryRecord 用于计算一条活跃统一记忆在被采纳后的生命周期状态。
+func evolveAdoptedMemoryRecord(session logicdomain.SessionRef, row logicdomain.MemoryNodeRecord, adoptedAt time.Time) logicdomain.MemoryNodeRecord {
+	updated := row
+	updated.LastRecalledAt = adoptedAt.UTC()
+	updated.LastAdoptedAt = adoptedAt.UTC()
+	updated.RecalledCount++
+	updated.AdoptedCount++
+	if updated.RefreshWeight <= 0 {
+		updated.RefreshWeight = 1
+	}
+	updated.RefreshWeight++
+	if row.OriginSessionID > 0 && row.OriginSessionID != session.SessionID {
+		updated.CrossSessionAdoptedCount++
+	}
+	if row.ScopeLevel == logicdomain.MemoryScopeLevelSession && updated.CrossSessionAdoptedCount >= 2 {
+		updated.ScopeLevel = logicdomain.MemoryScopeLevelProject
+		if updated.MemoryLevel < logicdomain.MemoryLevelStable {
+			updated.MemoryLevel = logicdomain.MemoryLevelStable
+		}
+	}
+	updated.ExpiresAt = chooseLongerMemoryExpiry(updated.ExpiresAt, defaultUnifiedMemoryExpiry(updated.ScopeLevel, adoptedAt))
+	updated.UpdatedAt = adoptedAt.UTC()
+	return updated
+}
+
+// chooseLongerMemoryExpiry keeps the farther expiry horizon so adoption never shortens one record's lifetime by mistake.
+// chooseLongerMemoryExpiry 用于保留更远的过期时间，避免采纳操作意外缩短某条记录的寿命。
+func chooseLongerMemoryExpiry(current, candidate time.Time) time.Time {
+	if current.IsZero() {
+		return candidate.UTC()
+	}
+	if current.After(candidate) {
+		return current.UTC()
+	}
+	return candidate.UTC()
+}
+
+// chooseNonZeroTime keeps helper callers concise when they want to preserve a provided timestamp but fall back to now.
+// chooseNonZeroTime 用于在调用方希望优先保留已有时间戳、否则回退到 now 时，保持辅助逻辑简洁。
+func chooseNonZeroTime(value, fallback time.Time) time.Time {
+	if value.IsZero() {
+		return fallback.UTC()
+	}
+	return value.UTC()
+}
+
+// nullableUint64 returns a pointer only when the value is non-zero, so SQL builders can emit NULL for optional ids.
+// nullableUint64 用于仅在数值非零时返回指针，让 SQL 构造器可以为可空 id 输出 NULL。
+func nullableUint64(value uint64) *uint64 {
+	if value == 0 {
+		return nil
+	}
+	return &value
 }
 
 // buildSessionBatchProgressUpdateSQL renders the raw UPDATE used to advance last_summarized_id and subtract the processed pending budget after one queued batch succeeds.
@@ -3362,6 +3939,29 @@ func normalizeUint64List(values []uint64) []uint64 {
 	return out
 }
 
+// normalizeStringList removes blanks and duplicates from generic string id lists while keeping deterministic ascending order.
+// normalizeStringList 用于从通用字符串 id 列表中去掉空值和重复项，并保持确定性的升序。
+func normalizeStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 // sortedProfileBindingIDs returns one deterministic ascending id slice from a rendered-profile update map so SQL scripts remain stable in tests and logs.
 // sortedProfileBindingIDs 用于从渲染后画像更新 map 中返回确定性的升序 id 列表，确保 SQL 脚本在测试和日志里保持稳定。
 func sortedProfileBindingIDs(values map[uint64]string) []uint64 {
@@ -3396,6 +3996,26 @@ func sqlUint64List(values []uint64) string {
 	}
 	if len(parts) == 0 {
 		return "0"
+	}
+	return strings.Join(parts, ",")
+}
+
+// sqlStringList converts one string slice into a comma-separated SQL literal list for raw statement builders.
+// sqlStringList 用于把字符串切片转换成逗号分隔的 SQL 字面量列表，供原始语句构造器使用。
+func sqlStringList(values []string) string {
+	if len(values) == 0 {
+		return "''"
+	}
+	parts := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		parts = append(parts, sqlStringLiteral(value))
+	}
+	if len(parts) == 0 {
+		return "''"
 	}
 	return strings.Join(parts, ",")
 }
@@ -3531,34 +4151,38 @@ func (r projectJoinRow) toDomain() logicdomain.ProjectRecord {
 }
 
 type sessionRow struct {
-	ID               uint64 `json:"id"`
-	SessionKey       string `json:"session_key"`
-	UserID           uint64 `json:"user_id"`
-	TeamID           uint64 `json:"team_id"`
-	SpaceID          uint64 `json:"space_id"`
-	ProjectID        uint64 `json:"project_id"`
-	TurnCount        int    `json:"turn_count"`
-	LastSummarizedID uint64 `json:"last_summarized_id"`
-	SummarizeContent string `json:"summarize_content"`
-	SummarizeBudget  int    `json:"summarize_budget"`
-	CreatedTimestamp int64  `json:"created_timestamp"`
-	UpdatedTimestamp int64  `json:"updated_timestamp"`
+	ID                            uint64 `json:"id"`
+	SessionKey                    string `json:"session_key"`
+	UserID                        uint64 `json:"user_id"`
+	TeamID                        uint64 `json:"team_id"`
+	SpaceID                       uint64 `json:"space_id"`
+	ProjectID                     uint64 `json:"project_id"`
+	TurnCount                     int    `json:"turn_count"`
+	LastSummarizedID              uint64 `json:"last_summarized_id"`
+	SummarizeContent              string `json:"summarize_content"`
+	SummarizeBudget               int    `json:"summarize_budget"`
+	LastExtractObservedTimestamp  int64  `json:"last_extract_observed_timestamp"`
+	LastExtractCompletedTimestamp int64  `json:"last_extract_completed_timestamp"`
+	CreatedTimestamp              int64  `json:"created_timestamp"`
+	UpdatedTimestamp              int64  `json:"updated_timestamp"`
 }
 
 func (r sessionRow) toDomain() logicdomain.SessionRecord {
 	return logicdomain.SessionRecord{
-		ID:               r.ID,
-		SessionKey:       r.SessionKey,
-		UserID:           r.UserID,
-		TeamID:           r.TeamID,
-		SpaceID:          r.SpaceID,
-		ProjectID:        r.ProjectID,
-		TurnCount:        r.TurnCount,
-		LastSummarizedID: r.LastSummarizedID,
-		SummarizeContent: r.SummarizeContent,
-		SummarizeBudget:  r.SummarizeBudget,
-		CreatedAt:        unixMilliToTime(r.CreatedTimestamp),
-		UpdatedAt:        unixMilliToTime(r.UpdatedTimestamp),
+		ID:                     r.ID,
+		SessionKey:             r.SessionKey,
+		UserID:                 r.UserID,
+		TeamID:                 r.TeamID,
+		SpaceID:                r.SpaceID,
+		ProjectID:              r.ProjectID,
+		TurnCount:              r.TurnCount,
+		LastSummarizedID:       r.LastSummarizedID,
+		SummarizeContent:       r.SummarizeContent,
+		SummarizeBudget:        r.SummarizeBudget,
+		LastExtractObservedAt:  unixMilliToTime(r.LastExtractObservedTimestamp),
+		LastExtractCompletedAt: unixMilliToTime(r.LastExtractCompletedTimestamp),
+		CreatedAt:              unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:              unixMilliToTime(r.UpdatedTimestamp),
 	}
 }
 
@@ -3599,30 +4223,92 @@ func (r turnRecordRow) toDomain() logicdomain.SessionTurnRecord {
 }
 
 type memoryNodeRow struct {
-	ID               uint64 `json:"id"`
-	ProjectID        uint64 `json:"project_id"`
-	UserID           uint64 `json:"user_id"`
-	TurnID           uint64 `json:"turn_id"`
-	VectorID         string `json:"vector_id"`
-	Category         int    `json:"category"`
-	Abstract         string `json:"abstract"`
-	Details          string `json:"details"`
-	NodeStatus       int    `json:"node_status"`
-	CreatedTimestamp int64  `json:"created_timestamp"`
+	ID                       uint64  `json:"id"`
+	TeamID                   uint64  `json:"team_id"`
+	SpaceID                  uint64  `json:"space_id"`
+	ProjectID                uint64  `json:"project_id"`
+	UserID                   uint64  `json:"user_id"`
+	OriginSessionID          uint64  `json:"origin_session_id"`
+	SourceTurnID             *uint64 `json:"source_turn_id"`
+	VectorID                 string  `json:"vector_id"`
+	VectorJSON               string  `json:"vector_json"`
+	SourceKind               int     `json:"source_kind"`
+	ScopeLevel               int     `json:"scope_level"`
+	Category                 int     `json:"category"`
+	Abstract                 string  `json:"abstract"`
+	Details                  string  `json:"details"`
+	MemoryStatus             int     `json:"memory_status"`
+	Priority                 int     `json:"priority"`
+	MemoryLevel              int     `json:"memory_level"`
+	RefreshWeight            int     `json:"refresh_weight"`
+	StatusReason             string  `json:"status_reason"`
+	ExpiresTimestamp         int64   `json:"expires_timestamp"`
+	LastRecalledTimestamp    int64   `json:"last_recalled_timestamp"`
+	LastAdoptedTimestamp     int64   `json:"last_adopted_timestamp"`
+	RecalledCount            int     `json:"recalled_count"`
+	AdoptedCount             int     `json:"adopted_count"`
+	CrossSessionAdoptedCount int     `json:"cross_session_adopted_count"`
+	DedupeHash               string  `json:"dedupe_hash"`
+	CreatedTimestamp         int64   `json:"created_timestamp"`
+	UpdatedTimestamp         int64   `json:"updated_timestamp"`
 }
 
 func (r memoryNodeRow) toDomain() logicdomain.SessionMemoryNodeRecord {
 	return logicdomain.SessionMemoryNodeRecord{
-		ID:         r.ID,
-		ProjectID:  r.ProjectID,
-		UserID:     r.UserID,
-		TurnID:     r.TurnID,
-		VectorID:   r.VectorID,
-		Category:   r.Category,
-		Abstract:   r.Abstract,
-		Details:    r.Details,
-		NodeStatus: r.NodeStatus,
-		CreatedAt:  unixMilliToTime(r.CreatedTimestamp),
+		ID:              r.ID,
+		TeamID:          r.TeamID,
+		SpaceID:         r.SpaceID,
+		ProjectID:       r.ProjectID,
+		UserID:          r.UserID,
+		OriginSessionID: r.OriginSessionID,
+		TurnID:          optionalUint64Value(r.SourceTurnID),
+		VectorID:        r.VectorID,
+		Category:        r.Category,
+		Abstract:        r.Abstract,
+		Details:         r.Details,
+		SourceKind:      r.SourceKind,
+		ScopeLevel:      r.ScopeLevel,
+		Priority:        r.Priority,
+		MemoryLevel:     r.MemoryLevel,
+		RefreshWeight:   r.RefreshWeight,
+		NodeStatus:      r.MemoryStatus,
+		CreatedAt:       unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:       unixMilliToTime(r.UpdatedTimestamp),
+	}
+}
+
+// toMemoryNodeRecord converts one SQL row into the public unified durable-memory record used by mixed detail lookup and direct-write dedupe flows.
+// toMemoryNodeRecord 用于把一条 SQL 行转换成混合详情查询和主动写入查重流程使用的统一长期记忆记录。
+func (r memoryNodeRow) toMemoryNodeRecord() logicdomain.MemoryNodeRecord {
+	return logicdomain.MemoryNodeRecord{
+		ID:                       r.ID,
+		TeamID:                   r.TeamID,
+		SpaceID:                  r.SpaceID,
+		ProjectID:                r.ProjectID,
+		UserID:                   r.UserID,
+		OriginSessionID:          r.OriginSessionID,
+		SourceTurnID:             optionalUint64Value(r.SourceTurnID),
+		VectorID:                 r.VectorID,
+		Vector:                   decodeFloat32Slice(r.VectorJSON),
+		SourceKind:               r.SourceKind,
+		ScopeLevel:               r.ScopeLevel,
+		Category:                 r.Category,
+		Abstract:                 r.Abstract,
+		Details:                  r.Details,
+		Status:                   r.MemoryStatus,
+		Priority:                 r.Priority,
+		MemoryLevel:              r.MemoryLevel,
+		RefreshWeight:            r.RefreshWeight,
+		StatusReason:             r.StatusReason,
+		ExpiresAt:                unixMilliToTime(r.ExpiresTimestamp),
+		LastRecalledAt:           unixMilliToTime(r.LastRecalledTimestamp),
+		LastAdoptedAt:            unixMilliToTime(r.LastAdoptedTimestamp),
+		RecalledCount:            r.RecalledCount,
+		AdoptedCount:             r.AdoptedCount,
+		CrossSessionAdoptedCount: r.CrossSessionAdoptedCount,
+		DedupeHash:               r.DedupeHash,
+		CreatedAt:                unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:                unixMilliToTime(r.UpdatedTimestamp),
 	}
 }
 

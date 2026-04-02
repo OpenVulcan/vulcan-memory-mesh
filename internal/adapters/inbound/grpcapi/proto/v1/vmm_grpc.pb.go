@@ -34,6 +34,8 @@ const (
 	VMMService_ApplyProfileInstruction_FullMethodName = "/vmm.v1.VMMService/ApplyProfileInstruction"
 	VMMService_SearchMemoryEvents_FullMethodName      = "/vmm.v1.VMMService/SearchMemoryEvents"
 	VMMService_GetTurnDetails_FullMethodName          = "/vmm.v1.VMMService/GetTurnDetails"
+	VMMService_GetMemoryDetails_FullMethodName        = "/vmm.v1.VMMService/GetMemoryDetails"
+	VMMService_WriteMemories_FullMethodName           = "/vmm.v1.VMMService/WriteMemories"
 	VMMService_PreCheck_FullMethodName                = "/vmm.v1.VMMService/PreCheck"
 	VMMService_PostAction_FullMethodName              = "/vmm.v1.VMMService/PostAction"
 )
@@ -81,17 +83,23 @@ type VMMServiceClient interface {
 	// ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
 	// ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
 	ApplyProfileInstruction(ctx context.Context, in *ApplyProfileInstructionRequest, opts ...grpc.CallOption) (*ApplyProfileInstructionResponse, error)
-	// SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns hits with turn anchors.
-	// SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回带 turn 锚点的命中结果。
+	// SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns unified memory refs plus optional source turn refs.
+	// SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回统一 memory ref 以及可选的来源 turn ref。
 	SearchMemoryEvents(ctx context.Context, in *SearchMemoryEventsRequest, opts ...grpc.CallOption) (*SearchMemoryEventsResponse, error)
 	// GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted dialogue payloads.
 	// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方查看原始持久化对话载荷。
 	GetTurnDetails(ctx context.Context, in *GetTurnDetailsRequest, opts ...grpc.CallOption) (*GetTurnDetailsResponse, error)
-	// PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
-	// PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
+	// GetMemoryDetails loads one ordered `TYPE + ID` ref list and returns either unified memory details or turn details for each ref.
+	// GetMemoryDetails 用于按顺序读取一组 `TYPE + ID` 引用，并为每个引用返回统一记忆详情或 turn 详情。
+	GetMemoryDetails(ctx context.Context, in *GetMemoryDetailsRequest, opts ...grpc.CallOption) (*GetMemoryDetailsResponse, error)
+	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns their unified refs.
+	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并返回它们的统一引用。
+	WriteMemories(ctx context.Context, in *WriteMemoriesRequest, opts ...grpc.CallOption) (*WriteMemoriesResponse, error)
+	// PreCheck validates project_id/user_id through the interceptor, runs live intent extraction plus unified memory adoption, and returns the assembled context payload.
+	// PreCheck 用于通过拦截器校验 project_id/user_id，执行实时意图提取与统一记忆采纳，并返回组装后的上下文载荷。
 	PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error)
-	// PostAction validates project_id/user_id through the interceptor, logs the payload, and persists the cleaned message sequence asynchronously.
-	// PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志，并异步持久化清洗后的消息序列。
+	// PostAction validates project_id/user_id through the interceptor, logs the payload, and persists the cleaned message sequence synchronously.
+	// PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志，并同步持久化清洗后的消息序列。
 	PostAction(ctx context.Context, in *PostActionRequest, opts ...grpc.CallOption) (*PostActionResponse, error)
 }
 
@@ -243,6 +251,26 @@ func (c *vMMServiceClient) GetTurnDetails(ctx context.Context, in *GetTurnDetail
 	return out, nil
 }
 
+func (c *vMMServiceClient) GetMemoryDetails(ctx context.Context, in *GetMemoryDetailsRequest, opts ...grpc.CallOption) (*GetMemoryDetailsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetMemoryDetailsResponse)
+	err := c.cc.Invoke(ctx, VMMService_GetMemoryDetails_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *vMMServiceClient) WriteMemories(ctx context.Context, in *WriteMemoriesRequest, opts ...grpc.CallOption) (*WriteMemoriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(WriteMemoriesResponse)
+	err := c.cc.Invoke(ctx, VMMService_WriteMemories_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *vMMServiceClient) PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PreCheckResponse)
@@ -306,17 +334,23 @@ type VMMServiceServer interface {
 	// ApplyProfileInstruction accepts one explicit manual profile instruction for one target and persists the reviewed node changes.
 	// ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
 	ApplyProfileInstruction(context.Context, *ApplyProfileInstructionRequest) (*ApplyProfileInstructionResponse, error)
-	// SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns hits with turn anchors.
-	// SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回带 turn 锚点的命中结果。
+	// SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns unified memory refs plus optional source turn refs.
+	// SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回统一 memory ref 以及可选的来源 turn ref。
 	SearchMemoryEvents(context.Context, *SearchMemoryEventsRequest) (*SearchMemoryEventsResponse, error)
 	// GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted dialogue payloads.
 	// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方查看原始持久化对话载荷。
 	GetTurnDetails(context.Context, *GetTurnDetailsRequest) (*GetTurnDetailsResponse, error)
-	// PreCheck validates project_id/user_id through the interceptor and currently returns a deterministic no-injection response.
-	// PreCheck 用于通过拦截器校验 project_id/user_id，并在当前阶段返回稳定的“不需要记忆”响应。
+	// GetMemoryDetails loads one ordered `TYPE + ID` ref list and returns either unified memory details or turn details for each ref.
+	// GetMemoryDetails 用于按顺序读取一组 `TYPE + ID` 引用，并为每个引用返回统一记忆详情或 turn 详情。
+	GetMemoryDetails(context.Context, *GetMemoryDetailsRequest) (*GetMemoryDetailsResponse, error)
+	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns their unified refs.
+	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并返回它们的统一引用。
+	WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error)
+	// PreCheck validates project_id/user_id through the interceptor, runs live intent extraction plus unified memory adoption, and returns the assembled context payload.
+	// PreCheck 用于通过拦截器校验 project_id/user_id，执行实时意图提取与统一记忆采纳，并返回组装后的上下文载荷。
 	PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error)
-	// PostAction validates project_id/user_id through the interceptor, logs the payload, and persists the cleaned message sequence asynchronously.
-	// PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志，并异步持久化清洗后的消息序列。
+	// PostAction validates project_id/user_id through the interceptor, logs the payload, and persists the cleaned message sequence synchronously.
+	// PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志，并同步持久化清洗后的消息序列。
 	PostAction(context.Context, *PostActionRequest) (*PostActionResponse, error)
 	mustEmbedUnimplementedVMMServiceServer()
 }
@@ -369,6 +403,12 @@ func (UnimplementedVMMServiceServer) SearchMemoryEvents(context.Context, *Search
 }
 func (UnimplementedVMMServiceServer) GetTurnDetails(context.Context, *GetTurnDetailsRequest) (*GetTurnDetailsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetTurnDetails not implemented")
+}
+func (UnimplementedVMMServiceServer) GetMemoryDetails(context.Context, *GetMemoryDetailsRequest) (*GetMemoryDetailsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetMemoryDetails not implemented")
+}
+func (UnimplementedVMMServiceServer) WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method WriteMemories not implemented")
 }
 func (UnimplementedVMMServiceServer) PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PreCheck not implemented")
@@ -649,6 +689,42 @@ func _VMMService_GetTurnDetails_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VMMService_GetMemoryDetails_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetMemoryDetailsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).GetMemoryDetails(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_GetMemoryDetails_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).GetMemoryDetails(ctx, req.(*GetMemoryDetailsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _VMMService_WriteMemories_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(WriteMemoriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).WriteMemories(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_WriteMemories_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).WriteMemories(ctx, req.(*WriteMemoriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _VMMService_PreCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PreCheckRequest)
 	if err := dec(in); err != nil {
@@ -747,6 +823,14 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "GetTurnDetails",
 			Handler:    _VMMService_GetTurnDetails_Handler,
+		},
+		{
+			MethodName: "GetMemoryDetails",
+			Handler:    _VMMService_GetMemoryDetails_Handler,
+		},
+		{
+			MethodName: "WriteMemories",
+			Handler:    _VMMService_WriteMemories_Handler,
 		},
 		{
 			MethodName: "PreCheck",

@@ -36,7 +36,21 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 			},
 		},
 	}
-	turns := &stubTurnLookupStore{}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{
+				ID:              201,
+				OriginSessionID: 12,
+				SourceTurnID:    41,
+				SourceKind:      logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel:      logicdomain.MemoryScopeLevelProject,
+				Category:        3,
+				Abstract:        "用户喜欢吃香蕉。",
+				Details:         "来自近期饮食偏好提炼。",
+				VectorID:        "vec-1",
+			},
+		},
+	}
 	embedding := &stubEmbeddingClient{
 		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
 	}
@@ -75,7 +89,7 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	if group.QueryIndex != 0 || group.Background != "用户最近一直在讨论水果和饮品。" || group.Query != "喜欢的水果" {
 		t.Fatalf("unexpected group echo: %+v", group)
 	}
-	if len(group.Hits) != 1 || group.Hits[0].TurnID != 41 || group.Hits[0].SessionID != 12 || group.Hits[0].Category != 3 {
+	if len(group.Hits) != 1 || group.Hits[0].MemoryRef.ID != 201 || group.Hits[0].SourceRef.ID != 41 || group.Hits[0].SessionID != 12 || group.Hits[0].Category != 3 {
 		t.Fatalf("unexpected hits: %+v", group.Hits)
 	}
 	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 || !strings.Contains(embedding.requests[0].Texts[0], "关键语句") {
@@ -125,6 +139,8 @@ type stubTurnLookupStore struct {
 	turnIDs []uint64
 	rows    []logicdomain.SessionTurnRecord
 	windows map[uint64]logicdomain.TurnDetailWindow
+	memoryRowsByID     []logicdomain.MemoryNodeRecord
+	memoryRowsByVector []logicdomain.MemoryNodeRecord
 	err     error
 }
 
@@ -156,4 +172,41 @@ func (s *stubTurnLookupStore) LoadTurnWindows(_ context.Context, _ []uint64, _ i
 		}
 	}
 	return cloned, nil
+}
+
+// LoadMemoryNodesByIDs returns canned memory rows for mixed memory-detail assertions.
+// LoadMemoryNodesByIDs 用于返回混合记忆详情断言所需的预设记忆行。
+func (s *stubTurnLookupStore) LoadMemoryNodesByIDs(_ context.Context, _ []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]logicdomain.MemoryNodeRecord(nil), s.memoryRowsByID...), nil
+}
+
+// LoadMemoryNodesByVectorIDs returns canned memory rows for search-hit enrichment assertions.
+// LoadMemoryNodesByVectorIDs 用于返回搜索命中补全断言所需的预设记忆行。
+func (s *stubTurnLookupStore) LoadMemoryNodesByVectorIDs(_ context.Context, _ []string) ([]logicdomain.MemoryNodeRecord, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]logicdomain.MemoryNodeRecord(nil), s.memoryRowsByVector...), nil
+}
+
+// FindRecentActiveMemoryByDedupe keeps the stub interface-complete for tests that only exercise search and turn-detail flows.
+// FindRecentActiveMemoryByDedupe 用于补齐测试桩接口，因为当前这些测试只覆盖搜索和 turn 详情流程。
+func (s *stubTurnLookupStore) FindRecentActiveMemoryByDedupe(_ context.Context, _ logicdomain.SessionRef, _, _ int, _ string, _ time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
+	if s.err != nil {
+		return logicdomain.MemoryNodeRecord{}, false, s.err
+	}
+	return logicdomain.MemoryNodeRecord{}, false, nil
+}
+
+// CreateDirectMemoryNode keeps the stub interface-complete for tests that do not exercise direct-write persistence.
+// CreateDirectMemoryNode 用于补齐测试桩接口，因为当前这些测试不覆盖主动写入持久化。
+func (s *stubTurnLookupStore) CreateDirectMemoryNode(_ context.Context, _ logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
+	if s.err != nil {
+		return logicdomain.MemoryNodeRecord{}, s.err
+	}
+	record.ID = 1
+	return record, nil
 }

@@ -26,28 +26,44 @@ func NewTurnAnalyzer(llm appports.LLMClient, prompts appports.PromptSource, mode
 	return &TurnAnalyzer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
-// Analyze runs one structured LLM extraction over the current raw turn transcript.
-// Analyze 用于针对当前原始 turn transcript 执行一次结构化 LLM 提炼。
-func (a *TurnAnalyzer) Analyze(ctx context.Context, transcript string) (logicdomain.TurnAnalysis, error) {
-	// Load the dedicated prompt scene and issue one JSON generation request for the current raw turn.
-	// 加载专用场景提示词，并针对当前原始 turn 发起一次 JSON 生成请求。
+// Analyze runs one structured LLM extraction over one reference-aware single-turn analysis input.
+// Analyze 用于针对一份参考感知型单轮分析输入执行一次结构化 LLM 提炼。
+func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error) {
+	// Load the dedicated prompt scene, render the optional TAG sections, and submit one stable JSON request body for the target turn.
+	// 加载专用场景提示词、渲染可选 TAG 片段，并为目标 turn 发送一份稳定 JSON 请求体。
 	if a == nil || a.llm == nil {
 		return logicdomain.TurnAnalysis{}, fmt.Errorf("turn analyzer llm client is nil")
+	}
+	requestBody, err := renderTurnAnalysisRequest(input)
+	if err != nil {
+		return logicdomain.TurnAnalysis{}, fmt.Errorf("render analyze_turn request: %w", err)
 	}
 	prompt, err := a.prompts.GetPrompt("analyze_turn", a.model)
 	if err != nil {
 		return logicdomain.TurnAnalysis{}, fmt.Errorf("load analyze_turn prompt: %w", err)
 	}
+	prompt = renderTurnAnalysisSystemPrompt(prompt, input)
 	resp, err := a.llm.Generate(ctx, appports.LLMRequest{
 		Model:          a.model,
 		SystemPrompt:   prompt,
-		UserPrompt:     strings.TrimSpace(transcript),
+		UserPrompt:     requestBody,
 		ResponseFormat: appports.LLMResponseFormatJSON,
 	})
 	if err != nil {
 		return logicdomain.TurnAnalysis{}, err
 	}
-	return parseTurnAnalysisResponse(resp.Content)
+	analysis, err := parseTurnAnalysisResponse(resp.Content)
+	if err != nil {
+		return logicdomain.TurnAnalysis{}, err
+	}
+	if analysis.TurnID != input.TargetTurn.TurnID {
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{
+			Scene:   "analyze_turn",
+			Message: fmt.Sprintf("turn_id mismatch: got %d want %d", analysis.TurnID, input.TargetTurn.TurnID),
+			Raw:     resp.Content,
+		}
+	}
+	return analysis, nil
 }
 
 // parseTurnAnalysisResponse normalizes the model output into the internal turn-analysis contract and rejects structurally invalid payloads.
@@ -60,6 +76,7 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
+		TurnID      uint64 `json:"turn_id"`
 		Details     string `json:"details"`
 		MemoryNodes []struct {
 			Category int    `json:"category"`
@@ -70,17 +87,23 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 			ProfileType int    `json:"profile_type"`
 			Content     string `json:"content"`
 		} `json:"profile_nodes"`
+		SupersededMemoryIDs []uint64 `json:"superseded_memory_ids"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "json decode failed", Raw: raw}
+	}
+	if payload.TurnID == 0 {
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "turn_id is required", Raw: raw}
 	}
 
 	// Validate and de-duplicate extracted items so the persistence layer only receives canonical node candidates.
 	// 校验并去重提炼项，让持久化层只接收规范化后的节点候选。
 	analysis := logicdomain.TurnAnalysis{
-		Details:      strings.TrimSpace(payload.Details),
-		MemoryNodes:  make([]logicdomain.MemoryNodeCandidate, 0, len(payload.MemoryNodes)),
-		ProfileNodes: make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
+		TurnID:              payload.TurnID,
+		Details:             strings.TrimSpace(payload.Details),
+		MemoryNodes:         make([]logicdomain.MemoryNodeCandidate, 0, len(payload.MemoryNodes)),
+		ProfileNodes:        make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
+		SupersededMemoryIDs: normalizeUint64Set(payload.SupersededMemoryIDs),
 	}
 	memorySeen := map[string]struct{}{}
 	for _, node := range payload.MemoryNodes {

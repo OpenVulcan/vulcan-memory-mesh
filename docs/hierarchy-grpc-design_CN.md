@@ -204,8 +204,8 @@ CREATE TABLE IF NOT EXISTS vmm_memory_entries (
 说明：
 
 - 当前主线已经预留长期记忆表
-- 但 `PreCheck` 还处于保守禁用状态
-- 后续摘要提炼恢复时，会把摘要结果写进这里
+- `PreCheck` 已接回实时两层召回与采纳
+- 当前 turn 的即时提炼结果会直接写进这里，并参与后续检索
 
 ## 四、LanceDB 扁平化元数据
 
@@ -503,17 +503,21 @@ message PostActionTimelineItem {
 
 ### 7. `PreCheck`
 
-当前实现是保守模式：
+当前实现是实时两层模式：
 
 1. 统一拦截器先完成 `session/user/project` 校验和解析
-2. 进入用例层后直接返回：
-   - `should_inject = false`
-   - `context_text = ""`
-   - `context_items = []`
+2. 第一层 `extract_intent` 结合最近已提炼 turn 和当前输入判断是否需要记忆，并生成检索关键词
+3. 加载最近 session 记忆，并通过统一记忆检索接口召回长期候选
+4. 第二层 `review_precheck_memory` 从候选里选择真正有帮助的 memory id
+5. 只对被采纳的记忆写回生命周期
+6. 把稳定画像和采纳结果组装为：
+   - `should_inject`
+   - `context_text`
+   - `context_items`
 
 这样做的目的：
 
-- 先把存储和层级模型收稳
+- 在保留统一层级模型的前提下，把记忆注入真正接回主链
 - 暂不恢复自动记忆注入
 
 ### 8. `PostAction`

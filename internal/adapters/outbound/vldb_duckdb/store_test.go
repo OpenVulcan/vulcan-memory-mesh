@@ -260,7 +260,7 @@ func TestApplyTurnAnalysisWritesTurnSummaryAndDerivedNodes(t *testing.T) {
 	}
 	store := newDuckDBTestStore(t, server)
 
-	err := store.ApplyTurnAnalysis(context.Background(), logicdomain.SessionRef{
+	_, err := store.ApplyTurnAnalysis(context.Background(), logicdomain.SessionRef{
 		SessionID:  41,
 		SessionKey: "sess-key-1",
 		UserID:     7,

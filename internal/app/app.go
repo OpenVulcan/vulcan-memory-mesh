@@ -85,9 +85,9 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support profile management")
 	}
-	turnLookup, ok := relational.(appports.TurnLookupStore)
+	memoryStore, ok := relational.(appports.MemoryStore)
 	if !ok {
-		return nil, fmt.Errorf("relational store does not support turn detail lookup")
+		return nil, fmt.Errorf("relational store does not support unified memory lookup")
 	}
 	noiseGate, err := buildNoiseGate(cfg, layout, embedding, noiseCache, logger)
 	if err != nil {
@@ -98,14 +98,27 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// 在处理器和出站端口之上装配用例层。
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
-	memory := usecase.NewMemoryUseCase(profileStore, turnLookup, embedding, vector, logger)
-	pre := usecase.NewPreCheckUseCase(logger)
+	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
+	pre := usecase.NewPreCheckUseCase(
+		profiles,
+		memory,
+		relational,
+		processor.NewIntentExtractor(llm, prompts, cfg.LLM.Model, cfg.MemoryPipeline.MaxSearchKeywords),
+		processor.NewPreCheckMemoryReviewer(llm, prompts, cfg.LLM.Model),
+		processor.NewContextAssembler(prompts, cfg.LLM.Model),
+		usecase.PreCheckConfig{
+			IntentTimeout:      cfg.PreCheck.IntentTimeout.Duration,
+			TopK:               cfg.PreCheck.TopK,
+			MinSimilarityScore: minSimilarityOrDefault(cfg),
+		},
+		logger,
+	)
 	post := usecase.NewPostActionUseCase(
 		noiseGate,
 		relational,
 		embedding,
 		vector,
-		processor.NewSessionBatchAnalyzer(llm, prompts, cfg.LLM.Model),
+		processor.NewTurnAnalyzer(llm, prompts, cfg.LLM.Model),
 		processor.NewProfileReviewer(llm, prompts, cfg.LLM.Model),
 		usecase.PostActionAnalysisConfig{
 			TurnThreshold:  cfg.PostAction.SessionAnalysisTurnThreshold,
@@ -201,6 +214,15 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		}
 	}
 	return nil
+}
+
+// minSimilarityOrDefault keeps the pre-check runtime aligned with the validated memory-pipeline similarity floor.
+// minSimilarityOrDefault 用于让 pre-check 运行时与已校验过的 memory pipeline 相似度下限保持一致。
+func minSimilarityOrDefault(cfg config.Config) float64 {
+	if cfg.MemoryPipeline.MinSimilarityScore != nil && *cfg.MemoryPipeline.MinSimilarityScore > 0 {
+		return *cfg.MemoryPipeline.MinSimilarityScore
+	}
+	return 0.75
 }
 
 // buildLLM selects the configured generation backend used by the debug-stage post-action summary probe and future LLM-driven workflows.

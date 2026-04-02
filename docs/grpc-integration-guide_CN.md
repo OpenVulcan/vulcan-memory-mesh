@@ -470,15 +470,18 @@
 典型联动方式：
 
 1. 先调用 `SearchMemoryEvents`
-2. 从命中结果中拿到 `turn_id`
-3. 再调用 `GetTurnDetails` 回查脱水原文、解析后的具体对话内容，以及前后相邻 turn 编号
+2. 从命中结果中拿到 `memory_ref / source_ref`
+3. 如果需要混合详情，调用 `GetMemoryDetails`
+4. 如果只想按旧接口回看 turn 原文，仍可对 `source_ref.type=TURN` 的条目调用 `GetTurnDetails`
 
 ### PreCheck
 
 当前状态：
 
-- 保守禁用
-- 固定返回不注入
+- 已接回实时两层召回
+- 第一层 `extract_intent` 负责判断是否需要记忆并提取检索关键词
+- 第二层 `review_precheck_memory` 负责在最近 session 记忆和统一记忆召回结果里选择真正要注入的条目
+- 只有被第二层采纳的 memory id 才会刷新生命周期
 
 但有一个前提：
 
@@ -494,8 +497,8 @@
 - 主业务入口
 - 记录原始日志和清洗后日志
 - 清洗 `user_content` / `timeline[].content` / `assistant_content`
-- 立即返回 `accepted=true`
-- 后台继续写入关系库存储（默认 SQLite，兼容 DuckDB）
+- 同步完成持久化和单轮提炼后返回 `accepted=true`
+- 写入关系库存储（默认 SQLite，兼容 DuckDB）前，会先完成统一记忆向量写入和必要的回滚保护
 
 同样也有一个前提：
 
@@ -520,4 +523,4 @@
 
 - 先打通层级和用户解析
 - 再打通主写入链
-- 最后再验证当前保守版 `PreCheck`
+- 最后再验证实时 `PreCheck`

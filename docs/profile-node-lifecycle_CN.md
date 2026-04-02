@@ -366,10 +366,10 @@ scope `profile` 正文不再长期保存 `P / L / W` 的说明头。
 
 ## 当前执行顺序
 
-当前 `PostAction` 批处理里的画像链路已经是：
+当前 `PostAction` 主线里的画像链路已经是：
 
-1. `analyze_session_batch` 为每条待处理 turn 产出 `profile_nodes[]`
-2. 后端按 user/project 两侧收集本批次新画像候选
+1. `analyze_turn` 为当前 turn 产出 `profile_nodes[]`
+2. 后端按 user/project 两侧收集本轮新画像候选
 3. 读取当前目标下仍然 `active` 且未过期的画像节点
 4. 把“活跃旧节点 + 新候选”送入 `review_profile_nodes`
 5. LLM 返回：
@@ -385,7 +385,7 @@ scope `profile` 正文不再长期保存 `P / L / W` 的说明头。
    - 计算 `expires_timestamp`
 7. 最后由后端重建 `vmm_users.profile / vmm_projects.profile`
 
-另外，队列每 30 秒还会额外执行一次过期画像收敛：
+另外，后台维护 worker 每 30 秒还会额外执行一次过期画像收敛：
 
 1. 把到期的 `active` 节点改成 `expired`
 2. 重新渲染受影响 user/project 的 profile 文本

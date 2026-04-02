@@ -37,16 +37,25 @@ type TurnDetailWindow struct {
 // SessionMemoryNodeRecord stores one active memory node row that the batch analyzer can reference when deciding what to supersede.
 // SessionMemoryNodeRecord 用于保存一条活跃记忆节点记录，让批处理分析器在判断哪些旧记忆需要淘汰时可以引用它。
 type SessionMemoryNodeRecord struct {
-	ID         uint64
-	ProjectID  uint64
-	UserID     uint64
-	TurnID     uint64
-	VectorID   string
-	Category   int
-	Abstract   string
-	Details    string
-	NodeStatus int
-	CreatedAt  time.Time
+	ID              uint64
+	TeamID          uint64
+	SpaceID         uint64
+	ProjectID       uint64
+	UserID          uint64
+	OriginSessionID uint64
+	TurnID          uint64
+	VectorID        string
+	Category        int
+	Abstract        string
+	Details         string
+	SourceKind      int
+	ScopeLevel      int
+	Priority        int
+	MemoryLevel     int
+	RefreshWeight   int
+	NodeStatus      int
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // SessionAnalysisContext carries the exact session batch window that one queued LLM call should inspect.

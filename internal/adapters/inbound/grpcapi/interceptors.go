@@ -60,8 +60,8 @@ func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *
 		logger = logx.Default()
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
-		// Only pre-check and post-action require deterministic scope resolution before the handler starts.
-		// 只有 pre-check 和 post-action 需要在处理器执行前完成确定性范围解析。
+		// Only the business-chain RPCs that depend on one resolved session need deterministic scope resolution before the handler starts.
+		// 只有依赖已解析 session 的业务链路 RPC，才需要在处理器执行前完成确定性范围解析。
 		if info == nil || !requiresResolvedScope(info.FullMethod) {
 			return handler(ctx, req)
 		}
@@ -147,7 +147,7 @@ func resolvedSessionRefFromContext(ctx context.Context) (logicdomain.SessionRef,
 // requiresResolvedScope 用于判断某个 gRPC 方法是否属于需要确定性 project/user 范围解析的业务链路。
 func requiresResolvedScope(fullMethod string) bool {
 	switch fullMethod {
-	case "/vmm.v1.VMMService/PreCheck", "/vmm.v1.VMMService/PostAction":
+	case "/vmm.v1.VMMService/PreCheck", "/vmm.v1.VMMService/PostAction", "/vmm.v1.VMMService/WriteMemories":
 		return true
 	default:
 		return false

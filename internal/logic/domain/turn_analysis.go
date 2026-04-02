@@ -174,23 +174,78 @@ type PersistedTurnRecord struct {
 // TurnAnalysis carries the structured LLM extraction output that should be written back onto one turn row and its derived node tables.
 // TurnAnalysis 用于承载结构化 LLM 提炼结果，并回写到 turn 行及其衍生节点表。
 type TurnAnalysis struct {
+	TurnID               uint64
 	Details              string
 	DetailsBudget        int
 	MemoryNodes          []MemoryNodeCandidate
 	ProfileNodes         []ProfileNodeCandidate
+	SupersededMemoryIDs  []uint64
 	UserProfileMerged    bool
 	MergedUserProfile    string
 	ProjectProfileMerged bool
 	MergedProjectProfile string
 }
 
+// TurnAnalysisReferenceTurn stores one already-refined historical turn summary that can help the single-turn analyzer understand the immediate context without re-extracting the old turn itself.
+// TurnAnalysisReferenceTurn 用于保存一条已经提炼完成的历史 turn 精要，让单轮分析器理解紧邻上下文，但不能把旧 turn 重新当作本轮提炼对象。
+type TurnAnalysisReferenceTurn struct {
+	TurnID  uint64
+	Details string
+}
+
+// TurnAnalysisTargetTurn stores the only raw turn that the single-turn analyzer is allowed to extract into fresh details, memory nodes, and profile nodes.
+// TurnAnalysisTargetTurn 用于保存单轮分析器唯一允许重新提炼的目标 turn 原文，让输出始终只绑定这一轮。
+type TurnAnalysisTargetTurn struct {
+	TurnID  uint64
+	RawTurn string
+}
+
+// TurnAnalysisActiveMemoryNode stores one currently active memory node that the single-turn analyzer may use for de-duplication and supersede decisions.
+// TurnAnalysisActiveMemoryNode 用于保存一条当前仍然活跃的记忆节点，让单轮分析器在去重和覆盖判断时可以参考它。
+type TurnAnalysisActiveMemoryNode struct {
+	MemoryID     uint64
+	SourceTurnID uint64
+	Category     int
+	Abstract     string
+	Details      string
+	SourceKind   string
+	ScopeLevel   string
+}
+
+// TurnAnalysisDirectWrite stores one recently accepted direct-write memory so the single-turn analyzer can avoid extracting facts that the tool path has already persisted.
+// TurnAnalysisDirectWrite 用于保存一条最近已经采纳的主动写入记忆，让单轮分析器避免把工具链路已经入库的事实再次重复提炼。
+type TurnAnalysisDirectWrite struct {
+	MemoryID         uint64
+	ScopeLevel       string
+	Abstract         string
+	Details          string
+	CreatedTimestamp int64
+}
+
+// TurnAnalysisInput bundles the contextual inputs required by the reference-aware single-turn analyzer.
+// TurnAnalysisInput 用于打包参考感知型单轮分析器所需的上下文输入。
+type TurnAnalysisInput struct {
+	ReferenceTurns         []TurnAnalysisReferenceTurn
+	TargetTurn             TurnAnalysisTargetTurn
+	ActiveMemoryNodes      []TurnAnalysisActiveMemoryNode
+	RecentGRPCMemoryWrites []TurnAnalysisDirectWrite
+}
+
 // MemoryNodeCandidate stores one memory feature extracted from a turn before it is assigned ids and persisted.
 // MemoryNodeCandidate 用于保存一条从 turn 中提炼出的记忆特征，等待分配 ID 后持久化。
 type MemoryNodeCandidate struct {
-	Category int
-	VectorID string
-	Abstract string
-	Details  string
+	Category      int
+	VectorID      string
+	Vector        []float32
+	Abstract      string
+	Details       string
+	SourceKind    int
+	ScopeLevel    int
+	Priority      int
+	MemoryLevel   int
+	RefreshWeight int
+	ExpiresAt     time.Time
+	DedupeHash    string
 }
 
 // ProfileNodeCandidate stores one profile feature extracted from a turn before it is bound to a user or project row.

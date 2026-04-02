@@ -634,15 +634,15 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 
 // ApplyTurnAnalysis writes the extracted turn summary back to the turn row and inserts derived memory/profile nodes for later processing.
 // ApplyTurnAnalysis 用于把提炼出的 turn 总结回写到 turn 行，并插入后续处理所需的 memory/profile 节点。
-func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) error {
+func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error) {
 	if turn.ID == 0 {
-		return logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
 	}
 	if session.ProjectID == 0 {
-		return logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
 	if session.UserID == 0 {
-		return logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
 	}
 
 	// Serialize analysis writes so the turn status flip and all derived node rows stay aligned under one deterministic id allocation window.
@@ -662,13 +662,13 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	if len(analysis.MemoryNodes) > 0 {
 		memoryStartID, err = s.nextNumericID(ctx, "vmm_memory_nodes")
 		if err != nil {
-			return fmt.Errorf("allocate memory node id: %w", err)
+			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("allocate memory node id: %w", err)
 		}
 	}
 	if len(analysis.ProfileNodes) > 0 {
 		profileStartID, err = s.nextNumericID(ctx, "vmm_profile_nodes")
 		if err != nil {
-			return fmt.Errorf("allocate profile node id: %w", err)
+			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("allocate profile node id: %w", err)
 		}
 	}
 
@@ -681,19 +681,19 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	}
 	for idx, node := range analysis.MemoryNodes {
 		if strings.TrimSpace(node.VectorID) == "" {
-			return logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
 		}
 		script += buildMemoryNodeInsertSQL(memoryStartID+uint64(idx), session.ProjectID, session.UserID, turn.ID, strings.TrimSpace(node.VectorID), node.Category, node.Abstract, node.Details, nowMs)
 	}
 	for idx, node := range analysis.ProfileNodes {
 		if !logicdomain.ValidProfileType(node.ProfileType) {
-			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
 		}
 		if strings.TrimSpace(node.Content) == "" {
-			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
 		}
 		if !logicdomain.ValidProfileStatus(node.Status) {
-			return logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
 		}
 		bindID := session.ProjectID
 		if node.ProfileType == logicdomain.ProfileTypeUser {
@@ -705,9 +705,9 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), uint64Ptr(turn.ID), node.ProfileType, bindID, node, nowMs)
 	}
 	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("apply turn analysis: %w", err)
+		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("apply turn analysis: %w", err)
 	}
-	return nil
+	return logicdomain.TurnAnalysisApplyResult{}, nil
 }
 
 // LoadProfileTargets loads the current durable user/project profile blobs so post-action can merge fresh profile evidence before persistence.
