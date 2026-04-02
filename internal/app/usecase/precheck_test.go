@@ -520,6 +520,9 @@ func TestPreCheckExecutePassesMatchedContextEvidenceToReviewer(t *testing.T) {
 	if candidate.OriginExplanation == "" {
 		t.Fatalf("expected non-empty origin explanation, got %#v", candidate)
 	}
+	if candidate.ScoreLabel != "Very Strong Match" || candidate.ScoreExplanation == "" {
+		t.Fatalf("expected score explanation to be preserved, got %#v", candidate)
+	}
 	if candidate.MatchedContextSupportCount != 3 || candidate.MatchedContextRebuttalCount != 0 || candidate.MatchedContextScoreDelta <= 0 {
 		t.Fatalf("expected matched context evidence to be preserved, got %#v", candidate)
 	}

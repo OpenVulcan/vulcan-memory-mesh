@@ -22,6 +22,8 @@ type PreCheckMemoryCandidate struct {
 	Abstract                    string
 	Details                     string
 	Score                       float64
+	ScoreLabel                  string
+	ScoreExplanation            string
 	Origin                      string
 	OriginLabel                 string
 	OriginExplanation           string

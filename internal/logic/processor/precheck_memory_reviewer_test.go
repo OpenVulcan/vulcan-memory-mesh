@@ -53,6 +53,9 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 				MemoryID:                   15,
 				Abstract:                   "phase4 新方案",
 				Details:                    "适用于 local oss 当前环境。",
+				Score:                      0.96,
+				ScoreLabel:                 "Very Strong Match",
+				ScoreExplanation:           "当前最终分数为 0.960，候选阈值为 0.800。 当前 query 命中的 context evidence 额外带来了 +0.075 的正向增益。",
 				Origin:                     "hybrid_rrf_rerank_mmr",
 				OriginLabel:                "Hybrid RRF + Rerank + MMR",
 				OriginExplanation:          "候选先经过 hybrid RRF 融合，再被 rerank 模型重排，并额外经过 MMR 多样性控制。",
@@ -82,5 +85,8 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 	}
 	if payload.Candidates[0].OriginLabel != "Hybrid RRF + Rerank + MMR" || payload.Candidates[0].OriginExplanation == "" {
 		t.Fatalf("expected origin explanation fields to survive rendering, got %#v", payload.Candidates[0])
+	}
+	if payload.Candidates[0].ScoreLabel != "Very Strong Match" || payload.Candidates[0].ScoreExplanation == "" {
+		t.Fatalf("expected score explanation fields to survive rendering, got %#v", payload.Candidates[0])
 	}
 }

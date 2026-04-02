@@ -388,6 +388,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 			if hit.Score < u.config.MinSimilarityScore {
 				continue
 			}
+			scoreExplanation := describePreCheckCandidateScore(hit.Score, u.config.MinSimilarityScore, hit.MatchedContextScoreDelta)
 			originExplanation := describePreCheckMemoryOrigin(hit.Origin)
 			candidate := logicdomain.PreCheckMemoryCandidate{
 				MemoryID:                    hit.MemoryRef.ID,
@@ -398,6 +399,8 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				Abstract:                    strings.TrimSpace(hit.Abstract),
 				Details:                     strings.TrimSpace(hit.DetailsPreview),
 				Score:                       hit.Score,
+				ScoreLabel:                  scoreExplanation.Label,
+				ScoreExplanation:            scoreExplanation.Explanation,
 				Origin:                      strings.TrimSpace(hit.Origin),
 				OriginLabel:                 originExplanation.Label,
 				OriginExplanation:           originExplanation.Explanation,

@@ -160,6 +160,8 @@ func normalizePreCheckReviewCandidates(values []logicdomain.PreCheckMemoryCandid
 		value.ScopeLevel = strings.TrimSpace(value.ScopeLevel)
 		value.Abstract = strings.TrimSpace(value.Abstract)
 		value.Details = strings.TrimSpace(value.Details)
+		value.ScoreLabel = strings.TrimSpace(value.ScoreLabel)
+		value.ScoreExplanation = strings.TrimSpace(value.ScoreExplanation)
 		value.Origin = strings.TrimSpace(value.Origin)
 		value.OriginLabel = strings.TrimSpace(value.OriginLabel)
 		value.OriginExplanation = strings.TrimSpace(value.OriginExplanation)
