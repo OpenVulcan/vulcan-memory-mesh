@@ -17,6 +17,7 @@ import (
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/textutil"
 )
 
 const (
@@ -421,7 +422,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
 		mapped = u.rerankSearchHits(ctx, buildMemorySearchText(item), mapped)
 		mapped = u.applyWeibullDecaySearchHits(mapped)
-		mapped = applyContextEvidenceOrdering(mapped)
+		mapped = u.applyContextEvidenceScoring(ctx, item, mapped)
 		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
@@ -1110,31 +1111,171 @@ func latestMemoryReinforcementTime(hit MemoryQueryHit) time.Time {
 	return latest
 }
 
-// applyContextEvidenceOrdering keeps a deterministic post-score ordering hook where later context-aware ranking can favor better-supported memories without changing transport contracts.
-// applyContextEvidenceOrdering 用于保留一个确定性的后置排序入口，让后续情境感知排序在不改传输契约的前提下偏向证据更充分的记忆。
-func applyContextEvidenceOrdering(hits []MemoryQueryHit) []MemoryQueryHit {
-	if len(hits) <= 1 {
+// applyContextEvidenceScoring loads contextual evidence edges for the current candidate pool and applies a soft boost or demotion when the query/background explicitly matches those situations.
+// applyContextEvidenceScoring 用于为当前候选池加载情境证据边，并在 query/background 明确命中这些场景时做软提升或软降权。
+func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item MemoryQueryItem, hits []MemoryQueryHit) []MemoryQueryHit {
+	if u == nil || u.memories == nil || len(hits) <= 1 {
 		return hits
 	}
-	ordered := append([]MemoryQueryHit(nil), hits...)
-	sort.SliceStable(ordered, func(i, j int) bool {
-		if ordered[i].Score != ordered[j].Score {
-			return ordered[i].Score > ordered[j].Score
+	signals := buildMemoryQueryContextSignals(item)
+	if len(signals.Phrases) == 0 {
+		return hits
+	}
+	memoryIDs := collectMemoryQueryHitIDs(hits)
+	if len(memoryIDs) == 0 {
+		return hits
+	}
+	edges, err := u.memories.LoadMemoryContextEdgesByMemoryIDs(ctx, memoryIDs)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Warn("memory context evidence scoring degraded", "candidate_count", len(memoryIDs), "err", err)
 		}
-		leftEvidence := ordered[i].SupportCount - ordered[i].RebuttalCount
-		rightEvidence := ordered[j].SupportCount - ordered[j].RebuttalCount
-		if leftEvidence != rightEvidence {
-			return leftEvidence > rightEvidence
+		return hits
+	}
+	if len(edges) == 0 {
+		return hits
+	}
+
+	// Aggregate only the edges whose context values explicitly match the normalized query/background phrases so unrelated support stats do not leak into the current ranking.
+	// 只聚合那些与规范化 query/background 短语明确匹配的 edge，避免无关情境的支持统计污染当前排序。
+	matchedEvidence := make(map[uint64]memoryContextEvidenceScore, len(memoryIDs))
+	for _, edge := range edges {
+		if !signals.Match(edge.ContextValue) {
+			continue
 		}
-		if ordered[i].SupportCount != ordered[j].SupportCount {
-			return ordered[i].SupportCount > ordered[j].SupportCount
+		score := matchedEvidence[edge.MemoryID]
+		score.SupportCount += edge.SupportCount
+		score.RebuttalCount += edge.RebuttalCount
+		matchedEvidence[edge.MemoryID] = score
+	}
+	if len(matchedEvidence) == 0 {
+		return hits
+	}
+
+	scored := append([]MemoryQueryHit(nil), hits...)
+	evidenceByID := make(map[uint64]memoryContextEvidenceScore, len(matchedEvidence))
+	for idx := range scored {
+		evidence := matchedEvidence[scored[idx].MemoryRef.ID]
+		if evidence.SupportCount == 0 && evidence.RebuttalCount == 0 {
+			continue
 		}
-		if ordered[i].RebuttalCount != ordered[j].RebuttalCount {
-			return ordered[i].RebuttalCount < ordered[j].RebuttalCount
+		evidence.Delta = computeMemoryContextEvidenceDelta(evidence)
+		scored[idx].Score += evidence.Delta
+		evidenceByID[scored[idx].MemoryRef.ID] = evidence
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].Score != scored[j].Score {
+			return scored[i].Score > scored[j].Score
+		}
+		left := evidenceByID[scored[i].MemoryRef.ID]
+		right := evidenceByID[scored[j].MemoryRef.ID]
+		leftNet := left.SupportCount - left.RebuttalCount
+		rightNet := right.SupportCount - right.RebuttalCount
+		if leftNet != rightNet {
+			return leftNet > rightNet
+		}
+		if left.SupportCount != right.SupportCount {
+			return left.SupportCount > right.SupportCount
+		}
+		if left.RebuttalCount != right.RebuttalCount {
+			return left.RebuttalCount < right.RebuttalCount
 		}
 		return false
 	})
-	return ordered
+	return scored
+}
+
+// memoryContextEvidenceScore stores the matched support/rebuttal totals for one candidate memory under the current query situation.
+// memoryContextEvidenceScore 用于保存当前 query 场景下某个候选记忆匹配到的支持/反驳总量。
+type memoryContextEvidenceScore struct {
+	SupportCount  int
+	RebuttalCount int
+	Delta         float64
+}
+
+// memoryQueryContextSignals stores the normalized phrases extracted from background/query so context edges can do deterministic lexical matching without another model call.
+// memoryQueryContextSignals 用于保存从 background/query 提取出的规范化短语，让 context edge 可以在不增加额外模型调用的情况下做确定性匹配。
+type memoryQueryContextSignals struct {
+	Phrases map[string]struct{}
+}
+
+// Match reports whether one normalized contextual value appears in the extracted phrase set for the current query item.
+// Match 用于判断某个规范化情境值是否出现在当前 query item 提取出的短语集合中。
+func (s memoryQueryContextSignals) Match(value string) bool {
+	if len(s.Phrases) == 0 {
+		return false
+	}
+	_, ok := s.Phrases[normalizeMemoryContextMatchText(value)]
+	return ok
+}
+
+// buildMemoryQueryContextSignals extracts deterministic phrases and short n-grams from the current query item so contextual retrieval can align memory edges with user intent.
+// buildMemoryQueryContextSignals 用于从当前 query item 提取确定性的短语和短 n-gram，让情境检索可以把记忆边与用户意图对齐。
+func buildMemoryQueryContextSignals(item MemoryQueryItem) memoryQueryContextSignals {
+	phrases := make(map[string]struct{})
+	appendPhrase := func(value string) {
+		value = normalizeMemoryContextMatchText(value)
+		if value == "" {
+			return
+		}
+		phrases[value] = struct{}{}
+	}
+	appendText := func(text string) {
+		appendPhrase(text)
+		tokens := textutil.Tokenize(text)
+		for _, token := range tokens {
+			appendPhrase(token)
+		}
+		for windowSize := 2; windowSize <= 4; windowSize++ {
+			for start := 0; start+windowSize <= len(tokens); start++ {
+				appendPhrase(strings.Join(tokens[start:start+windowSize], " "))
+			}
+		}
+	}
+	appendText(item.Background)
+	appendText(item.Query)
+	appendText(buildMemorySearchText(item))
+	return memoryQueryContextSignals{Phrases: phrases}
+}
+
+// normalizeMemoryContextMatchText normalizes a contextual phrase into the same lexical surface used by query-time matching and edge values.
+// normalizeMemoryContextMatchText 用于把情境短语归一成查询期匹配和 edge 值共享的词法表面形式。
+func normalizeMemoryContextMatchText(raw string) string {
+	raw = strings.ToLower(textutil.NormalizeWhitespace(raw))
+	if raw == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer("_", " ", "-", " ", "/", " ", "\\", " ", ".", " ")
+	return textutil.NormalizeWhitespace(replacer.Replace(raw))
+}
+
+// computeMemoryContextEvidenceDelta converts matched support/rebuttal counts into one bounded score delta so context evidence influences ranking without dominating the whole retrieval pipeline.
+// computeMemoryContextEvidenceDelta 用于把匹配到的支持/反驳计数转换成一个有界分数增量，让情境证据影响排序但不垄断整条检索链。
+func computeMemoryContextEvidenceDelta(evidence memoryContextEvidenceScore) float64 {
+	supportBoost := math.Min(0.12, 0.025*float64(evidence.SupportCount))
+	rebuttalPenalty := math.Min(0.14, 0.03*float64(evidence.RebuttalCount))
+	return supportBoost - rebuttalPenalty
+}
+
+// collectMemoryQueryHitIDs returns the distinct durable memory ids present in one candidate slice so query-time enrichment can batch-load relational evidence once.
+// collectMemoryQueryHitIDs 用于返回候选切片中的去重长期 memory id，方便查询期补全一次性批量加载关系证据。
+func collectMemoryQueryHitIDs(hits []MemoryQueryHit) []uint64 {
+	if len(hits) == 0 {
+		return nil
+	}
+	seen := make(map[uint64]struct{}, len(hits))
+	ids := make([]uint64, 0, len(hits))
+	for _, hit := range hits {
+		if hit.MemoryRef.ID == 0 {
+			continue
+		}
+		if _, ok := seen[hit.MemoryRef.ID]; ok {
+			continue
+		}
+		seen[hit.MemoryRef.ID] = struct{}{}
+		ids = append(ids, hit.MemoryRef.ID)
+	}
+	return ids
 }
 
 // memoryLevelDecayScale stretches the Weibull scale for higher-level memories so stable or core knowledge decays more slowly than short-term facts.

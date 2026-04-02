@@ -2003,6 +2003,30 @@ ORDER BY id ASC
 	return out, nil
 }
 
+// LoadMemoryContextEdgesByMemoryIDs loads the contextual evidence rows attached to one memory-id batch so query-time scoring can align candidate memories with the current situation.
+// LoadMemoryContextEdgesByMemoryIDs 用于按 memory id 批量加载情境证据行，让查询期打分可以把候选记忆与当前场景对齐。
+func (s *Store) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
+	memoryIDs = normalizeUint64List(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return []logicdomain.MemoryContextEdge{}, nil
+	}
+	rows, err := queryRows[memoryContextEdgeRow](s, ctx, fmt.Sprintf(`
+SELECT memory_id, context_key, context_value, support_count, rebuttal_count,
+       last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
+FROM vmm_memory_context_edges
+WHERE memory_id IN (%s)
+ORDER BY memory_id ASC, context_key ASC, context_value ASC
+`, sqlUint64List(memoryIDs)))
+	if err != nil {
+		return nil, fmt.Errorf("query memory context edges by memory ids: %w", err)
+	}
+	edges := make([]logicdomain.MemoryContextEdge, 0, len(rows))
+	for _, row := range rows {
+		edges = append(edges, row.toDomain())
+	}
+	return edges, nil
+}
+
 // LoadMemoryNodesByVectorIDs loads unified durable memory rows by vector ids so vector search hits can be enriched with relational refs.
 // LoadMemoryNodesByVectorIDs 用于按 vector id 读取统一长期记忆行，让向量召回结果补全为关系层 ref。
 func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
@@ -4365,6 +4389,22 @@ type memoryContextEdgeRow struct {
 	LastRebuttedTimestamp  int64  `json:"last_rebutted_timestamp"`
 	CreatedTimestamp       int64  `json:"created_timestamp"`
 	UpdatedTimestamp       int64  `json:"updated_timestamp"`
+}
+
+// toDomain converts one SQL edge row into the public contextual-evidence record used by query-time scoring and future context-aware filters.
+// toDomain 用于把一条 SQL 情境边行转换成查询期打分和未来情境过滤会复用的公开证据记录。
+func (r memoryContextEdgeRow) toDomain() logicdomain.MemoryContextEdge {
+	return logicdomain.MemoryContextEdge{
+		MemoryID:        r.MemoryID,
+		ContextKey:      strings.TrimSpace(r.ContextKey),
+		ContextValue:    strings.TrimSpace(r.ContextValue),
+		SupportCount:    r.SupportCount,
+		RebuttalCount:   r.RebuttalCount,
+		LastSupportedAt: unixMilliToTime(r.LastSupportedTimestamp),
+		LastRebuttedAt:  unixMilliToTime(r.LastRebuttedTimestamp),
+		CreatedAt:       unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:       unixMilliToTime(r.UpdatedTimestamp),
+	}
 }
 
 func (r memoryNodeRow) toDomain() logicdomain.SessionMemoryNodeRecord {

@@ -275,6 +275,38 @@ func TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows(t *testing.T) {
 	}
 }
 
+// TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically verifies context-edge lookup batches memory ids into one stable relational read.
+// TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically 用于验证 context-edge 查询会把 memory ids 合并成一次稳定的关系层读取。
+func TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var captured *sqlitev1.QueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		captured = req
+		return &sqlitev1.QueryJsonResponse{
+			JsonData: `[{"memory_id":201,"context_key":"deployment_mode","context_value":"local oss","support_count":2,"rebuttal_count":1,"last_supported_timestamp":1000,"last_rebutted_timestamp":2000,"created_timestamp":3000,"updated_timestamp":4000}]`,
+		}, nil
+	}
+
+	edges, err := store.LoadMemoryContextEdgesByMemoryIDs(context.Background(), []uint64{202, 201, 202})
+	if err != nil {
+		t.Fatalf("LoadMemoryContextEdgesByMemoryIDs returned error: %v", err)
+	}
+	if len(edges) != 1 || edges[0].MemoryID != 201 || edges[0].SupportCount != 2 || edges[0].RebuttalCount != 1 {
+		t.Fatalf("unexpected context edges: %+v", edges)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJson request to be captured")
+	}
+	if !strings.Contains(captured.GetSql(), "FROM vmm_memory_context_edges") {
+		t.Fatalf("expected context edge table in sql, got %q", captured.GetSql())
+	}
+	if !strings.Contains(captured.GetSql(), "memory_id IN (201,202)") {
+		t.Fatalf("expected normalized memory id list in sql, got %q", captured.GetSql())
+	}
+}
+
 // TestEvolveAdoptedMemoryRecordStrengthensLifecycle verifies memory adoption now records reinforcement evidence and promotes hot cross-session facts.
 // TestEvolveAdoptedMemoryRecordStrengthensLifecycle 用于验证记忆采纳现在会记录强化证据，并把跨会话高频命中的事实提升生命周期等级。
 func TestEvolveAdoptedMemoryRecordStrengthensLifecycle(t *testing.T) {

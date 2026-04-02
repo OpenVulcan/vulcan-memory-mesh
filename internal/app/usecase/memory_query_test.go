@@ -518,9 +518,9 @@ func TestMemoryUseCaseSearchAppliesWeibullDecay(t *testing.T) {
 	}
 }
 
-// TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker verifies equally scored hits prefer stronger support and lower rebuttal counts before the final top-k is trimmed.
-// TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker 用于验证在分数相同的情况下，最终裁剪前会优先保留支持更强且反驳更少的记忆。
-func TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker(t *testing.T) {
+// TestMemoryUseCaseSearchAppliesContextAwareScoring verifies matched context edges can boost supportive memories and demote rebutted memories before MMR runs.
+// TestMemoryUseCaseSearchAppliesContextAwareScoring 用于验证命中的 context edge 会在 MMR 之前提升支持记忆、压低反驳记忆。
+func TestMemoryUseCaseSearchAppliesContextAwareScoring(t *testing.T) {
 	profiles := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
 			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
@@ -529,8 +529,12 @@ func TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker(t *testing.T) {
 	}
 	turns := &stubTurnLookupStore{
 		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
-			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "证据更强", Details: "支持更多", VectorID: "vec-1", SupportCount: 3, RebuttalCount: 0},
-			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "证据更弱", Details: "反驳更多", VectorID: "vec-2", SupportCount: 1, RebuttalCount: 1},
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "phase4 旧方案", Details: "这条记忆被当前场景反驳", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "phase4 新方案", Details: "这条记忆被当前场景支持", VectorID: "vec-2"},
+		},
+		memoryContextEdges: []logicdomain.MemoryContextEdge{
+			{MemoryID: 201, ContextKey: "deployment_mode", ContextValue: "local oss", RebuttalCount: 2},
+			{MemoryID: 202, ContextKey: "deployment_mode", ContextValue: "local oss", SupportCount: 2},
 		},
 	}
 	embedding := &stubEmbeddingClient{
@@ -538,8 +542,8 @@ func TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker(t *testing.T) {
 	}
 	vector := &stubVectorStore{
 		searchHits: []logicdomain.MemoryHit{
-			{ID: "vec-2", Text: "证据更弱", Score: 0.91},
-			{ID: "vec-1", Text: "证据更强", Score: 0.91},
+			{ID: "vec-1", Text: "phase4 旧方案", Score: 0.91},
+			{ID: "vec-2", Text: "phase4 新方案", Score: 0.91},
 		},
 	}
 
@@ -548,17 +552,68 @@ func TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"当前方案"}]`,
+		QueryJSON: `[{"background":"当前部署模式仍然是 local_oss。","query":"phase4 当前方案"}]`,
 		TopK:      2,
 	})
 	if err != nil {
-		t.Fatalf("search memory events with context evidence ordering: %v", err)
+		t.Fatalf("search memory events with context-aware scoring: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[1].MemoryRef.ID != 201 {
+		t.Fatalf("expected supportive context edge to win, got %+v", result.Results[0].Hits)
+	}
+	if len(turns.contextLookupIDs) != 2 || turns.contextLookupIDs[0] != 201 || turns.contextLookupIDs[1] != 202 {
+		t.Fatalf("expected context edge lookup over both candidate ids, got %+v", turns.contextLookupIDs)
+	}
+}
+
+// TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches verifies unrelated context edges do not perturb the existing ranked order.
+// TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches 用于验证无关 context edge 不会扰动现有排序。
+func TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "旧排序第一", Details: "第一条", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "旧排序第二", Details: "第二条", VectorID: "vec-2"},
+		},
+		memoryContextEdges: []logicdomain.MemoryContextEdge{
+			{MemoryID: 201, ContextKey: "deployment_mode", ContextValue: "cloud", SupportCount: 3},
+			{MemoryID: 202, ContextKey: "task_stage", ContextValue: "phase2", RebuttalCount: 2},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "旧排序第一", Score: 0.93},
+			{ID: "vec-2", Text: "旧排序第二", Score: 0.91},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"background":"当前仍然是 local_oss。","query":"phase4 当前方案"}]`,
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events without matching context edges: %v", err)
 	}
 	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
 		t.Fatalf("unexpected results: %+v", result.Results)
 	}
 	if result.Results[0].Hits[0].MemoryRef.ID != 201 || result.Results[0].Hits[1].MemoryRef.ID != 202 {
-		t.Fatalf("expected stronger context evidence to win the tie, got %+v", result.Results[0].Hits)
+		t.Fatalf("expected original order to remain unchanged, got %+v", result.Results[0].Hits)
 	}
 }
 
@@ -598,11 +653,13 @@ type stubTurnLookupStore struct {
 	rows               []logicdomain.SessionTurnRecord
 	windows            map[uint64]logicdomain.TurnDetailWindow
 	memoryRowsByID     []logicdomain.MemoryNodeRecord
+	memoryContextEdges []logicdomain.MemoryContextEdge
 	memoryRowsByVector []logicdomain.MemoryNodeRecord
 	lexicalHits        []logicdomain.MemoryLexicalHit
 	lexicalQueries     []string
 	lexicalTopKs       []int
 	lexicalFilters     []logicdomain.SearchFilter
+	contextLookupIDs   []uint64
 	err                error
 }
 
@@ -643,6 +700,16 @@ func (s *stubTurnLookupStore) LoadMemoryNodesByIDs(_ context.Context, _ []uint64
 		return nil, s.err
 	}
 	return append([]logicdomain.MemoryNodeRecord(nil), s.memoryRowsByID...), nil
+}
+
+// LoadMemoryContextEdgesByMemoryIDs returns canned context edges for context-aware retrieval assertions.
+// LoadMemoryContextEdgesByMemoryIDs 用于返回情境感知检索断言需要的预设 context edges。
+func (s *stubTurnLookupStore) LoadMemoryContextEdgesByMemoryIDs(_ context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
+	s.contextLookupIDs = append([]uint64(nil), memoryIDs...)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]logicdomain.MemoryContextEdge(nil), s.memoryContextEdges...), nil
 }
 
 // LoadMemoryNodesByVectorIDs returns canned memory rows for search-hit enrichment assertions.

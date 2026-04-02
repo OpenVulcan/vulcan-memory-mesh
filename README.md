@@ -96,6 +96,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - 未提炼 turn 的脱水原文
 - 第一层 `extract_intent` 判断是否需要记忆，并生成多条向量检索语句
 - 通过统一记忆检索接口批量向量化这些检索语句并召回长期候选
+  - 当前服务端检索链是：`vector + lexical + RRF + rerank(optional) + Weibull + context-aware scoring + MMR`
 - 第二层 `review_precheck_memory` 只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
 - 将稳定画像和被采纳记忆一起组装为 `context_text / context_items`
