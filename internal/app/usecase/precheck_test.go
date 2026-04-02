@@ -741,6 +741,82 @@ func TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary(t *testing.T) 
 	}
 }
 
+// TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores verifies that when the unified search layer already decided an equal-score order, pre-check preserves that order instead of reordering ties by memory id.
+// TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores 用于验证当 unified search 层已经决定了同分顺序时，pre-check 会保留该顺序，而不是再按 memory id 改写 tie-break。
+func TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores(t *testing.T) {
+	uc := NewPreCheckUseCase(
+		nil,
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Query:      "phase4 当前方案",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 30},
+								SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 18},
+								SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+								Abstract:       "应优先保留的上游第一候选",
+								DetailsPreview: "它在 unified search 里已经排在前面。",
+								Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:          0.91,
+								Origin:         "hybrid_rrf_rerank_mmr",
+							},
+							{
+								MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+								SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 17},
+								SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+								Abstract:       "不应因为 memory id 更小而顶替前者",
+								DetailsPreview: "这条只是同分候选。",
+								Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:          0.91,
+								Origin:         "hybrid_rrf_rerank_mmr",
+							},
+						},
+					},
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, ReviewCandidateLimit: 1},
+		nil,
+	)
+
+	candidates, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "在 phase4 下应该继续用哪个方案？",
+	}, logicdomain.IntentResult{
+		Queries:    []string{"phase4 当前方案"},
+		NeedMemory: true,
+		Reason:     "needs architecture memory",
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected one retained candidate after limit, got %#v", candidates)
+	}
+	if candidates[0].MemoryID != 30 {
+		t.Fatalf("expected unified-search first candidate to survive equal-score tie, got %#v", candidates)
+	}
+	if candidates[0].CandidateNumber != 1 {
+		t.Fatalf("expected candidate numbering to follow preserved order, got %#v", candidates)
+	}
+}
+
 // stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
 // stubPreCheckProfiles 用于作为 pre-check 测试里的画像组合加载桩。
 type stubPreCheckProfiles struct {

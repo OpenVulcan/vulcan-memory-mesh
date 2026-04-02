@@ -380,6 +380,8 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		return nil, err
 	}
 	merged := make(map[uint64]logicdomain.PreCheckMemoryCandidate)
+	firstSeenOrder := make(map[uint64]int)
+	nextSeenOrder := 0
 	for _, group := range result.Results {
 		for _, hit := range group.Hits {
 			if hit.MemoryRef.Type != logicdomain.MemoryRefTypeMemory || hit.MemoryRef.ID == 0 {
@@ -411,6 +413,10 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 			if candidate.Details == "" {
 				candidate.Details = candidate.Abstract
 			}
+			if _, ok := firstSeenOrder[candidate.MemoryID]; !ok {
+				firstSeenOrder[candidate.MemoryID] = nextSeenOrder
+				nextSeenOrder++
+			}
 			if existing, ok := merged[candidate.MemoryID]; ok {
 				merged[candidate.MemoryID] = mergePreCheckCandidate(existing, candidate)
 				continue
@@ -424,10 +430,15 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		out = append(out, candidate)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
-		if out[i].Score == out[j].Score {
-			return out[i].MemoryID < out[j].MemoryID
+		if out[i].Score != out[j].Score {
+			return out[i].Score > out[j].Score
 		}
-		return out[i].Score > out[j].Score
+		leftOrder, leftOK := firstSeenOrder[out[i].MemoryID]
+		rightOrder, rightOK := firstSeenOrder[out[j].MemoryID]
+		if leftOK && rightOK && leftOrder != rightOrder {
+			return leftOrder < rightOrder
+		}
+		return out[i].MemoryID < out[j].MemoryID
 	})
 	if len(out) > u.config.ReviewCandidateLimit {
 		out = out[:u.config.ReviewCandidateLimit]
