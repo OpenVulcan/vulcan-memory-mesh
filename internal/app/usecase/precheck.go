@@ -468,9 +468,10 @@ func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreChe
 	if u.reviewer == nil {
 		return nil, fmt.Errorf("pre-check memory reviewer is nil")
 	}
+	searchQueries := normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent)
 	review, err := u.reviewer.Review(ctx, logicdomain.PreCheckMemoryReviewInput{
 		UserContent:   cmd.UserContent,
-		SearchQueries: append([]string(nil), intent.Queries...),
+		SearchQueries: searchQueries,
 		IntentReason:  intent.Reason,
 		Candidates:    append([]logicdomain.PreCheckMemoryCandidate(nil), candidates...),
 	})
@@ -556,21 +557,12 @@ func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, persona l
 // buildPreCheckMemoryQueryJSON converts the stage-one search sentences into the grouped memory-search JSON format already consumed by the unified search surface.
 // buildPreCheckMemoryQueryJSON 用于把第一层检索语句转换成统一记忆查询接口已消费的分组 JSON 格式。
 func buildPreCheckMemoryQueryJSON(intent logicdomain.IntentResult, userContent string) (string, error) {
-	items := make([]MemoryQueryItem, 0, len(intent.Queries))
-	for _, query := range intent.Queries {
-		query = strings.TrimSpace(query)
-		if query == "" {
-			continue
-		}
+	queries := normalizePreCheckMemoryQueries(intent.Queries, userContent)
+	items := make([]MemoryQueryItem, 0, len(queries))
+	for _, query := range queries {
 		items = append(items, MemoryQueryItem{
 			Background: strings.TrimSpace(userContent),
 			Query:      query,
-		})
-	}
-	if len(items) == 0 {
-		items = append(items, MemoryQueryItem{
-			Background: strings.TrimSpace(userContent),
-			Query:      strings.TrimSpace(userContent),
 		})
 	}
 	body, err := json.Marshal(items)
@@ -578,6 +570,32 @@ func buildPreCheckMemoryQueryJSON(intent logicdomain.IntentResult, userContent s
 		return "", fmt.Errorf("marshal pre-check query json: %w", err)
 	}
 	return string(body), nil
+}
+
+// normalizePreCheckMemoryQueries trims and de-duplicates stage-one queries so pre-check only searches and explains the distinct retrieval prompts that actually matter.
+// normalizePreCheckMemoryQueries 用于裁剪并去重第一层 query，让 pre-check 只检索并解释真正有意义的去重检索语句。
+func normalizePreCheckMemoryQueries(queries []string, userContent string) []string {
+	normalized := make([]string, 0, len(queries))
+	seen := make(map[string]struct{}, len(queries))
+	for _, query := range queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		if _, ok := seen[query]; ok {
+			continue
+		}
+		seen[query] = struct{}{}
+		normalized = append(normalized, query)
+	}
+	if len(normalized) > 0 {
+		return normalized
+	}
+	userContent = strings.TrimSpace(userContent)
+	if userContent == "" {
+		return nil
+	}
+	return []string{userContent}
 }
 
 // buildPreCheckMemoryText turns one adopted candidate into the compact text fragment injected back to the upstream caller.

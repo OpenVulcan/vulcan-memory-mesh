@@ -4,6 +4,7 @@ package usecase
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -434,6 +435,84 @@ func TestPreCheckExecuteRewritesGenericQueriesToCurrentInput(t *testing.T) {
 	}
 	if strings.Count(memories.cmd.QueryJSON, current) < 2 {
 		t.Fatalf("expected rewritten query json to keep full current input in both background and query, got %s", memories.cmd.QueryJSON)
+	}
+}
+
+// TestPreCheckExecuteDeduplicatesSearchQueries verifies that repeated stage-one queries are collapsed before unified retrieval and reviewer input construction so pre-check does not pay duplicate recall cost for the same query.
+// TestPreCheckExecuteDeduplicatesSearchQueries 用于验证第一层重复 query 会在统一检索和 reviewer 输入前被折叠，避免 pre-check 为同一 query 支付重复召回成本。
+func TestPreCheckExecuteDeduplicatesSearchQueries(t *testing.T) {
+	memories := &stubPreCheckMemories{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{
+				{
+					QueryIndex: 0,
+					Query:      "phase4 当前方案",
+					Hits: []MemoryQueryHit{
+						{
+							MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 30},
+							SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 18},
+							SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+							ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+							Abstract:       "phase4 新方案",
+							DetailsPreview: "这是被去重 query 命中的候选。",
+							Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+							Score:          0.94,
+							Origin:         "vector_search",
+						},
+					},
+				},
+			},
+		},
+	}
+	reviewer := &stubPreCheckReviewer{
+		result: logicdomain.PreCheckMemoryReviewResult{
+			SelectedCandidateNumbers: []int{1},
+		},
+	}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckProfiles{},
+		memories,
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 17, SessionID: 41, Details: "上一轮确认当前环境是 phase4。", DetailsBudget: 15, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"phase4 当前方案", " phase4 当前方案 ", "phase4 当前方案"},
+				NeedMemory: true,
+				Reason:     "needs architecture memory",
+			},
+		},
+		reviewer,
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	if _, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-dedupe-query"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "在 phase4 下应该继续用哪个方案？",
+	}); err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+
+	var items []MemoryQueryItem
+	if err := json.Unmarshal([]byte(memories.cmd.QueryJSON), &items); err != nil {
+		t.Fatalf("unmarshal query json: %v", err)
+	}
+	if len(items) != 1 || items[0].Query != "phase4 当前方案" {
+		t.Fatalf("expected deduplicated search query json, got %#v", items)
+	}
+	if len(reviewer.input.SearchQueries) != 1 || reviewer.input.SearchQueries[0] != "phase4 当前方案" {
+		t.Fatalf("expected reviewer to see deduplicated search queries, got %#v", reviewer.input.SearchQueries)
 	}
 }
 
