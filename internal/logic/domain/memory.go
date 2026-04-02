@@ -130,6 +130,8 @@ type MemoryNodeRecord struct {
 	Priority                 int
 	MemoryLevel              int
 	RefreshWeight            int
+	SupportCount             int
+	RebuttalCount            int
 	StatusReason             string
 	ExpiresAt                time.Time
 	LastRecalledAt           time.Time
@@ -143,6 +145,20 @@ type MemoryNodeRecord struct {
 	DedupeHash               string
 	CreatedAt                time.Time
 	UpdatedAt                time.Time
+}
+
+// MemoryContextEdge stores one durable memory-to-context relationship so later retrieval can filter or re-rank by explicit situational evidence.
+// MemoryContextEdge 用于保存一条长期记忆到情境标签的关系，让后续检索可以按明确情境证据过滤或重排。
+type MemoryContextEdge struct {
+	MemoryID        uint64
+	ContextKey      string
+	ContextValue    string
+	SupportCount    int
+	RebuttalCount   int
+	LastSupportedAt time.Time
+	LastRebuttedAt  time.Time
+	CreatedAt       time.Time
+	UpdatedAt       time.Time
 }
 
 // TurnAnalysisApplyResult stores the durable follow-up coordinates produced after one single-turn analysis has been written back.

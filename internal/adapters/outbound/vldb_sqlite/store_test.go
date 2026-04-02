@@ -314,6 +314,80 @@ func TestEvolveAdoptedMemoryRecordStrengthensLifecycle(t *testing.T) {
 	}
 }
 
+// TestCurrentSchemaSQLContainsContextualMemoryTables verifies the managed SQLite schema now includes context-evidence counters on memory rows plus the dedicated edge table.
+// TestCurrentSchemaSQLContainsContextualMemoryTables 用于验证受管 SQLite schema 现在包含主记忆行上的证据计数，以及独立的情境边表。
+func TestCurrentSchemaSQLContainsContextualMemoryTables(t *testing.T) {
+	requiredFragments := []string{
+		"support_count INTEGER NOT NULL DEFAULT 0",
+		"rebuttal_count INTEGER NOT NULL DEFAULT 0",
+		"CREATE TABLE IF NOT EXISTS vmm_memory_context_edges",
+		"idx_vmm_memory_context_edges_lookup",
+		"idx_vmm_memory_context_edges_memory",
+	}
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(currentSchemaSQL, fragment) {
+			t.Fatalf("expected schema to contain %q", fragment)
+		}
+	}
+	if !strings.Contains(resetManagedSchemaSQL, "DROP TABLE IF EXISTS vmm_memory_context_edges;") {
+		t.Fatal("expected reset schema script to drop vmm_memory_context_edges")
+	}
+}
+
+// TestNormalizeTurnMemoryContextEdgesAggregatesCounts verifies one memory candidate's repeated context labels collapse into deterministic support/rebuttal counters.
+// TestNormalizeTurnMemoryContextEdgesAggregatesCounts 用于验证同一记忆候选上的重复情境标签会折叠成确定性的支持/反驳统计。
+func TestNormalizeTurnMemoryContextEdgesAggregatesCounts(t *testing.T) {
+	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	edges := normalizeTurnMemoryContextEdges(201, []logicdomain.MemoryContextEdgeCandidate{
+		{ContextKey: "task_stage", ContextValue: "phase4", Relation: logicdomain.MemoryContextRelationSupport},
+		{ContextKey: "task_stage", ContextValue: "phase4", Relation: logicdomain.MemoryContextRelationSupport},
+		{ContextKey: "task_stage", ContextValue: "phase4", Relation: logicdomain.MemoryContextRelationRebuttal},
+		{ContextKey: "deployment_mode", ContextValue: "local_oss", Relation: logicdomain.MemoryContextRelationSupport},
+	}, now)
+
+	if len(edges) != 2 {
+		t.Fatalf("expected two aggregated context edges, got %+v", edges)
+	}
+	if edges[0].MemoryID != 201 || edges[0].ContextKey != "deployment_mode" || edges[0].SupportCount != 1 || edges[0].RebuttalCount != 0 {
+		t.Fatalf("unexpected first edge aggregation: %+v", edges[0])
+	}
+	if edges[1].ContextKey != "task_stage" || edges[1].SupportCount != 2 || edges[1].RebuttalCount != 1 {
+		t.Fatalf("unexpected second edge aggregation: %+v", edges[1])
+	}
+	supportCount, rebuttalCount := summarizeMemoryContextEdges(edges)
+	if supportCount != 3 || rebuttalCount != 1 {
+		t.Fatalf("unexpected memory-level evidence summary: support=%d rebuttal=%d", supportCount, rebuttalCount)
+	}
+}
+
+// TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements verifies edge persistence always clears the old rows first and then inserts the normalized replacements.
+// TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements 用于验证情境边持久化会先清空旧行，再插入规范化后的替代行。
+func TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements(t *testing.T) {
+	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	sqlText := buildMemoryContextEdgesReplaceSQL(201, []logicdomain.MemoryContextEdge{
+		{
+			MemoryID:        201,
+			ContextKey:      "task_stage",
+			ContextValue:    "phase4",
+			SupportCount:    2,
+			RebuttalCount:   1,
+			LastSupportedAt: now,
+			LastRebuttedAt:  now,
+			CreatedAt:       now,
+			UpdatedAt:       now,
+		},
+	})
+	if !strings.Contains(sqlText, "DELETE FROM vmm_memory_context_edges") {
+		t.Fatalf("expected delete statement in context edge sql, got %q", sqlText)
+	}
+	if !strings.Contains(sqlText, "INSERT INTO vmm_memory_context_edges") {
+		t.Fatalf("expected insert statement in context edge sql, got %q", sqlText)
+	}
+	if !strings.Contains(sqlText, "'task_stage'") || !strings.Contains(sqlText, "'phase4'") {
+		t.Fatalf("expected key/value literals in context edge sql, got %q", sqlText)
+	}
+}
+
 // setTrailerOptions populates grpc.Trailer call options so the adapter sees the same retry metadata shape a real gateway would emit.
 // setTrailerOptions 用于填充 grpc.Trailer 调用选项，让适配器能看到真实网关会返回的重试 metadata 形态。
 func setTrailerOptions(opts []grpc.CallOption, trailer metadata.MD) {

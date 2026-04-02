@@ -182,6 +182,7 @@ message PostActionTimelineItem {
     - 最近若干条已提炼历史 `details`
     - 当前 turn 的原始脱水 JSON
     - 当前 session 下仍然活跃的旧记忆节点
+      - 这些节点现在会额外携带 `support_count / rebuttal_count`
     - 其中：
       - 历史部分只用于参考
       - 当前 turn 是唯一允许输出新 `details / memory_nodes / profile_nodes` 的目标
@@ -190,6 +191,8 @@ message PostActionTimelineItem {
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
+      - 每条 `memory_nodes[]` 现在允许可选 `context_edges[]`
+      - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
     - 当前 turn 的 `profile_nodes[]`
     - 供后续统一记忆模型接入的 `superseded_memory_ids`
 18. 如果当前 turn 有 `profile_nodes[]`：
@@ -223,6 +226,8 @@ message PostActionTimelineItem {
       - `extracted_status = 1`
     - 同步插入：
       - `vmm_memory_nodes`
+        - 包含聚合后的 `support_count / rebuttal_count`
+      - `vmm_memory_context_edges`
       - `vmm_profile_nodes`
     - 同步更新：
       - `vmm_users.profile`

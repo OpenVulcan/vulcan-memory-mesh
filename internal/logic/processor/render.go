@@ -98,13 +98,15 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 		RawTurn json.RawMessage `json:"raw_turn"`
 	}
 	type activeMemoryNodeInput struct {
-		MemoryID     uint64 `json:"memory_id"`
-		SourceTurnID uint64 `json:"source_turn_id,omitempty"`
-		Category     int    `json:"category"`
-		Abstract     string `json:"abstract"`
-		Details      string `json:"details"`
-		SourceKind   string `json:"source_kind,omitempty"`
-		ScopeLevel   string `json:"scope_level,omitempty"`
+		MemoryID      uint64 `json:"memory_id"`
+		SourceTurnID  uint64 `json:"source_turn_id,omitempty"`
+		Category      int    `json:"category"`
+		Abstract      string `json:"abstract"`
+		Details       string `json:"details"`
+		SourceKind    string `json:"source_kind,omitempty"`
+		ScopeLevel    string `json:"scope_level,omitempty"`
+		SupportCount  int    `json:"support_count,omitempty"`
+		RebuttalCount int    `json:"rebuttal_count,omitempty"`
 	}
 	type recentDirectWriteInput struct {
 		MemoryID   uint64 `json:"memory_id"`
@@ -151,13 +153,15 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 			details = strings.TrimSpace(node.Abstract)
 		}
 		body.ActiveMemoryNodes = append(body.ActiveMemoryNodes, activeMemoryNodeInput{
-			MemoryID:     node.MemoryID,
-			SourceTurnID: node.SourceTurnID,
-			Category:     node.Category,
-			Abstract:     strings.TrimSpace(node.Abstract),
-			Details:      details,
-			SourceKind:   strings.TrimSpace(node.SourceKind),
-			ScopeLevel:   strings.TrimSpace(node.ScopeLevel),
+			MemoryID:      node.MemoryID,
+			SourceTurnID:  node.SourceTurnID,
+			Category:      node.Category,
+			Abstract:      strings.TrimSpace(node.Abstract),
+			Details:       details,
+			SourceKind:    strings.TrimSpace(node.SourceKind),
+			ScopeLevel:    strings.TrimSpace(node.ScopeLevel),
+			SupportCount:  node.SupportCount,
+			RebuttalCount: node.RebuttalCount,
 		})
 	}
 	for _, memory := range input.RecentGRPCMemoryWrites {

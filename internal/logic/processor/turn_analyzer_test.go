@@ -24,7 +24,19 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
     {
       "category": 4,
       "abstract": "当前对话需要先形成 AI 记忆子项目建议。",
-      "details": "用户当前诉求是获得该子项目的设计建议。"
+      "details": "用户当前诉求是获得该子项目的设计建议。",
+      "context_edges": [
+        {
+          "context_key": "task_stage",
+          "context_value": "phase4",
+          "relation": "support"
+        },
+        {
+          "context_key": "deployment-mode",
+          "context_value": "local oss",
+          "relation": "rebuttal"
+        }
+      ]
     }
   ],
   "profile_nodes": [
@@ -55,7 +67,7 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 			RawTurn: `{"user":"你好","assistant":"收到"}`,
 		},
 		ActiveMemoryNodes: []logicdomain.TurnAnalysisActiveMemoryNode{
-			{MemoryID: 71, SourceTurnID: 80, Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "旧记忆", Details: "旧记忆详情"},
+			{MemoryID: 71, SourceTurnID: 80, Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "旧记忆", Details: "旧记忆详情", SupportCount: 2, RebuttalCount: 1},
 		},
 		RecentGRPCMemoryWrites: []logicdomain.TurnAnalysisDirectWrite{
 			{MemoryID: 301, ScopeLevel: "PROJECT", Abstract: "已主动写入的记忆", Details: "这条记忆已经由工具写入"},
@@ -73,6 +85,9 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if !strings.Contains(llm.request.UserPrompt, `"reference_turns"`) || !strings.Contains(llm.request.UserPrompt, `"recent_grpc_memory_writes"`) {
 		t.Fatalf("expected structured turn-analysis request body, got %s", llm.request.UserPrompt)
 	}
+	if !strings.Contains(llm.request.UserPrompt, `"support_count": 2`) || !strings.Contains(llm.request.UserPrompt, `"rebuttal_count": 1`) {
+		t.Fatalf("expected support/rebuttal counts in turn-analysis request body, got %s", llm.request.UserPrompt)
+	}
 	if !strings.Contains(llm.request.SystemPrompt, "绝对禁止把这些历史摘要重新提炼成当前 turn 的新增记忆或画像") {
 		t.Fatalf("expected rendered reference rule in system prompt, got %s", llm.request.SystemPrompt)
 	}
@@ -84,6 +99,12 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	}
 	if analysis.MemoryNodes[0].Category != logicdomain.MemoryNodeCategoryRequirementTODO {
 		t.Fatalf("unexpected memory category: %+v", analysis.MemoryNodes[0])
+	}
+	if len(analysis.MemoryNodes[0].ContextEdges) != 2 {
+		t.Fatalf("expected context edges to be parsed, got %+v", analysis.MemoryNodes[0].ContextEdges)
+	}
+	if analysis.MemoryNodes[0].ContextEdges[0].Relation != logicdomain.MemoryContextRelationSupport || analysis.MemoryNodes[0].ContextEdges[1].Relation != logicdomain.MemoryContextRelationRebuttal {
+		t.Fatalf("unexpected context edge relations: %+v", analysis.MemoryNodes[0].ContextEdges)
 	}
 	if analysis.ProfileNodes[0].ProfileType != logicdomain.ProfileTypeProject {
 		t.Fatalf("unexpected profile node: %+v", analysis.ProfileNodes[0])
@@ -99,6 +120,18 @@ func TestParseTurnAnalysisResponseRejectsInvalidCategory(t *testing.T) {
 	_, err := parseTurnAnalysisResponse(`{"turn_id":1,"details":"","memory_nodes":[{"category":99,"abstract":"bad","details":"bad"}],"profile_nodes":[],"superseded_memory_ids":[]}`)
 	if err == nil {
 		t.Fatal("expected invalid category error")
+	}
+	if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
+		t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+	}
+}
+
+// TestParseTurnAnalysisResponseRejectsInvalidContextRelation verifies unsupported context-edge relations are rejected instead of leaking malformed evidence into persistence.
+// TestParseTurnAnalysisResponseRejectsInvalidContextRelation 用于验证不支持的 context-edge relation 会被拒绝，避免畸形证据漏进持久化层。
+func TestParseTurnAnalysisResponseRejectsInvalidContextRelation(t *testing.T) {
+	_, err := parseTurnAnalysisResponse(`{"turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"bad","details":"bad","context_edges":[{"context_key":"stage","context_value":"phase4","relation":"unknown"}]}],"profile_nodes":[],"superseded_memory_ids":[]}`)
+	if err == nil {
+		t.Fatal("expected invalid context relation error")
 	}
 	if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
 		t.Fatalf("expected InvalidLLMOutputError, got %T", err)

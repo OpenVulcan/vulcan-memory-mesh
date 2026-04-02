@@ -79,9 +79,14 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		TurnID      uint64 `json:"turn_id"`
 		Details     string `json:"details"`
 		MemoryNodes []struct {
-			Category int    `json:"category"`
-			Abstract string `json:"abstract"`
-			Details  string `json:"details"`
+			Category     int    `json:"category"`
+			Abstract     string `json:"abstract"`
+			Details      string `json:"details"`
+			ContextEdges []struct {
+				ContextKey   string `json:"context_key"`
+				ContextValue string `json:"context_value"`
+				Relation     string `json:"relation"`
+			} `json:"context_edges"`
 		} `json:"memory_nodes"`
 		ProfileNodes []struct {
 			ProfileType int    `json:"profile_type"`
@@ -105,7 +110,7 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		ProfileNodes:        make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
 		SupersededMemoryIDs: normalizeUint64Set(payload.SupersededMemoryIDs),
 	}
-	memorySeen := map[string]struct{}{}
+	memorySeen := map[string]int{}
 	for _, node := range payload.MemoryNodes {
 		node.Abstract = strings.TrimSpace(node.Abstract)
 		node.Details = strings.TrimSpace(node.Details)
@@ -118,15 +123,21 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if node.Details == "" {
 			node.Details = node.Abstract
 		}
+		contextEdges, err := normalizeMemoryContextEdgeCandidates(node.ContextEdges)
+		if err != nil {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
+		}
 		key := fmt.Sprintf("%d|%s|%s", node.Category, node.Abstract, node.Details)
-		if _, ok := memorySeen[key]; ok {
+		if existingIdx, ok := memorySeen[key]; ok {
+			analysis.MemoryNodes[existingIdx].ContextEdges = mergeMemoryContextEdgeCandidates(analysis.MemoryNodes[existingIdx].ContextEdges, contextEdges)
 			continue
 		}
-		memorySeen[key] = struct{}{}
+		memorySeen[key] = len(analysis.MemoryNodes)
 		analysis.MemoryNodes = append(analysis.MemoryNodes, logicdomain.MemoryNodeCandidate{
-			Category: node.Category,
-			Abstract: node.Abstract,
-			Details:  node.Details,
+			Category:     node.Category,
+			Abstract:     node.Abstract,
+			Details:      node.Details,
+			ContextEdges: contextEdges,
 		})
 	}
 	profileSeen := map[string]struct{}{}
@@ -150,6 +161,90 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		})
 	}
 	return analysis, nil
+}
+
+// normalizeMemoryContextEdgeCandidates validates and de-duplicates one raw context-edge slice so persistence only sees canonical support/rebuttal evidence labels.
+// normalizeMemoryContextEdgeCandidates 用于校验并去重原始 context-edge 切片，保证持久化层只接收规范化的支持/反驳情境证据标签。
+func normalizeMemoryContextEdgeCandidates(rawEdges []struct {
+	ContextKey   string `json:"context_key"`
+	ContextValue string `json:"context_value"`
+	Relation     string `json:"relation"`
+}) ([]logicdomain.MemoryContextEdgeCandidate, error) {
+	if len(rawEdges) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(rawEdges))
+	normalized := make([]logicdomain.MemoryContextEdgeCandidate, 0, len(rawEdges))
+	for _, edge := range rawEdges {
+		contextKey := normalizeMemoryContextKey(edge.ContextKey)
+		contextValue := normalizeMemoryContextValue(edge.ContextValue)
+		if contextKey == "" || contextValue == "" {
+			continue
+		}
+		relation := strings.ToLower(strings.TrimSpace(edge.Relation))
+		if relation == "" {
+			relation = logicdomain.MemoryContextRelationSupport
+		}
+		if !logicdomain.ValidMemoryContextRelation(relation) {
+			return nil, fmt.Errorf("invalid context edge relation %q", edge.Relation)
+		}
+		key := contextKey + "|" + contextValue + "|" + relation
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		normalized = append(normalized, logicdomain.MemoryContextEdgeCandidate{
+			ContextKey:   contextKey,
+			ContextValue: contextValue,
+			Relation:     relation,
+		})
+	}
+	return normalized, nil
+}
+
+// mergeMemoryContextEdgeCandidates appends extra contextual evidence onto one existing candidate while preserving stable de-duplication semantics.
+// mergeMemoryContextEdgeCandidates 用于把额外的情境证据合并到已有候选上，同时保持稳定的去重语义。
+func mergeMemoryContextEdgeCandidates(base, extra []logicdomain.MemoryContextEdgeCandidate) []logicdomain.MemoryContextEdgeCandidate {
+	if len(extra) == 0 {
+		return base
+	}
+	seen := make(map[string]struct{}, len(base)+len(extra))
+	merged := make([]logicdomain.MemoryContextEdgeCandidate, 0, len(base)+len(extra))
+	appendEdge := func(edge logicdomain.MemoryContextEdgeCandidate) {
+		key := strings.TrimSpace(edge.ContextKey) + "|" + strings.TrimSpace(edge.ContextValue) + "|" + strings.TrimSpace(edge.Relation)
+		if key == "||" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		merged = append(merged, edge)
+	}
+	for _, edge := range base {
+		appendEdge(edge)
+	}
+	for _, edge := range extra {
+		appendEdge(edge)
+	}
+	return merged
+}
+
+// normalizeMemoryContextKey converts free-form context keys into lower snake-like labels so later indexing and filtering stay stable across model wording drift.
+// normalizeMemoryContextKey 用于把自由形式的情境键归一成小写、接近 snake_case 的标签，降低模型措辞波动对索引和过滤的影响。
+func normalizeMemoryContextKey(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(" ", "_", "-", "_", "/", "_")
+	return replacer.Replace(raw)
+}
+
+// normalizeMemoryContextValue trims and collapses surrounding whitespace so repeated contextual values do not fork into duplicate durable edges.
+// normalizeMemoryContextValue 用于裁剪并压缩两端空白，避免同一情境值因为格式差异被拆成重复的长期边。
+func normalizeMemoryContextValue(raw string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
 }
 
 // normalizeUint64Set removes zeros and duplicates from one uint64 list while keeping the first-seen order stable for deterministic persistence and tests.

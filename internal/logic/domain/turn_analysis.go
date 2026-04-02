@@ -5,6 +5,16 @@ package domain
 import "time"
 
 const (
+	// MemoryContextRelationSupport marks one contextual edge as evidence that supports the memory inside the given situation.
+	// MemoryContextRelationSupport 用于标记某条情境边在给定场景下对该记忆形成支持证据。
+	MemoryContextRelationSupport = "support"
+
+	// MemoryContextRelationRebuttal marks one contextual edge as evidence that contradicts or weakens the memory inside the given situation.
+	// MemoryContextRelationRebuttal 用于标记某条情境边在给定场景下对该记忆形成反驳或削弱证据。
+	MemoryContextRelationRebuttal = "rebuttal"
+)
+
+const (
 	// TurnExtractedStatusPending marks one turn row that has not completed feature extraction yet.
 	// TurnExtractedStatusPending 用于标记一条尚未完成特征提取的 turn 记录。
 	TurnExtractedStatusPending = 0
@@ -203,13 +213,15 @@ type TurnAnalysisTargetTurn struct {
 // TurnAnalysisActiveMemoryNode stores one currently active memory node that the single-turn analyzer may use for de-duplication and supersede decisions.
 // TurnAnalysisActiveMemoryNode 用于保存一条当前仍然活跃的记忆节点，让单轮分析器在去重和覆盖判断时可以参考它。
 type TurnAnalysisActiveMemoryNode struct {
-	MemoryID     uint64
-	SourceTurnID uint64
-	Category     int
-	Abstract     string
-	Details      string
-	SourceKind   string
-	ScopeLevel   string
+	MemoryID      uint64
+	SourceTurnID  uint64
+	Category      int
+	Abstract      string
+	Details       string
+	SourceKind    string
+	ScopeLevel    string
+	SupportCount  int
+	RebuttalCount int
 }
 
 // TurnAnalysisDirectWrite stores one recently accepted direct-write memory so the single-turn analyzer can avoid extracting facts that the tool path has already persisted.
@@ -239,6 +251,7 @@ type MemoryNodeCandidate struct {
 	Vector        []float32
 	Abstract      string
 	Details       string
+	ContextEdges  []MemoryContextEdgeCandidate
 	SourceKind    int
 	ScopeLevel    int
 	Priority      int
@@ -246,6 +259,14 @@ type MemoryNodeCandidate struct {
 	RefreshWeight int
 	ExpiresAt     time.Time
 	DedupeHash    string
+}
+
+// MemoryContextEdgeCandidate stores one extracted situational label attached to a new memory candidate before it is aggregated into durable edge counters.
+// MemoryContextEdgeCandidate 用于保存附着在新记忆候选上的一条提取情境标签，后续会被聚合成长期边和统计计数。
+type MemoryContextEdgeCandidate struct {
+	ContextKey   string
+	ContextValue string
+	Relation     string
 }
 
 // ProfileNodeCandidate stores one profile feature extracted from a turn before it is bound to a user or project row.
@@ -301,4 +322,15 @@ func ValidProfileLevel(level int) bool {
 // ValidProfileSourceKind 用于判断某个画像来源类型是否属于当前支持的来源枚举集合。
 func ValidProfileSourceKind(sourceKind int) bool {
 	return sourceKind >= ProfileSourceKindTurnExtract && sourceKind <= ProfileSourceKindRetainedAfterUserDelete
+}
+
+// ValidMemoryContextRelation reports whether one contextual evidence relation belongs to the supported support/rebuttal set.
+// ValidMemoryContextRelation 用于判断某个情境证据关系是否属于当前支持的 support/rebuttal 集合。
+func ValidMemoryContextRelation(relation string) bool {
+	switch relation {
+	case MemoryContextRelationSupport, MemoryContextRelationRebuttal:
+		return true
+	default:
+		return false
+	}
 }

@@ -53,6 +53,8 @@ type SessionMemoryNodeRecord struct {
 	Priority        int
 	MemoryLevel     int
 	RefreshWeight   int
+	SupportCount    int
+	RebuttalCount   int
 	NodeStatus      int
 	CreatedAt       time.Time
 	UpdatedAt       time.Time

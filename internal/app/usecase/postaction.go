@@ -371,13 +371,15 @@ func (u *PostActionUseCase) buildTurnAnalysisInput(ctx context.Context, session 
 	}
 	for _, node := range activeMemoryNodes {
 		input.ActiveMemoryNodes = append(input.ActiveMemoryNodes, logicdomain.TurnAnalysisActiveMemoryNode{
-			MemoryID:     node.ID,
-			SourceTurnID: node.TurnID,
-			Category:     node.Category,
-			Abstract:     strings.TrimSpace(node.Abstract),
-			Details:      strings.TrimSpace(node.Details),
-			SourceKind:   logicdomain.MemorySourceKindLabel(node.SourceKind),
-			ScopeLevel:   logicdomain.MemoryScopeLevelLabel(node.ScopeLevel),
+			MemoryID:      node.ID,
+			SourceTurnID:  node.TurnID,
+			Category:      node.Category,
+			Abstract:      strings.TrimSpace(node.Abstract),
+			Details:       strings.TrimSpace(node.Details),
+			SourceKind:    logicdomain.MemorySourceKindLabel(node.SourceKind),
+			ScopeLevel:    logicdomain.MemoryScopeLevelLabel(node.ScopeLevel),
+			SupportCount:  node.SupportCount,
+			RebuttalCount: node.RebuttalCount,
 		})
 	}
 	for _, item := range recentDirectWrites {

@@ -47,6 +47,8 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 				Category:        3,
 				Abstract:        "用户喜欢吃香蕉。",
 				Details:         "来自近期饮食偏好提炼。",
+				SupportCount:    2,
+				RebuttalCount:   1,
 				VectorID:        "vec-1",
 			},
 		},
@@ -91,6 +93,9 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	}
 	if len(group.Hits) != 1 || group.Hits[0].MemoryRef.ID != 201 || group.Hits[0].SourceRef.ID != 41 || group.Hits[0].SessionID != 12 || group.Hits[0].Category != 3 {
 		t.Fatalf("unexpected hits: %+v", group.Hits)
+	}
+	if group.Hits[0].SupportCount != 2 || group.Hits[0].RebuttalCount != 1 {
+		t.Fatalf("expected context evidence counts to be preserved, got %+v", group.Hits[0])
 	}
 	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 || !strings.Contains(embedding.requests[0].Texts[0], "关键语句") {
 		t.Fatalf("unexpected embedding request: %+v", embedding.requests)
@@ -510,6 +515,50 @@ func TestMemoryUseCaseSearchAppliesWeibullDecay(t *testing.T) {
 	}
 	if result.Results[0].Hits[0].Score <= result.Results[0].Hits[1].Score {
 		t.Fatalf("expected first decayed score to stay above second: %+v", result.Results[0].Hits)
+	}
+}
+
+// TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker verifies equally scored hits prefer stronger support and lower rebuttal counts before the final top-k is trimmed.
+// TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker 用于验证在分数相同的情况下，最终裁剪前会优先保留支持更强且反驳更少的记忆。
+func TestMemoryUseCaseSearchUsesContextEvidenceAsTieBreaker(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "证据更强", Details: "支持更多", VectorID: "vec-1", SupportCount: 3, RebuttalCount: 0},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "证据更弱", Details: "反驳更多", VectorID: "vec-2", SupportCount: 1, RebuttalCount: 1},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-2", Text: "证据更弱", Score: 0.91},
+			{ID: "vec-1", Text: "证据更强", Score: 0.91},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"query":"当前方案"}]`,
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with context evidence ordering: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 201 || result.Results[0].Hits[1].MemoryRef.ID != 202 {
+		t.Fatalf("expected stronger context evidence to win the tie, got %+v", result.Results[0].Hits)
 	}
 }
 

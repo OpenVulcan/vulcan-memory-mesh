@@ -125,11 +125,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
     - 最近若干条已提炼完成的历史 `details`
     - 当前 turn 的原始脱水 JSON
     - 当前 session 下仍活跃的旧记忆节点锚点
+      - 会携带 `support_count / rebuttal_count` 作为既有证据强度提示
     - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
 12. `analyze_turn` 会返回：
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
+      - 每条 `memory_nodes[]` 可选携带 `context_edges[]`
+      - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
     - 当前 turn 的 `profile_nodes[]`
     - `superseded_memory_ids`
 13. 如果当前 turn 有 `profile_nodes[]`：
@@ -140,6 +143,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 15. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite）：
     - `vmm_turn_records.details / details_budget / extracted_status`
     - 统一后的 `vmm_memory_nodes`
+      - 包含聚合后的 `support_count / rebuttal_count`
+    - `vmm_memory_context_edges`
     - `vmm_profile_nodes`
 16. 画像评审完成后，会在关系库存储中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
 17. 后台定时维护仍会做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本

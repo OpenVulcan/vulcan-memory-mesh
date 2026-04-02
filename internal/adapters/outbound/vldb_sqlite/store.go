@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 12
+	currentSchemaVersion = 13
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -67,6 +67,7 @@ const resetManagedSchemaSQL = `
 DROP TABLE IF EXISTS vmm_profile_nodes;
 DROP TABLE IF EXISTS vmm_profile_instructions;
 DROP TABLE IF EXISTS vmm_memory_nodes_fts;
+DROP TABLE IF EXISTS vmm_memory_context_edges;
 DROP TABLE IF EXISTS vmm_memory_nodes;
 DROP TABLE IF EXISTS vmm_turn_records;
 DROP TABLE IF EXISTS vmm_chat_messages;
@@ -191,6 +192,8 @@ CREATE TABLE IF NOT EXISTS vmm_memory_nodes (
   priority INTEGER NOT NULL DEFAULT 2,
   memory_level INTEGER NOT NULL DEFAULT 2,
   refresh_weight INTEGER NOT NULL DEFAULT 0,
+  support_count INTEGER NOT NULL DEFAULT 0,
+  rebuttal_count INTEGER NOT NULL DEFAULT 0,
   status_reason TEXT NOT NULL DEFAULT '',
   expires_timestamp BIGINT NOT NULL DEFAULT 0,
   last_recalled_timestamp BIGINT NOT NULL DEFAULT 0,
@@ -217,6 +220,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vmm_memory_nodes_fts USING fts5(
   details,
   tokenize='unicode61'
 );
+
+CREATE TABLE IF NOT EXISTS vmm_memory_context_edges (
+  memory_id BIGINT NOT NULL,
+  context_key TEXT NOT NULL,
+  context_value TEXT NOT NULL,
+  support_count INTEGER NOT NULL DEFAULT 0,
+  rebuttal_count INTEGER NOT NULL DEFAULT 0,
+  last_supported_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_rebutted_timestamp BIGINT NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (memory_id, context_key, context_value),
+  FOREIGN KEY(memory_id) REFERENCES vmm_memory_nodes(id)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_lookup ON vmm_memory_context_edges(context_key, context_value, memory_id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_memory ON vmm_memory_context_edges(memory_id);
 
 CREATE TABLE IF NOT EXISTS vmm_profile_nodes (
   id BIGINT PRIMARY KEY,
@@ -966,8 +985,11 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].category", Message: "must be one supported memory category"}
 		}
 		record := normalizeTurnMemoryNodeRecord(session, turn, node, memoryStartID+uint64(idx), now)
+		contextEdges := normalizeTurnMemoryContextEdges(record.ID, node.ContextEdges, now)
+		record.SupportCount, record.RebuttalCount = summarizeMemoryContextEdges(contextEdges)
 		script += buildMemoryNodeInsertSQL(record)
 		script += buildMemoryNodeFTSUpsertSQL(record)
+		script += buildMemoryContextEdgesReplaceSQL(record.ID, contextEdges)
 		insertedMemoryNodes = append(insertedMemoryNodes, record)
 	}
 	for idx, node := range analysis.ProfileNodes {
@@ -1963,7 +1985,7 @@ func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([
 	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-       memory_status, priority, memory_level, refresh_weight, status_reason,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
        expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
@@ -1992,7 +2014,7 @@ func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []stri
 	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-       memory_status, priority, memory_level, refresh_weight, status_reason,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
        expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
@@ -2080,7 +2102,7 @@ func (s *Store) FindRecentActiveMemoryByDedupe(ctx context.Context, session logi
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-       memory_status, priority, memory_level, refresh_weight, status_reason,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
        expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
@@ -2145,7 +2167,7 @@ func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicd
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-       memory_status, priority, memory_level, refresh_weight, status_reason,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
        expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
@@ -2178,7 +2200,7 @@ func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicd
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-       memory_status, priority, memory_level, refresh_weight, status_reason,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
        expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
@@ -2527,7 +2549,7 @@ func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]lo
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-       memory_status, priority, memory_level, refresh_weight, status_reason,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
        expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
@@ -3411,15 +3433,15 @@ func buildMemoryNodeInsertSQL(record logicdomain.MemoryNodeRecord) string {
 INSERT INTO vmm_memory_nodes (
   id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
   vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-  memory_status, priority, memory_level, refresh_weight, status_reason,
+  memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
   expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
   recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
   created_timestamp, updated_timestamp
-) VALUES (%d, %d, %d, %d, %d, %d, %s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %s, %d, %d);
+) VALUES (%d, %d, %d, %d, %d, %d, %s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %d, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %s, %d, %d);
 `, record.ID, record.TeamID, record.SpaceID, record.ProjectID, record.UserID, record.OriginSessionID, sqlNullableUint64(nullableUint64(record.SourceTurnID)),
 		sqlStringLiteral(strings.TrimSpace(record.VectorID)), sqlStringLiteral(vectorJSON), record.SourceKind, record.ScopeLevel, record.Category,
 		sqlStringLiteral(strings.TrimSpace(record.Abstract)), sqlStringLiteral(strings.TrimSpace(record.Details)),
-		record.Status, record.Priority, record.MemoryLevel, record.RefreshWeight, sqlStringLiteral(strings.TrimSpace(record.StatusReason)),
+		record.Status, record.Priority, record.MemoryLevel, record.RefreshWeight, record.SupportCount, record.RebuttalCount, sqlStringLiteral(strings.TrimSpace(record.StatusReason)),
 		expiresMs, lastRecalledMs, lastAdoptedMs, lastReinforcedMs, record.RecalledCount, record.AdoptedCount, record.ReinforcementCount, record.CrossSessionAdoptedCount,
 		boolToSQLiteInt(record.DecayDisabled), sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
 }
@@ -3443,6 +3465,39 @@ func buildMemoryNodesFTSDeleteSQL(memoryIDs []uint64) string {
 DELETE FROM vmm_memory_nodes_fts
 WHERE rowid IN (%s);
 `, sqlUint64List(memoryIDs))
+}
+
+// buildMemoryContextEdgesReplaceSQL rewrites one memory row's contextual evidence edges in one deterministic script so later contextual retrieval can trust relational support/rebuttal stats.
+// buildMemoryContextEdgesReplaceSQL 用于以确定性脚本重写某条记忆的情境证据边，让后续情境检索能够信赖关系层的支持/反驳统计。
+func buildMemoryContextEdgesReplaceSQL(memoryID uint64, edges []logicdomain.MemoryContextEdge) string {
+	if memoryID == 0 {
+		return ""
+	}
+	script := fmt.Sprintf(`
+DELETE FROM vmm_memory_context_edges
+WHERE memory_id = %d;
+`, memoryID)
+	for _, edge := range edges {
+		if edge.MemoryID == 0 || strings.TrimSpace(edge.ContextKey) == "" || strings.TrimSpace(edge.ContextValue) == "" {
+			continue
+		}
+		lastSupportedMs := int64(0)
+		if !edge.LastSupportedAt.IsZero() {
+			lastSupportedMs = edge.LastSupportedAt.UTC().UnixMilli()
+		}
+		lastRebuttedMs := int64(0)
+		if !edge.LastRebuttedAt.IsZero() {
+			lastRebuttedMs = edge.LastRebuttedAt.UTC().UnixMilli()
+		}
+		script += fmt.Sprintf(`
+INSERT INTO vmm_memory_context_edges (
+  memory_id, context_key, context_value, support_count, rebuttal_count,
+  last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
+) VALUES (%d, %s, %s, %d, %d, %d, %d, %d, %d);
+`, edge.MemoryID, sqlStringLiteral(strings.TrimSpace(edge.ContextKey)), sqlStringLiteral(strings.TrimSpace(edge.ContextValue)),
+			edge.SupportCount, edge.RebuttalCount, lastSupportedMs, lastRebuttedMs, edge.CreatedAt.UTC().UnixMilli(), edge.UpdatedAt.UTC().UnixMilli())
+	}
+	return script
 }
 
 // buildMemoryAdoptionUpdateSQL renders one raw UPDATE for a memory row that has just been adopted by pre-check.
@@ -3682,6 +3737,69 @@ WHERE memory_status = %d AND id IN (%s);
 `, logicdomain.MemoryStatusSuperseded, updatedMs, logicdomain.MemoryStatusActive, sqlUint64List(memoryIDs))
 }
 
+// normalizeTurnMemoryContextEdges aggregates one extracted candidate's situational evidence into durable per-context counters so later retrieval can reason over explicit support/rebuttal traces.
+// normalizeTurnMemoryContextEdges 用于把一条提炼候选上的情境证据聚合成长期的逐情境计数，让后续检索能够基于显式支持/反驳轨迹推理。
+func normalizeTurnMemoryContextEdges(memoryID uint64, candidates []logicdomain.MemoryContextEdgeCandidate, now time.Time) []logicdomain.MemoryContextEdge {
+	if memoryID == 0 || len(candidates) == 0 {
+		return nil
+	}
+	aggregated := make(map[string]logicdomain.MemoryContextEdge, len(candidates))
+	for _, candidate := range candidates {
+		contextKey := strings.TrimSpace(candidate.ContextKey)
+		contextValue := strings.TrimSpace(candidate.ContextValue)
+		relation := strings.TrimSpace(candidate.Relation)
+		if contextKey == "" || contextValue == "" || !logicdomain.ValidMemoryContextRelation(relation) {
+			continue
+		}
+		key := contextKey + "|" + contextValue
+		edge := aggregated[key]
+		if edge.MemoryID == 0 {
+			edge = logicdomain.MemoryContextEdge{
+				MemoryID:     memoryID,
+				ContextKey:   contextKey,
+				ContextValue: contextValue,
+				CreatedAt:    now.UTC(),
+				UpdatedAt:    now.UTC(),
+			}
+		}
+		switch relation {
+		case logicdomain.MemoryContextRelationRebuttal:
+			edge.RebuttalCount++
+			edge.LastRebuttedAt = now.UTC()
+		default:
+			edge.SupportCount++
+			edge.LastSupportedAt = now.UTC()
+		}
+		edge.UpdatedAt = now.UTC()
+		aggregated[key] = edge
+	}
+	if len(aggregated) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(aggregated))
+	for key := range aggregated {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	edges := make([]logicdomain.MemoryContextEdge, 0, len(keys))
+	for _, key := range keys {
+		edges = append(edges, aggregated[key])
+	}
+	return edges
+}
+
+// summarizeMemoryContextEdges folds one edge slice into memory-level support/rebuttal totals so the main memory row can expose quick ranking signals without joining the edge table.
+// summarizeMemoryContextEdges 用于把情境边切片折叠成记忆级 support/rebuttal 总数，让主记忆行无需 join 边表也能暴露快速排序信号。
+func summarizeMemoryContextEdges(edges []logicdomain.MemoryContextEdge) (int, int) {
+	supportCount := 0
+	rebuttalCount := 0
+	for _, edge := range edges {
+		supportCount += edge.SupportCount
+		rebuttalCount += edge.RebuttalCount
+	}
+	return supportCount, rebuttalCount
+}
+
 // normalizeTurnMemoryNodeRecord fills unified-memory defaults for one turn-extracted node before it is persisted.
 // normalizeTurnMemoryNodeRecord 用于在持久化前，为一条 turn 提炼记忆补齐统一记忆表默认值。
 func normalizeTurnMemoryNodeRecord(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, node logicdomain.MemoryNodeCandidate, id uint64, now time.Time) logicdomain.MemoryNodeRecord {
@@ -3754,6 +3872,8 @@ func normalizeDirectMemoryNodeRecord(session logicdomain.SessionRef, record logi
 	record.DedupeHash = strings.TrimSpace(record.DedupeHash)
 	record.CreatedAt = chooseNonZeroTime(record.CreatedAt, now)
 	record.UpdatedAt = chooseNonZeroTime(record.UpdatedAt, now)
+	record.SupportCount = 0
+	record.RebuttalCount = 0
 	if !logicdomain.ValidMemorySourceKind(record.SourceKind) {
 		record.SourceKind = logicdomain.MemorySourceKindGRPCAIWrite
 	}
@@ -4209,6 +4329,8 @@ type memoryNodeRow struct {
 	Priority                 int     `json:"priority"`
 	MemoryLevel              int     `json:"memory_level"`
 	RefreshWeight            int     `json:"refresh_weight"`
+	SupportCount             int     `json:"support_count"`
+	RebuttalCount            int     `json:"rebuttal_count"`
 	StatusReason             string  `json:"status_reason"`
 	ExpiresTimestamp         int64   `json:"expires_timestamp"`
 	LastRecalledTimestamp    int64   `json:"last_recalled_timestamp"`
@@ -4231,6 +4353,20 @@ type memoryLexicalRow struct {
 	Rank     float64 `json:"rank"`
 }
 
+// memoryContextEdgeRow stores one durable contextual edge row so future filtering or debugging paths can decode the persisted support/rebuttal evidence graph.
+// memoryContextEdgeRow 用于保存一条长期情境边行，便于未来过滤或调试链路解码已持久化的支持/反驳证据图。
+type memoryContextEdgeRow struct {
+	MemoryID               uint64 `json:"memory_id"`
+	ContextKey             string `json:"context_key"`
+	ContextValue           string `json:"context_value"`
+	SupportCount           int    `json:"support_count"`
+	RebuttalCount          int    `json:"rebuttal_count"`
+	LastSupportedTimestamp int64  `json:"last_supported_timestamp"`
+	LastRebuttedTimestamp  int64  `json:"last_rebutted_timestamp"`
+	CreatedTimestamp       int64  `json:"created_timestamp"`
+	UpdatedTimestamp       int64  `json:"updated_timestamp"`
+}
+
 func (r memoryNodeRow) toDomain() logicdomain.SessionMemoryNodeRecord {
 	return logicdomain.SessionMemoryNodeRecord{
 		ID:              r.ID,
@@ -4249,6 +4385,8 @@ func (r memoryNodeRow) toDomain() logicdomain.SessionMemoryNodeRecord {
 		Priority:        r.Priority,
 		MemoryLevel:     r.MemoryLevel,
 		RefreshWeight:   r.RefreshWeight,
+		SupportCount:    r.SupportCount,
+		RebuttalCount:   r.RebuttalCount,
 		NodeStatus:      r.MemoryStatus,
 		CreatedAt:       unixMilliToTime(r.CreatedTimestamp),
 		UpdatedAt:       unixMilliToTime(r.UpdatedTimestamp),
@@ -4277,6 +4415,8 @@ func (r memoryNodeRow) toMemoryNodeRecord() logicdomain.MemoryNodeRecord {
 		Priority:                 r.Priority,
 		MemoryLevel:              r.MemoryLevel,
 		RefreshWeight:            r.RefreshWeight,
+		SupportCount:             r.SupportCount,
+		RebuttalCount:            r.RebuttalCount,
 		StatusReason:             r.StatusReason,
 		ExpiresAt:                unixMilliToTime(r.ExpiresTimestamp),
 		LastRecalledAt:           unixMilliToTime(r.LastRecalledTimestamp),

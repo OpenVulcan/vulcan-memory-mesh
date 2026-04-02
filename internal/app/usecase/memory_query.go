@@ -104,6 +104,8 @@ type MemoryQueryHit struct {
 	LastRecalledAt           time.Time
 	LastAdoptedAt            time.Time
 	LastReinforcedAt         time.Time
+	SupportCount             int
+	RebuttalCount            int
 	ReinforcementCount       int
 	CrossSessionAdoptedCount int
 	DecayDisabled            bool
@@ -419,6 +421,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
 		mapped = u.rerankSearchHits(ctx, buildMemorySearchText(item), mapped)
 		mapped = u.applyWeibullDecaySearchHits(mapped)
+		mapped = applyContextEvidenceOrdering(mapped)
 		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
@@ -873,6 +876,8 @@ func (u *MemoryUseCase) materializeLexicalHits(ctx context.Context, hits []logic
 			LastRecalledAt:           row.LastRecalledAt,
 			LastAdoptedAt:            row.LastAdoptedAt,
 			LastReinforcedAt:         row.LastReinforcedAt,
+			SupportCount:             row.SupportCount,
+			RebuttalCount:            row.RebuttalCount,
 			ReinforcementCount:       row.ReinforcementCount,
 			CrossSessionAdoptedCount: row.CrossSessionAdoptedCount,
 			DecayDisabled:            row.DecayDisabled,
@@ -1103,6 +1108,33 @@ func latestMemoryReinforcementTime(hit MemoryQueryHit) time.Time {
 		}
 	}
 	return latest
+}
+
+// applyContextEvidenceOrdering keeps a deterministic post-score ordering hook where later context-aware ranking can favor better-supported memories without changing transport contracts.
+// applyContextEvidenceOrdering 用于保留一个确定性的后置排序入口，让后续情境感知排序在不改传输契约的前提下偏向证据更充分的记忆。
+func applyContextEvidenceOrdering(hits []MemoryQueryHit) []MemoryQueryHit {
+	if len(hits) <= 1 {
+		return hits
+	}
+	ordered := append([]MemoryQueryHit(nil), hits...)
+	sort.SliceStable(ordered, func(i, j int) bool {
+		if ordered[i].Score != ordered[j].Score {
+			return ordered[i].Score > ordered[j].Score
+		}
+		leftEvidence := ordered[i].SupportCount - ordered[i].RebuttalCount
+		rightEvidence := ordered[j].SupportCount - ordered[j].RebuttalCount
+		if leftEvidence != rightEvidence {
+			return leftEvidence > rightEvidence
+		}
+		if ordered[i].SupportCount != ordered[j].SupportCount {
+			return ordered[i].SupportCount > ordered[j].SupportCount
+		}
+		if ordered[i].RebuttalCount != ordered[j].RebuttalCount {
+			return ordered[i].RebuttalCount < ordered[j].RebuttalCount
+		}
+		return false
+	})
+	return ordered
 }
 
 // memoryLevelDecayScale stretches the Weibull scale for higher-level memories so stable or core knowledge decays more slowly than short-term facts.
@@ -1491,6 +1523,8 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 			LastRecalledAt:           row.LastRecalledAt,
 			LastAdoptedAt:            row.LastAdoptedAt,
 			LastReinforcedAt:         row.LastReinforcedAt,
+			SupportCount:             row.SupportCount,
+			RebuttalCount:            row.RebuttalCount,
 			ReinforcementCount:       row.ReinforcementCount,
 			CrossSessionAdoptedCount: row.CrossSessionAdoptedCount,
 			DecayDisabled:            row.DecayDisabled,
