@@ -5,34 +5,34 @@ package domain
 // PreCheckTurnContext stores one recent turn fragment exposed to the first-stage pre-check LLM, using refined details when available and dehydrated raw text otherwise.
 // PreCheckTurnContext 用于保存暴露给 pre-check 第一层 LLM 的最近 turn 片段；若已提炼则使用 details，否则使用脱水原文。
 type PreCheckTurnContext struct {
-	TurnID      uint64
-	ContentType string
-	Content     string
+	TurnID      uint64 `json:"turn_id"`
+	ContentType string `json:"content_type"`
+	Content     string `json:"content"`
 }
 
 // PreCheckMemoryCandidate stores one numbered candidate memory fragment together with retrieval-side evidence so the second-stage reviewer can judge not only what the memory says but also why it matched the current request.
 // PreCheckMemoryCandidate 用于保存一条带编号的候选记忆片段及其检索侧证据，让 pre-check 第二层评审器不仅能看见记忆内容，也能知道它为何命中当前请求。
 type PreCheckMemoryCandidate struct {
-	CandidateNumber             int
-	MemoryID                    uint64
-	SourceTurnID                uint64
-	SourceKind                  string
-	ScopeLevel                  string
-	Category                    int
-	Abstract                    string
-	Details                     string
-	Score                       float64
-	ScoreLabel                  string
-	ScoreExplanation            string
-	Origin                      string
-	OriginLabel                 string
-	OriginExplanation           string
-	SupportCount                int
-	RebuttalCount               int
-	MatchedContextValues        []string
-	MatchedContextSupportCount  int
-	MatchedContextRebuttalCount int
-	MatchedContextScoreDelta    float64
+	CandidateNumber             int      `json:"candidate_number"`
+	MemoryID                    uint64   `json:"memory_id"`
+	SourceTurnID                uint64   `json:"source_turn_id,omitempty"`
+	SourceKind                  string   `json:"source_kind,omitempty"`
+	ScopeLevel                  string   `json:"scope_level,omitempty"`
+	Category                    int      `json:"category"`
+	Abstract                    string   `json:"abstract,omitempty"`
+	Details                     string   `json:"details,omitempty"`
+	Score                       float64  `json:"score"`
+	ScoreLabel                  string   `json:"score_label,omitempty"`
+	ScoreExplanation            string   `json:"score_explanation,omitempty"`
+	Origin                      string   `json:"origin,omitempty"`
+	OriginLabel                 string   `json:"origin_label,omitempty"`
+	OriginExplanation           string   `json:"origin_explanation,omitempty"`
+	SupportCount                int      `json:"support_count,omitempty"`
+	RebuttalCount               int      `json:"rebuttal_count,omitempty"`
+	MatchedContextValues        []string `json:"matched_context_values,omitempty"`
+	MatchedContextSupportCount  int      `json:"matched_context_support_count,omitempty"`
+	MatchedContextRebuttalCount int      `json:"matched_context_rebuttal_count,omitempty"`
+	MatchedContextScoreDelta    float64  `json:"matched_context_score_delta,omitempty"`
 }
 
 // PreCheckMemoryReviewInput carries the current user request, stage-one search reasoning, and numbered candidates into the second-stage reviewer.

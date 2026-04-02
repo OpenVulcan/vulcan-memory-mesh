@@ -4,6 +4,7 @@ package processor
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -73,6 +74,9 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 	}
 	if err := json.Unmarshal([]byte(rendered), &payload); err != nil {
 		t.Fatalf("unmarshal rendered review request: %v", err)
+	}
+	if strings.Contains(rendered, "\"CandidateNumber\"") || !strings.Contains(rendered, "\"candidate_number\"") {
+		t.Fatalf("expected snake_case candidate keys in rendered payload, got %s", rendered)
 	}
 	if len(payload.Candidates) != 1 {
 		t.Fatalf("unexpected candidates: %#v", payload.Candidates)
