@@ -52,21 +52,11 @@ func mergePreCheckCandidate(existing, incoming logicdomain.PreCheckMemoryCandida
 	// Preserve the broadest reviewer-facing context view by unioning matched values while avoiding count inflation across repeated groups.
 	// 通过合并命中的 context 值来保留最广的 reviewer 视图，同时避免跨重复 group 直接累加计数导致夸大。
 	merged.MatchedContextValues = appendSortedUniquePreCheckValues(existing.MatchedContextValues, incoming.MatchedContextValues...)
-	if incoming.MatchedContextSupportCount > merged.MatchedContextSupportCount {
-		merged.MatchedContextSupportCount = incoming.MatchedContextSupportCount
-	}
-	if incoming.MatchedContextRebuttalCount > merged.MatchedContextRebuttalCount {
-		merged.MatchedContextRebuttalCount = incoming.MatchedContextRebuttalCount
-	}
-	if absFloat64(incoming.MatchedContextScoreDelta) > absFloat64(merged.MatchedContextScoreDelta) {
-		merged.MatchedContextScoreDelta = incoming.MatchedContextScoreDelta
-	}
-	if incoming.SupportCount > merged.SupportCount {
-		merged.SupportCount = incoming.SupportCount
-	}
-	if incoming.RebuttalCount > merged.RebuttalCount {
-		merged.RebuttalCount = incoming.RebuttalCount
-	}
+	merged.MatchedContextSupportCount = maxPreCheckCount(existing.MatchedContextSupportCount, incoming.MatchedContextSupportCount)
+	merged.MatchedContextRebuttalCount = maxPreCheckCount(existing.MatchedContextRebuttalCount, incoming.MatchedContextRebuttalCount)
+	merged.MatchedContextScoreDelta = chooseStrongerSignedDelta(existing.MatchedContextScoreDelta, incoming.MatchedContextScoreDelta)
+	merged.SupportCount = maxPreCheckCount(existing.SupportCount, incoming.SupportCount)
+	merged.RebuttalCount = maxPreCheckCount(existing.RebuttalCount, incoming.RebuttalCount)
 	return merged
 }
 
@@ -169,4 +159,22 @@ func absFloat64(value float64) float64 {
 		return -value
 	}
 	return value
+}
+
+// chooseStrongerSignedDelta keeps the signed delta whose absolute value is larger so merged candidates retain the strongest contextual boost or penalty seen across repeated hits.
+// chooseStrongerSignedDelta 用于保留绝对值更大的带符号 delta，让合并后的候选继续体现重复命中里最强的情境增益或惩罚。
+func chooseStrongerSignedDelta(left, right float64) float64 {
+	if absFloat64(right) > absFloat64(left) {
+		return right
+	}
+	return left
+}
+
+// maxPreCheckCount keeps candidate merge code readable when taking the stronger reviewer-facing count across repeated hits.
+// maxPreCheckCount 用于在重复命中里选择更强 reviewer 计数时保持合并代码可读。
+func maxPreCheckCount(left, right int) int {
+	if right > left {
+		return right
+	}
+	return left
 }

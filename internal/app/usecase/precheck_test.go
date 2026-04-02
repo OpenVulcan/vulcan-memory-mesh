@@ -638,6 +638,106 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary verifies that when a higher-score hit becomes the representative candidate, stronger matched-context stats from the other repeated hit are still preserved.
+// TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary 用于验证当更高分命中成为代表候选时，另一条重复命中里更强的 matched-context 统计仍会被保留下来。
+func TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary(t *testing.T) {
+	reviewer := &stubPreCheckReviewer{}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckProfiles{},
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Query:      "local oss 当前方案",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:                   logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 30},
+								SourceRef:                   logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 18},
+								SourceKind:                  logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:                  logicdomain.MemoryScopeLevelProject,
+								Abstract:                    "phase4 新方案",
+								DetailsPreview:              "这条命中分更高。",
+								Category:                    logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:                       0.94,
+								Origin:                      "vector_search",
+								MatchedContextValues:        []string{"deployment_mode=local oss"},
+								MatchedContextSupportCount:  1,
+								MatchedContextRebuttalCount: 0,
+								MatchedContextScoreDelta:    0.02,
+							},
+						},
+					},
+					{
+						QueryIndex: 1,
+						Query:      "phase4 当前方案",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:                   logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 30},
+								SourceRef:                   logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 18},
+								SourceKind:                  logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:                  logicdomain.MemoryScopeLevelProject,
+								Abstract:                    "phase4 新方案",
+								DetailsPreview:              "这条命中的 context evidence 更强。",
+								Category:                    logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:                       0.91,
+								Origin:                      "hybrid_rrf",
+								MatchedContextValues:        []string{"task_stage=phase4"},
+								MatchedContextSupportCount:  3,
+								MatchedContextRebuttalCount: 1,
+								MatchedContextScoreDelta:    0.07,
+							},
+						},
+					},
+				},
+			},
+		},
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 17, SessionID: 41, Details: "上一轮确认当前环境是 local oss phase4。", DetailsBudget: 15, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"local oss 当前方案", "phase4 当前方案"},
+				NeedMemory: true,
+				Reason:     "needs repeated architecture memory evidence",
+			},
+		},
+		reviewer,
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	if _, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-secondary-evidence"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "在 local oss 的 phase4 下应该继续用哪个方案？",
+	}); err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if len(reviewer.input.Candidates) != 1 {
+		t.Fatalf("expected one merged candidate, got %#v", reviewer.input.Candidates)
+	}
+	candidate := reviewer.input.Candidates[0]
+	if candidate.Score != 0.94 {
+		t.Fatalf("expected higher representative score to remain, got %#v", candidate)
+	}
+	if candidate.MatchedContextSupportCount != 3 || candidate.MatchedContextRebuttalCount != 1 {
+		t.Fatalf("expected stronger secondary matched counts to survive merge, got %#v", candidate)
+	}
+	if candidate.MatchedContextScoreDelta != 0.07 {
+		t.Fatalf("expected stronger secondary matched delta to survive merge, got %#v", candidate)
+	}
+}
+
 // stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
 // stubPreCheckProfiles 用于作为 pre-check 测试里的画像组合加载桩。
 type stubPreCheckProfiles struct {
