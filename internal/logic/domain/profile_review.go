@@ -1,5 +1,5 @@
-// profile_review.go declares the atomic profile-node review models shared by post-action workers, reviewer prompts, and DuckDB persistence.
-// profile_review.go 用于声明 post-action 工作器、画像评审提示词和 DuckDB 持久化共享的原子化画像节点评审模型。
+// profile_review.go declares the atomic profile-node review models shared by post-action workers, reviewer prompts, and SQLite-backed persistence.
+// profile_review.go 用于声明 post-action 工作器、画像评审提示词和 SQLite 持久化共享的原子化画像节点评审模型。
 package domain
 
 import "time"

@@ -422,6 +422,97 @@ func TestMemoryUseCaseSearchDegradesWhenRerankFails(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchAppliesWeibullDecay verifies read-time Weibull decay can demote stale weakly reinforced memories beneath fresher reinforced memories.
+// TestMemoryUseCaseSearchAppliesWeibullDecay 用于验证读时 Weibull 衰减会把陈旧且强化较弱的记忆降到更新且强化更强的记忆之后。
+func TestMemoryUseCaseSearchAppliesWeibullDecay(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	now := time.Now().UTC()
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{
+				ID:                 201,
+				OriginSessionID:    12,
+				SourceTurnID:       41,
+				SourceKind:         logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel:         logicdomain.MemoryScopeLevelProject,
+				Priority:           logicdomain.MemoryPriorityP2,
+				MemoryLevel:        logicdomain.MemoryLevelPhase,
+				Category:           3,
+				Abstract:           "旧实现方案",
+				Details:            "这是很早以前确认过的一条弱强化记忆",
+				VectorID:           "vec-1",
+				CreatedAt:          now.Add(-180 * 24 * time.Hour),
+				LastReinforcedAt:   now.Add(-120 * 24 * time.Hour),
+				ReinforcementCount: 0,
+			},
+			{
+				ID:                       202,
+				OriginSessionID:          12,
+				SourceTurnID:             42,
+				SourceKind:               logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel:               logicdomain.MemoryScopeLevelProject,
+				Priority:                 logicdomain.MemoryPriorityP1,
+				MemoryLevel:              logicdomain.MemoryLevelStable,
+				Category:                 3,
+				Abstract:                 "新实现方案",
+				Details:                  "这是最近多次被跨会话采纳的一条稳定记忆",
+				VectorID:                 "vec-2",
+				CreatedAt:                now.Add(-20 * 24 * time.Hour),
+				LastReinforcedAt:         now.Add(-2 * 24 * time.Hour),
+				ReinforcementCount:       4,
+				CrossSessionAdoptedCount: 3,
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "旧实现方案", Score: 0.96},
+			{ID: "vec-2", Text: "新实现方案", Score: 0.91},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureDecay(true, 1.35, 2160, 0.4, 0.18, 0.12)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"query":"当前实现方案"}]`,
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with weibull decay: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected weibull results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[1].MemoryRef.ID != 201 {
+		t.Fatalf("expected reinforced memory to rank first after decay, got %+v", result.Results[0].Hits)
+	}
+	if result.Results[0].Hits[0].Score <= result.Results[0].Hits[1].Score {
+		t.Fatalf("expected first decayed score to stay above second: %+v", result.Results[0].Hits)
+	}
+}
+
 // TestMemoryUseCaseGetTurnsPreservesRequestedOrder verifies turn lookups keep the caller-supplied order while deduplicating repeated ids.
 // TestMemoryUseCaseGetTurnsPreservesRequestedOrder 用于验证 turn 查询会在去重后保持调用方给定的顺序。
 func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {

@@ -1,7 +1,7 @@
 // store_test.go verifies the sqlite-first transport helpers so the adapter keeps using typed params,
-// ExecuteBatch, and retryable gateway semantics instead of silently regressing to the duckdb-compatible path.
+// ExecuteBatch, and retryable gateway semantics instead of silently regressing to an older compatibility path.
 // store_test.go 用于验证 sqlite-first 传输助手，确保适配器持续使用强类型参数、ExecuteBatch 和可重试网关语义，
-// 而不是悄悄回退到 duckdb 兼容路径。
+// 而不是悄悄回退到旧的兼容实现路径。
 package vldb_sqlite
 
 import (
@@ -272,6 +272,45 @@ func TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows(t *testing.T) {
 	}
 	if !strings.Contains(captured.GetSql(), "vector_id IN ('vec-1','vec-2')") {
 		t.Fatalf("expected vector id list in vector lookup sql, got %q", captured.GetSql())
+	}
+}
+
+// TestEvolveAdoptedMemoryRecordStrengthensLifecycle verifies memory adoption now records reinforcement evidence and promotes hot cross-session facts.
+// TestEvolveAdoptedMemoryRecordStrengthensLifecycle 用于验证记忆采纳现在会记录强化证据，并把跨会话高频命中的事实提升生命周期等级。
+func TestEvolveAdoptedMemoryRecordStrengthensLifecycle(t *testing.T) {
+	adoptedAt := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	row := logicdomain.MemoryNodeRecord{
+		ID:                       201,
+		OriginSessionID:          11,
+		ScopeLevel:               logicdomain.MemoryScopeLevelSession,
+		Priority:                 logicdomain.MemoryPriorityP0,
+		MemoryLevel:              logicdomain.MemoryLevelSession,
+		RefreshWeight:            1,
+		ExpiresAt:                adoptedAt.Add(24 * time.Hour),
+		AdoptedCount:             1,
+		ReinforcementCount:       1,
+		CrossSessionAdoptedCount: 3,
+	}
+
+	updated := evolveAdoptedMemoryRecord(logicdomain.SessionRef{SessionID: 22}, row, adoptedAt)
+
+	if !updated.LastReinforcedAt.Equal(adoptedAt) {
+		t.Fatalf("last reinforced timestamp = %v", updated.LastReinforcedAt)
+	}
+	if updated.ReinforcementCount != 2 {
+		t.Fatalf("reinforcement count = %d", updated.ReinforcementCount)
+	}
+	if updated.ScopeLevel != logicdomain.MemoryScopeLevelProject {
+		t.Fatalf("scope level = %d", updated.ScopeLevel)
+	}
+	if updated.MemoryLevel != logicdomain.MemoryLevelPersistent {
+		t.Fatalf("memory level = %d", updated.MemoryLevel)
+	}
+	if updated.CrossSessionAdoptedCount != 4 {
+		t.Fatalf("cross-session adopted count = %d", updated.CrossSessionAdoptedCount)
+	}
+	if !updated.ExpiresAt.After(row.ExpiresAt) {
+		t.Fatalf("expected expiry to extend, before=%v after=%v", row.ExpiresAt, updated.ExpiresAt)
 	}
 }
 

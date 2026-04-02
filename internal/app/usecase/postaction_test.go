@@ -228,7 +228,7 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 				CreatedAt:         time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
 			},
 		},
-		analysisErr: errors.New("duckdb write failed"),
+		analysisErr: errors.New("sqlite write failed"),
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
 		TurnID:  91,
@@ -425,7 +425,7 @@ func TestPostActionUseCaseConvergesExpiredProfiles(t *testing.T) {
 // TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock 用于验证当存储层开始报告“连接污染式”的死锁症状后，周期性维护会先进入退避，而不是继续立刻重试。
 func TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock(t *testing.T) {
 	store := &testRelationalStore{
-		expiredProfileErr: errors.New("duckdb prepare failed: Invalid Error: resource deadlock would occur: resource deadlock would occur"),
+		expiredProfileErr: errors.New("sqlite prepare failed: Invalid Error: resource deadlock would occur: resource deadlock would occur"),
 	}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})

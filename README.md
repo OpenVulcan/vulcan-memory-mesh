@@ -9,7 +9,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
 - 默认用 SQLite 保存层级、session、turn 记录、turn 提炼结果与长期 SQL 数据
-- 保留 DuckDB 兼容关系库存储接口，便于调试和迁移期对照
 - 用 LanceDB 保存向量数据
 - 由 Caddy 等外部反向代理负责 TLS
 
@@ -20,7 +19,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
-- [DuckDB Schema 版本管理说明（中文）](./docs/duckdb-schema-versioning_CN.md)
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 - [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
@@ -61,14 +59,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - 适配层优先使用 typed params、`ExecuteBatch` 和 sqlite 网关声明的可重试 trailer 语义
 - LanceDB：向量写入、检索和删除
 
-当前也保留一条兼容关系库存储路径：
-
-- DuckDB：兼容 provider，可在配置中显式切换，用于迁移期对照和兼容转换
-
 运行时已经移除：
 
 - HTTP 服务
 - 应用内 TLS
+- 旧兼容关系库存 provider
 - 内存关系库存根 / 内存向量库存根回退
 
 ## 核心约束
@@ -142,7 +137,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
     - 如果本轮只有 user 或只有 project 画像候选，则只把对应一侧送进 LLM，不会把缺失侧作为空块一起传入
     - 自动提炼与画像评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
 14. 对新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
-15. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite，兼容 DuckDB）：
+15. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite）：
     - `vmm_turn_records.details / details_budget / extracted_status`
     - 统一后的 `vmm_memory_nodes`
     - `vmm_profile_nodes`
@@ -151,7 +146,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
   - LanceDB 行里的 `session_id` 会保存真实来源 session
   - `metadata_json` 只保留 `category / details / source_kind / scope_level / priority / memory_level` 这类补充信息
-  - 如果 DuckDB / SQLite 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
+  - 如果 SQLite 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
   - `vmm_teams.profile / vmm_spaces.profile` 不参与 post-action 自动合并，但现在支持通过显式手工画像指令重建
 
 ### 画像接口
@@ -331,7 +326,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 需要调试时，可以继续通过 `make` 调主程序，但把清理目标通过 `--debug-clean` 传给二进制：
 
 ```powershell
-.\make.bat run --debug-clean duckdb
+.\make.bat run --debug-clean sqlite
 .\make.bat run --debug-clean lancedb
 .\make.bat run --debug-clean all
 ```
@@ -339,7 +334,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 说明：
 
 - `make` 只负责透传参数，不在脚本里直接做数据库清理
-- `vmm-local --debug-clean ...` 会只连接对应的 SQLite / DuckDB / LanceDB gRPC 网关
+- `vmm-local --debug-clean ...` 会只连接对应的 SQLite / LanceDB gRPC 网关
 - 清理完成后立即退出，不会启动 VMM gRPC 服务
 
 ## 配置说明
@@ -353,7 +348,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `grpc.request_timeout.post_action`
 - `relational.provider`
 - `sqlite.address`
-- `duckdb.address`
 - `lancedb.address`
 - `lancedb.table_name`
 - `lancedb.vector_column`
@@ -385,6 +379,18 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - 是否在融合或 rerank 之后启用 MMR 多样性控制；开启后会优先保留更分散的候选，减少近重复记忆挤占名额
 - `mmr_lambda`
   - MMR 的相关性与多样性权重，越接近 `1` 越偏向原始相关性排序，越接近 `0` 越偏向去重分散
+- `weibull_enabled`
+  - 是否启用读时 Weibull 衰减；开启后会在融合或 rerank 之后，对陈旧且强化较弱的记忆做自然降权
+- `weibull_shape`
+  - Weibull 形状参数；值越大，衰减在后段越陡
+- `weibull_scale_hours`
+  - Weibull 基础时间尺度（小时）；值越大，整体衰减越慢
+- `weibull_min_multiplier`
+  - 读时衰减的最低保底乘子，避免未过期记忆在排序上被直接打到接近零
+- `weibull_reinforce_weight`
+  - 强化次数对衰减尺度的放大权重；越大表示“访问强化”效果越明显
+- `weibull_cross_session_boost`
+  - 跨 session 采纳次数对衰减尺度的额外放大权重，用于保护真正跨任务复用的记忆
 
 `rerank` 下当前新增的是“向量召回后的第二阶段重排序”参数：
 
@@ -422,7 +428,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结构化结果
 - 如果本轮有 `profile_nodes`，会统一走一次 `review_profile_nodes`，按 user/project 两侧分别评审新旧画像节点
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
-- DuckDB / SQLite 成功回写后，会更新：
+- SQLite 成功回写后，会更新：
   - `vmm_turn_records.details / details_budget / extracted_status`
   - `vmm_memory_nodes`
   - `vmm_profile_nodes`
@@ -440,7 +446,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 如果调用方需要 `P/L/W` 说明，应通过 `GetProfileBundle` 的 `full` 模式在输出层按需附加；省略 `include_explanation` 时默认开启
 - 如果 LLM 判定旧记忆 turn 已被覆盖，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`，并删除 LanceDB 旧向量
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
-- 如果 DuckDB 回写失败，会尝试回滚这次新增的 LanceDB 向量
+- 如果 SQLite 回写失败，会尝试回滚这次新增的 LanceDB 向量
 - 后台 worker 还会按 `session_analysis_idle_timeout` 周期性补扫陈旧 pending session，帮助崩溃或临时失败后的恢复
 
 另外，当前还有一批“已经声明但尚未接入主运行时”的配置参数，见：

@@ -444,8 +444,8 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		return nil, fmt.Errorf("embedding result count mismatch: got %d want %d", len(vectors), len(analysis.MemoryNodes))
 	}
 
-	// Upsert LanceDB rows first so DuckDB only flips extracted_status after the corresponding vectors already exist.
-	// 先 upsert LanceDB 行，确保 DuckDB 只有在对应向量已存在时才会把 extracted_status 置为完成。
+	// Upsert LanceDB rows first so SQLite only flips extracted_status after the corresponding vectors already exist.
+	// 先 upsert LanceDB 行，确保 SQLite 只有在对应向量已存在时才会把 extracted_status 置为完成。
 	insertedIDs := make([]string, 0, len(analysis.MemoryNodes))
 	for idx := range analysis.MemoryNodes {
 		vectorID, err := generatePostActionUUID()
@@ -657,8 +657,8 @@ func buildPostActionMemoryFilter(session logicdomain.SessionRef) logicdomain.Sea
 	}
 }
 
-// choosePostActionCreatedAt prefers the persisted turn timestamp so vector rows and DuckDB memory nodes share the same approximate origin time.
-// choosePostActionCreatedAt 用于优先复用已落库 turn 的时间戳，让向量行和 DuckDB 记忆节点共享接近的产生时间。
+// choosePostActionCreatedAt prefers the persisted turn timestamp so vector rows and SQLite memory nodes share the same approximate origin time.
+// choosePostActionCreatedAt 用于优先复用已落库 turn 的时间戳，让向量行和 SQLite 记忆节点共享接近的产生时间。
 func choosePostActionCreatedAt(turn logicdomain.PersistedTurnRecord) time.Time {
 	if !turn.CreatedAt.IsZero() {
 		return turn.CreatedAt
@@ -666,8 +666,8 @@ func choosePostActionCreatedAt(turn logicdomain.PersistedTurnRecord) time.Time {
 	return time.Now().UTC()
 }
 
-// generatePostActionUUID creates one random UUID string for the LanceDB row id and DuckDB memory-node vector_id link.
-// generatePostActionUUID 用于生成随机 UUID 字符串，同时作为 LanceDB 行 id 和 DuckDB 记忆节点的 vector_id 关联键。
+// generatePostActionUUID creates one random UUID string for the LanceDB row id and SQLite memory-node vector_id link.
+// generatePostActionUUID 用于生成随机 UUID 字符串，同时作为 LanceDB 行 id 和 SQLite 记忆节点的 vector_id 关联键。
 func generatePostActionUUID() (string, error) {
 	buf := make([]byte, 16)
 	if _, err := rand.Read(buf); err != nil {

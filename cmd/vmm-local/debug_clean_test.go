@@ -4,8 +4,8 @@ package main
 
 import "testing"
 
-// TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets verifies one flag value can address one backend or both backends.
-// TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets 用于验证单个参数既可以指向一个后端，也可以同时指向两个后端。
+// TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets verifies one flag value can address one backend or the remaining supported combination.
+// TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets 用于验证单个参数既可以指向一个后端，也可以指向当前剩余支持的组合。
 func TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets(t *testing.T) {
 	cases := []struct {
 		name     string
@@ -16,11 +16,6 @@ func TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets(t *testing.T) {
 			name:     "sqlite only",
 			raw:      "sqlite",
 			expected: debugCleanSelection{SQLite: true},
-		},
-		{
-			name:     "duckdb only",
-			raw:      "duckdb",
-			expected: debugCleanSelection{DuckDB: true},
 		},
 		{
 			name:     "lancedb only",
@@ -39,8 +34,8 @@ func TestParseDebugCleanSelectionAcceptsSingleAndCombinedTargets(t *testing.T) {
 		},
 		{
 			name:     "plus separated with spaces",
-			raw:      " sqlite + duckdb ",
-			expected: debugCleanSelection{SQLite: true, DuckDB: true},
+			raw:      " sqlite + lancedb ",
+			expected: debugCleanSelection{SQLite: true, LanceDB: true},
 		},
 	}
 
@@ -64,6 +59,7 @@ func TestParseDebugCleanSelectionRejectsUnsupportedTargets(t *testing.T) {
 	cases := []string{
 		"",
 		"   ",
+		"duckdb",
 		"duckdb,postgres",
 	}
 

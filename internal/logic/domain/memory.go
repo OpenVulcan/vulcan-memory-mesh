@@ -134,9 +134,12 @@ type MemoryNodeRecord struct {
 	ExpiresAt                time.Time
 	LastRecalledAt           time.Time
 	LastAdoptedAt            time.Time
+	LastReinforcedAt         time.Time
 	RecalledCount            int
 	AdoptedCount             int
+	ReinforcementCount       int
 	CrossSessionAdoptedCount int
+	DecayDisabled            bool
 	DedupeHash               string
 	CreatedAt                time.Time
 	UpdatedAt                time.Time

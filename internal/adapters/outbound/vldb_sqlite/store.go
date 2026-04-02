@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 11
+	currentSchemaVersion = 12
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -195,9 +195,12 @@ CREATE TABLE IF NOT EXISTS vmm_memory_nodes (
   expires_timestamp BIGINT NOT NULL DEFAULT 0,
   last_recalled_timestamp BIGINT NOT NULL DEFAULT 0,
   last_adopted_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_reinforced_timestamp BIGINT NOT NULL DEFAULT 0,
   recalled_count INTEGER NOT NULL DEFAULT 0,
   adopted_count INTEGER NOT NULL DEFAULT 0,
+  reinforcement_count INTEGER NOT NULL DEFAULT 0,
   cross_session_adopted_count INTEGER NOT NULL DEFAULT 0,
+  decay_disabled INTEGER NOT NULL DEFAULT 0,
   dedupe_hash TEXT NOT NULL DEFAULT '',
   created_timestamp BIGINT NOT NULL,
   updated_timestamp BIGINT NOT NULL
@@ -1961,8 +1964,8 @@ func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
        memory_status, priority, memory_level, refresh_weight, status_reason,
-       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
-       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE id IN (%s)
@@ -1990,8 +1993,8 @@ func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []stri
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
        memory_status, priority, memory_level, refresh_weight, status_reason,
-       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
-       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE vector_id IN (%s)
@@ -2078,8 +2081,8 @@ func (s *Store) FindRecentActiveMemoryByDedupe(ctx context.Context, session logi
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
        memory_status, priority, memory_level, refresh_weight, status_reason,
-       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
-       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE origin_session_id = ?
@@ -2143,8 +2146,8 @@ func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicd
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
        memory_status, priority, memory_level, refresh_weight, status_reason,
-       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
-       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE origin_session_id = ?
@@ -2176,8 +2179,8 @@ func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicd
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
        memory_status, priority, memory_level, refresh_weight, status_reason,
-       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
-       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE origin_session_id = ?
@@ -2525,8 +2528,8 @@ func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]lo
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
        memory_status, priority, memory_level, refresh_weight, status_reason,
-       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
-       recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE project_id = ? AND memory_status = ?
@@ -3399,22 +3402,26 @@ func buildMemoryNodeInsertSQL(record logicdomain.MemoryNodeRecord) string {
 	if !record.LastAdoptedAt.IsZero() {
 		lastAdoptedMs = record.LastAdoptedAt.UTC().UnixMilli()
 	}
+	lastReinforcedMs := int64(0)
+	if !record.LastReinforcedAt.IsZero() {
+		lastReinforcedMs = record.LastReinforcedAt.UTC().UnixMilli()
+	}
 	vectorJSON := encodeFloat32Slice(record.Vector)
 	return fmt.Sprintf(`
 INSERT INTO vmm_memory_nodes (
   id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
   vector_id, vector_json, source_kind, scope_level, category, abstract, details,
   memory_status, priority, memory_level, refresh_weight, status_reason,
-  expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
-  recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
+  expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+  recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
   created_timestamp, updated_timestamp
-) VALUES (%d, %d, %d, %d, %d, %d, %s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %s, %d, %d, %d, %d, %d, %d, %s, %d, %d);
+) VALUES (%d, %d, %d, %d, %d, %d, %s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %s, %d, %d);
 `, record.ID, record.TeamID, record.SpaceID, record.ProjectID, record.UserID, record.OriginSessionID, sqlNullableUint64(nullableUint64(record.SourceTurnID)),
 		sqlStringLiteral(strings.TrimSpace(record.VectorID)), sqlStringLiteral(vectorJSON), record.SourceKind, record.ScopeLevel, record.Category,
 		sqlStringLiteral(strings.TrimSpace(record.Abstract)), sqlStringLiteral(strings.TrimSpace(record.Details)),
 		record.Status, record.Priority, record.MemoryLevel, record.RefreshWeight, sqlStringLiteral(strings.TrimSpace(record.StatusReason)),
-		expiresMs, lastRecalledMs, lastAdoptedMs, record.RecalledCount, record.AdoptedCount, record.CrossSessionAdoptedCount,
-		sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
+		expiresMs, lastRecalledMs, lastAdoptedMs, lastReinforcedMs, record.RecalledCount, record.AdoptedCount, record.ReinforcementCount, record.CrossSessionAdoptedCount,
+		boolToSQLiteInt(record.DecayDisabled), sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
 }
 
 // buildMemoryNodeFTSUpsertSQL mirrors one durable memory row into the SQLite FTS table so hybrid lexical recall can search abstract and details together.
@@ -3453,6 +3460,10 @@ func buildMemoryAdoptionUpdateSQL(record logicdomain.MemoryNodeRecord) string {
 	if !record.LastAdoptedAt.IsZero() {
 		lastAdoptedMs = record.LastAdoptedAt.UTC().UnixMilli()
 	}
+	lastReinforcedMs := int64(0)
+	if !record.LastReinforcedAt.IsZero() {
+		lastReinforcedMs = record.LastReinforcedAt.UTC().UnixMilli()
+	}
 	return fmt.Sprintf(`
 UPDATE vmm_memory_nodes
 SET scope_level = %d,
@@ -3462,13 +3473,16 @@ SET scope_level = %d,
     expires_timestamp = %d,
     last_recalled_timestamp = %d,
     last_adopted_timestamp = %d,
+    last_reinforced_timestamp = %d,
     recalled_count = %d,
     adopted_count = %d,
+    reinforcement_count = %d,
     cross_session_adopted_count = %d,
+    decay_disabled = %d,
     updated_timestamp = %d
 WHERE id = %d;
-`, record.ScopeLevel, record.Status, record.MemoryLevel, record.RefreshWeight, expiresMs, lastRecalledMs, lastAdoptedMs,
-		record.RecalledCount, record.AdoptedCount, record.CrossSessionAdoptedCount, record.UpdatedAt.UTC().UnixMilli(), record.ID)
+`, record.ScopeLevel, record.Status, record.MemoryLevel, record.RefreshWeight, expiresMs, lastRecalledMs, lastAdoptedMs, lastReinforcedMs,
+		record.RecalledCount, record.AdoptedCount, record.ReinforcementCount, record.CrossSessionAdoptedCount, boolToSQLiteInt(record.DecayDisabled), record.UpdatedAt.UTC().UnixMilli(), record.ID)
 }
 
 // buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node together with its lifecycle metadata and final status.
@@ -3500,6 +3514,15 @@ func sqlNullableUint64(value *uint64) string {
 		return "NULL"
 	}
 	return strconv.FormatUint(*value, 10)
+}
+
+// boolToSQLiteInt renders SQLite-friendly boolean literals because the managed schema persists bool-like fields as integer columns.
+// boolToSQLiteInt 用于渲染 SQLite 友好的布尔字面量，因为当前受管 schema 会把布尔型字段持久化为整型列。
+func boolToSQLiteInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 // optionalUint64Value converts one optional numeric column into the internal zero sentinel used by current in-memory helpers.
@@ -3709,6 +3732,8 @@ func normalizeTurnMemoryNodeRecord(session logicdomain.SessionRef, turn logicdom
 	} else {
 		record.ExpiresAt = record.ExpiresAt.UTC()
 	}
+	record.LastReinforcedAt = time.Time{}
+	record.ReinforcementCount = 0
 	return record
 }
 
@@ -3756,6 +3781,10 @@ func normalizeDirectMemoryNodeRecord(session logicdomain.SessionRef, record logi
 	} else {
 		record.ExpiresAt = record.ExpiresAt.UTC()
 	}
+	record.LastReinforcedAt = chooseNonZeroTime(record.LastReinforcedAt, time.Time{})
+	if record.ReinforcementCount < 0 {
+		record.ReinforcementCount = 0
+	}
 	return record
 }
 
@@ -3778,12 +3807,17 @@ func evolveAdoptedMemoryRecord(session logicdomain.SessionRef, row logicdomain.M
 	updated := row
 	updated.LastRecalledAt = adoptedAt.UTC()
 	updated.LastAdoptedAt = adoptedAt.UTC()
+	updated.LastReinforcedAt = adoptedAt.UTC()
 	updated.RecalledCount++
 	updated.AdoptedCount++
+	updated.ReinforcementCount++
 	if updated.RefreshWeight <= 0 {
 		updated.RefreshWeight = 1
 	}
 	updated.RefreshWeight++
+	if updated.AdoptedCount >= 2 && updated.MemoryLevel < logicdomain.MemoryLevelPhase {
+		updated.MemoryLevel = logicdomain.MemoryLevelPhase
+	}
 	if row.OriginSessionID > 0 && row.OriginSessionID != session.SessionID {
 		updated.CrossSessionAdoptedCount++
 	}
@@ -3792,6 +3826,9 @@ func evolveAdoptedMemoryRecord(session logicdomain.SessionRef, row logicdomain.M
 		if updated.MemoryLevel < logicdomain.MemoryLevelStable {
 			updated.MemoryLevel = logicdomain.MemoryLevelStable
 		}
+	}
+	if updated.CrossSessionAdoptedCount >= 4 && updated.Priority == logicdomain.MemoryPriorityP0 && updated.MemoryLevel < logicdomain.MemoryLevelPersistent {
+		updated.MemoryLevel = logicdomain.MemoryLevelPersistent
 	}
 	updated.ExpiresAt = chooseLongerMemoryExpiry(updated.ExpiresAt, defaultUnifiedMemoryExpiry(updated.ScopeLevel, adoptedAt))
 	updated.UpdatedAt = adoptedAt.UTC()
@@ -4176,9 +4213,12 @@ type memoryNodeRow struct {
 	ExpiresTimestamp         int64   `json:"expires_timestamp"`
 	LastRecalledTimestamp    int64   `json:"last_recalled_timestamp"`
 	LastAdoptedTimestamp     int64   `json:"last_adopted_timestamp"`
+	LastReinforcedTimestamp  int64   `json:"last_reinforced_timestamp"`
 	RecalledCount            int     `json:"recalled_count"`
 	AdoptedCount             int     `json:"adopted_count"`
+	ReinforcementCount       int     `json:"reinforcement_count"`
 	CrossSessionAdoptedCount int     `json:"cross_session_adopted_count"`
+	DecayDisabledValue       int     `json:"decay_disabled"`
 	DedupeHash               string  `json:"dedupe_hash"`
 	CreatedTimestamp         int64   `json:"created_timestamp"`
 	UpdatedTimestamp         int64   `json:"updated_timestamp"`
@@ -4241,9 +4281,12 @@ func (r memoryNodeRow) toMemoryNodeRecord() logicdomain.MemoryNodeRecord {
 		ExpiresAt:                unixMilliToTime(r.ExpiresTimestamp),
 		LastRecalledAt:           unixMilliToTime(r.LastRecalledTimestamp),
 		LastAdoptedAt:            unixMilliToTime(r.LastAdoptedTimestamp),
+		LastReinforcedAt:         unixMilliToTime(r.LastReinforcedTimestamp),
 		RecalledCount:            r.RecalledCount,
 		AdoptedCount:             r.AdoptedCount,
+		ReinforcementCount:       r.ReinforcementCount,
 		CrossSessionAdoptedCount: r.CrossSessionAdoptedCount,
+		DecayDisabled:            r.DecayDisabledValue > 0,
 		DedupeHash:               r.DedupeHash,
 		CreatedAt:                unixMilliToTime(r.CreatedTimestamp),
 		UpdatedAt:                unixMilliToTime(r.UpdatedTimestamp),

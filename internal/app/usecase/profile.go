@@ -64,8 +64,8 @@ type ProfileExecutor interface {
 	ApplyInstruction(ctx context.Context, cmd ProfileInstructionCommand) (ProfileInstructionResult, error)
 }
 
-// ProfileUseCase orchestrates profile-node queries plus explicit manual profile instructions on top of the DuckDB profile store and LLM reviewer.
-// ProfileUseCase 用于在 DuckDB 画像存储和 LLM 评审器之上编排画像节点查询与显式手工画像指令流程。
+// ProfileUseCase orchestrates profile-node queries plus explicit manual profile instructions on top of the SQLite-backed profile store and LLM reviewer.
+// ProfileUseCase 用于在 SQLite 画像存储和 LLM 评审器之上编排画像节点查询与显式手工画像指令流程。
 type ProfileUseCase struct {
 	store    appports.ProfileStore
 	reviewer ManualProfileInstructionReviewer
@@ -153,9 +153,9 @@ func (u *ProfileUseCase) ApplyInstruction(ctx context.Context, cmd ProfileInstru
 		defer gate.mu.Unlock()
 
 		// Serialize per-target manual instructions and reuse identical in-flight calls so overlapping plugin retries
-		// do not launch duplicate LLM reviews or race on the same DuckDB profile rows.
+		// do not launch duplicate LLM reviews or race on the same SQLite profile rows.
 		// 按目标串行化手工画像指令，并复用相同的并发调用结果，避免插件重试时重复触发 LLM 评审，
-		// 或在同一批 DuckDB 画像行上发生竞争。
+		// 或在同一批 SQLite 画像行上发生竞争。
 		result, err := u.applyInstructionLocked(ctx, target, instruction)
 		u.finishProfileInstructionFlight(flightKey, flight, result, err)
 		return result, err
@@ -372,8 +372,8 @@ func (u *ProfileUseCase) failProfileInstruction(ctx context.Context, instruction
 	}
 }
 
-// validateProfileQueryCommand checks the requested target selector before the query hits DuckDB.
-// validateProfileQueryCommand 用于在查询命中 DuckDB 前校验请求目标选择参数。
+// validateProfileQueryCommand checks the requested target selector before the query hits SQLite-backed persistence.
+// validateProfileQueryCommand 用于在查询命中 SQLite 持久化之前校验请求目标选择参数。
 func validateProfileQueryCommand(cmd ProfileQueryCommand) error {
 	if !logicdomain.ValidProfileType(cmd.ProfileType) {
 		return logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}

@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
 	"github.com/openvulcan/vmm/internal/config"
@@ -18,7 +17,6 @@ import (
 type debugCleanSelection struct {
 	All     bool
 	SQLite  bool
-	DuckDB  bool
 	LanceDB bool
 }
 
@@ -30,7 +28,7 @@ func parseDebugCleanSelection(raw string) (debugCleanSelection, error) {
 		return r == ',' || r == '+' || r == ';'
 	})
 	if len(parts) == 0 {
-		return selection, fmt.Errorf("debug-clean target is required: use sqlite, duckdb, lancedb, or all")
+		return selection, fmt.Errorf("debug-clean target is required: use sqlite, lancedb, or all")
 	}
 	for _, part := range parts {
 		switch strings.TrimSpace(part) {
@@ -39,18 +37,16 @@ func parseDebugCleanSelection(raw string) (debugCleanSelection, error) {
 			selection.LanceDB = true
 		case "sqlite":
 			selection.SQLite = true
-		case "duckdb":
-			selection.DuckDB = true
 		case "lancedb":
 			selection.LanceDB = true
 		case "":
 			continue
 		default:
-			return debugCleanSelection{}, fmt.Errorf("unsupported debug-clean target %q: use sqlite, duckdb, lancedb, or all", part)
+			return debugCleanSelection{}, fmt.Errorf("unsupported debug-clean target %q: use sqlite, lancedb, or all", part)
 		}
 	}
-	if !selection.SQLite && !selection.DuckDB && !selection.LanceDB {
-		return debugCleanSelection{}, fmt.Errorf("debug-clean target is required: use sqlite, duckdb, lancedb, or all")
+	if !selection.SQLite && !selection.LanceDB {
+		return debugCleanSelection{}, fmt.Errorf("debug-clean target is required: use sqlite, lancedb, or all")
 	}
 	return selection, nil
 }
@@ -66,24 +62,13 @@ func runDebugClean(ctx context.Context, cfg config.Config, target string) error 
 	// Execute the requested cleanup targets sequentially so failures report the exact backend that blocked the wipe.
 	// 按顺序执行被请求的清理目标，确保失败时能明确指出是哪个后端阻塞了清空操作。
 	if selection.All {
-		switch strings.ToLower(strings.TrimSpace(cfg.Relational.Provider)) {
-		case "duckdb":
-			selection.DuckDB = true
-		default:
-			selection.SQLite = true
-		}
+		selection.SQLite = true
 	}
 	if selection.SQLite {
 		if err := vldb_sqlite.DebugCleanManagedSchema(ctx, cfg.SQLite.Address, cfg.SQLite.Timeout.Duration); err != nil {
 			return err
 		}
 		fmt.Printf("[vmm-debug-clean] SQLite managed schema cleaned via %s\n", strings.TrimSpace(cfg.SQLite.Address))
-	}
-	if selection.DuckDB {
-		if err := vldb_duckdb.DebugCleanManagedSchema(ctx, cfg.DuckDB.Address, cfg.DuckDB.Timeout.Duration); err != nil {
-			return err
-		}
-		fmt.Printf("[vmm-debug-clean] DuckDB managed schema cleaned via %s\n", strings.TrimSpace(cfg.DuckDB.Address))
 	}
 	if selection.LanceDB {
 		tableName, err := vldb_lancedb.DebugDropConfiguredTable(ctx, cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.Embedding.Dimension)

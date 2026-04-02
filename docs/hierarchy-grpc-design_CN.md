@@ -5,7 +5,7 @@
 这份文档记录当前主线版本采用的：
 
 - Team / Space / Project / User 层级模型
-- DuckDB 基础表结构
+- SQLite 基础表结构
 - gRPC 对外契约
 - `PreCheck` / `PostAction` 的核心实现逻辑
 
@@ -58,7 +58,7 @@ flowchart TD
 - `TurnRecord` 属于某个 `Session`
 - `MemoryEntry` 属于某个 `Project` 和 `User`
 
-## 三、DuckDB 表结构
+## 三、SQLite 表结构
 
 当前基线 SQL 文件：
 
@@ -78,7 +78,7 @@ CREATE TABLE IF NOT EXISTS vmm_version (
 
 用途：
 
-- 记录当前 DuckDB schema 版本
+- 记录当前 SQLite schema 版本
 - 启动时判断是否需要重置调试阶段的受管表
 
 ### 2. 用户与层级表
@@ -384,7 +384,7 @@ message PostActionTimelineItem {
 
 实现逻辑：
 
-1. 从 DuckDB 联表查询 `team / space / project`
+1. 从 SQLite 联表查询 `team / space / project`
 2. 按 `TeamName / SpaceName / ProjectName` 排序
 3. 返回 `ProjectEntry`
 4. `display_path` 组装成：
@@ -427,7 +427,7 @@ message PostActionTimelineItem {
       - `turn_records`
       - `memory_entries`
       - `memory_nodes`
-   - 再删 DuckDB 中的：
+   - 再删 SQLite 中的：
       - 项目自身与项目 turn 派生的 `vmm_profile_nodes`
       - `vmm_memory_nodes`
       - `vmm_turn_records`
@@ -453,7 +453,7 @@ message PostActionTimelineItem {
 1. 解析源项目和目标项目
 2. `confirm_migrate=false` 时只返回确认提示
 3. `confirm_migrate=true` 时：
-   - 先更新 DuckDB 中 session 的 `team_id / space_id / project_id`
+   - 先更新 SQLite 中 session 的 `team_id / space_id / project_id`
    - 再更新 `vmm_turn_records.project_id`
    - 再删除 LanceDB 源项目向量
    - 再根据目标项目已有长期记忆重建向量
@@ -489,7 +489,7 @@ message PostActionTimelineItem {
    - 写入 `vmm_users.delete_confirm_code`
    - 返回 `requires_confirmation=true`
 2. 第二次带正确确认码后：
-   - 删 DuckDB 中该用户的：
+   - 删 SQLite 中该用户的：
       - 用户自身 `vmm_profile_nodes`
       - `vmm_turn_records`
       - `vmm_sessions`

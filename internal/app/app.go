@@ -16,7 +16,6 @@ import (
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -106,6 +105,14 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
 	memory.ConfigureHybrid(cfg.MemoryPipeline.HybridEnabled, cfg.MemoryPipeline.LexicalTopK, cfg.MemoryPipeline.RRFK)
 	memory.ConfigureMMR(cfg.MemoryPipeline.MMREnabled, cfg.MemoryPipeline.MMRLambda)
+	memory.ConfigureDecay(
+		cfg.MemoryPipeline.WeibullEnabled,
+		cfg.MemoryPipeline.WeibullShape,
+		cfg.MemoryPipeline.WeibullScaleHours,
+		cfg.MemoryPipeline.WeibullMinMultiplier,
+		cfg.MemoryPipeline.WeibullReinforceWeight,
+		cfg.MemoryPipeline.WeibullCrossSessionBoost,
+	)
 	memory.ConfigureRerank(reranker, cfg.Rerank.TopN)
 	pre := usecase.NewPreCheckUseCase(
 		profiles,
@@ -292,8 +299,6 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	switch strings.ToLower(cfg.Relational.Provider) {
 	case "sqlite":
 		return vldb_sqlite.NewStore(cfg.SQLite.Address, cfg.SQLite.Timeout.Duration)
-	case "duckdb":
-		return vldb_duckdb.NewStore(cfg.DuckDB.Address, cfg.DuckDB.Timeout.Duration)
 	default:
 		return nil, fmt.Errorf("unsupported relational provider: %s", cfg.Relational.Provider)
 	}

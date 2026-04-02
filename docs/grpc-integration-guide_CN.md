@@ -10,7 +10,7 @@
 - 业务接口应该传什么
 - 管理接口应该传什么
 - trace、大小限制、超时和 TLS 应该怎么处理
-- 默认关系库存储已经切到 SQLite，DuckDB 保留为兼容 provider
+- 默认关系库存储已经切到 SQLite，旧兼容 provider 已移除
 
 ## 一、当前服务模型
 
@@ -502,7 +502,7 @@
 - 清洗 `user_content` / `timeline[].content` / `assistant_content`
 - 稳定写入一条 turn 后立即返回 `accepted=true`
 - 后台异步工作器再继续执行单轮提炼
-- 异步提炼写入关系库存储（默认 SQLite，兼容 DuckDB）前，会先完成统一记忆向量写入和必要的回滚保护
+- 异步提炼写入关系库存储（默认 SQLite）前，会先完成统一记忆向量写入和必要的回滚保护
 
 同样也有一个前提：
 

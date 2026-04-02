@@ -1,5 +1,5 @@
-// profile_instruction.go declares the profile-query and manual-instruction models shared by gRPC handlers, use cases, processors, and DuckDB persistence.
-// profile_instruction.go 用于声明 gRPC、用例层、处理器和 DuckDB 持久化共享的画像查询与手工画像指令模型。
+// profile_instruction.go declares the profile-query and manual-instruction models shared by gRPC handlers, use cases, processors, and SQLite-backed persistence.
+// profile_instruction.go 用于声明 gRPC、用例层、处理器和 SQLite 持久化共享的画像查询与手工画像指令模型。
 package domain
 
 import "time"

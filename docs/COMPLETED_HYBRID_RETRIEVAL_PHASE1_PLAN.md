@@ -12,11 +12,11 @@
 
 ## 2. 执行步骤
 
-1. 检查当前 `MemoryStore` / `vldb_sqlite` / `vldb_duckdb` / `memory_query.go` 的真实检索链与过滤缺口。
+1. 检查当前 `MemoryStore` / `vldb_sqlite` / `memory_query.go` 的真实检索链与过滤缺口。
 2. 扩展应用层端口与领域模型，为 lexical hit、RRF 融合和来源标识提供最小必要结构。
 3. 修改 SQLite schema，新增 `vmm_memory_nodes_fts` 并补齐写入/状态变更时的 FTS 同步。
 4. 在 SQLite 适配器中实现 lexical search，并修复 `LoadMemoryNodesByVectorIDs` / `LoadActiveSessionMemoryNodes` / `LoadRecentDirectMemoryWrites` 的过期过滤。
-5. 在 DuckDB 适配器中补最小兼容桩，保证当前运行时组合和测试继续稳定。
+5. 在旧兼容 provider 已移除前，曾短暂补最小兼容桩以保证运行时组合和测试稳定；当前主线已不再保留该路径。
 6. 改造 `MemoryUseCase.Search(...)`，实现：
    - vector recall
    - lexical recall
@@ -44,6 +44,6 @@
 - SQLite 可执行 lexical recall，并能和向量结果做 RRF 融合。
 - `PreCheck` 不改 RPC 契约即可自动使用混合检索结果。
 - 相关测试通过，且至少执行：
-  - `go test ./internal/adapters/outbound/vldb_sqlite ./internal/adapters/outbound/vldb_duckdb ./internal/app/usecase ./internal/config`
+  - `go test ./internal/adapters/outbound/vldb_sqlite ./internal/app/usecase ./internal/config`
   - `go test ./...`
   - `.\make.ps1 build`

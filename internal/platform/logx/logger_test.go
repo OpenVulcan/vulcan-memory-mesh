@@ -80,13 +80,13 @@ func TestTextLoggerRendersErrorsAsMessages(t *testing.T) {
 
 	// Emit one realistic error value so the formatter proves it keeps the original error message visible for operator troubleshooting.
 	// 输出一条真实 error 值，验证格式器会保留原始错误文本，便于运维定位问题。
-	logger.Error("maintenance failed", "err", errors.New("duckdb prepare failed: resource deadlock would occur"))
+	logger.Error("maintenance failed", "err", errors.New("sqlite prepare failed: resource deadlock would occur"))
 
 	output := logBuf.String()
 	if strings.Contains(output, "err：{}") {
 		t.Fatalf("expected error message instead of empty JSON object, got %s", output)
 	}
-	if !strings.Contains(output, "TEXT(err)：\nduckdb prepare failed: resource deadlock would occur\n") {
+	if !strings.Contains(output, "TEXT(err)：\nsqlite prepare failed: resource deadlock would occur\n") {
 		t.Fatalf("expected error string output, got %s", output)
 	}
 }

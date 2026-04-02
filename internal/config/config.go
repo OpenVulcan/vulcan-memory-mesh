@@ -56,7 +56,6 @@ type Config struct {
 	Logging        LoggingConfig        `json:"logging"`
 	PII            PIIConfig            `json:"pii"`
 	Noise          NoiseConfig          `json:"noise"`
-	DuckDB         DuckDBConfig         `json:"duckdb"`
 	SQLite         SQLiteConfig         `json:"sqlite"`
 	LanceDB        LanceDBConfig        `json:"lancedb"`
 	LLM            LLMConfig            `json:"llm"`
@@ -106,13 +105,6 @@ type NoiseConfig struct {
 	DefaultLanguage   string  `json:"default_language"`
 	SemanticEnabled   bool    `json:"semantic_enabled"`
 	SemanticThreshold float64 `json:"semantic_threshold"`
-}
-
-// DuckDBConfig holds the gRPC endpoint used by the local DuckDB gateway for durable SQL-backed data.
-// DuckDBConfig 用于保存本地 DuckDB 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
-type DuckDBConfig struct {
-	Address string   `json:"address"`
-	Timeout Duration `json:"timeout"`
 }
 
 // SQLiteConfig holds the gRPC endpoint used by the local SQLite gateway for durable SQL-backed data.
@@ -203,16 +195,22 @@ type PreCheckConfig struct {
 	SimilarityThreshold float64  `json:"similarity_threshold,omitempty"`
 }
 
-// MemoryPipelineConfig controls keyword fan-out, hybrid retrieval, and diversity filtering in the memory recall pipeline.
-// MemoryPipelineConfig 用于控制记忆召回流水线中的关键词扇出、混合检索和多样性过滤。
+// MemoryPipelineConfig controls keyword fan-out, hybrid retrieval, read-time decay, and diversity filtering in the memory recall pipeline.
+// MemoryPipelineConfig 用于控制记忆召回流水线中的关键词扇出、混合检索、读时衰减和多样性过滤。
 type MemoryPipelineConfig struct {
-	MaxSearchKeywords  int      `json:"max_search_keywords"`
-	MinSimilarityScore *float64 `json:"min_similarity_score,omitempty"`
-	HybridEnabled      bool     `json:"hybrid_enabled"`
-	LexicalTopK        int      `json:"lexical_top_k,omitempty"`
-	RRFK               int      `json:"rrf_k,omitempty"`
-	MMREnabled         bool     `json:"mmr_enabled"`
-	MMRLambda          float64  `json:"mmr_lambda,omitempty"`
+	MaxSearchKeywords        int      `json:"max_search_keywords"`
+	MinSimilarityScore       *float64 `json:"min_similarity_score,omitempty"`
+	HybridEnabled            bool     `json:"hybrid_enabled"`
+	LexicalTopK              int      `json:"lexical_top_k,omitempty"`
+	RRFK                     int      `json:"rrf_k,omitempty"`
+	MMREnabled               bool     `json:"mmr_enabled"`
+	MMRLambda                float64  `json:"mmr_lambda,omitempty"`
+	WeibullEnabled           bool     `json:"weibull_enabled"`
+	WeibullShape             float64  `json:"weibull_shape,omitempty"`
+	WeibullScaleHours        float64  `json:"weibull_scale_hours,omitempty"`
+	WeibullMinMultiplier     float64  `json:"weibull_min_multiplier,omitempty"`
+	WeibullReinforceWeight   float64  `json:"weibull_reinforce_weight,omitempty"`
+	WeibullCrossSessionBoost float64  `json:"weibull_cross_session_boost,omitempty"`
 }
 
 // DefaultLocal executes the DefaultLocal logic.
@@ -228,7 +226,6 @@ func DefaultLocal() Config {
 		Logging:    LoggingConfig{Level: "info", Format: "text"},
 		PII:        PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:      NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
-		DuckDB:     DuckDBConfig{Address: "127.0.0.1:19401", Timeout: Duration{5 * time.Second}},
 		SQLite:     SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
 		LanceDB:    LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
 		LLM:        LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
@@ -246,13 +243,19 @@ func DefaultLocal() Config {
 		},
 		PreCheck: PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
 		MemoryPipeline: MemoryPipelineConfig{
-			MaxSearchKeywords:  5,
-			MinSimilarityScore: float64Ptr(0.75),
-			HybridEnabled:      true,
-			LexicalTopK:        8,
-			RRFK:               60,
-			MMREnabled:         true,
-			MMRLambda:          0.75,
+			MaxSearchKeywords:        5,
+			MinSimilarityScore:       float64Ptr(0.75),
+			HybridEnabled:            true,
+			LexicalTopK:              8,
+			RRFK:                     60,
+			MMREnabled:               true,
+			MMRLambda:                0.75,
+			WeibullEnabled:           true,
+			WeibullShape:             1.35,
+			WeibullScaleHours:        2160,
+			WeibullMinMultiplier:     0.4,
+			WeibullReinforceWeight:   0.18,
+			WeibullCrossSessionBoost: 0.12,
 		},
 	}
 }
@@ -446,6 +449,21 @@ func (c *Config) Normalize() {
 	if c.MemoryPipeline.MMRLambda <= 0 || c.MemoryPipeline.MMRLambda > 1 {
 		c.MemoryPipeline.MMRLambda = 0.75
 	}
+	if c.MemoryPipeline.WeibullShape <= 0 {
+		c.MemoryPipeline.WeibullShape = 1.35
+	}
+	if c.MemoryPipeline.WeibullScaleHours <= 0 {
+		c.MemoryPipeline.WeibullScaleHours = 2160
+	}
+	if c.MemoryPipeline.WeibullMinMultiplier < 0 || c.MemoryPipeline.WeibullMinMultiplier > 1 {
+		c.MemoryPipeline.WeibullMinMultiplier = 0.4
+	}
+	if c.MemoryPipeline.WeibullReinforceWeight < 0 {
+		c.MemoryPipeline.WeibullReinforceWeight = 0.18
+	}
+	if c.MemoryPipeline.WeibullCrossSessionBoost < 0 {
+		c.MemoryPipeline.WeibullCrossSessionBoost = 0.12
+	}
 	if c.MemoryPipeline.MinSimilarityScore == nil {
 		if c.PreCheck.SimilarityThreshold > 0 {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(c.PreCheck.SimilarityThreshold)
@@ -486,12 +504,6 @@ func (c *Config) Normalize() {
 	if c.Noise.SemanticThreshold <= 0 {
 		c.Noise.SemanticThreshold = 0.88
 	}
-	if strings.TrimSpace(c.DuckDB.Address) == "" {
-		c.DuckDB.Address = "127.0.0.1:19401"
-	}
-	if c.DuckDB.Timeout.Duration <= 0 {
-		c.DuckDB.Timeout = Duration{5 * time.Second}
-	}
 	if strings.TrimSpace(c.SQLite.Address) == "" {
 		c.SQLite.Address = "127.0.0.1:19501"
 	}
@@ -518,9 +530,8 @@ func (c *Config) Normalize() {
 		c.PostAction.InputMode = "compat"
 	}
 
-	// Default durable local data paths to the gateway-backed SQLite implementation while
-	// keeping DuckDB available as one compatibility provider.
-	// 为本地持久化数据路径默认归一到基于网关的 SQLite 实现，同时保留 DuckDB 兼容 provider。
+	// Default durable local data paths to the gateway-backed SQLite implementation only.
+	// 为本地持久化数据路径只保留基于网关的 SQLite 实现。
 	if strings.TrimSpace(c.Relational.Provider) == "" {
 		c.Relational.Provider = "sqlite"
 	}
@@ -575,6 +586,21 @@ func (c Config) Validate() error {
 	if c.MemoryPipeline.MMRLambda <= 0 || c.MemoryPipeline.MMRLambda > 1 {
 		return errors.New("memory_pipeline.mmr_lambda must be in (0,1]")
 	}
+	if c.MemoryPipeline.WeibullShape <= 0 {
+		return errors.New("memory_pipeline.weibull_shape must be > 0")
+	}
+	if c.MemoryPipeline.WeibullScaleHours <= 0 {
+		return errors.New("memory_pipeline.weibull_scale_hours must be > 0")
+	}
+	if c.MemoryPipeline.WeibullMinMultiplier < 0 || c.MemoryPipeline.WeibullMinMultiplier > 1 {
+		return errors.New("memory_pipeline.weibull_min_multiplier must be in [0,1]")
+	}
+	if c.MemoryPipeline.WeibullReinforceWeight < 0 {
+		return errors.New("memory_pipeline.weibull_reinforce_weight must be >= 0")
+	}
+	if c.MemoryPipeline.WeibullCrossSessionBoost < 0 {
+		return errors.New("memory_pipeline.weibull_cross_session_boost must be >= 0")
+	}
 	if c.MemoryPipeline.MinSimilarityScore == nil {
 		return errors.New("memory_pipeline.min_similarity_score must be set")
 	}
@@ -603,12 +629,8 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.SQLite.Address) == "" {
 			return errors.New("sqlite.address is required")
 		}
-	case "duckdb":
-		if strings.TrimSpace(c.DuckDB.Address) == "" {
-			return errors.New("duckdb.address is required")
-		}
 	default:
-		return errors.New("relational.provider must be sqlite or duckdb")
+		return errors.New("relational.provider must be sqlite")
 	}
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
@@ -735,8 +757,6 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
 	setBool("VMM_NOISE_SEMANTIC_ENABLED", &cfg.Noise.SemanticEnabled)
 	setFloat("VMM_NOISE_SEMANTIC_THRESHOLD", &cfg.Noise.SemanticThreshold)
-	setString("VMM_DUCKDB_ADDRESS", &cfg.DuckDB.Address)
-	setDuration("VMM_DUCKDB_TIMEOUT", &cfg.DuckDB.Timeout)
 	setString("VMM_SQLITE_ADDRESS", &cfg.SQLite.Address)
 	setDuration("VMM_SQLITE_TIMEOUT", &cfg.SQLite.Timeout)
 	setString("VMM_LANCEDB_ADDRESS", &cfg.LanceDB.Address)
@@ -781,6 +801,12 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_MEMORY_RRF_K", &cfg.MemoryPipeline.RRFK)
 	setBool("VMM_MEMORY_MMR_ENABLED", &cfg.MemoryPipeline.MMREnabled)
 	setFloat("VMM_MEMORY_MMR_LAMBDA", &cfg.MemoryPipeline.MMRLambda)
+	setBool("VMM_MEMORY_WEIBULL_ENABLED", &cfg.MemoryPipeline.WeibullEnabled)
+	setFloat("VMM_MEMORY_WEIBULL_SHAPE", &cfg.MemoryPipeline.WeibullShape)
+	setFloat("VMM_MEMORY_WEIBULL_SCALE_HOURS", &cfg.MemoryPipeline.WeibullScaleHours)
+	setFloat("VMM_MEMORY_WEIBULL_MIN_MULTIPLIER", &cfg.MemoryPipeline.WeibullMinMultiplier)
+	setFloat("VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT", &cfg.MemoryPipeline.WeibullReinforceWeight)
+	setFloat("VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST", &cfg.MemoryPipeline.WeibullCrossSessionBoost)
 }
 
 // isOpenAIProvider reports whether one provider alias resolves to the supported OpenAI-compatible adapter.

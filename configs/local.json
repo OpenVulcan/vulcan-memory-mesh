@@ -22,10 +22,6 @@
     "semantic_enabled": true,
     "semantic_threshold": 0.88
   },
-  "duckdb": {
-    "address": "${VMM_DUCKDB_ADDRESS}",
-    "timeout": "5s"
-  },
   "sqlite": {
     "address": "${VMM_SQLITE_ADDRESS}",
     "timeout": "5s"
@@ -71,7 +67,7 @@
     "provider": "${VMM_VECTOR_PROVIDER}"
   },
   "relational": {
-    "provider": "${VMM_RELATIONAL_PROVIDER}"
+    "provider": "sqlite"
   },
   "post_action": {
     "input_mode": "compat",
@@ -92,6 +88,12 @@
     "lexical_top_k": 8,
     "rrf_k": 60,
     "mmr_enabled": true,
-    "mmr_lambda": 0.75
+    "mmr_lambda": 0.75,
+    "weibull_enabled": true,
+    "weibull_shape": 1.35,
+    "weibull_scale_hours": 2160,
+    "weibull_min_multiplier": 0.4,
+    "weibull_reinforce_weight": 0.18,
+    "weibull_cross_session_boost": 0.12
   }
 }

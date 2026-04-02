@@ -60,7 +60,7 @@
 5. 清洗后日志记录
 6. 后台 `PostActionUseCase`
 7. **NoiseGate**
-8. DuckDB 写入
+8. SQLite 写入
 
 也就是说：
 
@@ -191,7 +191,7 @@
 
 1. 应用启动时读取当前生效规则
 2. 对规则内容计算 `rules_hash`
-3. 优先从 DuckDB 的 `vmm_noise_embeddings` 读取缓存
+3. 优先从 SQLite 的 `vmm_noise_embeddings` 读取缓存
 4. 只有当以下条件全部一致时才复用：
    - `scope`
    - `language`
@@ -200,7 +200,7 @@
    - `rules_hash`
 5. 如果不一致：
    - 重新做 embedding
-   - 覆盖写回 DuckDB
+   - 覆盖写回 SQLite
 
 这意味着以下变化会触发重算：
 
@@ -264,7 +264,7 @@
 结果：
 
 - 跳过 `NoiseGate`
-- 直接把 `user / timeline / assistant` 组装成一条脱水 turn 写入关系库存储（默认 SQLite，兼容 DuckDB）
+- 直接把 `user / timeline / assistant` 组装成一条脱水 turn 写入关系库存储（默认 SQLite）
 
 ## 编写规则建议
 

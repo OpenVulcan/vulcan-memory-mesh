@@ -35,9 +35,9 @@
 - 不建议第一步就让 `Weibull` 完全替换 `expires_timestamp`
   - 当前 memory 侧没有完整的“过期收敛”维护流程
   - 应先把 `Weibull` 作为检索打分层，而不是立刻替换硬过期边界
-- 不建议一开始就做 `DuckDB + SQLite` 双 provider 完整对齐
-  - 当前 `DuckDB` 基线 schema 明显落后于 `SQLite`
-  - 推荐先做 `SQLite` 主路径，`DuckDB` 保持 vector-only fallback
+- 不建议在历史兼容 provider 上继续追求双 provider 完整对齐
+  - 旧兼容 provider 的基线 schema 曾明显落后于 `SQLite`
+  - 当前主线已经只保留 `SQLite` 主路径
 
 ## 2. 当前实现现状
 
@@ -153,14 +153,14 @@
 
 - 把 BM25 强塞进 `VectorStore`
 - 用 `LIKE '%xxx%'` 假装 lexical search
-- 首先在 `DuckDB` 实现 lexical 检索
+- 首先在 `SQLite` 实现 lexical 检索
 
 ### 推荐为什么是 `SQLite FTS5`
 
 因为当前项目：
 
 - 本地默认 `relational.provider = sqlite`
-- `DuckDB` schema 还落后
+- 历史兼容 provider 的 schema 曾明显落后
 - `SQLite` 适合本地轻量全文检索
 - 代码里关系读写已经高度集中在 `vldb_sqlite/store.go`
 
@@ -1012,7 +1012,7 @@ func ComputeMemoryDecayScore(now time.Time, row logicdomain.MemoryNodeRecord, cf
 
 1. 不改 gRPC 请求
 2. 不上模型 rerank
-3. 不先动 DuckDB
+3. 不先动历史兼容 provider
 4. 只做：
    - SQLite FTS
    - RRF
@@ -1032,7 +1032,7 @@ func ComputeMemoryDecayScore(now time.Time, row logicdomain.MemoryNodeRecord, cf
 ### 最关键的落地原则
 
 1. 不要把 BM25 塞进 `VectorStore`
-2. 不要在 `DuckDB` 上先追求 provider parity
+2. 不要在旧兼容 provider 上先追求 provider parity
 3. 不要直接用聊天模型做第一版 rerank
 4. 不要让 `Weibull` 一步替换 `expires_timestamp`
 5. 先把 active/unexpired 过滤修正好，再上高级检索与衰减

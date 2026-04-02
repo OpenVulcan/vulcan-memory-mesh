@@ -26,7 +26,6 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.PostAction.SessionAnalysisMaxInputTokens = 0
 	cfg.Vector.Provider = ""
 	cfg.Relational.Provider = ""
-	cfg.DuckDB.Address = ""
 	cfg.SQLite.Address = ""
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
@@ -34,6 +33,11 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.MemoryPipeline.LexicalTopK = 0
 	cfg.MemoryPipeline.RRFK = 0
 	cfg.MemoryPipeline.MMRLambda = 0
+	cfg.MemoryPipeline.WeibullShape = 0
+	cfg.MemoryPipeline.WeibullScaleHours = 0
+	cfg.MemoryPipeline.WeibullMinMultiplier = -1
+	cfg.MemoryPipeline.WeibullReinforceWeight = -1
+	cfg.MemoryPipeline.WeibullCrossSessionBoost = -1
 	cfg.Rerank.Provider = ""
 	cfg.Rerank.Endpoint = ""
 	cfg.Rerank.Model = ""
@@ -109,6 +113,24 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.MemoryPipeline.MMRLambda != 0.75 {
 		t.Fatalf("mmr_lambda = %v", cfg.MemoryPipeline.MMRLambda)
 	}
+	if !cfg.MemoryPipeline.WeibullEnabled {
+		t.Fatal("expected weibull decay to stay enabled by default")
+	}
+	if cfg.MemoryPipeline.WeibullShape != 1.35 {
+		t.Fatalf("weibull_shape = %v", cfg.MemoryPipeline.WeibullShape)
+	}
+	if cfg.MemoryPipeline.WeibullScaleHours != 2160 {
+		t.Fatalf("weibull_scale_hours = %v", cfg.MemoryPipeline.WeibullScaleHours)
+	}
+	if cfg.MemoryPipeline.WeibullMinMultiplier != 0.4 {
+		t.Fatalf("weibull_min_multiplier = %v", cfg.MemoryPipeline.WeibullMinMultiplier)
+	}
+	if cfg.MemoryPipeline.WeibullReinforceWeight != 0.18 {
+		t.Fatalf("weibull_reinforce_weight = %v", cfg.MemoryPipeline.WeibullReinforceWeight)
+	}
+	if cfg.MemoryPipeline.WeibullCrossSessionBoost != 0.12 {
+		t.Fatalf("weibull_cross_session_boost = %v", cfg.MemoryPipeline.WeibullCrossSessionBoost)
+	}
 	if cfg.Rerank.Provider != "dashscope" {
 		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
 	}
@@ -156,6 +178,18 @@ func TestConfigValidateRejectsInvalidHybridRetrievalKnobs(t *testing.T) {
 	cfg.MemoryPipeline.MMRLambda = 0
 	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.mmr_lambda must be in (0,1]" {
 		t.Fatalf("unexpected mmr_lambda validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.MemoryPipeline.WeibullShape = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.weibull_shape must be > 0" {
+		t.Fatalf("unexpected weibull_shape validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.MemoryPipeline.WeibullMinMultiplier = 2
+	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.weibull_min_multiplier must be in [0,1]" {
+		t.Fatalf("unexpected weibull_min_multiplier validate error: %v", err)
 	}
 }
 
@@ -214,8 +248,8 @@ func TestConfigValidateRejectsPreCheckTimeoutBudget(t *testing.T) {
 	}
 }
 
-// TestConfigValidateRejectsRemovedProviders verifies the runtime no longer accepts the removed in-memory fallbacks.
-// TestConfigValidateRejectsRemovedProviders 用于验证运行时已经不再接受被移除的内存回退 provider。
+// TestConfigValidateRejectsRemovedProviders verifies the runtime no longer accepts removed fallback providers and only keeps SQLite as the relational backend.
+// TestConfigValidateRejectsRemovedProviders 用于验证运行时已经不再接受被移除的回退 provider，并且关系库存储只保留 SQLite。
 func TestConfigValidateRejectsRemovedProviders(t *testing.T) {
 	cfg := newValidConfigForTest()
 	cfg.Vector.Provider = "memory"
@@ -225,7 +259,7 @@ func TestConfigValidateRejectsRemovedProviders(t *testing.T) {
 
 	cfg = newValidConfigForTest()
 	cfg.Relational.Provider = "memory"
-	if err := cfg.Validate(); err == nil || err.Error() != "relational.provider must be sqlite or duckdb" {
+	if err := cfg.Validate(); err == nil || err.Error() != "relational.provider must be sqlite" {
 		t.Fatalf("unexpected relational validate error: %v", err)
 	}
 }
@@ -318,7 +352,6 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 	}
 	configBody := `{
 		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"duckdb":{"address":"127.0.0.1:19401","timeout":"5s"},
 		"sqlite":{"address":"127.0.0.1:19501","timeout":"5s"},
 		"lancedb":{"address":"127.0.0.1:19301","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
 		"llm":{
@@ -428,6 +461,12 @@ func TestApplyEnvOverridesSetsHybridRetrievalSettings(t *testing.T) {
 	t.Setenv("VMM_MEMORY_RRF_K", "77")
 	t.Setenv("VMM_MEMORY_MMR_ENABLED", "false")
 	t.Setenv("VMM_MEMORY_MMR_LAMBDA", "0.66")
+	t.Setenv("VMM_MEMORY_WEIBULL_ENABLED", "false")
+	t.Setenv("VMM_MEMORY_WEIBULL_SHAPE", "1.8")
+	t.Setenv("VMM_MEMORY_WEIBULL_SCALE_HOURS", "1440")
+	t.Setenv("VMM_MEMORY_WEIBULL_MIN_MULTIPLIER", "0.3")
+	t.Setenv("VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT", "0.22")
+	t.Setenv("VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST", "0.15")
 
 	applyEnvOverrides(&cfg)
 
@@ -445,6 +484,24 @@ func TestApplyEnvOverridesSetsHybridRetrievalSettings(t *testing.T) {
 	}
 	if cfg.MemoryPipeline.MMRLambda != 0.66 {
 		t.Fatalf("memory pipeline mmr_lambda = %v", cfg.MemoryPipeline.MMRLambda)
+	}
+	if cfg.MemoryPipeline.WeibullEnabled {
+		t.Fatal("expected weibull decay to be disabled by env override")
+	}
+	if cfg.MemoryPipeline.WeibullShape != 1.8 {
+		t.Fatalf("memory pipeline weibull_shape = %v", cfg.MemoryPipeline.WeibullShape)
+	}
+	if cfg.MemoryPipeline.WeibullScaleHours != 1440 {
+		t.Fatalf("memory pipeline weibull_scale_hours = %v", cfg.MemoryPipeline.WeibullScaleHours)
+	}
+	if cfg.MemoryPipeline.WeibullMinMultiplier != 0.3 {
+		t.Fatalf("memory pipeline weibull_min_multiplier = %v", cfg.MemoryPipeline.WeibullMinMultiplier)
+	}
+	if cfg.MemoryPipeline.WeibullReinforceWeight != 0.22 {
+		t.Fatalf("memory pipeline weibull_reinforce_weight = %v", cfg.MemoryPipeline.WeibullReinforceWeight)
+	}
+	if cfg.MemoryPipeline.WeibullCrossSessionBoost != 0.15 {
+		t.Fatalf("memory pipeline weibull_cross_session_boost = %v", cfg.MemoryPipeline.WeibullCrossSessionBoost)
 	}
 }
 
@@ -470,7 +527,6 @@ func restoreEnv(t *testing.T, key string) {
 func currentTestConfigBody(apiKeyExpr string) string {
 	return `{
 		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"duckdb":{"address":"127.0.0.1:19401","timeout":"5s"},
 		"sqlite":{"address":"127.0.0.1:19501","timeout":"5s"},
 		"lancedb":{"address":"127.0.0.1:19301","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
 		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"` + apiKeyExpr + `","model":"test-model"},
@@ -492,7 +548,6 @@ func newValidConfigForTest() Config {
 	cfg.Embedding.Endpoint = "https://api.openai.com/v1"
 	cfg.Embedding.APIKey = "test-key"
 	cfg.Embedding.Dimension = 1024
-	cfg.DuckDB.Address = "127.0.0.1:19401"
 	cfg.SQLite.Address = "127.0.0.1:19501"
 	cfg.LanceDB.Address = "127.0.0.1:19301"
 	return cfg

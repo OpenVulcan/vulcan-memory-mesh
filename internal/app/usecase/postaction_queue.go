@@ -258,8 +258,8 @@ func (u *PostActionUseCase) queueMaintenanceBackoffActive(now time.Time) bool {
 	return now.Before(u.maintenanceBackoffUntil)
 }
 
-// markQueueMaintenanceBackoff pauses low-priority maintenance scans for one short window after the shared DuckDB connection starts reporting poisoned-state errors.
-// markQueueMaintenanceBackoff 用于在共享 DuckDB 连接开始报“污染态”错误后，暂时暂停低优先级维护扫描，避免持续撞击坏连接。
+// markQueueMaintenanceBackoff pauses low-priority maintenance scans for one short window after the shared SQLite connection starts reporting poisoned-state errors.
+// markQueueMaintenanceBackoff 用于在共享 SQLite 连接开始报“污染态”错误后，暂时暂停低优先级维护扫描，避免持续撞击坏连接。
 func (u *PostActionUseCase) markQueueMaintenanceBackoff(operation string, err error) {
 	if u == nil || err == nil || !shouldPauseQueueMaintenance(err) {
 		return
@@ -289,8 +289,8 @@ func (u *PostActionUseCase) markQueueMaintenanceBackoff(operation string, err er
 	}
 }
 
-// shouldPauseQueueMaintenance classifies the gateway failures that indicate the shared DuckDB connection is already poisoned and periodic scans should stand down briefly.
-// shouldPauseQueueMaintenance 用于识别这类网关失败：它表明共享 DuckDB 连接已经进入污染态，周期性扫描应暂时退避。
+// shouldPauseQueueMaintenance classifies the gateway failures that indicate the shared SQLite connection is already poisoned and periodic scans should stand down briefly.
+// shouldPauseQueueMaintenance 用于识别这类网关失败：它表明共享 SQLite 连接已经进入污染态，周期性扫描应暂时退避。
 func shouldPauseQueueMaintenance(err error) bool {
 	if err == nil {
 		return false

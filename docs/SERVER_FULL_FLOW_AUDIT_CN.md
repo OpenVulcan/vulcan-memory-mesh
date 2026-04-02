@@ -15,7 +15,7 @@
   - `Profile`：查询活跃画像、组装 bundle、执行显式手工画像指令
 - 当前 LLM / Embedding 只支持 `OpenAI-compatible` provider。
 - 当前向量后端只支持 `LanceDB`。
-- 当前关系存储后端支持 `SQLite` 或 `DuckDB`，但本地默认值是 `SQLite`。
+- 当前关系存储后端只保留 `SQLite`，本地默认值也是 `SQLite`。
 - 当前提示词系统已经实现模型路由与用户覆盖，但并非所有 prompt 文件都接在当前运行时热路径上。
 - 当前 `PII Engine` 已实现规则加载与脱敏能力，但在 `app.NewLocal(...)` 中没有被装配进主链路。
 
@@ -40,7 +40,7 @@
   - `LLMClient`：`internal/adapters/outbound/openai_native`
   - `EmbeddingClient`：`internal/adapters/outbound/openai_native`
   - `VectorStore`：`internal/adapters/outbound/vldb_lancedb`
-  - `RelationalStore`：`internal/adapters/outbound/vldb_sqlite` 或 `internal/adapters/outbound/vldb_duckdb`
+  - `RelationalStore`：`internal/adapters/outbound/vldb_sqlite`
   - `NoiseGate`：`internal/logic/processor.NewNoiseGate(...)`
   - `WorkspaceUseCase`
   - `ProfileUseCase`
@@ -150,7 +150,6 @@ flowchart TD
 - `noise.enabled = true`
 - `noise.semantic_enabled = true`
 - `noise.semantic_threshold = 0.88`
-- `duckdb.address = 127.0.0.1:19401`
 - `sqlite.address = 127.0.0.1:19501`
 - `lancedb.address = 127.0.0.1:19301`
 - `llm.provider = openai`
@@ -174,7 +173,7 @@ flowchart TD
 
 - `grpc.request_timeout.pre_check > pre_check.intent_timeout`
 - `vector.provider` 必须是 `lancedb`
-- `relational.provider` 必须是 `sqlite` 或 `duckdb`
+- `relational.provider` 必须是 `sqlite`
 - `llm.provider` 和 `embedding.provider` 必须是 `OpenAI-compatible`
 - `llm.endpoint/api_key/model` 必填
 - `embedding.endpoint/api_key/model/dimension` 必填
@@ -1180,9 +1179,9 @@ Proto 有该字段，server 也会回填，但 `ProfileBundleUseCase` 当前并�
 - transport validate：允许 `top_k <= 64`
 - usecase normalize：最终最多只取 `32`
 
-### 12.6 DuckDB 基线 SQL 与当前 SQLite 正式 schema 已经存在代差
+### 12.6 DuckDB 基线 SQL 已从当前项目移除
 
-`deploy/sql/001_init.sql` 中的 DuckDB 基线表仍然是旧模型，至少有这些差异：
+旧的 `deploy/sql/001_init.sql` DuckDB 基线文件已从当前项目移除，当前正式 schema 只保留 SQLite 网关基线。
 
 - `vmm_turn_records` 缺少 `details / details_budget`
 - `vmm_sessions` 缺少 `last_extract_observed_timestamp / last_extract_completed_timestamp`
@@ -1238,7 +1237,7 @@ Proto 有该字段，server 也会回填，但 `ProfileBundleUseCase` 当前并�
 ### 13.6 存储与适配器
 
 - `internal/adapters/outbound/vldb_sqlite/store.go`
-- `internal/adapters/outbound/vldb_duckdb/store.go`
+- `internal/adapters/outbound/vldb_sqlite/store.go`
 - `internal/adapters/outbound/vldb_lancedb/store.go`
 - `internal/adapters/outbound/openai_native/llm.go`
 

@@ -159,7 +159,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vmm_memory_nodes_fts USING fts5(
 
 - `LIKE '%xxx%'`
 - 词法检索放进 LanceDB
-- 先做 DuckDB 版本对齐
+- 先做 SQLite schema 版本对齐
 
 ## 3.2 RRF：维持“默认融合算法”结论，但需要落到接口和返回字段
 

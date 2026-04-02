@@ -28,7 +28,7 @@ func main() {
 		os.Exit(1)
 	}
 	cfgPath := flag.String("config", "", "user config dir (~/.vmm by default); legacy json config file path is still supported")
-	debugClean := flag.String("debug-clean", "", "debug-only gateway cleanup target: sqlite, duckdb, lancedb, or all")
+	debugClean := flag.String("debug-clean", "", "debug-only gateway cleanup target: sqlite, lancedb, or all")
 	flag.Parse()
 
 	// Build the prompt/config layout before any application dependency is created.

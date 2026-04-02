@@ -1,5 +1,5 @@
-// turn_analysis.go declares the per-turn extraction models shared by the post-action workflow, LLM processors, and DuckDB persistence.
-// turn_analysis.go 用于声明 post-action 工作流、LLM 处理器和 DuckDB 持久化共享的逐轮提炼模型。
+// turn_analysis.go declares the per-turn extraction models shared by the post-action workflow, LLM processors, and SQLite-backed persistence.
+// turn_analysis.go 用于声明 post-action 工作流、LLM 处理器和 SQLite 持久化共享的逐轮提炼模型。
 package domain
 
 import "time"
@@ -160,8 +160,8 @@ const (
 	ProfileLevelPersistent = 3
 )
 
-// PersistedTurnRecord stores the durable identifiers returned right after one cleaned turn is appended into DuckDB.
-// PersistedTurnRecord 用于保存一条清洗后 turn 写入 DuckDB 后立即返回的持久化标识。
+// PersistedTurnRecord stores the durable identifiers returned right after one cleaned turn is appended into SQLite.
+// PersistedTurnRecord 用于保存一条清洗后 turn 写入 SQLite 后立即返回的持久化标识。
 type PersistedTurnRecord struct {
 	ID               uint64
 	SessionID        uint64

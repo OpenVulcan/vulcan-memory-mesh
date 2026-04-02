@@ -1,5 +1,5 @@
-// profile_merge.go declares the profile-merge models shared by post-action use cases, LLM processors, and DuckDB persistence.
-// profile_merge.go 用于声明 post-action 用例、LLM 处理器和 DuckDB 持久化共享的画像合并模型。
+// profile_merge.go declares the profile-merge models shared by post-action use cases, LLM processors, and SQLite-backed persistence.
+// profile_merge.go 用于声明 post-action 用例、LLM 处理器和 SQLite 持久化共享的画像合并模型。
 package domain
 
 // ProfileTargetsSnapshot carries the current durable user/project profile blobs that the merge processor must fold new evidence into.

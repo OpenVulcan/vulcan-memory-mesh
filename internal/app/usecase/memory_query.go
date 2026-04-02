@@ -86,17 +86,27 @@ type MemoryQueryItem struct {
 // MemoryQueryHit returns one unified recalled memory candidate together with its durable refs and preview fields.
 // MemoryQueryHit 用于返回一条统一召回的记忆候选，以及它的长期引用和预览字段。
 type MemoryQueryHit struct {
-	MemoryRef      logicdomain.MemoryRef
-	SourceRef      logicdomain.MemoryRef
-	SourceKind     int
-	ScopeLevel     int
-	SessionID      uint64
-	Abstract       string
-	DetailsPreview string
-	Category       int
-	Score          float64
-	Origin         string
-	Vector         []float32
+	MemoryRef                logicdomain.MemoryRef
+	SourceRef                logicdomain.MemoryRef
+	SourceKind               int
+	ScopeLevel               int
+	Priority                 int
+	MemoryLevel              int
+	RefreshWeight            int
+	SessionID                uint64
+	Abstract                 string
+	DetailsPreview           string
+	Category                 int
+	Score                    float64
+	Origin                   string
+	Vector                   []float32
+	CreatedAt                time.Time
+	LastRecalledAt           time.Time
+	LastAdoptedAt            time.Time
+	LastReinforcedAt         time.Time
+	ReinforcementCount       int
+	CrossSessionAdoptedCount int
+	DecayDisabled            bool
 }
 
 // MemoryQueryGroupResult returns the echoed JSON query item together with the hit list produced for that item.
@@ -205,18 +215,24 @@ type MemoryExecutor interface {
 // MemoryUseCase orchestrates grouped memory search, mixed detail lookup, and direct AI memory writes on top of profile-target resolution and unified relational memory rows.
 // MemoryUseCase 用于在画像目标解析和统一关系记忆行之上，编排分组记忆检索、混合详情查询以及 AI 主动写记忆流程。
 type MemoryUseCase struct {
-	profiles      appports.ProfileStore
-	memories      appports.MemoryStore
-	embedding     appports.EmbeddingClient
-	hybridEnabled bool
-	lexicalTopK   int
-	rrfK          int
-	mmrEnabled    bool
-	mmrLambda     float64
-	reranker      appports.RerankerClient
-	rerankTopN    int
-	vector        appports.VectorStore
-	logger        *logx.Logger
+	profiles                 appports.ProfileStore
+	memories                 appports.MemoryStore
+	embedding                appports.EmbeddingClient
+	hybridEnabled            bool
+	lexicalTopK              int
+	rrfK                     int
+	mmrEnabled               bool
+	mmrLambda                float64
+	weibullEnabled           bool
+	weibullShape             float64
+	weibullScaleHours        float64
+	weibullMinMultiplier     float64
+	weibullReinforceWeight   float64
+	weibullCrossSessionBoost float64
+	reranker                 appports.RerankerClient
+	rerankTopN               int
+	vector                   appports.VectorStore
+	logger                   *logx.Logger
 }
 
 // NewMemoryUseCase creates a MemoryUseCase instance.
@@ -226,15 +242,20 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		logger = logx.Default()
 	}
 	return &MemoryUseCase{
-		profiles:    profiles,
-		memories:    memories,
-		embedding:   embedding,
-		lexicalTopK: defaultMemorySearchTopK,
-		rrfK:        60,
-		mmrLambda:   0.75,
-		rerankTopN:  defaultMemorySearchTopK,
-		vector:      vector,
-		logger:      logger,
+		profiles:                 profiles,
+		memories:                 memories,
+		embedding:                embedding,
+		lexicalTopK:              defaultMemorySearchTopK,
+		rrfK:                     60,
+		mmrLambda:                0.75,
+		weibullShape:             1.35,
+		weibullScaleHours:        2160,
+		weibullMinMultiplier:     0.4,
+		weibullReinforceWeight:   0.18,
+		weibullCrossSessionBoost: 0.12,
+		rerankTopN:               defaultMemorySearchTopK,
+		vector:                   vector,
+		logger:                   logger,
 	}
 }
 
@@ -269,6 +290,35 @@ func (u *MemoryUseCase) ConfigureMMR(enabled bool, lambda float64) {
 		lambda = 0.75
 	}
 	u.mmrLambda = lambda
+}
+
+// ConfigureDecay attaches the optional Weibull read-time decay model so older, weakly reinforced memories lose rank before the final top-k is chosen.
+// ConfigureDecay 用于挂载可选的 Weibull 读时衰减模型，让更旧且强化较弱的记忆在最终 top-k 生成前自然降权。
+func (u *MemoryUseCase) ConfigureDecay(enabled bool, shape, scaleHours, minMultiplier, reinforceWeight, crossSessionBoost float64) {
+	if u == nil {
+		return
+	}
+	u.weibullEnabled = enabled
+	if shape <= 0 {
+		shape = 1.35
+	}
+	if scaleHours <= 0 {
+		scaleHours = 2160
+	}
+	if minMultiplier < 0 || minMultiplier > 1 {
+		minMultiplier = 0.4
+	}
+	if reinforceWeight < 0 {
+		reinforceWeight = 0.18
+	}
+	if crossSessionBoost < 0 {
+		crossSessionBoost = 0.12
+	}
+	u.weibullShape = shape
+	u.weibullScaleHours = scaleHours
+	u.weibullMinMultiplier = minMultiplier
+	u.weibullReinforceWeight = reinforceWeight
+	u.weibullCrossSessionBoost = crossSessionBoost
 }
 
 // ConfigureRerank attaches one optional rerank backend and caps how many first-stage hits each query group may send into it.
@@ -368,6 +418,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		}
 		mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
 		mapped = u.rerankSearchHits(ctx, buildMemorySearchText(item), mapped)
+		mapped = u.applyWeibullDecaySearchHits(mapped)
 		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
@@ -806,15 +857,25 @@ func (u *MemoryUseCase) materializeLexicalHits(ctx context.Context, hits []logic
 				Type: logicdomain.MemoryRefTypeMemory,
 				ID:   row.ID,
 			},
-			SourceKind:     row.SourceKind,
-			ScopeLevel:     row.ScopeLevel,
-			SessionID:      row.OriginSessionID,
-			Abstract:       strings.TrimSpace(row.Abstract),
-			DetailsPreview: strings.TrimSpace(row.Details),
-			Category:       row.Category,
-			Score:          normalizedRankScore(idx+1, total),
-			Origin:         "lexical_search",
-			Vector:         append([]float32(nil), row.Vector...),
+			SourceKind:               row.SourceKind,
+			ScopeLevel:               row.ScopeLevel,
+			Priority:                 row.Priority,
+			MemoryLevel:              row.MemoryLevel,
+			RefreshWeight:            row.RefreshWeight,
+			SessionID:                row.OriginSessionID,
+			Abstract:                 strings.TrimSpace(row.Abstract),
+			DetailsPreview:           strings.TrimSpace(row.Details),
+			Category:                 row.Category,
+			Score:                    normalizedRankScore(idx+1, total),
+			Origin:                   "lexical_search",
+			Vector:                   append([]float32(nil), row.Vector...),
+			CreatedAt:                row.CreatedAt,
+			LastRecalledAt:           row.LastRecalledAt,
+			LastAdoptedAt:            row.LastAdoptedAt,
+			LastReinforcedAt:         row.LastReinforcedAt,
+			ReinforcementCount:       row.ReinforcementCount,
+			CrossSessionAdoptedCount: row.CrossSessionAdoptedCount,
+			DecayDisabled:            row.DecayDisabled,
 		}
 		if row.SourceTurnID > 0 {
 			mappedHit.SourceRef = logicdomain.MemoryRef{
@@ -960,6 +1021,161 @@ func trimSearchHits(hits []MemoryQueryHit, topK int) []MemoryQueryHit {
 		return hits
 	}
 	return append([]MemoryQueryHit(nil), hits[:topK]...)
+}
+
+// applyWeibullDecaySearchHits reapplies one read-time memory-lifecycle prior after fusion and rerank so stale but still unexpired rows stop dominating recall.
+// applyWeibullDecaySearchHits 用于在融合和 rerank 之后重新施加一次“读时记忆生命周期先验”，让陈旧但尚未过期的记录不再长期垄断召回。
+func (u *MemoryUseCase) applyWeibullDecaySearchHits(hits []MemoryQueryHit) []MemoryQueryHit {
+	if u == nil || !u.weibullEnabled || len(hits) <= 1 {
+		return hits
+	}
+	now := time.Now().UTC()
+	scored := append([]MemoryQueryHit(nil), hits...)
+	changed := false
+	for idx := range scored {
+		nextScore := clampUnitScore(scored[idx].Score * u.weibullDecayMultiplier(scored[idx], now))
+		if math.Abs(nextScore-scored[idx].Score) > 1e-9 {
+			changed = true
+		}
+		scored[idx].Score = nextScore
+	}
+	if !changed {
+		return scored
+	}
+	sort.SliceStable(scored, func(i, j int) bool {
+		if scored[i].Score == scored[j].Score {
+			return scored[i].MemoryRef.ID < scored[j].MemoryRef.ID
+		}
+		return scored[i].Score > scored[j].Score
+	})
+	return scored
+}
+
+// weibullDecayMultiplier converts lifecycle evidence on one memory hit into a stable read-time score multiplier without changing hard expiry semantics.
+// weibullDecayMultiplier 用于把单条记忆的生命周期证据转换成稳定的读时分数乘子，同时不改变现有硬过期语义。
+func (u *MemoryUseCase) weibullDecayMultiplier(hit MemoryQueryHit, now time.Time) float64 {
+	if u == nil || hit.DecayDisabled {
+		return 1
+	}
+	anchor := latestMemoryReinforcementTime(hit)
+	if anchor.IsZero() || !now.After(anchor) {
+		return 1
+	}
+	ageHours := now.Sub(anchor).Hours()
+	if ageHours <= 0 {
+		return 1
+	}
+
+	scaleHours := u.weibullScaleHours
+	scaleHours *= memoryLevelDecayScale(hit.MemoryLevel)
+	scaleHours *= memoryPriorityDecayScale(hit.Priority)
+	scaleHours *= memoryScopeDecayScale(hit.ScopeLevel)
+	scaleHours *= 1 + 0.08*float64(maxInt(hit.RefreshWeight, 0))
+	scaleHours *= 1 + u.weibullReinforceWeight*math.Log1p(float64(maxInt(hit.ReinforcementCount, 0)))
+	scaleHours *= 1 + u.weibullCrossSessionBoost*float64(maxInt(hit.CrossSessionAdoptedCount, 0))
+	if scaleHours <= 0 {
+		return 1
+	}
+
+	survival := math.Exp(-math.Pow(ageHours/scaleHours, u.weibullShape))
+	if math.IsNaN(survival) || math.IsInf(survival, 0) {
+		return 1
+	}
+	if survival < u.weibullMinMultiplier {
+		survival = u.weibullMinMultiplier
+	}
+	return clampUnitScore(survival)
+}
+
+// latestMemoryReinforcementTime chooses the freshest lifecycle timestamp that should anchor Weibull age calculation for one durable memory row.
+// latestMemoryReinforcementTime 用于挑出一条长期记忆最“新鲜”的生命周期时间点，作为 Weibull 年龄计算的锚点。
+func latestMemoryReinforcementTime(hit MemoryQueryHit) time.Time {
+	latest := zeroOrUTC(hit.CreatedAt)
+	candidates := []time.Time{
+		hit.LastReinforcedAt,
+		hit.LastAdoptedAt,
+		hit.LastRecalledAt,
+	}
+	for _, candidate := range candidates {
+		candidate = zeroOrUTC(candidate)
+		if candidate.After(latest) {
+			latest = candidate
+		}
+	}
+	return latest
+}
+
+// memoryLevelDecayScale stretches the Weibull scale for higher-level memories so stable or core knowledge decays more slowly than short-term facts.
+// memoryLevelDecayScale 用于为更高等级的记忆拉长 Weibull 尺度，让稳定或核心知识比短期事实衰减得更慢。
+func memoryLevelDecayScale(level int) float64 {
+	switch level {
+	case logicdomain.MemoryLevelSession:
+		return 0.8
+	case logicdomain.MemoryLevelPhase:
+		return 1.0
+	case logicdomain.MemoryLevelStable:
+		return 1.5
+	case logicdomain.MemoryLevelPersistent:
+		return 2.4
+	default:
+		return 1.0
+	}
+}
+
+// memoryPriorityDecayScale slightly protects high-priority memories during read-time decay so hard rules do not disappear behind fresher trivia.
+// memoryPriorityDecayScale 用于在读时衰减里轻微保护高优先级记忆，避免硬规则被更新鲜但无关紧要的细节压下去。
+func memoryPriorityDecayScale(priority int) float64 {
+	switch priority {
+	case logicdomain.MemoryPriorityP0:
+		return 1.35
+	case logicdomain.MemoryPriorityP1:
+		return 1.15
+	default:
+		return 1.0
+	}
+}
+
+// memoryScopeDecayScale gives broader-scope memories a slightly longer decay horizon because they are more likely to remain useful across requests.
+// memoryScopeDecayScale 用于给更大作用域的记忆略长的衰减视窗，因为它们跨请求继续有用的概率更高。
+func memoryScopeDecayScale(scopeLevel int) float64 {
+	switch scopeLevel {
+	case logicdomain.MemoryScopeLevelSession:
+		return 0.9
+	case logicdomain.MemoryScopeLevelUser:
+		return 1.25
+	default:
+		return 1.1
+	}
+}
+
+// zeroOrUTC normalizes lifecycle timestamps used by read-time ranking so helper callers can compare zero values without extra branching.
+// zeroOrUTC 用于规范化读时排序使用的生命周期时间戳，让调用方在比较零值时不必反复写分支。
+func zeroOrUTC(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Time{}
+	}
+	return value.UTC()
+}
+
+// clampUnitScore keeps ranking multipliers and final scores inside the stable 0..1 range expected by pre-check filtering.
+// clampUnitScore 用于把排序乘子和最终分数都钳制在 pre-check 过滤所期望的稳定 0..1 区间。
+func clampUnitScore(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 1 {
+		return 1
+	}
+	return value
+}
+
+// maxInt keeps small lifecycle-weight helpers readable without repeatedly inlining zero-floor arithmetic.
+// maxInt 用于让小型生命周期权重辅助逻辑保持可读，避免反复内联零值下限计算。
+func maxInt(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
 }
 
 // applyMMRSearchHits diversifies the already-ranked candidate pool so highly similar memories do not monopolize the final top-k.
@@ -1259,15 +1475,25 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 				Type: logicdomain.MemoryRefTypeMemory,
 				ID:   row.ID,
 			},
-			SourceKind:     row.SourceKind,
-			ScopeLevel:     row.ScopeLevel,
-			SessionID:      chooseSearchSessionID(hit, row),
-			Abstract:       strings.TrimSpace(row.Abstract),
-			DetailsPreview: strings.TrimSpace(row.Details),
-			Category:       row.Category,
-			Score:          hit.Score,
-			Origin:         "vector_search",
-			Vector:         append([]float32(nil), row.Vector...),
+			SourceKind:               row.SourceKind,
+			ScopeLevel:               row.ScopeLevel,
+			Priority:                 row.Priority,
+			MemoryLevel:              row.MemoryLevel,
+			RefreshWeight:            row.RefreshWeight,
+			SessionID:                chooseSearchSessionID(hit, row),
+			Abstract:                 strings.TrimSpace(row.Abstract),
+			DetailsPreview:           strings.TrimSpace(row.Details),
+			Category:                 row.Category,
+			Score:                    hit.Score,
+			Origin:                   "vector_search",
+			Vector:                   append([]float32(nil), row.Vector...),
+			CreatedAt:                row.CreatedAt,
+			LastRecalledAt:           row.LastRecalledAt,
+			LastAdoptedAt:            row.LastAdoptedAt,
+			LastReinforcedAt:         row.LastReinforcedAt,
+			ReinforcementCount:       row.ReinforcementCount,
+			CrossSessionAdoptedCount: row.CrossSessionAdoptedCount,
+			DecayDisabled:            row.DecayDisabled,
 		}
 		if row.SourceTurnID > 0 {
 			mappedHit.SourceRef = logicdomain.MemoryRef{
