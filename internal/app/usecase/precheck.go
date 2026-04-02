@@ -388,8 +388,6 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 			if hit.Score < u.config.MinSimilarityScore {
 				continue
 			}
-			scoreExplanation := describePreCheckCandidateScore(hit.Score, u.config.MinSimilarityScore, hit.MatchedContextScoreDelta)
-			originExplanation := describePreCheckMemoryOrigin(hit.Origin)
 			candidate := logicdomain.PreCheckMemoryCandidate{
 				MemoryID:                    hit.MemoryRef.ID,
 				SourceTurnID:                hit.SourceRef.ID,
@@ -399,11 +397,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				Abstract:                    strings.TrimSpace(hit.Abstract),
 				Details:                     strings.TrimSpace(hit.DetailsPreview),
 				Score:                       hit.Score,
-				ScoreLabel:                  scoreExplanation.Label,
-				ScoreExplanation:            scoreExplanation.Explanation,
 				Origin:                      strings.TrimSpace(hit.Origin),
-				OriginLabel:                 originExplanation.Label,
-				OriginExplanation:           originExplanation.Explanation,
 				SupportCount:                hit.SupportCount,
 				RebuttalCount:               hit.RebuttalCount,
 				MatchedContextValues:        append([]string(nil), hit.MatchedContextValues...),
@@ -426,6 +420,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	}
 	out := make([]logicdomain.PreCheckMemoryCandidate, 0, len(merged))
 	for _, candidate := range merged {
+		candidate = normalizePreCheckCandidateDerivedFields(candidate, u.config.MinSimilarityScore)
 		out = append(out, candidate)
 	}
 	sort.SliceStable(out, func(i, j int) bool {
@@ -441,6 +436,18 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		out[idx].CandidateNumber = idx + 1
 	}
 	return out, nil
+}
+
+// normalizePreCheckCandidateDerivedFields recomputes reviewer-facing derived explanations from the final merged candidate values so score/origin labels never lag behind later merge decisions.
+// normalizePreCheckCandidateDerivedFields 用于基于最终合并后的候选值重新计算 reviewer 可见的派生说明，避免 score/origin 标签滞后于后续 merge 决策。
+func normalizePreCheckCandidateDerivedFields(candidate logicdomain.PreCheckMemoryCandidate, threshold float64) logicdomain.PreCheckMemoryCandidate {
+	scoreExplanation := describePreCheckCandidateScore(candidate.Score, threshold, candidate.MatchedContextScoreDelta)
+	originExplanation := describePreCheckMemoryOrigin(candidate.Origin)
+	candidate.ScoreLabel = scoreExplanation.Label
+	candidate.ScoreExplanation = scoreExplanation.Explanation
+	candidate.OriginLabel = originExplanation.Label
+	candidate.OriginExplanation = originExplanation.Explanation
+	return candidate
 }
 
 // reviewMemoryCandidates lets the second-stage reviewer choose candidate numbers and restores the selected candidate order for final injection.

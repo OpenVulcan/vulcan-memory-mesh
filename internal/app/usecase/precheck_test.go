@@ -736,6 +736,9 @@ func TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary(t *testing.T) 
 	if candidate.MatchedContextScoreDelta != 0.07 {
 		t.Fatalf("expected stronger secondary matched delta to survive merge, got %#v", candidate)
 	}
+	if !strings.Contains(candidate.ScoreExplanation, "0.070") {
+		t.Fatalf("expected score explanation to reflect merged delta, got %#v", candidate)
+	}
 }
 
 // stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
