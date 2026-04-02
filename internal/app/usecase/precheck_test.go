@@ -337,6 +337,110 @@ func TestPreCheckExecuteDegradesToPersona(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecuteRewritesGenericQueriesToCurrentInput verifies that stage-one deictic queries are rewritten to the full current request before unified retrieval begins.
+// TestPreCheckExecuteRewritesGenericQueriesToCurrentInput 用于验证第一层的指代式 query 会在进入统一检索前被改写为完整当前请求。
+func TestPreCheckExecuteRewritesGenericQueriesToCurrentInput(t *testing.T) {
+	memories := &stubPreCheckMemories{}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckProfiles{},
+		memories,
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 21, SessionID: 41, Details: "上一轮已经确认 SQLite schema 13 必须保持兼容。", DetailsBudget: 18, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"这个改动为什么这样做"},
+				NeedMemory: true,
+				Reason:     "model returned a deictic query",
+			},
+		},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	current := "这个改动会不会影响 SQLite schema 13 的兼容性？"
+	if _, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-rewrite"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: current,
+	}); err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if memories.searchCalls != 1 {
+		t.Fatalf("expected one search call, got %d", memories.searchCalls)
+	}
+	if strings.Count(memories.cmd.QueryJSON, current) < 2 {
+		t.Fatalf("expected rewritten query json to keep full current input in both background and query, got %s", memories.cmd.QueryJSON)
+	}
+}
+
+// TestPreCheckExecuteSkipsImmediateContextOnlyFallback verifies that when stage one fails to provide a stable long-term query, short deictic follow-ups stay on the recent-turn window instead of forcing memory retrieval.
+// TestPreCheckExecuteSkipsImmediateContextOnlyFallback 用于验证当第一层没给出稳定长期 query 时，短指代追问会留在最近 turn 窗口内处理，而不会强行触发记忆检索。
+func TestPreCheckExecuteSkipsImmediateContextOnlyFallback(t *testing.T) {
+	memories := &stubPreCheckMemories{}
+	assembler := &stubPreCheckAssembler{
+		text: "persona fallback context",
+		items: []logicdomain.ContextItem{
+			{Kind: "project_constraint", Title: "项目约束", Text: "[PROJECT]\n当前项目优先保持最近上下文一致。", Source: "persona"},
+		},
+	}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckProfiles{
+			result: ProfileBundleResult{ProjectProfile: "当前项目优先保持最近上下文一致。"},
+		},
+		memories,
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 31, SessionID: 41, Details: "上一轮已经解释为什么把并发控制改成 channel。", DetailsBudget: 18, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				NeedMemory: true,
+				Reason:     "model was unsure and returned no stable query",
+			},
+		},
+		&stubPreCheckReviewer{},
+		assembler,
+		PreCheckConfig{HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-skip"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "这里为什么这么改？",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if memories.searchCalls != 0 {
+		t.Fatalf("expected no memory search call, got %d", memories.searchCalls)
+	}
+	if !result.ShouldInject || result.Degraded {
+		t.Fatalf("unexpected result: %#v", result)
+	}
+	if len(assembler.hits) != 0 {
+		t.Fatalf("expected persona-only context, got %#v", assembler.hits)
+	}
+}
+
 // stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
 // stubPreCheckProfiles 用于作为 pre-check 测试里的画像组合加载桩。
 type stubPreCheckProfiles struct {
@@ -353,14 +457,16 @@ func (s *stubPreCheckProfiles) GetBundle(context.Context, ProfileBundleCommand) 
 // stubPreCheckMemories is the memory search double used by pre-check tests.
 // stubPreCheckMemories 用于作为 pre-check 测试里的记忆检索桩。
 type stubPreCheckMemories struct {
-	cmd    MemoryQueryCommand
-	result MemoryQueryResult
-	err    error
+	cmd         MemoryQueryCommand
+	searchCalls int
+	result      MemoryQueryResult
+	err         error
 }
 
 // Search executes the stubbed Search logic.
 // Search 用于执行桩化的 Search 逻辑。
 func (s *stubPreCheckMemories) Search(_ context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error) {
+	s.searchCalls++
 	s.cmd = cmd
 	return s.result, s.err
 }

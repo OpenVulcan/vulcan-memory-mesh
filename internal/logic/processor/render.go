@@ -19,15 +19,19 @@ func renderIntentUserPrompt(turns []logicdomain.PreCheckTurnContext, current str
 		Content     string `json:"content"`
 	}
 	type requestBody struct {
-		RecentTurns      []recentTurnInput `json:"recent_turns,omitempty"`
-		CurrentUserInput string            `json:"current_user_input"`
-		MaxSearchQueries int               `json:"max_search_queries"`
+		RecentTurns         []recentTurnInput `json:"recent_turns,omitempty"`
+		CurrentUserInput    string            `json:"current_user_input"`
+		CurrentContextHints []string          `json:"current_context_hints,omitempty"`
+		RecentContextHints  []string          `json:"recent_context_hints,omitempty"`
+		MaxSearchQueries    int               `json:"max_search_queries"`
 	}
 
 	body := requestBody{
-		RecentTurns:      make([]recentTurnInput, 0, len(turns)),
-		CurrentUserInput: strings.TrimSpace(current),
-		MaxSearchQueries: maxQueries,
+		RecentTurns:         make([]recentTurnInput, 0, len(turns)),
+		CurrentUserInput:    strings.TrimSpace(current),
+		CurrentContextHints: extractPreCheckContextHints(current, 4),
+		RecentContextHints:  extractRecentTurnContextHints(turns, 4),
+		MaxSearchQueries:    maxQueries,
 	}
 	for _, turn := range turns {
 		content := strings.TrimSpace(turn.Content)

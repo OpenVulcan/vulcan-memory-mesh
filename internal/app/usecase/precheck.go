@@ -192,6 +192,9 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		u.logPreCheckWarn("pre-check intent degraded", traceID, cmd.Session, err)
 		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
 	}
+	// Normalize the stage-one output locally so vague deictic queries do not over-trigger long-term retrieval when recent turns already explain the request.
+	// 在本地归一第一层输出，避免最近 turn 已经足够解释请求时，模糊指代 query 仍过度触发长期检索。
+	intent = normalizePreCheckIntentResult(intent, cmd.UserContent, recentTurns)
 	if !intent.NeedMemory {
 		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
 	}
@@ -532,7 +535,10 @@ func buildPreCheckMemoryQueryJSON(intent logicdomain.IntentResult, userContent s
 		})
 	}
 	if len(items) == 0 {
-		items = append(items, MemoryQueryItem{Query: strings.TrimSpace(userContent)})
+		items = append(items, MemoryQueryItem{
+			Background: strings.TrimSpace(userContent),
+			Query:      strings.TrimSpace(userContent),
+		})
 	}
 	body, err := json.Marshal(items)
 	if err != nil {

@@ -3,6 +3,7 @@
 package processor
 
 import (
+	"encoding/json"
 	"errors"
 	"testing"
 
@@ -43,5 +44,49 @@ func TestStripMarkdownFences(t *testing.T) {
 	got := stripMarkdownFences("```JSON\n{\"k\":1}\n```")
 	if got != "{\"k\":1}" {
 		t.Fatalf("got %q", got)
+	}
+}
+
+// TestRenderIntentUserPromptIncludesContextHints verifies that the first-stage prompt body now carries deterministic current/recent context hints alongside the raw turn window.
+// TestRenderIntentUserPromptIncludesContextHints 用于验证第一层提示词请求体现在会携带确定性的当前/最近情境 hints，以及原始 turn 窗口。
+func TestRenderIntentUserPromptIncludesContextHints(t *testing.T) {
+	rendered := renderIntentUserPrompt([]logicdomain.PreCheckTurnContext{
+		{TurnID: 11, ContentType: "DETAILS", Content: "上一轮已经确认 SQLite schema 13 需要保持兼容。"},
+		{TurnID: 12, ContentType: "RAW_TURN", Content: `{"user":"这里为什么删除 DuckDB 适配层","assistant":"因为当前主线只保留 SQLite"}`},
+	}, "这个改动会不会影响 SQLite schema 13 的兼容性？", 4)
+
+	var payload struct {
+		CurrentUserInput    string   `json:"current_user_input"`
+		CurrentContextHints []string `json:"current_context_hints"`
+		RecentContextHints  []string `json:"recent_context_hints"`
+		MaxSearchQueries    int      `json:"max_search_queries"`
+	}
+	if err := json.Unmarshal([]byte(rendered), &payload); err != nil {
+		t.Fatalf("unmarshal rendered prompt: %v", err)
+	}
+	if payload.CurrentUserInput != "这个改动会不会影响 SQLite schema 13 的兼容性？" {
+		t.Fatalf("unexpected current input: %q", payload.CurrentUserInput)
+	}
+	if payload.MaxSearchQueries != 4 {
+		t.Fatalf("unexpected max_search_queries: %d", payload.MaxSearchQueries)
+	}
+	if len(payload.CurrentContextHints) == 0 || payload.CurrentContextHints[0] != payload.CurrentUserInput {
+		t.Fatalf("unexpected current_context_hints: %#v", payload.CurrentContextHints)
+	}
+	if len(payload.RecentContextHints) == 0 {
+		t.Fatalf("expected recent_context_hints, got %#v", payload.RecentContextHints)
+	}
+	foundDuckDB := false
+	foundSQLite := false
+	for _, hint := range payload.RecentContextHints {
+		if hint == "duckdb" || hint == "DuckDB" || hint == "这里为什么删除 DuckDB 适配层 因为当前主线只保留 SQLite" {
+			foundDuckDB = true
+		}
+		if hint == "sqlite" || hint == "SQLite" || hint == "上一轮已经确认 SQLite schema 13 需要保持兼容" {
+			foundSQLite = true
+		}
+	}
+	if !foundDuckDB || !foundSQLite {
+		t.Fatalf("recent_context_hints did not preserve expected anchors: %#v", payload.RecentContextHints)
 	}
 }
