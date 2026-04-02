@@ -1,0 +1,12 @@
+# Keep repository text files normalized as LF so cross-platform edits remain stable.
+# 统一将仓库内的文本文件规范为 LF，避免跨平台编辑时反复出现换行符告警。
+* text=auto eol=lf
+
+# Windows batch launchers keep CRLF because cmd.exe tooling is most predictable with native endings.
+# Windows 批处理启动脚本保留 CRLF，降低 cmd.exe 侧兼容性风险。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# POSIX shell scripts should always stay LF.
+# POSIX Shell 脚本始终保持 LF。
+*.sh text eol=lf
