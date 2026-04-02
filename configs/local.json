@@ -87,6 +87,11 @@
   },
   "memory_pipeline": {
     "max_search_keywords": 5,
-    "min_similarity_score": 0.75
+    "min_similarity_score": 0.75,
+    "hybrid_enabled": true,
+    "lexical_top_k": 8,
+    "rrf_k": 60,
+    "mmr_enabled": true,
+    "mmr_lambda": 0.75
   }
 }

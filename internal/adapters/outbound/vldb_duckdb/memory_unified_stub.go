@@ -40,6 +40,12 @@ func (s *Store) LoadMemoryNodesByVectorIDs(context.Context, []string) ([]logicdo
 	return nil, fmt.Errorf("duckdb unified memory lookup is not implemented yet")
 }
 
+// SearchLexicalMemory keeps the SQLite-first hybrid retrieval interface complete while DuckDB still lacks the mirrored FTS table.
+// SearchLexicalMemory 用于在 DuckDB 尚未补齐镜像 FTS 表期间，先保持 SQLite-first 混合检索接口完整。
+func (s *Store) SearchLexicalMemory(context.Context, string, int, logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
+	return []logicdomain.MemoryLexicalHit{}, nil
+}
+
 // FindRecentActiveMemoryByDedupe reports that direct-write soft idempotency is not yet implemented on the DuckDB adapter.
 // FindRecentActiveMemoryByDedupe 用于明确提示：DuckDB 适配器上的主动写记忆软幂等尚未完成实现。
 func (s *Store) FindRecentActiveMemoryByDedupe(context.Context, logicdomain.SessionRef, int, int, string, time.Time) (logicdomain.MemoryNodeRecord, bool, error) {

@@ -730,6 +730,7 @@ type stubVectorStore struct {
 	deleteFilters  []logicdomain.SearchFilter
 	deleteIDsCalls [][]string
 	searchFilters  []logicdomain.SearchFilter
+	searchTopKs    []int
 	searchHits     []logicdomain.MemoryHit
 	upsertErr      error
 	searchErr      error
@@ -743,12 +744,13 @@ func (s *stubVectorStore) Upsert(_ context.Context, record logicdomain.MemoryRec
 	return s.upsertErr
 }
 
-// Search returns the configured hits because these post-action tests only need interface completeness.
-// Search 用于返回预设检索结果，因为这些 post-action 测试只需要补全接口。
-func (s *stubVectorStore) Search(_ context.Context, _ []float32, _ int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
+// Search returns the configured hits and records the requested top-k because memory-query tests also reuse this stub to assert candidate-pool sizing.
+// Search 用于返回预设检索结果并记录请求的 top-k，因为 memory-query 测试也会复用这个桩来断言候选池大小。
+func (s *stubVectorStore) Search(_ context.Context, _ []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
 	if s.searchErr != nil {
 		return nil, s.searchErr
 	}
+	s.searchTopKs = append(s.searchTopKs, topK)
 	s.searchFilters = append(s.searchFilters, filter)
 	return append([]logicdomain.MemoryHit(nil), s.searchHits...), nil
 }

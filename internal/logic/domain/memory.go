@@ -163,6 +163,13 @@ type MemorySearchRecord struct {
 	Score          float64
 }
 
+// MemoryLexicalHit stores one lexical-recall candidate returned by the relational search path before it is materialized back into a full durable memory row.
+// MemoryLexicalHit 用于保存关系检索路径返回的一条 lexical 召回候选，在它被回表成完整长期记忆行之前使用。
+type MemoryLexicalHit struct {
+	MemoryID uint64
+	Score    float64
+}
+
 // ValidMemoryRefType reports whether one memory reference type belongs to the supported enum set.
 // ValidMemoryRefType 用于判断某个记忆引用类型是否属于当前支持的枚举集合。
 func ValidMemoryRefType(refType int) bool {
@@ -226,4 +233,3 @@ func MemoryScopeLevelLabel(scopeLevel int) string {
 		return "PROJECT"
 	}
 }
-

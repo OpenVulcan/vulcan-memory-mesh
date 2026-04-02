@@ -104,6 +104,209 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchFusesHybridRecall verifies vector recall and lexical recall are fused through RRF before the grouped response is returned.
+// TestMemoryUseCaseSearchFusesHybridRecall 用于验证向量召回和 lexical 召回会先经过 RRF 融合，再返回最终的分组结果。
+func TestMemoryUseCaseSearchFusesHybridRecall(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "向量命中", Details: "向量详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "混合命中", Details: "混合详情", VectorID: "vec-2"},
+		},
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "向量命中", Details: "向量详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "混合命中", Details: "混合详情", VectorID: "vec-2"},
+		},
+		lexicalHits: []logicdomain.MemoryLexicalHit{
+			{MemoryID: 202, Score: 0.98},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "向量命中", Score: 0.91},
+			{ID: "vec-2", Text: "混合命中", Score: 0.84},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureHybrid(true, 5, 60)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"background":"最近在讨论排序和检索。","query":"混合检索"}]`,
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with hybrid recall: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected hybrid results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 {
+		t.Fatalf("expected hybrid candidate to rank first, got %+v", result.Results[0].Hits)
+	}
+	if result.Results[0].Hits[0].Origin != "hybrid_rrf" {
+		t.Fatalf("expected hybrid origin, got %+v", result.Results[0].Hits[0])
+	}
+	if len(turns.lexicalQueries) != 1 || turns.lexicalQueries[0] != "混合检索" {
+		t.Fatalf("unexpected lexical queries: %+v", turns.lexicalQueries)
+	}
+	if len(turns.lexicalTopKs) != 1 || turns.lexicalTopKs[0] != 5 {
+		t.Fatalf("unexpected lexical top-k values: %+v", turns.lexicalTopKs)
+	}
+	if len(turns.lexicalFilters) != 1 {
+		t.Fatalf("unexpected lexical filter count: %+v", turns.lexicalFilters)
+	}
+	filter := turns.lexicalFilters[0]
+	if filter.UserID != 7 || filter.TeamID != 3 || filter.SpaceID != 5 || filter.ProjectID != 9 {
+		t.Fatalf("unexpected lexical filter: %+v", filter)
+	}
+}
+
+// TestMemoryUseCaseSearchAppliesMMRDiversity verifies the final candidate list keeps broader coverage instead of returning multiple near-duplicate high-score memories.
+// TestMemoryUseCaseSearchAppliesMMRDiversity 用于验证最终候选列表会保留更广的覆盖面，而不是返回多个近重复的高分记忆。
+func TestMemoryUseCaseSearchAppliesMMRDiversity(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "香蕉偏好", Details: "喜欢香蕉奶昔", VectorID: "vec-1", Vector: []float32{1, 0}},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "香蕉饮品", Details: "经常点香蕉奶昔", VectorID: "vec-2", Vector: []float32{0.99, 0.01}},
+			{ID: 203, OriginSessionID: 12, SourceTurnID: 43, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "咖啡偏好", Details: "上午会点美式咖啡", VectorID: "vec-3", Vector: []float32{0, 1}},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "香蕉偏好", Score: 0.95},
+			{ID: "vec-2", Text: "香蕉饮品", Score: 0.94},
+			{ID: "vec-3", Text: "咖啡偏好", Score: 0.80},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureMMR(true, 0.75)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"query":"饮品偏好"}]`,
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with mmr: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected mmr results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 201 || result.Results[0].Hits[1].MemoryRef.ID != 203 {
+		t.Fatalf("expected diversified hits [201 203], got %+v", result.Results[0].Hits)
+	}
+	if result.Results[0].Hits[0].Origin != "vector_mmr" || result.Results[0].Hits[1].Origin != "vector_mmr" {
+		t.Fatalf("expected mmr origin labels, got %+v", result.Results[0].Hits)
+	}
+	if len(vector.searchTopKs) != 1 || vector.searchTopKs[0] != 4 {
+		t.Fatalf("expected mmr to enlarge candidate pool to 4, got %+v", vector.searchTopKs)
+	}
+}
+
+// TestMemoryUseCaseSearchKeepsRankOrderWhenMMRDisabled verifies the search order remains unchanged when the diversity stage is not enabled.
+// TestMemoryUseCaseSearchKeepsRankOrderWhenMMRDisabled 用于验证在未启用多样性阶段时，检索顺序会保持不变。
+func TestMemoryUseCaseSearchKeepsRankOrderWhenMMRDisabled(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "香蕉偏好", Details: "喜欢香蕉奶昔", VectorID: "vec-1", Vector: []float32{1, 0}},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "香蕉饮品", Details: "经常点香蕉奶昔", VectorID: "vec-2", Vector: []float32{0.99, 0.01}},
+			{ID: 203, OriginSessionID: 12, SourceTurnID: 43, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "咖啡偏好", Details: "上午会点美式咖啡", VectorID: "vec-3", Vector: []float32{0, 1}},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "香蕉偏好", Score: 0.95},
+			{ID: "vec-2", Text: "香蕉饮品", Score: 0.94},
+			{ID: "vec-3", Text: "咖啡偏好", Score: 0.80},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"query":"饮品偏好"}]`,
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events without mmr: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected non-mmr results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 201 || result.Results[0].Hits[1].MemoryRef.ID != 202 {
+		t.Fatalf("expected original hits [201 202], got %+v", result.Results[0].Hits)
+	}
+	if len(vector.searchTopKs) != 1 || vector.searchTopKs[0] != 2 {
+		t.Fatalf("expected original candidate pool to stay at 2, got %+v", vector.searchTopKs)
+	}
+}
+
 // TestMemoryUseCaseSearchAppliesRerank verifies the optional rerank layer can reorder first-stage vector hits before the grouped response is returned.
 // TestMemoryUseCaseSearchAppliesRerank 用于验证可选 rerank 层会在返回分组结果前重排首轮向量命中。
 func TestMemoryUseCaseSearchAppliesRerank(t *testing.T) {
@@ -256,6 +459,10 @@ type stubTurnLookupStore struct {
 	windows            map[uint64]logicdomain.TurnDetailWindow
 	memoryRowsByID     []logicdomain.MemoryNodeRecord
 	memoryRowsByVector []logicdomain.MemoryNodeRecord
+	lexicalHits        []logicdomain.MemoryLexicalHit
+	lexicalQueries     []string
+	lexicalTopKs       []int
+	lexicalFilters     []logicdomain.SearchFilter
 	err                error
 }
 
@@ -305,6 +512,18 @@ func (s *stubTurnLookupStore) LoadMemoryNodesByVectorIDs(_ context.Context, _ []
 		return nil, s.err
 	}
 	return append([]logicdomain.MemoryNodeRecord(nil), s.memoryRowsByVector...), nil
+}
+
+// SearchLexicalMemory records the lexical search request and returns canned lexical hits for hybrid-recall assertions.
+// SearchLexicalMemory 用于记录 lexical 搜索请求，并返回预设 lexical 命中，供混合召回断言使用。
+func (s *stubTurnLookupStore) SearchLexicalMemory(_ context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
+	s.lexicalQueries = append(s.lexicalQueries, query)
+	s.lexicalTopKs = append(s.lexicalTopKs, topK)
+	s.lexicalFilters = append(s.lexicalFilters, filter)
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]logicdomain.MemoryLexicalHit(nil), s.lexicalHits...), nil
 }
 
 // FindRecentActiveMemoryByDedupe keeps the stub interface-complete for tests that only exercise search and turn-detail flows.

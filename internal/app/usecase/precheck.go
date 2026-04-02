@@ -394,7 +394,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				Abstract:     strings.TrimSpace(hit.Abstract),
 				Details:      strings.TrimSpace(hit.DetailsPreview),
 				Score:        hit.Score,
-				Origin:       "vector_search",
+				Origin:       strings.TrimSpace(hit.Origin),
 			}
 			if candidate.Abstract == "" && candidate.Details == "" {
 				continue
@@ -579,7 +579,7 @@ func buildFallbackContextItems(persona logicdomain.PersonaContext, hits []logicd
 	}
 	for _, hit := range hits {
 		if text := strings.TrimSpace(hit.Text); text != "" {
-			items = append(items, logicdomain.ContextItem{Kind: "memory", Title: "向量召回记忆", Text: text, Source: "vector", Score: hit.Score})
+			items = append(items, logicdomain.ContextItem{Kind: "memory", Title: "混合召回记忆", Text: text, Source: "memory", Score: hit.Score})
 		}
 	}
 	return items

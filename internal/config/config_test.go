@@ -31,6 +31,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
+	cfg.MemoryPipeline.LexicalTopK = 0
+	cfg.MemoryPipeline.RRFK = 0
+	cfg.MemoryPipeline.MMRLambda = 0
 	cfg.Rerank.Provider = ""
 	cfg.Rerank.Endpoint = ""
 	cfg.Rerank.Model = ""
@@ -91,6 +94,21 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity score = %#v", cfg.MemoryPipeline.MinSimilarityScore)
 	}
+	if !cfg.MemoryPipeline.HybridEnabled {
+		t.Fatal("expected hybrid retrieval to stay enabled by default")
+	}
+	if cfg.MemoryPipeline.LexicalTopK != 8 {
+		t.Fatalf("lexical top_k = %d", cfg.MemoryPipeline.LexicalTopK)
+	}
+	if cfg.MemoryPipeline.RRFK != 60 {
+		t.Fatalf("rrf_k = %d", cfg.MemoryPipeline.RRFK)
+	}
+	if !cfg.MemoryPipeline.MMREnabled {
+		t.Fatal("expected mmr to stay enabled by default")
+	}
+	if cfg.MemoryPipeline.MMRLambda != 0.75 {
+		t.Fatalf("mmr_lambda = %v", cfg.MemoryPipeline.MMRLambda)
+	}
 	if cfg.Rerank.Provider != "dashscope" {
 		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
 	}
@@ -116,6 +134,28 @@ func TestConfigNormalizeClampsSearchKeywordFanOut(t *testing.T) {
 	cfg.Normalize()
 	if cfg.MemoryPipeline.MaxSearchKeywords != 10 {
 		t.Fatalf("max search keywords after clamp = %d", cfg.MemoryPipeline.MaxSearchKeywords)
+	}
+}
+
+// TestConfigValidateRejectsInvalidHybridRetrievalKnobs verifies the new lexical recall and RRF parameters stay strictly positive once configured.
+// TestConfigValidateRejectsInvalidHybridRetrievalKnobs 用于验证新增的 lexical 召回和 RRF 参数一旦配置后必须保持严格正数。
+func TestConfigValidateRejectsInvalidHybridRetrievalKnobs(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.MemoryPipeline.LexicalTopK = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.lexical_top_k must be > 0" {
+		t.Fatalf("unexpected lexical_top_k validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.MemoryPipeline.RRFK = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.rrf_k must be > 0" {
+		t.Fatalf("unexpected rrf_k validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.MemoryPipeline.MMRLambda = 0
+	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.mmr_lambda must be in (0,1]" {
+		t.Fatalf("unexpected mmr_lambda validate error: %v", err)
 	}
 }
 
@@ -376,6 +416,35 @@ func TestApplyEnvOverridesSetsRerankSettings(t *testing.T) {
 	}
 	if cfg.Rerank.Timeout.Duration != 9*time.Second {
 		t.Fatalf("rerank timeout = %v", cfg.Rerank.Timeout.Duration)
+	}
+}
+
+// TestApplyEnvOverridesSetsHybridRetrievalSettings verifies process-level overrides can tune lexical recall and RRF without editing the base config file.
+// TestApplyEnvOverridesSetsHybridRetrievalSettings 用于验证进程级环境变量可以在不改基础配置文件的前提下调整 lexical 召回和 RRF 参数。
+func TestApplyEnvOverridesSetsHybridRetrievalSettings(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_MEMORY_HYBRID_ENABLED", "false")
+	t.Setenv("VMM_MEMORY_LEXICAL_TOP_K", "11")
+	t.Setenv("VMM_MEMORY_RRF_K", "77")
+	t.Setenv("VMM_MEMORY_MMR_ENABLED", "false")
+	t.Setenv("VMM_MEMORY_MMR_LAMBDA", "0.66")
+
+	applyEnvOverrides(&cfg)
+
+	if cfg.MemoryPipeline.HybridEnabled {
+		t.Fatal("expected hybrid retrieval to be disabled by env override")
+	}
+	if cfg.MemoryPipeline.LexicalTopK != 11 {
+		t.Fatalf("memory pipeline lexical top_k = %d", cfg.MemoryPipeline.LexicalTopK)
+	}
+	if cfg.MemoryPipeline.RRFK != 77 {
+		t.Fatalf("memory pipeline rrf_k = %d", cfg.MemoryPipeline.RRFK)
+	}
+	if cfg.MemoryPipeline.MMREnabled {
+		t.Fatal("expected mmr to be disabled by env override")
+	}
+	if cfg.MemoryPipeline.MMRLambda != 0.66 {
+		t.Fatalf("memory pipeline mmr_lambda = %v", cfg.MemoryPipeline.MMRLambda)
 	}
 }
 

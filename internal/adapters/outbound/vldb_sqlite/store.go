@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 10
+	currentSchemaVersion = 11
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -66,6 +66,7 @@ const (
 const resetManagedSchemaSQL = `
 DROP TABLE IF EXISTS vmm_profile_nodes;
 DROP TABLE IF EXISTS vmm_profile_instructions;
+DROP TABLE IF EXISTS vmm_memory_nodes_fts;
 DROP TABLE IF EXISTS vmm_memory_nodes;
 DROP TABLE IF EXISTS vmm_turn_records;
 DROP TABLE IF EXISTS vmm_chat_messages;
@@ -201,11 +202,18 @@ CREATE TABLE IF NOT EXISTS vmm_memory_nodes (
   created_timestamp BIGINT NOT NULL,
   updated_timestamp BIGINT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_project_status ON vmm_memory_nodes(project_id, memory_status, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_project_active_window ON vmm_memory_nodes(project_id, memory_status, expires_timestamp, id);
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_source_turn ON vmm_memory_nodes(source_turn_id, id);
-CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_origin_session ON vmm_memory_nodes(origin_session_id, memory_status, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_origin_session_active ON vmm_memory_nodes(origin_session_id, memory_status, expires_timestamp, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_memory_nodes_vector ON vmm_memory_nodes(vector_id);
-CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_dedupe ON vmm_memory_nodes(origin_session_id, source_kind, scope_level, dedupe_hash, memory_status, created_timestamp);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_dedupe_window ON vmm_memory_nodes(origin_session_id, project_id, user_id, source_kind, scope_level, dedupe_hash, memory_status, expires_timestamp, created_timestamp);
+
+CREATE VIRTUAL TABLE IF NOT EXISTS vmm_memory_nodes_fts USING fts5(
+  memory_id UNINDEXED,
+  abstract,
+  details,
+  tokenize='unicode61'
+);
 
 CREATE TABLE IF NOT EXISTS vmm_profile_nodes (
   id BIGINT PRIMARY KEY,
@@ -956,6 +964,7 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		}
 		record := normalizeTurnMemoryNodeRecord(session, turn, node, memoryStartID+uint64(idx), now)
 		script += buildMemoryNodeInsertSQL(record)
+		script += buildMemoryNodeFTSUpsertSQL(record)
 		insertedMemoryNodes = append(insertedMemoryNodes, record)
 	}
 	for idx, node := range analysis.ProfileNodes {
@@ -979,6 +988,7 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	}
 	if len(supersededMemoryIDs) > 0 {
 		script += buildMemoryNodesSupersedeSQL(supersededMemoryIDs, nowMs)
+		script += buildMemoryNodesFTSDeleteSQL(supersededMemoryIDs)
 	}
 	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("apply turn analysis: %w", err)
@@ -1975,6 +1985,7 @@ func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []stri
 	if len(vectorIDs) == 0 {
 		return []logicdomain.MemoryNodeRecord{}, nil
 	}
+	nowMs := time.Now().UTC().UnixMilli()
 	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -1984,8 +1995,9 @@ SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_tur
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE vector_id IN (%s)
+  AND %s
 ORDER BY created_timestamp ASC, id ASC
-`, sqlStringList(vectorIDs)))
+`, sqlStringList(vectorIDs), buildActiveUnexpiredMemoryCondition("", nowMs)))
 	if err != nil {
 		return nil, fmt.Errorf("query memory nodes by vector ids: %w", err)
 	}
@@ -1994,6 +2006,63 @@ ORDER BY created_timestamp ASC, id ASC
 		out = append(out, row.toMemoryNodeRecord())
 	}
 	return out, nil
+}
+
+// SearchLexicalMemory runs one SQLite FTS recall over durable memory text and returns ranked memory ids for later relational materialization plus RRF fusion.
+// SearchLexicalMemory 用于在长期记忆文本上执行一次 SQLite FTS 召回，并返回后续回表与 RRF 融合所需的排序 memory id。
+func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
+	query = sanitizeSQLiteFTSQuery(query)
+	if query == "" || topK <= 0 {
+		return []logicdomain.MemoryLexicalHit{}, nil
+	}
+	if topK > 32 {
+		topK = 32
+	}
+
+	// Reuse the same project hierarchy filter as vector recall so hybrid fusion compares candidates from one consistent scope.
+	// 复用与向量召回一致的项目层级过滤，确保混合融合比较的是同一作用域中的候选。
+	sqlText := `
+SELECT n.id AS memory_id, bm25(vmm_memory_nodes_fts, 2.0, 1.0) AS rank
+FROM vmm_memory_nodes_fts
+JOIN vmm_memory_nodes AS n ON n.id = vmm_memory_nodes_fts.rowid
+WHERE vmm_memory_nodes_fts MATCH ?
+`
+	params := []any{query}
+	if filter.TeamID > 0 {
+		sqlText += `  AND n.team_id = ?` + "\n"
+		params = append(params, filter.TeamID)
+	}
+	if filter.SpaceID > 0 {
+		sqlText += `  AND n.space_id = ?` + "\n"
+		params = append(params, filter.SpaceID)
+	}
+	if filter.ProjectID > 0 {
+		sqlText += `  AND n.project_id = ?` + "\n"
+		params = append(params, filter.ProjectID)
+	}
+	if filter.UserID > 0 {
+		sqlText += `  AND (n.user_id = 0 OR n.user_id = ?)` + "\n"
+		params = append(params, filter.UserID)
+	}
+	if filter.SessionID > 0 {
+		sqlText += `  AND n.origin_session_id = ?` + "\n"
+		params = append(params, filter.SessionID)
+	}
+	sqlText += fmt.Sprintf("  AND %s\nORDER BY rank ASC, n.id ASC\nLIMIT ?\n", buildActiveUnexpiredMemoryCondition("n", time.Now().UTC().UnixMilli()))
+	params = append(params, topK)
+
+	rows, err := queryRows[memoryLexicalRow](s, ctx, sqlText, params...)
+	if err != nil {
+		return nil, fmt.Errorf("search lexical memory: %w", err)
+	}
+	hits := make([]logicdomain.MemoryLexicalHit, 0, len(rows))
+	for _, row := range rows {
+		hits = append(hits, logicdomain.MemoryLexicalHit{
+			MemoryID: row.MemoryID,
+			Score:    -row.Rank,
+		})
+	}
+	return hits, nil
 }
 
 // FindRecentActiveMemoryByDedupe finds one recent active direct-write memory row inside the same resolved session scope and soft-idempotency window.
@@ -2020,10 +2089,11 @@ WHERE origin_session_id = ?
   AND scope_level = ?
   AND dedupe_hash = ?
   AND memory_status = ?
+  AND (expires_timestamp <= 0 OR expires_timestamp > ?)
   AND created_timestamp >= ?
 ORDER BY created_timestamp DESC, id DESC
 LIMIT 1
-`, session.SessionID, session.ProjectID, session.UserID, sourceKind, scopeLevel, strings.TrimSpace(dedupeHash), logicdomain.MemoryStatusActive, notBefore.UTC().UnixMilli())
+`, session.SessionID, session.ProjectID, session.UserID, sourceKind, scopeLevel, strings.TrimSpace(dedupeHash), logicdomain.MemoryStatusActive, time.Now().UTC().UnixMilli(), notBefore.UTC().UnixMilli())
 	if err != nil {
 		return logicdomain.MemoryNodeRecord{}, false, fmt.Errorf("query memory dedupe row: %w", err)
 	}
@@ -2055,7 +2125,8 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 	}
 	now := time.Now().UTC()
 	record = normalizeDirectMemoryNodeRecord(session, record, nextID, now)
-	if err := s.exec(ctx, buildMemoryNodeInsertSQL(record)); err != nil {
+	script := buildMemoryNodeInsertSQL(record) + buildMemoryNodeFTSUpsertSQL(record)
+	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("insert direct memory node: %w", err)
 	}
 	return record, nil
@@ -2067,6 +2138,7 @@ func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicd
 	if session.SessionID == 0 {
 		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
+	nowMs := time.Now().UTC().UnixMilli()
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -2075,9 +2147,11 @@ SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_tur
        recalled_count, adopted_count, cross_session_adopted_count, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
-WHERE origin_session_id = ? AND memory_status = ?
+WHERE origin_session_id = ?
+  AND memory_status = ?
+  AND (expires_timestamp <= 0 OR expires_timestamp > ?)
 ORDER BY COALESCE(source_turn_id, 0) ASC, id ASC
-`, session.SessionID, logicdomain.MemoryStatusActive)
+`, session.SessionID, logicdomain.MemoryStatusActive, nowMs)
 	if err != nil {
 		return nil, fmt.Errorf("query active session memory nodes: %w", err)
 	}
@@ -2097,6 +2171,7 @@ func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicd
 	if observedBefore.IsZero() {
 		return []logicdomain.TurnAnalysisDirectWrite{}, nil
 	}
+	nowMs := time.Now().UTC().UnixMilli()
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -2108,10 +2183,11 @@ FROM vmm_memory_nodes
 WHERE origin_session_id = ?
   AND source_kind = ?
   AND memory_status = ?
+  AND (expires_timestamp <= 0 OR expires_timestamp > ?)
   AND created_timestamp > ?
   AND created_timestamp <= ?
 ORDER BY created_timestamp ASC, id ASC
-`, session.SessionID, logicdomain.MemorySourceKindGRPCAIWrite, logicdomain.MemoryStatusActive, observedAfter.UTC().UnixMilli(), observedBefore.UTC().UnixMilli())
+`, session.SessionID, logicdomain.MemorySourceKindGRPCAIWrite, logicdomain.MemoryStatusActive, nowMs, observedAfter.UTC().UnixMilli(), observedBefore.UTC().UnixMilli())
 	if err != nil {
 		return nil, fmt.Errorf("query recent direct memory writes: %w", err)
 	}
@@ -3341,6 +3417,27 @@ INSERT INTO vmm_memory_nodes (
 		sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
 }
 
+// buildMemoryNodeFTSUpsertSQL mirrors one durable memory row into the SQLite FTS table so hybrid lexical recall can search abstract and details together.
+// buildMemoryNodeFTSUpsertSQL 用于把长期记忆行同步镜像到 SQLite FTS 表，让混合 lexical 召回可以同时搜索 abstract 和 details。
+func buildMemoryNodeFTSUpsertSQL(record logicdomain.MemoryNodeRecord) string {
+	return fmt.Sprintf(`
+INSERT OR REPLACE INTO vmm_memory_nodes_fts (rowid, memory_id, abstract, details)
+VALUES (%d, %d, %s, %s);
+`, record.ID, record.ID, sqlStringLiteral(strings.TrimSpace(record.Abstract)), sqlStringLiteral(strings.TrimSpace(record.Details)))
+}
+
+// buildMemoryNodesFTSDeleteSQL removes superseded durable rows from the SQLite FTS mirror so lexical recall does not waste work on dead memories.
+// buildMemoryNodesFTSDeleteSQL 用于把已 superseded 的长期行从 SQLite FTS 镜像中删除，避免 lexical 召回继续在失效记忆上浪费开销。
+func buildMemoryNodesFTSDeleteSQL(memoryIDs []uint64) string {
+	if len(memoryIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`
+DELETE FROM vmm_memory_nodes_fts
+WHERE rowid IN (%s);
+`, sqlUint64List(memoryIDs))
+}
+
 // buildMemoryAdoptionUpdateSQL renders one raw UPDATE for a memory row that has just been adopted by pre-check.
 // buildMemoryAdoptionUpdateSQL 用于渲染一条刚被 pre-check 采纳的记忆行更新语句。
 func buildMemoryAdoptionUpdateSQL(record logicdomain.MemoryNodeRecord) string {
@@ -3778,6 +3875,48 @@ func normalizeStringList(values []string) []string {
 	return out
 }
 
+// buildActiveUnexpiredMemoryCondition renders the SQL predicate shared by hot-path memory reads that should ignore superseded or expired rows.
+// buildActiveUnexpiredMemoryCondition 用于渲染热路径记忆查询共用的 SQL 条件，让这类读取自动忽略 superseded 或已过期行。
+func buildActiveUnexpiredMemoryCondition(alias string, nowMs int64) string {
+	alias = strings.TrimSpace(alias)
+	if alias != "" {
+		alias += "."
+	}
+	return fmt.Sprintf(`%smemory_status = %d AND (%sexpires_timestamp <= 0 OR %sexpires_timestamp > %d)`, alias, logicdomain.MemoryStatusActive, alias, alias, nowMs)
+}
+
+// sanitizeSQLiteFTSQuery converts free-form user text into a conservative FTS5 MATCH expression so punctuation or mixed-language input does not break lexical recall.
+// sanitizeSQLiteFTSQuery 用于把自由文本转换成保守的 FTS5 MATCH 表达式，避免标点或中英混合输入直接打断 lexical 召回。
+func sanitizeSQLiteFTSQuery(raw string) string {
+	normalized := textutil.NormalizeWhitespace(raw)
+	if normalized == "" {
+		return ""
+	}
+	tokens := textutil.Tokenize(normalized)
+	if len(tokens) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(tokens)+1)
+	seen := make(map[string]struct{}, len(tokens)+1)
+	appendPart := func(value string) {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			return
+		}
+		value = `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
+		if _, ok := seen[value]; ok {
+			return
+		}
+		seen[value] = struct{}{}
+		parts = append(parts, value)
+	}
+	appendPart(normalized)
+	for _, token := range tokens {
+		appendPart(token)
+	}
+	return strings.Join(parts, " OR ")
+}
+
 // sortedProfileBindingIDs returns one deterministic ascending id slice from a rendered-profile update map so SQL scripts remain stable in tests and logs.
 // sortedProfileBindingIDs 用于从渲染后画像更新 map 中返回确定性的升序 id 列表，确保 SQL 脚本在测试和日志里保持稳定。
 func sortedProfileBindingIDs(values map[uint64]string) []uint64 {
@@ -4043,6 +4182,13 @@ type memoryNodeRow struct {
 	DedupeHash               string  `json:"dedupe_hash"`
 	CreatedTimestamp         int64   `json:"created_timestamp"`
 	UpdatedTimestamp         int64   `json:"updated_timestamp"`
+}
+
+// memoryLexicalRow stores one lexical recall row produced by SQLite FTS so the adapter can decode memory ids plus rank scores.
+// memoryLexicalRow 用于保存 SQLite FTS 产出的 lexical 召回行，让适配器可以解码 memory id 和排序分数。
+type memoryLexicalRow struct {
+	MemoryID uint64  `json:"memory_id"`
+	Rank     float64 `json:"rank"`
 }
 
 func (r memoryNodeRow) toDomain() logicdomain.SessionMemoryNodeRecord {

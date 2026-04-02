@@ -359,6 +359,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `lancedb.vector_column`
 - `llm.*`
 - `embedding.*`
+- `memory_pipeline.*`
 - `rerank.*`
 - `noise.*`
 - `post_action.input_mode`
@@ -367,6 +368,23 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `post_action.session_analysis_idle_timeout`
 - `post_action.session_analysis_history_turns`
 - `post_action.session_analysis_max_input_tokens`
+
+`memory_pipeline` 下当前新增的是“向量 + SQLite FTS5 混合召回”参数：
+
+- `max_search_keywords`
+  - 仍用于 `PreCheck` 的关键词扇出上限
+- `min_similarity_score`
+  - 仍用于 `PreCheck` 过滤低质量召回候选
+- `hybrid_enabled`
+  - 是否启用“向量召回 + SQLite FTS5 lexical 召回 + RRF 融合”链路；关闭时保持纯向量检索
+- `lexical_top_k`
+  - 每个 query group 最多取多少条 lexical 候选参与 RRF 融合
+- `rrf_k`
+  - Reciprocal Rank Fusion 的平滑常数；值越大，不同通道的名次差异被压得越平缓
+- `mmr_enabled`
+  - 是否在融合或 rerank 之后启用 MMR 多样性控制；开启后会优先保留更分散的候选，减少近重复记忆挤占名额
+- `mmr_lambda`
+  - MMR 的相关性与多样性权重，越接近 `1` 越偏向原始相关性排序，越接近 `0` 越偏向去重分散
 
 `rerank` 下当前新增的是“向量召回后的第二阶段重排序”参数：
 

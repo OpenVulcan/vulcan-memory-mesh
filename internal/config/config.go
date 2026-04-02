@@ -203,11 +203,16 @@ type PreCheckConfig struct {
 	SimilarityThreshold float64  `json:"similarity_threshold,omitempty"`
 }
 
-// MemoryPipelineConfig controls keyword fan-out and similarity filtering in the memory recall pipeline.
-// MemoryPipelineConfig 用于控制记忆召回流水线中的关键词扇出和相似度过滤。
+// MemoryPipelineConfig controls keyword fan-out, hybrid retrieval, and diversity filtering in the memory recall pipeline.
+// MemoryPipelineConfig 用于控制记忆召回流水线中的关键词扇出、混合检索和多样性过滤。
 type MemoryPipelineConfig struct {
 	MaxSearchKeywords  int      `json:"max_search_keywords"`
 	MinSimilarityScore *float64 `json:"min_similarity_score,omitempty"`
+	HybridEnabled      bool     `json:"hybrid_enabled"`
+	LexicalTopK        int      `json:"lexical_top_k,omitempty"`
+	RRFK               int      `json:"rrf_k,omitempty"`
+	MMREnabled         bool     `json:"mmr_enabled"`
+	MMRLambda          float64  `json:"mmr_lambda,omitempty"`
 }
 
 // DefaultLocal executes the DefaultLocal logic.
@@ -239,8 +244,16 @@ func DefaultLocal() Config {
 			SessionAnalysisHistoryTurns:   3,
 			SessionAnalysisMaxInputTokens: 6000,
 		},
-		PreCheck:       PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
-		MemoryPipeline: MemoryPipelineConfig{MaxSearchKeywords: 5, MinSimilarityScore: float64Ptr(0.75)},
+		PreCheck: PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
+		MemoryPipeline: MemoryPipelineConfig{
+			MaxSearchKeywords:  5,
+			MinSimilarityScore: float64Ptr(0.75),
+			HybridEnabled:      true,
+			LexicalTopK:        8,
+			RRFK:               60,
+			MMREnabled:         true,
+			MMRLambda:          0.75,
+		},
 	}
 }
 
@@ -424,6 +437,15 @@ func (c *Config) Normalize() {
 	if c.MemoryPipeline.MaxSearchKeywords > 10 {
 		c.MemoryPipeline.MaxSearchKeywords = 10
 	}
+	if c.MemoryPipeline.LexicalTopK <= 0 {
+		c.MemoryPipeline.LexicalTopK = 8
+	}
+	if c.MemoryPipeline.RRFK <= 0 {
+		c.MemoryPipeline.RRFK = 60
+	}
+	if c.MemoryPipeline.MMRLambda <= 0 || c.MemoryPipeline.MMRLambda > 1 {
+		c.MemoryPipeline.MMRLambda = 0.75
+	}
 	if c.MemoryPipeline.MinSimilarityScore == nil {
 		if c.PreCheck.SimilarityThreshold > 0 {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(c.PreCheck.SimilarityThreshold)
@@ -543,6 +565,15 @@ func (c Config) Validate() error {
 	}
 	if c.MemoryPipeline.MaxSearchKeywords <= 0 || c.MemoryPipeline.MaxSearchKeywords > 10 {
 		return errors.New("memory_pipeline.max_search_keywords must be in [1,10]")
+	}
+	if c.MemoryPipeline.LexicalTopK <= 0 {
+		return errors.New("memory_pipeline.lexical_top_k must be > 0")
+	}
+	if c.MemoryPipeline.RRFK <= 0 {
+		return errors.New("memory_pipeline.rrf_k must be > 0")
+	}
+	if c.MemoryPipeline.MMRLambda <= 0 || c.MemoryPipeline.MMRLambda > 1 {
+		return errors.New("memory_pipeline.mmr_lambda must be in (0,1]")
 	}
 	if c.MemoryPipeline.MinSimilarityScore == nil {
 		return errors.New("memory_pipeline.min_similarity_score must be set")
@@ -745,6 +776,11 @@ func applyEnvOverrides(cfg *Config) {
 	setFloat("VMM_PRE_CHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
+	setBool("VMM_MEMORY_HYBRID_ENABLED", &cfg.MemoryPipeline.HybridEnabled)
+	setInt("VMM_MEMORY_LEXICAL_TOP_K", &cfg.MemoryPipeline.LexicalTopK)
+	setInt("VMM_MEMORY_RRF_K", &cfg.MemoryPipeline.RRFK)
+	setBool("VMM_MEMORY_MMR_ENABLED", &cfg.MemoryPipeline.MMREnabled)
+	setFloat("VMM_MEMORY_MMR_LAMBDA", &cfg.MemoryPipeline.MMRLambda)
 }
 
 // isOpenAIProvider reports whether one provider alias resolves to the supported OpenAI-compatible adapter.

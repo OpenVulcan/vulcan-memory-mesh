@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -94,6 +95,8 @@ type MemoryQueryHit struct {
 	DetailsPreview string
 	Category       int
 	Score          float64
+	Origin         string
+	Vector         []float32
 }
 
 // MemoryQueryGroupResult returns the echoed JSON query item together with the hit list produced for that item.
@@ -105,8 +108,8 @@ type MemoryQueryGroupResult struct {
 	Hits       []MemoryQueryHit
 }
 
-// MemoryQueryResult returns the resolved user/project targets plus all grouped vector-search results.
-// MemoryQueryResult 用于返回已解析的 user/project 目标，以及全部分组向量检索结果。
+// MemoryQueryResult returns the resolved user/project targets plus all grouped recall results after fusion, rerank, and optional diversity control.
+// MemoryQueryResult 用于返回已解析的 user/project 目标，以及融合、重排和可选多样性控制后的全部分组召回结果。
 type MemoryQueryResult struct {
 	UserTarget    logicdomain.ProfileTargetRef
 	ProjectTarget logicdomain.ProfileTargetRef
@@ -202,13 +205,18 @@ type MemoryExecutor interface {
 // MemoryUseCase orchestrates grouped memory search, mixed detail lookup, and direct AI memory writes on top of profile-target resolution and unified relational memory rows.
 // MemoryUseCase 用于在画像目标解析和统一关系记忆行之上，编排分组记忆检索、混合详情查询以及 AI 主动写记忆流程。
 type MemoryUseCase struct {
-	profiles   appports.ProfileStore
-	memories   appports.MemoryStore
-	embedding  appports.EmbeddingClient
-	reranker   appports.RerankerClient
-	rerankTopN int
-	vector     appports.VectorStore
-	logger     *logx.Logger
+	profiles      appports.ProfileStore
+	memories      appports.MemoryStore
+	embedding     appports.EmbeddingClient
+	hybridEnabled bool
+	lexicalTopK   int
+	rrfK          int
+	mmrEnabled    bool
+	mmrLambda     float64
+	reranker      appports.RerankerClient
+	rerankTopN    int
+	vector        appports.VectorStore
+	logger        *logx.Logger
 }
 
 // NewMemoryUseCase creates a MemoryUseCase instance.
@@ -218,13 +226,49 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		logger = logx.Default()
 	}
 	return &MemoryUseCase{
-		profiles:   profiles,
-		memories:   memories,
-		embedding:  embedding,
-		rerankTopN: defaultMemorySearchTopK,
-		vector:     vector,
-		logger:     logger,
+		profiles:    profiles,
+		memories:    memories,
+		embedding:   embedding,
+		lexicalTopK: defaultMemorySearchTopK,
+		rrfK:        60,
+		mmrLambda:   0.75,
+		rerankTopN:  defaultMemorySearchTopK,
+		vector:      vector,
+		logger:      logger,
 	}
+}
+
+// ConfigureHybrid attaches the lexical-recall and RRF knobs used by the mixed retrieval pipeline.
+// ConfigureHybrid 用于挂载混合检索流水线使用的 lexical 召回和 RRF 参数。
+func (u *MemoryUseCase) ConfigureHybrid(enabled bool, lexicalTopK, rrfK int) {
+	if u == nil {
+		return
+	}
+	u.hybridEnabled = enabled
+	if lexicalTopK <= 0 {
+		lexicalTopK = defaultMemorySearchTopK
+	}
+	if lexicalTopK > maxMemorySearchTopK {
+		lexicalTopK = maxMemorySearchTopK
+	}
+	if rrfK <= 0 {
+		rrfK = 60
+	}
+	u.lexicalTopK = lexicalTopK
+	u.rrfK = rrfK
+}
+
+// ConfigureMMR attaches the optional diversity-control step used after fusion/rerank so near-duplicate candidates stop crowding out broader context.
+// ConfigureMMR 用于挂载融合或 rerank 之后的可选多样性控制步骤，避免近重复候选挤占更广的上下文信息。
+func (u *MemoryUseCase) ConfigureMMR(enabled bool, lambda float64) {
+	if u == nil {
+		return
+	}
+	u.mmrEnabled = enabled
+	if lambda <= 0 || lambda > 1 {
+		lambda = 0.75
+	}
+	u.mmrLambda = lambda
 }
 
 // ConfigureRerank attaches one optional rerank backend and caps how many first-stage hits each query group may send into it.
@@ -243,8 +287,8 @@ func (u *MemoryUseCase) ConfigureRerank(reranker appports.RerankerClient, topN i
 	u.rerankTopN = topN
 }
 
-// Search resolves the concrete project/user scope, parses the grouped JSON payload, embeds each item, and returns enriched unified memory refs.
-// Search 用于解析具体的 project/user 范围、解析分组 JSON 载荷、对每条输入做 embedding，并返回补全后的统一记忆引用。
+// Search resolves the concrete project/user scope, parses the grouped JSON payload, runs the configured retrieval stages, and returns enriched unified memory refs.
+// Search 用于解析具体的 project/user 范围、解析分组 JSON 载荷、执行已配置的检索阶段，并返回补全后的统一记忆引用。
 func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error) {
 	if u == nil || u.profiles == nil {
 		return MemoryQueryResult{}, fmt.Errorf("profile store is nil")
@@ -300,9 +344,21 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		ProjectID: projectTarget.ProjectID,
 	}
 	topK := normalizeMemorySearchTopK(cmd.TopK)
+	candidatePoolK := topK
+	if u.hybridEnabled || u.reranker != nil || u.mmrEnabled {
+		lexicalTopK := 0
+		if u.hybridEnabled {
+			lexicalTopK = u.lexicalTopK
+		}
+		rerankTopN := 0
+		if u.reranker != nil {
+			rerankTopN = u.rerankTopN
+		}
+		candidatePoolK = normalizeMemoryCandidatePoolK(topK, lexicalTopK, rerankTopN, u.mmrEnabled)
+	}
 	results := make([]MemoryQueryGroupResult, 0, len(items))
 	for idx, item := range items {
-		hits, err := u.vector.Search(ctx, embedResp.Vectors[idx], topK, filter)
+		hits, err := u.vector.Search(ctx, embedResp.Vectors[idx], candidatePoolK, filter)
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
@@ -310,12 +366,14 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
+		mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
 		mapped = u.rerankSearchHits(ctx, buildMemorySearchText(item), mapped)
+		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
 			Background: item.Background,
 			Query:      item.Query,
-			Hits:       mapped,
+			Hits:       trimSearchHits(mapped, topK),
 		})
 	}
 	return MemoryQueryResult{
@@ -666,6 +724,375 @@ func normalizeMemorySearchTopK(topK int) int {
 	return topK
 }
 
+// normalizeMemoryCandidatePoolK keeps the mixed-recall candidate pool large enough for lexical fusion, rerank, and optional MMR without breaking the repo-wide RPC cap.
+// normalizeMemoryCandidatePoolK 用于让混合召回候选池足够承载 lexical 融合、rerank 和可选 MMR，同时继续遵守仓库级 RPC 上限。
+func normalizeMemoryCandidatePoolK(finalTopK, lexicalTopK, rerankTopN int, mmrEnabled bool) int {
+	poolK := finalTopK
+	if lexicalTopK > poolK {
+		poolK = lexicalTopK
+	}
+	if rerankTopN > poolK {
+		poolK = rerankTopN
+	}
+	if mmrEnabled {
+		mmrPoolK := finalTopK * 2
+		if mmrPoolK > poolK {
+			poolK = mmrPoolK
+		}
+	}
+	return normalizeMemorySearchTopK(poolK)
+}
+
+// hybridizeSearchHits optionally augments vector hits with lexical recall and fuses both channels through RRF.
+// hybridizeSearchHits 用于按需使用 lexical 召回增强向量命中，并通过 RRF 融合两个通道。
+func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQueryItem, filter logicdomain.SearchFilter, poolK int, vectorHits []MemoryQueryHit) []MemoryQueryHit {
+	if u == nil || !u.hybridEnabled || u.memories == nil {
+		return trimSearchHits(vectorHits, poolK)
+	}
+	query := buildMemoryLexicalQuery(item)
+	if strings.TrimSpace(query) == "" {
+		return trimSearchHits(vectorHits, poolK)
+	}
+	lexicalHits, err := u.memories.SearchLexicalMemory(ctx, query, poolK, filter)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Warn("memory lexical search degraded", "query", strings.TrimSpace(query), "err", err)
+		}
+		return trimSearchHits(vectorHits, poolK)
+	}
+	if len(lexicalHits) == 0 {
+		return trimSearchHits(vectorHits, poolK)
+	}
+	materialized, err := u.materializeLexicalHits(ctx, lexicalHits)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Warn("memory lexical materialization degraded", "query", strings.TrimSpace(query), "err", err)
+		}
+		return trimSearchHits(vectorHits, poolK)
+	}
+	return fuseSearchHitsByRRF(vectorHits, materialized, poolK, u.rrfK)
+}
+
+// buildMemoryLexicalQuery keeps lexical recall focused on the key query instead of the full embedding background text.
+// buildMemoryLexicalQuery 用于让 lexical 召回聚焦关键查询语句，而不是完整的 embedding 背景文本。
+func buildMemoryLexicalQuery(item MemoryQueryItem) string {
+	return strings.TrimSpace(item.Query)
+}
+
+// materializeLexicalHits loads the durable rows for lexical hits and converts them into the same public hit shape used by vector recall.
+// materializeLexicalHits 用于回表加载 lexical 命中的长期行，并把它们转换成与向量召回一致的公开命中结构。
+func (u *MemoryUseCase) materializeLexicalHits(ctx context.Context, hits []logicdomain.MemoryLexicalHit) ([]MemoryQueryHit, error) {
+	memoryIDs := collectLexicalMemoryIDs(hits)
+	if len(memoryIDs) == 0 {
+		return []MemoryQueryHit{}, nil
+	}
+	rows, err := u.memories.LoadMemoryNodesByIDs(ctx, memoryIDs)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		byID[row.ID] = row
+	}
+	mapped := make([]MemoryQueryHit, 0, len(hits))
+	total := len(hits)
+	for idx, hit := range hits {
+		row, ok := byID[hit.MemoryID]
+		if !ok {
+			continue
+		}
+		mappedHit := MemoryQueryHit{
+			MemoryRef: logicdomain.MemoryRef{
+				Type: logicdomain.MemoryRefTypeMemory,
+				ID:   row.ID,
+			},
+			SourceKind:     row.SourceKind,
+			ScopeLevel:     row.ScopeLevel,
+			SessionID:      row.OriginSessionID,
+			Abstract:       strings.TrimSpace(row.Abstract),
+			DetailsPreview: strings.TrimSpace(row.Details),
+			Category:       row.Category,
+			Score:          normalizedRankScore(idx+1, total),
+			Origin:         "lexical_search",
+			Vector:         append([]float32(nil), row.Vector...),
+		}
+		if row.SourceTurnID > 0 {
+			mappedHit.SourceRef = logicdomain.MemoryRef{
+				Type: logicdomain.MemoryRefTypeTurn,
+				ID:   row.SourceTurnID,
+			}
+		}
+		mapped = append(mapped, mappedHit)
+	}
+	return mapped, nil
+}
+
+// collectLexicalMemoryIDs removes empty and duplicate lexical hit ids before the relational materialization query starts.
+// collectLexicalMemoryIDs 用于在关系层回表开始前去掉空值和重复的 lexical 命中 id。
+func collectLexicalMemoryIDs(hits []logicdomain.MemoryLexicalHit) []uint64 {
+	if len(hits) == 0 {
+		return nil
+	}
+	seen := make(map[uint64]struct{}, len(hits))
+	ids := make([]uint64, 0, len(hits))
+	for _, hit := range hits {
+		if hit.MemoryID == 0 {
+			continue
+		}
+		if _, ok := seen[hit.MemoryID]; ok {
+			continue
+		}
+		seen[hit.MemoryID] = struct{}{}
+		ids = append(ids, hit.MemoryID)
+	}
+	return ids
+}
+
+// fuseSearchHitsByRRF merges vector and lexical hits by reciprocal-rank fusion while preserving one caller-friendly score in the 0..1 range.
+// fuseSearchHitsByRRF 用于通过 reciprocal-rank fusion 融合向量和 lexical 命中，并保留一个 0..1 区间内的调用方友好分数。
+func fuseSearchHitsByRRF(vectorHits, lexicalHits []MemoryQueryHit, topK, rrfK int) []MemoryQueryHit {
+	type fusedCandidate struct {
+		Hit      MemoryQueryHit
+		RRFScore float64
+		Channels int
+	}
+	if rrfK <= 0 {
+		rrfK = 60
+	}
+	candidates := make(map[uint64]*fusedCandidate, len(vectorHits)+len(lexicalHits))
+	merge := func(hits []MemoryQueryHit, channel string) {
+		total := len(hits)
+		for idx, hit := range hits {
+			if hit.MemoryRef.ID == 0 {
+				continue
+			}
+			candidate, ok := candidates[hit.MemoryRef.ID]
+			if !ok {
+				copyHit := hit
+				candidate = &fusedCandidate{Hit: copyHit}
+				candidates[hit.MemoryRef.ID] = candidate
+			}
+			candidate.RRFScore += 1.0 / float64(rrfK+idx+1)
+			candidate.Channels++
+			if hit.Score > candidate.Hit.Score {
+				candidate.Hit.Score = hit.Score
+			}
+			switch {
+			case candidate.Hit.Origin == "":
+				candidate.Hit.Origin = channel
+			case candidate.Hit.Origin != channel:
+				candidate.Hit.Origin = "hybrid_rrf"
+			}
+			if strings.TrimSpace(candidate.Hit.Abstract) == "" {
+				candidate.Hit.Abstract = hit.Abstract
+			}
+			if strings.TrimSpace(candidate.Hit.DetailsPreview) == "" {
+				candidate.Hit.DetailsPreview = hit.DetailsPreview
+			}
+			if candidate.Hit.SourceRef.Empty() && !hit.SourceRef.Empty() {
+				candidate.Hit.SourceRef = hit.SourceRef
+			}
+			if candidate.Hit.SessionID == 0 {
+				candidate.Hit.SessionID = hit.SessionID
+			}
+			if total > 0 {
+				rankScore := normalizedRankScore(idx+1, total)
+				if rankScore > candidate.Hit.Score {
+					candidate.Hit.Score = rankScore
+				}
+			}
+		}
+	}
+	merge(vectorHits, "vector_search")
+	merge(lexicalHits, "lexical_search")
+
+	fused := make([]fusedCandidate, 0, len(candidates))
+	for _, candidate := range candidates {
+		fused = append(fused, *candidate)
+	}
+	sort.SliceStable(fused, func(i, j int) bool {
+		if fused[i].RRFScore == fused[j].RRFScore {
+			if fused[i].Hit.Score == fused[j].Hit.Score {
+				return fused[i].Hit.MemoryRef.ID < fused[j].Hit.MemoryRef.ID
+			}
+			return fused[i].Hit.Score > fused[j].Hit.Score
+		}
+		return fused[i].RRFScore > fused[j].RRFScore
+	})
+	if topK > 0 && len(fused) > topK {
+		fused = fused[:topK]
+	}
+	out := make([]MemoryQueryHit, 0, len(fused))
+	for idx, candidate := range fused {
+		hit := candidate.Hit
+		rankScore := normalizedRankScore(idx+1, len(fused))
+		if rankScore > hit.Score {
+			hit.Score = rankScore
+		}
+		if candidate.Channels > 1 && hit.Score < 1 {
+			hit.Score = math.Min(1, hit.Score+0.03)
+		}
+		out = append(out, hit)
+	}
+	return out
+}
+
+// normalizedRankScore converts one 1-based rank into a stable 0..1 score so lexical-only or fused hits can still pass the existing pre-check threshold gate.
+// normalizedRankScore 用于把 1-based 排名转换成稳定的 0..1 分数，让 lexical-only 或融合命中仍能通过现有 pre-check 阈值门槛。
+func normalizedRankScore(rank, total int) float64 {
+	if rank <= 0 || total <= 0 {
+		return 0
+	}
+	score := 1 - (float64(rank-1) / float64(total*2))
+	if score < 0 {
+		return 0
+	}
+	if score > 1 {
+		return 1
+	}
+	return score
+}
+
+// trimSearchHits applies the final top-k cap while preserving the already established hit order.
+// trimSearchHits 用于在保持既有命中顺序的前提下施加最终 top-k 截断。
+func trimSearchHits(hits []MemoryQueryHit, topK int) []MemoryQueryHit {
+	if topK <= 0 || len(hits) <= topK {
+		return hits
+	}
+	return append([]MemoryQueryHit(nil), hits[:topK]...)
+}
+
+// applyMMRSearchHits diversifies the already-ranked candidate pool so highly similar memories do not monopolize the final top-k.
+// applyMMRSearchHits 用于对已经排好序的候选池做多样性重排，避免高度相似的记忆垄断最终 top-k。
+func (u *MemoryUseCase) applyMMRSearchHits(ctx context.Context, topK int, hits []MemoryQueryHit) []MemoryQueryHit {
+	if u == nil || !u.mmrEnabled || len(hits) <= 1 {
+		return trimSearchHits(hits, topK)
+	}
+	limit := topK
+	if limit <= 0 || limit > len(hits) {
+		limit = len(hits)
+	}
+	working := append([]MemoryQueryHit(nil), hits...)
+	working = u.ensureMMRVectors(ctx, working)
+	if len(working) <= 1 {
+		return trimSearchHits(working, limit)
+	}
+
+	selected := make([]MemoryQueryHit, 0, limit)
+	used := make(map[uint64]struct{}, limit)
+	for len(selected) < limit {
+		bestIdx := -1
+		bestScore := math.Inf(-1)
+		for idx, hit := range working {
+			if _, ok := used[hit.MemoryRef.ID]; ok {
+				continue
+			}
+			score := hit.Score
+			if len(selected) > 0 {
+				score = u.mmrLambda*hit.Score - (1-u.mmrLambda)*maxMMRSimilarity(hit, selected)
+			}
+			if score > bestScore {
+				bestScore = score
+				bestIdx = idx
+				continue
+			}
+			if score == bestScore {
+				current := working[bestIdx]
+				if hit.Score > current.Score || (hit.Score == current.Score && hit.MemoryRef.ID < current.MemoryRef.ID) {
+					bestIdx = idx
+				}
+			}
+		}
+		if bestIdx < 0 {
+			break
+		}
+		chosen := working[bestIdx]
+		chosen.Origin = normalizeMMROrigin(chosen.Origin)
+		selected = append(selected, chosen)
+		used[chosen.MemoryRef.ID] = struct{}{}
+	}
+	return selected
+}
+
+// ensureMMRVectors backfills missing vectors from durable memory rows so the diversity pass can still run on hits produced by multiple retrieval channels.
+// ensureMMRVectors 用于从长期记忆行回填缺失向量，让多通道召回后的命中仍能执行多样性重排。
+func (u *MemoryUseCase) ensureMMRVectors(ctx context.Context, hits []MemoryQueryHit) []MemoryQueryHit {
+	if u == nil || u.memories == nil || len(hits) == 0 {
+		return hits
+	}
+	missingIDs := make([]uint64, 0, len(hits))
+	for _, hit := range hits {
+		if hit.MemoryRef.ID == 0 || len(hit.Vector) > 0 {
+			continue
+		}
+		missingIDs = append(missingIDs, hit.MemoryRef.ID)
+	}
+	if len(missingIDs) == 0 {
+		return hits
+	}
+	rows, err := u.memories.LoadMemoryNodesByIDs(ctx, missingIDs)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Warn("memory mmr vector backfill degraded", "candidate_count", len(missingIDs), "err", err)
+		}
+		return hits
+	}
+	byID := make(map[uint64][]float32, len(rows))
+	for _, row := range rows {
+		if len(row.Vector) == 0 {
+			continue
+		}
+		byID[row.ID] = append([]float32(nil), row.Vector...)
+	}
+	for idx := range hits {
+		if len(hits[idx].Vector) > 0 {
+			continue
+		}
+		if vector, ok := byID[hits[idx].MemoryRef.ID]; ok {
+			hits[idx].Vector = vector
+		}
+	}
+	return hits
+}
+
+// maxMMRSimilarity returns the largest cosine similarity between one candidate and the already selected set.
+// maxMMRSimilarity 用于返回某个候选与已选择集合之间的最大余弦相似度。
+func maxMMRSimilarity(candidate MemoryQueryHit, selected []MemoryQueryHit) float64 {
+	if len(candidate.Vector) == 0 || len(selected) == 0 {
+		return 0
+	}
+	best := 0.0
+	for _, chosen := range selected {
+		score := cosineSimilarityFloat32(candidate.Vector, chosen.Vector)
+		if score > best {
+			best = score
+		}
+	}
+	return best
+}
+
+// cosineSimilarityFloat32 computes a safe cosine similarity for two candidate vectors so MMR can compare near-duplicate memories from different retrieval channels.
+// cosineSimilarityFloat32 用于为两条候选向量计算安全的余弦相似度，让 MMR 可以比较不同检索通道中的近重复记忆。
+func cosineSimilarityFloat32(a, b []float32) float64 {
+	if len(a) == 0 || len(a) != len(b) {
+		return 0
+	}
+	dot := 0.0
+	normA := 0.0
+	normB := 0.0
+	for idx := range a {
+		av := float64(a[idx])
+		bv := float64(b[idx])
+		dot += av * bv
+		normA += av * av
+		normB += bv * bv
+	}
+	if normA <= 0 || normB <= 0 {
+		return 0
+	}
+	return dot / math.Sqrt(normA*normB)
+}
+
 // rerankSearchHits reorders the first-stage vector hits with the configured rerank backend and degrades to the original ordering on provider failures.
 // rerankSearchHits 用于使用已配置的 rerank 后端重排首轮向量命中，并在 provider 失败时降级回原始顺序。
 func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits []MemoryQueryHit) []MemoryQueryHit {
@@ -706,6 +1133,7 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 			continue
 		}
 		hit.Score = result.Score
+		hit.Origin = normalizeRerankedOrigin(hit.Origin)
 		ordered = append(ordered, hit)
 		seen[memoryID] = struct{}{}
 	}
@@ -719,6 +1147,53 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 		ordered = append(ordered, hits[limit:]...)
 	}
 	return ordered
+}
+
+// normalizeRerankedOrigin upgrades the hit origin label once a later rerank model has re-evaluated the candidate order.
+// normalizeRerankedOrigin 用于在后续 rerank 模型重新评估候选顺序后，升级命中来源标签。
+func normalizeRerankedOrigin(origin string) string {
+	origin = strings.TrimSpace(origin)
+	switch origin {
+	case "hybrid_rrf":
+		return "hybrid_rrf_rerank"
+	case "lexical_search":
+		return "lexical_rerank"
+	case "vector_search":
+		return "vector_rerank"
+	default:
+		if origin == "" {
+			return "rerank"
+		}
+		return origin
+	}
+}
+
+// normalizeMMROrigin upgrades the hit origin label once the diversity pass has re-ordered the candidate list.
+// normalizeMMROrigin 用于在多样性重排改写候选顺序后，升级命中来源标签。
+func normalizeMMROrigin(origin string) string {
+	origin = strings.TrimSpace(origin)
+	switch origin {
+	case "hybrid_rrf_rerank":
+		return "hybrid_rrf_rerank_mmr"
+	case "hybrid_rrf":
+		return "hybrid_rrf_mmr"
+	case "lexical_rerank":
+		return "lexical_rerank_mmr"
+	case "lexical_search":
+		return "lexical_mmr"
+	case "vector_rerank":
+		return "vector_rerank_mmr"
+	case "vector_search":
+		return "vector_mmr"
+	default:
+		if origin == "" {
+			return "mmr"
+		}
+		if strings.HasSuffix(origin, "_mmr") {
+			return origin
+		}
+		return origin + "_mmr"
+	}
 }
 
 // buildRerankDocuments converts one mapped-hit slice into the compact text fragments expected by the rerank provider.
@@ -791,6 +1266,8 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 			DetailsPreview: strings.TrimSpace(row.Details),
 			Category:       row.Category,
 			Score:          hit.Score,
+			Origin:         "vector_search",
+			Vector:         append([]float32(nil), row.Vector...),
 		}
 		if row.SourceTurnID > 0 {
 			mappedHit.SourceRef = logicdomain.MemoryRef{

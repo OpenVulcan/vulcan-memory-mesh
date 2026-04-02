@@ -6,6 +6,7 @@ package vldb_sqlite
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -191,6 +192,86 @@ func TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch(t *testing.T) {
 	}
 	if first := capturedBatch.GetItems()[0].GetParams(); len(first) != 9 {
 		t.Fatalf("expected nine typed params in first batch item, got %d", len(first))
+	}
+}
+
+// TestStoreSearchLexicalMemoryUsesTypedSQLiteParams verifies hybrid lexical recall keeps using MATCH with typed params instead of falling back to params_json.
+// TestStoreSearchLexicalMemoryUsesTypedSQLiteParams 用于验证混合 lexical 召回仍通过 MATCH 和强类型参数执行，而不是退回 params_json。
+func TestStoreSearchLexicalMemoryUsesTypedSQLiteParams(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var captured *sqlitev1.QueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		captured = req
+		return &sqlitev1.QueryJsonResponse{
+			JsonData: `[{"memory_id":201,"rank":0.42}]`,
+		}, nil
+	}
+
+	hits, err := store.SearchLexicalMemory(context.Background(), "文本排序模型", 5, logicdomain.SearchFilter{
+		UserID:    7,
+		TeamID:    3,
+		SpaceID:   5,
+		ProjectID: 9,
+	})
+	if err != nil {
+		t.Fatalf("SearchLexicalMemory returned error: %v", err)
+	}
+	if len(hits) != 1 || hits[0].MemoryID != 201 {
+		t.Fatalf("unexpected lexical hits: %+v", hits)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJson request to be captured")
+	}
+	if strings.TrimSpace(captured.GetParamsJson()) != "" {
+		t.Fatalf("expected typed params only, got params_json=%q", captured.GetParamsJson())
+	}
+	if !strings.Contains(captured.GetSql(), "vmm_memory_nodes_fts MATCH ?") {
+		t.Fatalf("expected MATCH clause in lexical sql, got %q", captured.GetSql())
+	}
+	if !strings.Contains(captured.GetSql(), "bm25(vmm_memory_nodes_fts, 2.0, 1.0)") {
+		t.Fatalf("expected bm25 clause in lexical sql, got %q", captured.GetSql())
+	}
+	if !strings.Contains(captured.GetSql(), "(n.user_id = 0 OR n.user_id = ?)") {
+		t.Fatalf("expected shared user scope filter in lexical sql, got %q", captured.GetSql())
+	}
+	if len(captured.GetParams()) != 6 {
+		t.Fatalf("expected six typed params, got %d", len(captured.GetParams()))
+	}
+	queryValue, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_StringValue)
+	if !ok || !strings.Contains(queryValue.StringValue, "文本排序模型") {
+		t.Fatalf("expected sanitized lexical query as first param, got %#v", captured.GetParams()[0].Kind)
+	}
+}
+
+// TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows verifies vector-hit enrichment now ignores inactive or expired durable rows before they re-enter recall flows.
+// TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows 用于验证向量命中回表现在会先排除 inactive 或已过期的长期行，避免它们重新进入召回链。
+func TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var captured *sqlitev1.QueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		captured = req
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	}
+
+	_, err := store.LoadMemoryNodesByVectorIDs(context.Background(), []string{"vec-1", "vec-2"})
+	if err != nil {
+		t.Fatalf("LoadMemoryNodesByVectorIDs returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJson request to be captured")
+	}
+	if !strings.Contains(captured.GetSql(), fmt.Sprintf("memory_status = %d", logicdomain.MemoryStatusActive)) {
+		t.Fatalf("expected active status filter in vector lookup sql, got %q", captured.GetSql())
+	}
+	if !strings.Contains(captured.GetSql(), "expires_timestamp <= 0 OR expires_timestamp >") {
+		t.Fatalf("expected expiry filter in vector lookup sql, got %q", captured.GetSql())
+	}
+	if !strings.Contains(captured.GetSql(), "vector_id IN ('vec-1','vec-2')") {
+		t.Fatalf("expected vector id list in vector lookup sql, got %q", captured.GetSql())
 	}
 }
 
