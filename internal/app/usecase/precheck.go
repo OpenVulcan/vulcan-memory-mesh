@@ -418,9 +418,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				candidate.Details = candidate.Abstract
 			}
 			if existing, ok := merged[candidate.MemoryID]; ok {
-				if candidate.Score > existing.Score {
-					merged[candidate.MemoryID] = candidate
-				}
+				merged[candidate.MemoryID] = mergePreCheckCandidate(existing, candidate)
 				continue
 			}
 			merged[candidate.MemoryID] = candidate
