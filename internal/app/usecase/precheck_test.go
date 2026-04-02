@@ -125,6 +125,59 @@ func TestPreCheckExecuteReturnsPersonaOnly(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack verifies that when the shared assembler fails and pre-check falls back to local deterministic rendering, the RPC result still marks the request as degraded.
+// TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack 用于验证当共享 assembler 失败且 pre-check 回退到本地确定性渲染时，RPC 结果仍会正确标记本次请求为 degraded。
+func TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack(t *testing.T) {
+	profiles := &stubPreCheckProfiles{
+		result: ProfileBundleResult{
+			ProjectProfile: "当前项目默认使用 gRPC。",
+		},
+	}
+	intent := &stubPreCheckIntentExtractor{
+		result: logicdomain.IntentResult{
+			NeedMemory: false,
+			Reason:     "question is self-contained",
+		},
+	}
+	assembler := &stubPreCheckAssembler{
+		err: context.DeadlineExceeded,
+	}
+	uc := NewPreCheckUseCase(
+		profiles,
+		&stubPreCheckMemories{},
+		&stubPreCheckStore{},
+		intent,
+		&stubPreCheckReviewer{},
+		assembler,
+		PreCheckConfig{},
+		nil,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-assembler-fallback"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "这次接口要怎么设计？",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if !result.ShouldInject {
+		t.Fatal("expected should_inject=true")
+	}
+	if !result.Degraded {
+		t.Fatalf("expected degraded=true when assembler falls back, got %#v", result)
+	}
+	if len(result.ContextItems) == 0 || !strings.Contains(result.ContextText, "当前项目默认使用 gRPC。") {
+		t.Fatalf("expected local fallback context to be returned, got %#v", result)
+	}
+}
+
 // TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates verifies stage one sees mixed refined/raw recent turns, then stage two adopts numbered candidates.
 // TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates 用于验证第一层会看到 refined/raw 混合最近 turn，随后第二层按编号采纳候选。
 func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testing.T) {

@@ -520,7 +520,7 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 			Score: candidate.Score,
 		})
 	}
-	contextText, items, err := u.assemblePreCheckContext(ctx, persona, memoryHits)
+	contextText, items, assembleDegraded, err := u.assemblePreCheckContext(ctx, persona, memoryHits)
 	if err != nil {
 		return PreCheckResult{}, err
 	}
@@ -528,25 +528,29 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 		ShouldInject: len(items) > 0,
 		ContextText:  contextText,
 		ContextItems: items,
-		Degraded:     degraded,
+		Degraded:     degraded || assembleDegraded,
 		TraceID:      traceID,
 	}, nil
 }
 
 // assemblePreCheckContext prefers the shared assembler but falls back to a local deterministic renderer if prompt loading degrades.
 // assemblePreCheckContext 用于优先使用共享 assembler；若提示词加载降级，则回退到本地确定性渲染。
-func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, error) {
+func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, bool, error) {
 	if u.assembler != nil {
 		contextText, items, err := u.assembler.Assemble(ctx, persona, hits)
 		if err == nil {
-			return contextText, items, nil
+			return contextText, items, false, nil
 		}
 		if u.logger != nil {
 			u.logger.Warn("pre-check assembler degraded to fallback", "err", err)
 		}
+		// Surface fallback activation to the caller so the RPC degraded bit stays honest even when local rendering succeeds.
+		// 把 fallback 激活信号向上传递，确保即便本地渲染成功，RPC 的 degraded 标志仍能如实反映本次降级。
+		fallbackItems := buildFallbackContextItems(persona, hits)
+		return buildFallbackContextSummary(fallbackItems), fallbackItems, true, nil
 	}
 	items := buildFallbackContextItems(persona, hits)
-	return buildFallbackContextSummary(items), items, nil
+	return buildFallbackContextSummary(items), items, false, nil
 }
 
 // buildPreCheckMemoryQueryJSON converts the stage-one search sentences into the grouped memory-search JSON format already consumed by the unified search surface.
