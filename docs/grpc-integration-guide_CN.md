@@ -479,8 +479,11 @@
 当前状态：
 
 - 已接回实时两层召回
-- 第一层 `extract_intent` 负责判断是否需要记忆并提取检索关键词
-- 第二层 `review_precheck_memory` 负责在最近 session 记忆和统一记忆召回结果里选择真正要注入的条目
+- 第一层 `extract_intent` 会读取最近 turn 窗口，并混合：
+  - 已提炼 turn 的 `details`
+  - 未提炼 turn 的脱水原文
+- 第一层输出多条向量检索语句，而不是只给关键词
+- 第二层 `review_precheck_memory` 负责在统一记忆召回结果里按候选编号选择真正要注入的条目
 - 只有被第二层采纳的 memory id 才会刷新生命周期
 
 但有一个前提：
@@ -497,8 +500,9 @@
 - 主业务入口
 - 记录原始日志和清洗后日志
 - 清洗 `user_content` / `timeline[].content` / `assistant_content`
-- 同步完成持久化和单轮提炼后返回 `accepted=true`
-- 写入关系库存储（默认 SQLite，兼容 DuckDB）前，会先完成统一记忆向量写入和必要的回滚保护
+- 稳定写入一条 turn 后立即返回 `accepted=true`
+- 后台异步工作器再继续执行单轮提炼
+- 异步提炼写入关系库存储（默认 SQLite，兼容 DuckDB）前，会先完成统一记忆向量写入和必要的回滚保护
 
 同样也有一个前提：
 

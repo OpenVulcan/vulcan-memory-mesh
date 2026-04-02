@@ -141,8 +141,8 @@ func (u *PostActionUseCase) queueWorkerLoop() {
 	}
 }
 
-// handleQueuedSession snapshots the latest queue state for one session, runs one batch attempt, and reschedules if new turns arrived mid-flight.
-// handleQueuedSession 用于获取某个 session 的最新队列状态、执行一次批处理尝试，并在处理中间又有新 turn 到来时自动重排。
+// handleQueuedSession snapshots the latest queue state for one session, runs one asynchronous extraction attempt, and reschedules if new turns arrived mid-flight.
+// handleQueuedSession 用于获取某个 session 的最新队列状态、执行一次异步提炼尝试，并在处理中间又有新 turn 到来时自动重排。
 func (u *PostActionUseCase) handleQueuedSession(sessionID uint64) {
 	if u == nil || sessionID == 0 {
 		return
@@ -167,7 +167,11 @@ func (u *PostActionUseCase) handleQueuedSession(sessionID uint64) {
 	state.Force = false
 	u.queueMu.Unlock()
 
-	u.processQueuedSession(session, force, "queue")
+	if u.turnAnalyzer != nil {
+		u.processQueuedTurns(session, "queue")
+	} else {
+		u.processQueuedSession(session, force, "queue")
+	}
 
 	// If new turns arrived while the worker was busy, immediately requeue the same session so it does not wait for the next external trigger.
 	// 如果工作器繁忙期间又有新 turn 到达，则立刻把同一 session 重新排队，避免它只能等待下一次外部触发。
@@ -193,10 +197,10 @@ func (u *PostActionUseCase) handleQueuedSession(sessionID uint64) {
 	}
 }
 
-// scanIdlePendingSessions periodically promotes stale sessions into forced legacy batch attempts when that compatibility path is still enabled.
-// scanIdlePendingSessions 用于在兼容批处理路径仍启用时，周期性地把空闲过久的 session 提升为强制分析。
+// scanIdlePendingSessions periodically promotes stale sessions with pending turns into queue items so async extraction can recover after crashes or temporary failures.
+// scanIdlePendingSessions 用于周期性地把仍有待处理 turn 且已空闲过久的 session 提升为队列任务，方便异步提炼在崩溃或临时失败后恢复。
 func (u *PostActionUseCase) scanIdlePendingSessions() {
-	if u == nil || u.store == nil || u.batchAnalyzer == nil || u.analysisCfg.IdleTimeout <= 0 {
+	if u == nil || u.store == nil || u.analysisCfg.IdleTimeout <= 0 {
 		return
 	}
 	sessions, err := u.store.ListIdlePendingSessions(u.queueCtx, u.analysisCfg.IdleTimeout, 128)
@@ -209,6 +213,51 @@ func (u *PostActionUseCase) scanIdlePendingSessions() {
 	}
 	for _, session := range sessions {
 		u.enqueueSessionAnalysis(session, true)
+	}
+}
+
+// processQueuedTurns loads pending turns for one session and applies the single-turn analyzer asynchronously in durable order.
+// processQueuedTurns 用于加载某个 session 的待处理 turn，并按持久化顺序异步执行逐轮单轮分析。
+func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, source string) {
+	if u == nil || u.store == nil || u.turnAnalyzer == nil || session.SessionID == 0 {
+		return
+	}
+	workerCtx := u.queueCtx
+	if workerCtx == nil {
+		workerCtx = context.Background()
+	}
+
+	// Load the currently pending turns first so one queue slot can drain as much finished work as possible before yielding.
+	// 先加载当前所有待处理 turn，让一次队列处理尽量多地消化已落库但尚未提炼的工作。
+	pendingTurns, err := u.store.LoadPendingSessionTurns(workerCtx, session)
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Error("post-action pending turns load failed", "session_key", session.SessionKey, "session_id", session.SessionID, "source", source, "err", err)
+		}
+		return
+	}
+	for _, pendingTurn := range pendingTurns {
+		persistedTurn := logicdomain.PersistedTurnRecord{
+			ID:               pendingTurn.ID,
+			SessionID:        pendingTurn.SessionID,
+			ProjectID:        pendingTurn.ProjectID,
+			DehydratedBudget: pendingTurn.DehydratedBudget,
+			CreatedAt:        pendingTurn.CreatedAt,
+			UpdatedAt:        pendingTurn.UpdatedAt,
+		}
+		rawTurn, err := turnRecordFromStoredTurn(pendingTurn)
+		if err != nil {
+			if u.logger != nil {
+				u.logger.Error("post-action queued turn decode failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
+			}
+			return
+		}
+		if err := u.applyImmediateTurnAnalysis(workerCtx, session, persistedTurn, rawTurn); err != nil {
+			if u.logger != nil {
+				u.logger.Error("post-action queued turn analysis failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
+			}
+			return
+		}
 	}
 }
 

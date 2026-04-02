@@ -96,10 +96,12 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 当前 `PreCheck` 已恢复为实时两层流程：
 
 - 完成请求校验与范围解析
-- 加载最近已提炼完成的 session 历史
-- 第一层 `extract_intent` 判断是否需要记忆，以及该用哪些关键词召回
-- 拉取当前 session 最近活跃记忆，并通过统一记忆检索接口召回长期候选
-- 第二层 `review_precheck_memory` 只采纳对当前请求真正有帮助的 memory id
+- 读取最近 turn 窗口，并在 token 预算内混合：
+  - 已提炼 turn 的 `details`
+  - 未提炼 turn 的脱水原文
+- 第一层 `extract_intent` 判断是否需要记忆，并生成多条向量检索语句
+- 通过统一记忆检索接口批量向量化这些检索语句并召回长期候选
+- 第二层 `review_precheck_memory` 只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
 - 将稳定画像和被采纳记忆一起组装为 `context_text / context_items`
 - 当某一步降级时，仍会尽量返回可用的画像上下文，并把 `degraded=true`
@@ -122,29 +124,29 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 6. 当 `timeline` 为空时，先过 `NoiseGate`
 7. 如果不过滤，则写入 `vmm_turn_records`
 8. 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
-9. turn 写入成功后，会立刻发起一次单轮 `analyze_turn`
-10. 单轮分析输入会包含：
+9. turn 写入成功后，立即返回 `accepted=true`
+10. 后台工作器异步读取 pending turn，并发起单轮 `analyze_turn`
+11. 单轮分析输入会包含：
     - 最近若干条已提炼完成的历史 `details`
     - 当前 turn 的原始脱水 JSON
     - 当前 session 下仍活跃的旧记忆节点锚点
     - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
-11. `analyze_turn` 会返回：
+12. `analyze_turn` 会返回：
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
     - 当前 turn 的 `profile_nodes[]`
     - `superseded_memory_ids`
-12. 如果当前 turn 有 `profile_nodes[]`：
+13. 如果当前 turn 有 `profile_nodes[]`：
     - 会把当前 user/project 下仍然 `active` 且未过期的画像节点，与本轮新画像候选一起送入 `review_profile_nodes`
     - 如果本轮只有 user 或只有 project 画像候选，则只把对应一侧送进 LLM，不会把缺失侧作为空块一起传入
     - 自动提炼与画像评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
-13. 对新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
-14. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite，兼容 DuckDB）：
+14. 对新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
+15. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite，兼容 DuckDB）：
     - `vmm_turn_records.details / details_budget / extracted_status`
     - 统一后的 `vmm_memory_nodes`
     - `vmm_profile_nodes`
-15. 画像评审完成后，会在关系库存储中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
-16. 本次写入成功后，才会同步返回 `accepted=true`
+16. 画像评审完成后，会在关系库存储中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
 17. 后台定时维护仍会做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本
   - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
   - LanceDB 行里的 `session_id` 会保存真实来源 session

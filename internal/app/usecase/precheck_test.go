@@ -1,5 +1,5 @@
-// precheck_test.go verifies the live pre-check flow, including persona-only injection, second-stage memory adoption, and degraded fallback behavior.
-// precheck_test.go 用于验证实时 pre-check 流程，包括仅画像注入、第二层记忆采纳和降级回退行为。
+// precheck_test.go verifies the live turn-centric pre-check flow, including persona-only injection, numbered candidate adoption, and degraded fallback behavior.
+// precheck_test.go 用于验证基于 turn 的实时 pre-check 流程，包括仅画像注入、编号候选采纳和降级回退行为。
 package usecase
 
 import (
@@ -54,8 +54,8 @@ func TestValidatePreCheckRejectsEmptyUserContent(t *testing.T) {
 	}
 }
 
-// TestPreCheckExecuteReturnsPersonaOnly verifies the first-stage intent gate can skip memory recall while still returning stable profile context.
-// TestPreCheckExecuteReturnsPersonaOnly 用于验证第一层意图门控可以跳过记忆召回，同时仍返回稳定画像上下文。
+// TestPreCheckExecuteReturnsPersonaOnly verifies the first-stage gate can skip memory recall while still returning stable profile context.
+// TestPreCheckExecuteReturnsPersonaOnly 用于验证第一层门控可以跳过记忆召回，同时仍返回稳定画像上下文。
 func TestPreCheckExecuteReturnsPersonaOnly(t *testing.T) {
 	profiles := &stubPreCheckProfiles{
 		result: ProfileBundleResult{
@@ -125,15 +125,15 @@ func TestPreCheckExecuteReturnsPersonaOnly(t *testing.T) {
 	}
 }
 
-// TestPreCheckExecuteAdoptsSelectedMemories verifies the live flow performs first-stage recall, second-stage selection, and lifecycle write-back for adopted ids.
-// TestPreCheckExecuteAdoptsSelectedMemories 用于验证实时流程会执行第一层召回、第二层选择，并为采纳 id 写回生命周期。
-func TestPreCheckExecuteAdoptsSelectedMemories(t *testing.T) {
+// TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates verifies stage one sees mixed refined/raw recent turns, then stage two adopts numbered candidates.
+// TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates 用于验证第一层会看到 refined/raw 混合最近 turn，随后第二层按编号采纳候选。
+func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testing.T) {
 	memories := &stubPreCheckMemories{
 		result: MemoryQueryResult{
 			Results: []MemoryQueryGroupResult{
 				{
 					QueryIndex: 0,
-					Query:      "channel",
+					Query:      "项目为什么从 mutex 改成 channel 做并发控制",
 					Hits: []MemoryQueryHit{
 						{
 							MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
@@ -141,9 +141,25 @@ func TestPreCheckExecuteAdoptsSelectedMemories(t *testing.T) {
 							SourceKind:     logicdomain.MemorySourceKindTurnExtract,
 							ScopeLevel:     logicdomain.MemoryScopeLevelProject,
 							Abstract:       "项目已经决定用 channel 替代 mutex。",
-							DetailsPreview: "该并发方案已经在上轮对话确认。",
+							DetailsPreview: "这是当前项目的并发实现决策。",
 							Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
 							Score:          0.93,
+						},
+					},
+				},
+				{
+					QueryIndex: 1,
+					Query:      "之前有没有确认过 channel 方案",
+					Hits: []MemoryQueryHit{
+						{
+							MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 21},
+							SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 7},
+							SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+							ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+							Abstract:       "上轮已经确认 channel 方案。",
+							DetailsPreview: "它是最近刚被确认的实现方向。",
+							Category:       logicdomain.MemoryNodeCategoryProjectContext,
+							Score:          0.88,
 						},
 					},
 				},
@@ -151,46 +167,41 @@ func TestPreCheckExecuteAdoptsSelectedMemories(t *testing.T) {
 		},
 	}
 	store := &stubPreCheckStore{
-		history: []logicdomain.SessionTurnRecord{
+		recentTurns: []logicdomain.SessionTurnRecord{
 			{
-				ID:                8,
+				ID:                7,
 				SessionID:         41,
 				DehydratedContent: `{"user":"把并发控制改成 channel","timeline":[],"assistant":"已经改掉 mutex"}`,
 				ExtractedStatus:   logicdomain.TurnExtractedStatusDone,
 				Details:           "上一轮确认并发控制改成 channel。",
+				DetailsBudget:     20,
 			},
-		},
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
 			{
-				ID:            10,
-				TurnID:        8,
-				Category:      logicdomain.MemoryNodeCategoryProjectContext,
-				Abstract:      "当前 session 正在处理并发控制重构。",
-				Details:       "本 session 最近一直在讨论 mutex 到 channel 的替换。",
-				SourceKind:    logicdomain.MemorySourceKindTurnExtract,
-				ScopeLevel:    logicdomain.MemoryScopeLevelSession,
-				RefreshWeight: 1,
-				UpdatedAt:     time.Unix(1700000200, 0),
+				ID:                8,
+				SessionID:         41,
+				DehydratedContent: `{"user":"为什么这里要改","timeline":[],"assistant":"因为 channel 更适合当前模型"}`,
+				DehydratedBudget:  25,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
 			},
 		},
 	}
 	intent := &stubPreCheckIntentExtractor{
 		result: logicdomain.IntentResult{
-			Keywords:   []string{"channel", "mutex"},
+			Queries:    []string{"项目为什么从 mutex 改成 channel 做并发控制", "之前有没有确认过 channel 方案"},
 			NeedMemory: true,
 			Reason:     "needs recent architecture context",
 		},
 	}
 	reviewer := &stubPreCheckReviewer{
 		result: logicdomain.PreCheckMemoryReviewResult{
-			SelectedMemoryIDs: []uint64{10, 20},
-			Reason:            "one recent session fact plus one stable project fact",
+			SelectedCandidateNumbers: []int{2, 1},
+			Reason:                   "先用最近确认，再用稳定决策",
 		},
 	}
 	assembler := &stubPreCheckAssembler{
 		text: "assembled adopted context",
 		items: []logicdomain.ContextItem{
-			{Kind: "memory", Title: "向量召回记忆", Text: "当前 session 正在处理并发控制重构。", Source: "vector", Score: 1},
+			{Kind: "memory", Title: "向量召回记忆", Text: "上轮已经确认 channel 方案。", Source: "vector", Score: 0.88},
 			{Kind: "memory", Title: "向量召回记忆", Text: "项目已经决定用 channel 替代 mutex。", Source: "vector", Score: 0.93},
 		},
 	}
@@ -201,7 +212,7 @@ func TestPreCheckExecuteAdoptsSelectedMemories(t *testing.T) {
 		intent,
 		reviewer,
 		assembler,
-		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},
 		nil,
 	)
 
@@ -228,19 +239,28 @@ func TestPreCheckExecuteAdoptsSelectedMemories(t *testing.T) {
 	if result.Degraded {
 		t.Fatal("expected degraded=false")
 	}
-	if len(store.adoptedIDs) != 2 || store.adoptedIDs[0] != 10 || store.adoptedIDs[1] != 20 {
+	if len(store.adoptedIDs) != 2 || store.adoptedIDs[0] != 21 || store.adoptedIDs[1] != 20 {
 		t.Fatalf("unexpected adopted ids: %#v", store.adoptedIDs)
 	}
-	if len(reviewer.input.RecentSessionMemories) != 1 {
-		t.Fatalf("unexpected recent session inputs: %#v", reviewer.input.RecentSessionMemories)
+	if len(intent.turns) != 2 {
+		t.Fatalf("unexpected recent turns: %#v", intent.turns)
 	}
-	if len(reviewer.input.RetrievedMemories) != 1 {
-		t.Fatalf("unexpected retrieved memory inputs: %#v", reviewer.input.RetrievedMemories)
+	if intent.turns[0].ContentType != "DETAILS" || intent.turns[0].Content != "上一轮确认并发控制改成 channel。" {
+		t.Fatalf("unexpected extracted turn context: %#v", intent.turns[0])
 	}
-	if len(assembler.hits) != 2 {
+	if intent.turns[1].ContentType != "RAW_TURN" || !strings.Contains(intent.turns[1].Content, `"assistant":"因为 channel 更适合当前模型"`) {
+		t.Fatalf("unexpected pending turn context: %#v", intent.turns[1])
+	}
+	if len(reviewer.input.Candidates) != 2 {
+		t.Fatalf("unexpected reviewer candidates: %#v", reviewer.input.Candidates)
+	}
+	if reviewer.input.Candidates[0].CandidateNumber != 1 || reviewer.input.Candidates[1].CandidateNumber != 2 {
+		t.Fatalf("unexpected candidate numbering: %#v", reviewer.input.Candidates)
+	}
+	if len(assembler.hits) != 2 || assembler.hits[0].ID != "21" || assembler.hits[1].ID != "20" {
 		t.Fatalf("unexpected assembled hits: %#v", assembler.hits)
 	}
-	if !strings.Contains(memories.cmd.QueryJSON, "\"query\":\"channel\"") {
+	if !strings.Contains(memories.cmd.QueryJSON, "\"query\":\"项目为什么从 mutex 改成 channel 做并发控制\"") {
 		t.Fatalf("unexpected search query json: %s", memories.cmd.QueryJSON)
 	}
 }
@@ -278,9 +298,13 @@ func TestPreCheckExecuteDegradesToPersona(t *testing.T) {
 				},
 			},
 		},
-		&stubPreCheckStore{},
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 11, SessionID: 41, Details: "上一轮已经强调兼容优先。", DetailsBudget: 15, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
 		&stubPreCheckIntentExtractor{
-			result: logicdomain.IntentResult{Keywords: []string{"兼容"}, NeedMemory: true},
+			result: logicdomain.IntentResult{Queries: []string{"兼容"}, NeedMemory: true},
 		},
 		&stubPreCheckReviewer{err: context.DeadlineExceeded},
 		assembler,
@@ -362,26 +386,18 @@ func (s *stubPreCheckMemories) Write(context.Context, WriteMemoriesCommand) (Wri
 // stubPreCheckStore is the relational store double used by pre-check tests.
 // stubPreCheckStore 用于作为 pre-check 测试里的关系存储桩。
 type stubPreCheckStore struct {
-	history           []logicdomain.SessionTurnRecord
-	historyErr        error
-	activeMemoryNodes []logicdomain.SessionMemoryNodeRecord
-	activeErr         error
-	adoptedSession    logicdomain.SessionRef
-	adoptedIDs        []uint64
-	adoptedAt         time.Time
-	adoptionErr       error
+	recentTurns    []logicdomain.SessionTurnRecord
+	recentTurnsErr error
+	adoptedSession logicdomain.SessionRef
+	adoptedIDs     []uint64
+	adoptedAt      time.Time
+	adoptionErr    error
 }
 
-// LoadRecentSessionHistory executes the stubbed LoadRecentSessionHistory logic.
-// LoadRecentSessionHistory 用于执行桩化的 LoadRecentSessionHistory 逻辑。
-func (s *stubPreCheckStore) LoadRecentSessionHistory(context.Context, logicdomain.SessionRef, int) ([]logicdomain.SessionTurnRecord, error) {
-	return append([]logicdomain.SessionTurnRecord(nil), s.history...), s.historyErr
-}
-
-// LoadActiveSessionMemoryNodes executes the stubbed LoadActiveSessionMemoryNodes logic.
-// LoadActiveSessionMemoryNodes 用于执行桩化的 LoadActiveSessionMemoryNodes 逻辑。
-func (s *stubPreCheckStore) LoadActiveSessionMemoryNodes(context.Context, logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
-	return append([]logicdomain.SessionMemoryNodeRecord(nil), s.activeMemoryNodes...), s.activeErr
+// LoadRecentSessionTurns executes the stubbed LoadRecentSessionTurns logic.
+// LoadRecentSessionTurns 用于执行桩化的 LoadRecentSessionTurns 逻辑。
+func (s *stubPreCheckStore) LoadRecentSessionTurns(context.Context, logicdomain.SessionRef, int) ([]logicdomain.SessionTurnRecord, error) {
+	return append([]logicdomain.SessionTurnRecord(nil), s.recentTurns...), s.recentTurnsErr
 }
 
 // ApplyMemoryAdoption executes the stubbed ApplyMemoryAdoption logic.
@@ -396,7 +412,7 @@ func (s *stubPreCheckStore) ApplyMemoryAdoption(_ context.Context, session logic
 // stubPreCheckIntentExtractor is the first-stage extractor double used by pre-check tests.
 // stubPreCheckIntentExtractor 用于作为 pre-check 测试里的第一层意图提取桩。
 type stubPreCheckIntentExtractor struct {
-	history []logicdomain.HistorySnippet
+	turns   []logicdomain.PreCheckTurnContext
 	current string
 	result  logicdomain.IntentResult
 	err     error
@@ -404,8 +420,8 @@ type stubPreCheckIntentExtractor struct {
 
 // Extract executes the stubbed Extract logic.
 // Extract 用于执行桩化的 Extract 逻辑。
-func (s *stubPreCheckIntentExtractor) Extract(_ context.Context, history []logicdomain.HistorySnippet, current string) (logicdomain.IntentResult, error) {
-	s.history = append([]logicdomain.HistorySnippet(nil), history...)
+func (s *stubPreCheckIntentExtractor) Extract(_ context.Context, turns []logicdomain.PreCheckTurnContext, current string) (logicdomain.IntentResult, error) {
+	s.turns = append([]logicdomain.PreCheckTurnContext(nil), turns...)
 	s.current = current
 	return s.result, s.err
 }

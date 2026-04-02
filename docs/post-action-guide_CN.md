@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何在单轮写入后立即完成 LLM 提炼，并把结果写入 SQLite（默认）/DuckDB（兼容）与 LanceDB。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何在单轮写入后先稳定落库并立即返回，再由后台异步完成 LLM 提炼，并把结果写入 SQLite（默认）/DuckDB（兼容）与 LanceDB。
 
 当前默认的 SQLite 关系库存储适配层会优先使用：
 
@@ -30,8 +30,8 @@
 2. 记录原始日志
 3. 清洗待存储文本
 4. 记录清洗后日志
-5. 立即返回 `accepted=true`
-6. 后台继续把脱水后的 turn 记录写入关系库存储（默认 SQLite，兼容 DuckDB），并把后续 LLM 分析转交给 session 队列
+5. 先把脱水后的 turn 记录稳定写入关系库存储（默认 SQLite，兼容 DuckDB）
+6. 把后续 LLM 分析转交给 session 队列，并立即返回 `accepted=true`
 
 ## 请求结构
 
@@ -174,10 +174,10 @@ message PostActionTimelineItem {
     - 顶层 `assistant_content` 保留
     - 这里的“脱水”指的是整理成稳定 JSON 分析单元，不再对 `timeline[*].type=assistant` 做二次占位替换
 13. 计算脱水 JSON 的 token 预算
-14. 追加到 DuckDB：
+14. 追加到 DuckDB / SQLite：
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
-15. turn 写入成功后，会立刻在主写链路里发起一次单轮 `analyze_turn`
+15. turn 写入成功后，会由后台队列异步发起一次单轮 `analyze_turn`
 16. `analyze_turn` 请求会包含：
     - 最近若干条已提炼历史 `details`
     - 当前 turn 的原始脱水 JSON
@@ -249,7 +249,7 @@ message PostActionTimelineItem {
     - 把这些节点批量标记成 `expired`
     - 读取受影响 user/project 当前剩余的 `active` 节点
     - 由后端重新渲染 `vmm_users.profile / vmm_projects.profile`
-23. 如果 LanceDB 已写入新向量，但 DuckDB / SQLite 最终回写失败：
+23. 如果 LanceDB 已写入新向量，但 DuckDB / SQLite 异步回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立新向量
 27. 当前限制：

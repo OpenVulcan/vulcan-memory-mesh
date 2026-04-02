@@ -51,8 +51,8 @@ type PostActionExecutor interface {
 	Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error)
 }
 
-// PostActionTurnAnalyzer is the tiny port used by post-action to analyze one persisted turn immediately after it is appended.
-// PostActionTurnAnalyzer 用于让 post-action 在 turn 落库后立刻分析这一轮。
+// PostActionTurnAnalyzer is the tiny port used by post-action background workers to analyze one persisted turn after it has been durably queued.
+// PostActionTurnAnalyzer 用于让 post-action 后台工作器在 turn 稳定落库并入队后，再对这一轮执行提炼分析。
 type PostActionTurnAnalyzer interface {
 	Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error)
 }
@@ -80,8 +80,8 @@ type PostActionAnalysisConfig struct {
 	QueueScanInterval time.Duration
 }
 
-// PostActionUseCase stores one cleaned turn, runs immediate single-turn extraction, and keeps the legacy batch helpers available only for compatibility tests and maintenance tasks.
-// PostActionUseCase 用于存储一条清洗后的 turn、立即执行单轮提炼，并仅为兼容测试和维护任务保留旧的批处理辅助能力。
+// PostActionUseCase stores one cleaned turn, queues asynchronous extraction work, and keeps legacy batch helpers available for compatibility tests and maintenance tasks.
+// PostActionUseCase 用于存储一条清洗后的 turn、把后续提炼排入异步工作器，并为兼容测试和维护任务保留旧的批处理辅助能力。
 type PostActionUseCase struct {
 	noiseGate               appports.NoiseTurnFilter
 	store                   appports.RelationalStore
@@ -102,8 +102,8 @@ type PostActionUseCase struct {
 	queueState              map[uint64]*postActionQueueState
 }
 
-// NewPostActionUseCase creates a PostActionUseCase instance for the runtime single-turn path.
-// NewPostActionUseCase 用于为运行时单轮路径创建 PostActionUseCase 实例。
+// NewPostActionUseCase creates a PostActionUseCase instance for the runtime asynchronous single-turn path.
+// NewPostActionUseCase 用于为运行时异步单轮提炼路径创建 PostActionUseCase 实例。
 func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
 	return newPostActionUseCase(noiseGate, store, embedding, vector, turnAnalyzer, nil, profiles, analysisCfg, logger, true)
 }
@@ -149,8 +149,8 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	return uc
 }
 
-// Execute persists one cleaned turn into the resolved session, then immediately runs single-turn extraction and write-back.
-// Execute 用于把清洗后的单条 turn 持久化到已解析的 session 中，并立刻完成单轮提炼和结果回写。
+// Execute persists one cleaned turn into the resolved session, enqueues background extraction, and returns immediately without blocking on LLM work.
+// Execute 用于把清洗后的单条 turn 持久化到已解析的 session 中、把后台提炼工作入队，并在不等待 LLM 完成的情况下立即返回。
 func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error) {
 	// Validate the resolved session scope and the new text-only payload before touching storage.
 	// 在访问存储前先校验已解析的 session 范围和新的纯文本载荷。
@@ -177,14 +177,14 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 		}
 	}
 
-	// Require the immediate turn analyzer before touching durable storage so the runtime does not silently fall back to the removed queued-only extraction path.
-	// 在访问持久化存储前要求提供即时 turn 分析器，避免运行时悄悄退回到已取消的“仅排队提炼”路径。
-	if u.turnAnalyzer == nil {
-		return PostActionResult{}, fmt.Errorf("post-action turn analyzer is nil")
+	// Require at least one downstream analyzer path before touching durable storage so accepted requests will not get stuck permanently without any worker implementation.
+	// 在访问持久化存储前要求至少存在一条下游分析路径，避免请求被接受后却因没有任何工作器实现而永久悬空。
+	if u.turnAnalyzer == nil && u.batchAnalyzer == nil {
+		return PostActionResult{}, fmt.Errorf("post-action analyzer is nil")
 	}
 
-	// Persist one canonical turn record so DuckDB can keep the cleaned conversation as one dehydrated analysis unit.
-	// 持久化一条标准 turn 记录，让 DuckDB 可以把清洗后的对话保存为一个脱水分析单元。
+	// Persist one canonical turn record first so later retries and pre-check windows can always rely on durable turn history even before extraction finishes.
+	// 先持久化一条标准 turn 记录，让后续重试和 pre-check 窗口即使在提炼尚未完成时，也始终能够依赖稳定的 turn 历史。
 	timeline := make([]logicdomain.TurnTimelineItem, 0, len(cmd.Timeline))
 	for _, item := range cmd.Timeline {
 		timeline = append(timeline, logicdomain.TurnTimelineItem{
@@ -202,9 +202,13 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 	if err != nil {
 		return PostActionResult{}, err
 	}
-	if err := u.applyImmediateTurnAnalysis(ctx, cmd.Session, persistedTurn, rawTurnFromCommand(cmd)); err != nil {
-		return PostActionResult{}, err
+
+	// Queue the owning session for asynchronous extraction so the transport layer does not block on model latency.
+	// 把所属 session 排入异步提炼队列，避免传输层被模型延迟卡住。
+	if u.logger != nil {
+		u.logger.Info("post-action turn queued", "trace_id", traceID, "session_key", cmd.Session.SessionKey, "session_id", cmd.Session.SessionID, "turn_id", persistedTurn.ID)
 	}
+	u.enqueueSessionAnalysis(cmd.Session, false)
 	return PostActionResult{Accepted: true, TraceID: traceID}, nil
 }
 
@@ -528,6 +532,28 @@ func rawTurnFromCommand(cmd PostActionCommand) logicdomain.TurnRecord {
 		Timeline:         timeline,
 		AssistantContent: rawAssistant,
 	}
+}
+
+// turnRecordFromStoredTurn rebuilds one raw turn from the dehydrated row so background workers can rerun the same single-turn analyzer input after async queueing.
+// turnRecordFromStoredTurn 用于从脱水 turn 行重建原始轮次，让后台工作器在异步入队后仍能重建同样的单轮分析输入。
+func turnRecordFromStoredTurn(turn logicdomain.SessionTurnRecord) (logicdomain.TurnRecord, error) {
+	userContent, timeline, assistantContent := parseDehydratedTurnContent(turn.DehydratedContent)
+	if strings.TrimSpace(userContent) == "" && strings.TrimSpace(assistantContent) == "" && len(timeline) == 0 {
+		return logicdomain.TurnRecord{}, fmt.Errorf("stored turn %d dehydrated_content could not be decoded", turn.ID)
+	}
+	rawTimeline := make([]logicdomain.TurnTimelineItem, 0, len(timeline))
+	for _, item := range timeline {
+		rawTimeline = append(rawTimeline, logicdomain.TurnTimelineItem{
+			Type:    strings.TrimSpace(item.Type),
+			Content: strings.TrimSpace(item.Content),
+		})
+	}
+	return logicdomain.TurnRecord{
+		UserContent:      strings.TrimSpace(userContent),
+		Timeline:         rawTimeline,
+		AssistantContent: strings.TrimSpace(assistantContent),
+		CreatedAt:        turn.CreatedAt,
+	}, nil
 }
 
 // buildPostActionTurnPayload serializes one turn into the same compact JSON structure used for current persistence-side budget estimation.

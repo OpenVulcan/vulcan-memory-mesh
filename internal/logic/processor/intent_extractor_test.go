@@ -12,18 +12,18 @@ import (
 // TestParseIntentResponseParsesMarkdownJSON verifies that fenced JSON model output is accepted and de-duplicated correctly.
 // TestParseIntentResponseParsesMarkdownJSON 用于验证带 fenced code 的 JSON 模型输出能被正确解析并去重。
 func TestParseIntentResponseParsesMarkdownJSON(t *testing.T) {
-	intent, err := parseIntentResponse("analysis...\n```json\n{\n  \"keywords\": [\"go\", \"memory\", \"go\"],\n  \"need_memory\": true,\n  \"reason\": \"match user question\"\n}\n```\nextra")
+	intent, err := parseIntentResponse("analysis...\n```json\n{\n  \"queries\": [\"go memory 设计\", \"go memory 设计\"],\n  \"need_memory\": true,\n  \"reason\": \"match user question\"\n}\n```\nextra")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !intent.NeedMemory {
 		t.Fatal("expected need_memory=true")
 	}
-	if len(intent.Keywords) != 2 {
-		t.Fatalf("keywords len = %d", len(intent.Keywords))
+	if len(intent.Queries) != 1 {
+		t.Fatalf("queries len = %d", len(intent.Queries))
 	}
-	if intent.Keywords[0] != "go" || intent.Keywords[1] != "memory" {
-		t.Fatalf("keywords = %#v", intent.Keywords)
+	if intent.Queries[0] != "go memory 设计" {
+		t.Fatalf("queries = %#v", intent.Queries)
 	}
 }
 

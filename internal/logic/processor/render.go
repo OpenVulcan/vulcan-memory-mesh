@@ -10,26 +10,41 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
-// renderIntentUserPrompt renders the target output.
-// renderIntentUserPrompt 用于渲染目标输出。
-func renderIntentUserPrompt(history []logicdomain.HistorySnippet, current string, maxKeywords int) string {
-	var b strings.Builder
-	b.WriteString("请结合最近对话和当前输入，输出 JSON。\n")
-	b.WriteString(fmt.Sprintf("最多返回 %d 个搜索关键词。\n\n", maxKeywords))
-	if len(history) > 0 {
-		b.WriteString("最近 2 轮历史：\n")
-		for _, item := range history {
-			b.WriteString("- ")
-			b.WriteString(item.Role)
-			b.WriteString(": ")
-			b.WriteString(item.Content)
-			b.WriteString("\n")
-		}
-		b.WriteString("\n")
+// renderIntentUserPrompt serializes the mixed recent-turn window and current user question into a stable JSON body for the first-stage pre-check scene.
+// renderIntentUserPrompt 用于把混合最近 turn 窗口和当前用户问题序列化成稳定 JSON 请求体，供 pre-check 第一层场景使用。
+func renderIntentUserPrompt(turns []logicdomain.PreCheckTurnContext, current string, maxQueries int) string {
+	type recentTurnInput struct {
+		TurnID      uint64 `json:"turn_id"`
+		ContentType string `json:"content_type"`
+		Content     string `json:"content"`
 	}
-	b.WriteString("当前问题：\n")
-	b.WriteString(strings.TrimSpace(current))
-	return b.String()
+	type requestBody struct {
+		RecentTurns      []recentTurnInput `json:"recent_turns,omitempty"`
+		CurrentUserInput string            `json:"current_user_input"`
+		MaxSearchQueries int               `json:"max_search_queries"`
+	}
+
+	body := requestBody{
+		RecentTurns:      make([]recentTurnInput, 0, len(turns)),
+		CurrentUserInput: strings.TrimSpace(current),
+		MaxSearchQueries: maxQueries,
+	}
+	for _, turn := range turns {
+		content := strings.TrimSpace(turn.Content)
+		if turn.TurnID == 0 || content == "" {
+			continue
+		}
+		body.RecentTurns = append(body.RecentTurns, recentTurnInput{
+			TurnID:      turn.TurnID,
+			ContentType: strings.TrimSpace(turn.ContentType),
+			Content:     content,
+		})
+	}
+	rendered, err := json.MarshalIndent(body, "", "  ")
+	if err != nil {
+		return fmt.Sprintf("{\"current_user_input\":%q,\"max_search_queries\":%d}", strings.TrimSpace(current), maxQueries)
+	}
+	return string(rendered)
 }
 
 // renderContextSummary renders the target output.

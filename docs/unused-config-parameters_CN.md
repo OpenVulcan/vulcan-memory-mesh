@@ -43,9 +43,9 @@
 | `pii.default_language` | 仅配置桥接或启动校验使用 | 在 `Normalize()` 中，当 `noise.default_language` 为空时，回填给 `noise.default_language` | 主运行时不直接读取它 |
 | `post_action.input_mode` | 仅配置桥接或启动校验使用 | 只在配置加载阶段做默认值归一化和合法值校验 | `compat` / `strict` 当前没有运行时差异 |
 | `pre_check.intent_timeout` | 主运行时已消费 | 第一层 `extract_intent` 的内部超时预算 | 仍会在启动时与 `grpc.request_timeout.pre_check` 做大小关系校验 |
-| `pre_check.top_k` | 主运行时已消费 | 控制每个 pre-check 检索关键词的向量召回数量 | 直接进入实时 pre-check 工作流 |
+| `pre_check.top_k` | 主运行时已消费 | 控制每个 pre-check 检索语句的向量召回数量 | 直接进入实时 pre-check 工作流 |
 | `pre_check.similarity_threshold` | 仅配置桥接或启动校验使用 | 当 `memory_pipeline.min_similarity_score` 为空时，在 `Normalize()` 中回填过去 | 运行时实际读取的是 `memory_pipeline.min_similarity_score` |
-| `memory_pipeline.max_search_keywords` | 主运行时已消费 | 限制第一层意图提取最多返回多少个检索关键词 | 已进入实时 pre-check 工作流 |
+| `memory_pipeline.max_search_keywords` | 主运行时已消费 | 限制第一层意图提取最多返回多少条检索语句 | 已进入实时 pre-check 工作流 |
 | `memory_pipeline.min_similarity_score` | 主运行时已消费 | 控制 pre-check 过滤低相似度记忆候选的阈值 | 已进入实时 pre-check 工作流 |
 
 ## 关联代码位置

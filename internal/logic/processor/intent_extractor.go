@@ -12,8 +12,8 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
-// IntentExtractor drives prompt lookup, LLM invocation, and JSON parsing for the intent-extraction scene.
-// IntentExtractor 用于驱动意图提取场景的提示词读取、LLM 调用和 JSON 解析。
+// IntentExtractor drives prompt lookup, LLM invocation, and JSON parsing for the first-stage pre-check scene that expands recent turns into search queries.
+// IntentExtractor 用于驱动 pre-check 第一层场景的提示词读取、LLM 调用和 JSON 解析，把最近 turn 窗口展开成检索语句。
 type IntentExtractor struct {
 	llm     appports.LLMClient
 	prompts appports.PromptSource
@@ -33,9 +33,9 @@ func NewIntentExtractor(llm appports.LLMClient, prompts appports.PromptSource, m
 	return &IntentExtractor{llm: llm, prompts: prompts, model: strings.TrimSpace(model), maxKws: maxKeywords}
 }
 
-// Extract extracts the target data.
-// Extract 用于提取目标数据。
-func (e *IntentExtractor) Extract(ctx context.Context, history []logicdomain.HistorySnippet, current string) (logicdomain.IntentResult, error) {
+// Extract runs the first-stage pre-check prompt over the mixed recent-turn window plus the current user request.
+// Extract 用于基于混合最近 turn 窗口和当前用户请求，执行 pre-check 第一层提示词。
+func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCheckTurnContext, current string) (logicdomain.IntentResult, error) {
 	// Load the scene prompt and issue a structured JSON generation request to the LLM.
 	// 加载场景提示词，并向 LLM 发起结构化 JSON 生成请求。
 	if e.llm == nil {
@@ -45,7 +45,7 @@ func (e *IntentExtractor) Extract(ctx context.Context, history []logicdomain.His
 	if err != nil {
 		return logicdomain.IntentResult{}, fmt.Errorf("load extract_intent prompt: %w", err)
 	}
-	resp, err := e.llm.Generate(ctx, appports.LLMRequest{Model: e.model, SystemPrompt: prompt, UserPrompt: renderIntentUserPrompt(history, current, e.maxKws), ResponseFormat: appports.LLMResponseFormatJSON})
+	resp, err := e.llm.Generate(ctx, appports.LLMRequest{Model: e.model, SystemPrompt: prompt, UserPrompt: renderIntentUserPrompt(turns, current, e.maxKws), ResponseFormat: appports.LLMResponseFormatJSON})
 	if err != nil {
 		return logicdomain.IntentResult{}, err
 	}
@@ -56,8 +56,8 @@ func (e *IntentExtractor) Extract(ctx context.Context, history []logicdomain.His
 	if err != nil {
 		return logicdomain.IntentResult{}, err
 	}
-	if len(intent.Keywords) > e.maxKws {
-		intent.Keywords = intent.Keywords[:e.maxKws]
+	if len(intent.Queries) > e.maxKws {
+		intent.Queries = intent.Queries[:e.maxKws]
 	}
 	return intent, nil
 }
@@ -72,6 +72,7 @@ func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "extract_intent", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
+		Queries    []string `json:"queries"`
 		Keywords   []string `json:"keywords"`
 		NeedMemory *bool    `json:"need_memory"`
 		Reason     string   `json:"reason"`
@@ -85,20 +86,24 @@ func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 	if payload.NeedMemory == nil {
 		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "extract_intent", Message: "missing need_memory", Raw: raw}
 	}
-	keywords := make([]string, 0, len(payload.Keywords))
-	seen := map[string]struct{}{}
-	for _, kw := range payload.Keywords {
-		kw = strings.TrimSpace(kw)
-		if kw == "" {
-			continue
-		}
-		if _, ok := seen[kw]; ok {
-			continue
-		}
-		seen[kw] = struct{}{}
-		keywords = append(keywords, kw)
+	sourceQueries := payload.Queries
+	if len(sourceQueries) == 0 {
+		sourceQueries = payload.Keywords
 	}
-	return logicdomain.IntentResult{Keywords: keywords, NeedMemory: *payload.NeedMemory, Reason: strings.TrimSpace(payload.Reason)}, nil
+	queries := make([]string, 0, len(sourceQueries))
+	seen := map[string]struct{}{}
+	for _, query := range sourceQueries {
+		query = strings.TrimSpace(query)
+		if query == "" {
+			continue
+		}
+		if _, ok := seen[query]; ok {
+			continue
+		}
+		seen[query] = struct{}{}
+		queries = append(queries, query)
+	}
+	return logicdomain.IntentResult{Queries: queries, NeedMemory: *payload.NeedMemory, Reason: strings.TrimSpace(payload.Reason)}, nil
 }
 
 // extractJSONObject extracts the target data.

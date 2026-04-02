@@ -77,8 +77,8 @@ service VMMService {
   // PreCheck 用于通过拦截器校验 project_id/user_id，执行实时意图提取与统一记忆采纳，并返回组装后的上下文载荷。
   rpc PreCheck(PreCheckRequest) returns (PreCheckResponse);
 
-  // PostAction validates project_id/user_id through the interceptor, logs the payload, and persists the cleaned message sequence synchronously.
-  // PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志，并同步持久化清洗后的消息序列。
+  // PostAction validates project_id/user_id through the interceptor, logs the payload, durably appends the cleaned turn, and queues async extraction.
+  // PostAction 用于通过拦截器校验 project_id/user_id、打印载荷日志、稳定追加清洗后的 turn，并把后续提炼排入异步队列。
   rpc PostAction(PostActionRequest) returns (PostActionResponse);
 }
 
@@ -627,8 +627,8 @@ message PostActionRequest {
   repeated PostActionTimelineItem timeline = 6;
 }
 
-// PostActionResponse acknowledges whether the request completed the synchronous persistence flow successfully.
-// PostActionResponse 用于确认请求是否已经成功完成同步持久化流程。
+// PostActionResponse acknowledges whether the request was accepted, durably persisted as one turn, and queued for async extraction successfully.
+// PostActionResponse 用于确认请求是否已经成功被接受、稳定落为一条 turn，并成功排入异步提炼队列。
 message PostActionResponse {
   bool accepted = 1;
   string trace_id = 2;

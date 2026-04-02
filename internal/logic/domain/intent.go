@@ -2,10 +2,10 @@
 // intent.go 用于声明处理器和用例层共享的结构化意图提取模型。
 package domain
 
-// IntentResult carries the parsed intent-extraction result consumed by the pre-check recall flow.
-// IntentResult 用于承载 pre-check 召回流程消费的结构化意图提取结果。
+// IntentResult carries the parsed stage-one pre-check result, including whether memory is needed and which search sentences should drive vector recall.
+// IntentResult 用于承载 pre-check 第一层的结构化结果，包括是否需要记忆，以及哪些检索语句应驱动向量召回。
 type IntentResult struct {
-	Keywords   []string
+	Queries    []string
 	NeedMemory bool
 	Reason     string
 }

@@ -1502,6 +1502,38 @@ ORDER BY id ASC
 	return turns, nil
 }
 
+// LoadRecentSessionTurns returns the latest persisted turn rows for one session regardless of extracted status, ordered from oldest to newest after the final window is chosen.
+// LoadRecentSessionTurns 用于返回某个 session 最近持久化的 turn 行，不区分 extracted 状态；最终结果按从旧到新排序。
+func (s *Store) LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
+	if session.SessionID == 0 {
+		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if limit <= 0 {
+		return []logicdomain.SessionTurnRecord{}, nil
+	}
+	rows, err := queryRows[turnRecordRow](s, ctx, `
+SELECT id, session_id, project_id,
+       dehydrated_content,
+       dehydrated_budget, extracted_status, details, details_budget,
+       created_timestamp, updated_timestamp
+FROM vmm_turn_records
+WHERE session_id = ?
+ORDER BY id DESC
+LIMIT ?
+`, session.SessionID, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query recent session turns: %w", err)
+	}
+	turns := make([]logicdomain.SessionTurnRecord, 0, len(rows))
+	for _, row := range rows {
+		turns = append(turns, row.toDomain())
+	}
+	for left, right := 0, len(turns)-1; left < right; left, right = left+1, right-1 {
+		turns[left], turns[right] = turns[right], turns[left]
+	}
+	return turns, nil
+}
+
 // LoadRecentSessionHistory returns the latest extracted turn summaries for one session, ordered from oldest to newest for prompt assembly.
 // LoadRecentSessionHistory 用于返回某个 session 最近已提炼的 turn 精要，并按从旧到新的顺序排列，供提示词组装使用。
 func (s *Store) LoadRecentSessionHistory(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {

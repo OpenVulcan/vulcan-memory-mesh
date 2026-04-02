@@ -1,5 +1,5 @@
-// precheck.go implements the live pre-check flow that performs intent extraction, unified memory recall, second-stage adoption, and final context assembly.
-// precheck.go 用于实现实时 pre-check 流程，负责执行意图提取、统一记忆召回、第二层采纳和最终上下文组装。
+// precheck.go implements the live pre-check flow that first reasons over recent turns, then recalls unified memory, then lets a second LLM choose numbered candidates.
+// precheck.go 用于实现实时 pre-check 流程：先基于最近 turn 做推理，再召回统一记忆，最后由第二层 LLM 从编号候选中做选择。
 package usecase
 
 import (
@@ -12,6 +12,7 @@ import (
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
@@ -20,13 +21,13 @@ const (
 	// defaultPreCheckTopK 用于在调用方省略配置覆盖时，为向量召回提供受控默认值。
 	defaultPreCheckTopK = 5
 
-	// defaultPreCheckHistoryTurns keeps the first-stage intent prompt focused on only the most recent extracted turns.
-	// defaultPreCheckHistoryTurns 用于让第一层意图提示词只关注最近几条已提炼 turn。
-	defaultPreCheckHistoryTurns = 2
+	// defaultPreCheckHistoryTurns keeps the first-stage turn window focused on only the most recent conversation context.
+	// defaultPreCheckHistoryTurns 用于让第一层最近 turn 窗口只关注最新的一小段对话上下文。
+	defaultPreCheckHistoryTurns = 3
 
-	// defaultPreCheckRecentSessionMemories keeps the second-stage reviewer grounded in only the freshest in-session memory nodes.
-	// defaultPreCheckRecentSessionMemories 用于让第二层评审器只参考当前 session 内最新的一小批记忆节点。
-	defaultPreCheckRecentSessionMemories = 8
+	// defaultPreCheckHistoryTokens keeps the first-stage turn window under a bounded token budget.
+	// defaultPreCheckHistoryTokens 用于让第一层最近 turn 窗口保持在受控 token 预算内。
+	defaultPreCheckHistoryTokens = 6000
 
 	// defaultPreCheckReviewCandidates caps the candidate fan-out sent to the second-stage reviewer so one request stays compact and stable.
 	// defaultPreCheckReviewCandidates 用于限制送入第二层评审器的候选扇出，保证单次请求保持紧凑稳定。
@@ -62,14 +63,14 @@ type PreCheckExecutor interface {
 	Execute(ctx context.Context, cmd PreCheckCommand) (PreCheckResult, error)
 }
 
-// PreCheckIntentExtractor is the first-stage processor used to decide whether memory is needed and which keywords should drive recall.
-// PreCheckIntentExtractor 用于表示第一层处理器，负责判断是否需要记忆以及该用哪些关键词驱动召回。
+// PreCheckIntentExtractor is the first-stage processor used to decide whether memory is needed and which search sentences should drive recall.
+// PreCheckIntentExtractor 用于表示第一层处理器，负责判断是否需要记忆以及该用哪些检索语句驱动召回。
 type PreCheckIntentExtractor interface {
-	Extract(ctx context.Context, history []logicdomain.HistorySnippet, current string) (logicdomain.IntentResult, error)
+	Extract(ctx context.Context, turns []logicdomain.PreCheckTurnContext, current string) (logicdomain.IntentResult, error)
 }
 
-// PreCheckMemoryReviewer is the second-stage processor used to adopt truly useful memory candidates from the recalled pool.
-// PreCheckMemoryReviewer 用于表示第二层处理器，负责从召回池中采纳真正有用的记忆候选。
+// PreCheckMemoryReviewer is the second-stage processor used to adopt truly useful numbered memory candidates from the recalled pool.
+// PreCheckMemoryReviewer 用于表示第二层处理器，负责从召回池中的编号候选里采纳真正有用的记忆。
 type PreCheckMemoryReviewer interface {
 	Review(ctx context.Context, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error)
 }
@@ -92,27 +93,26 @@ type PreCheckMemorySearcher interface {
 	Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error)
 }
 
-// PreCheckStore loads recent extracted session state and writes lifecycle updates for adopted memory rows.
-// PreCheckStore 用于加载最近提炼过的 session 状态，并为被采纳的记忆行写回生命周期更新。
+// PreCheckStore loads recent mixed session turns and writes lifecycle updates for adopted memory rows.
+// PreCheckStore 用于加载最近的混合 session turn，并为被采纳的记忆行写回生命周期更新。
 type PreCheckStore interface {
-	LoadRecentSessionHistory(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error)
-	LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error)
+	LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error)
 	ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error
 }
 
-// PreCheckConfig keeps the first-stage timeout and recall fan-out knobs local to the live pre-check workflow.
-// PreCheckConfig 用于保存实时 pre-check 工作流本地使用的第一层超时和召回扇出参数。
+// PreCheckConfig keeps the timeout, turn-window, and recall knobs local to the live pre-check workflow.
+// PreCheckConfig 用于保存实时 pre-check 工作流本地使用的超时、turn 窗口和召回参数。
 type PreCheckConfig struct {
-	IntentTimeout         time.Duration
-	TopK                  int
-	MinSimilarityScore    float64
-	HistoryTurns          int
-	RecentSessionMemories int
-	ReviewCandidateLimit  int
+	IntentTimeout        time.Duration
+	TopK                 int
+	MinSimilarityScore   float64
+	HistoryTurns         int
+	MaxInputTokens       int
+	ReviewCandidateLimit int
 }
 
-// PreCheckUseCase executes the live pre-check workflow on top of resolved session scope, rendered profiles, unified memory recall, and lifecycle write-back.
-// PreCheckUseCase 用于在已解析 session 范围、渲染画像、统一记忆召回和生命周期回写之上执行实时 pre-check 工作流。
+// PreCheckUseCase executes the live pre-check workflow on top of resolved session scope, recent turn windows, unified memory recall, and lifecycle write-back.
+// PreCheckUseCase 用于在已解析 session 范围、最近 turn 窗口、统一记忆召回和生命周期回写之上执行实时 pre-check 工作流。
 type PreCheckUseCase struct {
 	profiles  PreCheckProfileBundleLoader
 	memories  PreCheckMemorySearcher
@@ -136,8 +136,8 @@ func NewPreCheckUseCase(profiles PreCheckProfileBundleLoader, memories PreCheckM
 	if cfg.HistoryTurns <= 0 {
 		cfg.HistoryTurns = defaultPreCheckHistoryTurns
 	}
-	if cfg.RecentSessionMemories <= 0 {
-		cfg.RecentSessionMemories = defaultPreCheckRecentSessionMemories
+	if cfg.MaxInputTokens <= 0 {
+		cfg.MaxInputTokens = defaultPreCheckHistoryTokens
 	}
 	if cfg.ReviewCandidateLimit <= 0 {
 		cfg.ReviewCandidateLimit = defaultPreCheckReviewCandidates
@@ -157,8 +157,8 @@ func NewPreCheckUseCase(profiles PreCheckProfileBundleLoader, memories PreCheckM
 	}
 }
 
-// Execute validates the resolved scope, runs the two-stage memory flow, and returns the final assembled context or a degraded fallback.
-// Execute 用于校验已解析范围、执行两层记忆流程，并返回最终组装后的上下文或降级回退结果。
+// Execute validates the resolved scope, runs the turn-centric two-stage memory flow, and returns the final assembled context or a degraded fallback.
+// Execute 用于校验已解析范围、执行基于 turn 的两层记忆流程，并返回最终组装后的上下文或降级回退结果。
 func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (PreCheckResult, error) {
 	if err := validatePreCheck(cmd); err != nil {
 		return PreCheckResult{}, err
@@ -175,9 +175,18 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		persona = logicdomain.PersonaContext{}
 	}
 
-	// Run the first-stage intent extractor against the latest extracted history so memory recall only starts when the user really needs it.
-	// 用最新已提炼历史执行第一层意图提取，只在用户确实需要记忆时才启动召回。
-	intent, err := u.extractIntent(ctx, cmd)
+	// Build the recent mixed turn window so stage one can reason over refined details and still see pending raw turns when async extraction has not finished yet.
+	// 构建最近混合 turn 窗口，让第一层既能利用已提炼 details，也能在异步提炼尚未完成时看到待处理原文。
+	recentTurns, err := u.loadRecentTurnContexts(ctx, cmd.Session)
+	if err != nil {
+		degraded = true
+		u.logPreCheckWarn("pre-check recent turns degraded", traceID, cmd.Session, err)
+		recentTurns = nil
+	}
+
+	// Run the first-stage intent extractor against the recent turn window and current request so recall only starts when memory is actually useful.
+	// 用最近 turn 窗口和当前请求执行第一层意图提取，只在记忆确实有帮助时才启动召回。
+	intent, err := u.extractIntent(ctx, recentTurns, cmd.UserContent)
 	if err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check intent degraded", traceID, cmd.Session, err)
@@ -187,27 +196,21 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
 	}
 
-	// Gather recent in-session memory plus vector-recalled durable memory so the second-stage reviewer can choose only truly useful rows.
-	// 汇总当前 session 内最近记忆和向量召回出来的长期记忆，让第二层评审器只采纳真正有用的条目。
-	recentSession, err := u.loadRecentSessionMemoryCandidates(ctx, cmd.Session)
-	if err != nil {
-		degraded = true
-		u.logPreCheckWarn("pre-check recent session memory degraded", traceID, cmd.Session, err)
-		recentSession = nil
-	}
-	recalled, err := u.searchMemoryCandidates(ctx, cmd, intent, recentSession)
+	// Recall unified memory using the search sentences returned by stage one, then number the final deduplicated candidate list for stage two.
+	// 使用第一层返回的检索语句召回统一记忆，并给最终去重后的候选列表编号，交给第二层评审。
+	candidates, err := u.searchMemoryCandidates(ctx, cmd, intent)
 	if err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check memory recall degraded", traceID, cmd.Session, err)
-		recalled = nil
+		candidates = nil
 	}
-	if len(recentSession) == 0 && len(recalled) == 0 {
+	if len(candidates) == 0 {
 		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
 	}
 
-	// Let the second-stage reviewer decide which unified memory ids are worth injecting for this concrete user request.
-	// 让第二层评审器根据本次具体用户请求，决定哪些统一记忆 id 值得注入。
-	selectedCandidates, err := u.reviewMemoryCandidates(ctx, cmd, intent, recentSession, recalled)
+	// Let the second-stage reviewer choose candidate numbers in priority order, then map them back to memory ids for lifecycle write-back and final injection.
+	// 让第二层评审器按优先顺序选择候选编号，再映射回 memory id，用于生命周期回写和最终注入。
+	selectedCandidates, err := u.reviewMemoryCandidates(ctx, cmd, intent, candidates)
 	if err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, err)
@@ -226,15 +229,11 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	return u.finalizePreCheck(ctx, traceID, persona, selectedCandidates, degraded)
 }
 
-// extractIntent loads recent extracted history and runs the first-stage intent extractor under the configured inner timeout budget.
-// extractIntent 用于加载最近已提炼历史，并在配置好的内部超时预算内执行第一层意图提取。
-func (u *PreCheckUseCase) extractIntent(ctx context.Context, cmd PreCheckCommand) (logicdomain.IntentResult, error) {
+// extractIntent runs the first-stage intent extractor under the configured inner timeout budget.
+// extractIntent 用于在配置好的内部超时预算内执行第一层意图提取。
+func (u *PreCheckUseCase) extractIntent(ctx context.Context, turns []logicdomain.PreCheckTurnContext, current string) (logicdomain.IntentResult, error) {
 	if u.intent == nil {
 		return logicdomain.IntentResult{}, fmt.Errorf("pre-check intent extractor is nil")
-	}
-	history, err := u.loadHistorySnippets(ctx, cmd.Session)
-	if err != nil {
-		return logicdomain.IntentResult{}, err
 	}
 	intentCtx := ctx
 	cancel := func() {}
@@ -242,30 +241,87 @@ func (u *PreCheckUseCase) extractIntent(ctx context.Context, cmd PreCheckCommand
 		intentCtx, cancel = context.WithTimeout(ctx, u.config.IntentTimeout)
 	}
 	defer cancel()
-	return u.intent.Extract(intentCtx, history, cmd.UserContent)
+	return u.intent.Extract(intentCtx, turns, current)
 }
 
-// loadHistorySnippets converts the latest extracted turns into the compact history snippet shape expected by the intent prompt.
-// loadHistorySnippets 用于把最近已提炼过的 turn 转成意图提示词期望的紧凑 history snippet 结构。
-func (u *PreCheckUseCase) loadHistorySnippets(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.HistorySnippet, error) {
+// loadRecentTurnContexts loads the recent session turns, trims them by budget, and converts them into refined-or-raw turn fragments for stage-one reasoning.
+// loadRecentTurnContexts 用于加载最近 session turn、按预算裁剪，并把它们转换成“提炼文或原文”的第一层推理片段。
+func (u *PreCheckUseCase) loadRecentTurnContexts(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.PreCheckTurnContext, error) {
 	if u.store == nil || u.config.HistoryTurns <= 0 {
-		return []logicdomain.HistorySnippet{}, nil
+		return []logicdomain.PreCheckTurnContext{}, nil
 	}
-	rows, err := u.store.LoadRecentSessionHistory(ctx, session, u.config.HistoryTurns)
+	rows, err := u.store.LoadRecentSessionTurns(ctx, session, u.config.HistoryTurns)
 	if err != nil {
 		return nil, err
 	}
-	snippets := make([]logicdomain.HistorySnippet, 0, len(rows)*2)
+	rows = trimRecentTurnsByBudget(rows, u.config.MaxInputTokens)
+	contexts := make([]logicdomain.PreCheckTurnContext, 0, len(rows))
 	for _, row := range rows {
-		userContent, _, assistantContent := parseDehydratedTurnContent(row.DehydratedContent)
-		if text := strings.TrimSpace(userContent); text != "" {
-			snippets = append(snippets, logicdomain.HistorySnippet{Role: "user", Content: text})
+		context := logicdomain.PreCheckTurnContext{TurnID: row.ID}
+		if row.ExtractedStatus == logicdomain.TurnExtractedStatusDone && strings.TrimSpace(row.Details) != "" {
+			context.ContentType = "DETAILS"
+			context.Content = strings.TrimSpace(row.Details)
+		} else {
+			context.ContentType = "RAW_TURN"
+			context.Content = strings.TrimSpace(row.DehydratedContent)
 		}
-		if text := strings.TrimSpace(assistantContent); text != "" {
-			snippets = append(snippets, logicdomain.HistorySnippet{Role: "assistant", Content: text})
+		if context.TurnID == 0 || strings.TrimSpace(context.Content) == "" {
+			continue
 		}
+		contexts = append(contexts, context)
 	}
-	return snippets, nil
+	return contexts, nil
+}
+
+// trimRecentTurnsByBudget keeps the newest turns under the configured token budget while preserving final chronological order.
+// trimRecentTurnsByBudget 用于在配置的 token 预算内保留最新 turn，并在最终结果中维持时间顺序。
+func trimRecentTurnsByBudget(rows []logicdomain.SessionTurnRecord, maxInputTokens int) []logicdomain.SessionTurnRecord {
+	if len(rows) == 0 || maxInputTokens <= 0 {
+		return append([]logicdomain.SessionTurnRecord(nil), rows...)
+	}
+	selected := make([]logicdomain.SessionTurnRecord, 0, len(rows))
+	total := 0
+	for idx := len(rows) - 1; idx >= 0; idx-- {
+		budget := preCheckTurnBudget(rows[idx])
+		if len(selected) > 0 && total+budget > maxInputTokens {
+			break
+		}
+		selected = append(selected, rows[idx])
+		total += budget
+	}
+	if len(selected) == 0 {
+		return []logicdomain.SessionTurnRecord{rows[len(rows)-1]}
+	}
+	for left, right := 0, len(selected)-1; left < right; left, right = left+1, right-1 {
+		selected[left], selected[right] = selected[right], selected[left]
+	}
+	return selected
+}
+
+// preCheckTurnBudget chooses the extracted-details budget when available and falls back to dehydrated budget for still-pending turns.
+// preCheckTurnBudget 用于在存在 details 时优先使用已提炼预算，并对仍为 pending 的 turn 回退到脱水预算。
+func preCheckTurnBudget(row logicdomain.SessionTurnRecord) int {
+	if row.ExtractedStatus == logicdomain.TurnExtractedStatusDone && strings.TrimSpace(row.Details) != "" {
+		if row.DetailsBudget > 0 {
+			return row.DetailsBudget
+		}
+		return estimatePreCheckBudget(row.Details)
+	}
+	if row.DehydratedBudget > 0 {
+		return row.DehydratedBudget
+	}
+	return estimatePreCheckBudget(row.DehydratedContent)
+}
+
+// estimatePreCheckBudget applies the local token estimator to one turn fragment so recent-turn trimming stays aligned with other text-budget decisions in the repo.
+// estimatePreCheckBudget 用于对 turn 片段应用本地 token 估算器，让最近 turn 裁剪与仓库里其他文本预算逻辑保持一致。
+func estimatePreCheckBudget(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
+	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
+	return estimator.Estimate(text)
 }
 
 // loadPersonaContext reuses the split profile-bundle output so pre-check can inject stable TEAM/SPACE/PROJECT/USER context without duplicating profile SQL here.
@@ -301,52 +357,9 @@ func (u *PreCheckUseCase) loadPersonaContext(ctx context.Context, session logicd
 	return persona, nil
 }
 
-// loadRecentSessionMemoryCandidates keeps only the newest active rows from the current session so the second-stage reviewer can see recent short-term state.
-// loadRecentSessionMemoryCandidates 用于保留当前 session 内最新的一小批活跃记忆行，让第二层评审器看见最近短期状态。
-func (u *PreCheckUseCase) loadRecentSessionMemoryCandidates(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.PreCheckMemoryCandidate, error) {
-	if u.store == nil {
-		return []logicdomain.PreCheckMemoryCandidate{}, nil
-	}
-	rows, err := u.store.LoadActiveSessionMemoryNodes(ctx, session)
-	if err != nil {
-		return nil, err
-	}
-	sort.SliceStable(rows, func(i, j int) bool {
-		if rows[i].UpdatedAt.Equal(rows[j].UpdatedAt) {
-			return rows[i].ID > rows[j].ID
-		}
-		return rows[i].UpdatedAt.After(rows[j].UpdatedAt)
-	})
-	if len(rows) > u.config.RecentSessionMemories {
-		rows = rows[:u.config.RecentSessionMemories]
-	}
-	out := make([]logicdomain.PreCheckMemoryCandidate, 0, len(rows))
-	for _, row := range rows {
-		candidate := logicdomain.PreCheckMemoryCandidate{
-			MemoryID:     row.ID,
-			SourceTurnID: row.TurnID,
-			SourceKind:   logicdomain.MemorySourceKindLabel(row.SourceKind),
-			ScopeLevel:   logicdomain.MemoryScopeLevelLabel(row.ScopeLevel),
-			Category:     row.Category,
-			Abstract:     strings.TrimSpace(row.Abstract),
-			Details:      strings.TrimSpace(row.Details),
-			Score:        1,
-			Origin:       "recent_session",
-		}
-		if candidate.Abstract == "" && candidate.Details == "" {
-			continue
-		}
-		if candidate.Details == "" {
-			candidate.Details = candidate.Abstract
-		}
-		out = append(out, candidate)
-	}
-	return out, nil
-}
-
-// searchMemoryCandidates reuses the unified memory-search RPC logic, then keeps only de-duplicated hits above the configured similarity floor.
-// searchMemoryCandidates 用于复用统一记忆查询逻辑，然后只保留高于配置相似度下限且去重后的命中结果。
-func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult, recentSession []logicdomain.PreCheckMemoryCandidate) ([]logicdomain.PreCheckMemoryCandidate, error) {
+// searchMemoryCandidates reuses the unified memory-search RPC logic, then keeps only de-duplicated hits above the configured similarity floor and numbers them for stage two.
+// searchMemoryCandidates 用于复用统一记忆查询逻辑，然后只保留高于配置相似度下限且去重后的命中结果，并为第二层评审分配候选编号。
+func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult) ([]logicdomain.PreCheckMemoryCandidate, error) {
 	if u.memories == nil {
 		return []logicdomain.PreCheckMemoryCandidate{}, nil
 	}
@@ -363,12 +376,6 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	if err != nil {
 		return nil, err
 	}
-	recentIDs := make(map[uint64]struct{}, len(recentSession))
-	for _, candidate := range recentSession {
-		if candidate.MemoryID > 0 {
-			recentIDs[candidate.MemoryID] = struct{}{}
-		}
-	}
 	merged := make(map[uint64]logicdomain.PreCheckMemoryCandidate)
 	for _, group := range result.Results {
 		for _, hit := range group.Hits {
@@ -376,9 +383,6 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				continue
 			}
 			if hit.Score < u.config.MinSimilarityScore {
-				continue
-			}
-			if _, ok := recentIDs[hit.MemoryRef.ID]; ok {
 				continue
 			}
 			candidate := logicdomain.PreCheckMemoryCandidate{
@@ -420,37 +424,34 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	if len(out) > u.config.ReviewCandidateLimit {
 		out = out[:u.config.ReviewCandidateLimit]
 	}
+	for idx := range out {
+		out[idx].CandidateNumber = idx + 1
+	}
 	return out, nil
 }
 
-// reviewMemoryCandidates lets the second-stage reviewer choose a small adopted subset and restores the caller-facing order from the merged candidate map.
-// reviewMemoryCandidates 用于让第二层评审器挑出一个小型采纳子集，并从合并候选映射中恢复调用方可用的顺序结果。
-func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult, recentSession, recalled []logicdomain.PreCheckMemoryCandidate) ([]logicdomain.PreCheckMemoryCandidate, error) {
+// reviewMemoryCandidates lets the second-stage reviewer choose candidate numbers and restores the selected candidate order for final injection.
+// reviewMemoryCandidates 用于让第二层评审器选择候选编号，并恢复最终注入使用的候选顺序。
+func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult, candidates []logicdomain.PreCheckMemoryCandidate) ([]logicdomain.PreCheckMemoryCandidate, error) {
 	if u.reviewer == nil {
 		return nil, fmt.Errorf("pre-check memory reviewer is nil")
 	}
 	review, err := u.reviewer.Review(ctx, logicdomain.PreCheckMemoryReviewInput{
-		UserContent:           cmd.UserContent,
-		IntentKeywords:        append([]string(nil), intent.Keywords...),
-		IntentReason:          intent.Reason,
-		RecentSessionMemories: append([]logicdomain.PreCheckMemoryCandidate(nil), recentSession...),
-		RetrievedMemories:     append([]logicdomain.PreCheckMemoryCandidate(nil), recalled...),
+		UserContent:   cmd.UserContent,
+		SearchQueries: append([]string(nil), intent.Queries...),
+		IntentReason:  intent.Reason,
+		Candidates:    append([]logicdomain.PreCheckMemoryCandidate(nil), candidates...),
 	})
 	if err != nil {
 		return nil, err
 	}
-	candidatesByID := make(map[uint64]logicdomain.PreCheckMemoryCandidate, len(recentSession)+len(recalled))
-	for _, candidate := range recentSession {
-		candidatesByID[candidate.MemoryID] = candidate
+	candidatesByNumber := make(map[int]logicdomain.PreCheckMemoryCandidate, len(candidates))
+	for _, candidate := range candidates {
+		candidatesByNumber[candidate.CandidateNumber] = candidate
 	}
-	for _, candidate := range recalled {
-		if _, ok := candidatesByID[candidate.MemoryID]; !ok {
-			candidatesByID[candidate.MemoryID] = candidate
-		}
-	}
-	selected := make([]logicdomain.PreCheckMemoryCandidate, 0, len(review.SelectedMemoryIDs))
-	for _, memoryID := range review.SelectedMemoryIDs {
-		if candidate, ok := candidatesByID[memoryID]; ok {
+	selected := make([]logicdomain.PreCheckMemoryCandidate, 0, len(review.SelectedCandidateNumbers))
+	for _, number := range review.SelectedCandidateNumbers {
+		if candidate, ok := candidatesByNumber[number]; ok {
 			selected = append(selected, candidate)
 		}
 	}
@@ -516,18 +517,18 @@ func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, persona l
 	return buildFallbackContextSummary(items), items, nil
 }
 
-// buildPreCheckMemoryQueryJSON converts the intent keywords into the grouped memory-search JSON format already consumed by the unified search surface.
-// buildPreCheckMemoryQueryJSON 用于把意图关键词转换成统一记忆查询接口已消费的分组 JSON 格式。
+// buildPreCheckMemoryQueryJSON converts the stage-one search sentences into the grouped memory-search JSON format already consumed by the unified search surface.
+// buildPreCheckMemoryQueryJSON 用于把第一层检索语句转换成统一记忆查询接口已消费的分组 JSON 格式。
 func buildPreCheckMemoryQueryJSON(intent logicdomain.IntentResult, userContent string) (string, error) {
-	items := make([]MemoryQueryItem, 0, len(intent.Keywords))
-	for _, keyword := range intent.Keywords {
-		keyword = strings.TrimSpace(keyword)
-		if keyword == "" {
+	items := make([]MemoryQueryItem, 0, len(intent.Queries))
+	for _, query := range intent.Queries {
+		query = strings.TrimSpace(query)
+		if query == "" {
 			continue
 		}
 		items = append(items, MemoryQueryItem{
 			Background: strings.TrimSpace(userContent),
-			Query:      keyword,
+			Query:      query,
 		})
 	}
 	if len(items) == 0 {

@@ -506,11 +506,14 @@ message PostActionTimelineItem {
 当前实现是实时两层模式：
 
 1. 统一拦截器先完成 `session/user/project` 校验和解析
-2. 第一层 `extract_intent` 结合最近已提炼 turn 和当前输入判断是否需要记忆，并生成检索关键词
-3. 加载最近 session 记忆，并通过统一记忆检索接口召回长期候选
-4. 第二层 `review_precheck_memory` 从候选里选择真正有帮助的 memory id
-5. 只对被采纳的记忆写回生命周期
-6. 把稳定画像和采纳结果组装为：
+2. 第一层 `extract_intent` 结合最近 turn 窗口和当前输入判断是否需要记忆，并生成多条检索语句
+3. 最近 turn 窗口会混合：
+   - 已提炼 turn 的 `details`
+   - 未提炼 turn 的脱水原文
+4. 通过统一记忆检索接口批量向量化这些检索语句并召回长期候选
+5. 第二层 `review_precheck_memory` 从带编号候选里选择真正有帮助的编号
+6. 只对被采纳的记忆写回生命周期
+7. 把稳定画像和采纳结果组装为：
    - `should_inject`
    - `context_text`
    - `context_items`

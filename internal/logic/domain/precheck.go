@@ -2,33 +2,41 @@
 // precheck.go 用于声明用例层和 LLM 处理器共享的结构化 pre-check 评审模型。
 package domain
 
-// PreCheckMemoryCandidate stores one candidate memory fragment that the second-stage pre-check reviewer may adopt for injection.
-// PreCheckMemoryCandidate 用于保存一条可供 pre-check 第二层评审器采纳并注入的候选记忆片段。
+// PreCheckTurnContext stores one recent turn fragment exposed to the first-stage pre-check LLM, using refined details when available and dehydrated raw text otherwise.
+// PreCheckTurnContext 用于保存暴露给 pre-check 第一层 LLM 的最近 turn 片段；若已提炼则使用 details，否则使用脱水原文。
+type PreCheckTurnContext struct {
+	TurnID      uint64
+	ContentType string
+	Content     string
+}
+
+// PreCheckMemoryCandidate stores one numbered candidate memory fragment that the second-stage pre-check reviewer may adopt for injection.
+// PreCheckMemoryCandidate 用于保存一条带编号的候选记忆片段，供 pre-check 第二层评审器采纳并注入。
 type PreCheckMemoryCandidate struct {
-	MemoryID     uint64
-	SourceTurnID uint64
-	SourceKind   string
-	ScopeLevel   string
-	Category     int
-	Abstract     string
-	Details      string
-	Score        float64
-	Origin       string
+	CandidateNumber int
+	MemoryID        uint64
+	SourceTurnID    uint64
+	SourceKind      string
+	ScopeLevel      string
+	Category        int
+	Abstract        string
+	Details         string
+	Score           float64
+	Origin          string
 }
 
-// PreCheckMemoryReviewInput carries the current user request, extracted intent, and candidate memories into the second-stage reviewer.
-// PreCheckMemoryReviewInput 用于把当前用户请求、第一层意图结果和候选记忆送入第二层评审器。
+// PreCheckMemoryReviewInput carries the current user request, stage-one search reasoning, and numbered candidates into the second-stage reviewer.
+// PreCheckMemoryReviewInput 用于把当前用户请求、第一层检索推理结果以及带编号候选送入第二层评审器。
 type PreCheckMemoryReviewInput struct {
-	UserContent           string
-	IntentKeywords        []string
-	IntentReason          string
-	RecentSessionMemories []PreCheckMemoryCandidate
-	RetrievedMemories     []PreCheckMemoryCandidate
+	UserContent   string
+	SearchQueries []string
+	IntentReason  string
+	Candidates    []PreCheckMemoryCandidate
 }
 
-// PreCheckMemoryReviewResult stores the durable memory ids selected by the second-stage reviewer together with its brief rationale.
-// PreCheckMemoryReviewResult 用于保存第二层评审器选中的长期记忆 id，以及简要理由。
+// PreCheckMemoryReviewResult stores the chosen candidate numbers returned by the second-stage reviewer together with its brief rationale.
+// PreCheckMemoryReviewResult 用于保存第二层评审器返回的候选编号，以及简要理由。
 type PreCheckMemoryReviewResult struct {
-	SelectedMemoryIDs []uint64
-	Reason            string
+	SelectedCandidateNumbers []int
+	Reason                   string
 }

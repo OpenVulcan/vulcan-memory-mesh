@@ -26,11 +26,11 @@ func NewPreCheckMemoryReviewer(llm appports.LLMClient, prompts appports.PromptSo
 	return &PreCheckMemoryReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
-// Review executes one structured memory-adoption review over the recalled pre-check candidates.
-// Review 用于对 pre-check 召回出来的候选记忆执行一次结构化采纳评审。
+// Review executes one structured memory-adoption review over the numbered pre-check candidates.
+// Review 用于对 pre-check 召回出来的带编号候选记忆执行一次结构化采纳评审。
 func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error) {
-	// Load the dedicated prompt scene and send one stable JSON request body so the reviewer can choose memory ids deterministically.
-	// 加载专用场景提示词，并发送稳定的 JSON 请求体，让评审器可以确定性地选择 memory id。
+	// Load the dedicated prompt scene and send one stable JSON request body so the reviewer can choose candidate numbers deterministically.
+	// 加载专用场景提示词，并发送稳定的 JSON 请求体，让评审器可以确定性地选择候选编号。
 	if r == nil || r.llm == nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("pre-check memory reviewer llm client is nil")
 	}
@@ -58,18 +58,16 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 // renderPreCheckMemoryReviewRequest 用于把第二层评审输入序列化成稳定的 JSON 请求体。
 func renderPreCheckMemoryReviewRequest(input logicdomain.PreCheckMemoryReviewInput) (string, error) {
 	type requestBody struct {
-		UserContent           string                                `json:"user_content"`
-		IntentKeywords        []string                              `json:"intent_keywords"`
-		IntentReason          string                                `json:"intent_reason,omitempty"`
-		RecentSessionMemories []logicdomain.PreCheckMemoryCandidate `json:"recent_session_memories,omitempty"`
-		RetrievedMemories     []logicdomain.PreCheckMemoryCandidate `json:"retrieved_memories,omitempty"`
+		UserContent   string                                `json:"user_content"`
+		SearchQueries []string                              `json:"search_queries,omitempty"`
+		IntentReason  string                                `json:"intent_reason,omitempty"`
+		Candidates    []logicdomain.PreCheckMemoryCandidate `json:"candidates,omitempty"`
 	}
 	body := requestBody{
-		UserContent:           strings.TrimSpace(input.UserContent),
-		IntentKeywords:        normalizeStringValues(input.IntentKeywords),
-		IntentReason:          strings.TrimSpace(input.IntentReason),
-		RecentSessionMemories: normalizePreCheckReviewCandidates(input.RecentSessionMemories),
-		RetrievedMemories:     normalizePreCheckReviewCandidates(input.RetrievedMemories),
+		UserContent:   strings.TrimSpace(input.UserContent),
+		SearchQueries: normalizeStringValues(input.SearchQueries),
+		IntentReason:  strings.TrimSpace(input.IntentReason),
+		Candidates:    normalizePreCheckReviewCandidates(input.Candidates),
 	}
 	rendered, err := json.MarshalIndent(body, "", "  ")
 	if err != nil {
@@ -78,8 +76,8 @@ func renderPreCheckMemoryReviewRequest(input logicdomain.PreCheckMemoryReviewInp
 	return string(rendered), nil
 }
 
-// parsePreCheckMemoryReviewResponse validates the reviewer output and rejects ids that do not belong to the candidate set of this request.
-// parsePreCheckMemoryReviewResponse 用于校验评审器输出，并拒绝不属于本次候选集合的 id。
+// parsePreCheckMemoryReviewResponse validates the reviewer output and rejects candidate numbers that do not belong to the current request.
+// parsePreCheckMemoryReviewResponse 用于校验评审器输出，并拒绝不属于本次候选集合的候选编号。
 func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error) {
 	// Extract the first JSON object so fenced code or provider wrappers do not break structured parsing.
 	// 先抽取第一个 JSON 对象，避免 fenced code 或 provider 包装破坏结构化解析。
@@ -88,67 +86,76 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "review_precheck_memory", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
-		SelectedMemoryIDs []uint64 `json:"selected_memory_ids"`
-		Reason            string   `json:"reason"`
+		SelectedCandidateNumbers []int    `json:"selected_candidate_numbers"`
+		SelectedMemoryIDs        []uint64 `json:"selected_memory_ids"`
+		Reason                   string   `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "review_precheck_memory", Message: "json decode failed", Raw: raw}
 	}
 
-	// Keep only deduplicated ids that belong to the current candidate set so one bad model response cannot select foreign rows.
-	// 只保留去重后且属于当前候选集合的 id，避免错误模型响应选中外部记录。
-	allowed := make(map[uint64]struct{}, len(input.RecentSessionMemories)+len(input.RetrievedMemories))
-	for _, candidate := range input.RecentSessionMemories {
-		if candidate.MemoryID > 0 {
-			allowed[candidate.MemoryID] = struct{}{}
-		}
-	}
-	for _, candidate := range input.RetrievedMemories {
-		if candidate.MemoryID > 0 {
-			allowed[candidate.MemoryID] = struct{}{}
-		}
-	}
-	selected := make([]uint64, 0, len(payload.SelectedMemoryIDs))
-	seen := map[uint64]struct{}{}
-	for _, memoryID := range payload.SelectedMemoryIDs {
-		if memoryID == 0 {
+	// Keep only deduplicated candidate numbers that belong to the current request so one bad model response cannot select foreign rows.
+	// 只保留去重后且属于当前请求的候选编号，避免错误模型响应选中外部记录。
+	allowed := make(map[int]uint64, len(input.Candidates))
+	memoryToNumber := make(map[uint64]int, len(input.Candidates))
+	for _, candidate := range input.Candidates {
+		if candidate.CandidateNumber <= 0 {
 			continue
 		}
-		if _, ok := allowed[memoryID]; !ok {
+		allowed[candidate.CandidateNumber] = candidate.MemoryID
+		if candidate.MemoryID > 0 {
+			memoryToNumber[candidate.MemoryID] = candidate.CandidateNumber
+		}
+	}
+	selectedNumbers := payload.SelectedCandidateNumbers
+	if len(selectedNumbers) == 0 && len(payload.SelectedMemoryIDs) > 0 {
+		for _, memoryID := range payload.SelectedMemoryIDs {
+			if number, ok := memoryToNumber[memoryID]; ok {
+				selectedNumbers = append(selectedNumbers, number)
+			}
+		}
+	}
+	selected := make([]int, 0, len(selectedNumbers))
+	seen := map[int]struct{}{}
+	for _, candidateNumber := range selectedNumbers {
+		if candidateNumber <= 0 {
+			continue
+		}
+		if _, ok := allowed[candidateNumber]; !ok {
 			return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{
 				Scene:   "review_precheck_memory",
-				Message: fmt.Sprintf("selected_memory_ids contains unknown id %d", memoryID),
+				Message: fmt.Sprintf("selected_candidate_numbers contains unknown number %d", candidateNumber),
 				Raw:     raw,
 			}
 		}
-		if _, ok := seen[memoryID]; ok {
+		if _, ok := seen[candidateNumber]; ok {
 			continue
 		}
-		seen[memoryID] = struct{}{}
-		selected = append(selected, memoryID)
+		seen[candidateNumber] = struct{}{}
+		selected = append(selected, candidateNumber)
 	}
 	return logicdomain.PreCheckMemoryReviewResult{
-		SelectedMemoryIDs: selected,
-		Reason:            strings.TrimSpace(payload.Reason),
+		SelectedCandidateNumbers: selected,
+		Reason:                   strings.TrimSpace(payload.Reason),
 	}, nil
 }
 
-// normalizePreCheckReviewCandidates trims empty text noise and removes duplicate candidate ids before the payload reaches the model.
-// normalizePreCheckReviewCandidates 用于在候选载荷进入模型前裁掉空文本噪声并移除重复 id。
+// normalizePreCheckReviewCandidates trims empty text noise and removes duplicate candidate numbers before the payload reaches the model.
+// normalizePreCheckReviewCandidates 用于在候选载荷进入模型前裁掉空文本噪声并移除重复候选编号。
 func normalizePreCheckReviewCandidates(values []logicdomain.PreCheckMemoryCandidate) []logicdomain.PreCheckMemoryCandidate {
 	if len(values) == 0 {
 		return nil
 	}
-	seen := make(map[uint64]struct{}, len(values))
+	seen := make(map[int]struct{}, len(values))
 	out := make([]logicdomain.PreCheckMemoryCandidate, 0, len(values))
 	for _, value := range values {
-		if value.MemoryID == 0 {
+		if value.CandidateNumber <= 0 || value.MemoryID == 0 {
 			continue
 		}
-		if _, ok := seen[value.MemoryID]; ok {
+		if _, ok := seen[value.CandidateNumber]; ok {
 			continue
 		}
-		seen[value.MemoryID] = struct{}{}
+		seen[value.CandidateNumber] = struct{}{}
 		value.SourceKind = strings.TrimSpace(value.SourceKind)
 		value.ScopeLevel = strings.TrimSpace(value.ScopeLevel)
 		value.Abstract = strings.TrimSpace(value.Abstract)

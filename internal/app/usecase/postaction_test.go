@@ -1,5 +1,5 @@
-// postaction_test.go verifies the immediate single-turn post-action workflow plus the retained legacy batch helpers used by compatibility tests.
-// postaction_test.go 用于验证即时单轮的 post-action 工作流，以及兼容测试仍会覆盖的遗留批处理辅助能力。
+// postaction_test.go verifies the async single-turn post-action workflow plus the retained legacy batch helpers used by compatibility tests.
+// postaction_test.go 用于验证异步单轮的 post-action 工作流，以及兼容测试仍会覆盖的遗留批处理辅助能力。
 package usecase
 
 import (
@@ -20,7 +20,7 @@ import (
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := newPostActionUseCase(filter, store, nil, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -48,8 +48,8 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	}
 }
 
-// TestPostActionUseCaseSkipsNoiseGateForTimeline verifies timeline-driven payloads still bypass the single-round noise gate and persist one canonical turn row.
-// TestPostActionUseCaseSkipsNoiseGateForTimeline 用于验证带 timeline 的载荷仍会跳过单轮噪声门，并持久化成一条标准 turn 记录。
+// TestPostActionUseCaseSkipsNoiseGateForTimeline verifies timeline-driven payloads still bypass the single-round noise gate and persist one canonical turn row before async processing begins.
+// TestPostActionUseCaseSkipsNoiseGateForTimeline 用于验证带 timeline 的载荷仍会跳过单轮噪声门，并在异步处理开始前先持久化成一条标准 turn 记录。
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
@@ -85,17 +85,17 @@ func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 		{Type: "assistant", Content: "中间回答"},
 		{Type: "user", Content: "补充问题"},
 	})
-	if analyzer.calls != 1 {
-		t.Fatalf("expected immediate turn analyzer to run once, got %d", analyzer.calls)
+	if analyzer.calls != 0 {
+		t.Fatalf("expected analyzer not to run during Execute, got %d", analyzer.calls)
 	}
-	if store.analysisTurn.ID != 1 || store.analysis.Details != "timeline turn details" {
-		t.Fatalf("expected immediate analysis to be persisted, got turn=%+v analysis=%+v", store.analysisTurn, store.analysis)
+	if store.analysisTurn.ID != 0 || store.analysis.Details != "" {
+		t.Fatalf("expected no analysis write-back during Execute, got turn=%+v analysis=%+v", store.analysisTurn, store.analysis)
 	}
 }
 
-// TestPostActionUseCaseProcessesSingleRoundImmediately verifies accepted single-round payloads are analyzed immediately with refined history and active-memory references.
-// TestPostActionUseCaseProcessesSingleRoundImmediately 用于验证通过噪声门的单轮载荷会立刻结合已提炼历史和活跃记忆完成分析。
-func TestPostActionUseCaseProcessesSingleRoundImmediately(t *testing.T) {
+// TestPostActionUseCaseQueuesAcceptedTurnWithoutBlocking verifies accepted single-round payloads are persisted and returned immediately without running the analyzer inline.
+// TestPostActionUseCaseQueuesAcceptedTurnWithoutBlocking 用于验证通过噪声门的单轮载荷会先持久化并立即返回，而不会在 Execute 内联执行分析器。
+func TestPostActionUseCaseQueuesAcceptedTurnWithoutBlocking(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
 	store := &testRelationalStore{
 		persistedTurn: logicdomain.PersistedTurnRecord{
@@ -106,24 +106,9 @@ func TestPostActionUseCaseProcessesSingleRoundImmediately(t *testing.T) {
 			CreatedAt:        time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC),
 			UpdatedAt:        time.Date(2026, 4, 2, 9, 0, 1, 0, time.UTC),
 		},
-		historyTurns: []logicdomain.SessionTurnRecord{
-			{ID: 77, SessionID: 88, ProjectID: 12, Details: "上一轮已经确认并发部分会改成 channel。", DetailsBudget: 20, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
-		},
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
-			{ID: 701, TurnID: 77, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "旧并发方案", Details: "历史上使用过 mutex。", NodeStatus: logicdomain.MemoryNodeStatusActive},
-		},
 	}
-	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		TurnID:              88,
-		Details:             "当前轮确认保持即时提炼链路。",
-		SupersededMemoryIDs: []uint64{701},
-		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "当前项目确认改用 channel 管理并发。", Details: "这是新的并发决策。"},
-		},
-	}}
-	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
-	vector := &stubVectorStore{}
-	uc := newPostActionUseCase(filter, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{
+	analyzer := &stubPostActionTurnAnalyzer{}
+	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
 	}, nil, false)
@@ -147,8 +132,63 @@ func TestPostActionUseCaseProcessesSingleRoundImmediately(t *testing.T) {
 		t.Fatal("expected accepted result")
 	}
 	assertPersistedTurn(t, store.turn, "你好", "收到", nil)
+	if analyzer.calls != 0 {
+		t.Fatalf("expected analyzer not to run during Execute, got %d", analyzer.calls)
+	}
+	if store.analysisTurn.ID != 0 {
+		t.Fatalf("expected no inline analysis write-back, got %+v", store.analysisTurn)
+	}
+}
+
+// TestPostActionUseCaseProcessesQueuedTurnsAsynchronously verifies the async worker uses refined history and active-memory references when it drains pending turns.
+// TestPostActionUseCaseProcessesQueuedTurnsAsynchronously 用于验证异步工作器在消化 pending turn 时，会结合已提炼历史和活跃记忆锚点完成分析。
+func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                88,
+				SessionID:         88,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"你好","timeline":[],"assistant":"收到"}`,
+				DehydratedBudget:  10,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC),
+				UpdatedAt:         time.Date(2026, 4, 2, 9, 0, 1, 0, time.UTC),
+			},
+		},
+		historyTurns: []logicdomain.SessionTurnRecord{
+			{ID: 77, SessionID: 88, ProjectID: 12, Details: "上一轮已经确认并发部分会改成 channel。", DetailsBudget: 20, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+		},
+		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
+			{ID: 701, TurnID: 77, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "旧并发方案", Details: "历史上使用过 mutex。", NodeStatus: logicdomain.MemoryNodeStatusActive},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		TurnID:              88,
+		Details:             "当前轮确认保持异步提炼链路。",
+		SupersededMemoryIDs: []uint64{701},
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "当前项目确认改用 channel 管理并发。", Details: "这是新的并发决策。"},
+		},
+	}}
+	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
+	vector := &stubVectorStore{}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{
+		HistoryTurns:   3,
+		MaxInputTokens: 200,
+	}, nil, false)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{
+		SessionID:  88,
+		SessionKey: "sess-ok",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, "test")
+
 	if analyzer.calls != 1 {
-		t.Fatalf("expected immediate turn analyzer to run once, got %d", analyzer.calls)
+		t.Fatalf("expected queued turn analyzer to run once, got %d", analyzer.calls)
 	}
 	if analyzer.input.TargetTurn.TurnID != 88 {
 		t.Fatalf("expected target turn id 88, got %+v", analyzer.input.TargetTurn)
@@ -165,7 +205,7 @@ func TestPostActionUseCaseProcessesSingleRoundImmediately(t *testing.T) {
 	if store.analysisTurn.ID != 88 {
 		t.Fatalf("expected apply turn analysis to use persisted turn 88, got %+v", store.analysisTurn)
 	}
-	if store.analysis.Details != "当前轮确认保持即时提炼链路。" {
+	if store.analysis.Details != "当前轮确认保持异步提炼链路。" {
 		t.Fatalf("unexpected persisted analysis: %+v", store.analysis)
 	}
 	if len(store.analysis.SupersededMemoryIDs) != 1 || store.analysis.SupersededMemoryIDs[0] != 701 {
@@ -173,16 +213,20 @@ func TestPostActionUseCaseProcessesSingleRoundImmediately(t *testing.T) {
 	}
 }
 
-// TestPostActionUseCaseRollsBackTurnVectorsWhenImmediatePersistenceFails verifies freshly inserted vectors are deleted again when the synchronous turn write-back fails.
-// TestPostActionUseCaseRollsBackTurnVectorsWhenImmediatePersistenceFails 用于验证同步 turn 回写失败时，刚插入的向量会被立即回滚删除。
-func TestPostActionUseCaseRollsBackTurnVectorsWhenImmediatePersistenceFails(t *testing.T) {
-	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{{TurnIndex: 1, UserMessage: "你好", AssistantReply: "收到"}}}
+// TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails verifies freshly inserted vectors are deleted again when async turn write-back fails.
+// TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails 用于验证异步 turn 回写失败时，刚插入的向量会被立即回滚删除。
+func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *testing.T) {
 	store := &testRelationalStore{
-		persistedTurn: logicdomain.PersistedTurnRecord{
-			ID:        91,
-			SessionID: 91,
-			ProjectID: 12,
-			CreatedAt: time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                91,
+				SessionID:         91,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"你好","timeline":[],"assistant":"收到"}`,
+				DehydratedBudget:  10,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
+			},
 		},
 		analysisErr: errors.New("duckdb write failed"),
 	}
@@ -190,28 +234,22 @@ func TestPostActionUseCaseRollsBackTurnVectorsWhenImmediatePersistenceFails(t *t
 		TurnID:  91,
 		Details: "当前轮需要落一条记忆。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "需要记录当前同步回写失败回滚场景。", Details: "用于验证向量回滚。"},
+			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "需要记录当前异步回写失败回滚场景。", Details: "用于验证向量回滚。"},
 		},
 	}}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.9, 0.8, 0.7}}}}
 	vector := &stubVectorStore{}
-	uc := newPostActionUseCase(filter, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
-	_, err := uc.Execute(context.Background(), PostActionCommand{
-		Session: logicdomain.SessionRef{
-			SessionID:  91,
-			SessionKey: "sess-rollback-immediate",
-			UserID:     9,
-			TeamID:     4,
-			SpaceID:    6,
-			ProjectID:  12,
-		},
-		UserContent:      "你好",
-		AssistantContent: "收到",
-	})
-	if err == nil {
-		t.Fatal("expected immediate persistence failure")
-	}
+	uc.processQueuedTurns(logicdomain.SessionRef{
+		SessionID:  91,
+		SessionKey: "sess-rollback-immediate",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, "test")
+
 	if len(vector.upserts) != 1 {
 		t.Fatalf("expected 1 vector upsert before rollback, got %d", len(vector.upserts))
 	}
@@ -647,6 +685,7 @@ type testRelationalStore struct {
 	turn                    logicdomain.TurnRecord
 	persistedTurn           logicdomain.PersistedTurnRecord
 	pendingTurns            []logicdomain.SessionTurnRecord
+	recentTurns             []logicdomain.SessionTurnRecord
 	historyTurns            []logicdomain.SessionTurnRecord
 	activeMemoryNodes       []logicdomain.SessionMemoryNodeRecord
 	recentDirectWrites      []logicdomain.TurnAnalysisDirectWrite
@@ -698,6 +737,15 @@ func (s *testRelationalStore) AppendTurnRecord(_ context.Context, session logicd
 // LoadPendingSessionTurns 用于返回队列处理测试中预设的待处理 turn。
 func (s *testRelationalStore) LoadPendingSessionTurns(_ context.Context, _ logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error) {
 	return append([]logicdomain.SessionTurnRecord(nil), s.pendingTurns...), nil
+}
+
+// LoadRecentSessionTurns returns the canned recent turns used by pre-check and async-queue tests that need mixed refined/raw windows.
+// LoadRecentSessionTurns 用于返回 pre-check 和异步队列测试使用的预设最近 turn 窗口。
+func (s *testRelationalStore) LoadRecentSessionTurns(_ context.Context, _ logicdomain.SessionRef, _ int) ([]logicdomain.SessionTurnRecord, error) {
+	if len(s.recentTurns) == 0 {
+		return append([]logicdomain.SessionTurnRecord(nil), s.historyTurns...), nil
+	}
+	return append([]logicdomain.SessionTurnRecord(nil), s.recentTurns...), nil
 }
 
 // LoadRecentSessionHistory returns the canned extracted history turns used as batch references.
