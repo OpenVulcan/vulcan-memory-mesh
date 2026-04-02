@@ -19,12 +19,8 @@ func mergePreCheckCandidate(existing, incoming logicdomain.PreCheckMemoryCandida
 		secondary = existing
 	}
 	merged := primary
-	if strings.TrimSpace(merged.Abstract) == "" && strings.TrimSpace(secondary.Abstract) != "" {
-		merged.Abstract = secondary.Abstract
-	}
-	if strings.TrimSpace(merged.Details) == "" && strings.TrimSpace(secondary.Details) != "" {
-		merged.Details = secondary.Details
-	}
+	merged.Abstract = chooseRicherPreCheckText(primary.Abstract, secondary.Abstract)
+	merged.Details = chooseRicherPreCheckText(primary.Details, secondary.Details)
 	if strings.TrimSpace(merged.SourceKind) == "" && strings.TrimSpace(secondary.SourceKind) != "" {
 		merged.SourceKind = secondary.SourceKind
 	}
@@ -118,6 +114,23 @@ func scorePreCheckOriginRichness(origin string) int {
 		score++
 	}
 	return score
+}
+
+// chooseRicherPreCheckText keeps the more informative non-empty candidate text so repeated hits can retain stronger explanations without losing fuller reviewer-facing wording.
+// chooseRicherPreCheckText 用于在重复命中时保留信息量更高的非空候选文本，让更强说明不会牺牲 reviewer 看到的完整表述。
+func chooseRicherPreCheckText(primary, secondary string) string {
+	primary = strings.TrimSpace(primary)
+	secondary = strings.TrimSpace(secondary)
+	switch {
+	case primary == "":
+		return secondary
+	case secondary == "":
+		return primary
+	case len(secondary) > len(primary):
+		return secondary
+	default:
+		return primary
+	}
 }
 
 // appendSortedUniquePreCheckValues deduplicates and sorts reviewer-facing string lists so merged candidate explanations stay stable across map iteration and query-group order.

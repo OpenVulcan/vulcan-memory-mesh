@@ -550,7 +550,7 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 								SourceKind:                 logicdomain.MemorySourceKindTurnExtract,
 								ScopeLevel:                 logicdomain.MemoryScopeLevelProject,
 								Abstract:                   "phase4 新方案",
-								DetailsPreview:             "适用于 local oss。",
+								DetailsPreview:             "适用于 local oss，并且这条记录补充了更完整的历史背景和实现约束说明。",
 								Category:                   logicdomain.MemoryNodeCategoryArchitectureDecision,
 								Score:                      0.92,
 								Origin:                     "vector_search",
@@ -632,6 +632,9 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 	}
 	if candidate.ScoreLabel != "Very Strong Match" || !strings.Contains(candidate.ScoreExplanation, "0.050") {
 		t.Fatalf("expected stronger score explanation to survive merge, got %#v", candidate)
+	}
+	if !strings.Contains(candidate.Details, "更完整的历史背景和实现约束说明") {
+		t.Fatalf("expected richer details text to survive merge, got %#v", candidate)
 	}
 }
 
