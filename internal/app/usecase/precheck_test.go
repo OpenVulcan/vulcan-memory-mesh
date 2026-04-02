@@ -179,6 +179,87 @@ func TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems verifies that when pre-check falls back to local summary rendering after selecting memories, the summary section titles stay aligned with the returned ContextItems instead of reverting to stale hard-coded labels.
+// TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems 用于验证当 pre-check 在选中记忆后回退到本地 summary 渲染时，摘要 section 标题会和返回的 ContextItems 保持一致，而不是退回到过期的硬编码标签。
+func TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems(t *testing.T) {
+	assembler := &stubPreCheckAssembler{
+		err: context.DeadlineExceeded,
+	}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckProfiles{},
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Query:      "phase4 当前方案",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+								SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 8},
+								SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+								Abstract:       "phase4 新方案",
+								DetailsPreview: "这是 fallback summary 里的记忆内容。",
+								Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:          0.96,
+								Origin:         "hybrid_rrf",
+							},
+						},
+					},
+				},
+			},
+		},
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 7, SessionID: 41, Details: "上一轮确认当前环境仍是 phase4。", DetailsBudget: 15, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"phase4 当前方案"},
+				NeedMemory: true,
+				Reason:     "needs architecture memory",
+			},
+		},
+		&stubPreCheckReviewer{
+			result: logicdomain.PreCheckMemoryReviewResult{
+				SelectedCandidateNumbers: []int{1},
+			},
+		},
+		assembler,
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-fallback-title"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "在 phase4 下应该继续用哪个方案？",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if !result.Degraded || !result.ShouldInject {
+		t.Fatalf("expected degraded fallback injection, got %#v", result)
+	}
+	if !strings.Contains(result.ContextText, "[混合召回记忆]") {
+		t.Fatalf("expected fallback summary to use item-aligned memory title, got %q", result.ContextText)
+	}
+	if strings.Contains(result.ContextText, "[向量召回记忆]") {
+		t.Fatalf("expected fallback summary to avoid stale vector-only title, got %q", result.ContextText)
+	}
+	if len(result.ContextItems) == 0 || result.ContextItems[0].Title != "混合召回记忆" {
+		t.Fatalf("expected fallback items to expose mixed memory title, got %#v", result.ContextItems)
+	}
+}
+
 // TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates verifies stage one sees mixed refined/raw recent turns, then stage two adopts numbered candidates.
 // TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates 用于验证第一层会看到 refined/raw 混合最近 turn，随后第二层按编号采纳候选。
 func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testing.T) {

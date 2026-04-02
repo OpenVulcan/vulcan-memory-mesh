@@ -670,8 +670,9 @@ func buildFallbackContextSummary(items []logicdomain.ContextItem) string {
 			b.WriteString("\n\n")
 		}
 		firstSection = false
+		title := fallbackContextSectionTitle(group.Title, section)
 		b.WriteString("[")
-		b.WriteString(group.Title)
+		b.WriteString(title)
 		b.WriteString("]\n")
 		for idx, item := range section {
 			if item.Kind == "memory" {
@@ -684,6 +685,19 @@ func buildFallbackContextSummary(items []logicdomain.ContextItem) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// fallbackContextSectionTitle keeps fallback text and structured items aligned by preferring the section title already carried by the first item in that section.
+// fallbackContextSectionTitle 用于优先复用分组里第一条 item 自带的标题，保证 fallback 文本和结构化条目在 section 命名上保持一致。
+func fallbackContextSectionTitle(defaultTitle string, section []logicdomain.ContextItem) string {
+	if len(section) == 0 {
+		return defaultTitle
+	}
+	title := strings.TrimSpace(section[0].Title)
+	if title == "" {
+		return defaultTitle
+	}
+	return title
 }
 
 // logPreCheckWarn keeps degraded-path logging uniform so field triage remains easy after rollout.
