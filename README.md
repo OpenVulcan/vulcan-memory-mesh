@@ -367,14 +367,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `post_action.session_analysis_history_turns`
 - `post_action.session_analysis_max_input_tokens`
 
-`post_action` 下当前保留 5 个与 LLM 提炼窗口相关的参数：
+`post_action` 下当前保留 5 个与异步单轮提炼窗口和恢复扫描相关的参数：
 
 - `session_analysis_turn_threshold`
   - 兼容保留参数，当前主线不会再按“累计待处理 turn 数”触发批量提炼
 - `session_analysis_token_threshold`
   - 兼容保留参数，当前主线不会再按“累计待处理 token”触发批量提炼
 - `session_analysis_idle_timeout`
-  - 兼容保留参数，当前主线不再按 idle timeout 触发延后提炼；后台仅保留画像过期收敛维护
+  - 当前仍用于后台恢复扫描：如果某个 session 的 pending turn 长时间未被消费，会在超过该阈值后被重新入队
 - `session_analysis_history_turns`
   - 每次单轮 `analyze_turn` 最多回带多少条历史 `details` 精要作为参考
 - `session_analysis_max_input_tokens`
@@ -382,7 +382,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 当前主线的行为是：
 
-- `PostAction` 成功写入 turn 后，会立刻发起一次 `analyze_turn`
+- `PostAction` 成功写入 turn 并完成入队后，后台会尽快发起一次 `analyze_turn`
 - `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结构化结果
 - 如果本轮有 `profile_nodes`，会统一走一次 `review_profile_nodes`，按 user/project 两侧分别评审新旧画像节点
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
@@ -405,6 +405,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 如果 LLM 判定旧记忆 turn 已被覆盖，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`，并删除 LanceDB 旧向量
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
 - 如果 DuckDB 回写失败，会尝试回滚这次新增的 LanceDB 向量
+- 后台 worker 还会按 `session_analysis_idle_timeout` 周期性补扫陈旧 pending session，帮助崩溃或临时失败后的恢复
 
 另外，当前还有一批“已经声明但尚未接入主运行时”的配置参数，见：
 

@@ -18,7 +18,6 @@ var RequiredScenes = []string{
 	"extract_intent.md",
 	"assemble_context.md",
 	"analyze_turn.md",
-	"analyze_session_batch.md",
 	"summarize_entry.md",
 	"merge_profile.md",
 	"review_profile_nodes.md",

@@ -1778,8 +1778,8 @@ ORDER BY profile_date ASC, priority ASC, refresh_weight DESC, id ASC
 	return nodes, nil
 }
 
-// LoadPendingSessionTurns returns the oldest not-yet-extracted turn rows for one session so queued post-action workers can build a batch window.
-// LoadPendingSessionTurns 用于返回某个 session 中尚未提取的最早 turn 行，让排队的 post-action 工作器构建批处理窗口。
+// LoadPendingSessionTurns returns the oldest not-yet-extracted turn rows for one session so queued post-action workers can drain pending work in durable order.
+// LoadPendingSessionTurns 用于返回某个 session 中尚未提取的最早 turn 行，让排队的 post-action 工作器按持久化顺序消化待处理工作。
 func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error) {
 	if session.SessionID == 0 {
 		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
@@ -2260,189 +2260,6 @@ WHERE id = ?
 		return fmt.Errorf("advance session extract window: %w", err)
 	}
 	return nil
-}
-
-// ApplySessionBatchAnalysis writes back a queued batch of turn summaries, inserts fresh memory/profile nodes, advances session summarize progress, and marks superseded memory turns.
-// ApplySessionBatchAnalysis 用于回写一批排队的 turn 摘要、插入新的 memory/profile 节点、推进 session 总结进度，并标记被淘汰的旧记忆 turn。
-func (s *Store) ApplySessionBatchAnalysis(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis logicdomain.SessionBatchAnalysis) (logicdomain.SessionAnalysisApplyResult, error) {
-	if session.SessionID == 0 {
-		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
-	}
-	if session.ProjectID == 0 {
-		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
-	}
-	if session.UserID == 0 {
-		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
-	}
-	if len(turns) == 0 {
-		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "turns", Message: "must contain at least one pending turn"}
-	}
-
-	// Serialize the full batch write so turn status flips, inserted nodes, and session progress remain consistent within one deterministic id window.
-	// 串行化整批写入，确保 turn 状态切换、节点插入和 session 进度推进在同一个确定性 ID 窗口内保持一致。
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	turnByID := make(map[uint64]logicdomain.SessionTurnRecord, len(turns))
-	for _, turn := range turns {
-		turnByID[turn.ID] = turn
-	}
-	if len(analysis.Turns) != len(turnByID) {
-		return logicdomain.SessionAnalysisApplyResult{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_session_batch", Message: fmt.Sprintf("turn_results count mismatch: got %d want %d", len(analysis.Turns), len(turnByID))}
-	}
-
-	now := time.Now().UTC()
-	nowMs := now.UnixMilli()
-	nowRFC3339 := now.Format(time.RFC3339Nano)
-	memoryNodeCount := 0
-	profileNodeCount := 0
-	processedBudget := 0
-	lastTurnID := uint64(0)
-	for idx := range analysis.Turns {
-		turnResult := &analysis.Turns[idx]
-		storedTurn, ok := turnByID[turnResult.TurnID]
-		if !ok {
-			return logicdomain.SessionAnalysisApplyResult{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_session_batch", Message: fmt.Sprintf("unexpected turn_id %d", turnResult.TurnID)}
-		}
-		if turnResult.DetailsBudget <= 0 {
-			turnResult.DetailsBudget = estimateTokenBudget(turnResult.Details)
-		}
-		memoryNodeCount += len(turnResult.MemoryNodes)
-		profileNodeCount += len(turnResult.ProfileNodes)
-		processedBudget += storedTurn.DehydratedBudget
-		if turnResult.TurnID > lastTurnID {
-			lastTurnID = turnResult.TurnID
-		}
-	}
-
-	memoryStartID := uint64(0)
-	profileStartID := uint64(0)
-	var err error
-	if memoryNodeCount > 0 {
-		memoryStartID, err = s.nextNumericID(ctx, "vmm_memory_nodes")
-		if err != nil {
-			return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("allocate memory node id: %w", err)
-		}
-	}
-	if profileNodeCount > 0 {
-		profileStartID, err = s.nextNumericID(ctx, "vmm_profile_nodes")
-		if err != nil {
-			return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("allocate profile node id: %w", err)
-		}
-	}
-
-	obsoleteTurnIDs := normalizeBatchTurnIDs(analysis.ObsoleteMemoryTurnIDs)
-	obsoleteVectorIDs, err := s.loadObsoleteVectorIDs(ctx, session.SessionID, obsoleteTurnIDs)
-	if err != nil {
-		return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("load obsolete vector ids: %w", err)
-	}
-	retiredProfileNodeIDs := normalizeUint64List(analysis.RetiredProfileNodeIDs)
-
-	script := ""
-	memoryOffset := uint64(0)
-	profileOffset := uint64(0)
-	sort.Slice(analysis.Turns, func(i, j int) bool {
-		return analysis.Turns[i].TurnID < analysis.Turns[j].TurnID
-	})
-	for _, turnResult := range analysis.Turns {
-		script += buildTurnAnalysisUpdateSQL(turnResult.TurnID, strings.TrimSpace(turnResult.Details), turnResult.DetailsBudget, nowMs)
-		for idx, node := range turnResult.MemoryNodes {
-			if strings.TrimSpace(node.VectorID) == "" {
-				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
-			}
-			record := normalizeTurnMemoryNodeRecord(session, logicdomain.PersistedTurnRecord{
-				ID:        turnResult.TurnID,
-				SessionID: session.SessionID,
-				ProjectID: session.ProjectID,
-				CreatedAt: turnByID[turnResult.TurnID].CreatedAt,
-				UpdatedAt: now,
-			}, node, memoryStartID+memoryOffset, now)
-			script += buildMemoryNodeInsertSQL(record)
-			memoryOffset++
-		}
-		for idx, node := range turnResult.ProfileNodes {
-			if !logicdomain.ValidProfileType(node.ProfileType) {
-				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
-			}
-			if strings.TrimSpace(node.Content) == "" {
-				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
-			}
-			if !logicdomain.ValidProfileStatus(node.Status) {
-				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].status", Message: "must be one supported profile status"}
-			}
-			if node.RefreshWeight < 0 {
-				return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].refresh_weight", Message: "must be >= 0"}
-			}
-			if node.Status == logicdomain.ProfileStatusActive {
-				if !logicdomain.ValidProfilePriority(node.Priority) {
-					return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].priority", Message: "must be one supported profile priority"}
-				}
-				if !logicdomain.ValidProfileLevel(node.ProfileLevel) {
-					return logicdomain.SessionAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_level", Message: "must be one supported profile level"}
-				}
-			}
-			bindID := session.ProjectID
-			switch node.ProfileType {
-			case logicdomain.ProfileTypeUser:
-				bindID = session.UserID
-			case logicdomain.ProfileTypeTeam:
-				bindID = session.TeamID
-			case logicdomain.ProfileTypeSpace:
-				bindID = session.SpaceID
-			}
-			if strings.TrimSpace(node.ProfileDate) == "" {
-				node.ProfileDate = chooseProfileDateFromTurn(turnByID[turnResult.TurnID], now)
-			}
-			insertedProfileID := profileStartID + profileOffset
-			script += buildProfileNodeInsertSQL(insertedProfileID, uint64Ptr(turnResult.TurnID), node.ProfileType, bindID, node, nowMs)
-			if node.Status == logicdomain.ProfileStatusActive && len(node.SupersedeNodeIDs) > 0 {
-				script += buildProfileNodesSupersedeSQL(normalizeUint64List(node.SupersedeNodeIDs), insertedProfileID, "", nowMs)
-			}
-			profileOffset++
-		}
-	}
-	if analysis.UserProfileMerged {
-		script += buildUserProfileUpdateSQL(session.UserID, analysis.MergedUserProfile, nowRFC3339)
-	}
-	if analysis.ProjectProfileMerged {
-		script += buildProjectProfileUpdateSQL(session.ProjectID, analysis.MergedProjectProfile, nowRFC3339)
-	}
-	if len(retiredProfileNodeIDs) > 0 {
-		script += buildProfileNodesRetireSQL(retiredProfileNodeIDs, "", nowMs)
-	}
-	if len(obsoleteTurnIDs) > 0 {
-		script += buildMemoryNodesSupersedeBySourceTurnSQL(obsoleteTurnIDs, nowMs)
-	}
-	script += buildSessionBatchProgressUpdateSQL(session.SessionID, processedBudget, lastTurnID)
-	if err := s.exec(ctx, script); err != nil {
-		return logicdomain.SessionAnalysisApplyResult{}, fmt.Errorf("apply session batch analysis: %w", err)
-	}
-	return logicdomain.SessionAnalysisApplyResult{ObsoleteVectorIDs: obsoleteVectorIDs}, nil
-}
-
-// loadObsoleteVectorIDs loads the currently active vector ids for the obsolete source-turn anchors so the caller can delete those rows from LanceDB after SQLite commits.
-// loadObsoleteVectorIDs 用于加载被淘汰 source-turn 锚点当前仍活跃的 vector_id，供调用方在 SQLite 提交成功后删除 LanceDB 对应行。
-func (s *Store) loadObsoleteVectorIDs(ctx context.Context, sessionID uint64, turnIDs []uint64) ([]string, error) {
-	if sessionID == 0 || len(turnIDs) == 0 {
-		return nil, nil
-	}
-	rows, err := queryRows[obsoleteVectorRow](s, ctx, fmt.Sprintf(`
-SELECT vector_id
-FROM vmm_memory_nodes
-WHERE origin_session_id = %d AND memory_status = %d AND source_turn_id IN (%s)
-ORDER BY source_turn_id ASC, id ASC
-`, sessionID, logicdomain.MemoryStatusActive, sqlUint64List(turnIDs)))
-	if err != nil {
-		return nil, err
-	}
-	ids := make([]string, 0, len(rows))
-	for _, row := range rows {
-		if strings.TrimSpace(row.VectorID) == "" {
-			continue
-		}
-		ids = append(ids, strings.TrimSpace(row.VectorID))
-	}
-	return ids, nil
 }
 
 // loadActiveMemoryVectorIDs loads the vector ids of active unified memory rows by memory id so callers can clean those vector rows after a supersede update commits.
@@ -3745,19 +3562,6 @@ WHERE memory_status = %d AND id IN (%s);
 `, logicdomain.MemoryStatusSuperseded, updatedMs, logicdomain.MemoryStatusActive, sqlUint64List(memoryIDs))
 }
 
-// buildMemoryNodesSupersedeBySourceTurnSQL renders the raw UPDATE used by the legacy batch path to supersede active memory rows anchored to obsolete source turns.
-// buildMemoryNodesSupersedeBySourceTurnSQL 用于渲染旧 batch 兼容路径使用的原始 UPDATE，按废弃 source turn 把 active 记忆行标记为 superseded。
-func buildMemoryNodesSupersedeBySourceTurnSQL(turnIDs []uint64, updatedMs int64) string {
-	if len(turnIDs) == 0 {
-		return ""
-	}
-	return fmt.Sprintf(`
-UPDATE vmm_memory_nodes
-SET memory_status = %d, updated_timestamp = %d
-WHERE memory_status = %d AND source_turn_id IN (%s);
-`, logicdomain.MemoryStatusSuperseded, updatedMs, logicdomain.MemoryStatusActive, sqlUint64List(turnIDs))
-}
-
 // normalizeTurnMemoryNodeRecord fills unified-memory defaults for one turn-extracted node before it is persisted.
 // normalizeTurnMemoryNodeRecord 用于在持久化前，为一条 turn 提炼记忆补齐统一记忆表默认值。
 func normalizeTurnMemoryNodeRecord(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, node logicdomain.MemoryNodeCandidate, id uint64, now time.Time) logicdomain.MemoryNodeRecord {
@@ -3927,26 +3731,6 @@ func nullableUint64(value uint64) *uint64 {
 	return &value
 }
 
-// buildSessionBatchProgressUpdateSQL renders the raw UPDATE used to advance last_summarized_id and subtract the processed pending budget after one queued batch succeeds.
-// buildSessionBatchProgressUpdateSQL 用于渲染原始 UPDATE 语句，在排队批处理成功后推进 last_summarized_id 并扣减已处理的待总结预算。
-func buildSessionBatchProgressUpdateSQL(sessionID uint64, processedBudget int, lastTurnID uint64) string {
-	return fmt.Sprintf(`
-UPDATE vmm_sessions
-SET last_summarized_id = CASE WHEN last_summarized_id < %d THEN %d ELSE last_summarized_id END,
-    summarize_budget = CASE WHEN summarize_budget - %d < 0 THEN 0 ELSE summarize_budget - %d END
-WHERE id = %d;
-`, lastTurnID, lastTurnID, processedBudget, processedBudget, sessionID)
-}
-
-// chooseProfileDateFromTurn derives the rendered profile date from one persisted turn and falls back to the current time when needed.
-// chooseProfileDateFromTurn 用于从已持久化 turn 推导画像展示日期，并在必要时回退到当前时间。
-func chooseProfileDateFromTurn(turn logicdomain.SessionTurnRecord, fallback time.Time) string {
-	if !turn.CreatedAt.IsZero() {
-		return turn.CreatedAt.UTC().Format("2006-01-02")
-	}
-	return fallback.UTC().Format("2006-01-02")
-}
-
 // normalizeUint64List removes zeros and duplicates from generic uint64 id lists while keeping a deterministic ascending order.
 // normalizeUint64List 用于从通用 uint64 id 列表中去掉零值和重复项，并保持确定性的升序。
 func normalizeUint64List(values []uint64) []uint64 {
@@ -4050,30 +3834,6 @@ func sqlStringList(values []string) string {
 		return "''"
 	}
 	return strings.Join(parts, ",")
-}
-
-// normalizeBatchTurnIDs removes zeros and duplicates from one turn-id list while keeping a deterministic ascending order.
-// normalizeBatchTurnIDs 用于去掉 turn-id 列表中的零值和重复项，并保持确定性的升序。
-func normalizeBatchTurnIDs(values []uint64) []uint64 {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := map[uint64]struct{}{}
-	out := make([]uint64, 0, len(values))
-	for _, value := range values {
-		if value == 0 {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i] < out[j]
-	})
-	return out
 }
 
 // sqlStringLiteral escapes one string into a single-quoted SQL literal for debug-stage raw statement rendering.

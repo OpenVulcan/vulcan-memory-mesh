@@ -1,5 +1,5 @@
-// postaction_profiles.go implements the queued profile-review, lifecycle, and profile-rendering helpers used by post-action batches.
-// postaction_profiles.go 用于实现 post-action 批处理中与画像评审、生命周期计算和画像渲染相关的辅助逻辑。
+// postaction_profiles.go implements the queued profile-review, lifecycle, and profile-rendering helpers used by the current async post-action pipeline.
+// postaction_profiles.go 用于实现当前异步 post-action 主链中的画像评审、生命周期计算和画像渲染辅助逻辑。
 package usecase
 
 import (
@@ -228,8 +228,8 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 		updated = true
 	}
 
-	// Then mark rejected candidates as invalid so the batch can still persist them for later auditing without polluting the active profile set.
-	// 然后把被拒绝的候选标成 invalid，便于批处理仍然落库备案，但不会污染活跃画像集合。
+	// Then mark rejected candidates as invalid so the async pipeline can still persist them for later auditing without polluting the active profile set.
+	// 然后把被拒绝的候选标成 invalid，便于异步流水线继续落库存档，但不会污染活跃画像集合。
 	for _, idx := range section.InvalidCandidateIndexes {
 		if idx < 0 || idx >= len(refs) {
 			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s invalid candidate_index %d is out of range", label, idx)}

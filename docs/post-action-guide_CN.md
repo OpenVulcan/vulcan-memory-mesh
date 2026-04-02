@@ -259,10 +259,11 @@ message PostActionTimelineItem {
 
 当前后台维护仍然是单 worker goroutine，不是多 worker 并行。
 
-它现在只负责周期性维护，不再承担延后的 turn 提炼：
+它现在不再承担旧的 batch 聚合提炼，但仍负责异步队列恢复相关维护：
 
 1. 每 30 秒执行一次过期画像收敛
-2. 在共享存储连接出现死锁/污染症状时进入短暂退避
+2. 每 30 秒扫描一次超过 `session_analysis_idle_timeout` 的 pending session，并重新入队恢复单轮提炼
+3. 在共享存储连接出现死锁/污染症状时进入短暂退避
 
 ### 历史窗口与预算规则
 
@@ -534,7 +535,7 @@ grpcurl -plaintext `
 - `post_action.session_analysis_token_threshold`
   - 兼容保留参数，当前主线不再按累计待处理 token 触发延后提炼
 - `post_action.session_analysis_idle_timeout`
-  - 兼容保留参数，当前主线不再按 idle timeout 强制触发延后提炼
+  - 当前仍用于后台恢复扫描：如果某个 session 的 pending turn 长时间未被消费，会在超过该阈值后被重新入队
 - `post_action.session_analysis_history_turns`
   - 表示每次单轮 `analyze_turn` 最多回带多少条历史 `details` 精要
 - `post_action.session_analysis_max_input_tokens`
@@ -542,7 +543,7 @@ grpcurl -plaintext `
 
 当前已经接入的行为是：
 
-- `PostAction` 成功写入 turn 后，会立刻触发一次 `analyze_turn`
+- `PostAction` 成功写入 turn 并完成入队后，后台会尽快触发一次 `analyze_turn`
 - `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结果
 - 如果本轮有 `profile_nodes`，会统一走一次 `review_profile_nodes`
 - `review_profile_nodes` 会分开返回 user/project 两块 JSON 结果
@@ -573,6 +574,6 @@ grpcurl -plaintext `
 - 当前主线不再支持旧的 `raw_messages_snapshot` 契约
 - 当前主线不再支持 `team_id / space_id` 由客户端直接传入
 - 当前 `PostAction` 只接受纯文本字段，不接受原始消息节点对象
-- 当前 `PostAction` 会在返回前完成 turn 落库、单轮提炼和结果回写；但这条链路仍可能因为下游 LLM / 向量 / 数据库错误而失败
+- 当前 `PostAction` 在返回前只保证 turn 落库成功并完成异步入队，不会等待单轮提炼和结果回写完成
 - 当前 `vmm_sessions.summarize_content` 仍未开始维护宏观会话总结正文
 - 当前只会自动合并 user/project 画像，team/space 画像仍需后续显式配置

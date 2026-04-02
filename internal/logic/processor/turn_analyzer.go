@@ -151,3 +151,24 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 	}
 	return analysis, nil
 }
+
+// normalizeUint64Set removes zeros and duplicates from one uint64 list while keeping the first-seen order stable for deterministic persistence and tests.
+// normalizeUint64Set 用于去掉 uint64 列表中的零值和重复项，并保持首次出现顺序稳定，方便持久化和测试获得确定性结果。
+func normalizeUint64Set(values []uint64) []uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[uint64]struct{}, len(values))
+	out := make([]uint64, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}

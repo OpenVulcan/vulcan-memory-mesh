@@ -264,7 +264,7 @@
 结果：
 
 - 跳过 `NoiseGate`
-- 直接把 `user / timeline / assistant` 组装成一条脱水 turn 写入 DuckDB
+- 直接把 `user / timeline / assistant` 组装成一条脱水 turn 写入关系库存储（默认 SQLite，兼容 DuckDB）
 
 ## 编写规则建议
 

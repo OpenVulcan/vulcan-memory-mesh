@@ -57,20 +57,16 @@ type PostActionTurnAnalyzer interface {
 	Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error)
 }
 
-// PostActionSessionBatchAnalyzer is the tiny port kept for the legacy queued batch path and related tests.
-// PostActionSessionBatchAnalyzer 用于保留旧的排队批处理路径以及相关测试。
-type PostActionSessionBatchAnalyzer interface {
-	Analyze(ctx context.Context, requestBody string) (logicdomain.SessionBatchAnalysis, error)
-}
-
 // PostActionProfileReviewer is the tiny port used by post-action to review fresh profile candidates against the current active user/project profile nodes.
 // PostActionProfileReviewer 用于让 post-action 把新的画像候选与当前活跃的 user/project 画像节点进行评审。
 type PostActionProfileReviewer interface {
 	Review(ctx context.Context, snapshot logicdomain.ProfileReviewTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileReviewResult, error)
 }
 
-// PostActionAnalysisConfig carries the session-level thresholds that decide when post-action should fire one debug-stage LLM summary.
-// PostActionAnalysisConfig 用于承载 session 级阈值，并决定 post-action 何时触发一次调试阶段的 LLM 摘要。
+// PostActionAnalysisConfig carries the queue and history knobs used by the async single-turn extraction pipeline,
+// while keeping a few legacy threshold fields for backward-compatible configuration parsing.
+// PostActionAnalysisConfig 用于承载异步单轮提炼流水线的队列与历史窗口参数，
+// 并保留少量旧阈值字段以兼容既有配置解析。
 type PostActionAnalysisConfig struct {
 	TurnThreshold     int
 	TokenThreshold    int
@@ -80,15 +76,16 @@ type PostActionAnalysisConfig struct {
 	QueueScanInterval time.Duration
 }
 
-// PostActionUseCase stores one cleaned turn, queues asynchronous extraction work, and keeps legacy batch helpers available for compatibility tests and maintenance tasks.
-// PostActionUseCase 用于存储一条清洗后的 turn、把后续提炼排入异步工作器，并为兼容测试和维护任务保留旧的批处理辅助能力。
+// PostActionUseCase stores one cleaned turn, queues asynchronous single-turn extraction work,
+// and coordinates the maintenance tasks that keep long-lived profile state in sync.
+// PostActionUseCase 用于存储一条清洗后的 turn、把后续单轮提炼排入异步工作器，
+// 并协调长期画像状态保持同步所需的维护任务。
 type PostActionUseCase struct {
 	noiseGate               appports.NoiseTurnFilter
 	store                   appports.RelationalStore
 	embedding               appports.EmbeddingClient
 	vector                  appports.VectorStore
 	turnAnalyzer            PostActionTurnAnalyzer
-	batchAnalyzer           PostActionSessionBatchAnalyzer
 	profiles                PostActionProfileReviewer
 	analysisCfg             PostActionAnalysisConfig
 	logger                  *logx.Logger
@@ -105,12 +102,12 @@ type PostActionUseCase struct {
 // NewPostActionUseCase creates a PostActionUseCase instance for the runtime asynchronous single-turn path.
 // NewPostActionUseCase 用于为运行时异步单轮提炼路径创建 PostActionUseCase 实例。
 func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
-	return newPostActionUseCase(noiseGate, store, embedding, vector, turnAnalyzer, nil, profiles, analysisCfg, logger, true)
+	return newPostActionUseCase(noiseGate, store, embedding, vector, turnAnalyzer, profiles, analysisCfg, logger, true)
 }
 
-// newPostActionUseCase builds the post-action use case and optionally keeps the legacy batch worker alive for maintenance or compatibility tests.
-// newPostActionUseCase 用于构建 post-action 用例，并按需保留旧批处理工作器以服务维护或兼容测试。
-func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, batchAnalyzer PostActionSessionBatchAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
+// newPostActionUseCase builds the post-action use case and optionally starts the async queue worker for runtime paths.
+// newPostActionUseCase 用于构建 post-action 用例，并按需启动运行时异步队列工作器。
+func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -133,15 +130,14 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 		analysisCfg.QueueScanInterval = 30 * time.Second
 	}
 	uc := &PostActionUseCase{
-		noiseGate:     noiseGate,
-		store:         store,
-		embedding:     embedding,
-		vector:        vector,
-		turnAnalyzer:  turnAnalyzer,
-		batchAnalyzer: batchAnalyzer,
-		profiles:      profiles,
-		analysisCfg:   analysisCfg,
-		logger:        logger,
+		noiseGate:    noiseGate,
+		store:        store,
+		embedding:    embedding,
+		vector:       vector,
+		turnAnalyzer: turnAnalyzer,
+		profiles:     profiles,
+		analysisCfg:  analysisCfg,
+		logger:       logger,
 	}
 	if startWorker && store != nil {
 		uc.startQueueWorker()
@@ -177,9 +173,9 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 		}
 	}
 
-	// Require at least one downstream analyzer path before touching durable storage so accepted requests will not get stuck permanently without any worker implementation.
-	// 在访问持久化存储前要求至少存在一条下游分析路径，避免请求被接受后却因没有任何工作器实现而永久悬空。
-	if u.turnAnalyzer == nil && u.batchAnalyzer == nil {
+	// Require the single-turn analyzer before touching durable storage so accepted requests will not get stuck permanently without any worker implementation.
+	// 在访问持久化存储前要求存在单轮分析器，避免请求被接受后却因没有任何工作器实现而永久悬空。
+	if u.turnAnalyzer == nil {
 		return PostActionResult{}, fmt.Errorf("post-action analyzer is nil")
 	}
 
@@ -208,7 +204,7 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 	if u.logger != nil {
 		u.logger.Info("post-action turn queued", "trace_id", traceID, "session_key", cmd.Session.SessionKey, "session_id", cmd.Session.SessionID, "turn_id", persistedTurn.ID)
 	}
-	u.enqueueSessionAnalysis(cmd.Session, false)
+	u.enqueueSessionAnalysis(cmd.Session)
 	return PostActionResult{Accepted: true, TraceID: traceID}, nil
 }
 
@@ -598,6 +594,31 @@ func estimatePostActionTextBudget(text string) int {
 	}
 	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
 	return estimator.Estimate(text)
+}
+
+// trimHistoryTurnsByBudget keeps the most recent refined summaries inside the remaining analyzer budget so the target raw turn always has room.
+// trimHistoryTurnsByBudget 用于在剩余分析预算内保留最近的已提炼历史精要，确保目标原始 turn 始终有足够空间。
+func trimHistoryTurnsByBudget(turns []logicdomain.SessionTurnRecord, remainingBudget int) []logicdomain.SessionTurnRecord {
+	if len(turns) == 0 || remainingBudget <= 0 {
+		return nil
+	}
+	selected := make([]logicdomain.SessionTurnRecord, 0, len(turns))
+	total := 0
+	for i := len(turns) - 1; i >= 0; i-- {
+		budget := turns[i].DetailsBudget
+		if budget <= 0 {
+			budget = estimatePostActionTextBudget(turns[i].Details)
+		}
+		if len(selected) > 0 && total+budget > remainingBudget {
+			break
+		}
+		selected = append(selected, turns[i])
+		total += budget
+	}
+	for left, right := 0, len(selected)-1; left < right; left, right = left+1, right-1 {
+		selected[left], selected[right] = selected[right], selected[left]
+	}
+	return selected
 }
 
 // embedPostActionTexts runs embedding requests in provider-safe batches and returns vectors in the same order as the input texts.

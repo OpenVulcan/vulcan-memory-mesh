@@ -169,8 +169,10 @@ type RelationalConfig struct {
 	Provider string `json:"provider"`
 }
 
-// PostActionConfig controls inbound validation strictness plus the future session-level analysis thresholds used by the post-action pipeline.
-// PostActionConfig 用于控制入站校验严格度，以及 post-action 流水线未来执行 session 级分析时使用的阈值。
+// PostActionConfig controls inbound validation strictness plus the async single-turn extraction knobs,
+// while retaining a few threshold fields as backward-compatible no-op configuration entries.
+// PostActionConfig 用于控制入站校验严格度和异步单轮提炼参数，
+// 同时保留少量阈值字段，作为向后兼容的空操作配置项。
 type PostActionConfig struct {
 	InputMode                     string   `json:"input_mode"`
 	SessionAnalysisTurnThreshold  int      `json:"session_analysis_turn_threshold"`
