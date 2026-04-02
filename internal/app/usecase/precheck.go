@@ -383,11 +383,12 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	firstSeenOrder := make(map[uint64]int)
 	nextSeenOrder := 0
 	for _, group := range result.Results {
-		for _, hit := range group.Hits {
+		for hitIdx, hit := range group.Hits {
 			if hit.MemoryRef.Type != logicdomain.MemoryRefTypeMemory || hit.MemoryRef.ID == 0 {
 				continue
 			}
-			if hit.Score < u.config.MinSimilarityScore {
+			candidateScore := normalizePreCheckReviewScore(hit.Score, hit.Origin, hitIdx+1, len(group.Hits))
+			if candidateScore < u.config.MinSimilarityScore {
 				continue
 			}
 			candidate := logicdomain.PreCheckMemoryCandidate{
@@ -398,7 +399,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				Category:                    hit.Category,
 				Abstract:                    strings.TrimSpace(hit.Abstract),
 				Details:                     strings.TrimSpace(hit.DetailsPreview),
-				Score:                       hit.Score,
+				Score:                       candidateScore,
 				Origin:                      strings.TrimSpace(hit.Origin),
 				SupportCount:                hit.SupportCount,
 				RebuttalCount:               hit.RebuttalCount,

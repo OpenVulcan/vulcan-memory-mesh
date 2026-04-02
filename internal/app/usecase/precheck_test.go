@@ -817,6 +817,85 @@ func TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores(t *testin
 	}
 }
 
+// TestPreCheckSearchCandidatesKeepsTopRerankedHitBelowSimilarityFloor verifies that pre-check does not discard the first reranked candidate just because the provider-specific rerank score is lower than the vector similarity threshold.
+// TestPreCheckSearchCandidatesKeepsTopRerankedHitBelowSimilarityFloor 用于验证 pre-check 不会仅因 provider 自定义 rerank 分低于向量相似度阈值，就误丢第一条 rerank 候选。
+func TestPreCheckSearchCandidatesKeepsTopRerankedHitBelowSimilarityFloor(t *testing.T) {
+	uc := NewPreCheckUseCase(
+		nil,
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Query:      "文本排序模型",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 202},
+								SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 42},
+								SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+								Abstract:       "第二条",
+								DetailsPreview: "它被 rerank 评为当前 query 的第一候选。",
+								Category:       logicdomain.MemoryNodeCategoryProjectContext,
+								Score:          0.27,
+								Origin:         "vector_rerank",
+							},
+							{
+								MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 201},
+								SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 41},
+								SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+								Abstract:       "第一条",
+								DetailsPreview: "它是 rerank 后的第二候选。",
+								Category:       logicdomain.MemoryNodeCategoryProjectContext,
+								Score:          0.18,
+								Origin:         "vector_rerank",
+							},
+						},
+					},
+				},
+			},
+		},
+		nil,
+		nil,
+		nil,
+		nil,
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, ReviewCandidateLimit: 4},
+		nil,
+	)
+
+	candidates, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "什么是文本排序模型？",
+	}, logicdomain.IntentResult{
+		Queries:    []string{"文本排序模型"},
+		NeedMemory: true,
+		Reason:     "needs reranked memory candidate",
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected only the top reranked candidate to survive thresholding, got %#v", candidates)
+	}
+	if candidates[0].MemoryID != 202 {
+		t.Fatalf("expected first reranked candidate to survive, got %#v", candidates)
+	}
+	if candidates[0].Score < 0.99 {
+		t.Fatalf("expected reviewer-facing score to be normalized from rerank order, got %#v", candidates)
+	}
+	if candidates[0].ScoreLabel != "Very Strong Match" {
+		t.Fatalf("expected normalized rerank candidate to receive a strong reviewer label, got %#v", candidates)
+	}
+}
+
 // stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
 // stubPreCheckProfiles 用于作为 pre-check 测试里的画像组合加载桩。
 type stubPreCheckProfiles struct {
