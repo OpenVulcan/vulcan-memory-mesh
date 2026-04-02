@@ -149,10 +149,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - 画像评审完成后，会在关系库存储中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
    - 队列扫描时还会同步做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本
    - 如果 LLM 判定旧记忆 turn 需要淘汰，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`
-   - DuckDB 成功提交后，会删除 LanceDB 中对应的旧向量行
-   - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
-   - LanceDB 行里的 `session_id` 会保存真实来源 session
-   - 如果 DuckDB 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
+  - DuckDB 成功提交后，会删除 LanceDB 中对应的旧向量行
+  - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
+  - LanceDB 行里的 `session_id` 会保存真实来源 session
+  - `metadata_json` 只保留 `turn_id / category / details` 这类顶层列之外的补充信息
+  - 如果 DuckDB 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
    - `vmm_teams.profile / vmm_spaces.profile` 不参与 post-action 自动合并，但现在支持通过显式手工画像指令重建
 
 ### 画像接口

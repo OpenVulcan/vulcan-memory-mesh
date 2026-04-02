@@ -46,11 +46,13 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 				ID:    "vec-1",
 				Text:  "用户喜欢吃香蕉。",
 				Score: 0.91,
+				Filter: logicdomain.SearchFilter{
+					SessionID: 12,
+				},
 				Metadata: map[string]string{
-					"turn_id":    "41",
-					"session_id": "12",
-					"category":   "3",
-					"details":    "来自近期饮食偏好提炼。",
+					"turn_id":  "41",
+					"category": "3",
+					"details":  "来自近期饮食偏好提炼。",
 				},
 			},
 		},

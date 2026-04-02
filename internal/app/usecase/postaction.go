@@ -285,12 +285,9 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 			Vector: vectors[idx],
 			Filter: buildPostActionMemoryFilter(session),
 			Metadata: map[string]string{
-				"turn_id":    strconv.FormatUint(turn.ID, 10),
-				"session_id": strconv.FormatUint(session.SessionID, 10),
-				"user_id":    strconv.FormatUint(session.UserID, 10),
-				"project_id": strconv.FormatUint(session.ProjectID, 10),
-				"category":   strconv.Itoa(analysis.MemoryNodes[idx].Category),
-				"details":    strings.TrimSpace(analysis.MemoryNodes[idx].Details),
+				"turn_id":  strconv.FormatUint(turn.ID, 10),
+				"category": strconv.Itoa(analysis.MemoryNodes[idx].Category),
+				"details":  strings.TrimSpace(analysis.MemoryNodes[idx].Details),
 			},
 			CreatedAt: choosePostActionCreatedAt(turn),
 		}

@@ -340,7 +340,7 @@ func mapMemoryHits(hits []logicdomain.MemoryHit) []MemoryQueryHit {
 		mapped = append(mapped, MemoryQueryHit{
 			MemoryID:  strings.TrimSpace(hit.ID),
 			TurnID:    parseUint64Metadata(hit.Metadata, "turn_id"),
-			SessionID: parseUint64Metadata(hit.Metadata, "session_id"),
+			SessionID: hit.Filter.SessionID,
 			Content:   strings.TrimSpace(hit.Text),
 			Details:   strings.TrimSpace(hit.Metadata["details"]),
 			Category:  parseIntMetadata(hit.Metadata, "category"),

@@ -662,12 +662,9 @@ func (u *PostActionUseCase) persistSessionBatchVectors(ctx context.Context, sess
 			Vector: vectors[idx],
 			Filter: buildPostActionMemoryFilter(session),
 			Metadata: map[string]string{
-				"turn_id":    strconv.FormatUint(turnResult.TurnID, 10),
-				"session_id": strconv.FormatUint(session.SessionID, 10),
-				"user_id":    strconv.FormatUint(session.UserID, 10),
-				"project_id": strconv.FormatUint(session.ProjectID, 10),
-				"category":   strconv.Itoa(node.Category),
-				"details":    strings.TrimSpace(node.Details),
+				"turn_id":  strconv.FormatUint(turnResult.TurnID, 10),
+				"category": strconv.Itoa(node.Category),
+				"details":  strings.TrimSpace(node.Details),
 			},
 			CreatedAt: chooseSessionTurnCreatedAt(turn),
 		}
