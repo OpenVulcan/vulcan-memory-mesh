@@ -41,6 +41,26 @@ func TestParsePreCheckMemoryReviewResponseRejectsUnknownNumbers(t *testing.T) {
 	}
 }
 
+// TestParsePreCheckMemoryReviewResponseRecoversFromMixedNumberAndMemoryIDOutput verifies that when the model emits both candidate numbers and memory ids, valid memory-id mappings can rescue an otherwise partially malformed numbered selection.
+// TestParsePreCheckMemoryReviewResponseRecoversFromMixedNumberAndMemoryIDOutput 用于验证当模型同时输出 candidate number 和 memory id 时，合法的 memory-id 映射可以挽回部分格式错误的编号选择。
+func TestParsePreCheckMemoryReviewResponseRecoversFromMixedNumberAndMemoryIDOutput(t *testing.T) {
+	result, err := parsePreCheckMemoryReviewResponse(`{"selected_candidate_numbers":[99,2],"selected_memory_ids":[12],"reason":"useful"}`, logicdomain.PreCheckMemoryReviewInput{
+		Candidates: []logicdomain.PreCheckMemoryCandidate{
+			{CandidateNumber: 1, MemoryID: 12},
+			{CandidateNumber: 2, MemoryID: 15},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected parser to recover using selected_memory_ids, got %v", err)
+	}
+	if len(result.SelectedCandidateNumbers) != 2 || result.SelectedCandidateNumbers[0] != 2 || result.SelectedCandidateNumbers[1] != 1 {
+		t.Fatalf("unexpected recovered selected numbers: %#v", result.SelectedCandidateNumbers)
+	}
+	if result.Reason != "useful" {
+		t.Fatalf("unexpected reason: %q", result.Reason)
+	}
+}
+
 // TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence verifies the second-stage reviewer request keeps the matched context summary that explains why each candidate fit the current query.
 // TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence 用于验证第二层 reviewer 请求会保留用于解释候选为何命中当前 query 的 matched context 摘要。
 func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *testing.T) {

@@ -107,26 +107,17 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 			memoryToNumber[candidate.MemoryID] = candidate.CandidateNumber
 		}
 	}
-	selectedNumbers := payload.SelectedCandidateNumbers
-	if len(selectedNumbers) == 0 && len(payload.SelectedMemoryIDs) > 0 {
-		for _, memoryID := range payload.SelectedMemoryIDs {
-			if number, ok := memoryToNumber[memoryID]; ok {
-				selectedNumbers = append(selectedNumbers, number)
-			}
-		}
-	}
+	selectedNumbers := normalizeSelectedPreCheckCandidateNumbers(payload.SelectedCandidateNumbers, payload.SelectedMemoryIDs, allowed, memoryToNumber)
 	selected := make([]int, 0, len(selectedNumbers))
 	seen := map[int]struct{}{}
+	invalidNumbers := make([]int, 0)
 	for _, candidateNumber := range selectedNumbers {
 		if candidateNumber <= 0 {
 			continue
 		}
 		if _, ok := allowed[candidateNumber]; !ok {
-			return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{
-				Scene:   "review_precheck_memory",
-				Message: fmt.Sprintf("selected_candidate_numbers contains unknown number %d", candidateNumber),
-				Raw:     raw,
-			}
+			invalidNumbers = append(invalidNumbers, candidateNumber)
+			continue
 		}
 		if _, ok := seen[candidateNumber]; ok {
 			continue
@@ -134,10 +125,54 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 		seen[candidateNumber] = struct{}{}
 		selected = append(selected, candidateNumber)
 	}
+	if len(selected) == 0 && len(invalidNumbers) > 0 {
+		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{
+			Scene:   "review_precheck_memory",
+			Message: fmt.Sprintf("selected_candidate_numbers contains unknown number %d", invalidNumbers[0]),
+			Raw:     raw,
+		}
+	}
 	return logicdomain.PreCheckMemoryReviewResult{
 		SelectedCandidateNumbers: selected,
 		Reason:                   strings.TrimSpace(payload.Reason),
 	}, nil
+}
+
+// normalizeSelectedPreCheckCandidateNumbers merges reviewer-selected candidate numbers with memory-id fallbacks so partially malformed model output can still recover the intended picks.
+// normalizeSelectedPreCheckCandidateNumbers 用于把 reviewer 选择的候选编号与 memory-id 回退结果合并起来，让模型部分格式错误时仍能恢复预期选择。
+func normalizeSelectedPreCheckCandidateNumbers(candidateNumbers []int, memoryIDs []uint64, allowed map[int]uint64, memoryToNumber map[uint64]int) []int {
+	selected := make([]int, 0, len(candidateNumbers)+len(memoryIDs))
+	seen := make(map[int]struct{}, len(candidateNumbers)+len(memoryIDs))
+	appendNumber := func(number int) {
+		if number <= 0 {
+			return
+		}
+		if _, ok := seen[number]; ok {
+			return
+		}
+		seen[number] = struct{}{}
+		selected = append(selected, number)
+	}
+
+	// Keep any candidate-number choices the model emitted so valid structured output continues to drive the primary ordering.
+	// 先保留模型显式输出的 candidate number，让合法的结构化编号继续作为主排序来源。
+	for _, number := range candidateNumbers {
+		appendNumber(number)
+	}
+
+	// Add recoverable selections from memory ids as a secondary signal, so one malformed candidate number does not erase otherwise valid intent.
+	// 再补充可由 memory id 恢复出的选择，避免单个错误 candidate number 抹掉本来有效的模型意图。
+	for _, memoryID := range memoryIDs {
+		number, ok := memoryToNumber[memoryID]
+		if !ok {
+			continue
+		}
+		if _, ok := allowed[number]; !ok {
+			continue
+		}
+		appendNumber(number)
+	}
+	return selected
 }
 
 // normalizePreCheckReviewCandidates trims empty text noise and removes duplicate candidate numbers before the payload reaches the model.
