@@ -23,6 +23,8 @@ type PreCheckMemoryCandidate struct {
 	Details                     string
 	Score                       float64
 	Origin                      string
+	OriginLabel                 string
+	OriginExplanation           string
 	SupportCount                int
 	RebuttalCount               int
 	MatchedContextValues        []string

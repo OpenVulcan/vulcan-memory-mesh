@@ -514,6 +514,12 @@ func TestPreCheckExecutePassesMatchedContextEvidenceToReviewer(t *testing.T) {
 	if candidate.SupportCount != 4 || candidate.RebuttalCount != 1 {
 		t.Fatalf("expected aggregate support/rebuttal counts to be preserved, got %#v", candidate)
 	}
+	if candidate.Origin != "hybrid_rrf" || candidate.OriginLabel != "Hybrid RRF" {
+		t.Fatalf("expected origin explanation to be preserved, got %#v", candidate)
+	}
+	if candidate.OriginExplanation == "" {
+		t.Fatalf("expected non-empty origin explanation, got %#v", candidate)
+	}
 	if candidate.MatchedContextSupportCount != 3 || candidate.MatchedContextRebuttalCount != 0 || candidate.MatchedContextScoreDelta <= 0 {
 		t.Fatalf("expected matched context evidence to be preserved, got %#v", candidate)
 	}

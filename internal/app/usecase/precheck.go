@@ -388,6 +388,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 			if hit.Score < u.config.MinSimilarityScore {
 				continue
 			}
+			originExplanation := describePreCheckMemoryOrigin(hit.Origin)
 			candidate := logicdomain.PreCheckMemoryCandidate{
 				MemoryID:                    hit.MemoryRef.ID,
 				SourceTurnID:                hit.SourceRef.ID,
@@ -398,6 +399,8 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				Details:                     strings.TrimSpace(hit.DetailsPreview),
 				Score:                       hit.Score,
 				Origin:                      strings.TrimSpace(hit.Origin),
+				OriginLabel:                 originExplanation.Label,
+				OriginExplanation:           originExplanation.Explanation,
 				SupportCount:                hit.SupportCount,
 				RebuttalCount:               hit.RebuttalCount,
 				MatchedContextValues:        append([]string(nil), hit.MatchedContextValues...),

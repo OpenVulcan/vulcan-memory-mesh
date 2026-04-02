@@ -53,6 +53,9 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 				MemoryID:                   15,
 				Abstract:                   "phase4 新方案",
 				Details:                    "适用于 local oss 当前环境。",
+				Origin:                     "hybrid_rrf_rerank_mmr",
+				OriginLabel:                "Hybrid RRF + Rerank + MMR",
+				OriginExplanation:          "候选先经过 hybrid RRF 融合，再被 rerank 模型重排，并额外经过 MMR 多样性控制。",
 				MatchedContextValues:       []string{"deployment_mode=local oss", "deployment_mode=local oss", "task_stage=phase4"},
 				MatchedContextSupportCount: 3,
 				MatchedContextScoreDelta:   0.075,
@@ -76,5 +79,8 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 	}
 	if payload.Candidates[0].MatchedContextValues[0] != "deployment_mode=local oss" || payload.Candidates[0].MatchedContextValues[1] != "task_stage=phase4" {
 		t.Fatalf("unexpected matched context values: %#v", payload.Candidates[0].MatchedContextValues)
+	}
+	if payload.Candidates[0].OriginLabel != "Hybrid RRF + Rerank + MMR" || payload.Candidates[0].OriginExplanation == "" {
+		t.Fatalf("expected origin explanation fields to survive rendering, got %#v", payload.Candidates[0])
 	}
 }
