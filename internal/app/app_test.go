@@ -70,6 +70,26 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 	}
 }
 
+// TestBuildRerankerFallsBackToLLMAPIKey verifies DashScope rerank can reuse the existing LLM api key when rerank.api_key is omitted.
+// TestBuildRerankerFallsBackToLLMAPIKey 用于验证在省略 rerank.api_key 时，DashScope rerank 可以回退复用现有 llm.api_key。
+func TestBuildRerankerFallsBackToLLMAPIKey(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.APIKey = "shared-llm-key"
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Provider = "dashscope"
+	cfg.Rerank.APIKey = ""
+	cfg.Rerank.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+	cfg.Rerank.Model = "qwen3-vl-rerank"
+
+	reranker, err := buildReranker(cfg)
+	if err != nil {
+		t.Fatalf("build reranker: %v", err)
+	}
+	if reranker == nil {
+		t.Fatal("expected reranker to be constructed")
+	}
+}
+
 // startFakeSQLiteGateway serves the minimal SQLite RPC surface needed by runtime composition tests.
 // startFakeSQLiteGateway 用于提供运行时装配测试所需的最小 SQLite RPC 面。
 func startFakeSQLiteGateway(t *testing.T) (string, func()) {

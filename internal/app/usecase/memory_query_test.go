@@ -104,6 +104,121 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchAppliesRerank verifies the optional rerank layer can reorder first-stage vector hits before the grouped response is returned.
+// TestMemoryUseCaseSearchAppliesRerank 用于验证可选 rerank 层会在返回分组结果前重排首轮向量命中。
+func TestMemoryUseCaseSearchAppliesRerank(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第一条", Details: "第一条详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第二条", Details: "第二条详情", VectorID: "vec-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "第一条", Score: 0.91},
+			{ID: "vec-2", Text: "第二条", Score: 0.89},
+		},
+	}
+	reranker := &stubRerankerClient{
+		results: []appports.RerankerResult{
+			{ID: "202", Score: 0.99},
+			{ID: "201", Score: 0.27},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureRerank(reranker, 5)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"background":"最近在讨论排序。","query":"文本排序模型"}]`,
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with rerank: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[0].Score != 0.99 {
+		t.Fatalf("unexpected first reranked hit: %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].MemoryRef.ID != 201 || result.Results[0].Hits[1].Score != 0.27 {
+		t.Fatalf("unexpected second reranked hit: %+v", result.Results[0].Hits[1])
+	}
+	if len(reranker.requests) != 1 || reranker.requests[0].query == "" || len(reranker.requests[0].docs) != 2 {
+		t.Fatalf("unexpected rerank requests: %+v", reranker.requests)
+	}
+}
+
+// TestMemoryUseCaseSearchDegradesWhenRerankFails verifies the main search flow still succeeds when the optional rerank backend errors.
+// TestMemoryUseCaseSearchDegradesWhenRerankFails 用于验证可选 rerank 后端报错时，主搜索流程仍会降级成功返回。
+func TestMemoryUseCaseSearchDegradesWhenRerankFails(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第一条", Details: "第一条详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第二条", Details: "第二条详情", VectorID: "vec-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "第一条", Score: 0.91},
+			{ID: "vec-2", Text: "第二条", Score: 0.89},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureRerank(&stubRerankerClient{err: context.DeadlineExceeded}, 5)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"query":"文本排序模型"}]`,
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events degrade: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 201 || result.Results[0].Hits[0].Score != 0.91 {
+		t.Fatalf("unexpected degraded first hit: %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].MemoryRef.ID != 202 || result.Results[0].Hits[1].Score != 0.89 {
+		t.Fatalf("unexpected degraded second hit: %+v", result.Results[0].Hits[1])
+	}
+}
+
 // TestMemoryUseCaseGetTurnsPreservesRequestedOrder verifies turn lookups keep the caller-supplied order while deduplicating repeated ids.
 // TestMemoryUseCaseGetTurnsPreservesRequestedOrder 用于验证 turn 查询会在去重后保持调用方给定的顺序。
 func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {
@@ -136,12 +251,12 @@ func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {
 // stubTurnLookupStore supplies deterministic turn rows for memory-query tests.
 // stubTurnLookupStore 用于为记忆查询测试提供确定性的 turn 行。
 type stubTurnLookupStore struct {
-	turnIDs []uint64
-	rows    []logicdomain.SessionTurnRecord
-	windows map[uint64]logicdomain.TurnDetailWindow
+	turnIDs            []uint64
+	rows               []logicdomain.SessionTurnRecord
+	windows            map[uint64]logicdomain.TurnDetailWindow
 	memoryRowsByID     []logicdomain.MemoryNodeRecord
 	memoryRowsByVector []logicdomain.MemoryNodeRecord
-	err     error
+	err                error
 }
 
 // LoadTurnsByIDs records the requested ids and returns the canned rows.
@@ -209,4 +324,34 @@ func (s *stubTurnLookupStore) CreateDirectMemoryNode(_ context.Context, _ logicd
 	}
 	record.ID = 1
 	return record, nil
+}
+
+// stubRerankerClient records rerank calls and returns one canned response so search tests can verify ordering changes without a live provider.
+// stubRerankerClient 用于记录 rerank 调用并返回预设结果，让搜索测试无需真实 provider 也能验证排序变化。
+type stubRerankerClient struct {
+	requests []stubRerankRequest
+	results  []appports.RerankerResult
+	err      error
+}
+
+// stubRerankRequest stores one recorded rerank query plus the candidate documents seen by the stub.
+// stubRerankRequest 用于保存一条被桩记录下来的 rerank query 以及其候选文档。
+type stubRerankRequest struct {
+	query string
+	docs  []appports.RerankerDocument
+	topN  int
+}
+
+// Rerank records the request and returns the canned provider result.
+// Rerank 用于记录请求并返回预设 provider 结果。
+func (s *stubRerankerClient) Rerank(_ context.Context, query string, docs []appports.RerankerDocument, topN int) ([]appports.RerankerResult, error) {
+	s.requests = append(s.requests, stubRerankRequest{
+		query: query,
+		docs:  append([]appports.RerankerDocument(nil), docs...),
+		topN:  topN,
+	})
+	if s.err != nil {
+		return nil, s.err
+	}
+	return append([]appports.RerankerResult(nil), s.results...), nil
 }

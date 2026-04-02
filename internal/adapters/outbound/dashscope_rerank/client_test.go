@@ -1,0 +1,73 @@
+// client_test.go verifies DashScope rerank request construction and response parsing without calling the live provider.
+// client_test.go 用于在不调用真实 provider 的前提下，验证 DashScope rerank 的请求构造和响应解析。
+package dashscope_rerank
+
+import (
+	"context"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"testing"
+
+	appports "github.com/openvulcan/vmm/internal/app/ports"
+)
+
+// TestClientRerankBuildsDashScopeRequest verifies the adapter sends the expected authorization header and JSON body to DashScope.
+// TestClientRerankBuildsDashScopeRequest 用于验证适配器会向 DashScope 发送期望的鉴权头和 JSON 请求体。
+func TestClientRerankBuildsDashScopeRequest(t *testing.T) {
+	var capturedAuth string
+	var capturedBody requestPayload
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		capturedAuth = r.Header.Get("Authorization")
+		if err := json.NewDecoder(r.Body).Decode(&capturedBody); err != nil {
+			t.Fatalf("decode request body: %v", err)
+		}
+		_, _ = w.Write([]byte(`{"output":{"results":[{"index":1,"relevance_score":0.98},{"index":0,"relevance_score":0.54}]}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key", "qwen3-vl-rerank", 0, server.Client())
+	results, err := client.Rerank(context.Background(), "什么是文本排序模型", []appports.RerankerDocument{
+		{ID: "doc-1", Text: "第一条文档"},
+		{ID: "doc-2", Text: "第二条文档"},
+	}, 2)
+	if err != nil {
+		t.Fatalf("rerank: %v", err)
+	}
+
+	if capturedAuth != "Bearer test-key" {
+		t.Fatalf("authorization header = %q", capturedAuth)
+	}
+	if capturedBody.Model != "qwen3-vl-rerank" {
+		t.Fatalf("model = %q", capturedBody.Model)
+	}
+	if capturedBody.Input.Query != "什么是文本排序模型" {
+		t.Fatalf("query = %q", capturedBody.Input.Query)
+	}
+	if len(capturedBody.Input.Documents) != 2 || capturedBody.Input.Documents[0] != "第一条文档" || capturedBody.Input.Documents[1] != "第二条文档" {
+		t.Fatalf("documents = %#v", capturedBody.Input.Documents)
+	}
+	if !capturedBody.Parameters.ReturnDocuments || capturedBody.Parameters.TopN != 2 {
+		t.Fatalf("parameters = %#v", capturedBody.Parameters)
+	}
+	if len(results) != 2 || results[0].ID != "doc-2" || results[0].Score != 0.98 || results[1].ID != "doc-1" {
+		t.Fatalf("results = %#v", results)
+	}
+}
+
+// TestClientRerankRejectsOutOfRangeIndex verifies provider bugs cannot silently map scores onto the wrong local document id.
+// TestClientRerankRejectsOutOfRangeIndex 用于验证 provider 返回异常索引时不会悄悄把分数映射到错误的本地文档上。
+func TestClientRerankRejectsOutOfRangeIndex(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte(`{"output":{"results":[{"index":7,"relevance_score":0.98}]}}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key", "qwen3-vl-rerank", 0, server.Client())
+	_, err := client.Rerank(context.Background(), "query", []appports.RerankerDocument{
+		{ID: "doc-1", Text: "第一条文档"},
+	}, 1)
+	if err == nil {
+		t.Fatal("expected out-of-range index error")
+	}
+}

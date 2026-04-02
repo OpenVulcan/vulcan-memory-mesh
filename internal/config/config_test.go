@@ -31,6 +31,11 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
+	cfg.Rerank.Provider = ""
+	cfg.Rerank.Endpoint = ""
+	cfg.Rerank.Model = ""
+	cfg.Rerank.TopN = 0
+	cfg.Rerank.Timeout = Duration{}
 	cfg.PreCheck.SimilarityThreshold = 0.82
 
 	cfg.Normalize()
@@ -85,6 +90,21 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity score = %#v", cfg.MemoryPipeline.MinSimilarityScore)
+	}
+	if cfg.Rerank.Provider != "dashscope" {
+		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
+	}
+	if cfg.Rerank.Endpoint == "" {
+		t.Fatal("expected rerank endpoint default")
+	}
+	if cfg.Rerank.Model != "qwen3-vl-rerank" {
+		t.Fatalf("rerank model = %q", cfg.Rerank.Model)
+	}
+	if cfg.Rerank.TopN != 8 {
+		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
+	}
+	if cfg.Rerank.Timeout.Duration != 8*time.Second {
+		t.Fatalf("rerank timeout = %v", cfg.Rerank.Timeout.Duration)
 	}
 }
 
@@ -322,6 +342,40 @@ func TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds(t *testing.T) 
 	}
 	if cfg.PostAction.SessionAnalysisMaxInputTokens != 7200 {
 		t.Fatalf("post action session analysis max input tokens = %d", cfg.PostAction.SessionAnalysisMaxInputTokens)
+	}
+}
+
+// TestApplyEnvOverridesSetsRerankSettings verifies process-level overrides can enable DashScope rerank without editing the base config file.
+// TestApplyEnvOverridesSetsRerankSettings 用于验证进程级环境变量可以在不修改基础配置文件的前提下启用 DashScope rerank。
+func TestApplyEnvOverridesSetsRerankSettings(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_RERANK_ENABLED", "true")
+	t.Setenv("VMM_RERANK_PROVIDER", "dashscope")
+	t.Setenv("VMM_RERANK_ENDPOINT", "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank")
+	t.Setenv("VMM_RERANK_API_KEY", "dashscope-key")
+	t.Setenv("VMM_RERANK_MODEL", "qwen3-vl-rerank")
+	t.Setenv("VMM_RERANK_TOP_N", "6")
+	t.Setenv("VMM_RERANK_TIMEOUT", "9s")
+
+	applyEnvOverrides(&cfg)
+
+	if !cfg.Rerank.Enabled {
+		t.Fatal("expected rerank to be enabled")
+	}
+	if cfg.Rerank.Provider != "dashscope" {
+		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
+	}
+	if cfg.Rerank.APIKey != "dashscope-key" {
+		t.Fatalf("rerank api key = %q", cfg.Rerank.APIKey)
+	}
+	if cfg.Rerank.Model != "qwen3-vl-rerank" {
+		t.Fatalf("rerank model = %q", cfg.Rerank.Model)
+	}
+	if cfg.Rerank.TopN != 6 {
+		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
+	}
+	if cfg.Rerank.Timeout.Duration != 9*time.Second {
+		t.Fatalf("rerank timeout = %v", cfg.Rerank.Timeout.Duration)
 	}
 }
 

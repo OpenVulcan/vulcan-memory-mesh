@@ -30,10 +30,30 @@ type EmbeddingResponse struct {
 	Vectors [][]float32
 }
 
+// RerankerDocument carries one candidate document sent into an external rerank backend after the first-stage recall finishes.
+// RerankerDocument 用于承载首轮召回完成后送入外部重排序后端的一条候选文档。
+type RerankerDocument struct {
+	ID   string
+	Text string
+}
+
+// RerankerResult returns one reranked document id together with the provider score produced for the query.
+// RerankerResult 用于返回某条重排序文档的 id，以及该 query 下由提供方产生的分数。
+type RerankerResult struct {
+	ID    string
+	Score float64
+}
+
 // EmbeddingClient is the port used by use cases to obtain embeddings without depending on a concrete SDK.
 // EmbeddingClient 用于让用例层在不依赖具体 SDK 的前提下获取向量表示。
 type EmbeddingClient interface {
 	Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error)
+}
+
+// RerankerClient is the port used by use cases to reorder first-stage recall hits with one dedicated rerank model.
+// RerankerClient 用于让用例层使用专门的重排序模型对首轮召回结果重新排序。
+type RerankerClient interface {
+	Rerank(ctx context.Context, query string, docs []RerankerDocument, topN int) ([]RerankerResult, error)
 }
 
 // VectorStore is the port used to persist, search, and administratively clean memory vectors inside the recall pipeline.

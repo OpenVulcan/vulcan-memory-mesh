@@ -202,11 +202,13 @@ type MemoryExecutor interface {
 // MemoryUseCase orchestrates grouped memory search, mixed detail lookup, and direct AI memory writes on top of profile-target resolution and unified relational memory rows.
 // MemoryUseCase 用于在画像目标解析和统一关系记忆行之上，编排分组记忆检索、混合详情查询以及 AI 主动写记忆流程。
 type MemoryUseCase struct {
-	profiles  appports.ProfileStore
-	memories  appports.MemoryStore
-	embedding appports.EmbeddingClient
-	vector    appports.VectorStore
-	logger    *logx.Logger
+	profiles   appports.ProfileStore
+	memories   appports.MemoryStore
+	embedding  appports.EmbeddingClient
+	reranker   appports.RerankerClient
+	rerankTopN int
+	vector     appports.VectorStore
+	logger     *logx.Logger
 }
 
 // NewMemoryUseCase creates a MemoryUseCase instance.
@@ -216,12 +218,29 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		logger = logx.Default()
 	}
 	return &MemoryUseCase{
-		profiles:  profiles,
-		memories:  memories,
-		embedding: embedding,
-		vector:    vector,
-		logger:    logger,
+		profiles:   profiles,
+		memories:   memories,
+		embedding:  embedding,
+		rerankTopN: defaultMemorySearchTopK,
+		vector:     vector,
+		logger:     logger,
 	}
+}
+
+// ConfigureRerank attaches one optional rerank backend and caps how many first-stage hits each query group may send into it.
+// ConfigureRerank 用于挂载可选的重排序后端，并限制每个 query group 最多向其发送多少首轮命中结果。
+func (u *MemoryUseCase) ConfigureRerank(reranker appports.RerankerClient, topN int) {
+	if u == nil {
+		return
+	}
+	u.reranker = reranker
+	if topN <= 0 {
+		topN = defaultMemorySearchTopK
+	}
+	if topN > maxMemorySearchTopK {
+		topN = maxMemorySearchTopK
+	}
+	u.rerankTopN = topN
 }
 
 // Search resolves the concrete project/user scope, parses the grouped JSON payload, embeds each item, and returns enriched unified memory refs.
@@ -291,6 +310,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
+		mapped = u.rerankSearchHits(ctx, buildMemorySearchText(item), mapped)
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
 			Background: item.Background,
@@ -644,6 +664,98 @@ func normalizeMemorySearchTopK(topK int) int {
 		return maxMemorySearchTopK
 	}
 	return topK
+}
+
+// rerankSearchHits reorders the first-stage vector hits with the configured rerank backend and degrades to the original ordering on provider failures.
+// rerankSearchHits 用于使用已配置的 rerank 后端重排首轮向量命中，并在 provider 失败时降级回原始顺序。
+func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits []MemoryQueryHit) []MemoryQueryHit {
+	if u == nil || u.reranker == nil || len(hits) <= 1 {
+		return hits
+	}
+	limit := u.rerankTopN
+	if limit <= 0 || limit > len(hits) {
+		limit = len(hits)
+	}
+	primary := append([]MemoryQueryHit(nil), hits[:limit]...)
+	results, err := u.reranker.Rerank(ctx, strings.TrimSpace(query), buildRerankDocuments(primary), len(primary))
+	if err != nil {
+		if u.logger != nil {
+			u.logger.Warn("memory search rerank degraded", "query", strings.TrimSpace(query), "candidate_count", len(primary), "err", err)
+		}
+		return hits
+	}
+	if len(results) == 0 {
+		return hits
+	}
+
+	// Rewrite the provider-ranked subset with rerank scores first, then append any untouched tail candidates so the caller still receives a stable result count.
+	// 先按 provider 重排并写回被 rerank 的子集分数，再追加未触及的尾部候选，保证调用方仍拿到稳定数量的结果。
+	byID := make(map[uint64]MemoryQueryHit, len(primary))
+	for _, hit := range primary {
+		byID[hit.MemoryRef.ID] = hit
+	}
+	ordered := make([]MemoryQueryHit, 0, len(hits))
+	seen := make(map[uint64]struct{}, len(results))
+	for _, result := range results {
+		memoryID, err := strconv.ParseUint(strings.TrimSpace(result.ID), 10, 64)
+		if err != nil {
+			continue
+		}
+		hit, ok := byID[memoryID]
+		if !ok {
+			continue
+		}
+		hit.Score = result.Score
+		ordered = append(ordered, hit)
+		seen[memoryID] = struct{}{}
+	}
+	for _, hit := range primary {
+		if _, ok := seen[hit.MemoryRef.ID]; ok {
+			continue
+		}
+		ordered = append(ordered, hit)
+	}
+	if limit < len(hits) {
+		ordered = append(ordered, hits[limit:]...)
+	}
+	return ordered
+}
+
+// buildRerankDocuments converts one mapped-hit slice into the compact text fragments expected by the rerank provider.
+// buildRerankDocuments 用于把补全后的命中切片转换成 rerank provider 期望的紧凑文本片段。
+func buildRerankDocuments(hits []MemoryQueryHit) []appports.RerankerDocument {
+	if len(hits) == 0 {
+		return nil
+	}
+	docs := make([]appports.RerankerDocument, 0, len(hits))
+	for _, hit := range hits {
+		text := buildMemorySearchCandidateText(hit)
+		if hit.MemoryRef.ID == 0 || strings.TrimSpace(text) == "" {
+			continue
+		}
+		docs = append(docs, appports.RerankerDocument{
+			ID:   strconv.FormatUint(hit.MemoryRef.ID, 10),
+			Text: text,
+		})
+	}
+	return docs
+}
+
+// buildMemorySearchCandidateText merges abstract and details into one rerank document while avoiding empty duplicated text.
+// buildMemorySearchCandidateText 用于把 abstract 和 details 合并成一条 rerank 文档，同时避免空文本和重复文本。
+func buildMemorySearchCandidateText(hit MemoryQueryHit) string {
+	abstract := strings.TrimSpace(hit.Abstract)
+	details := strings.TrimSpace(hit.DetailsPreview)
+	switch {
+	case abstract == "" && details == "":
+		return ""
+	case details == "" || details == abstract:
+		return abstract
+	case abstract == "":
+		return details
+	default:
+		return abstract + "\n" + details
+	}
 }
 
 // mapSearchHits enriches vector hits with relational unified-memory rows so the search response can return durable memory refs instead of bare turn anchors.

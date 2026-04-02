@@ -359,6 +359,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `lancedb.vector_column`
 - `llm.*`
 - `embedding.*`
+- `rerank.*`
 - `noise.*`
 - `post_action.input_mode`
 - `post_action.session_analysis_turn_threshold`
@@ -366,6 +367,23 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `post_action.session_analysis_idle_timeout`
 - `post_action.session_analysis_history_turns`
 - `post_action.session_analysis_max_input_tokens`
+
+`rerank` 下当前新增的是“向量召回后的第二阶段重排序”参数：
+
+- `enabled`
+  - 是否启用 DashScope rerank；关闭时检索链保持当前的纯向量顺序
+- `provider`
+  - 当前仅支持 `dashscope`
+- `endpoint`
+  - 默认使用阿里云 DashScope `text-rerank` 地址
+- `api_key`
+  - 可单独配置；若为空，运行时会回退复用 `llm.api_key`
+- `model`
+  - 当前默认 `qwen3-vl-rerank`
+- `top_n`
+  - 每个 query group 最多送多少条首轮向量命中进入 rerank
+- `timeout`
+  - 单次 rerank HTTP 调用预算；超时或失败时检索链会降级回原始向量排序
 
 `post_action` 下当前保留 5 个与异步单轮提炼窗口和恢复扫描相关的参数：
 

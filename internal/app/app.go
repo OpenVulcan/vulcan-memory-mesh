@@ -14,6 +14,7 @@ import (
 
 	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_duckdb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
@@ -61,6 +62,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
+	reranker, err := buildReranker(cfg)
+	if err != nil {
+		return nil, err
+	}
 	vector, err := buildVector(cfg)
 	if err != nil {
 		return nil, err
@@ -99,6 +104,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
+	memory.ConfigureRerank(reranker, cfg.Rerank.TopN)
 	pre := usecase.NewPreCheckUseCase(
 		profiles,
 		memory,
@@ -246,6 +252,24 @@ func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams), nil
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
+	}
+}
+
+// buildReranker selects the optional second-stage rerank backend used to reorder first-stage vector recall hits.
+// buildReranker 用于选择可选的第二阶段重排序后端，对首轮向量召回结果重新排序。
+func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
+	if !cfg.Rerank.Enabled {
+		return nil, nil
+	}
+	apiKey := strings.TrimSpace(cfg.Rerank.APIKey)
+	if apiKey == "" {
+		apiKey = strings.TrimSpace(cfg.LLM.APIKey)
+	}
+	switch strings.ToLower(cfg.Rerank.Provider) {
+	case "dashscope":
+		return dashscope_rerank.NewClient(cfg.Rerank.Endpoint, apiKey, cfg.Rerank.Model, cfg.Rerank.Timeout.Duration, nil), nil
+	default:
+		return nil, fmt.Errorf("unsupported rerank provider: %s", cfg.Rerank.Provider)
 	}
 }
 

@@ -61,6 +61,7 @@ type Config struct {
 	LanceDB        LanceDBConfig        `json:"lancedb"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
+	Rerank         RerankConfig         `json:"rerank"`
 	Vector         VectorConfig         `json:"vector"`
 	Relational     RelationalConfig     `json:"relational"`
 	PostAction     PostActionConfig     `json:"post_action"`
@@ -157,6 +158,18 @@ type EmbeddingConfig struct {
 	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
 }
 
+// RerankConfig holds the optional second-stage rerank settings used to reorder vector recall hits.
+// RerankConfig 用于保存可选的第二阶段重排序配置，让系统在向量召回后重新排序候选。
+type RerankConfig struct {
+	Enabled  bool     `json:"enabled"`
+	Provider string   `json:"provider,omitempty"`
+	Endpoint string   `json:"endpoint,omitempty"`
+	APIKey   string   `json:"api_key,omitempty"`
+	Model    string   `json:"model,omitempty"`
+	TopN     int      `json:"top_n,omitempty"`
+	Timeout  Duration `json:"timeout,omitempty"`
+}
+
 // VectorConfig selects the vector backend used by recall and long-term memory indexing.
 // VectorConfig 用于选择记忆召回和长期记忆索引使用的向量后端。
 type VectorConfig struct {
@@ -215,6 +228,7 @@ func DefaultLocal() Config {
 		LanceDB:    LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
 		LLM:        LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
 		Embedding:  EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
+		Rerank:     RerankConfig{Enabled: false, Provider: "dashscope", Endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank", Model: "qwen3-vl-rerank", TopN: 8, Timeout: Duration{8 * time.Second}},
 		Vector:     VectorConfig{Provider: "lancedb"},
 		Relational: RelationalConfig{Provider: "sqlite"},
 		PostAction: PostActionConfig{
@@ -420,6 +434,21 @@ func (c *Config) Normalize() {
 	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
 		c.Embedding.Dimension = 1024
 	}
+	if strings.TrimSpace(c.Rerank.Provider) == "" {
+		c.Rerank.Provider = "dashscope"
+	}
+	if strings.TrimSpace(c.Rerank.Endpoint) == "" {
+		c.Rerank.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+	}
+	if strings.TrimSpace(c.Rerank.Model) == "" {
+		c.Rerank.Model = "qwen3-vl-rerank"
+	}
+	if c.Rerank.TopN <= 0 {
+		c.Rerank.TopN = 8
+	}
+	if c.Rerank.Timeout.Duration <= 0 {
+		c.Rerank.Timeout = Duration{8 * time.Second}
+	}
 	if strings.TrimSpace(c.Logging.Level) == "" {
 		c.Logging.Level = "info"
 	}
@@ -571,6 +600,28 @@ func (c Config) Validate() error {
 	if c.Embedding.Dimension <= 0 {
 		return errors.New("embedding.dimension must be > 0")
 	}
+	if c.Rerank.Enabled {
+		switch strings.ToLower(strings.TrimSpace(c.Rerank.Provider)) {
+		case "dashscope":
+		default:
+			return errors.New("rerank.provider must be dashscope when rerank is enabled")
+		}
+		if strings.TrimSpace(c.Rerank.Endpoint) == "" {
+			return errors.New("rerank.endpoint is required when rerank is enabled")
+		}
+		if strings.TrimSpace(c.Rerank.Model) == "" {
+			return errors.New("rerank.model is required when rerank is enabled")
+		}
+		if strings.TrimSpace(c.Rerank.APIKey) == "" && strings.TrimSpace(c.LLM.APIKey) == "" {
+			return errors.New("rerank.api_key is required when rerank is enabled and llm.api_key is empty")
+		}
+		if c.Rerank.TopN <= 0 {
+			return errors.New("rerank.top_n must be > 0 when rerank is enabled")
+		}
+		if c.Rerank.Timeout.Duration <= 0 {
+			return errors.New("rerank.timeout must be > 0 when rerank is enabled")
+		}
+	}
 	switch c.PostAction.InputMode {
 	case "strict", "compat":
 	default:
@@ -674,6 +725,13 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_EMBED_DIMENSION", &cfg.Embedding.Dimension)
 	setString("VMM_EMBED_ORGANIZATION", &cfg.Embedding.Organization)
 	setString("VMM_EMBED_PROJECT", &cfg.Embedding.Project)
+	setBool("VMM_RERANK_ENABLED", &cfg.Rerank.Enabled)
+	setString("VMM_RERANK_PROVIDER", &cfg.Rerank.Provider)
+	setString("VMM_RERANK_ENDPOINT", &cfg.Rerank.Endpoint)
+	setString("VMM_RERANK_API_KEY", &cfg.Rerank.APIKey)
+	setString("VMM_RERANK_MODEL", &cfg.Rerank.Model)
+	setInt("VMM_RERANK_TOP_N", &cfg.Rerank.TopN)
+	setDuration("VMM_RERANK_TIMEOUT", &cfg.Rerank.Timeout)
 	setString("VMM_VECTOR_PROVIDER", &cfg.Vector.Provider)
 	setString("VMM_RELATIONAL_PROVIDER", &cfg.Relational.Provider)
 	setString("VMM_POST_ACTION_INPUT_MODE", &cfg.PostAction.InputMode)

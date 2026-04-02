@@ -58,6 +58,15 @@
     "organization": "${OPENAI_ORGANIZATION}",
     "project": "${OPENAI_PROJECT}"
   },
+  "rerank": {
+    "enabled": false,
+    "provider": "dashscope",
+    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+    "api_key": "${OPENAI_API_KEY}",
+    "model": "qwen3-vl-rerank",
+    "top_n": 8,
+    "timeout": "8s"
+  },
   "vector": {
     "provider": "${VMM_VECTOR_PROVIDER}"
   },
