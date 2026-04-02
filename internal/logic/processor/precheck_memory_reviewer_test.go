@@ -3,6 +3,7 @@
 package processor
 
 import (
+	"encoding/json"
 	"testing"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -36,5 +37,44 @@ func TestParsePreCheckMemoryReviewResponseRejectsUnknownNumbers(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("expected invalid output error")
+	}
+}
+
+// TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence verifies the second-stage reviewer request keeps the matched context summary that explains why each candidate fit the current query.
+// TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence 用于验证第二层 reviewer 请求会保留用于解释候选为何命中当前 query 的 matched context 摘要。
+func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *testing.T) {
+	rendered, err := renderPreCheckMemoryReviewRequest(logicdomain.PreCheckMemoryReviewInput{
+		UserContent:   "在 local oss 的 phase4 下应该继续用哪个方案？",
+		SearchQueries: []string{"local oss 下的 phase4 当前方案"},
+		IntentReason:  "needs environment-specific architecture memory",
+		Candidates: []logicdomain.PreCheckMemoryCandidate{
+			{
+				CandidateNumber:            1,
+				MemoryID:                   15,
+				Abstract:                   "phase4 新方案",
+				Details:                    "适用于 local oss 当前环境。",
+				MatchedContextValues:       []string{"deployment_mode=local oss", "deployment_mode=local oss", "task_stage=phase4"},
+				MatchedContextSupportCount: 3,
+				MatchedContextScoreDelta:   0.075,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("render review request: %v", err)
+	}
+	var payload struct {
+		Candidates []logicdomain.PreCheckMemoryCandidate `json:"candidates"`
+	}
+	if err := json.Unmarshal([]byte(rendered), &payload); err != nil {
+		t.Fatalf("unmarshal rendered review request: %v", err)
+	}
+	if len(payload.Candidates) != 1 {
+		t.Fatalf("unexpected candidates: %#v", payload.Candidates)
+	}
+	if len(payload.Candidates[0].MatchedContextValues) != 2 {
+		t.Fatalf("expected duplicate matched context values to be deduplicated, got %#v", payload.Candidates[0].MatchedContextValues)
+	}
+	if payload.Candidates[0].MatchedContextValues[0] != "deployment_mode=local oss" || payload.Candidates[0].MatchedContextValues[1] != "task_stage=phase4" {
+		t.Fatalf("unexpected matched context values: %#v", payload.Candidates[0].MatchedContextValues)
 	}
 }

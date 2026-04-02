@@ -564,6 +564,18 @@ func TestMemoryUseCaseSearchAppliesContextAwareScoring(t *testing.T) {
 	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[1].MemoryRef.ID != 201 {
 		t.Fatalf("expected supportive context edge to win, got %+v", result.Results[0].Hits)
 	}
+	if result.Results[0].Hits[0].MatchedContextSupportCount != 2 || result.Results[0].Hits[0].MatchedContextRebuttalCount != 0 {
+		t.Fatalf("expected supportive matched context evidence on first hit, got %+v", result.Results[0].Hits[0])
+	}
+	if len(result.Results[0].Hits[0].MatchedContextValues) != 1 || result.Results[0].Hits[0].MatchedContextValues[0] != "deployment_mode=local oss" {
+		t.Fatalf("expected first hit to expose matched context values, got %+v", result.Results[0].Hits[0].MatchedContextValues)
+	}
+	if result.Results[0].Hits[0].MatchedContextScoreDelta <= 0 {
+		t.Fatalf("expected supportive matched context to produce positive delta, got %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].MatchedContextSupportCount != 0 || result.Results[0].Hits[1].MatchedContextRebuttalCount != 2 || result.Results[0].Hits[1].MatchedContextScoreDelta >= 0 {
+		t.Fatalf("expected rebutted matched context evidence on second hit, got %+v", result.Results[0].Hits[1])
+	}
 	if len(turns.contextLookupIDs) != 2 || turns.contextLookupIDs[0] != 201 || turns.contextLookupIDs[1] != 202 {
 		t.Fatalf("expected context edge lookup over both candidate ids, got %+v", turns.contextLookupIDs)
 	}
@@ -614,6 +626,9 @@ func TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches(t *testing.T) 
 	}
 	if result.Results[0].Hits[0].MemoryRef.ID != 201 || result.Results[0].Hits[1].MemoryRef.ID != 202 {
 		t.Fatalf("expected original order to remain unchanged, got %+v", result.Results[0].Hits)
+	}
+	if len(result.Results[0].Hits[0].MatchedContextValues) != 0 || len(result.Results[0].Hits[1].MatchedContextValues) != 0 {
+		t.Fatalf("expected unmatched context edges to stay hidden from hits, got %+v", result.Results[0].Hits)
 	}
 }
 

@@ -87,29 +87,33 @@ type MemoryQueryItem struct {
 // MemoryQueryHit returns one unified recalled memory candidate together with its durable refs and preview fields.
 // MemoryQueryHit 用于返回一条统一召回的记忆候选，以及它的长期引用和预览字段。
 type MemoryQueryHit struct {
-	MemoryRef                logicdomain.MemoryRef
-	SourceRef                logicdomain.MemoryRef
-	SourceKind               int
-	ScopeLevel               int
-	Priority                 int
-	MemoryLevel              int
-	RefreshWeight            int
-	SessionID                uint64
-	Abstract                 string
-	DetailsPreview           string
-	Category                 int
-	Score                    float64
-	Origin                   string
-	Vector                   []float32
-	CreatedAt                time.Time
-	LastRecalledAt           time.Time
-	LastAdoptedAt            time.Time
-	LastReinforcedAt         time.Time
-	SupportCount             int
-	RebuttalCount            int
-	ReinforcementCount       int
-	CrossSessionAdoptedCount int
-	DecayDisabled            bool
+	MemoryRef                   logicdomain.MemoryRef
+	SourceRef                   logicdomain.MemoryRef
+	SourceKind                  int
+	ScopeLevel                  int
+	Priority                    int
+	MemoryLevel                 int
+	RefreshWeight               int
+	SessionID                   uint64
+	Abstract                    string
+	DetailsPreview              string
+	Category                    int
+	Score                       float64
+	Origin                      string
+	Vector                      []float32
+	CreatedAt                   time.Time
+	LastRecalledAt              time.Time
+	LastAdoptedAt               time.Time
+	LastReinforcedAt            time.Time
+	SupportCount                int
+	RebuttalCount               int
+	MatchedContextValues        []string
+	MatchedContextSupportCount  int
+	MatchedContextRebuttalCount int
+	MatchedContextScoreDelta    float64
+	ReinforcementCount          int
+	CrossSessionAdoptedCount    int
+	DecayDisabled               bool
 }
 
 // MemoryQueryGroupResult returns the echoed JSON query item together with the hit list produced for that item.
@@ -1146,6 +1150,7 @@ func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item Me
 		score := matchedEvidence[edge.MemoryID]
 		score.SupportCount += edge.SupportCount
 		score.RebuttalCount += edge.RebuttalCount
+		score.MatchedContextValues = appendUniqueMemoryContextEvidenceValue(score.MatchedContextValues, edge.ContextKey, edge.ContextValue)
 		matchedEvidence[edge.MemoryID] = score
 	}
 	if len(matchedEvidence) == 0 {
@@ -1160,7 +1165,12 @@ func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item Me
 			continue
 		}
 		evidence.Delta = computeMemoryContextEvidenceDelta(evidence)
+		sort.Strings(evidence.MatchedContextValues)
 		scored[idx].Score += evidence.Delta
+		scored[idx].MatchedContextValues = append([]string(nil), evidence.MatchedContextValues...)
+		scored[idx].MatchedContextSupportCount = evidence.SupportCount
+		scored[idx].MatchedContextRebuttalCount = evidence.RebuttalCount
+		scored[idx].MatchedContextScoreDelta = evidence.Delta
 		evidenceByID[scored[idx].MemoryRef.ID] = evidence
 	}
 	sort.SliceStable(scored, func(i, j int) bool {
@@ -1188,9 +1198,10 @@ func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item Me
 // memoryContextEvidenceScore stores the matched support/rebuttal totals for one candidate memory under the current query situation.
 // memoryContextEvidenceScore 用于保存当前 query 场景下某个候选记忆匹配到的支持/反驳总量。
 type memoryContextEvidenceScore struct {
-	SupportCount  int
-	RebuttalCount int
-	Delta         float64
+	SupportCount         int
+	RebuttalCount        int
+	MatchedContextValues []string
+	Delta                float64
 }
 
 // memoryQueryContextSignals stores the normalized phrases extracted from background/query so context edges can do deterministic lexical matching without another model call.
@@ -1255,6 +1266,26 @@ func computeMemoryContextEvidenceDelta(evidence memoryContextEvidenceScore) floa
 	supportBoost := math.Min(0.12, 0.025*float64(evidence.SupportCount))
 	rebuttalPenalty := math.Min(0.14, 0.03*float64(evidence.RebuttalCount))
 	return supportBoost - rebuttalPenalty
+}
+
+// appendUniqueMemoryContextEvidenceValue keeps the matched context summary deterministic and de-duplicated so upper layers can surface a compact explanation of why a memory matched.
+// appendUniqueMemoryContextEvidenceValue 用于保持命中的 context 摘要确定且去重，方便上层输出“这条记忆为什么命中”的紧凑说明。
+func appendUniqueMemoryContextEvidenceValue(values []string, key, value string) []string {
+	key = strings.TrimSpace(key)
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	label := value
+	if key != "" {
+		label = key + "=" + value
+	}
+	for _, existing := range values {
+		if existing == label {
+			return values
+		}
+	}
+	return append(values, label)
 }
 
 // collectMemoryQueryHitIDs returns the distinct durable memory ids present in one candidate slice so query-time enrichment can batch-load relational evidence once.

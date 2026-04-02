@@ -441,6 +441,87 @@ func TestPreCheckExecuteSkipsImmediateContextOnlyFallback(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecutePassesMatchedContextEvidenceToReviewer verifies that query-time context evidence is preserved when the second-stage reviewer receives numbered candidates.
+// TestPreCheckExecutePassesMatchedContextEvidenceToReviewer 用于验证查询期命中的 context evidence 会在第二层 reviewer 收到的候选里被完整保留。
+func TestPreCheckExecutePassesMatchedContextEvidenceToReviewer(t *testing.T) {
+	reviewer := &stubPreCheckReviewer{}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckProfiles{},
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Query:      "local oss 下的 phase4 当前方案",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:                   logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+								SourceRef:                   logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 8},
+								SourceKind:                  logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:                  logicdomain.MemoryScopeLevelProject,
+								Abstract:                    "phase4 新方案",
+								DetailsPreview:              "它与 local oss 当前场景匹配。",
+								Category:                    logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:                       0.96,
+								Origin:                      "hybrid_rrf",
+								SupportCount:                4,
+								RebuttalCount:               1,
+								MatchedContextValues:        []string{"deployment_mode=local oss", "task_stage=phase4"},
+								MatchedContextSupportCount:  3,
+								MatchedContextRebuttalCount: 0,
+								MatchedContextScoreDelta:    0.075,
+							},
+						},
+					},
+				},
+			},
+		},
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 7, SessionID: 41, Details: "上一轮确认当前环境仍是 local oss。", DetailsBudget: 15, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"local oss 下的 phase4 当前方案"},
+				NeedMemory: true,
+				Reason:     "needs environment-specific architecture memory",
+			},
+		},
+		reviewer,
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	if _, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-evidence"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "在 local oss 的 phase4 下应该继续用哪个方案？",
+	}); err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if len(reviewer.input.Candidates) != 1 {
+		t.Fatalf("unexpected reviewer candidates: %#v", reviewer.input.Candidates)
+	}
+	candidate := reviewer.input.Candidates[0]
+	if candidate.SupportCount != 4 || candidate.RebuttalCount != 1 {
+		t.Fatalf("expected aggregate support/rebuttal counts to be preserved, got %#v", candidate)
+	}
+	if candidate.MatchedContextSupportCount != 3 || candidate.MatchedContextRebuttalCount != 0 || candidate.MatchedContextScoreDelta <= 0 {
+		t.Fatalf("expected matched context evidence to be preserved, got %#v", candidate)
+	}
+	if len(candidate.MatchedContextValues) != 2 || candidate.MatchedContextValues[0] != "deployment_mode=local oss" || candidate.MatchedContextValues[1] != "task_stage=phase4" {
+		t.Fatalf("unexpected matched context values: %#v", candidate.MatchedContextValues)
+	}
+}
+
 // stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
 // stubPreCheckProfiles 用于作为 pre-check 测试里的画像组合加载桩。
 type stubPreCheckProfiles struct {

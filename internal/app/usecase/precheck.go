@@ -389,15 +389,21 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				continue
 			}
 			candidate := logicdomain.PreCheckMemoryCandidate{
-				MemoryID:     hit.MemoryRef.ID,
-				SourceTurnID: hit.SourceRef.ID,
-				SourceKind:   logicdomain.MemorySourceKindLabel(hit.SourceKind),
-				ScopeLevel:   logicdomain.MemoryScopeLevelLabel(hit.ScopeLevel),
-				Category:     hit.Category,
-				Abstract:     strings.TrimSpace(hit.Abstract),
-				Details:      strings.TrimSpace(hit.DetailsPreview),
-				Score:        hit.Score,
-				Origin:       strings.TrimSpace(hit.Origin),
+				MemoryID:                    hit.MemoryRef.ID,
+				SourceTurnID:                hit.SourceRef.ID,
+				SourceKind:                  logicdomain.MemorySourceKindLabel(hit.SourceKind),
+				ScopeLevel:                  logicdomain.MemoryScopeLevelLabel(hit.ScopeLevel),
+				Category:                    hit.Category,
+				Abstract:                    strings.TrimSpace(hit.Abstract),
+				Details:                     strings.TrimSpace(hit.DetailsPreview),
+				Score:                       hit.Score,
+				Origin:                      strings.TrimSpace(hit.Origin),
+				SupportCount:                hit.SupportCount,
+				RebuttalCount:               hit.RebuttalCount,
+				MatchedContextValues:        append([]string(nil), hit.MatchedContextValues...),
+				MatchedContextSupportCount:  hit.MatchedContextSupportCount,
+				MatchedContextRebuttalCount: hit.MatchedContextRebuttalCount,
+				MatchedContextScoreDelta:    hit.MatchedContextScoreDelta,
 			}
 			if candidate.Abstract == "" && candidate.Details == "" {
 				continue

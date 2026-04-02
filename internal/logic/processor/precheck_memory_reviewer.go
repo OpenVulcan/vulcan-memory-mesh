@@ -161,6 +161,7 @@ func normalizePreCheckReviewCandidates(values []logicdomain.PreCheckMemoryCandid
 		value.Abstract = strings.TrimSpace(value.Abstract)
 		value.Details = strings.TrimSpace(value.Details)
 		value.Origin = strings.TrimSpace(value.Origin)
+		value.MatchedContextValues = normalizeStringValues(value.MatchedContextValues)
 		if value.Abstract == "" && value.Details == "" {
 			continue
 		}

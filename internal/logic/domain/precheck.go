@@ -10,19 +10,25 @@ type PreCheckTurnContext struct {
 	Content     string
 }
 
-// PreCheckMemoryCandidate stores one numbered candidate memory fragment that the second-stage pre-check reviewer may adopt for injection.
-// PreCheckMemoryCandidate 用于保存一条带编号的候选记忆片段，供 pre-check 第二层评审器采纳并注入。
+// PreCheckMemoryCandidate stores one numbered candidate memory fragment together with retrieval-side evidence so the second-stage reviewer can judge not only what the memory says but also why it matched the current request.
+// PreCheckMemoryCandidate 用于保存一条带编号的候选记忆片段及其检索侧证据，让 pre-check 第二层评审器不仅能看见记忆内容，也能知道它为何命中当前请求。
 type PreCheckMemoryCandidate struct {
-	CandidateNumber int
-	MemoryID        uint64
-	SourceTurnID    uint64
-	SourceKind      string
-	ScopeLevel      string
-	Category        int
-	Abstract        string
-	Details         string
-	Score           float64
-	Origin          string
+	CandidateNumber             int
+	MemoryID                    uint64
+	SourceTurnID                uint64
+	SourceKind                  string
+	ScopeLevel                  string
+	Category                    int
+	Abstract                    string
+	Details                     string
+	Score                       float64
+	Origin                      string
+	SupportCount                int
+	RebuttalCount               int
+	MatchedContextValues        []string
+	MatchedContextSupportCount  int
+	MatchedContextRebuttalCount int
+	MatchedContextScoreDelta    float64
 }
 
 // PreCheckMemoryReviewInput carries the current user request, stage-one search reasoning, and numbered candidates into the second-stage reviewer.
