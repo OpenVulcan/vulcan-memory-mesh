@@ -792,7 +792,13 @@ func buildMemorySearchText(item MemoryQueryItem) string {
 // buildMemoryQueryCacheKey converts one normalized query group into a stable in-request cache key so repeated groups can reuse one retrieval execution without changing the caller-facing result shape.
 // buildMemoryQueryCacheKey 用于把一条已归一的 query group 转成稳定的单请求缓存键，让重复 group 能复用一次检索执行，同时不改变调用方看到的结果结构。
 func buildMemoryQueryCacheKey(item MemoryQueryItem) string {
-	return item.Background + "\x00" + item.Query
+	return normalizeMemoryQueryCachePart(item.Background) + "\x00" + normalizeMemoryQueryCachePart(item.Query)
+}
+
+// normalizeMemoryQueryCachePart keeps the in-request dedupe key aligned with pre-check's low-risk query normalization so case-only variants do not fan out into duplicate retrieval work.
+// normalizeMemoryQueryCachePart 用于让单请求去重键与 pre-check 的低风险 query 归一保持一致，避免仅有大小写差异的变体再次扩散成重复检索开销。
+func normalizeMemoryQueryCachePart(text string) string {
+	return strings.ToLower(textutil.NormalizeWhitespace(text))
 }
 
 // cloneMemoryQueryHits deep-copies one hit slice before it is shared across repeated groups so later callers cannot accidentally mutate another group's cached result.

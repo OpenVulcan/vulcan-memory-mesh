@@ -262,6 +262,70 @@ func TestMemoryUseCaseSearchReusesEquivalentGroupedQueries(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchReusesCaseEquivalentGroupedQueries verifies the in-request cache key also collapses case-only group variants so technical English queries do not repeat the full retrieval pipeline.
+// TestMemoryUseCaseSearchReusesCaseEquivalentGroupedQueries 用于验证单请求缓存键也会折叠仅有大小写差异的 group，避免英文技术查询因大小写不同而重复执行整条检索链。
+func TestMemoryUseCaseSearchReusesCaseEquivalentGroupedQueries(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "Schema Compatibility", Details: "The project stayed on schema version 13 for compatibility.", VectorID: "vec-1"},
+		},
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "Schema Compatibility", Details: "The project stayed on schema version 13 for compatibility.", VectorID: "vec-1"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "Schema Compatibility", Score: 0.91},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"background":"SQLite Schema Compatibility","query":"Schema Version 13"},{"background":"sqlite schema compatibility","query":"schema version 13"}]`,
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events: %v", err)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("results len = %d", len(result.Results))
+	}
+	if len(result.Results[0].Hits) != 1 || len(result.Results[1].Hits) != 1 {
+		t.Fatalf("expected both groups to reuse one hit set, got %+v", result.Results)
+	}
+	if result.Results[0].Background != "SQLite Schema Compatibility" || result.Results[1].Background != "sqlite schema compatibility" {
+		t.Fatalf("expected original caller echo to stay intact, got %+v", result.Results)
+	}
+	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 {
+		t.Fatalf("expected one deduped embedding request for case variants, got %+v", embedding.requests)
+	}
+	if len(vector.searchTopKs) != 1 {
+		t.Fatalf("expected one deduped vector search for case variants, got %+v", vector.searchTopKs)
+	}
+}
+
 // TestMemoryUseCaseSearchFusesHybridRecall verifies vector recall and lexical recall are fused through RRF before the grouped response is returned.
 // TestMemoryUseCaseSearchFusesHybridRecall 用于验证向量召回和 lexical 召回会先经过 RRF 融合，再返回最终的分组结果。
 func TestMemoryUseCaseSearchFusesHybridRecall(t *testing.T) {
