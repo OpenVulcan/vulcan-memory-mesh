@@ -313,12 +313,13 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	return nil
 }
 
-// logPostActionAnalysisResult records one redacted summary of the persisted analysis so operators can diagnose extraction throughput without writing derived user text into runtime logs.
-// logPostActionAnalysisResult 用于记录一份脱敏后的分析结果摘要，让排障仍能观察提炼吞吐，但不会把衍生出的用户文本写入运行时日志。
+// logPostActionAnalysisResult records one redacted summary of the persisted analysis so operators can diagnose extraction throughput without writing derived user text into runtime logs, while also stripping high-dimensional vectors from debug JSON output.
+// logPostActionAnalysisResult 用于记录一份脱敏后的分析结果摘要，让排障仍能观察提炼吞吐，同时会从调试 JSON 输出中剥离高维向量。
 func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, input logicdomain.TurnAnalysisInput, analysis logicdomain.TurnAnalysis, vectorIDs []string) {
 	if u == nil || u.logger == nil {
 		return
 	}
+	redactedAnalysis, redactedVectorNodes := redactTurnAnalysisVectorsForLog(analysis)
 	fields := []any{
 		"session_key", session.SessionKey,
 		"session_id", session.SessionID,
@@ -334,7 +335,13 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		"user_profile_merged", analysis.UserProfileMerged,
 		"project_profile_merged", analysis.ProjectProfileMerged,
 	}
-	if analysisJSON, err := json.Marshal(analysis); err == nil {
+	if redactedVectorNodes > 0 {
+		fields = append(fields,
+			"vector_payload_notice", "embedding vectors omitted from analysis_json",
+			"vector_payload_redacted_nodes", redactedVectorNodes,
+		)
+	}
+	if analysisJSON, err := json.Marshal(redactedAnalysis); err == nil {
 		if u.logger != nil && u.logger.PayloadDebugEnabled() {
 			fields = append(fields, "analysis_json", string(analysisJSON))
 		} else {
@@ -345,6 +352,27 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		}
 	}
 	u.logger.Info("post-action turn analysis result", fields...)
+}
+
+// redactTurnAnalysisVectorsForLog clones one turn-analysis payload and clears the in-memory vector arrays so debug JSON remains readable and avoids dumping 1024-dimensional embeddings into logs.
+// redactTurnAnalysisVectorsForLog 用于复制一份 turn analysis 载荷，并清空其中的内存向量数组，避免调试 JSON 把 1024 维 embedding 整块写入日志。
+func redactTurnAnalysisVectorsForLog(analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysis, int) {
+	if len(analysis.MemoryNodes) == 0 {
+		return analysis, 0
+	}
+	redacted := analysis
+	redacted.MemoryNodes = append([]logicdomain.MemoryNodeCandidate(nil), analysis.MemoryNodes...)
+	redactedNodes := 0
+	for idx := range redacted.MemoryNodes {
+		if len(redacted.MemoryNodes[idx].Vector) == 0 {
+			continue
+		}
+		node := redacted.MemoryNodes[idx]
+		node.Vector = nil
+		redacted.MemoryNodes[idx] = node
+		redactedNodes++
+	}
+	return redacted, redactedNodes
 }
 
 // buildTurnAnalysisInput loads refined reference turns and active memory anchors, then builds the structured request consumed by the reference-aware single-turn analyzer.

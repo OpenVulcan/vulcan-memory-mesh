@@ -389,8 +389,8 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 	}
 }
 
-// TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled verifies the shared payload-debug logger switch can opt analysis-result logs back into full JSON output for local troubleshooting.
-// TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled 用于验证共享 payload 调试开关开启后，分析结果日志会重新输出完整 JSON，方便本地排障。
+// TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled verifies the shared payload-debug logger switch still emits full analysis JSON for local troubleshooting, while omitting the high-dimensional vector arrays that add no diagnostic value.
+// TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled 用于验证共享 payload 调试开关开启后，分析结果日志仍会输出完整分析 JSON 供本地排障，但会省略没有诊断价值的高维向量数组。
 func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) {
 	store := &testRelationalStore{
 		pendingTurns: []logicdomain.SessionTurnRecord{
@@ -439,6 +439,12 @@ func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) 
 	}
 	if !strings.Contains(logs, "用户银行卡 1234 的部署方案需要切到本地模式。") || !strings.Contains(logs, "这是敏感派生文本。") {
 		t.Fatalf("expected payload-debug analysis log to include derived text, got %s", logs)
+	}
+	if !strings.Contains(logs, `vector_payload_notice："embedding vectors omitted from analysis_json"`) || !strings.Contains(logs, "vector_payload_redacted_nodes：1") {
+		t.Fatalf("expected payload-debug analysis log to announce vector redaction, got %s", logs)
+	}
+	if strings.Contains(logs, `"Vector": [`) || strings.Contains(logs, "0.1") || strings.Contains(logs, "0.2") || strings.Contains(logs, "0.3") {
+		t.Fatalf("expected payload-debug analysis log to omit vector dimensions, got %s", logs)
 	}
 	if strings.Contains(logs, "analysis_sha256") || strings.Contains(logs, "analysis_len") {
 		t.Fatalf("expected payload-debug analysis log to bypass redacted digest fields, got %s", logs)
