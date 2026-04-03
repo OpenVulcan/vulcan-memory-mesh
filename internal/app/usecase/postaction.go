@@ -335,10 +335,14 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		"project_profile_merged", analysis.ProjectProfileMerged,
 	}
 	if analysisJSON, err := json.Marshal(analysis); err == nil {
-		fields = append(fields,
-			"analysis_len", len(analysisJSON),
-			"analysis_sha256", shortLogDigest(string(analysisJSON)),
-		)
+		if u.logger != nil && u.logger.PayloadDebugEnabled() {
+			fields = append(fields, "analysis_json", string(analysisJSON))
+		} else {
+			fields = append(fields,
+				"analysis_len", len(analysisJSON),
+				"analysis_sha256", shortLogDigest(string(analysisJSON)),
+			)
+		}
 	}
 	u.logger.Info("post-action turn analysis result", fields...)
 }

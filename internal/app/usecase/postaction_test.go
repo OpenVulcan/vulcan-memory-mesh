@@ -389,6 +389,62 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 	}
 }
 
+// TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled verifies the shared payload-debug logger switch can opt analysis-result logs back into full JSON output for local troubleshooting.
+// TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled 用于验证共享 payload 调试开关开启后，分析结果日志会重新输出完整 JSON，方便本地排障。
+func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                89,
+				SessionID:         89,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"你好","timeline":[],"assistant":"收到"}`,
+				DehydratedBudget:  10,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
+			},
+		},
+		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
+			{ID: 702, TurnID: 78, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "旧部署方案", Details: "旧的部署偏好。", NodeStatus: logicdomain.MemoryNodeStatusActive},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		TurnID:  89,
+		Details: "用户银行卡 1234 的部署方案需要切到本地模式。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "用户身份证 5678 的部署偏好", Details: "这是敏感派生文本。"},
+		},
+	}}
+	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
+	vector := &stubVectorStore{}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text", DebugPayloads: true})
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{
+		HistoryTurns:   3,
+		MaxInputTokens: 200,
+	}, logger, false)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{
+		SessionID:  89,
+		SessionKey: "sess-debug-analysis",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, "test")
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "post-action turn analysis result") || !strings.Contains(logs, "JSON(analysis_json)：") {
+		t.Fatalf("expected payload-debug analysis JSON log, got %s", logs)
+	}
+	if !strings.Contains(logs, "用户银行卡 1234 的部署方案需要切到本地模式。") || !strings.Contains(logs, "这是敏感派生文本。") {
+		t.Fatalf("expected payload-debug analysis log to include derived text, got %s", logs)
+	}
+	if strings.Contains(logs, "analysis_sha256") || strings.Contains(logs, "analysis_len") {
+		t.Fatalf("expected payload-debug analysis log to bypass redacted digest fields, got %s", logs)
+	}
+}
+
 // TestPostActionUseCaseBatchesProfileReviewAcrossTurns verifies user/project profile evidence from multiple pending turns is reviewed in one batched call and then rendered back into durable profile text.
 // TestPostActionUseCaseBatchesProfileReviewAcrossTurns 用于验证来自多条待处理 turn 的 user/project 画像证据会通过一次批量评审调用统一处理，并回写成长期画像文本。
 func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {

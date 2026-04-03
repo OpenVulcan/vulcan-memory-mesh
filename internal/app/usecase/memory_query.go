@@ -861,7 +861,7 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 	lexicalHits, err := u.memories.SearchLexicalMemory(ctx, query, poolK, filter)
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory lexical search degraded", append(redactedMemoryQueryLogFields(query), "err", err)...)
+			u.logger.Warn("memory lexical search degraded", append(memoryQueryLogFields(u.logger, query), "err", err)...)
 		}
 		return trimSearchHits(vectorHits, poolK)
 	}
@@ -871,7 +871,7 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 	materialized, err := u.materializeLexicalHits(ctx, lexicalHits)
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory lexical materialization degraded", append(redactedMemoryQueryLogFields(query), "err", err)...)
+			u.logger.Warn("memory lexical materialization degraded", append(memoryQueryLogFields(u.logger, query), "err", err)...)
 		}
 		return trimSearchHits(vectorHits, poolK)
 	}
@@ -1590,7 +1590,7 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 	results, err := u.reranker.Rerank(ctx, strings.TrimSpace(query), buildRerankDocuments(primary), len(primary))
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory search rerank degraded", append(redactedMemoryQueryLogFields(query), "candidate_count", len(primary), "err", err)...)
+			u.logger.Warn("memory search rerank degraded", append(memoryQueryLogFields(u.logger, query), "candidate_count", len(primary), "err", err)...)
 		}
 		return hits
 	}
@@ -1716,10 +1716,13 @@ func buildMemorySearchCandidateText(hit MemoryQueryHit) string {
 	}
 }
 
-// redactedMemoryQueryLogFields converts one live search query into length and digest fields so degraded retrieval logs stay debuggable without writing user text into runtime logs.
-// redactedMemoryQueryLogFields 用于把实时检索 query 转成长度和摘要字段，让降级日志在可排障的同时不把用户文本写入运行时日志。
-func redactedMemoryQueryLogFields(query string) []any {
+// memoryQueryLogFields converts one live search query into either a redacted diagnostic summary or a full debug payload according to the shared payload-debug logger switch.
+// memoryQueryLogFields 用于根据共享 payload 调试开关，把实时检索 query 转成脱敏诊断字段或完整调试正文。
+func memoryQueryLogFields(logger *logx.Logger, query string) []any {
 	normalized := strings.TrimSpace(query)
+	if logger != nil && logger.PayloadDebugEnabled() {
+		return []any{"query", normalized}
+	}
 	return []any{
 		"query_len", len(normalized),
 		"query_sha256", shortLogDigest(normalized),

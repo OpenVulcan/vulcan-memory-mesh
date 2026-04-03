@@ -48,7 +48,7 @@ func NewLocal(cfg config.Config, prompts appports.PromptSource, layout config.Pr
 func newApplication(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
 	// Initialize shared runtime utilities such as logging and ID generation first.
 	// 先初始化日志和 ID 生成器等共享运行时能力。
-	logger := logx.New(os.Stdout, logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format})
+	logger := logx.New(os.Stdout, logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format, DebugPayloads: cfg.Logging.DebugRPCPayloads})
 	ids := xid.NewGenerator()
 
 	// Build outbound dependencies from the active configuration.

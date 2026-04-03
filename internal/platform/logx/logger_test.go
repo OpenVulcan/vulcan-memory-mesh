@@ -90,3 +90,32 @@ func TestTextLoggerRendersErrorsAsMessages(t *testing.T) {
 		t.Fatalf("expected error string output, got %s", output)
 	}
 }
+
+// TestLoggerLevelFiltersLowerSeverity verifies the configured runtime log level is truly enforced so release environments can suppress info and warn chatter while still keeping error logs.
+// TestLoggerLevelFiltersLowerSeverity 用于验证运行时日志级别配置会被真实执行，让 release 环境可以压制 info 和 warn 噪声，同时保留 error 日志。
+func TestLoggerLevelFiltersLowerSeverity(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := New(logBuf, Config{Level: "error", Format: "text"})
+
+	logger.Info("info should be dropped")
+	logger.Warn("warn should be dropped")
+	logger.Error("error should stay visible")
+
+	output := logBuf.String()
+	if strings.Contains(output, "info should be dropped") || strings.Contains(output, "warn should be dropped") {
+		t.Fatalf("expected error level to suppress lower severities, got %s", output)
+	}
+	if !strings.Contains(output, "error should stay visible") {
+		t.Fatalf("expected error level to keep error logs, got %s", output)
+	}
+}
+
+// TestLoggerPayloadDebugFlagPropagates verifies the shared payload-debug switch survives child logger creation so business layers can consistently decide whether to log full payloads.
+// TestLoggerPayloadDebugFlagPropagates 用于验证共享 payload 调试开关会在子日志器之间继承，确保业务层能够稳定判断是否输出完整载荷。
+func TestLoggerPayloadDebugFlagPropagates(t *testing.T) {
+	logger := New(&bytes.Buffer{}, Config{Level: "info", Format: "text", DebugPayloads: true}).With("component", "grpcapi")
+
+	if !logger.PayloadDebugEnabled() {
+		t.Fatal("expected payload debug flag to propagate through child logger")
+	}
+}

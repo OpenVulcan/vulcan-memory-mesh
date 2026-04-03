@@ -14,14 +14,16 @@ import (
 // Config carries the logging knobs used to build one structured runtime logger.
 // Config 用于承载构建结构化运行时日志器时使用的配置项。
 type Config struct {
-	Level  string
-	Format string
+	Level         string
+	Format        string
+	DebugPayloads bool
 }
 
 // Logger wraps slog.Logger so adapters and use cases can share a small logging surface.
 // Logger 用于包装 slog.Logger，让适配层和用例层共享一套轻量日志接口。
 type Logger struct {
-	base *slog.Logger
+	base          *slog.Logger
+	debugPayloads bool
 }
 
 // New creates a Logger instance backed by a text or JSON slog handler.
@@ -39,7 +41,7 @@ func New(w io.Writer, cfg Config) *Logger {
 	default:
 		handler = newMultilineTextHandler(w, opts)
 	}
-	return &Logger{base: slog.New(handler)}
+	return &Logger{base: slog.New(handler), debugPayloads: cfg.DebugPayloads}
 }
 
 // Default creates a Logger instance with stdout text output at info level.
@@ -54,7 +56,7 @@ func (l *Logger) With(args ...any) *Logger {
 	if l == nil {
 		return Default().With(args...)
 	}
-	return &Logger{base: l.base.With(args...)}
+	return &Logger{base: l.base.With(args...), debugPayloads: l.debugPayloads}
 }
 
 // Debug writes one debug-level log entry.
@@ -114,6 +116,13 @@ func (l *Logger) Errorf(format string, args ...any) {
 func (l *Logger) Enabled(ctx context.Context, level slog.Level) bool {
 	logger := resolve(l)
 	return logger.base.Enabled(ctx, level)
+}
+
+// PayloadDebugEnabled reports whether the current logger should emit full payload-oriented debug fields instead of the default redacted summaries.
+// PayloadDebugEnabled 用于判断当前日志器是否应输出完整载荷类调试字段，而不是默认的脱敏摘要。
+func (l *Logger) PayloadDebugEnabled() bool {
+	logger := resolve(l)
+	return logger.debugPayloads
 }
 
 // parseLevel normalizes string levels into slog levels.

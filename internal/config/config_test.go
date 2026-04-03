@@ -271,6 +271,16 @@ func TestConfigValidateRejectsUnknownPostActionMode(t *testing.T) {
 	}
 }
 
+// TestConfigValidateRejectsUnknownLoggingLevel verifies the runtime config only accepts the documented log levels so release deployments can rely on error-only output without ambiguous fallback behavior.
+// TestConfigValidateRejectsUnknownLoggingLevel 用于验证运行时配置只接受文档声明的日志级别，让 release 部署可以稳定依赖 error-only 输出，而不是落到含糊的隐式回退行为。
+func TestConfigValidateRejectsUnknownLoggingLevel(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Logging.Level = "verbose"
+	if err := cfg.Validate(); err == nil || err.Error() != "logging.level must be one of debug, info, warn, error" {
+		t.Fatalf("unexpected logging level validate error: %v", err)
+	}
+}
+
 // TestConfigValidateRejectsInvalidPostActionAnalysisThresholds verifies the future session-analysis trigger thresholds must stay positive.
 // TestConfigValidateRejectsInvalidPostActionAnalysisThresholds 用于验证未来 session 分析触发阈值必须保持正数。
 func TestConfigValidateRejectsInvalidPostActionAnalysisThresholds(t *testing.T) {

@@ -352,6 +352,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `grpc.request_timeout.workspace`
 - `grpc.request_timeout.pre_check`
 - `grpc.request_timeout.post_action`
+- `logging.level`
 - `logging.debug_rpc_payloads`
 - `relational.provider`
 - `sqlite.address`
@@ -372,10 +373,15 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 `logging` 下当前与业务链 RPC 载荷调试相关的新增项：
 
+- `level`
+  - 支持 `debug` / `info` / `warn` / `error`
+  - 默认 `info`
+  - release 环境如需尽量只保留错误日志，可直接设为 `error`
+  - 也可通过环境变量 `VMM_LOG_LEVEL=error` 覆盖
 - `debug_rpc_payloads`
   - 默认 `false`
-  - 关闭时：`PreCheck` 和 `PostAction` 相关日志只输出存在性、计数和执行状态等安全字段，不写正文
-  - 开启时：`pre-check received` / `pre-check returned` 会输出请求正文和组装上下文；`post-action received raw` / `post-action received cleaned` 会输出正文和 timeline JSON，便于本地排障
+  - 关闭时：`PreCheck`、`PostAction`、`memory query` 等 payload 相关日志只输出存在性、计数、长度、摘要和执行状态等安全字段，不写正文
+  - 开启时：`pre-check received` / `pre-check returned` 会输出请求正文和组装上下文；`post-action received raw` / `post-action received cleaned` 会输出正文和 timeline JSON；`post-action turn analysis result`、`memory ... degraded`、`pre-check ... degraded` 等日志会输出完整 payload 诊断内容，便于本地排障
   - 也可通过环境变量 `VMM_LOG_DEBUG_RPC_PAYLOADS=true` 显式开启
   - 建议仅在本地调试或受控环境下临时开启
 

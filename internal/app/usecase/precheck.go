@@ -174,7 +174,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	persona, err := u.loadPersonaContext(ctx, cmd.Session)
 	if err != nil {
 		degraded = true
-		u.logPreCheckWarn("pre-check persona bundle degraded", traceID, cmd.Session, err)
+		u.logPreCheckWarn("pre-check persona bundle degraded", traceID, cmd.Session, cmd.UserContent, err)
 		persona = logicdomain.PersonaContext{}
 	}
 
@@ -183,7 +183,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	recentTurns, err := u.loadRecentTurnContexts(ctx, cmd.Session)
 	if err != nil {
 		degraded = true
-		u.logPreCheckWarn("pre-check recent turns degraded", traceID, cmd.Session, err)
+		u.logPreCheckWarn("pre-check recent turns degraded", traceID, cmd.Session, cmd.UserContent, err)
 		recentTurns = nil
 	}
 
@@ -192,7 +192,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	intent, err := u.extractIntent(ctx, recentTurns, cmd.UserContent)
 	if err != nil {
 		degraded = true
-		u.logPreCheckWarn("pre-check intent degraded", traceID, cmd.Session, err)
+		u.logPreCheckWarn("pre-check intent degraded", traceID, cmd.Session, cmd.UserContent, err)
 		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
 	}
 	// Normalize the stage-one output locally so vague deictic queries do not over-trigger long-term retrieval when recent turns already explain the request.
@@ -207,7 +207,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	candidates, err := u.searchMemoryCandidates(ctx, cmd, intent)
 	if err != nil {
 		degraded = true
-		u.logPreCheckWarn("pre-check memory recall degraded", traceID, cmd.Session, err)
+		u.logPreCheckWarn("pre-check memory recall degraded", traceID, cmd.Session, cmd.UserContent, err)
 		candidates = nil
 	}
 	if len(candidates) == 0 {
@@ -219,7 +219,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	selectedCandidates, err := u.reviewMemoryCandidates(ctx, cmd, intent, candidates)
 	if err != nil {
 		degraded = true
-		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, err)
+		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, cmd.UserContent, err)
 		selectedCandidates = nil
 	}
 	if len(selectedCandidates) == 0 {
@@ -230,7 +230,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	// 只对被采纳的记忆写回生命周期更新，确保单纯召回不会刷新有效期或权重。
 	if err := u.writeMemoryAdoption(ctx, cmd.Session, selectedCandidates); err != nil {
 		degraded = true
-		u.logPreCheckWarn("pre-check lifecycle write-back degraded", traceID, cmd.Session, err)
+		u.logPreCheckWarn("pre-check lifecycle write-back degraded", traceID, cmd.Session, cmd.UserContent, err)
 	}
 	return u.finalizePreCheck(ctx, traceID, persona, selectedCandidates, degraded)
 }
@@ -715,20 +715,24 @@ func fallbackContextSectionTitle(defaultTitle string, section []logicdomain.Cont
 	return title
 }
 
-// logPreCheckWarn keeps degraded-path logging uniform so field triage remains easy after rollout.
-// logPreCheckWarn 用于统一降级路径日志，方便上线后排查问题。
-func (u *PreCheckUseCase) logPreCheckWarn(message, traceID string, session logicdomain.SessionRef, err error) {
+// logPreCheckWarn keeps degraded-path logging uniform so field triage remains easy after rollout, while still allowing the shared payload-debug switch to expose the original request text during local troubleshooting.
+// logPreCheckWarn 用于统一降级路径日志，方便上线后排查问题；同时在共享 payload 调试开关开启时，允许本地排障看到原始请求文本。
+func (u *PreCheckUseCase) logPreCheckWarn(message, traceID string, session logicdomain.SessionRef, userContent string, err error) {
 	if u.logger == nil {
 		return
 	}
-	u.logger.Warn(message,
+	fields := []any{
 		"trace_id", traceID,
 		"session_key", session.SessionKey,
 		"session_id", session.SessionID,
 		"project_id", session.ProjectID,
 		"user_id", session.UserID,
 		"err", err,
-	)
+	}
+	if u.logger.PayloadDebugEnabled() {
+		fields = append(fields, "user_content", strings.TrimSpace(userContent))
+	}
+	u.logger.Warn(message, fields...)
 }
 
 // validatePreCheck checks the resolved identifiers and current user content before the use case enters the live pre-check workflow.

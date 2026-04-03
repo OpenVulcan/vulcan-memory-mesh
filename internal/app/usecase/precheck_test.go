@@ -3,6 +3,7 @@
 package usecase
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"strings"
@@ -10,6 +11,7 @@ import (
 	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
@@ -488,6 +490,48 @@ func TestPreCheckExecuteDegradesToPersona(t *testing.T) {
 	}
 	if len(assembler.hits) != 0 {
 		t.Fatalf("expected persona-only fallback, got %#v", assembler.hits)
+	}
+}
+
+// TestPreCheckExecuteLogsRawUserContentWhenPayloadDebugEnabled verifies degraded pre-check warnings can include the original request text when the shared payload-debug logger switch is explicitly enabled for local troubleshooting.
+// TestPreCheckExecuteLogsRawUserContentWhenPayloadDebugEnabled 用于验证当共享 payload 调试开关显式开启时，降级 pre-check 警告日志可以带出原始请求文本，方便本地排障。
+func TestPreCheckExecuteLogsRawUserContentWhenPayloadDebugEnabled(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "warn", Format: "text", DebugPayloads: true})
+	uc := NewPreCheckUseCase(
+		&stubPreCheckProfiles{err: context.DeadlineExceeded},
+		&stubPreCheckMemories{},
+		&stubPreCheckStore{},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				NeedMemory: false,
+				Reason:     "self contained",
+			},
+		},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{},
+		logger,
+	)
+
+	userContent := "这个改动会不会影响 SQLite schema 13 的兼容性？"
+	if _, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-debug-log"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: userContent,
+	}); err != nil {
+		t.Fatalf("execute pre-check with payload-debug logger: %v", err)
+	}
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "pre-check persona bundle degraded") || !strings.Contains(logs, "TEXT(user_content)：") || !strings.Contains(logs, userContent) {
+		t.Fatalf("expected payload-debug pre-check warning to include raw user content, got %s", logs)
 	}
 }
 

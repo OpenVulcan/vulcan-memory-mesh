@@ -603,6 +603,11 @@ func (c Config) Validate() error {
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
 	}
+	switch strings.ToLower(strings.TrimSpace(c.Logging.Level)) {
+	case "", "debug", "info", "warn", "warning", "error":
+	default:
+		return errors.New("logging.level must be one of debug, info, warn, error")
+	}
 	switch strings.ToLower(strings.TrimSpace(c.Logging.Format)) {
 	case "text", "json":
 	default:
