@@ -468,6 +468,24 @@ func TestWriteMemoriesPersistsResolvedSession(t *testing.T) {
 	}
 }
 
+// TestWriteMemoriesRejectsNilItem verifies the transport returns one validation error instead of panicking when direct tests or manual integrations pass a nil write item inside the repeated payload.
+// TestWriteMemoriesRejectsNilItem 用于验证当直接测试或手工集成在 repeated 载荷中传入 nil 写入项时，传输层会返回校验错误，而不是直接 panic。
+func TestWriteMemoriesRejectsNilItem(t *testing.T) {
+	server := NewServer(Dependencies{
+		Memory: &stubMemoryExecutor{},
+	})
+
+	_, err := server.WriteMemories(context.Background(), &vmmv1.WriteMemoriesRequest{
+		SessionId: "sess-1",
+		UserId:    7,
+		ProjectId: 9,
+		Items:     []*vmmv1.WriteMemoryItem{nil},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+}
+
 // TestGetProfileBundleReturnsCombinedPrompt verifies the bundle RPC returns the authoritative combined prompt text in full mode.
 // TestGetProfileBundleReturnsCombinedPrompt 用于验证 bundle RPC 在 full 模式下返回权威的组合提示词文本。
 func TestGetProfileBundleReturnsCombinedPrompt(t *testing.T) {
@@ -666,6 +684,28 @@ func TestPostActionReturnsAcceptedSynchronously(t *testing.T) {
 	}
 	if !strings.Contains(logs, `user_content_len`) || !strings.Contains(logs, `assistant_content_sha256`) || !strings.Contains(logs, `timeline_sha256`) {
 		t.Fatalf("expected redacted payload metadata in logs, got %s", logs)
+	}
+}
+
+// TestPostActionRejectsNilTimelineItem verifies the transport returns one validation error instead of panicking when direct tests or manual integrations pass a nil timeline item.
+// TestPostActionRejectsNilTimelineItem 用于验证当直接测试或手工集成传入 nil timeline 项时，传输层会返回校验错误，而不是直接 panic。
+func TestPostActionRejectsNilTimelineItem(t *testing.T) {
+	server := NewServer(Dependencies{
+		PostAction: postActionFunc(func(context.Context, usecase.PostActionCommand) (usecase.PostActionResult, error) {
+			return usecase.PostActionResult{Accepted: true}, nil
+		}),
+	})
+
+	_, err := server.PostAction(context.Background(), &vmmv1.PostActionRequest{
+		SessionId:        "sess-1",
+		UserId:           7,
+		ProjectId:        9,
+		UserContent:      "第一问",
+		AssistantContent: "收到",
+		Timeline:         []*vmmv1.PostActionTimelineItem{nil},
+	})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("status code = %s", status.Code(err))
 	}
 }
 

@@ -40,6 +40,9 @@ func NormalizePostActionRequest(req *vmmv1.PostActionRequest) {
 	req.UserContent = strings.TrimSpace(req.GetUserContent())
 	req.AssistantContent = strings.TrimSpace(req.GetAssistantContent())
 	for _, item := range req.GetTimeline() {
+		if item == nil {
+			continue
+		}
 		item.Type = strings.ToLower(strings.TrimSpace(item.GetType()))
 		item.Content = strings.TrimSpace(item.GetContent())
 	}
@@ -168,6 +171,9 @@ func NormalizeWriteMemoriesRequest(req *vmmv1.WriteMemoriesRequest) {
 	}
 	req.SessionId = strings.TrimSpace(req.GetSessionId())
 	for _, item := range req.GetItems() {
+		if item == nil {
+			continue
+		}
 		item.Abstract = strings.TrimSpace(item.GetAbstract())
 		item.Details = strings.TrimSpace(item.GetDetails())
 	}
@@ -216,6 +222,9 @@ func (v *RequestValidator) ValidatePostAction(req *vmmv1.PostActionRequest) erro
 		return err
 	}
 	for idx, item := range req.GetTimeline() {
+		if item == nil {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("timeline[%d]", idx), Message: "item is required"}
+		}
 		if err := requireOneOf(fmt.Sprintf("timeline[%d].type", idx), item.GetType(), "user", "assistant"); err != nil {
 			return err
 		}
@@ -437,6 +446,9 @@ func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest
 		return logicdomain.ValidationError{Field: "items", Message: "must contain at most 32 items"}
 	}
 	for idx, item := range req.GetItems() {
+		if item == nil {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d]", idx), Message: "item is required"}
+		}
 		switch item.GetScopeLevel() {
 		case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED,
 			vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION,
