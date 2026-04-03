@@ -213,6 +213,67 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 	}
 }
 
+// TestPostActionUseCaseRedactsAnalysisResultLogs verifies the async analysis-result log keeps throughput diagnostics without writing derived analysis text into runtime logs.
+// TestPostActionUseCaseRedactsAnalysisResultLogs 用于验证异步分析结果日志会保留吞吐诊断字段，但不会把提炼出的分析文本写入运行时日志。
+func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                88,
+				SessionID:         88,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"你好","timeline":[],"assistant":"收到"}`,
+				DehydratedBudget:  10,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 4, 2, 9, 0, 0, 0, time.UTC),
+				UpdatedAt:         time.Date(2026, 4, 2, 9, 0, 1, 0, time.UTC),
+			},
+		},
+		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
+			{ID: 701, TurnID: 77, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "旧部署方案", Details: "旧的部署偏好。", NodeStatus: logicdomain.MemoryNodeStatusActive},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		TurnID:   88,
+		Details:  "用户银行卡 1234 的部署方案需要切到本地模式。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "用户身份证 5678 的部署偏好", Details: "这是敏感派生文本。"},
+		},
+		ProfileNodes: []logicdomain.ProfileNodeCandidate{
+			{ProfileType: logicdomain.ProfileTypeUser, Content: "用户更偏好本地模式。"},
+		},
+		SupersededMemoryIDs: []uint64{701},
+	}}
+	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
+	vector := &stubVectorStore{}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{
+		HistoryTurns:   3,
+		MaxInputTokens: 200,
+	}, logger, false)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{
+		SessionID:  88,
+		SessionKey: "sess-redact",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, "test")
+
+	logs := logBuf.String()
+	if !strings.Contains(logs, "post-action turn analysis result") {
+		t.Fatalf("expected analysis result log, got %s", logs)
+	}
+	if strings.Contains(logs, "用户银行卡 1234 的部署方案需要切到本地模式。") || strings.Contains(logs, "用户身份证 5678 的部署偏好") || strings.Contains(logs, "这是敏感派生文本。") {
+		t.Fatalf("expected analysis result log to redact derived text, got %s", logs)
+	}
+	if !strings.Contains(logs, "details_len") || !strings.Contains(logs, "memory_node_count") || !strings.Contains(logs, "analysis_sha256") {
+		t.Fatalf("expected redacted analysis diagnostics, got %s", logs)
+	}
+}
+
 // TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails verifies freshly inserted vectors are deleted again when async turn write-back fails.
 // TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails 用于验证异步 turn 回写失败时，刚插入的向量会被立即回滚删除。
 func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *testing.T) {

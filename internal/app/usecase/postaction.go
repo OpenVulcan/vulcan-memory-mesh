@@ -302,22 +302,38 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 			u.logger.Error("post-action superseded vector cleanup failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", deleteErr)
 		}
 	}
+	u.logPostActionAnalysisResult(session, turn, input, analysis, vectorIDs)
+	return nil
+}
 
-	if u.logger != nil {
-		analysisJSON, _ := json.Marshal(analysis)
-		u.logger.Info(
-			"post-action turn analysis result",
-			"session_key", session.SessionKey,
-			"session_id", session.SessionID,
-			"turn_id", turn.ID,
-			"reference_turn_count", len(input.ReferenceTurns),
-			"active_memory_count", len(input.ActiveMemoryNodes),
-			"recent_direct_write_count", len(input.RecentGRPCMemoryWrites),
-			"vector_count", len(vectorIDs),
-			"analysis", string(analysisJSON),
+// logPostActionAnalysisResult records one redacted summary of the persisted analysis so operators can diagnose extraction throughput without writing derived user text into runtime logs.
+// logPostActionAnalysisResult 用于记录一份脱敏后的分析结果摘要，让排障仍能观察提炼吞吐，但不会把衍生出的用户文本写入运行时日志。
+func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, input logicdomain.TurnAnalysisInput, analysis logicdomain.TurnAnalysis, vectorIDs []string) {
+	if u == nil || u.logger == nil {
+		return
+	}
+	fields := []any{
+		"session_key", session.SessionKey,
+		"session_id", session.SessionID,
+		"turn_id", turn.ID,
+		"reference_turn_count", len(input.ReferenceTurns),
+		"active_memory_count", len(input.ActiveMemoryNodes),
+		"recent_direct_write_count", len(input.RecentGRPCMemoryWrites),
+		"vector_count", len(vectorIDs),
+		"details_len", len(strings.TrimSpace(analysis.Details)),
+		"memory_node_count", len(analysis.MemoryNodes),
+		"profile_node_count", len(analysis.ProfileNodes),
+		"superseded_memory_count", len(analysis.SupersededMemoryIDs),
+		"user_profile_merged", analysis.UserProfileMerged,
+		"project_profile_merged", analysis.ProjectProfileMerged,
+	}
+	if analysisJSON, err := json.Marshal(analysis); err == nil {
+		fields = append(fields,
+			"analysis_len", len(analysisJSON),
+			"analysis_sha256", shortLogDigest(string(analysisJSON)),
 		)
 	}
-	return nil
+	u.logger.Info("post-action turn analysis result", fields...)
 }
 
 // buildTurnAnalysisInput loads refined reference turns and active memory anchors, then builds the structured request consumed by the reference-aware single-turn analyzer.
