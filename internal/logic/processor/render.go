@@ -74,8 +74,9 @@ func renderContextSummary(items []logicdomain.ContextItem) string {
 			b.WriteString("\n\n")
 		}
 		firstSection = false
+		title := renderContextSectionTitle(group.Title, section)
 		b.WriteString("[")
-		b.WriteString(group.Title)
+		b.WriteString(title)
 		b.WriteString("]\n")
 		for i, item := range section {
 			if item.Kind == "memory" {
@@ -88,6 +89,19 @@ func renderContextSummary(items []logicdomain.ContextItem) string {
 		}
 	}
 	return strings.TrimSpace(b.String())
+}
+
+// renderContextSectionTitle keeps summary section labels aligned with the actual context items so the main assembler path does not drift away from fallback rendering.
+// renderContextSectionTitle 用于让摘要 section 标题与实际 context item 保持一致，避免主 assembler 路径再次和 fallback 渲染发生漂移。
+func renderContextSectionTitle(defaultTitle string, section []logicdomain.ContextItem) string {
+	if len(section) == 0 {
+		return defaultTitle
+	}
+	title := strings.TrimSpace(section[0].Title)
+	if title == "" {
+		return defaultTitle
+	}
+	return title
 }
 
 // renderTurnAnalysisRequest serializes one reference-aware single-turn analysis input into the stable JSON body consumed by the analyze_turn scene.

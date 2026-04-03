@@ -77,10 +77,11 @@ func normalizePreCheckIntentQueries(queries []string, current string) []string {
 		if query == "" {
 			continue
 		}
-		if _, ok := seen[query]; ok {
+		key := strings.ToLower(textutil.NormalizeWhitespace(query))
+		if _, ok := seen[key]; ok {
 			continue
 		}
-		seen[query] = struct{}{}
+		seen[key] = struct{}{}
 		out = append(out, query)
 	}
 	return out

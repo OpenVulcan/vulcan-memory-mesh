@@ -560,7 +560,7 @@ func TestPreCheckExecuteDeduplicatesSearchQueries(t *testing.T) {
 		},
 		&stubPreCheckIntentExtractor{
 			result: logicdomain.IntentResult{
-				Queries:    []string{"phase4 当前方案", " phase4   当前方案 ", "phase4\n当前方案"},
+				Queries:    []string{"SQLite schema 13 compatibility", " sqlite   schema 13 compatibility ", "SQLITE\nschema 13 compatibility"},
 				NeedMemory: true,
 				Reason:     "needs architecture memory",
 			},
@@ -589,10 +589,10 @@ func TestPreCheckExecuteDeduplicatesSearchQueries(t *testing.T) {
 	if err := json.Unmarshal([]byte(memories.cmd.QueryJSON), &items); err != nil {
 		t.Fatalf("unmarshal query json: %v", err)
 	}
-	if len(items) != 1 || items[0].Query != "phase4 当前方案" {
+	if len(items) != 1 || items[0].Query != "SQLite schema 13 compatibility" {
 		t.Fatalf("expected deduplicated search query json, got %#v", items)
 	}
-	if len(reviewer.input.SearchQueries) != 1 || reviewer.input.SearchQueries[0] != "phase4 当前方案" {
+	if len(reviewer.input.SearchQueries) != 1 || reviewer.input.SearchQueries[0] != "SQLite schema 13 compatibility" {
 		t.Fatalf("expected reviewer to see deduplicated search queries, got %#v", reviewer.input.SearchQueries)
 	}
 }
