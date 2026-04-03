@@ -341,7 +341,7 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 			"vector_payload_redacted_nodes", redactedVectorNodes,
 		)
 	}
-	if analysisJSON, err := json.Marshal(redactedAnalysis); err == nil {
+	if analysisJSON, err := marshalTurnAnalysisForLog(redactedAnalysis); err == nil {
 		if u.logger != nil && u.logger.PayloadDebugEnabled() {
 			fields = append(fields, "analysis_json", string(analysisJSON))
 		} else {
@@ -373,6 +373,117 @@ func redactTurnAnalysisVectorsForLog(analysis logicdomain.TurnAnalysis) (logicdo
 		redactedNodes++
 	}
 	return redacted, redactedNodes
+}
+
+// marshalTurnAnalysisForLog serializes one redacted turn-analysis payload into log JSON while omitting the high-dimensional Vector field entirely.
+// marshalTurnAnalysisForLog 用于把一份已脱敏的 turn analysis 载荷序列化成日志 JSON，并彻底省略高维 Vector 字段。
+func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error) {
+	type memoryContextEdgeLogPayload struct {
+		ContextKey   string `json:"ContextKey"`
+		ContextValue string `json:"ContextValue"`
+		Relation     string `json:"Relation"`
+	}
+	type memoryNodeLogPayload struct {
+		Category      int                           `json:"Category"`
+		VectorID      string                        `json:"VectorID"`
+		Abstract      string                        `json:"Abstract"`
+		Details       string                        `json:"Details"`
+		ContextEdges  []memoryContextEdgeLogPayload `json:"ContextEdges"`
+		SourceKind    int                           `json:"SourceKind"`
+		ScopeLevel    int                           `json:"ScopeLevel"`
+		Priority      int                           `json:"Priority"`
+		MemoryLevel   int                           `json:"MemoryLevel"`
+		RefreshWeight int                           `json:"RefreshWeight"`
+		ExpiresAt     time.Time                     `json:"ExpiresAt"`
+		DedupeHash    string                        `json:"DedupeHash"`
+	}
+	type profileNodeLogPayload struct {
+		ProfileType      int       `json:"ProfileType"`
+		Content          string    `json:"Content"`
+		Status           int       `json:"Status"`
+		Priority         int       `json:"Priority"`
+		ProfileLevel     int       `json:"ProfileLevel"`
+		LevelReason      string    `json:"LevelReason"`
+		RefreshWeight    int       `json:"RefreshWeight"`
+		ProfileDate      string    `json:"ProfileDate"`
+		SourceTurnID     uint64    `json:"SourceTurnID"`
+		SourceKind       int       `json:"SourceKind"`
+		SourceID         uint64    `json:"SourceID"`
+		StatusReason     string    `json:"StatusReason"`
+		ExpiresAt        time.Time `json:"ExpiresAt"`
+		SupersedeNodeIDs []uint64  `json:"SupersedeNodeIDs"`
+	}
+	type turnAnalysisLogPayload struct {
+		TurnID               uint64                  `json:"TurnID"`
+		Details              string                  `json:"Details"`
+		DetailsBudget        int                     `json:"DetailsBudget"`
+		MemoryNodes          []memoryNodeLogPayload  `json:"MemoryNodes"`
+		ProfileNodes         []profileNodeLogPayload `json:"ProfileNodes"`
+		SupersededMemoryIDs  []uint64                `json:"SupersededMemoryIDs"`
+		UserProfileMerged    bool                    `json:"UserProfileMerged"`
+		MergedUserProfile    string                  `json:"MergedUserProfile"`
+		ProjectProfileMerged bool                    `json:"ProjectProfileMerged"`
+		MergedProjectProfile string                  `json:"MergedProjectProfile"`
+	}
+
+	memoryNodes := make([]memoryNodeLogPayload, 0, len(analysis.MemoryNodes))
+	for _, node := range analysis.MemoryNodes {
+		edges := make([]memoryContextEdgeLogPayload, 0, len(node.ContextEdges))
+		for _, edge := range node.ContextEdges {
+			edges = append(edges, memoryContextEdgeLogPayload{
+				ContextKey:   edge.ContextKey,
+				ContextValue: edge.ContextValue,
+				Relation:     edge.Relation,
+			})
+		}
+		memoryNodes = append(memoryNodes, memoryNodeLogPayload{
+			Category:      node.Category,
+			VectorID:      node.VectorID,
+			Abstract:      node.Abstract,
+			Details:       node.Details,
+			ContextEdges:  edges,
+			SourceKind:    node.SourceKind,
+			ScopeLevel:    node.ScopeLevel,
+			Priority:      node.Priority,
+			MemoryLevel:   node.MemoryLevel,
+			RefreshWeight: node.RefreshWeight,
+			ExpiresAt:     node.ExpiresAt,
+			DedupeHash:    node.DedupeHash,
+		})
+	}
+
+	profileNodes := make([]profileNodeLogPayload, 0, len(analysis.ProfileNodes))
+	for _, node := range analysis.ProfileNodes {
+		profileNodes = append(profileNodes, profileNodeLogPayload{
+			ProfileType:      node.ProfileType,
+			Content:          node.Content,
+			Status:           node.Status,
+			Priority:         node.Priority,
+			ProfileLevel:     node.ProfileLevel,
+			LevelReason:      node.LevelReason,
+			RefreshWeight:    node.RefreshWeight,
+			ProfileDate:      node.ProfileDate,
+			SourceTurnID:     node.SourceTurnID,
+			SourceKind:       node.SourceKind,
+			SourceID:         node.SourceID,
+			StatusReason:     node.StatusReason,
+			ExpiresAt:        node.ExpiresAt,
+			SupersedeNodeIDs: append([]uint64(nil), node.SupersedeNodeIDs...),
+		})
+	}
+
+	return json.Marshal(turnAnalysisLogPayload{
+		TurnID:               analysis.TurnID,
+		Details:              analysis.Details,
+		DetailsBudget:        analysis.DetailsBudget,
+		MemoryNodes:          memoryNodes,
+		ProfileNodes:         profileNodes,
+		SupersededMemoryIDs:  append([]uint64(nil), analysis.SupersededMemoryIDs...),
+		UserProfileMerged:    analysis.UserProfileMerged,
+		MergedUserProfile:    analysis.MergedUserProfile,
+		ProjectProfileMerged: analysis.ProjectProfileMerged,
+		MergedProjectProfile: analysis.MergedProjectProfile,
+	})
 }
 
 // buildTurnAnalysisInput loads refined reference turns and active memory anchors, then builds the structured request consumed by the reference-aware single-turn analyzer.

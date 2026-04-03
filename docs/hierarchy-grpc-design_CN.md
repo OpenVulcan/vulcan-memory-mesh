@@ -511,9 +511,12 @@ message PostActionTimelineItem {
    - 已提炼 turn 的 `details`
    - 未提炼 turn 的脱水原文
 4. 通过统一记忆检索接口批量向量化这些检索语句并召回长期候选
+   - 检索范围按服务端解析出的 `team / space / project` 限定
+   - 并额外带 `user_id = 0 OR current_user_id` 过滤
+   - 默认不再用 `session_id` 把长期记忆进一步收窄
 5. 第二层 `review_precheck_memory` 从带编号候选里选择真正有帮助的编号
 6. 只对被采纳的记忆写回生命周期
-7. 把稳定画像和采纳结果组装为：
+7. 只把被采纳的记忆组装为：
    - `should_inject`
    - `context_text`
    - `context_items`

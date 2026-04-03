@@ -97,10 +97,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - 第一层 `extract_intent` 会结合最近 turn、当前输入和服务端提取的 context hints，先判断是否真的需要长期记忆，再生成带情境锚点的检索语句
 - 通过统一记忆检索接口批量向量化这些检索语句并召回长期候选
   - 当前服务端检索链是：`vector + lexical + RRF + rerank(optional) + Weibull + context-aware scoring + MMR`
+  - 当前检索过滤范围是已解析出来的 `team_id + space_id + project_id`
+  - 同时带 `user_id = 0 OR current_user_id` 过滤，允许共享记忆和当前用户私有记忆一起参与召回
+  - 默认不会再额外按 `session_id` 收窄长期记忆检索
 - 第二层 `review_precheck_memory` 会结合候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
-- 将稳定画像和被采纳记忆一起组装为 `context_text / context_items`
-- 当某一步降级时，仍会尽量返回可用的画像上下文，并把 `degraded=true`
+- 只把被采纳的记忆组装为 `context_text / context_items`
+- 画像读取仍走独立接口：`GetProfileNodes / GetProfileBundle`
+- 当某一步降级且没有任何记忆最终被采纳时，会返回空上下文，并把 `degraded=true`
 
 ### PostAction
 

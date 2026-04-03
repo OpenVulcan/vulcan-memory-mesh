@@ -1,5 +1,5 @@
-// precheck_test.go verifies the live turn-centric pre-check flow, including persona-only injection, numbered candidate adoption, and degraded fallback behavior.
-// precheck_test.go 用于验证基于 turn 的实时 pre-check 流程，包括仅画像注入、编号候选采纳和降级回退行为。
+// precheck_test.go verifies the live turn-centric pre-check flow, including LLM intent gating, numbered candidate adoption, and degraded fallback behavior.
+// precheck_test.go 用于验证基于 turn 的实时 pre-check 流程，包括 LLM 意图门控、编号候选采纳和降级回退行为。
 package usecase
 
 import (
@@ -76,31 +76,17 @@ func TestValidatePreCheckRejectsEmptyUserContent(t *testing.T) {
 	}
 }
 
-// TestPreCheckExecuteReturnsPersonaOnly verifies the first-stage gate can skip memory recall while still returning stable profile context.
-// TestPreCheckExecuteReturnsPersonaOnly 用于验证第一层门控可以跳过记忆召回，同时仍返回稳定画像上下文。
-func TestPreCheckExecuteReturnsPersonaOnly(t *testing.T) {
-	profiles := &stubPreCheckProfiles{
-		result: ProfileBundleResult{
-			TeamProfile:    "团队统一要求输出中文。",
-			ProjectProfile: "当前项目默认使用 gRPC。",
-			UserProfile:    "用户偏好先给结论再解释。",
-		},
-	}
+// TestPreCheckExecuteReturnsEmptyContextWhenMemoryIsNotNeeded verifies the first-stage gate can skip long-term recall and return an empty pre-check payload instead of mixing in profile data.
+// TestPreCheckExecuteReturnsEmptyContextWhenMemoryIsNotNeeded 用于验证当第一层判断不需要长期记忆时，pre-check 会返回空上下文，而不是混入画像数据。
+func TestPreCheckExecuteReturnsEmptyContextWhenMemoryIsNotNeeded(t *testing.T) {
 	intent := &stubPreCheckIntentExtractor{
 		result: logicdomain.IntentResult{
 			NeedMemory: false,
 			Reason:     "question is self-contained",
 		},
 	}
-	assembler := &stubPreCheckAssembler{
-		text: "assembled persona context",
-		items: []logicdomain.ContextItem{
-			{Kind: "project_constraint", Title: "项目约束", Text: "[TEAM]\n团队统一要求输出中文。", Source: "persona"},
-			{Kind: "preference", Title: "偏好习惯", Text: "[USER]\n用户偏好先给结论再解释。", Source: "persona"},
-		},
-	}
+	assembler := &stubPreCheckAssembler{}
 	uc := NewPreCheckUseCase(
-		profiles,
 		&stubPreCheckMemories{},
 		&stubPreCheckStore{},
 		intent,
@@ -124,10 +110,10 @@ func TestPreCheckExecuteReturnsPersonaOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute pre-check: %v", err)
 	}
-	if !result.ShouldInject {
-		t.Fatal("expected should_inject=true")
+	if result.ShouldInject {
+		t.Fatalf("expected should_inject=false, got %#v", result)
 	}
-	if result.ContextText != "assembled persona context" {
+	if result.ContextText != "" {
 		t.Fatalf("unexpected context text: %q", result.ContextText)
 	}
 	if result.Degraded {
@@ -136,25 +122,17 @@ func TestPreCheckExecuteReturnsPersonaOnly(t *testing.T) {
 	if result.TraceID != "trace-pre-persona" {
 		t.Fatalf("unexpected trace id: %q", result.TraceID)
 	}
-	if len(assembler.hits) != 0 {
-		t.Fatalf("expected no memory hits, got %#v", assembler.hits)
-	}
-	if len(assembler.persona.ProjectConstraints) != 2 {
-		t.Fatalf("unexpected persona project constraints: %#v", assembler.persona.ProjectConstraints)
+	if assembler.called {
+		t.Fatalf("expected assembler to be skipped when no memory is needed, got %#v", assembler)
 	}
 	if got := intent.current; got != "这次接口要怎么设计？" {
 		t.Fatalf("unexpected current input: %q", got)
 	}
 }
 
-// TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack verifies that when the shared assembler fails and pre-check falls back to local deterministic rendering, the RPC result still marks the request as degraded.
-// TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack 用于验证当共享 assembler 失败且 pre-check 回退到本地确定性渲染时，RPC 结果仍会正确标记本次请求为 degraded。
-func TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack(t *testing.T) {
-	profiles := &stubPreCheckProfiles{
-		result: ProfileBundleResult{
-			ProjectProfile: "当前项目默认使用 gRPC。",
-		},
-	}
+// TestPreCheckExecuteSkipsAssemblerWhenNoMemoryIsNeeded verifies that when stage one decides no memory is needed, pre-check returns directly instead of calling the assembler fallback path.
+// TestPreCheckExecuteSkipsAssemblerWhenNoMemoryIsNeeded 用于验证当第一层判断无需记忆时，pre-check 会直接返回，而不会进入 assembler 或 fallback 路径。
+func TestPreCheckExecuteSkipsAssemblerWhenNoMemoryIsNeeded(t *testing.T) {
 	intent := &stubPreCheckIntentExtractor{
 		result: logicdomain.IntentResult{
 			NeedMemory: false,
@@ -165,7 +143,6 @@ func TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack(t *testing.T) {
 		err: context.DeadlineExceeded,
 	}
 	uc := NewPreCheckUseCase(
-		profiles,
 		&stubPreCheckMemories{},
 		&stubPreCheckStore{},
 		intent,
@@ -189,14 +166,11 @@ func TestPreCheckExecuteMarksDegradedWhenAssemblerFallsBack(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute pre-check: %v", err)
 	}
-	if !result.ShouldInject {
-		t.Fatal("expected should_inject=true")
+	if result.ShouldInject || result.Degraded {
+		t.Fatalf("expected direct empty result without assembler fallback, got %#v", result)
 	}
-	if !result.Degraded {
-		t.Fatalf("expected degraded=true when assembler falls back, got %#v", result)
-	}
-	if len(result.ContextItems) == 0 || !strings.Contains(result.ContextText, "当前项目默认使用 gRPC。") {
-		t.Fatalf("expected local fallback context to be returned, got %#v", result)
+	if assembler.called {
+		t.Fatalf("expected assembler to be skipped, got %#v", assembler)
 	}
 }
 
@@ -207,7 +181,6 @@ func TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems(t *testing.T)
 		err: context.DeadlineExceeded,
 	}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{},
 		&stubPreCheckMemories{
 			result: MemoryQueryResult{
 				Results: []MemoryQueryGroupResult{
@@ -362,7 +335,6 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 		},
 	}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{},
 		memories,
 		store,
 		intent,
@@ -421,19 +393,11 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 	}
 }
 
-// TestPreCheckExecuteDegradesToPersona verifies that second-stage reviewer failures do not fail the whole request when stable persona context is still available.
-// TestPreCheckExecuteDegradesToPersona 用于验证当稳定画像上下文仍可用时，第二层评审器失败不会导致整个请求失败。
-func TestPreCheckExecuteDegradesToPersona(t *testing.T) {
-	assembler := &stubPreCheckAssembler{
-		text: "persona fallback context",
-		items: []logicdomain.ContextItem{
-			{Kind: "project_constraint", Title: "项目约束", Text: "[PROJECT]\n当前项目优先保证接口兼容。", Source: "persona"},
-		},
-	}
+// TestPreCheckExecuteDegradesToEmptyResult verifies that second-stage reviewer failures do not fail the whole request, but pre-check also no longer falls back to profile-only injection.
+// TestPreCheckExecuteDegradesToEmptyResult 用于验证当第二层评审器失败时，请求不会整体失败，但 pre-check 也不再回退成仅画像注入。
+func TestPreCheckExecuteDegradesToEmptyResult(t *testing.T) {
+	assembler := &stubPreCheckAssembler{}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{
-			result: ProfileBundleResult{ProjectProfile: "当前项目优先保证接口兼容。"},
-		},
 		&stubPreCheckMemories{
 			result: MemoryQueryResult{
 				Results: []MemoryQueryGroupResult{
@@ -482,14 +446,14 @@ func TestPreCheckExecuteDegradesToPersona(t *testing.T) {
 	if err != nil {
 		t.Fatalf("execute pre-check: %v", err)
 	}
-	if !result.ShouldInject {
-		t.Fatal("expected should_inject=true")
+	if result.ShouldInject {
+		t.Fatalf("expected should_inject=false, got %#v", result)
 	}
 	if !result.Degraded {
 		t.Fatal("expected degraded=true")
 	}
-	if len(assembler.hits) != 0 {
-		t.Fatalf("expected persona-only fallback, got %#v", assembler.hits)
+	if assembler.called {
+		t.Fatalf("expected assembler to be skipped on reviewer degradation with no selected memory, got %#v", assembler)
 	}
 }
 
@@ -498,10 +462,10 @@ func TestPreCheckExecuteDegradesToPersona(t *testing.T) {
 func TestPreCheckExecuteLogsRawUserContentWhenPayloadDebugEnabled(t *testing.T) {
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "warn", Format: "text", DebugPayloads: true})
+	store := &stubPreCheckStore{recentTurnsErr: context.DeadlineExceeded}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{err: context.DeadlineExceeded},
 		&stubPreCheckMemories{},
-		&stubPreCheckStore{},
+		store,
 		&stubPreCheckIntentExtractor{
 			result: logicdomain.IntentResult{
 				NeedMemory: false,
@@ -530,7 +494,7 @@ func TestPreCheckExecuteLogsRawUserContentWhenPayloadDebugEnabled(t *testing.T) 
 	}
 
 	logs := logBuf.String()
-	if !strings.Contains(logs, "pre-check persona bundle degraded") || !strings.Contains(logs, "TEXT(user_content)：") || !strings.Contains(logs, userContent) {
+	if !strings.Contains(logs, "pre-check recent turns degraded") || !strings.Contains(logs, "TEXT(user_content)：") || !strings.Contains(logs, userContent) {
 		t.Fatalf("expected payload-debug pre-check warning to include raw user content, got %s", logs)
 	}
 }
@@ -540,7 +504,6 @@ func TestPreCheckExecuteLogsRawUserContentWhenPayloadDebugEnabled(t *testing.T) 
 func TestPreCheckExecuteRewritesGenericQueriesToCurrentInput(t *testing.T) {
 	memories := &stubPreCheckMemories{}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{},
 		memories,
 		&stubPreCheckStore{
 			recentTurns: []logicdomain.SessionTurnRecord{
@@ -614,7 +577,6 @@ func TestPreCheckExecuteDeduplicatesSearchQueries(t *testing.T) {
 		},
 	}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{},
 		memories,
 		&stubPreCheckStore{
 			recentTurns: []logicdomain.SessionTurnRecord{
@@ -664,16 +626,8 @@ func TestPreCheckExecuteDeduplicatesSearchQueries(t *testing.T) {
 // TestPreCheckExecuteSkipsImmediateContextOnlyFallback 用于验证当第一层没给出稳定长期 query 时，短指代追问会留在最近 turn 窗口内处理，而不会强行触发记忆检索。
 func TestPreCheckExecuteSkipsImmediateContextOnlyFallback(t *testing.T) {
 	memories := &stubPreCheckMemories{}
-	assembler := &stubPreCheckAssembler{
-		text: "persona fallback context",
-		items: []logicdomain.ContextItem{
-			{Kind: "project_constraint", Title: "项目约束", Text: "[PROJECT]\n当前项目优先保持最近上下文一致。", Source: "persona"},
-		},
-	}
+	assembler := &stubPreCheckAssembler{}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{
-			result: ProfileBundleResult{ProjectProfile: "当前项目优先保持最近上下文一致。"},
-		},
 		memories,
 		&stubPreCheckStore{
 			recentTurns: []logicdomain.SessionTurnRecord{
@@ -709,11 +663,11 @@ func TestPreCheckExecuteSkipsImmediateContextOnlyFallback(t *testing.T) {
 	if memories.searchCalls != 0 {
 		t.Fatalf("expected no memory search call, got %d", memories.searchCalls)
 	}
-	if !result.ShouldInject || result.Degraded {
+	if result.ShouldInject || result.Degraded {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if len(assembler.hits) != 0 {
-		t.Fatalf("expected persona-only context, got %#v", assembler.hits)
+	if assembler.called {
+		t.Fatalf("expected assembler to be skipped for immediate-context-only follow-up, got %#v", assembler)
 	}
 }
 
@@ -722,7 +676,6 @@ func TestPreCheckExecuteSkipsImmediateContextOnlyFallback(t *testing.T) {
 func TestPreCheckExecutePassesMatchedContextEvidenceToReviewer(t *testing.T) {
 	reviewer := &stubPreCheckReviewer{}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{},
 		&stubPreCheckMemories{
 			result: MemoryQueryResult{
 				Results: []MemoryQueryGroupResult{
@@ -812,7 +765,6 @@ func TestPreCheckExecutePassesMatchedContextEvidenceToReviewer(t *testing.T) {
 func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 	reviewer := &stubPreCheckReviewer{}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{},
 		&stubPreCheckMemories{
 			result: MemoryQueryResult{
 				Results: []MemoryQueryGroupResult{
@@ -919,7 +871,6 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 func TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary(t *testing.T) {
 	reviewer := &stubPreCheckReviewer{}
 	uc := NewPreCheckUseCase(
-		&stubPreCheckProfiles{},
 		&stubPreCheckMemories{
 			result: MemoryQueryResult{
 				Results: []MemoryQueryGroupResult{
@@ -1021,7 +972,6 @@ func TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary(t *testing.T) 
 // TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores 用于验证当 unified search 层已经决定了同分顺序时，pre-check 会保留该顺序，而不是再按 memory id 改写 tie-break。
 func TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores(t *testing.T) {
 	uc := NewPreCheckUseCase(
-		nil,
 		&stubPreCheckMemories{
 			result: MemoryQueryResult{
 				Results: []MemoryQueryGroupResult{
@@ -1097,7 +1047,6 @@ func TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores(t *testin
 // TestPreCheckSearchCandidatesKeepsTopRerankedHitBelowSimilarityFloor 用于验证 pre-check 不会仅因 provider 自定义 rerank 分低于向量相似度阈值，就误丢第一条 rerank 候选。
 func TestPreCheckSearchCandidatesKeepsTopRerankedHitBelowSimilarityFloor(t *testing.T) {
 	uc := NewPreCheckUseCase(
-		nil,
 		&stubPreCheckMemories{
 			result: MemoryQueryResult{
 				Results: []MemoryQueryGroupResult{
@@ -1182,19 +1131,6 @@ func TestBuildPreCheckMemoryTextDeduplicatesFormattingVariants(t *testing.T) {
 	if text != "SQLite schema 13 compatibility" {
 		t.Fatalf("expected duplicate formatting variants to collapse to abstract, got %q", text)
 	}
-}
-
-// stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
-// stubPreCheckProfiles 用于作为 pre-check 测试里的画像组合加载桩。
-type stubPreCheckProfiles struct {
-	result ProfileBundleResult
-	err    error
-}
-
-// GetBundle executes the stubbed GetBundle logic.
-// GetBundle 用于执行桩化的 GetBundle 逻辑。
-func (s *stubPreCheckProfiles) GetBundle(context.Context, ProfileBundleCommand) (ProfileBundleResult, error) {
-	return s.result, s.err
 }
 
 // stubPreCheckMemories is the memory search double used by pre-check tests.
@@ -1293,6 +1229,7 @@ func (s *stubPreCheckReviewer) Review(_ context.Context, input logicdomain.PreCh
 // stubPreCheckAssembler is the context assembler double used by pre-check tests.
 // stubPreCheckAssembler 用于作为 pre-check 测试里的上下文组装桩。
 type stubPreCheckAssembler struct {
+	called  bool
 	persona logicdomain.PersonaContext
 	hits    []logicdomain.MemoryHit
 	text    string
@@ -1303,6 +1240,7 @@ type stubPreCheckAssembler struct {
 // Assemble executes the stubbed Assemble logic.
 // Assemble 用于执行桩化的 Assemble 逻辑。
 func (s *stubPreCheckAssembler) Assemble(_ context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, error) {
+	s.called = true
 	s.persona = persona
 	s.hits = append([]logicdomain.MemoryHit(nil), hits...)
 	return s.text, append([]logicdomain.ContextItem(nil), s.items...), s.err

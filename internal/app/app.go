@@ -133,7 +133,6 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	)
 	memory.ConfigureRerank(reranker, cfg.Rerank.TopN)
 	pre := usecase.NewPreCheckUseCase(
-		profiles,
 		memory,
 		relational,
 		processor.NewIntentExtractor(llm, prompts, cfg.LLM.Model, cfg.MemoryPipeline.MaxSearchKeywords),

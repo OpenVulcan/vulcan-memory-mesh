@@ -483,8 +483,11 @@
   - 已提炼 turn 的 `details`
   - 未提炼 turn 的脱水原文
 - 第一层输出多条向量检索语句，而不是只给关键词
+- 检索范围由服务端解析出的 `team / space / project` 决定，并附带 `user_id = 0 OR current_user_id` 过滤
+- 默认不会再额外按 `session_id` 收窄长期记忆检索
 - 第二层 `review_precheck_memory` 负责在统一记忆召回结果里按候选编号选择真正要注入的条目
 - 只有被第二层采纳的 memory id 才会刷新生命周期
+- `PreCheck` 不再混入画像 bundle；画像读取继续通过 `GetProfileNodes / GetProfileBundle`
 
 但有一个前提：
 

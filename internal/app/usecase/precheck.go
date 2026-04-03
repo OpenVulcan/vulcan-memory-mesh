@@ -75,16 +75,10 @@ type PreCheckMemoryReviewer interface {
 	Review(ctx context.Context, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error)
 }
 
-// PreCheckContextAssembler turns persona data plus adopted memories into the final injection payload returned by the RPC.
-// PreCheckContextAssembler 用于把画像数据和已采纳记忆组合成 RPC 返回的最终注入载荷。
+// PreCheckContextAssembler turns adopted memories into the final injection payload returned by the RPC.
+// PreCheckContextAssembler 用于把已采纳记忆转换成 RPC 返回的最终注入载荷。
 type PreCheckContextAssembler interface {
 	Assemble(ctx context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, error)
-}
-
-// PreCheckProfileBundleLoader resolves the current TEAM/SPACE/PROJECT/USER rendered profiles so pre-check can inject stable environment context.
-// PreCheckProfileBundleLoader 用于解析当前 TEAM/SPACE/PROJECT/USER 渲染画像，让 pre-check 可以注入稳定的环境上下文。
-type PreCheckProfileBundleLoader interface {
-	GetBundle(ctx context.Context, cmd ProfileBundleCommand) (ProfileBundleResult, error)
 }
 
 // PreCheckMemorySearcher resolves grouped vector recall over the unified memory surface used by the gRPC memory APIs.
@@ -114,7 +108,6 @@ type PreCheckConfig struct {
 // PreCheckUseCase executes the live pre-check workflow on top of resolved session scope, recent turn windows, unified memory recall, and lifecycle write-back.
 // PreCheckUseCase 用于在已解析 session 范围、最近 turn 窗口、统一记忆召回和生命周期回写之上执行实时 pre-check 工作流。
 type PreCheckUseCase struct {
-	profiles  PreCheckProfileBundleLoader
 	memories  PreCheckMemorySearcher
 	store     PreCheckStore
 	intent    PreCheckIntentExtractor
@@ -126,7 +119,7 @@ type PreCheckUseCase struct {
 
 // NewPreCheckUseCase creates a PreCheckUseCase instance.
 // NewPreCheckUseCase 用于创建 PreCheckUseCase 实例。
-func NewPreCheckUseCase(profiles PreCheckProfileBundleLoader, memories PreCheckMemorySearcher, store PreCheckStore, intent PreCheckIntentExtractor, reviewer PreCheckMemoryReviewer, assembler PreCheckContextAssembler, cfg PreCheckConfig, logger *logx.Logger) *PreCheckUseCase {
+func NewPreCheckUseCase(memories PreCheckMemorySearcher, store PreCheckStore, intent PreCheckIntentExtractor, reviewer PreCheckMemoryReviewer, assembler PreCheckContextAssembler, cfg PreCheckConfig, logger *logx.Logger) *PreCheckUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -146,7 +139,6 @@ func NewPreCheckUseCase(profiles PreCheckProfileBundleLoader, memories PreCheckM
 		cfg.MinSimilarityScore = defaultPreCheckSimilarity
 	}
 	return &PreCheckUseCase{
-		profiles:  profiles,
 		memories:  memories,
 		store:     store,
 		intent:    intent,
@@ -157,8 +149,8 @@ func NewPreCheckUseCase(profiles PreCheckProfileBundleLoader, memories PreCheckM
 	}
 }
 
-// Execute validates the resolved scope, runs the turn-centric two-stage memory flow, and returns the final assembled context or a degraded fallback.
-// Execute 用于校验已解析范围、执行基于 turn 的两层记忆流程，并返回最终组装后的上下文或降级回退结果。
+// Execute validates the resolved scope, runs the turn-centric two-stage memory flow, and returns only adopted memory context instead of mixing in the separate profile bundle.
+// Execute 用于校验已解析范围、执行基于 turn 的两层记忆流程，并且只返回被采纳的记忆上下文，不再混入独立画像 bundle。
 func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (PreCheckResult, error) {
 	if u == nil {
 		return PreCheckResult{}, fmt.Errorf("pre-check use case is nil")
@@ -168,15 +160,6 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	}
 	traceID := trace.IDFromContext(ctx)
 	degraded := false
-
-	// Load stable profile bundle first so the request can still return environment context even if one later memory step degrades.
-	// 先加载稳定画像组合，确保即便后续某个记忆步骤降级，请求仍能返回环境上下文。
-	persona, err := u.loadPersonaContext(ctx, cmd.Session)
-	if err != nil {
-		degraded = true
-		u.logPreCheckWarn("pre-check persona bundle degraded", traceID, cmd.Session, cmd.UserContent, err)
-		persona = logicdomain.PersonaContext{}
-	}
 
 	// Build the recent mixed turn window so stage one can reason over refined details and still see pending raw turns when async extraction has not finished yet.
 	// 构建最近混合 turn 窗口，让第一层既能利用已提炼 details，也能在异步提炼尚未完成时看到待处理原文。
@@ -193,13 +176,13 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check intent degraded", traceID, cmd.Session, cmd.UserContent, err)
-		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
+		return u.finalizePreCheck(ctx, traceID, nil, degraded)
 	}
 	// Normalize the stage-one output locally so vague deictic queries do not over-trigger long-term retrieval when recent turns already explain the request.
 	// 在本地归一第一层输出，避免最近 turn 已经足够解释请求时，模糊指代 query 仍过度触发长期检索。
 	intent = normalizePreCheckIntentResult(intent, cmd.UserContent, recentTurns)
 	if !intent.NeedMemory {
-		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
+		return u.finalizePreCheck(ctx, traceID, nil, degraded)
 	}
 
 	// Recall unified memory using the search sentences returned by stage one, then number the final deduplicated candidate list for stage two.
@@ -211,7 +194,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		candidates = nil
 	}
 	if len(candidates) == 0 {
-		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
+		return u.finalizePreCheck(ctx, traceID, nil, degraded)
 	}
 
 	// Let the second-stage reviewer choose candidate numbers in priority order, then map them back to memory ids for lifecycle write-back and final injection.
@@ -223,7 +206,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		selectedCandidates = nil
 	}
 	if len(selectedCandidates) == 0 {
-		return u.finalizePreCheck(ctx, traceID, persona, nil, degraded)
+		return u.finalizePreCheck(ctx, traceID, nil, degraded)
 	}
 
 	// Write back lifecycle updates only for adopted memories so recall alone never refreshes expiry or weight.
@@ -232,7 +215,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		degraded = true
 		u.logPreCheckWarn("pre-check lifecycle write-back degraded", traceID, cmd.Session, cmd.UserContent, err)
 	}
-	return u.finalizePreCheck(ctx, traceID, persona, selectedCandidates, degraded)
+	return u.finalizePreCheck(ctx, traceID, selectedCandidates, degraded)
 }
 
 // extractIntent runs the first-stage intent extractor under the configured inner timeout budget.
@@ -328,39 +311,6 @@ func estimatePreCheckBudget(text string) int {
 	}
 	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
 	return estimator.Estimate(text)
-}
-
-// loadPersonaContext reuses the split profile-bundle output so pre-check can inject stable TEAM/SPACE/PROJECT/USER context without duplicating profile SQL here.
-// loadPersonaContext 用于复用 split profile bundle 的输出，让 pre-check 可以注入稳定的 TEAM/SPACE/PROJECT/USER 上下文，而无需在这里重复画像 SQL。
-func (u *PreCheckUseCase) loadPersonaContext(ctx context.Context, session logicdomain.SessionRef) (logicdomain.PersonaContext, error) {
-	if u.profiles == nil {
-		return logicdomain.PersonaContext{}, nil
-	}
-	bundle, err := u.profiles.GetBundle(ctx, ProfileBundleCommand{
-		UserID:             session.UserID,
-		ProjectID:          session.ProjectID,
-		Mode:               ProfileBundleModeSplit,
-		IncludeExplanation: false,
-	})
-	if err != nil {
-		return logicdomain.PersonaContext{}, err
-	}
-	persona := logicdomain.PersonaContext{
-		ProjectConstraints: make([]string, 0, 3),
-		Preferences:        make([]string, 0, 1),
-	}
-	appendSection := func(target *[]string, title, body string) {
-		body = strings.TrimSpace(body)
-		if body == "" {
-			return
-		}
-		*target = append(*target, "["+title+"]\n"+body)
-	}
-	appendSection(&persona.ProjectConstraints, "TEAM", bundle.TeamProfile)
-	appendSection(&persona.ProjectConstraints, "SPACE", bundle.SpaceProfile)
-	appendSection(&persona.ProjectConstraints, "PROJECT", bundle.ProjectProfile)
-	appendSection(&persona.Preferences, "USER", bundle.UserProfile)
-	return persona, nil
 }
 
 // searchMemoryCandidates reuses the unified memory-search RPC logic, then keeps only de-duplicated hits above the configured similarity floor and numbers them for stage two.
@@ -509,9 +459,9 @@ func (u *PreCheckUseCase) writeMemoryAdoption(ctx context.Context, session logic
 	return u.store.ApplyMemoryAdoption(ctx, session, memoryIDs, time.Now().UTC())
 }
 
-// finalizePreCheck assembles the final context text and item list, falling back to a deterministic local renderer when the shared assembler is unavailable.
-// finalizePreCheck 用于组装最终上下文文本和条目列表；若共享 assembler 不可用，则回退到确定性的本地渲染器。
-func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, persona logicdomain.PersonaContext, memories []logicdomain.PreCheckMemoryCandidate, degraded bool) (PreCheckResult, error) {
+// finalizePreCheck assembles the final context text and item list from adopted memories only, and short-circuits to an empty result when no memory survives the pipeline.
+// finalizePreCheck 用于仅基于被采纳记忆组装最终上下文；如果没有任何记忆穿过整条链路，则直接返回空结果。
+func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, memories []logicdomain.PreCheckMemoryCandidate, degraded bool) (PreCheckResult, error) {
 	memoryHits := make([]logicdomain.MemoryHit, 0, len(memories))
 	for _, candidate := range memories {
 		text := buildPreCheckMemoryText(candidate)
@@ -524,7 +474,16 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 			Score: candidate.Score,
 		})
 	}
-	contextText, items, assembleDegraded, err := u.assemblePreCheckContext(ctx, persona, memoryHits)
+	if len(memoryHits) == 0 {
+		return PreCheckResult{
+			ShouldInject: false,
+			ContextText:  "",
+			ContextItems: nil,
+			Degraded:     degraded,
+			TraceID:      traceID,
+		}, nil
+	}
+	contextText, items, assembleDegraded, err := u.assemblePreCheckContext(ctx, memoryHits)
 	if err != nil {
 		return PreCheckResult{}, err
 	}
@@ -539,9 +498,9 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 
 // assemblePreCheckContext prefers the shared assembler but falls back to a local deterministic renderer if prompt loading degrades.
 // assemblePreCheckContext 用于优先使用共享 assembler；若提示词加载降级，则回退到本地确定性渲染。
-func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, bool, error) {
+func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, bool, error) {
 	if u.assembler != nil {
-		contextText, items, err := u.assembler.Assemble(ctx, persona, hits)
+		contextText, items, err := u.assembler.Assemble(ctx, logicdomain.PersonaContext{}, hits)
 		if err == nil {
 			return contextText, items, false, nil
 		}
@@ -550,10 +509,10 @@ func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, persona l
 		}
 		// Surface fallback activation to the caller so the RPC degraded bit stays honest even when local rendering succeeds.
 		// 把 fallback 激活信号向上传递，确保即便本地渲染成功，RPC 的 degraded 标志仍能如实反映本次降级。
-		fallbackItems := buildFallbackContextItems(persona, hits)
+		fallbackItems := buildFallbackContextItems(hits)
 		return buildFallbackContextSummary(fallbackItems), fallbackItems, true, nil
 	}
-	items := buildFallbackContextItems(persona, hits)
+	items := buildFallbackContextItems(hits)
 	return buildFallbackContextSummary(items), items, false, nil
 }
 
@@ -630,25 +589,10 @@ func equivalentPreCheckMemoryText(left, right string) bool {
 	return left == right
 }
 
-// buildFallbackContextItems reproduces the stable grouping used by the shared assembler so pre-check can still answer when prompt loading fails.
-// buildFallbackContextItems 用于复刻共享 assembler 的稳定分组逻辑，确保提示词加载失败时 pre-check 仍能回答。
-func buildFallbackContextItems(persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) []logicdomain.ContextItem {
-	items := make([]logicdomain.ContextItem, 0, len(persona.ProjectConstraints)+len(persona.Profile)+len(persona.Preferences)+len(hits))
-	for _, text := range persona.ProjectConstraints {
-		if text = strings.TrimSpace(text); text != "" {
-			items = append(items, logicdomain.ContextItem{Kind: "project_constraint", Title: "项目约束", Text: text, Source: "persona"})
-		}
-	}
-	for _, text := range persona.Profile {
-		if text = strings.TrimSpace(text); text != "" {
-			items = append(items, logicdomain.ContextItem{Kind: "persona", Title: "个人画像", Text: text, Source: "persona"})
-		}
-	}
-	for _, text := range persona.Preferences {
-		if text = strings.TrimSpace(text); text != "" {
-			items = append(items, logicdomain.ContextItem{Kind: "preference", Title: "偏好习惯", Text: text, Source: "persona"})
-		}
-	}
+// buildFallbackContextItems reproduces the stable memory-item grouping used by the shared assembler so pre-check can still answer when prompt loading fails.
+// buildFallbackContextItems 用于复刻共享 assembler 的稳定记忆分组逻辑，确保提示词加载失败时 pre-check 仍能回答。
+func buildFallbackContextItems(hits []logicdomain.MemoryHit) []logicdomain.ContextItem {
+	items := make([]logicdomain.ContextItem, 0, len(hits))
 	for _, hit := range hits {
 		if text := strings.TrimSpace(hit.Text); text != "" {
 			items = append(items, logicdomain.ContextItem{Kind: "memory", Title: "混合召回记忆", Text: text, Source: "memory", Score: hit.Score})
@@ -664,10 +608,7 @@ func buildFallbackContextSummary(items []logicdomain.ContextItem) string {
 		return ""
 	}
 	order := []struct{ Kind, Title string }{
-		{Kind: "project_constraint", Title: "项目约束"},
-		{Kind: "persona", Title: "个人画像"},
-		{Kind: "preference", Title: "偏好习惯"},
-		{Kind: "memory", Title: "向量召回记忆"},
+		{Kind: "memory", Title: "混合召回记忆"},
 	}
 	var b strings.Builder
 	firstSection := true

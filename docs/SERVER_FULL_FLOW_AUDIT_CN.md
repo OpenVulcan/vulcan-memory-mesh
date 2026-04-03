@@ -698,22 +698,23 @@ Proto 文件：`internal/adapters/inbound/grpcapi/proto/v1/vmm.proto`
 `internal/app/usecase/precheck.go` 当前真实流程：
 
 1. 校验 `SessionRef` 与 `user_content`
-2. 调用 `ProfileUseCase.GetBundle(... SPLIT ...)` 加载 TEAM/SPACE/PROJECT/USER 画像
-3. 从关系存储读取最近 turn 窗口
-4. 若 turn 已完成提炼且 `details` 非空，则把该 turn 作为 `DETAILS`
-5. 否则把该 turn 的 `dehydrated_content` 作为 `RAW_TURN`
-6. 按 token budget 裁剪最近 turn 窗口
-7. 第一层 LLM：`IntentExtractor` + `extract_intent.md`
-8. 若 `need_memory = false`，直接返回 persona-only 上下文
-9. 若需要记忆，则把 stage-1 query 组装成统一记忆查询 JSON
-10. 复用 `MemoryUseCase.Search(...)` 做向量召回
-11. 依据 `min_similarity_score` 去掉低分候选
-12. 去重、排序、编号，形成 stage-2 candidates
-13. 第二层 LLM：`PreCheckMemoryReviewer` + `review_precheck_memory.md`
-14. 将选中的 `candidate_number` 映射回 `memory_id`
-15. 对采纳的 memory 执行 `ApplyMemoryAdoption(...)`
-16. 调用 `ContextAssembler` 拼装 `context_text + context_items`
-17. 若某些步骤失败但还能返回部分结果，则 `degraded = true`
+2. 从关系存储读取最近 turn 窗口
+3. 若 turn 已完成提炼且 `details` 非空，则把该 turn 作为 `DETAILS`
+4. 否则把该 turn 的 `dehydrated_content` 作为 `RAW_TURN`
+5. 按 token budget 裁剪最近 turn 窗口
+6. 第一层 LLM：`IntentExtractor` + `extract_intent.md`
+7. 若 `need_memory = false`，直接返回空上下文
+8. 若需要记忆，则把 stage-1 query 组装成统一记忆查询 JSON
+9. 复用 `MemoryUseCase.Search(...)` 做统一检索
+10. 检索过滤范围按已解析出的 `team_id + space_id + project_id` 限定，并带 `user_id = 0 OR current_user_id`
+11. 默认不再按 `session_id` 收窄长期记忆检索
+12. 依据 `min_similarity_score` 去掉低分候选
+13. 去重、排序、编号，形成 stage-2 candidates
+14. 第二层 LLM：`PreCheckMemoryReviewer` + `review_precheck_memory.md`
+15. 将选中的 `candidate_number` 映射回 `memory_id`
+16. 对采纳的 memory 执行 `ApplyMemoryAdoption(...)`
+17. 调用 `ContextAssembler` 拼装仅包含已采纳记忆的 `context_text + context_items`
+18. 若某些步骤失败但还能返回部分结果，则 `degraded = true`
 
 #### `PreCheck` 输入给第一层 LLM 的 JSON 形态
 

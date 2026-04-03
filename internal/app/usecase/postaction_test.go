@@ -443,8 +443,8 @@ func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) 
 	if !strings.Contains(logs, `vector_payload_notice："embedding vectors omitted from analysis_json"`) || !strings.Contains(logs, "vector_payload_redacted_nodes：1") {
 		t.Fatalf("expected payload-debug analysis log to announce vector redaction, got %s", logs)
 	}
-	if strings.Contains(logs, `"Vector": [`) || strings.Contains(logs, "0.1") || strings.Contains(logs, "0.2") || strings.Contains(logs, "0.3") {
-		t.Fatalf("expected payload-debug analysis log to omit vector dimensions, got %s", logs)
+	if strings.Contains(logs, `"Vector":`) {
+		t.Fatalf("expected payload-debug analysis log to omit the Vector field entirely, got %s", logs)
 	}
 	if strings.Contains(logs, "analysis_sha256") || strings.Contains(logs, "analysis_len") {
 		t.Fatalf("expected payload-debug analysis log to bypass redacted digest fields, got %s", logs)
