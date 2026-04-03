@@ -981,6 +981,15 @@ func (s *Server) logPostActionReceipt(traceID, message string, req *vmmv1.PostAc
 	if s == nil || s.logger == nil || req == nil {
 		return
 	}
+	nonEmptyTimelineItems := 0
+	for _, item := range req.GetTimeline() {
+		if item == nil {
+			continue
+		}
+		if item.GetType() != "" || item.GetContent() != "" {
+			nonEmptyTimelineItems++
+		}
+	}
 	timelineJSON, err := json.Marshal(req.GetTimeline())
 	if err != nil {
 		s.logger.Warn(message+" timeline marshal failed", "trace_id", traceID, "session_id", req.GetSessionId(), "err", err)
@@ -988,11 +997,10 @@ func (s *Server) logPostActionReceipt(traceID, message string, req *vmmv1.PostAc
 			message,
 			"trace_id", traceID,
 			"session_id", req.GetSessionId(),
-			"user_content_len", len(req.GetUserContent()),
-			"user_content_sha256", shortContentDigest(req.GetUserContent()),
-			"assistant_content_len", len(req.GetAssistantContent()),
-			"assistant_content_sha256", shortContentDigest(req.GetAssistantContent()),
+			"user_content_present", req.GetUserContent() != "",
+			"assistant_content_present", req.GetAssistantContent() != "",
 			"timeline_items", len(req.GetTimeline()),
+			"timeline_nonempty_items", nonEmptyTimelineItems,
 		)
 		return
 	}
@@ -1000,12 +1008,11 @@ func (s *Server) logPostActionReceipt(traceID, message string, req *vmmv1.PostAc
 		message,
 		"trace_id", traceID,
 		"session_id", req.GetSessionId(),
-		"user_content_len", len(req.GetUserContent()),
-		"user_content_sha256", shortContentDigest(req.GetUserContent()),
-		"assistant_content_len", len(req.GetAssistantContent()),
-		"assistant_content_sha256", shortContentDigest(req.GetAssistantContent()),
+		"user_content_present", req.GetUserContent() != "",
+		"assistant_content_present", req.GetAssistantContent() != "",
 		"timeline_items", len(req.GetTimeline()),
-		"timeline_sha256", shortContentDigest(string(timelineJSON)),
+		"timeline_nonempty_items", nonEmptyTimelineItems,
+		"timeline_marshaled", len(timelineJSON) > 0,
 	)
 }
 

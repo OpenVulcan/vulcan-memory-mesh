@@ -699,8 +699,11 @@ func TestPostActionReturnsAcceptedSynchronously(t *testing.T) {
 	if strings.Contains(logs, `第一问 [Image: 猫]`) {
 		t.Fatalf("expected cleaned payload text to stay out of logs, got %s", logs)
 	}
-	if !strings.Contains(logs, `user_content_len`) || !strings.Contains(logs, `assistant_content_sha256`) || !strings.Contains(logs, `timeline_sha256`) {
+	if !strings.Contains(logs, `user_content_present`) || !strings.Contains(logs, `assistant_content_present`) || !strings.Contains(logs, `timeline_nonempty_items`) {
 		t.Fatalf("expected redacted payload metadata in logs, got %s", logs)
+	}
+	if strings.Contains(logs, `user_content_sha256`) || strings.Contains(logs, `assistant_content_sha256`) || strings.Contains(logs, `timeline_sha256`) {
+		t.Fatalf("expected receipt logs to avoid stable payload digests, got %s", logs)
 	}
 }
 
