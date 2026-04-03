@@ -92,11 +92,12 @@ func RequestLoggerInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 		// Capture timing, peer address, and status code after the RPC completes.
 		// 在 RPC 完成后采集耗时、对端地址和状态码。
 		start := time.Now()
+		method := unaryMethodName(info)
 		resp, err := handler(ctx, req)
 		code := status.Code(err)
 		args := []any{
 			"trace_id", trace.IDFromContext(ctx),
-			"method", info.FullMethod,
+			"method", method,
 			"code", code.String(),
 			"latency", time.Since(start).String(),
 		}
@@ -121,11 +122,12 @@ func RecoveryInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, err error) {
 		// Recover at the transport edge so panics never leak across the gRPC boundary.
 		// 在传输层边界做 recover，确保 panic 不会越过 gRPC 边界泄露出去。
+		method := unaryMethodName(info)
 		defer func() {
 			if rec := recover(); rec != nil {
 				logger.Error("panic recovered", append([]any{
 					"trace_id", trace.IDFromContext(ctx),
-					"method", info.FullMethod,
+					"method", method,
 				}, redactedPanicLogFields(rec)...)...)
 				err = toStatus(errInternal)
 			}
@@ -143,6 +145,15 @@ func redactedPanicLogFields(rec any) []any {
 		"panic_len", len(raw),
 		"panic_sha256", shortContentDigest(raw),
 	}
+}
+
+// unaryMethodName returns a stable method label even when callers invoke exported interceptors with a nil UnaryServerInfo during tests or manual integration checks.
+// unaryMethodName 用于在测试或手工集成检查里传入 nil UnaryServerInfo 时，仍返回稳定的方法标签，避免导出拦截器直接崩溃。
+func unaryMethodName(info *grpc.UnaryServerInfo) string {
+	if info == nil {
+		return "unknown"
+	}
+	return strings.TrimSpace(info.FullMethod)
 }
 
 // withResolvedSessionRef stores the resolved session scope into context so handlers can reuse one shared lookup result.

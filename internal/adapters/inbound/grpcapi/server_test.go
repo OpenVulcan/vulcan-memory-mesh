@@ -719,6 +719,51 @@ func TestRecoveryInterceptorRedactsRawPanic(t *testing.T) {
 	}
 }
 
+// TestRequestLoggerInterceptorAllowsNilInfo verifies the exported request logger stays usable in direct tests or manual invocations even when UnaryServerInfo is absent.
+// TestRequestLoggerInterceptorAllowsNilInfo 用于验证导出的请求日志拦截器在直接测试或手工调用缺少 UnaryServerInfo 时仍可用，而不会直接崩溃。
+func TestRequestLoggerInterceptorAllowsNilInfo(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := RequestLoggerInterceptor(logger)
+
+	_, err := interceptor(context.Background(), nil, nil, func(context.Context, any) (any, error) {
+		return &emptypb.Empty{}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected request logger error: %v", err)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, `MSG："grpc request"`) {
+		t.Fatalf("expected grpc request log, got %s", logs)
+	}
+	if !strings.Contains(logs, `method："unknown"`) {
+		t.Fatalf("expected fallback method label in logs, got %s", logs)
+	}
+}
+
+// TestRecoveryInterceptorAllowsNilInfo verifies the exported recovery interceptor still converts panics into internal errors when UnaryServerInfo is absent.
+// TestRecoveryInterceptorAllowsNilInfo 用于验证导出的恢复拦截器在缺少 UnaryServerInfo 时仍会把 panic 转换成内部错误，而不会直接崩溃。
+func TestRecoveryInterceptorAllowsNilInfo(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := RecoveryInterceptor(logger)
+	panicText := "nil info panic payload"
+
+	_, err := interceptor(context.Background(), nil, nil, func(context.Context, any) (any, error) {
+		panic(panicText)
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+	logs := logBuf.String()
+	if strings.Contains(logs, panicText) {
+		t.Fatalf("expected panic text to stay out of logs, got %s", logs)
+	}
+	if !strings.Contains(logs, `method："unknown"`) {
+		t.Fatalf("expected fallback method label in panic logs, got %s", logs)
+	}
+}
+
 // preCheckFunc adapts a plain function to the current PreCheckExecutor interface.
 // preCheckFunc 用于把普通函数适配到当前 PreCheckExecutor 接口。
 type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error)
