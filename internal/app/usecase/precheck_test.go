@@ -1109,6 +1109,18 @@ func TestPreCheckSearchCandidatesKeepsTopRerankedHitBelowSimilarityFloor(t *test
 	}
 }
 
+// TestBuildPreCheckMemoryTextDeduplicatesFormattingVariants verifies that abstract/details pairs which differ only by whitespace or casing are collapsed into one injected line instead of being repeated as two lines in the final context.
+// TestBuildPreCheckMemoryTextDeduplicatesFormattingVariants 用于验证当 abstract/details 只存在空白或大小写差异时，最终注入文本会折叠成一行，而不是重复两次。
+func TestBuildPreCheckMemoryTextDeduplicatesFormattingVariants(t *testing.T) {
+	text := buildPreCheckMemoryText(logicdomain.PreCheckMemoryCandidate{
+		Abstract: "SQLite schema 13 compatibility",
+		Details:  " sqlite   schema 13\ncompatibility ",
+	})
+	if text != "SQLite schema 13 compatibility" {
+		t.Fatalf("expected duplicate formatting variants to collapse to abstract, got %q", text)
+	}
+}
+
 // stubPreCheckProfiles is the profile bundle loader double used by pre-check tests.
 // stubPreCheckProfiles 用于作为 pre-check 测试里的画像组合加载桩。
 type stubPreCheckProfiles struct {

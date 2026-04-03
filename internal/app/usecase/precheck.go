@@ -607,13 +607,24 @@ func buildPreCheckMemoryText(candidate logicdomain.PreCheckMemoryCandidate) stri
 	switch {
 	case abstract == "" && details == "":
 		return ""
-	case details == "" || details == abstract:
+	case details == "" || equivalentPreCheckMemoryText(abstract, details):
 		return abstract
 	case abstract == "":
 		return details
 	default:
 		return abstract + "\n" + details
 	}
+}
+
+// equivalentPreCheckMemoryText treats whitespace-only and case-only formatting differences as the same injected memory text so pre-check does not repeat one statement twice in the final context.
+// equivalentPreCheckMemoryText 用于把仅有空白或大小写差异的文本视为同一条注入记忆，避免 pre-check 在最终上下文里把同一句话重复注入两次。
+func equivalentPreCheckMemoryText(left, right string) bool {
+	left = strings.ToLower(textutil.NormalizeWhitespace(left))
+	right = strings.ToLower(textutil.NormalizeWhitespace(right))
+	if left == "" || right == "" {
+		return left == right
+	}
+	return left == right
 }
 
 // buildFallbackContextItems reproduces the stable grouping used by the shared assembler so pre-check can still answer when prompt loading fails.
