@@ -30,8 +30,8 @@ const (
 	// maxMemorySearchTopK 用于限制单次记忆查询 RPC 的最大返回量，避免误传超大请求时把 embedding 或向量检索放大。
 	maxMemorySearchTopK = 32
 
-	// maxMemoryQueryItems bounds the JSON query group size so one request cannot fan out into an unbounded number of vector searches.
-	// maxMemoryQueryItems 用于限制 JSON 查询组的条目数量，避免一次请求扩散成无限制的向量检索。
+	// maxMemoryQueryItems bounds the simple query list size so one request cannot fan out into an unbounded number of vector searches.
+	// maxMemoryQueryItems 用于限制简单查询列表的条目数量，避免一次请求扩散成无限制的向量检索。
 	maxMemoryQueryItems = 16
 
 	// maxTurnDetailLookup limits how many turn ids one detail query can request at once to keep relational reads bounded.
@@ -69,21 +69,20 @@ var (
 	defaultUserMemoryTTL = 365 * 24 * time.Hour
 )
 
-// MemoryQueryCommand carries one grouped JSON search payload together with the resolved user/project selectors and one optional scope override for specialized callers such as pre-check.
-// MemoryQueryCommand 用于承载一份分组 JSON 搜索载荷、解析范围所需的 user/project 选择参数，以及供 pre-check 等特殊调用方使用的可选作用域覆盖。
+// MemoryQueryCommand carries one simple query list together with the resolved user/project selectors and one optional scope override for specialized callers such as pre-check.
+// MemoryQueryCommand 用于承载一个简单查询字符串列表、解析范围所需的 user/project 选择参数，以及供 pre-check 等特殊调用方使用的可选作用域覆盖。
 type MemoryQueryCommand struct {
 	UserID        uint64
 	ProjectID     uint64
-	QueryJSON     string
+	Queries       []string
 	TopK          int
 	ScopeOverride string
 }
 
-// MemoryQueryItem stores one parsed JSON query-group item before embedding and vector search begin.
-// MemoryQueryItem 用于在 embedding 和向量检索开始前保存一条已解析的 JSON 查询组条目。
+// MemoryQueryItem stores one normalized query string before embedding and vector search begin.
+// MemoryQueryItem 用于在 embedding 和向量检索开始前保存一条已规范化的查询字符串。
 type MemoryQueryItem struct {
-	Background string `json:"background"`
-	Query      string `json:"query"`
+	Query string
 }
 
 // MemoryQueryHit returns one unified recalled memory candidate together with its durable refs and preview fields.
@@ -118,11 +117,10 @@ type MemoryQueryHit struct {
 	DecayDisabled               bool
 }
 
-// MemoryQueryGroupResult returns the echoed JSON query item together with the hit list produced for that item.
-// MemoryQueryGroupResult 用于返回被原样回显的 JSON 查询条目，以及针对该条目生成的命中结果。
+// MemoryQueryGroupResult returns the echoed normalized query together with the hit list produced for that query.
+// MemoryQueryGroupResult 用于返回原样回显的规范化查询，以及针对该查询生成的命中结果。
 type MemoryQueryGroupResult struct {
 	QueryIndex int
-	Background string
 	Query      string
 	Hits       []MemoryQueryHit
 }
@@ -346,8 +344,8 @@ func (u *MemoryUseCase) ConfigureRerank(reranker appports.RerankerClient, topN i
 	u.rerankTopN = topN
 }
 
-// Search resolves the concrete project/user scope, parses the grouped JSON payload, runs the configured retrieval stages, and returns enriched unified memory refs.
-// Search 用于解析具体的 project/user 范围、解析分组 JSON 载荷、执行已配置的检索阶段，并返回补全后的统一记忆引用。
+// Search resolves the concrete project/user scope, normalizes the simple query list, runs the configured retrieval stages, and returns enriched unified memory refs.
+// Search 用于解析具体的 project/user 范围、规范化简单查询列表、执行已配置的检索阶段，并返回补全后的统一记忆引用。
 func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error) {
 	if u == nil || u.profiles == nil {
 		return MemoryQueryResult{}, fmt.Errorf("profile store is nil")
@@ -376,9 +374,9 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		return MemoryQueryResult{}, err
 	}
 
-	// Parse the grouped JSON payload once, then embed each composed search text in order so the result can be echoed back item-by-item.
-	// 先一次性解析分组 JSON 载荷，再按顺序整理等价 group，避免同一次请求里的重复项把 embedding 和检索成本直接放大。
-	items, err := parseMemoryQueryJSON(cmd.QueryJSON)
+	// Normalize the query list once, then collapse repeated variants so one request can reuse retrieval work without exposing duplicate pipeline cost to callers.
+	// 先一次性规范化查询列表，再折叠重复变体，让单次请求可以复用检索工作，而不会把重复成本暴露给调用方。
+	items, err := normalizeMemoryQueries(cmd.Queries)
 	if err != nil {
 		return MemoryQueryResult{}, err
 	}
@@ -445,7 +443,6 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 			"mmr_enabled", u.mmrEnabled,
 		}, map[string]any{
 			"query_index":    idx,
-			"background":     item.Background,
 			"query":          item.Query,
 			"top_vector_hit": summarizeRawMemoryHitForLog(firstRawMemoryHit(hits)),
 			"top_mapped_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
@@ -461,7 +458,6 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 			"top_k", topK,
 		}, map[string]any{
 			"query_index":   idx,
-			"background":    item.Background,
 			"query":         item.Query,
 			"top_final_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
 		})
@@ -471,7 +467,6 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	for idx, item := range items {
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
-			Background: item.Background,
 			Query:      item.Query,
 			Hits:       cloneMemoryQueryHits(cachedHits[keys[idx]]),
 		})
@@ -684,8 +679,8 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 	return WriteMemoriesResult{Items: results}, nil
 }
 
-// validateMemoryQueryCommand checks the grouped vector-search request before any hierarchy, embedding, or vector work begins.
-// validateMemoryQueryCommand 用于在任何层级解析、embedding 或向量检索开始前校验分组向量搜索请求。
+// validateMemoryQueryCommand checks the simple query-list request before any hierarchy, embedding, or vector work begins.
+// validateMemoryQueryCommand 用于在任何层级解析、embedding 或向量检索开始前校验简单查询列表请求。
 func validateMemoryQueryCommand(cmd MemoryQueryCommand) error {
 	if cmd.UserID == 0 {
 		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
@@ -693,8 +688,11 @@ func validateMemoryQueryCommand(cmd MemoryQueryCommand) error {
 	if cmd.ProjectID == 0 {
 		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 	}
-	if strings.TrimSpace(cmd.QueryJSON) == "" {
-		return logicdomain.ValidationError{Field: "query_json", Message: "is required"}
+	if len(cmd.Queries) == 0 {
+		return logicdomain.ValidationError{Field: "queries", Message: "must contain at least one query"}
+	}
+	if len(cmd.Queries) > maxMemoryQueryItems {
+		return logicdomain.ValidationError{Field: "queries", Message: fmt.Sprintf("must contain at most %d queries", maxMemoryQueryItems)}
 	}
 	if cmd.TopK < 0 {
 		return logicdomain.ValidationError{Field: "top_k", Message: "must be >= 0"}
@@ -783,42 +781,36 @@ func validateWriteMemoriesCommand(cmd WriteMemoriesCommand) error {
 	return nil
 }
 
-// parseMemoryQueryJSON decodes the grouped JSON search payload into the strict array-of-items format expected by the RPC.
-// parseMemoryQueryJSON 用于把分组 JSON 搜索载荷解码成 RPC 期望的严格数组格式。
-func parseMemoryQueryJSON(raw string) ([]MemoryQueryItem, error) {
-	var items []MemoryQueryItem
-	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &items); err != nil {
-		return nil, logicdomain.ValidationError{Field: "query_json", Message: "must be a JSON array of {background, query} objects"}
+// normalizeMemoryQueries converts the caller-supplied query list into the strict normalized item format expected by the retrieval pipeline.
+// normalizeMemoryQueries 用于把调用方提供的查询列表转换成检索链路期望的严格规范化条目格式。
+func normalizeMemoryQueries(queries []string) ([]MemoryQueryItem, error) {
+	if len(queries) == 0 {
+		return nil, logicdomain.ValidationError{Field: "queries", Message: "must contain at least one query"}
 	}
-	if len(items) == 0 {
-		return nil, logicdomain.ValidationError{Field: "query_json", Message: "must contain at least one query item"}
+	if len(queries) > maxMemoryQueryItems {
+		return nil, logicdomain.ValidationError{Field: "queries", Message: fmt.Sprintf("must contain at most %d queries", maxMemoryQueryItems)}
 	}
-	if len(items) > maxMemoryQueryItems {
-		return nil, logicdomain.ValidationError{Field: "query_json", Message: fmt.Sprintf("must contain at most %d query items", maxMemoryQueryItems)}
-	}
-	for idx := range items {
-		items[idx].Background = textutil.NormalizeWhitespace(items[idx].Background)
-		items[idx].Query = textutil.NormalizeWhitespace(items[idx].Query)
-		if items[idx].Query == "" {
-			return nil, logicdomain.ValidationError{Field: "query_json[" + strconv.Itoa(idx) + "].query", Message: "is required"}
+	items := make([]MemoryQueryItem, 0, len(queries))
+	for idx, query := range queries {
+		query = textutil.NormalizeWhitespace(query)
+		if query == "" {
+			return nil, logicdomain.ValidationError{Field: "queries[" + strconv.Itoa(idx) + "]", Message: "is required"}
 		}
+		items = append(items, MemoryQueryItem{Query: query})
 	}
 	return items, nil
 }
 
-// buildMemorySearchText composes the optional background and required key query into one embedding text while keeping the caller-facing echo fields unchanged.
-// buildMemorySearchText 用于把可选背景和必填关键语句组合成一段 embedding 文本，同时保持返回给调用方的回显字段不变。
+// buildMemorySearchText keeps the embedding input aligned with the simplified AI-facing contract by using the normalized query text directly.
+// buildMemorySearchText 用于让 embedding 输入与简化后的 AI 接口契约保持一致，直接使用规范化查询文本。
 func buildMemorySearchText(item MemoryQueryItem) string {
-	if item.Background == "" {
-		return item.Query
-	}
-	return strings.TrimSpace(item.Background) + "\n\n关键语句：\n" + strings.TrimSpace(item.Query)
+	return strings.TrimSpace(item.Query)
 }
 
-// buildMemoryQueryCacheKey converts one normalized query group into a stable in-request cache key so repeated groups can reuse one retrieval execution without changing the caller-facing result shape.
-// buildMemoryQueryCacheKey 用于把一条已归一的 query group 转成稳定的单请求缓存键，让重复 group 能复用一次检索执行，同时不改变调用方看到的结果结构。
+// buildMemoryQueryCacheKey converts one normalized query into a stable in-request cache key so repeated queries can reuse one retrieval execution without changing the caller-facing result shape.
+// buildMemoryQueryCacheKey 用于把一条已归一的 query 转成稳定的单请求缓存键，让重复 query 能复用一次检索执行，同时不改变调用方看到的结果结构。
 func buildMemoryQueryCacheKey(item MemoryQueryItem) string {
-	return normalizeMemoryQueryCachePart(item.Background) + "\x00" + normalizeMemoryQueryCachePart(item.Query)
+	return normalizeMemoryQueryCachePart(item.Query)
 }
 
 // normalizeMemoryQueryCachePart keeps the in-request dedupe key aligned with pre-check's low-risk query normalization so case-only variants do not fan out into duplicate retrieval work.
@@ -898,7 +890,6 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 			"lexical_materialized_count", 0,
 			"hybrid_candidate_count", len(trimSearchHits(vectorHits, poolK)),
 		}, map[string]any{
-			"background":            item.Background,
 			"query":                 item.Query,
 			"top_vector_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(vectorHits)),
 			"top_lexical_candidate": nil,
@@ -920,7 +911,6 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 		"lexical_materialized_count", len(materialized),
 		"hybrid_candidate_count", len(fused),
 	}, map[string]any{
-		"background":            item.Background,
 		"query":                 item.Query,
 		"top_vector_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(vectorHits)),
 		"top_lexical_candidate": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(materialized)),
@@ -929,8 +919,8 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 	return fused
 }
 
-// buildMemoryLexicalQuery keeps lexical recall focused on the key query instead of the full embedding background text.
-// buildMemoryLexicalQuery 用于让 lexical 召回聚焦关键查询语句，而不是完整的 embedding 背景文本。
+// buildMemoryLexicalQuery keeps lexical recall focused on the normalized query text so the simplified AI-facing contract does not need a second background field.
+// buildMemoryLexicalQuery 用于让 lexical 召回聚焦规范化后的 query 文本，避免简化后的 AI 接口再引入第二个 background 字段。
 func buildMemoryLexicalQuery(item MemoryQueryItem) string {
 	return strings.TrimSpace(item.Query)
 }
@@ -1212,8 +1202,8 @@ func latestMemoryReinforcementTime(hit MemoryQueryHit) time.Time {
 	return latest
 }
 
-// applyContextEvidenceScoring loads contextual evidence edges for the current candidate pool and applies a soft boost or demotion when the query/background explicitly matches those situations.
-// applyContextEvidenceScoring 用于为当前候选池加载情境证据边，并在 query/background 明确命中这些场景时做软提升或软降权。
+// applyContextEvidenceScoring loads contextual evidence edges for the current candidate pool and applies a soft boost or demotion when the normalized query explicitly matches those situations.
+// applyContextEvidenceScoring 用于为当前候选池加载情境证据边，并在规范化 query 明确命中这些场景时做软提升或软降权。
 func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item MemoryQueryItem, hits []MemoryQueryHit) []MemoryQueryHit {
 	if u == nil || u.memories == nil || len(hits) <= 1 {
 		return hits
@@ -1237,8 +1227,8 @@ func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item Me
 		return hits
 	}
 
-	// Aggregate only the edges whose context values explicitly match the normalized query/background phrases so unrelated support stats do not leak into the current ranking.
-	// 只聚合那些与规范化 query/background 短语明确匹配的 edge，避免无关情境的支持统计污染当前排序。
+	// Aggregate only the edges whose context values explicitly match the normalized query phrases so unrelated support stats do not leak into the current ranking.
+	// 只聚合那些与规范化 query 短语明确匹配的 edge，避免无关情境的支持统计污染当前排序。
 	matchedEvidence := make(map[uint64]memoryContextEvidenceScore, len(memoryIDs))
 	for _, edge := range edges {
 		if !signals.Match(edge.ContextValue) {
@@ -1301,8 +1291,8 @@ type memoryContextEvidenceScore struct {
 	Delta                float64
 }
 
-// memoryQueryContextSignals stores the normalized phrases extracted from background/query so context edges can do deterministic lexical matching without another model call.
-// memoryQueryContextSignals 用于保存从 background/query 提取出的规范化短语，让 context edge 可以在不增加额外模型调用的情况下做确定性匹配。
+// memoryQueryContextSignals stores the normalized phrases extracted from the query so context edges can do deterministic lexical matching without another model call.
+// memoryQueryContextSignals 用于保存从 query 提取出的规范化短语，让 context edge 可以在不增加额外模型调用的情况下做确定性匹配。
 type memoryQueryContextSignals struct {
 	Phrases map[string]struct{}
 }
@@ -1340,9 +1330,7 @@ func buildMemoryQueryContextSignals(item MemoryQueryItem) memoryQueryContextSign
 			}
 		}
 	}
-	appendText(item.Background)
 	appendText(item.Query)
-	appendText(buildMemorySearchText(item))
 	return memoryQueryContextSignals{Phrases: phrases}
 }
 

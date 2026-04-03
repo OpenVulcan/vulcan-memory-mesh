@@ -512,8 +512,8 @@ func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyPr
 	}, nil
 }
 
-// SearchMemoryEvents parses one grouped JSON payload, embeds each query item, searches vector memories inside the resolved scope, and returns unified memory refs plus optional source-turn refs.
-// SearchMemoryEvents 用于解析分组 JSON 载荷、对每条查询做 embedding、在已解析范围内搜索向量记忆，并返回统一 memory ref 以及可选来源 turn ref。
+// SearchMemoryEvents runs one simple query list through the unified memory-search pipeline and returns only the AI-facing hit fields needed for follow-up tool calls.
+// SearchMemoryEvents 用于把简单查询字符串列表送入统一记忆检索链路，并只返回 AI 后续工具调用真正需要的命中字段。
 func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemoryEventsRequest) (*vmmv1.SearchMemoryEventsResponse, error) {
 	if err := s.requireReceiver(); err != nil {
 		return nil, err
@@ -530,7 +530,7 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 	result, err := s.memory.Search(ctx, usecase.MemoryQueryCommand{
 		UserID:    req.GetUserId(),
 		ProjectID: req.GetProjectId(),
-		QueryJSON: req.GetQueryJson(),
+		Queries:   req.GetQueries(),
 		TopK:      int(req.GetTopK()),
 	})
 	if err != nil {
@@ -541,20 +541,15 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 		hits := make([]*vmmv1.MemorySearchHit, 0, len(group.Hits))
 		for _, hit := range group.Hits {
 			hits = append(hits, &vmmv1.MemorySearchHit{
-				MemoryRef:      toProtoMemoryRef(hit.MemoryRef),
-				SourceRef:      toProtoMemoryRef(hit.SourceRef),
-				SourceKind:     toProtoMemorySourceKind(hit.SourceKind),
-				ScopeLevel:     toProtoMemoryScopeLevel(hit.ScopeLevel),
-				SessionId:      hit.SessionID,
+				MemoryId:       hit.MemoryRef.ID,
+				SourceTurnId:   hit.SourceRef.ID,
 				Abstract:       hit.Abstract,
 				DetailsPreview: hit.DetailsPreview,
-				Category:       int32(hit.Category),
-				Score:          hit.Score,
+				Category:       memoryCategoryLabel(hit.Category),
 			})
 		}
 		groups = append(groups, &vmmv1.MemorySearchGroupResult{
 			QueryIndex: uint32(group.QueryIndex),
-			Background: group.Background,
 			Query:      group.Query,
 			Hits:       hits,
 		})
@@ -565,8 +560,8 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 	}, nil
 }
 
-// GetTurnDetails loads one or more dehydrated turn rows by turn id and expands them with parsed dialogue fields plus nearby turn ids.
-// GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，并补充解析后的对话字段和相邻 turn 编号。
+// GetTurnDetails loads one or more turn rows by turn id and returns an AI-ready structured dialogue view instead of storage-oriented dehydrated fields.
+// GetTurnDetails 用于按 turn id 读取一条或多条 turn 记录，并返回面向 AI 的结构化对话视图，而不是面向存储的脱水字段。
 func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRequest) (*vmmv1.GetTurnDetailsResponse, error) {
 	if err := s.requireReceiver(); err != nil {
 		return nil, err
@@ -594,52 +589,8 @@ func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRe
 	}, nil
 }
 
-// GetMemoryDetails loads one ordered `TYPE + ID` ref list and returns mixed unified memory or turn details.
-// GetMemoryDetails 用于按顺序读取一组 `TYPE + ID` 引用，并返回混合的统一记忆详情或 turn 详情。
-func (s *Server) GetMemoryDetails(ctx context.Context, req *vmmv1.GetMemoryDetailsRequest) (*vmmv1.GetMemoryDetailsResponse, error) {
-	if err := s.requireReceiver(); err != nil {
-		return nil, err
-	}
-	if s.memory == nil {
-		return nil, toStatus(errRouteDisabled)
-	}
-	NormalizeGetMemoryDetailsRequest(req)
-	if err := s.validator().ValidateGetMemoryDetails(req); err != nil {
-		return nil, toStatus(describeError(err))
-	}
-	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
-	defer cancel()
-
-	// Convert the transport `TYPE + ID` references into domain refs so the use case can batch load memories and turns separately.
-	// 先把传输层 `TYPE + ID` 引用转换成领域层 ref，让用例可以分别批量读取 memory 和 turn。
-	refs := make([]logicdomain.MemoryRef, 0, len(req.GetRefs()))
-	for _, ref := range req.GetRefs() {
-		refs = append(refs, fromProtoMemoryRef(ref))
-	}
-	result, err := s.memory.GetDetails(ctx, usecase.MemoryDetailCommand{Refs: refs})
-	if err != nil {
-		return nil, toStatus(describeError(err))
-	}
-
-	items := make([]*vmmv1.MemoryDetailItem, 0, len(result.Items))
-	for _, item := range result.Items {
-		entry := &vmmv1.MemoryDetailItem{Ref: toProtoMemoryRef(item.Ref)}
-		if item.Memory != nil {
-			entry.Payload = &vmmv1.MemoryDetailItem_Memory{Memory: toMemoryDetailEntry(*item.Memory)}
-		}
-		if item.Turn != nil {
-			entry.Payload = &vmmv1.MemoryDetailItem_Turn{Turn: toTurnDetailEntry(*item.Turn)}
-		}
-		items = append(items, entry)
-	}
-	return &vmmv1.GetMemoryDetailsResponse{
-		Items:   items,
-		TraceId: trace.IDFromContext(ctx),
-	}, nil
-}
-
-// WriteMemories persists one batch of direct AI-written memory items inside the resolved session scope and returns unified refs.
-// WriteMemories 用于在已解析 session 范围内持久化一批 AI 主动写入的记忆项，并返回统一引用。
+// WriteMemories persists one batch of direct AI-written memory items inside the resolved session scope and returns only the created or deduplicated memory ids.
+// WriteMemories 用于在已解析 session 范围内持久化一批 AI 主动写入的记忆项，并只返回新建或复用的 memory id。
 func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequest) (*vmmv1.WriteMemoriesResponse, error) {
 	if err := s.requireReceiver(); err != nil {
 		return nil, err
@@ -658,18 +609,17 @@ func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequ
 	ctx, cancel := withTimeout(ctx, s.postTimeout)
 	defer cancel()
 
-	// Keep the transport layer focused on enum and timestamp conversion so write defaults still live in the use case.
-	// 让传输层只负责枚举和时间戳转换，写入默认值仍由用例层统一决定。
+	// Keep the transport layer focused on compact numeric concept mapping so AI-facing writes stay simple while defaults still live in the use case.
+	// 让传输层只负责紧凑数字概念值映射，保证 AI 写入面保持简单，而默认值仍由用例层统一决定。
 	items := make([]usecase.WriteMemoryItem, 0, len(req.GetItems()))
 	for _, item := range req.GetItems() {
 		items = append(items, usecase.WriteMemoryItem{
-			ScopeLevel:  fromProtoMemoryScopeLevel(item.GetScopeLevel()),
+			ScopeLevel:  normalizeTransportMemoryScopeLevel(item.GetScopeLevel()),
 			Abstract:    item.GetAbstract(),
 			Details:     item.GetDetails(),
 			Category:    int(item.GetCategory()),
-			Priority:    fromProtoMemoryPriority(item.GetPriority()),
-			MemoryLevel: fromProtoMemoryLevel(item.GetMemoryLevel()),
-			ExpiresAt:   fromUnixMillis(item.GetExpiresTimestamp()),
+			Priority:    normalizeTransportMemoryPriority(item.GetPriority()),
+			MemoryLevel: normalizeTransportMemoryLevel(item.GetMemoryLevel()),
 		})
 	}
 	result, err := s.memory.Write(ctx, usecase.WriteMemoriesCommand{
@@ -683,10 +633,8 @@ func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequ
 	entries := make([]*vmmv1.WriteMemoryResultItem, 0, len(result.Items))
 	for _, item := range result.Items {
 		entries = append(entries, &vmmv1.WriteMemoryResultItem{
-			MemoryRef:  toProtoMemoryRef(item.Ref),
-			SourceKind: toProtoMemorySourceKind(item.SourceKind),
-			ScopeLevel: toProtoMemoryScopeLevel(item.ScopeLevel),
-			Deduped:    item.Deduped,
+			MemoryId: item.Ref.ID,
+			Deduped:  item.Deduped,
 		})
 	}
 	return &vmmv1.WriteMemoriesResponse{
@@ -896,8 +844,8 @@ func toProfileNodeEntry(node logicdomain.ProfileNodeRecord) *vmmv1.ProfileNodeEn
 	}
 }
 
-// toTurnDetailEntry converts one detailed turn result into the protobuf transport shape used by the turn-detail lookup RPC.
-// toTurnDetailEntry 用于把一条补齐内容和相邻编号的 turn 详情结果转换成 turn 查询 RPC 使用的 protobuf 传输结构。
+// toTurnDetailEntry converts one detailed turn result into the compact AI-facing transport shape used by the turn-detail lookup RPC.
+// toTurnDetailEntry 用于把一条 turn 详情结果转换成 turn 查询 RPC 使用的紧凑 AI 友好传输结构。
 func toTurnDetailEntry(turn usecase.TurnDetailRecord) *vmmv1.TurnDetailEntry {
 	if turn.Turn.ID == 0 {
 		return nil
@@ -910,56 +858,13 @@ func toTurnDetailEntry(turn usecase.TurnDetailRecord) *vmmv1.TurnDetailEntry {
 		})
 	}
 	return &vmmv1.TurnDetailEntry{
-		TurnId:            turn.Turn.ID,
-		SessionId:         turn.Turn.SessionID,
-		ProjectId:         turn.Turn.ProjectID,
-		DehydratedContent: turn.Turn.DehydratedContent,
-		DehydratedBudget:  int32(turn.Turn.DehydratedBudget),
-		ExtractedStatus:   int32(turn.Turn.ExtractedStatus),
-		Details:           turn.Turn.Details,
-		DetailsBudget:     int32(turn.Turn.DetailsBudget),
-		CreatedTimestamp:  turn.Turn.CreatedAt.UTC().UnixMilli(),
-		UpdatedTimestamp:  turn.Turn.UpdatedAt.UTC().UnixMilli(),
-		UserContent:       turn.UserContent,
-		Timeline:          timeline,
-		AssistantContent:  turn.AssistantContent,
-		PreviousTurnIds:   append([]uint64(nil), turn.PreviousTurnIDs...),
-		NextTurnIds:       append([]uint64(nil), turn.NextTurnIDs...),
-	}
-}
-
-// toMemoryDetailEntry converts one unified durable memory row into the protobuf transport shape used by the mixed detail RPC.
-// toMemoryDetailEntry 用于把一条统一长期记忆行转换成混合详情 RPC 使用的 protobuf 传输结构。
-func toMemoryDetailEntry(memory logicdomain.MemoryNodeRecord) *vmmv1.MemoryDetailEntry {
-	if memory.ID == 0 {
-		return nil
-	}
-	return &vmmv1.MemoryDetailEntry{
-		MemoryId:                 memory.ID,
-		SourceKind:               toProtoMemorySourceKind(memory.SourceKind),
-		ScopeLevel:               toProtoMemoryScopeLevel(memory.ScopeLevel),
-		MemoryStatus:             toProtoMemoryStatus(memory.Status),
-		TeamId:                   memory.TeamID,
-		SpaceId:                  memory.SpaceID,
-		ProjectId:                memory.ProjectID,
-		UserId:                   memory.UserID,
-		OriginSessionId:          memory.OriginSessionID,
-		SourceTurnId:             memory.SourceTurnID,
-		Category:                 int32(memory.Category),
-		Abstract:                 memory.Abstract,
-		Details:                  memory.Details,
-		Priority:                 toProtoMemoryPriority(memory.Priority),
-		MemoryLevel:              toProtoMemoryLevel(memory.MemoryLevel),
-		RefreshWeight:            uint32(maxInt(memory.RefreshWeight, 0)),
-		StatusReason:             memory.StatusReason,
-		ExpiresTimestamp:         toUnixMillis(memory.ExpiresAt),
-		LastRecalledTimestamp:    toUnixMillis(memory.LastRecalledAt),
-		LastAdoptedTimestamp:     toUnixMillis(memory.LastAdoptedAt),
-		RecalledCount:            uint32(maxInt(memory.RecalledCount, 0)),
-		AdoptedCount:             uint32(maxInt(memory.AdoptedCount, 0)),
-		CrossSessionAdoptedCount: uint32(maxInt(memory.CrossSessionAdoptedCount, 0)),
-		CreatedTimestamp:         toUnixMillis(memory.CreatedAt),
-		UpdatedTimestamp:         toUnixMillis(memory.UpdatedAt),
+		TurnId:          turn.Turn.ID,
+		UserQuestion:    turn.UserContent,
+		Timeline:        timeline,
+		AssistantAnswer: turn.AssistantContent,
+		Detail:          turn.Turn.Details,
+		PreviousTurnIds: append([]uint64(nil), turn.PreviousTurnIDs...),
+		NextTurnIds:     append([]uint64(nil), turn.NextTurnIDs...),
 	}
 }
 
@@ -1191,178 +1096,70 @@ func toProtoProfileSourceKind(sourceKind int) vmmv1.ProfileNodeSourceKind {
 	}
 }
 
-// toProtoMemoryRef converts one internal memory ref into the protobuf `TYPE + ID` transport shape.
-// toProtoMemoryRef 用于把内部 memory ref 转换成 protobuf 的 `TYPE + ID` 传输结构。
-func toProtoMemoryRef(ref logicdomain.MemoryRef) *vmmv1.MemoryRef {
-	if ref.Empty() {
-		return nil
-	}
-	return &vmmv1.MemoryRef{
-		Type: toProtoMemoryRefType(ref.Type),
-		Id:   ref.ID,
-	}
-}
-
-// fromProtoMemoryRef converts one protobuf `TYPE + ID` pair into the internal memory-ref model.
-// fromProtoMemoryRef 用于把 protobuf 的 `TYPE + ID` 组合转换成内部 memory-ref 模型。
-func fromProtoMemoryRef(ref *vmmv1.MemoryRef) logicdomain.MemoryRef {
-	if ref == nil {
-		return logicdomain.MemoryRef{}
-	}
-	return logicdomain.MemoryRef{
-		Type: fromProtoMemoryRefType(ref.GetType()),
-		ID:   ref.GetId(),
-	}
-}
-
-// toProtoMemoryRefType converts the internal memory-ref type into the protobuf enum.
-// toProtoMemoryRefType 用于把内部 memory-ref 类型转换成 protobuf 枚举。
-func toProtoMemoryRefType(refType int) vmmv1.MemoryRefType {
-	switch refType {
-	case logicdomain.MemoryRefTypeTurn:
-		return vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN
-	case logicdomain.MemoryRefTypeMemory:
-		return vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY
+// memoryCategoryLabel converts one internal memory category id into the stable English label exposed to AI tools so callers do not need to understand internal numeric enums.
+// memoryCategoryLabel 用于把内部记忆分类编号转换成暴露给 AI 工具的稳定英文标签，避免调用方理解内部数字枚举。
+func memoryCategoryLabel(category int) string {
+	switch category {
+	case logicdomain.MemoryNodeCategoryArchitectureDecision:
+		return "architecture_decision"
+	case logicdomain.MemoryNodeCategoryTechSpecAPI:
+		return "tech_spec_api"
+	case logicdomain.MemoryNodeCategoryBusinessLogic:
+		return "business_logic"
+	case logicdomain.MemoryNodeCategoryRequirementTODO:
+		return "requirement_todo"
+	case logicdomain.MemoryNodeCategoryProjectContext:
+		return "project_context"
+	case logicdomain.MemoryNodeCategoryLogicalBugDebt:
+		return "logical_bug_debt"
+	case logicdomain.MemoryNodeCategorySecurityPolicy:
+		return "security_policy"
 	default:
-		return vmmv1.MemoryRefType_MEMORY_REF_TYPE_UNSPECIFIED
+		return "general"
 	}
 }
 
-// fromProtoMemoryRefType converts the protobuf memory-ref enum into the internal ref type.
-// fromProtoMemoryRefType 用于把 protobuf 的 memory-ref 枚举转换成内部 ref 类型。
-func fromProtoMemoryRefType(refType vmmv1.MemoryRefType) int {
-	switch refType {
-	case vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN:
-		return logicdomain.MemoryRefTypeTurn
-	case vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY:
-		return logicdomain.MemoryRefTypeMemory
-	default:
-		return 0
-	}
-}
-
-// toProtoMemorySourceKind converts the internal unified-memory source kind into the protobuf enum.
-// toProtoMemorySourceKind 用于把内部统一记忆来源类型转换成 protobuf 枚举。
-func toProtoMemorySourceKind(sourceKind int) vmmv1.MemorySourceKind {
-	switch sourceKind {
-	case logicdomain.MemorySourceKindGRPCAIWrite:
-		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_GRPC_AI_WRITE
-	case logicdomain.MemorySourceKindSystemSeed:
-		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_SYSTEM_SEED
-	case logicdomain.MemorySourceKindLegacyEntry:
-		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_LEGACY_ENTRY
-	case logicdomain.MemorySourceKindTurnExtract:
-		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_TURN_EXTRACT
-	default:
-		return vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_UNSPECIFIED
-	}
-}
-
-// toProtoMemoryScopeLevel converts the internal unified-memory scope level into the protobuf enum.
-// toProtoMemoryScopeLevel 用于把内部统一记忆作用域等级转换成 protobuf 枚举。
-func toProtoMemoryScopeLevel(scopeLevel int) vmmv1.MemoryScopeLevel {
+// normalizeTransportMemoryScopeLevel maps the compact numeric concept sent by AI tools into the internal scope enum while preserving -1 for omitted or unsupported values so the use case can still apply defaults.
+// normalizeTransportMemoryScopeLevel 用于把 AI 工具传来的紧凑数字概念值映射成内部 scope 枚举；若省略或不支持则保留 -1，让用例层继续补默认值。
+func normalizeTransportMemoryScopeLevel(scopeLevel int32) int {
 	switch scopeLevel {
-	case logicdomain.MemoryScopeLevelSession:
-		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION
-	case logicdomain.MemoryScopeLevelUser:
-		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_USER
-	case logicdomain.MemoryScopeLevelProject:
-		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT
-	default:
-		return vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED
-	}
-}
-
-// fromProtoMemoryScopeLevel converts the protobuf scope enum into the internal unified-memory scope level.
-// fromProtoMemoryScopeLevel 用于把 protobuf 的作用域枚举转换成内部统一记忆作用域等级。
-func fromProtoMemoryScopeLevel(scopeLevel vmmv1.MemoryScopeLevel) int {
-	switch scopeLevel {
-	case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION:
+	case 1:
 		return logicdomain.MemoryScopeLevelSession
-	case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT:
+	case 2:
 		return logicdomain.MemoryScopeLevelProject
-	case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_USER:
+	case 3:
 		return logicdomain.MemoryScopeLevelUser
 	default:
 		return -1
 	}
 }
 
-// toProtoMemoryStatus converts the internal durable-memory status into the protobuf enum.
-// toProtoMemoryStatus 用于把内部长期记忆状态转换成 protobuf 枚举。
-func toProtoMemoryStatus(status int) vmmv1.MemoryStatus {
-	switch status {
-	case logicdomain.MemoryStatusSuperseded:
-		return vmmv1.MemoryStatus_MEMORY_STATUS_SUPERSEDED
-	case logicdomain.MemoryStatusDeleted:
-		return vmmv1.MemoryStatus_MEMORY_STATUS_DELETED
-	case logicdomain.MemoryStatusExpired:
-		return vmmv1.MemoryStatus_MEMORY_STATUS_EXPIRED
-	case logicdomain.MemoryStatusActive:
-		return vmmv1.MemoryStatus_MEMORY_STATUS_ACTIVE
-	default:
-		return vmmv1.MemoryStatus_MEMORY_STATUS_UNSPECIFIED
-	}
-}
-
-// toProtoMemoryPriority converts the internal memory priority into the protobuf enum.
-// toProtoMemoryPriority 用于把内部记忆优先级转换成 protobuf 枚举。
-func toProtoMemoryPriority(priority int) vmmv1.MemoryPriority {
+// normalizeTransportMemoryPriority maps the compact numeric P-level sent by AI tools into the internal priority enum while preserving -1 for omitted values.
+// normalizeTransportMemoryPriority 用于把 AI 工具传来的紧凑数字 P 级别映射成内部 priority 枚举；省略时保留 -1。
+func normalizeTransportMemoryPriority(priority int32) int {
 	switch priority {
-	case logicdomain.MemoryPriorityP0:
-		return vmmv1.MemoryPriority_MEMORY_PRIORITY_P0
-	case logicdomain.MemoryPriorityP1:
-		return vmmv1.MemoryPriority_MEMORY_PRIORITY_P1
-	case logicdomain.MemoryPriorityP2:
-		return vmmv1.MemoryPriority_MEMORY_PRIORITY_P2
-	default:
-		return vmmv1.MemoryPriority_MEMORY_PRIORITY_UNSPECIFIED
-	}
-}
-
-// fromProtoMemoryPriority converts the protobuf memory priority into the internal value, returning -1 for unspecified transport defaults.
-// fromProtoMemoryPriority 用于把 protobuf 记忆优先级转换成内部值；若传输层未指定则返回 -1 以便用例层补默认值。
-func fromProtoMemoryPriority(priority vmmv1.MemoryPriority) int {
-	switch priority {
-	case vmmv1.MemoryPriority_MEMORY_PRIORITY_P0:
+	case 1:
 		return logicdomain.MemoryPriorityP0
-	case vmmv1.MemoryPriority_MEMORY_PRIORITY_P1:
+	case 2:
 		return logicdomain.MemoryPriorityP1
-	case vmmv1.MemoryPriority_MEMORY_PRIORITY_P2:
+	case 3:
 		return logicdomain.MemoryPriorityP2
 	default:
 		return -1
 	}
 }
 
-// toProtoMemoryLevel converts the internal memory lifecycle level into the protobuf enum.
-// toProtoMemoryLevel 用于把内部记忆生命周期等级转换成 protobuf 枚举。
-func toProtoMemoryLevel(level int) vmmv1.MemoryLevel {
+// normalizeTransportMemoryLevel maps the compact numeric L-level sent by AI tools into the internal lifecycle enum while preserving -1 for omitted values.
+// normalizeTransportMemoryLevel 用于把 AI 工具传来的紧凑数字 L 级别映射成内部生命周期枚举；省略时保留 -1。
+func normalizeTransportMemoryLevel(level int32) int {
 	switch level {
-	case logicdomain.MemoryLevelSession:
-		return vmmv1.MemoryLevel_MEMORY_LEVEL_L0
-	case logicdomain.MemoryLevelPhase:
-		return vmmv1.MemoryLevel_MEMORY_LEVEL_L1
-	case logicdomain.MemoryLevelStable:
-		return vmmv1.MemoryLevel_MEMORY_LEVEL_L2
-	case logicdomain.MemoryLevelPersistent:
-		return vmmv1.MemoryLevel_MEMORY_LEVEL_L3
-	default:
-		return vmmv1.MemoryLevel_MEMORY_LEVEL_UNSPECIFIED
-	}
-}
-
-// fromProtoMemoryLevel converts the protobuf memory lifecycle enum into the internal value, returning -1 when callers omit the field.
-// fromProtoMemoryLevel 用于把 protobuf 记忆生命周期枚举转换成内部值；调用方省略字段时返回 -1。
-func fromProtoMemoryLevel(level vmmv1.MemoryLevel) int {
-	switch level {
-	case vmmv1.MemoryLevel_MEMORY_LEVEL_L0:
+	case 1:
 		return logicdomain.MemoryLevelSession
-	case vmmv1.MemoryLevel_MEMORY_LEVEL_L1:
+	case 2:
 		return logicdomain.MemoryLevelPhase
-	case vmmv1.MemoryLevel_MEMORY_LEVEL_L2:
+	case 3:
 		return logicdomain.MemoryLevelStable
-	case vmmv1.MemoryLevel_MEMORY_LEVEL_L3:
+	case 4:
 		return logicdomain.MemoryLevelPersistent
 	default:
 		return -1

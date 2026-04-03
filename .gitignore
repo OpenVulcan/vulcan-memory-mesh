@@ -5,5 +5,4 @@ bin/
 dist/
 output/
 /nul
-.env
-bak_version
+configs/.env

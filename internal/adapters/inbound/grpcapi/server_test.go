@@ -265,8 +265,8 @@ func TestApplyProfileInstructionReturnsAcceptedAndRetired(t *testing.T) {
 	}
 }
 
-// TestSearchMemoryEventsReturnsHits verifies the grouped memory-search RPC echoes the query items and returns unified memory refs plus optional turn refs.
-// TestSearchMemoryEventsReturnsHits 用于验证分组记忆检索 RPC 会回显查询项，并返回统一 memory ref 以及可选 turn ref。
+// TestSearchMemoryEventsReturnsHits verifies the simplified memory-search RPC keeps only AI-facing fields such as memory_id, optional source_turn_id, abstract, preview, and category label.
+// TestSearchMemoryEventsReturnsHits 用于验证简化后的记忆检索 RPC 只返回 AI 需要的字段，例如 memory_id、可选 source_turn_id、摘要、预览和英文分类标签。
 func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 	fixture := newTestFixture(t, Dependencies{
 		IDs: xid.NewGenerator(),
@@ -275,7 +275,6 @@ func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 				Results: []usecase.MemoryQueryGroupResult{
 					{
 						QueryIndex: 0,
-						Background: "用户最近一直在讨论水果。",
 						Query:      "喜欢的水果",
 						Hits: []usecase.MemoryQueryHit{
 							{
@@ -299,26 +298,32 @@ func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 	resp, err := fixture.client.SearchMemoryEvents(context.Background(), &vmmv1.SearchMemoryEventsRequest{
 		UserId:    7,
 		ProjectId: 9,
-		QueryJson: `[{"background":"用户最近一直在讨论水果。","query":"喜欢的水果"}]`,
+		Queries:   []string{"喜欢的水果"},
 		TopK:      5,
 	})
 	if err != nil {
 		t.Fatalf("search memory events: %v", err)
 	}
-	if len(resp.GetResults()) != 1 || len(resp.GetResults()[0].GetHits()) != 1 {
+	if len(resp.GetResults()) != 1 || resp.GetResults()[0].GetQuery() != "喜欢的水果" || len(resp.GetResults()[0].GetHits()) != 1 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	hit := resp.GetResults()[0].GetHits()[0]
-	if hit.GetMemoryRef().GetType() != vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY || hit.GetMemoryRef().GetId() != 201 {
-		t.Fatalf("unexpected memory ref: %+v", hit.GetMemoryRef())
+	if hit.GetMemoryId() != 201 {
+		t.Fatalf("unexpected memory id: %+v", hit)
 	}
-	if hit.GetSourceRef().GetType() != vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN || hit.GetSourceRef().GetId() != 41 {
-		t.Fatalf("unexpected source ref: %+v", hit.GetSourceRef())
+	if hit.GetSourceTurnId() != 41 {
+		t.Fatalf("unexpected source turn id: %+v", hit)
+	}
+	if hit.GetAbstract() != "用户喜欢吃香蕉。" || hit.GetDetailsPreview() != "来自近期饮食偏好提炼。" {
+		t.Fatalf("unexpected abstract/preview: %+v", hit)
+	}
+	if hit.GetCategory() != "business_logic" {
+		t.Fatalf("unexpected category label: %+v", hit)
 	}
 }
 
-// TestGetTurnDetailsReturnsRows verifies the turn-detail RPC returns dehydrated turn rows unchanged.
-// TestGetTurnDetailsReturnsRows 用于验证 turn 详情 RPC 会原样返回脱水 turn 行。
+// TestGetTurnDetailsReturnsRows verifies the turn-detail RPC returns structured AI-facing fields so callers do not need to parse dehydrated storage JSON themselves.
+// TestGetTurnDetailsReturnsRows 用于验证 turn 详情 RPC 会直接返回面向 AI 的结构化字段，避免调用方再自行解析脱水存储 JSON。
 func TestGetTurnDetailsReturnsRows(t *testing.T) {
 	fixture := newTestFixture(t, Dependencies{
 		IDs: xid.NewGenerator(),
@@ -355,92 +360,21 @@ func TestGetTurnDetailsReturnsRows(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get turn details: %v", err)
 	}
-	if len(resp.GetTurns()) != 1 || resp.GetTurns()[0].GetTurnId() != 41 || resp.GetTurns()[0].GetDehydratedContent() == "" {
+	if len(resp.GetTurns()) != 1 || resp.GetTurns()[0].GetTurnId() != 41 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
-	if resp.GetTurns()[0].GetUserContent() != "我喜欢香蕉" || resp.GetTurns()[0].GetAssistantContent() != "收到" {
+	if resp.GetTurns()[0].GetUserQuestion() != "我喜欢香蕉" || resp.GetTurns()[0].GetAssistantAnswer() != "收到" {
 		t.Fatalf("expected parsed conversation content, got %+v", resp.GetTurns()[0])
+	}
+	if resp.GetTurns()[0].GetDetail() != "近期饮食偏好提炼。" {
+		t.Fatalf("expected parsed turn detail, got %+v", resp.GetTurns()[0])
 	}
 	if len(resp.GetTurns()[0].GetPreviousTurnIds()) != 3 || len(resp.GetTurns()[0].GetNextTurnIds()) != 3 || len(resp.GetTurns()[0].GetTimeline()) != 1 {
 		t.Fatalf("expected neighboring turn ids and timeline, got %+v", resp.GetTurns()[0])
 	}
 }
-
-// TestGetMemoryDetailsReturnsMixedItems verifies the mixed-detail RPC can return unified memory details and turn details in one ordered response.
-// TestGetMemoryDetailsReturnsMixedItems 用于验证混合详情 RPC 可以按顺序同时返回统一记忆详情和 turn 详情。
-func TestGetMemoryDetailsReturnsMixedItems(t *testing.T) {
-	fixture := newTestFixture(t, Dependencies{
-		IDs: xid.NewGenerator(),
-		Memory: &stubMemoryExecutor{
-			detailResult: usecase.MemoryDetailResult{
-				Items: []usecase.MemoryDetailItem{
-					{
-						Ref: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 201},
-						Memory: &logicdomain.MemoryNodeRecord{
-							ID:              201,
-							ProjectID:       9,
-							UserID:          7,
-							OriginSessionID: 12,
-							SourceTurnID:    41,
-							SourceKind:      logicdomain.MemorySourceKindGRPCAIWrite,
-							ScopeLevel:      logicdomain.MemoryScopeLevelProject,
-							Status:          logicdomain.MemoryStatusActive,
-							Category:        3,
-							Abstract:        "用户喜欢吃香蕉。",
-							Details:         "来自工具态主动写入。",
-							Priority:        logicdomain.MemoryPriorityP1,
-							MemoryLevel:     logicdomain.MemoryLevelStable,
-							RefreshWeight:   2,
-							CreatedAt:       time.UnixMilli(1775000000000),
-							UpdatedAt:       time.UnixMilli(1775000001000),
-						},
-					},
-					{
-						Ref: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 41},
-						Turn: &usecase.TurnDetailRecord{
-							Turn: logicdomain.SessionTurnRecord{
-								ID:                41,
-								SessionID:         12,
-								ProjectID:         9,
-								DehydratedContent: `{"user":"我喜欢香蕉"}`,
-								DehydratedBudget:  32,
-								ExtractedStatus:   1,
-								Details:           "近期饮食偏好提炼。",
-								DetailsBudget:     9,
-								CreatedAt:         time.UnixMilli(1775000000000),
-								UpdatedAt:         time.UnixMilli(1775000001000),
-							},
-							UserContent:      "我喜欢香蕉",
-							AssistantContent: "收到",
-						},
-					},
-				},
-			},
-		},
-	}, testBufSize)
-
-	resp, err := fixture.client.GetMemoryDetails(context.Background(), &vmmv1.GetMemoryDetailsRequest{
-		Refs: []*vmmv1.MemoryRef{
-			{Type: vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY, Id: 201},
-			{Type: vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN, Id: 41},
-		},
-	})
-	if err != nil {
-		t.Fatalf("get memory details: %v", err)
-	}
-	if len(resp.GetItems()) != 2 {
-		t.Fatalf("items len = %d", len(resp.GetItems()))
-	}
-	if resp.GetItems()[0].GetMemory().GetMemoryId() != 201 || resp.GetItems()[0].GetMemory().GetSourceKind() != vmmv1.MemorySourceKind_MEMORY_SOURCE_KIND_GRPC_AI_WRITE {
-		t.Fatalf("unexpected memory detail: %+v", resp.GetItems()[0].GetMemory())
-	}
-	if resp.GetItems()[1].GetTurn().GetTurnId() != 41 {
-		t.Fatalf("unexpected turn detail: %+v", resp.GetItems()[1].GetTurn())
-	}
-}
-
-// TestWriteMemoriesPersistsResolvedSession verifies the direct-write RPC uses the resolved session scope and returns unified refs.
-// TestWriteMemoriesPersistsResolvedSession 用于验证主动写记忆 RPC 会使用解析后的 session 范围，并返回统一引用。
+// TestWriteMemoriesPersistsResolvedSession verifies the direct-write RPC accepts compact numeric concepts, computes lifecycle server-side, and returns only the created memory ids.
+// TestWriteMemoriesPersistsResolvedSession 用于验证主动写记忆 RPC 接收紧凑数字概念值、由服务端计算生命周期，并且只返回新建 memory id。
 func TestWriteMemoriesPersistsResolvedSession(t *testing.T) {
 	memory := &stubMemoryExecutor{
 		writeResult: usecase.WriteMemoriesResult{
@@ -466,19 +400,19 @@ func TestWriteMemoriesPersistsResolvedSession(t *testing.T) {
 		ProjectId: 9,
 		Items: []*vmmv1.WriteMemoryItem{
 			{
-				ScopeLevel:  vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT,
+				ScopeLevel:  2,
 				Abstract:    "用户喜欢吃香蕉。",
 				Details:     "由工作态 AI 工具主动写入。",
 				Category:    3,
-				Priority:    vmmv1.MemoryPriority_MEMORY_PRIORITY_P1,
-				MemoryLevel: vmmv1.MemoryLevel_MEMORY_LEVEL_L2,
+				Priority:    2,
+				MemoryLevel: 3,
 			},
 		},
 	})
 	if err != nil {
 		t.Fatalf("write memories: %v", err)
 	}
-	if len(resp.GetItems()) != 1 || resp.GetItems()[0].GetMemoryRef().GetId() != 301 {
+	if len(resp.GetItems()) != 1 || resp.GetItems()[0].GetMemoryId() != 301 {
 		t.Fatalf("unexpected response: %+v", resp)
 	}
 	if memory.writeCmd.Session.SessionID != 41 || memory.writeCmd.Session.ProjectID != 9 || memory.writeCmd.Session.UserID != 7 {

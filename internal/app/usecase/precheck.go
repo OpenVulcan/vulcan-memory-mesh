@@ -4,7 +4,6 @@ package usecase
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -380,24 +379,21 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	if u.memories == nil {
 		return []logicdomain.PreCheckMemoryCandidate{}, nil
 	}
-	queryJSON, err := buildPreCheckMemoryQueryJSON(intent, cmd.UserContent)
-	if err != nil {
-		return nil, err
-	}
+	queries := buildPreCheckMemoryQueries(intent, cmd.UserContent)
 	u.logPreCheckStage("pre-check memory query prepared", trace.IDFromContext(ctx), cmd.Session, []any{
 		"top_k", u.config.TopK,
 		"search_scope", u.config.SearchScope,
-		"normalized_query_count", len(normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent)),
+		"normalized_query_count", len(queries),
 	}, map[string]any{
 		"current_user_input": cmd.UserContent,
-		"intent_queries":     normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"intent_queries":     queries,
 		"search_scope":       u.config.SearchScope,
-		"query_json":         json.RawMessage(queryJSON),
+		"queries":            queries,
 	})
 	result, err := u.memories.Search(ctx, MemoryQueryCommand{
 		UserID:        cmd.Session.UserID,
 		ProjectID:     cmd.Session.ProjectID,
-		QueryJSON:     queryJSON,
+		Queries:       queries,
 		TopK:          u.config.TopK,
 		ScopeOverride: u.config.SearchScope,
 	})
@@ -465,7 +461,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		"similarity_threshold", u.config.MinSimilarityScore,
 	}, map[string]any{
 		"current_user_input": cmd.UserContent,
-		"intent_queries":     normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"intent_queries":     queries,
 		"search_scope":       u.config.SearchScope,
 		"raw_groups":         rawGroups,
 		"best_raw_hit":       bestRawHit,
@@ -502,7 +498,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		"similarity_threshold", u.config.MinSimilarityScore,
 	}, map[string]any{
 		"current_user_input":       cmd.UserContent,
-		"intent_queries":           normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"intent_queries":           queries,
 		"search_scope":             u.config.SearchScope,
 		"best_raw_hit":             bestRawHit,
 		"best_below_threshold_hit": bestBelowThresholdHit,
@@ -514,7 +510,6 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 // preCheckRawRecallGroupLogPayload 用于保存 pre-check 相似度阈值裁剪前的一组 unified-search 命中快照。
 type preCheckRawRecallGroupLogPayload struct {
 	QueryIndex  int                       `json:"query_index"`
-	Background  string                    `json:"background,omitempty"`
 	Query       string                    `json:"query,omitempty"`
 	RawHitCount int                       `json:"raw_hit_count"`
 	TopRawHit   *memoryQueryHitLogPayload `json:"top_raw_hit,omitempty"`
@@ -544,7 +539,6 @@ func buildPreCheckRawRecallLogs(results []MemoryQueryGroupResult) ([]preCheckRaw
 		rawHitCount += len(group.Hits)
 		groups = append(groups, preCheckRawRecallGroupLogPayload{
 			QueryIndex:  group.QueryIndex,
-			Background:  group.Background,
 			Query:       group.Query,
 			RawHitCount: len(group.Hits),
 			TopRawHit:   summarizeMemoryQueryHitForLog(firstMemoryQueryHit(group.Hits)),
@@ -719,22 +713,10 @@ func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, hits []lo
 	return buildFallbackContextSummary(items), items, false, nil
 }
 
-// buildPreCheckMemoryQueryJSON converts the stage-one search sentences into the grouped memory-search JSON format already consumed by the unified search surface.
-// buildPreCheckMemoryQueryJSON 用于把第一层检索语句转换成统一记忆查询接口已消费的分组 JSON 格式。
-func buildPreCheckMemoryQueryJSON(intent logicdomain.IntentResult, userContent string) (string, error) {
-	queries := normalizePreCheckMemoryQueries(intent.Queries, userContent)
-	items := make([]MemoryQueryItem, 0, len(queries))
-	for _, query := range queries {
-		items = append(items, MemoryQueryItem{
-			Background: strings.TrimSpace(userContent),
-			Query:      query,
-		})
-	}
-	body, err := json.Marshal(items)
-	if err != nil {
-		return "", fmt.Errorf("marshal pre-check query json: %w", err)
-	}
-	return string(body), nil
+// buildPreCheckMemoryQueries converts the stage-one retrieval hints into the simplified query list already consumed by the unified search surface.
+// buildPreCheckMemoryQueries 用于把第一层检索提示转换成统一检索接口已消费的简化 query 列表。
+func buildPreCheckMemoryQueries(intent logicdomain.IntentResult, userContent string) []string {
+	return normalizePreCheckMemoryQueries(intent.Queries, userContent)
 }
 
 // normalizePreCheckMemoryQueries trims and de-duplicates stage-one queries so pre-check only searches and explains the distinct retrieval prompts that actually matter.

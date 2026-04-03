@@ -5,7 +5,6 @@ package usecase
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -388,8 +387,8 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 	if len(assembler.hits) != 2 || assembler.hits[0].ID != "21" || assembler.hits[1].ID != "20" {
 		t.Fatalf("unexpected assembled hits: %#v", assembler.hits)
 	}
-	if !strings.Contains(memories.cmd.QueryJSON, "\"query\":\"项目为什么从 mutex 改成 channel 做并发控制\"") {
-		t.Fatalf("unexpected search query json: %s", memories.cmd.QueryJSON)
+	if len(memories.cmd.Queries) != 2 || memories.cmd.Queries[0] != "项目为什么从 mutex 改成 channel 做并发控制" || memories.cmd.Queries[1] != "之前有没有确认过 channel 方案" {
+		t.Fatalf("unexpected search queries: %#v", memories.cmd.Queries)
 	}
 }
 
@@ -598,7 +597,6 @@ func TestPreCheckExecuteLogsRawRecallAndBestRejectedHit(t *testing.T) {
 			Results: []MemoryQueryGroupResult{
 				{
 					QueryIndex: 0,
-					Background: "之前我询问了你买车的事情，你还记得么",
 					Query:      "用户购车计划的历史记录和相关偏好",
 					Hits: []MemoryQueryHit{
 						{
@@ -775,8 +773,8 @@ func TestPreCheckExecuteRewritesGenericQueriesToCurrentInput(t *testing.T) {
 	if memories.searchCalls != 1 {
 		t.Fatalf("expected one search call, got %d", memories.searchCalls)
 	}
-	if strings.Count(memories.cmd.QueryJSON, current) < 2 {
-		t.Fatalf("expected rewritten query json to keep full current input in both background and query, got %s", memories.cmd.QueryJSON)
+	if len(memories.cmd.Queries) != 1 || memories.cmd.Queries[0] != current {
+		t.Fatalf("expected rewritten search query to keep full current input, got %#v", memories.cmd.Queries)
 	}
 }
 
@@ -845,12 +843,8 @@ func TestPreCheckExecuteDeduplicatesSearchQueries(t *testing.T) {
 		t.Fatalf("execute pre-check: %v", err)
 	}
 
-	var items []MemoryQueryItem
-	if err := json.Unmarshal([]byte(memories.cmd.QueryJSON), &items); err != nil {
-		t.Fatalf("unmarshal query json: %v", err)
-	}
-	if len(items) != 1 || items[0].Query != "SQLite schema 13 compatibility" {
-		t.Fatalf("expected deduplicated search query json, got %#v", items)
+	if len(memories.cmd.Queries) != 1 || memories.cmd.Queries[0] != "SQLite schema 13 compatibility" {
+		t.Fatalf("expected deduplicated search queries, got %#v", memories.cmd.Queries)
 	}
 	if len(reviewer.input.SearchQueries) != 1 || reviewer.input.SearchQueries[0] != "SQLite schema 13 compatibility" {
 		t.Fatalf("expected reviewer to see deduplicated search queries, got %#v", reviewer.input.SearchQueries)

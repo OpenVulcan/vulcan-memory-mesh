@@ -136,336 +136,6 @@ func (ProfileNodeSourceKind) EnumDescriptor() ([]byte, []int) {
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{1}
 }
 
-// MemoryRefType identifies whether one lookup ref targets a unified memory row or one persisted turn row.
-// MemoryRefType 用于标识某个查询引用指向统一记忆行，还是持久化 turn 行。
-type MemoryRefType int32
-
-const (
-	MemoryRefType_MEMORY_REF_TYPE_UNSPECIFIED MemoryRefType = 0
-	MemoryRefType_MEMORY_REF_TYPE_MEMORY      MemoryRefType = 1
-	MemoryRefType_MEMORY_REF_TYPE_TURN        MemoryRefType = 2
-)
-
-// Enum value maps for MemoryRefType.
-var (
-	MemoryRefType_name = map[int32]string{
-		0: "MEMORY_REF_TYPE_UNSPECIFIED",
-		1: "MEMORY_REF_TYPE_MEMORY",
-		2: "MEMORY_REF_TYPE_TURN",
-	}
-	MemoryRefType_value = map[string]int32{
-		"MEMORY_REF_TYPE_UNSPECIFIED": 0,
-		"MEMORY_REF_TYPE_MEMORY":      1,
-		"MEMORY_REF_TYPE_TURN":        2,
-	}
-)
-
-func (x MemoryRefType) Enum() *MemoryRefType {
-	p := new(MemoryRefType)
-	*p = x
-	return p
-}
-
-func (x MemoryRefType) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (MemoryRefType) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[2].Descriptor()
-}
-
-func (MemoryRefType) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[2]
-}
-
-func (x MemoryRefType) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use MemoryRefType.Descriptor instead.
-func (MemoryRefType) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{2}
-}
-
-// MemorySourceKind describes where one durable memory row came from.
-// MemorySourceKind 用于描述一条长期记忆行的来源。
-type MemorySourceKind int32
-
-const (
-	MemorySourceKind_MEMORY_SOURCE_KIND_UNSPECIFIED   MemorySourceKind = 0
-	MemorySourceKind_MEMORY_SOURCE_KIND_TURN_EXTRACT  MemorySourceKind = 1
-	MemorySourceKind_MEMORY_SOURCE_KIND_GRPC_AI_WRITE MemorySourceKind = 2
-	MemorySourceKind_MEMORY_SOURCE_KIND_SYSTEM_SEED   MemorySourceKind = 3
-	MemorySourceKind_MEMORY_SOURCE_KIND_LEGACY_ENTRY  MemorySourceKind = 4
-)
-
-// Enum value maps for MemorySourceKind.
-var (
-	MemorySourceKind_name = map[int32]string{
-		0: "MEMORY_SOURCE_KIND_UNSPECIFIED",
-		1: "MEMORY_SOURCE_KIND_TURN_EXTRACT",
-		2: "MEMORY_SOURCE_KIND_GRPC_AI_WRITE",
-		3: "MEMORY_SOURCE_KIND_SYSTEM_SEED",
-		4: "MEMORY_SOURCE_KIND_LEGACY_ENTRY",
-	}
-	MemorySourceKind_value = map[string]int32{
-		"MEMORY_SOURCE_KIND_UNSPECIFIED":   0,
-		"MEMORY_SOURCE_KIND_TURN_EXTRACT":  1,
-		"MEMORY_SOURCE_KIND_GRPC_AI_WRITE": 2,
-		"MEMORY_SOURCE_KIND_SYSTEM_SEED":   3,
-		"MEMORY_SOURCE_KIND_LEGACY_ENTRY":  4,
-	}
-)
-
-func (x MemorySourceKind) Enum() *MemorySourceKind {
-	p := new(MemorySourceKind)
-	*p = x
-	return p
-}
-
-func (x MemorySourceKind) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (MemorySourceKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3].Descriptor()
-}
-
-func (MemorySourceKind) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3]
-}
-
-func (x MemorySourceKind) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use MemorySourceKind.Descriptor instead.
-func (MemorySourceKind) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{3}
-}
-
-// MemoryScopeLevel describes the lifetime scope attached to one durable memory row.
-// MemoryScopeLevel 用于描述一条长期记忆行绑定的生命周期作用域。
-type MemoryScopeLevel int32
-
-const (
-	MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED MemoryScopeLevel = 0
-	MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION     MemoryScopeLevel = 1
-	MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT     MemoryScopeLevel = 2
-	MemoryScopeLevel_MEMORY_SCOPE_LEVEL_USER        MemoryScopeLevel = 3
-)
-
-// Enum value maps for MemoryScopeLevel.
-var (
-	MemoryScopeLevel_name = map[int32]string{
-		0: "MEMORY_SCOPE_LEVEL_UNSPECIFIED",
-		1: "MEMORY_SCOPE_LEVEL_SESSION",
-		2: "MEMORY_SCOPE_LEVEL_PROJECT",
-		3: "MEMORY_SCOPE_LEVEL_USER",
-	}
-	MemoryScopeLevel_value = map[string]int32{
-		"MEMORY_SCOPE_LEVEL_UNSPECIFIED": 0,
-		"MEMORY_SCOPE_LEVEL_SESSION":     1,
-		"MEMORY_SCOPE_LEVEL_PROJECT":     2,
-		"MEMORY_SCOPE_LEVEL_USER":        3,
-	}
-)
-
-func (x MemoryScopeLevel) Enum() *MemoryScopeLevel {
-	p := new(MemoryScopeLevel)
-	*p = x
-	return p
-}
-
-func (x MemoryScopeLevel) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (MemoryScopeLevel) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[4].Descriptor()
-}
-
-func (MemoryScopeLevel) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[4]
-}
-
-func (x MemoryScopeLevel) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use MemoryScopeLevel.Descriptor instead.
-func (MemoryScopeLevel) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{4}
-}
-
-// MemoryStatus describes the current durable state of one memory row.
-// MemoryStatus 用于描述一条记忆行当前的长期状态。
-type MemoryStatus int32
-
-const (
-	MemoryStatus_MEMORY_STATUS_UNSPECIFIED MemoryStatus = 0
-	MemoryStatus_MEMORY_STATUS_ACTIVE      MemoryStatus = 1
-	MemoryStatus_MEMORY_STATUS_SUPERSEDED  MemoryStatus = 2
-	MemoryStatus_MEMORY_STATUS_DELETED     MemoryStatus = 3
-	MemoryStatus_MEMORY_STATUS_EXPIRED     MemoryStatus = 4
-)
-
-// Enum value maps for MemoryStatus.
-var (
-	MemoryStatus_name = map[int32]string{
-		0: "MEMORY_STATUS_UNSPECIFIED",
-		1: "MEMORY_STATUS_ACTIVE",
-		2: "MEMORY_STATUS_SUPERSEDED",
-		3: "MEMORY_STATUS_DELETED",
-		4: "MEMORY_STATUS_EXPIRED",
-	}
-	MemoryStatus_value = map[string]int32{
-		"MEMORY_STATUS_UNSPECIFIED": 0,
-		"MEMORY_STATUS_ACTIVE":      1,
-		"MEMORY_STATUS_SUPERSEDED":  2,
-		"MEMORY_STATUS_DELETED":     3,
-		"MEMORY_STATUS_EXPIRED":     4,
-	}
-)
-
-func (x MemoryStatus) Enum() *MemoryStatus {
-	p := new(MemoryStatus)
-	*p = x
-	return p
-}
-
-func (x MemoryStatus) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (MemoryStatus) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[5].Descriptor()
-}
-
-func (MemoryStatus) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[5]
-}
-
-func (x MemoryStatus) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use MemoryStatus.Descriptor instead.
-func (MemoryStatus) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{5}
-}
-
-// MemoryPriority transports the compact P-level used by durable memories.
-// MemoryPriority 用于传输长期记忆使用的紧凑 P 级别。
-type MemoryPriority int32
-
-const (
-	MemoryPriority_MEMORY_PRIORITY_UNSPECIFIED MemoryPriority = 0
-	MemoryPriority_MEMORY_PRIORITY_P0          MemoryPriority = 1
-	MemoryPriority_MEMORY_PRIORITY_P1          MemoryPriority = 2
-	MemoryPriority_MEMORY_PRIORITY_P2          MemoryPriority = 3
-)
-
-// Enum value maps for MemoryPriority.
-var (
-	MemoryPriority_name = map[int32]string{
-		0: "MEMORY_PRIORITY_UNSPECIFIED",
-		1: "MEMORY_PRIORITY_P0",
-		2: "MEMORY_PRIORITY_P1",
-		3: "MEMORY_PRIORITY_P2",
-	}
-	MemoryPriority_value = map[string]int32{
-		"MEMORY_PRIORITY_UNSPECIFIED": 0,
-		"MEMORY_PRIORITY_P0":          1,
-		"MEMORY_PRIORITY_P1":          2,
-		"MEMORY_PRIORITY_P2":          3,
-	}
-)
-
-func (x MemoryPriority) Enum() *MemoryPriority {
-	p := new(MemoryPriority)
-	*p = x
-	return p
-}
-
-func (x MemoryPriority) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (MemoryPriority) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[6].Descriptor()
-}
-
-func (MemoryPriority) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[6]
-}
-
-func (x MemoryPriority) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use MemoryPriority.Descriptor instead.
-func (MemoryPriority) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{6}
-}
-
-// MemoryLevel transports the compact L-level used by durable memories.
-// MemoryLevel 用于传输长期记忆使用的紧凑 L 级别。
-type MemoryLevel int32
-
-const (
-	MemoryLevel_MEMORY_LEVEL_UNSPECIFIED MemoryLevel = 0
-	MemoryLevel_MEMORY_LEVEL_L0          MemoryLevel = 1
-	MemoryLevel_MEMORY_LEVEL_L1          MemoryLevel = 2
-	MemoryLevel_MEMORY_LEVEL_L2          MemoryLevel = 3
-	MemoryLevel_MEMORY_LEVEL_L3          MemoryLevel = 4
-)
-
-// Enum value maps for MemoryLevel.
-var (
-	MemoryLevel_name = map[int32]string{
-		0: "MEMORY_LEVEL_UNSPECIFIED",
-		1: "MEMORY_LEVEL_L0",
-		2: "MEMORY_LEVEL_L1",
-		3: "MEMORY_LEVEL_L2",
-		4: "MEMORY_LEVEL_L3",
-	}
-	MemoryLevel_value = map[string]int32{
-		"MEMORY_LEVEL_UNSPECIFIED": 0,
-		"MEMORY_LEVEL_L0":          1,
-		"MEMORY_LEVEL_L1":          2,
-		"MEMORY_LEVEL_L2":          3,
-		"MEMORY_LEVEL_L3":          4,
-	}
-)
-
-func (x MemoryLevel) Enum() *MemoryLevel {
-	p := new(MemoryLevel)
-	*p = x
-	return p
-}
-
-func (x MemoryLevel) String() string {
-	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
-}
-
-func (MemoryLevel) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[7].Descriptor()
-}
-
-func (MemoryLevel) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[7]
-}
-
-func (x MemoryLevel) Number() protoreflect.EnumNumber {
-	return protoreflect.EnumNumber(x)
-}
-
-// Deprecated: Use MemoryLevel.Descriptor instead.
-func (MemoryLevel) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{7}
-}
-
 // ProfileBundleMode selects whether callers want one combined prompt text or the split TEAM/SPACE/PROJECT/USER sections.
 // ProfileBundleMode 用于选择调用方希望返回一段组合提示词，还是拆分后的 TEAM/SPACE/PROJECT/USER 段落。
 type ProfileBundleMode int32
@@ -501,11 +171,11 @@ func (x ProfileBundleMode) String() string {
 }
 
 func (ProfileBundleMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[8].Descriptor()
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[2].Descriptor()
 }
 
 func (ProfileBundleMode) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[8]
+	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[2]
 }
 
 func (x ProfileBundleMode) Number() protoreflect.EnumNumber {
@@ -514,7 +184,7 @@ func (x ProfileBundleMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use ProfileBundleMode.Descriptor instead.
 func (ProfileBundleMode) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{8}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{2}
 }
 
 // HealthzResponse returns the runtime status plus trace metadata.
@@ -1779,60 +1449,6 @@ func (x *DeleteUserResponse) GetDeletedProfiles() int64 {
 	return 0
 }
 
-// MemoryRef transports one `TYPE + ID` reference for unified memory or turn-detail lookup.
-// MemoryRef 用于传输统一记忆或 turn 详情查询使用的 `TYPE + ID` 引用。
-type MemoryRef struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Type          MemoryRefType          `protobuf:"varint,1,opt,name=type,proto3,enum=vmm.v1.MemoryRefType" json:"type,omitempty"`
-	Id            uint64                 `protobuf:"varint,2,opt,name=id,proto3" json:"id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *MemoryRef) Reset() {
-	*x = MemoryRef{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MemoryRef) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MemoryRef) ProtoMessage() {}
-
-func (x *MemoryRef) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MemoryRef.ProtoReflect.Descriptor instead.
-func (*MemoryRef) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{17}
-}
-
-func (x *MemoryRef) GetType() MemoryRefType {
-	if x != nil {
-		return x.Type
-	}
-	return MemoryRefType_MEMORY_REF_TYPE_UNSPECIFIED
-}
-
-func (x *MemoryRef) GetId() uint64 {
-	if x != nil {
-		return x.Id
-	}
-	return 0
-}
-
 // ProfileNodeEntry transports one active atomic profile node back to the caller.
 // ProfileNodeEntry 用于把一条 active 原子化画像节点返回给调用方。
 type ProfileNodeEntry struct {
@@ -1855,7 +1471,7 @@ type ProfileNodeEntry struct {
 
 func (x *ProfileNodeEntry) Reset() {
 	*x = ProfileNodeEntry{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1867,7 +1483,7 @@ func (x *ProfileNodeEntry) String() string {
 func (*ProfileNodeEntry) ProtoMessage() {}
 
 func (x *ProfileNodeEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[17]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -1880,7 +1496,7 @@ func (x *ProfileNodeEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProfileNodeEntry.ProtoReflect.Descriptor instead.
 func (*ProfileNodeEntry) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{18}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{17}
 }
 
 func (x *ProfileNodeEntry) GetProfileNodeId() uint64 {
@@ -1979,7 +1595,7 @@ type RetiredProfileNodeEntry struct {
 
 func (x *RetiredProfileNodeEntry) Reset() {
 	*x = RetiredProfileNodeEntry{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -1991,7 +1607,7 @@ func (x *RetiredProfileNodeEntry) String() string {
 func (*RetiredProfileNodeEntry) ProtoMessage() {}
 
 func (x *RetiredProfileNodeEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[18]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2004,7 +1620,7 @@ func (x *RetiredProfileNodeEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use RetiredProfileNodeEntry.ProtoReflect.Descriptor instead.
 func (*RetiredProfileNodeEntry) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{19}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{18}
 }
 
 func (x *RetiredProfileNodeEntry) GetProfileNodeId() uint64 {
@@ -2035,7 +1651,7 @@ type GetProfileNodesRequest struct {
 
 func (x *GetProfileNodesRequest) Reset() {
 	*x = GetProfileNodesRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2047,7 +1663,7 @@ func (x *GetProfileNodesRequest) String() string {
 func (*GetProfileNodesRequest) ProtoMessage() {}
 
 func (x *GetProfileNodesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[19]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2060,7 +1676,7 @@ func (x *GetProfileNodesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProfileNodesRequest.ProtoReflect.Descriptor instead.
 func (*GetProfileNodesRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{20}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{19}
 }
 
 func (x *GetProfileNodesRequest) GetTarget() ProfileTarget {
@@ -2103,7 +1719,7 @@ type GetProfileNodesResponse struct {
 
 func (x *GetProfileNodesResponse) Reset() {
 	*x = GetProfileNodesResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2115,7 +1731,7 @@ func (x *GetProfileNodesResponse) String() string {
 func (*GetProfileNodesResponse) ProtoMessage() {}
 
 func (x *GetProfileNodesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[20]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2128,7 +1744,7 @@ func (x *GetProfileNodesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProfileNodesResponse.ProtoReflect.Descriptor instead.
 func (*GetProfileNodesResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{21}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{20}
 }
 
 func (x *GetProfileNodesResponse) GetNodes() []*ProfileNodeEntry {
@@ -2159,7 +1775,7 @@ type GetProfileBundleRequest struct {
 
 func (x *GetProfileBundleRequest) Reset() {
 	*x = GetProfileBundleRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2171,7 +1787,7 @@ func (x *GetProfileBundleRequest) String() string {
 func (*GetProfileBundleRequest) ProtoMessage() {}
 
 func (x *GetProfileBundleRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2184,7 +1800,7 @@ func (x *GetProfileBundleRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProfileBundleRequest.ProtoReflect.Descriptor instead.
 func (*GetProfileBundleRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{22}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{21}
 }
 
 func (x *GetProfileBundleRequest) GetUserId() uint64 {
@@ -2235,7 +1851,7 @@ type GetProfileBundleResponse struct {
 
 func (x *GetProfileBundleResponse) Reset() {
 	*x = GetProfileBundleResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[23]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2247,7 +1863,7 @@ func (x *GetProfileBundleResponse) String() string {
 func (*GetProfileBundleResponse) ProtoMessage() {}
 
 func (x *GetProfileBundleResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[23]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2260,7 +1876,7 @@ func (x *GetProfileBundleResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetProfileBundleResponse.ProtoReflect.Descriptor instead.
 func (*GetProfileBundleResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{23}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{22}
 }
 
 func (x *GetProfileBundleResponse) GetMode() ProfileBundleMode {
@@ -2347,7 +1963,7 @@ type ApplyProfileInstructionRequest struct {
 
 func (x *ApplyProfileInstructionRequest) Reset() {
 	*x = ApplyProfileInstructionRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[24]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[23]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2359,7 +1975,7 @@ func (x *ApplyProfileInstructionRequest) String() string {
 func (*ApplyProfileInstructionRequest) ProtoMessage() {}
 
 func (x *ApplyProfileInstructionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[24]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[23]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2372,7 +1988,7 @@ func (x *ApplyProfileInstructionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyProfileInstructionRequest.ProtoReflect.Descriptor instead.
 func (*ApplyProfileInstructionRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{24}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{23}
 }
 
 func (x *ApplyProfileInstructionRequest) GetTarget() ProfileTarget {
@@ -2418,7 +2034,7 @@ type ApplyProfileInstructionResponse struct {
 
 func (x *ApplyProfileInstructionResponse) Reset() {
 	*x = ApplyProfileInstructionResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[25]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[24]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2430,7 +2046,7 @@ func (x *ApplyProfileInstructionResponse) String() string {
 func (*ApplyProfileInstructionResponse) ProtoMessage() {}
 
 func (x *ApplyProfileInstructionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[25]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[24]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2443,7 +2059,7 @@ func (x *ApplyProfileInstructionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ApplyProfileInstructionResponse.ProtoReflect.Descriptor instead.
 func (*ApplyProfileInstructionResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{25}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{24}
 }
 
 func (x *ApplyProfileInstructionResponse) GetInstructionId() uint64 {
@@ -2481,13 +2097,13 @@ func (x *ApplyProfileInstructionResponse) GetTraceId() string {
 	return ""
 }
 
-// SearchMemoryEventsRequest carries one grouped JSON query payload together with the resolved user/project selectors.
-// SearchMemoryEventsRequest 用于承载一份分组 JSON 查询载荷，以及解析范围所需的 user/project 选择参数。
+// SearchMemoryEventsRequest carries one simple query list together with the resolved user/project selectors.
+// SearchMemoryEventsRequest 用于承载一个简单查询字符串列表，以及解析范围所需的 user/project 选择参数。
 type SearchMemoryEventsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	ProjectId     uint64                 `protobuf:"varint,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	QueryJson     string                 `protobuf:"bytes,3,opt,name=query_json,json=queryJson,proto3" json:"query_json,omitempty"`
+	Queries       []string               `protobuf:"bytes,3,rep,name=queries,proto3" json:"queries,omitempty"`
 	TopK          uint32                 `protobuf:"varint,4,opt,name=top_k,json=topK,proto3" json:"top_k,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -2495,7 +2111,7 @@ type SearchMemoryEventsRequest struct {
 
 func (x *SearchMemoryEventsRequest) Reset() {
 	*x = SearchMemoryEventsRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[26]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[25]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2507,7 +2123,7 @@ func (x *SearchMemoryEventsRequest) String() string {
 func (*SearchMemoryEventsRequest) ProtoMessage() {}
 
 func (x *SearchMemoryEventsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[26]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[25]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2520,7 +2136,7 @@ func (x *SearchMemoryEventsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMemoryEventsRequest.ProtoReflect.Descriptor instead.
 func (*SearchMemoryEventsRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{26}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{25}
 }
 
 func (x *SearchMemoryEventsRequest) GetUserId() uint64 {
@@ -2537,11 +2153,11 @@ func (x *SearchMemoryEventsRequest) GetProjectId() uint64 {
 	return 0
 }
 
-func (x *SearchMemoryEventsRequest) GetQueryJson() string {
+func (x *SearchMemoryEventsRequest) GetQueries() []string {
 	if x != nil {
-		return x.QueryJson
+		return x.Queries
 	}
-	return ""
+	return nil
 }
 
 func (x *SearchMemoryEventsRequest) GetTopK() uint32 {
@@ -2551,26 +2167,22 @@ func (x *SearchMemoryEventsRequest) GetTopK() uint32 {
 	return 0
 }
 
-// MemorySearchHit transports one vector-memory hit plus its unified memory ref and optional source turn ref.
-// MemorySearchHit 用于承载一条向量记忆命中结果，以及它的统一记忆引用和可选来源 turn 引用。
+// MemorySearchHit transports one AI-facing memory hit with the optional source turn id kept for later turn-detail lookup.
+// MemorySearchHit 用于承载一条面向 AI 的记忆命中结果，并保留可选的来源 turn id 供后续查看详情。
 type MemorySearchHit struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
-	MemoryRef      *MemoryRef             `protobuf:"bytes,1,opt,name=memory_ref,json=memoryRef,proto3" json:"memory_ref,omitempty"`
-	SourceRef      *MemoryRef             `protobuf:"bytes,2,opt,name=source_ref,json=sourceRef,proto3" json:"source_ref,omitempty"`
-	SourceKind     MemorySourceKind       `protobuf:"varint,3,opt,name=source_kind,json=sourceKind,proto3,enum=vmm.v1.MemorySourceKind" json:"source_kind,omitempty"`
-	ScopeLevel     MemoryScopeLevel       `protobuf:"varint,4,opt,name=scope_level,json=scopeLevel,proto3,enum=vmm.v1.MemoryScopeLevel" json:"scope_level,omitempty"`
-	SessionId      uint64                 `protobuf:"varint,5,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Abstract       string                 `protobuf:"bytes,6,opt,name=abstract,proto3" json:"abstract,omitempty"`
-	DetailsPreview string                 `protobuf:"bytes,7,opt,name=details_preview,json=detailsPreview,proto3" json:"details_preview,omitempty"`
-	Category       int32                  `protobuf:"varint,8,opt,name=category,proto3" json:"category,omitempty"`
-	Score          float64                `protobuf:"fixed64,9,opt,name=score,proto3" json:"score,omitempty"`
+	MemoryId       uint64                 `protobuf:"varint,1,opt,name=memory_id,json=memoryId,proto3" json:"memory_id,omitempty"`
+	SourceTurnId   uint64                 `protobuf:"varint,2,opt,name=source_turn_id,json=sourceTurnId,proto3" json:"source_turn_id,omitempty"`
+	Abstract       string                 `protobuf:"bytes,3,opt,name=abstract,proto3" json:"abstract,omitempty"`
+	DetailsPreview string                 `protobuf:"bytes,4,opt,name=details_preview,json=detailsPreview,proto3" json:"details_preview,omitempty"`
+	Category       string                 `protobuf:"bytes,5,opt,name=category,proto3" json:"category,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
 
 func (x *MemorySearchHit) Reset() {
 	*x = MemorySearchHit{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[27]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[26]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2582,7 +2194,7 @@ func (x *MemorySearchHit) String() string {
 func (*MemorySearchHit) ProtoMessage() {}
 
 func (x *MemorySearchHit) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[27]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[26]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2595,40 +2207,19 @@ func (x *MemorySearchHit) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemorySearchHit.ProtoReflect.Descriptor instead.
 func (*MemorySearchHit) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{27}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{26}
 }
 
-func (x *MemorySearchHit) GetMemoryRef() *MemoryRef {
+func (x *MemorySearchHit) GetMemoryId() uint64 {
 	if x != nil {
-		return x.MemoryRef
+		return x.MemoryId
 	}
-	return nil
+	return 0
 }
 
-func (x *MemorySearchHit) GetSourceRef() *MemoryRef {
+func (x *MemorySearchHit) GetSourceTurnId() uint64 {
 	if x != nil {
-		return x.SourceRef
-	}
-	return nil
-}
-
-func (x *MemorySearchHit) GetSourceKind() MemorySourceKind {
-	if x != nil {
-		return x.SourceKind
-	}
-	return MemorySourceKind_MEMORY_SOURCE_KIND_UNSPECIFIED
-}
-
-func (x *MemorySearchHit) GetScopeLevel() MemoryScopeLevel {
-	if x != nil {
-		return x.ScopeLevel
-	}
-	return MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED
-}
-
-func (x *MemorySearchHit) GetSessionId() uint64 {
-	if x != nil {
-		return x.SessionId
+		return x.SourceTurnId
 	}
 	return 0
 }
@@ -2647,35 +2238,27 @@ func (x *MemorySearchHit) GetDetailsPreview() string {
 	return ""
 }
 
-func (x *MemorySearchHit) GetCategory() int32 {
+func (x *MemorySearchHit) GetCategory() string {
 	if x != nil {
 		return x.Category
 	}
-	return 0
+	return ""
 }
 
-func (x *MemorySearchHit) GetScore() float64 {
-	if x != nil {
-		return x.Score
-	}
-	return 0
-}
-
-// MemorySearchGroupResult echoes one grouped JSON query item and returns the hit list produced for that item.
-// MemorySearchGroupResult 用于原样回显一条分组 JSON 查询项，并返回针对该项生成的命中列表。
+// MemorySearchGroupResult echoes one normalized query string and returns the hit list produced for that query.
+// MemorySearchGroupResult 用于原样回显一条规范化后的查询字符串，并返回针对该查询生成的命中列表。
 type MemorySearchGroupResult struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	QueryIndex    uint32                 `protobuf:"varint,1,opt,name=query_index,json=queryIndex,proto3" json:"query_index,omitempty"`
-	Background    string                 `protobuf:"bytes,2,opt,name=background,proto3" json:"background,omitempty"`
-	Query         string                 `protobuf:"bytes,3,opt,name=query,proto3" json:"query,omitempty"`
-	Hits          []*MemorySearchHit     `protobuf:"bytes,4,rep,name=hits,proto3" json:"hits,omitempty"`
+	Query         string                 `protobuf:"bytes,2,opt,name=query,proto3" json:"query,omitempty"`
+	Hits          []*MemorySearchHit     `protobuf:"bytes,3,rep,name=hits,proto3" json:"hits,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MemorySearchGroupResult) Reset() {
 	*x = MemorySearchGroupResult{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[28]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[27]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2687,7 +2270,7 @@ func (x *MemorySearchGroupResult) String() string {
 func (*MemorySearchGroupResult) ProtoMessage() {}
 
 func (x *MemorySearchGroupResult) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[28]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[27]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2700,7 +2283,7 @@ func (x *MemorySearchGroupResult) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MemorySearchGroupResult.ProtoReflect.Descriptor instead.
 func (*MemorySearchGroupResult) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{28}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{27}
 }
 
 func (x *MemorySearchGroupResult) GetQueryIndex() uint32 {
@@ -2708,13 +2291,6 @@ func (x *MemorySearchGroupResult) GetQueryIndex() uint32 {
 		return x.QueryIndex
 	}
 	return 0
-}
-
-func (x *MemorySearchGroupResult) GetBackground() string {
-	if x != nil {
-		return x.Background
-	}
-	return ""
 }
 
 func (x *MemorySearchGroupResult) GetQuery() string {
@@ -2743,7 +2319,7 @@ type SearchMemoryEventsResponse struct {
 
 func (x *SearchMemoryEventsResponse) Reset() {
 	*x = SearchMemoryEventsResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[29]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[28]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2755,7 +2331,7 @@ func (x *SearchMemoryEventsResponse) String() string {
 func (*SearchMemoryEventsResponse) ProtoMessage() {}
 
 func (x *SearchMemoryEventsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[29]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[28]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2768,7 +2344,7 @@ func (x *SearchMemoryEventsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SearchMemoryEventsResponse.ProtoReflect.Descriptor instead.
 func (*SearchMemoryEventsResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{29}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{28}
 }
 
 func (x *SearchMemoryEventsResponse) GetResults() []*MemorySearchGroupResult {
@@ -2796,7 +2372,7 @@ type GetTurnDetailsRequest struct {
 
 func (x *GetTurnDetailsRequest) Reset() {
 	*x = GetTurnDetailsRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[30]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2808,7 +2384,7 @@ func (x *GetTurnDetailsRequest) String() string {
 func (*GetTurnDetailsRequest) ProtoMessage() {}
 
 func (x *GetTurnDetailsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[30]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2821,7 +2397,7 @@ func (x *GetTurnDetailsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTurnDetailsRequest.ProtoReflect.Descriptor instead.
 func (*GetTurnDetailsRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{30}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *GetTurnDetailsRequest) GetTurnIds() []uint64 {
@@ -2831,32 +2407,24 @@ func (x *GetTurnDetailsRequest) GetTurnIds() []uint64 {
 	return nil
 }
 
-// TurnDetailEntry transports one dehydrated turn row back to the caller for exact-detail inspection.
-// TurnDetailEntry 用于把一条脱水 turn 行返回给调用方，供精确查看详情。
+// TurnDetailEntry transports one AI-ready turn view so callers can inspect the structured dialogue and nearby turn ids without parsing storage JSON.
+// TurnDetailEntry 用于返回一条适合 AI 消费的 turn 视图，让调用方无需解析存储 JSON 也能查看结构化对话和相邻 turn id。
 type TurnDetailEntry struct {
-	state             protoimpl.MessageState    `protogen:"open.v1"`
-	TurnId            uint64                    `protobuf:"varint,1,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	SessionId         uint64                    `protobuf:"varint,2,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	ProjectId         uint64                    `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	DehydratedContent string                    `protobuf:"bytes,4,opt,name=dehydrated_content,json=dehydratedContent,proto3" json:"dehydrated_content,omitempty"`
-	DehydratedBudget  int32                     `protobuf:"varint,5,opt,name=dehydrated_budget,json=dehydratedBudget,proto3" json:"dehydrated_budget,omitempty"`
-	ExtractedStatus   int32                     `protobuf:"varint,6,opt,name=extracted_status,json=extractedStatus,proto3" json:"extracted_status,omitempty"`
-	Details           string                    `protobuf:"bytes,7,opt,name=details,proto3" json:"details,omitempty"`
-	DetailsBudget     int32                     `protobuf:"varint,8,opt,name=details_budget,json=detailsBudget,proto3" json:"details_budget,omitempty"`
-	CreatedTimestamp  int64                     `protobuf:"varint,9,opt,name=created_timestamp,json=createdTimestamp,proto3" json:"created_timestamp,omitempty"`
-	UpdatedTimestamp  int64                     `protobuf:"varint,10,opt,name=updated_timestamp,json=updatedTimestamp,proto3" json:"updated_timestamp,omitempty"`
-	UserContent       string                    `protobuf:"bytes,11,opt,name=user_content,json=userContent,proto3" json:"user_content,omitempty"`
-	Timeline          []*PostActionTimelineItem `protobuf:"bytes,12,rep,name=timeline,proto3" json:"timeline,omitempty"`
-	AssistantContent  string                    `protobuf:"bytes,13,opt,name=assistant_content,json=assistantContent,proto3" json:"assistant_content,omitempty"`
-	PreviousTurnIds   []uint64                  `protobuf:"varint,14,rep,packed,name=previous_turn_ids,json=previousTurnIds,proto3" json:"previous_turn_ids,omitempty"`
-	NextTurnIds       []uint64                  `protobuf:"varint,15,rep,packed,name=next_turn_ids,json=nextTurnIds,proto3" json:"next_turn_ids,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	state           protoimpl.MessageState    `protogen:"open.v1"`
+	TurnId          uint64                    `protobuf:"varint,1,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	UserQuestion    string                    `protobuf:"bytes,2,opt,name=user_question,json=userQuestion,proto3" json:"user_question,omitempty"`
+	Timeline        []*PostActionTimelineItem `protobuf:"bytes,3,rep,name=timeline,proto3" json:"timeline,omitempty"`
+	AssistantAnswer string                    `protobuf:"bytes,4,opt,name=assistant_answer,json=assistantAnswer,proto3" json:"assistant_answer,omitempty"`
+	Detail          string                    `protobuf:"bytes,5,opt,name=detail,proto3" json:"detail,omitempty"`
+	PreviousTurnIds []uint64                  `protobuf:"varint,6,rep,packed,name=previous_turn_ids,json=previousTurnIds,proto3" json:"previous_turn_ids,omitempty"`
+	NextTurnIds     []uint64                  `protobuf:"varint,7,rep,packed,name=next_turn_ids,json=nextTurnIds,proto3" json:"next_turn_ids,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *TurnDetailEntry) Reset() {
 	*x = TurnDetailEntry{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[31]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2868,7 +2436,7 @@ func (x *TurnDetailEntry) String() string {
 func (*TurnDetailEntry) ProtoMessage() {}
 
 func (x *TurnDetailEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[31]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2881,7 +2449,7 @@ func (x *TurnDetailEntry) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use TurnDetailEntry.ProtoReflect.Descriptor instead.
 func (*TurnDetailEntry) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{31}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *TurnDetailEntry) GetTurnId() uint64 {
@@ -2891,72 +2459,9 @@ func (x *TurnDetailEntry) GetTurnId() uint64 {
 	return 0
 }
 
-func (x *TurnDetailEntry) GetSessionId() uint64 {
+func (x *TurnDetailEntry) GetUserQuestion() string {
 	if x != nil {
-		return x.SessionId
-	}
-	return 0
-}
-
-func (x *TurnDetailEntry) GetProjectId() uint64 {
-	if x != nil {
-		return x.ProjectId
-	}
-	return 0
-}
-
-func (x *TurnDetailEntry) GetDehydratedContent() string {
-	if x != nil {
-		return x.DehydratedContent
-	}
-	return ""
-}
-
-func (x *TurnDetailEntry) GetDehydratedBudget() int32 {
-	if x != nil {
-		return x.DehydratedBudget
-	}
-	return 0
-}
-
-func (x *TurnDetailEntry) GetExtractedStatus() int32 {
-	if x != nil {
-		return x.ExtractedStatus
-	}
-	return 0
-}
-
-func (x *TurnDetailEntry) GetDetails() string {
-	if x != nil {
-		return x.Details
-	}
-	return ""
-}
-
-func (x *TurnDetailEntry) GetDetailsBudget() int32 {
-	if x != nil {
-		return x.DetailsBudget
-	}
-	return 0
-}
-
-func (x *TurnDetailEntry) GetCreatedTimestamp() int64 {
-	if x != nil {
-		return x.CreatedTimestamp
-	}
-	return 0
-}
-
-func (x *TurnDetailEntry) GetUpdatedTimestamp() int64 {
-	if x != nil {
-		return x.UpdatedTimestamp
-	}
-	return 0
-}
-
-func (x *TurnDetailEntry) GetUserContent() string {
-	if x != nil {
-		return x.UserContent
+		return x.UserQuestion
 	}
 	return ""
 }
@@ -2968,9 +2473,16 @@ func (x *TurnDetailEntry) GetTimeline() []*PostActionTimelineItem {
 	return nil
 }
 
-func (x *TurnDetailEntry) GetAssistantContent() string {
+func (x *TurnDetailEntry) GetAssistantAnswer() string {
 	if x != nil {
-		return x.AssistantContent
+		return x.AssistantAnswer
+	}
+	return ""
+}
+
+func (x *TurnDetailEntry) GetDetail() string {
+	if x != nil {
+		return x.Detail
 	}
 	return ""
 }
@@ -3001,7 +2513,7 @@ type GetTurnDetailsResponse struct {
 
 func (x *GetTurnDetailsResponse) Reset() {
 	*x = GetTurnDetailsResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[32]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3013,7 +2525,7 @@ func (x *GetTurnDetailsResponse) String() string {
 func (*GetTurnDetailsResponse) ProtoMessage() {}
 
 func (x *GetTurnDetailsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[32]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3026,7 +2538,7 @@ func (x *GetTurnDetailsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use GetTurnDetailsResponse.ProtoReflect.Descriptor instead.
 func (*GetTurnDetailsResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{32}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *GetTurnDetailsResponse) GetTurns() []*TurnDetailEntry {
@@ -3043,454 +2555,23 @@ func (x *GetTurnDetailsResponse) GetTraceId() string {
 	return ""
 }
 
-// GetMemoryDetailsRequest carries one or more `TYPE + ID` refs whose durable payloads should be read back exactly as stored.
-// GetMemoryDetailsRequest 用于承载一条或多条 `TYPE + ID` 引用，让服务端按原样回读长期持久化内容。
-type GetMemoryDetailsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Refs          []*MemoryRef           `protobuf:"bytes,1,rep,name=refs,proto3" json:"refs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetMemoryDetailsRequest) Reset() {
-	*x = GetMemoryDetailsRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[33]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetMemoryDetailsRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetMemoryDetailsRequest) ProtoMessage() {}
-
-func (x *GetMemoryDetailsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[33]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetMemoryDetailsRequest.ProtoReflect.Descriptor instead.
-func (*GetMemoryDetailsRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{33}
-}
-
-func (x *GetMemoryDetailsRequest) GetRefs() []*MemoryRef {
-	if x != nil {
-		return x.Refs
-	}
-	return nil
-}
-
-// MemoryDetailEntry transports one unified durable memory row back to the caller for exact-detail inspection.
-// MemoryDetailEntry 用于把一条统一长期记忆行返回给调用方，供精确查看详情。
-type MemoryDetailEntry struct {
-	state                    protoimpl.MessageState `protogen:"open.v1"`
-	MemoryId                 uint64                 `protobuf:"varint,1,opt,name=memory_id,json=memoryId,proto3" json:"memory_id,omitempty"`
-	SourceKind               MemorySourceKind       `protobuf:"varint,2,opt,name=source_kind,json=sourceKind,proto3,enum=vmm.v1.MemorySourceKind" json:"source_kind,omitempty"`
-	ScopeLevel               MemoryScopeLevel       `protobuf:"varint,3,opt,name=scope_level,json=scopeLevel,proto3,enum=vmm.v1.MemoryScopeLevel" json:"scope_level,omitempty"`
-	MemoryStatus             MemoryStatus           `protobuf:"varint,4,opt,name=memory_status,json=memoryStatus,proto3,enum=vmm.v1.MemoryStatus" json:"memory_status,omitempty"`
-	TeamId                   uint64                 `protobuf:"varint,5,opt,name=team_id,json=teamId,proto3" json:"team_id,omitempty"`
-	SpaceId                  uint64                 `protobuf:"varint,6,opt,name=space_id,json=spaceId,proto3" json:"space_id,omitempty"`
-	ProjectId                uint64                 `protobuf:"varint,7,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
-	UserId                   uint64                 `protobuf:"varint,8,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
-	OriginSessionId          uint64                 `protobuf:"varint,9,opt,name=origin_session_id,json=originSessionId,proto3" json:"origin_session_id,omitempty"`
-	SourceTurnId             uint64                 `protobuf:"varint,10,opt,name=source_turn_id,json=sourceTurnId,proto3" json:"source_turn_id,omitempty"`
-	Category                 int32                  `protobuf:"varint,11,opt,name=category,proto3" json:"category,omitempty"`
-	Abstract                 string                 `protobuf:"bytes,12,opt,name=abstract,proto3" json:"abstract,omitempty"`
-	Details                  string                 `protobuf:"bytes,13,opt,name=details,proto3" json:"details,omitempty"`
-	Priority                 MemoryPriority         `protobuf:"varint,14,opt,name=priority,proto3,enum=vmm.v1.MemoryPriority" json:"priority,omitempty"`
-	MemoryLevel              MemoryLevel            `protobuf:"varint,15,opt,name=memory_level,json=memoryLevel,proto3,enum=vmm.v1.MemoryLevel" json:"memory_level,omitempty"`
-	RefreshWeight            uint32                 `protobuf:"varint,16,opt,name=refresh_weight,json=refreshWeight,proto3" json:"refresh_weight,omitempty"`
-	StatusReason             string                 `protobuf:"bytes,17,opt,name=status_reason,json=statusReason,proto3" json:"status_reason,omitempty"`
-	ExpiresTimestamp         int64                  `protobuf:"varint,18,opt,name=expires_timestamp,json=expiresTimestamp,proto3" json:"expires_timestamp,omitempty"`
-	LastRecalledTimestamp    int64                  `protobuf:"varint,19,opt,name=last_recalled_timestamp,json=lastRecalledTimestamp,proto3" json:"last_recalled_timestamp,omitempty"`
-	LastAdoptedTimestamp     int64                  `protobuf:"varint,20,opt,name=last_adopted_timestamp,json=lastAdoptedTimestamp,proto3" json:"last_adopted_timestamp,omitempty"`
-	RecalledCount            uint32                 `protobuf:"varint,21,opt,name=recalled_count,json=recalledCount,proto3" json:"recalled_count,omitempty"`
-	AdoptedCount             uint32                 `protobuf:"varint,22,opt,name=adopted_count,json=adoptedCount,proto3" json:"adopted_count,omitempty"`
-	CrossSessionAdoptedCount uint32                 `protobuf:"varint,23,opt,name=cross_session_adopted_count,json=crossSessionAdoptedCount,proto3" json:"cross_session_adopted_count,omitempty"`
-	CreatedTimestamp         int64                  `protobuf:"varint,24,opt,name=created_timestamp,json=createdTimestamp,proto3" json:"created_timestamp,omitempty"`
-	UpdatedTimestamp         int64                  `protobuf:"varint,25,opt,name=updated_timestamp,json=updatedTimestamp,proto3" json:"updated_timestamp,omitempty"`
-	unknownFields            protoimpl.UnknownFields
-	sizeCache                protoimpl.SizeCache
-}
-
-func (x *MemoryDetailEntry) Reset() {
-	*x = MemoryDetailEntry{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[34]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MemoryDetailEntry) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MemoryDetailEntry) ProtoMessage() {}
-
-func (x *MemoryDetailEntry) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[34]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MemoryDetailEntry.ProtoReflect.Descriptor instead.
-func (*MemoryDetailEntry) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{34}
-}
-
-func (x *MemoryDetailEntry) GetMemoryId() uint64 {
-	if x != nil {
-		return x.MemoryId
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetSourceKind() MemorySourceKind {
-	if x != nil {
-		return x.SourceKind
-	}
-	return MemorySourceKind_MEMORY_SOURCE_KIND_UNSPECIFIED
-}
-
-func (x *MemoryDetailEntry) GetScopeLevel() MemoryScopeLevel {
-	if x != nil {
-		return x.ScopeLevel
-	}
-	return MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED
-}
-
-func (x *MemoryDetailEntry) GetMemoryStatus() MemoryStatus {
-	if x != nil {
-		return x.MemoryStatus
-	}
-	return MemoryStatus_MEMORY_STATUS_UNSPECIFIED
-}
-
-func (x *MemoryDetailEntry) GetTeamId() uint64 {
-	if x != nil {
-		return x.TeamId
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetSpaceId() uint64 {
-	if x != nil {
-		return x.SpaceId
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetProjectId() uint64 {
-	if x != nil {
-		return x.ProjectId
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetUserId() uint64 {
-	if x != nil {
-		return x.UserId
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetOriginSessionId() uint64 {
-	if x != nil {
-		return x.OriginSessionId
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetSourceTurnId() uint64 {
-	if x != nil {
-		return x.SourceTurnId
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetCategory() int32 {
-	if x != nil {
-		return x.Category
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetAbstract() string {
-	if x != nil {
-		return x.Abstract
-	}
-	return ""
-}
-
-func (x *MemoryDetailEntry) GetDetails() string {
-	if x != nil {
-		return x.Details
-	}
-	return ""
-}
-
-func (x *MemoryDetailEntry) GetPriority() MemoryPriority {
-	if x != nil {
-		return x.Priority
-	}
-	return MemoryPriority_MEMORY_PRIORITY_UNSPECIFIED
-}
-
-func (x *MemoryDetailEntry) GetMemoryLevel() MemoryLevel {
-	if x != nil {
-		return x.MemoryLevel
-	}
-	return MemoryLevel_MEMORY_LEVEL_UNSPECIFIED
-}
-
-func (x *MemoryDetailEntry) GetRefreshWeight() uint32 {
-	if x != nil {
-		return x.RefreshWeight
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetStatusReason() string {
-	if x != nil {
-		return x.StatusReason
-	}
-	return ""
-}
-
-func (x *MemoryDetailEntry) GetExpiresTimestamp() int64 {
-	if x != nil {
-		return x.ExpiresTimestamp
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetLastRecalledTimestamp() int64 {
-	if x != nil {
-		return x.LastRecalledTimestamp
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetLastAdoptedTimestamp() int64 {
-	if x != nil {
-		return x.LastAdoptedTimestamp
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetRecalledCount() uint32 {
-	if x != nil {
-		return x.RecalledCount
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetAdoptedCount() uint32 {
-	if x != nil {
-		return x.AdoptedCount
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetCrossSessionAdoptedCount() uint32 {
-	if x != nil {
-		return x.CrossSessionAdoptedCount
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetCreatedTimestamp() int64 {
-	if x != nil {
-		return x.CreatedTimestamp
-	}
-	return 0
-}
-
-func (x *MemoryDetailEntry) GetUpdatedTimestamp() int64 {
-	if x != nil {
-		return x.UpdatedTimestamp
-	}
-	return 0
-}
-
-// MemoryDetailItem transports either one unified memory row or one turn row according to the requested ref type.
-// MemoryDetailItem 用于按请求引用类型承载统一记忆行或 turn 行中的一种。
-type MemoryDetailItem struct {
-	state protoimpl.MessageState `protogen:"open.v1"`
-	Ref   *MemoryRef             `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
-	// Types that are valid to be assigned to Payload:
-	//
-	//	*MemoryDetailItem_Memory
-	//	*MemoryDetailItem_Turn
-	Payload       isMemoryDetailItem_Payload `protobuf_oneof:"payload"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *MemoryDetailItem) Reset() {
-	*x = MemoryDetailItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[35]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *MemoryDetailItem) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*MemoryDetailItem) ProtoMessage() {}
-
-func (x *MemoryDetailItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[35]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use MemoryDetailItem.ProtoReflect.Descriptor instead.
-func (*MemoryDetailItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{35}
-}
-
-func (x *MemoryDetailItem) GetRef() *MemoryRef {
-	if x != nil {
-		return x.Ref
-	}
-	return nil
-}
-
-func (x *MemoryDetailItem) GetPayload() isMemoryDetailItem_Payload {
-	if x != nil {
-		return x.Payload
-	}
-	return nil
-}
-
-func (x *MemoryDetailItem) GetMemory() *MemoryDetailEntry {
-	if x != nil {
-		if x, ok := x.Payload.(*MemoryDetailItem_Memory); ok {
-			return x.Memory
-		}
-	}
-	return nil
-}
-
-func (x *MemoryDetailItem) GetTurn() *TurnDetailEntry {
-	if x != nil {
-		if x, ok := x.Payload.(*MemoryDetailItem_Turn); ok {
-			return x.Turn
-		}
-	}
-	return nil
-}
-
-type isMemoryDetailItem_Payload interface {
-	isMemoryDetailItem_Payload()
-}
-
-type MemoryDetailItem_Memory struct {
-	Memory *MemoryDetailEntry `protobuf:"bytes,2,opt,name=memory,proto3,oneof"`
-}
-
-type MemoryDetailItem_Turn struct {
-	Turn *TurnDetailEntry `protobuf:"bytes,3,opt,name=turn,proto3,oneof"`
-}
-
-func (*MemoryDetailItem_Memory) isMemoryDetailItem_Payload() {}
-
-func (*MemoryDetailItem_Turn) isMemoryDetailItem_Payload() {}
-
-// GetMemoryDetailsResponse returns the requested mixed refs plus trace metadata.
-// GetMemoryDetailsResponse 用于返回请求的混合引用详情和 trace 元数据。
-type GetMemoryDetailsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Items         []*MemoryDetailItem    `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`
-	TraceId       string                 `protobuf:"bytes,2,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *GetMemoryDetailsResponse) Reset() {
-	*x = GetMemoryDetailsResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *GetMemoryDetailsResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*GetMemoryDetailsResponse) ProtoMessage() {}
-
-func (x *GetMemoryDetailsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use GetMemoryDetailsResponse.ProtoReflect.Descriptor instead.
-func (*GetMemoryDetailsResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{36}
-}
-
-func (x *GetMemoryDetailsResponse) GetItems() []*MemoryDetailItem {
-	if x != nil {
-		return x.Items
-	}
-	return nil
-}
-
-func (x *GetMemoryDetailsResponse) GetTraceId() string {
-	if x != nil {
-		return x.TraceId
-	}
-	return ""
-}
-
 // WriteMemoryItem carries one direct AI-written memory candidate before soft idempotency and persistence begin.
 // WriteMemoryItem 用于承载一条 AI 主动写入记忆候选，在软幂等和持久化开始前使用。
 type WriteMemoryItem struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	ScopeLevel       MemoryScopeLevel       `protobuf:"varint,1,opt,name=scope_level,json=scopeLevel,proto3,enum=vmm.v1.MemoryScopeLevel" json:"scope_level,omitempty"`
-	Abstract         string                 `protobuf:"bytes,2,opt,name=abstract,proto3" json:"abstract,omitempty"`
-	Details          string                 `protobuf:"bytes,3,opt,name=details,proto3" json:"details,omitempty"`
-	Category         int32                  `protobuf:"varint,4,opt,name=category,proto3" json:"category,omitempty"`
-	Priority         MemoryPriority         `protobuf:"varint,5,opt,name=priority,proto3,enum=vmm.v1.MemoryPriority" json:"priority,omitempty"`
-	MemoryLevel      MemoryLevel            `protobuf:"varint,6,opt,name=memory_level,json=memoryLevel,proto3,enum=vmm.v1.MemoryLevel" json:"memory_level,omitempty"`
-	ExpiresTimestamp int64                  `protobuf:"varint,7,opt,name=expires_timestamp,json=expiresTimestamp,proto3" json:"expires_timestamp,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ScopeLevel    int32                  `protobuf:"varint,1,opt,name=scope_level,json=scopeLevel,proto3" json:"scope_level,omitempty"`
+	Abstract      string                 `protobuf:"bytes,2,opt,name=abstract,proto3" json:"abstract,omitempty"`
+	Details       string                 `protobuf:"bytes,3,opt,name=details,proto3" json:"details,omitempty"`
+	Category      int32                  `protobuf:"varint,4,opt,name=category,proto3" json:"category,omitempty"`
+	Priority      int32                  `protobuf:"varint,5,opt,name=priority,proto3" json:"priority,omitempty"`
+	MemoryLevel   int32                  `protobuf:"varint,6,opt,name=memory_level,json=memoryLevel,proto3" json:"memory_level,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteMemoryItem) Reset() {
 	*x = WriteMemoryItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3502,7 +2583,7 @@ func (x *WriteMemoryItem) String() string {
 func (*WriteMemoryItem) ProtoMessage() {}
 
 func (x *WriteMemoryItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3515,14 +2596,14 @@ func (x *WriteMemoryItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteMemoryItem.ProtoReflect.Descriptor instead.
 func (*WriteMemoryItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{37}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{32}
 }
 
-func (x *WriteMemoryItem) GetScopeLevel() MemoryScopeLevel {
+func (x *WriteMemoryItem) GetScopeLevel() int32 {
 	if x != nil {
 		return x.ScopeLevel
 	}
-	return MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED
+	return 0
 }
 
 func (x *WriteMemoryItem) GetAbstract() string {
@@ -3546,23 +2627,16 @@ func (x *WriteMemoryItem) GetCategory() int32 {
 	return 0
 }
 
-func (x *WriteMemoryItem) GetPriority() MemoryPriority {
+func (x *WriteMemoryItem) GetPriority() int32 {
 	if x != nil {
 		return x.Priority
 	}
-	return MemoryPriority_MEMORY_PRIORITY_UNSPECIFIED
+	return 0
 }
 
-func (x *WriteMemoryItem) GetMemoryLevel() MemoryLevel {
+func (x *WriteMemoryItem) GetMemoryLevel() int32 {
 	if x != nil {
 		return x.MemoryLevel
-	}
-	return MemoryLevel_MEMORY_LEVEL_UNSPECIFIED
-}
-
-func (x *WriteMemoryItem) GetExpiresTimestamp() int64 {
-	if x != nil {
-		return x.ExpiresTimestamp
 	}
 	return 0
 }
@@ -3581,7 +2655,7 @@ type WriteMemoriesRequest struct {
 
 func (x *WriteMemoriesRequest) Reset() {
 	*x = WriteMemoriesRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3593,7 +2667,7 @@ func (x *WriteMemoriesRequest) String() string {
 func (*WriteMemoriesRequest) ProtoMessage() {}
 
 func (x *WriteMemoriesRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3606,7 +2680,7 @@ func (x *WriteMemoriesRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteMemoriesRequest.ProtoReflect.Descriptor instead.
 func (*WriteMemoriesRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{38}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *WriteMemoriesRequest) GetSessionId() string {
@@ -3637,21 +2711,19 @@ func (x *WriteMemoriesRequest) GetItems() []*WriteMemoryItem {
 	return nil
 }
 
-// WriteMemoryResultItem returns the unified ref and effective write mode for one direct memory item.
-// WriteMemoryResultItem 用于返回单条主动记忆项的统一引用和实际写入模式。
+// WriteMemoryResultItem returns only the created or deduplicated memory id so AI callers can keep the write path minimal.
+// WriteMemoryResultItem 用于只返回新建或复用的 memory id，让 AI 调用方保持最小写入反馈。
 type WriteMemoryResultItem struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	MemoryRef     *MemoryRef             `protobuf:"bytes,1,opt,name=memory_ref,json=memoryRef,proto3" json:"memory_ref,omitempty"`
-	SourceKind    MemorySourceKind       `protobuf:"varint,2,opt,name=source_kind,json=sourceKind,proto3,enum=vmm.v1.MemorySourceKind" json:"source_kind,omitempty"`
-	ScopeLevel    MemoryScopeLevel       `protobuf:"varint,3,opt,name=scope_level,json=scopeLevel,proto3,enum=vmm.v1.MemoryScopeLevel" json:"scope_level,omitempty"`
-	Deduped       bool                   `protobuf:"varint,4,opt,name=deduped,proto3" json:"deduped,omitempty"`
+	MemoryId      uint64                 `protobuf:"varint,1,opt,name=memory_id,json=memoryId,proto3" json:"memory_id,omitempty"`
+	Deduped       bool                   `protobuf:"varint,2,opt,name=deduped,proto3" json:"deduped,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WriteMemoryResultItem) Reset() {
 	*x = WriteMemoryResultItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3663,7 +2735,7 @@ func (x *WriteMemoryResultItem) String() string {
 func (*WriteMemoryResultItem) ProtoMessage() {}
 
 func (x *WriteMemoryResultItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3676,28 +2748,14 @@ func (x *WriteMemoryResultItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteMemoryResultItem.ProtoReflect.Descriptor instead.
 func (*WriteMemoryResultItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{39}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{34}
 }
 
-func (x *WriteMemoryResultItem) GetMemoryRef() *MemoryRef {
+func (x *WriteMemoryResultItem) GetMemoryId() uint64 {
 	if x != nil {
-		return x.MemoryRef
+		return x.MemoryId
 	}
-	return nil
-}
-
-func (x *WriteMemoryResultItem) GetSourceKind() MemorySourceKind {
-	if x != nil {
-		return x.SourceKind
-	}
-	return MemorySourceKind_MEMORY_SOURCE_KIND_UNSPECIFIED
-}
-
-func (x *WriteMemoryResultItem) GetScopeLevel() MemoryScopeLevel {
-	if x != nil {
-		return x.ScopeLevel
-	}
-	return MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED
+	return 0
 }
 
 func (x *WriteMemoryResultItem) GetDeduped() bool {
@@ -3719,7 +2777,7 @@ type WriteMemoriesResponse struct {
 
 func (x *WriteMemoriesResponse) Reset() {
 	*x = WriteMemoriesResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3731,7 +2789,7 @@ func (x *WriteMemoriesResponse) String() string {
 func (*WriteMemoriesResponse) ProtoMessage() {}
 
 func (x *WriteMemoriesResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3744,7 +2802,7 @@ func (x *WriteMemoriesResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use WriteMemoriesResponse.ProtoReflect.Descriptor instead.
 func (*WriteMemoriesResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{40}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *WriteMemoriesResponse) GetItems() []*WriteMemoryResultItem {
@@ -3775,7 +2833,7 @@ type PreCheckRequest struct {
 
 func (x *PreCheckRequest) Reset() {
 	*x = PreCheckRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3787,7 +2845,7 @@ func (x *PreCheckRequest) String() string {
 func (*PreCheckRequest) ProtoMessage() {}
 
 func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3800,7 +2858,7 @@ func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckRequest.ProtoReflect.Descriptor instead.
 func (*PreCheckRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{41}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *PreCheckRequest) GetSessionId() string {
@@ -3846,7 +2904,7 @@ type ContextItem struct {
 
 func (x *ContextItem) Reset() {
 	*x = ContextItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3858,7 +2916,7 @@ func (x *ContextItem) String() string {
 func (*ContextItem) ProtoMessage() {}
 
 func (x *ContextItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3871,7 +2929,7 @@ func (x *ContextItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextItem.ProtoReflect.Descriptor instead.
 func (*ContextItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{42}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{37}
 }
 
 func (x *ContextItem) GetKind() string {
@@ -3924,7 +2982,7 @@ type PreCheckResponse struct {
 
 func (x *PreCheckResponse) Reset() {
 	*x = PreCheckResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3936,7 +2994,7 @@ func (x *PreCheckResponse) String() string {
 func (*PreCheckResponse) ProtoMessage() {}
 
 func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3949,7 +3007,7 @@ func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckResponse.ProtoReflect.Descriptor instead.
 func (*PreCheckResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{43}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PreCheckResponse) GetShouldInject() bool {
@@ -3999,7 +3057,7 @@ type PostActionTimelineItem struct {
 
 func (x *PostActionTimelineItem) Reset() {
 	*x = PostActionTimelineItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[44]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4011,7 +3069,7 @@ func (x *PostActionTimelineItem) String() string {
 func (*PostActionTimelineItem) ProtoMessage() {}
 
 func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[44]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4024,7 +3082,7 @@ func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionTimelineItem.ProtoReflect.Descriptor instead.
 func (*PostActionTimelineItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{44}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *PostActionTimelineItem) GetType() string {
@@ -4057,7 +3115,7 @@ type PostActionRequest struct {
 
 func (x *PostActionRequest) Reset() {
 	*x = PostActionRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[45]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4069,7 +3127,7 @@ func (x *PostActionRequest) String() string {
 func (*PostActionRequest) ProtoMessage() {}
 
 func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[45]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4082,7 +3140,7 @@ func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionRequest.ProtoReflect.Descriptor instead.
 func (*PostActionRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{45}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *PostActionRequest) GetSessionId() string {
@@ -4127,8 +3185,8 @@ func (x *PostActionRequest) GetTimeline() []*PostActionTimelineItem {
 	return nil
 }
 
-// PostActionResponse acknowledges whether the request completed the synchronous persistence flow successfully.
-// PostActionResponse 用于确认请求是否已经成功完成同步持久化流程。
+// PostActionResponse acknowledges whether the request was accepted, durably persisted as one turn, and queued for async extraction successfully.
+// PostActionResponse 用于确认请求是否已经成功被接受、稳定落为一条 turn，并成功排入异步提炼队列。
 type PostActionResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Accepted      bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
@@ -4139,7 +3197,7 @@ type PostActionResponse struct {
 
 func (x *PostActionResponse) Reset() {
 	*x = PostActionResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[46]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -4151,7 +3209,7 @@ func (x *PostActionResponse) String() string {
 func (*PostActionResponse) ProtoMessage() {}
 
 func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[46]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -4164,7 +3222,7 @@ func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionResponse.ProtoReflect.Descriptor instead.
 func (*PostActionResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{46}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *PostActionResponse) GetAccepted() bool {
@@ -4285,10 +3343,7 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\btrace_id\x18\t \x01(\tR\atraceId\x12#\n" +
 	"\rdeleted_users\x18\n" +
 	" \x01(\x03R\fdeletedUsers\x12)\n" +
-	"\x10deleted_profiles\x18\v \x01(\x03R\x0fdeletedProfiles\"F\n" +
-	"\tMemoryRef\x12)\n" +
-	"\x04type\x18\x01 \x01(\x0e2\x15.vmm.v1.MemoryRefTypeR\x04type\x12\x0e\n" +
-	"\x02id\x18\x02 \x01(\x04R\x02id\"\xc5\x03\n" +
+	"\x10deleted_profiles\x18\v \x01(\x03R\x0fdeletedProfiles\"\xc5\x03\n" +
 	"\x10ProfileNodeEntry\x12&\n" +
 	"\x0fprofile_node_id\x18\x01 \x01(\x04R\rprofileNodeId\x12-\n" +
 	"\x06target\x18\x02 \x01(\x0e2\x15.vmm.v1.ProfileTargetR\x06target\x12\x17\n" +
@@ -4346,128 +3401,58 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x0eaccepted_nodes\x18\x02 \x03(\v2\x18.vmm.v1.ProfileNodeEntryR\racceptedNodes\x12D\n" +
 	"\rretired_nodes\x18\x03 \x03(\v2\x1f.vmm.v1.RetiredProfileNodeEntryR\fretiredNodes\x12#\n" +
 	"\rreview_reason\x18\x04 \x01(\tR\freviewReason\x12\x19\n" +
-	"\btrace_id\x18\x05 \x01(\tR\atraceId\"\x87\x01\n" +
+	"\btrace_id\x18\x05 \x01(\tR\atraceId\"\x82\x01\n" +
 	"\x19SearchMemoryEventsRequest\x12\x17\n" +
 	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x1d\n" +
 	"\n" +
-	"project_id\x18\x02 \x01(\x04R\tprojectId\x12\x1d\n" +
-	"\n" +
-	"query_json\x18\x03 \x01(\tR\tqueryJson\x12\x13\n" +
-	"\x05top_k\x18\x04 \x01(\rR\x04topK\"\x81\x03\n" +
-	"\x0fMemorySearchHit\x120\n" +
-	"\n" +
-	"memory_ref\x18\x01 \x01(\v2\x11.vmm.v1.MemoryRefR\tmemoryRef\x120\n" +
-	"\n" +
-	"source_ref\x18\x02 \x01(\v2\x11.vmm.v1.MemoryRefR\tsourceRef\x129\n" +
-	"\vsource_kind\x18\x03 \x01(\x0e2\x18.vmm.v1.MemorySourceKindR\n" +
-	"sourceKind\x129\n" +
-	"\vscope_level\x18\x04 \x01(\x0e2\x18.vmm.v1.MemoryScopeLevelR\n" +
-	"scopeLevel\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x05 \x01(\x04R\tsessionId\x12\x1a\n" +
-	"\babstract\x18\x06 \x01(\tR\babstract\x12'\n" +
-	"\x0fdetails_preview\x18\a \x01(\tR\x0edetailsPreview\x12\x1a\n" +
-	"\bcategory\x18\b \x01(\x05R\bcategory\x12\x14\n" +
-	"\x05score\x18\t \x01(\x01R\x05score\"\x9d\x01\n" +
+	"project_id\x18\x02 \x01(\x04R\tprojectId\x12\x18\n" +
+	"\aqueries\x18\x03 \x03(\tR\aqueries\x12\x13\n" +
+	"\x05top_k\x18\x04 \x01(\rR\x04topK\"\xb5\x01\n" +
+	"\x0fMemorySearchHit\x12\x1b\n" +
+	"\tmemory_id\x18\x01 \x01(\x04R\bmemoryId\x12$\n" +
+	"\x0esource_turn_id\x18\x02 \x01(\x04R\fsourceTurnId\x12\x1a\n" +
+	"\babstract\x18\x03 \x01(\tR\babstract\x12'\n" +
+	"\x0fdetails_preview\x18\x04 \x01(\tR\x0edetailsPreview\x12\x1a\n" +
+	"\bcategory\x18\x05 \x01(\tR\bcategory\"}\n" +
 	"\x17MemorySearchGroupResult\x12\x1f\n" +
 	"\vquery_index\x18\x01 \x01(\rR\n" +
-	"queryIndex\x12\x1e\n" +
-	"\n" +
-	"background\x18\x02 \x01(\tR\n" +
-	"background\x12\x14\n" +
-	"\x05query\x18\x03 \x01(\tR\x05query\x12+\n" +
-	"\x04hits\x18\x04 \x03(\v2\x17.vmm.v1.MemorySearchHitR\x04hits\"r\n" +
+	"queryIndex\x12\x14\n" +
+	"\x05query\x18\x02 \x01(\tR\x05query\x12+\n" +
+	"\x04hits\x18\x03 \x03(\v2\x17.vmm.v1.MemorySearchHitR\x04hits\"r\n" +
 	"\x1aSearchMemoryEventsResponse\x129\n" +
 	"\aresults\x18\x01 \x03(\v2\x1f.vmm.v1.MemorySearchGroupResultR\aresults\x12\x19\n" +
 	"\btrace_id\x18\x02 \x01(\tR\atraceId\"2\n" +
 	"\x15GetTurnDetailsRequest\x12\x19\n" +
-	"\bturn_ids\x18\x01 \x03(\x04R\aturnIds\"\xe6\x04\n" +
+	"\bturn_ids\x18\x01 \x03(\x04R\aturnIds\"\x9e\x02\n" +
 	"\x0fTurnDetailEntry\x12\x17\n" +
-	"\aturn_id\x18\x01 \x01(\x04R\x06turnId\x12\x1d\n" +
-	"\n" +
-	"session_id\x18\x02 \x01(\x04R\tsessionId\x12\x1d\n" +
-	"\n" +
-	"project_id\x18\x03 \x01(\x04R\tprojectId\x12-\n" +
-	"\x12dehydrated_content\x18\x04 \x01(\tR\x11dehydratedContent\x12+\n" +
-	"\x11dehydrated_budget\x18\x05 \x01(\x05R\x10dehydratedBudget\x12)\n" +
-	"\x10extracted_status\x18\x06 \x01(\x05R\x0fextractedStatus\x12\x18\n" +
-	"\adetails\x18\a \x01(\tR\adetails\x12%\n" +
-	"\x0edetails_budget\x18\b \x01(\x05R\rdetailsBudget\x12+\n" +
-	"\x11created_timestamp\x18\t \x01(\x03R\x10createdTimestamp\x12+\n" +
-	"\x11updated_timestamp\x18\n" +
-	" \x01(\x03R\x10updatedTimestamp\x12!\n" +
-	"\fuser_content\x18\v \x01(\tR\vuserContent\x12:\n" +
-	"\btimeline\x18\f \x03(\v2\x1e.vmm.v1.PostActionTimelineItemR\btimeline\x12+\n" +
-	"\x11assistant_content\x18\r \x01(\tR\x10assistantContent\x12*\n" +
-	"\x11previous_turn_ids\x18\x0e \x03(\x04R\x0fpreviousTurnIds\x12\"\n" +
-	"\rnext_turn_ids\x18\x0f \x03(\x04R\vnextTurnIds\"b\n" +
+	"\aturn_id\x18\x01 \x01(\x04R\x06turnId\x12#\n" +
+	"\ruser_question\x18\x02 \x01(\tR\fuserQuestion\x12:\n" +
+	"\btimeline\x18\x03 \x03(\v2\x1e.vmm.v1.PostActionTimelineItemR\btimeline\x12)\n" +
+	"\x10assistant_answer\x18\x04 \x01(\tR\x0fassistantAnswer\x12\x16\n" +
+	"\x06detail\x18\x05 \x01(\tR\x06detail\x12*\n" +
+	"\x11previous_turn_ids\x18\x06 \x03(\x04R\x0fpreviousTurnIds\x12\"\n" +
+	"\rnext_turn_ids\x18\a \x03(\x04R\vnextTurnIds\"b\n" +
 	"\x16GetTurnDetailsResponse\x12-\n" +
 	"\x05turns\x18\x01 \x03(\v2\x17.vmm.v1.TurnDetailEntryR\x05turns\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId\"@\n" +
-	"\x17GetMemoryDetailsRequest\x12%\n" +
-	"\x04refs\x18\x01 \x03(\v2\x11.vmm.v1.MemoryRefR\x04refs\"\xa9\b\n" +
-	"\x11MemoryDetailEntry\x12\x1b\n" +
-	"\tmemory_id\x18\x01 \x01(\x04R\bmemoryId\x129\n" +
-	"\vsource_kind\x18\x02 \x01(\x0e2\x18.vmm.v1.MemorySourceKindR\n" +
-	"sourceKind\x129\n" +
-	"\vscope_level\x18\x03 \x01(\x0e2\x18.vmm.v1.MemoryScopeLevelR\n" +
-	"scopeLevel\x129\n" +
-	"\rmemory_status\x18\x04 \x01(\x0e2\x14.vmm.v1.MemoryStatusR\fmemoryStatus\x12\x17\n" +
-	"\ateam_id\x18\x05 \x01(\x04R\x06teamId\x12\x19\n" +
-	"\bspace_id\x18\x06 \x01(\x04R\aspaceId\x12\x1d\n" +
-	"\n" +
-	"project_id\x18\a \x01(\x04R\tprojectId\x12\x17\n" +
-	"\auser_id\x18\b \x01(\x04R\x06userId\x12*\n" +
-	"\x11origin_session_id\x18\t \x01(\x04R\x0foriginSessionId\x12$\n" +
-	"\x0esource_turn_id\x18\n" +
-	" \x01(\x04R\fsourceTurnId\x12\x1a\n" +
-	"\bcategory\x18\v \x01(\x05R\bcategory\x12\x1a\n" +
-	"\babstract\x18\f \x01(\tR\babstract\x12\x18\n" +
-	"\adetails\x18\r \x01(\tR\adetails\x122\n" +
-	"\bpriority\x18\x0e \x01(\x0e2\x16.vmm.v1.MemoryPriorityR\bpriority\x126\n" +
-	"\fmemory_level\x18\x0f \x01(\x0e2\x13.vmm.v1.MemoryLevelR\vmemoryLevel\x12%\n" +
-	"\x0erefresh_weight\x18\x10 \x01(\rR\rrefreshWeight\x12#\n" +
-	"\rstatus_reason\x18\x11 \x01(\tR\fstatusReason\x12+\n" +
-	"\x11expires_timestamp\x18\x12 \x01(\x03R\x10expiresTimestamp\x126\n" +
-	"\x17last_recalled_timestamp\x18\x13 \x01(\x03R\x15lastRecalledTimestamp\x124\n" +
-	"\x16last_adopted_timestamp\x18\x14 \x01(\x03R\x14lastAdoptedTimestamp\x12%\n" +
-	"\x0erecalled_count\x18\x15 \x01(\rR\rrecalledCount\x12#\n" +
-	"\radopted_count\x18\x16 \x01(\rR\fadoptedCount\x12=\n" +
-	"\x1bcross_session_adopted_count\x18\x17 \x01(\rR\x18crossSessionAdoptedCount\x12+\n" +
-	"\x11created_timestamp\x18\x18 \x01(\x03R\x10createdTimestamp\x12+\n" +
-	"\x11updated_timestamp\x18\x19 \x01(\x03R\x10updatedTimestamp\"\xa6\x01\n" +
-	"\x10MemoryDetailItem\x12#\n" +
-	"\x03ref\x18\x01 \x01(\v2\x11.vmm.v1.MemoryRefR\x03ref\x123\n" +
-	"\x06memory\x18\x02 \x01(\v2\x19.vmm.v1.MemoryDetailEntryH\x00R\x06memory\x12-\n" +
-	"\x04turn\x18\x03 \x01(\v2\x17.vmm.v1.TurnDetailEntryH\x00R\x04turnB\t\n" +
-	"\apayload\"e\n" +
-	"\x18GetMemoryDetailsResponse\x12.\n" +
-	"\x05items\x18\x01 \x03(\v2\x18.vmm.v1.MemoryDetailItemR\x05items\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xb7\x02\n" +
-	"\x0fWriteMemoryItem\x129\n" +
-	"\vscope_level\x18\x01 \x01(\x0e2\x18.vmm.v1.MemoryScopeLevelR\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xc3\x01\n" +
+	"\x0fWriteMemoryItem\x12\x1f\n" +
+	"\vscope_level\x18\x01 \x01(\x05R\n" +
 	"scopeLevel\x12\x1a\n" +
 	"\babstract\x18\x02 \x01(\tR\babstract\x12\x18\n" +
 	"\adetails\x18\x03 \x01(\tR\adetails\x12\x1a\n" +
-	"\bcategory\x18\x04 \x01(\x05R\bcategory\x122\n" +
-	"\bpriority\x18\x05 \x01(\x0e2\x16.vmm.v1.MemoryPriorityR\bpriority\x126\n" +
-	"\fmemory_level\x18\x06 \x01(\x0e2\x13.vmm.v1.MemoryLevelR\vmemoryLevel\x12+\n" +
-	"\x11expires_timestamp\x18\a \x01(\x03R\x10expiresTimestamp\"\x9c\x01\n" +
+	"\bcategory\x18\x04 \x01(\x05R\bcategory\x12\x1a\n" +
+	"\bpriority\x18\x05 \x01(\x05R\bpriority\x12!\n" +
+	"\fmemory_level\x18\x06 \x01(\x05R\vmemoryLevel\"\x9c\x01\n" +
 	"\x14WriteMemoriesRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x03 \x01(\x04R\tprojectId\x12-\n" +
-	"\x05items\x18\x04 \x03(\v2\x17.vmm.v1.WriteMemoryItemR\x05items\"\xd9\x01\n" +
-	"\x15WriteMemoryResultItem\x120\n" +
-	"\n" +
-	"memory_ref\x18\x01 \x01(\v2\x11.vmm.v1.MemoryRefR\tmemoryRef\x129\n" +
-	"\vsource_kind\x18\x02 \x01(\x0e2\x18.vmm.v1.MemorySourceKindR\n" +
-	"sourceKind\x129\n" +
-	"\vscope_level\x18\x03 \x01(\x0e2\x18.vmm.v1.MemoryScopeLevelR\n" +
-	"scopeLevel\x12\x18\n" +
-	"\adeduped\x18\x04 \x01(\bR\adeduped\"g\n" +
+	"\x05items\x18\x04 \x03(\v2\x17.vmm.v1.WriteMemoryItemR\x05items\"N\n" +
+	"\x15WriteMemoryResultItem\x12\x1b\n" +
+	"\tmemory_id\x18\x01 \x01(\x04R\bmemoryId\x12\x18\n" +
+	"\adeduped\x18\x02 \x01(\bR\adeduped\"g\n" +
 	"\x15WriteMemoriesResponse\x123\n" +
 	"\x05items\x18\x01 \x03(\v2\x1d.vmm.v1.WriteMemoryResultItemR\x05items\x12\x19\n" +
 	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\x8b\x01\n" +
@@ -4516,43 +3501,12 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"%PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT\x10\x01\x12/\n" +
 	"+PROFILE_NODE_SOURCE_KIND_MANUAL_INSTRUCTION\x10\x02\x12(\n" +
 	"$PROFILE_NODE_SOURCE_KIND_SYSTEM_SEED\x10\x03\x127\n" +
-	"3PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE\x10\x04*f\n" +
-	"\rMemoryRefType\x12\x1f\n" +
-	"\x1bMEMORY_REF_TYPE_UNSPECIFIED\x10\x00\x12\x1a\n" +
-	"\x16MEMORY_REF_TYPE_MEMORY\x10\x01\x12\x18\n" +
-	"\x14MEMORY_REF_TYPE_TURN\x10\x02*\xca\x01\n" +
-	"\x10MemorySourceKind\x12\"\n" +
-	"\x1eMEMORY_SOURCE_KIND_UNSPECIFIED\x10\x00\x12#\n" +
-	"\x1fMEMORY_SOURCE_KIND_TURN_EXTRACT\x10\x01\x12$\n" +
-	" MEMORY_SOURCE_KIND_GRPC_AI_WRITE\x10\x02\x12\"\n" +
-	"\x1eMEMORY_SOURCE_KIND_SYSTEM_SEED\x10\x03\x12#\n" +
-	"\x1fMEMORY_SOURCE_KIND_LEGACY_ENTRY\x10\x04*\x93\x01\n" +
-	"\x10MemoryScopeLevel\x12\"\n" +
-	"\x1eMEMORY_SCOPE_LEVEL_UNSPECIFIED\x10\x00\x12\x1e\n" +
-	"\x1aMEMORY_SCOPE_LEVEL_SESSION\x10\x01\x12\x1e\n" +
-	"\x1aMEMORY_SCOPE_LEVEL_PROJECT\x10\x02\x12\x1b\n" +
-	"\x17MEMORY_SCOPE_LEVEL_USER\x10\x03*\x9b\x01\n" +
-	"\fMemoryStatus\x12\x1d\n" +
-	"\x19MEMORY_STATUS_UNSPECIFIED\x10\x00\x12\x18\n" +
-	"\x14MEMORY_STATUS_ACTIVE\x10\x01\x12\x1c\n" +
-	"\x18MEMORY_STATUS_SUPERSEDED\x10\x02\x12\x19\n" +
-	"\x15MEMORY_STATUS_DELETED\x10\x03\x12\x19\n" +
-	"\x15MEMORY_STATUS_EXPIRED\x10\x04*y\n" +
-	"\x0eMemoryPriority\x12\x1f\n" +
-	"\x1bMEMORY_PRIORITY_UNSPECIFIED\x10\x00\x12\x16\n" +
-	"\x12MEMORY_PRIORITY_P0\x10\x01\x12\x16\n" +
-	"\x12MEMORY_PRIORITY_P1\x10\x02\x12\x16\n" +
-	"\x12MEMORY_PRIORITY_P2\x10\x03*\x7f\n" +
-	"\vMemoryLevel\x12\x1c\n" +
-	"\x18MEMORY_LEVEL_UNSPECIFIED\x10\x00\x12\x13\n" +
-	"\x0fMEMORY_LEVEL_L0\x10\x01\x12\x13\n" +
-	"\x0fMEMORY_LEVEL_L1\x10\x02\x12\x13\n" +
-	"\x0fMEMORY_LEVEL_L2\x10\x03\x12\x13\n" +
-	"\x0fMEMORY_LEVEL_L3\x10\x04*u\n" +
+	"3PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE\x10\x04*u\n" +
 	"\x11ProfileBundleMode\x12#\n" +
 	"\x1fPROFILE_BUNDLE_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18PROFILE_BUNDLE_MODE_FULL\x10\x01\x12\x1d\n" +
-	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x022\x87\v\n" +
+	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x022\xb0\n" +
+	"\n" +
 	"\n" +
 	"VMMService\x12:\n" +
 	"\aHealthz\x12\x16.google.protobuf.Empty\x1a\x17.vmm.v1.HealthzResponse\x12D\n" +
@@ -4569,8 +3523,7 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x10GetProfileBundle\x12\x1f.vmm.v1.GetProfileBundleRequest\x1a .vmm.v1.GetProfileBundleResponse\x12j\n" +
 	"\x17ApplyProfileInstruction\x12&.vmm.v1.ApplyProfileInstructionRequest\x1a'.vmm.v1.ApplyProfileInstructionResponse\x12[\n" +
 	"\x12SearchMemoryEvents\x12!.vmm.v1.SearchMemoryEventsRequest\x1a\".vmm.v1.SearchMemoryEventsResponse\x12O\n" +
-	"\x0eGetTurnDetails\x12\x1d.vmm.v1.GetTurnDetailsRequest\x1a\x1e.vmm.v1.GetTurnDetailsResponse\x12U\n" +
-	"\x10GetMemoryDetails\x12\x1f.vmm.v1.GetMemoryDetailsRequest\x1a .vmm.v1.GetMemoryDetailsResponse\x12L\n" +
+	"\x0eGetTurnDetails\x12\x1d.vmm.v1.GetTurnDetailsRequest\x1a\x1e.vmm.v1.GetTurnDetailsResponse\x12L\n" +
 	"\rWriteMemories\x12\x1c.vmm.v1.WriteMemoriesRequest\x1a\x1d.vmm.v1.WriteMemoriesResponse\x12=\n" +
 	"\bPreCheck\x12\x17.vmm.v1.PreCheckRequest\x1a\x18.vmm.v1.PreCheckResponse\x12C\n" +
 	"\n" +
@@ -4588,156 +3541,122 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP() []b
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescData
 }
 
-var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 9)
-var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_goTypes = []any{
 	(ProfileTarget)(0),                      // 0: vmm.v1.ProfileTarget
 	(ProfileNodeSourceKind)(0),              // 1: vmm.v1.ProfileNodeSourceKind
-	(MemoryRefType)(0),                      // 2: vmm.v1.MemoryRefType
-	(MemorySourceKind)(0),                   // 3: vmm.v1.MemorySourceKind
-	(MemoryScopeLevel)(0),                   // 4: vmm.v1.MemoryScopeLevel
-	(MemoryStatus)(0),                       // 5: vmm.v1.MemoryStatus
-	(MemoryPriority)(0),                     // 6: vmm.v1.MemoryPriority
-	(MemoryLevel)(0),                        // 7: vmm.v1.MemoryLevel
-	(ProfileBundleMode)(0),                  // 8: vmm.v1.ProfileBundleMode
-	(*HealthzResponse)(nil),                 // 9: vmm.v1.HealthzResponse
-	(*ProjectEntry)(nil),                    // 10: vmm.v1.ProjectEntry
-	(*UserEntry)(nil),                       // 11: vmm.v1.UserEntry
-	(*ListProjectsResponse)(nil),            // 12: vmm.v1.ListProjectsResponse
-	(*ResolveProjectRequest)(nil),           // 13: vmm.v1.ResolveProjectRequest
-	(*ResolveProjectResponse)(nil),          // 14: vmm.v1.ResolveProjectResponse
-	(*EnsureProjectRequest)(nil),            // 15: vmm.v1.EnsureProjectRequest
-	(*EnsureProjectResponse)(nil),           // 16: vmm.v1.EnsureProjectResponse
-	(*DeleteProjectRequest)(nil),            // 17: vmm.v1.DeleteProjectRequest
-	(*DeleteProjectResponse)(nil),           // 18: vmm.v1.DeleteProjectResponse
-	(*MigrateProjectRequest)(nil),           // 19: vmm.v1.MigrateProjectRequest
-	(*MigrateProjectResponse)(nil),          // 20: vmm.v1.MigrateProjectResponse
-	(*ResolveUserRequest)(nil),              // 21: vmm.v1.ResolveUserRequest
-	(*ResolveUserResponse)(nil),             // 22: vmm.v1.ResolveUserResponse
-	(*ListUsersResponse)(nil),               // 23: vmm.v1.ListUsersResponse
-	(*DeleteUserRequest)(nil),               // 24: vmm.v1.DeleteUserRequest
-	(*DeleteUserResponse)(nil),              // 25: vmm.v1.DeleteUserResponse
-	(*MemoryRef)(nil),                       // 26: vmm.v1.MemoryRef
-	(*ProfileNodeEntry)(nil),                // 27: vmm.v1.ProfileNodeEntry
-	(*RetiredProfileNodeEntry)(nil),         // 28: vmm.v1.RetiredProfileNodeEntry
-	(*GetProfileNodesRequest)(nil),          // 29: vmm.v1.GetProfileNodesRequest
-	(*GetProfileNodesResponse)(nil),         // 30: vmm.v1.GetProfileNodesResponse
-	(*GetProfileBundleRequest)(nil),         // 31: vmm.v1.GetProfileBundleRequest
-	(*GetProfileBundleResponse)(nil),        // 32: vmm.v1.GetProfileBundleResponse
-	(*ApplyProfileInstructionRequest)(nil),  // 33: vmm.v1.ApplyProfileInstructionRequest
-	(*ApplyProfileInstructionResponse)(nil), // 34: vmm.v1.ApplyProfileInstructionResponse
-	(*SearchMemoryEventsRequest)(nil),       // 35: vmm.v1.SearchMemoryEventsRequest
-	(*MemorySearchHit)(nil),                 // 36: vmm.v1.MemorySearchHit
-	(*MemorySearchGroupResult)(nil),         // 37: vmm.v1.MemorySearchGroupResult
-	(*SearchMemoryEventsResponse)(nil),      // 38: vmm.v1.SearchMemoryEventsResponse
-	(*GetTurnDetailsRequest)(nil),           // 39: vmm.v1.GetTurnDetailsRequest
-	(*TurnDetailEntry)(nil),                 // 40: vmm.v1.TurnDetailEntry
-	(*GetTurnDetailsResponse)(nil),          // 41: vmm.v1.GetTurnDetailsResponse
-	(*GetMemoryDetailsRequest)(nil),         // 42: vmm.v1.GetMemoryDetailsRequest
-	(*MemoryDetailEntry)(nil),               // 43: vmm.v1.MemoryDetailEntry
-	(*MemoryDetailItem)(nil),                // 44: vmm.v1.MemoryDetailItem
-	(*GetMemoryDetailsResponse)(nil),        // 45: vmm.v1.GetMemoryDetailsResponse
-	(*WriteMemoryItem)(nil),                 // 46: vmm.v1.WriteMemoryItem
-	(*WriteMemoriesRequest)(nil),            // 47: vmm.v1.WriteMemoriesRequest
-	(*WriteMemoryResultItem)(nil),           // 48: vmm.v1.WriteMemoryResultItem
-	(*WriteMemoriesResponse)(nil),           // 49: vmm.v1.WriteMemoriesResponse
-	(*PreCheckRequest)(nil),                 // 50: vmm.v1.PreCheckRequest
-	(*ContextItem)(nil),                     // 51: vmm.v1.ContextItem
-	(*PreCheckResponse)(nil),                // 52: vmm.v1.PreCheckResponse
-	(*PostActionTimelineItem)(nil),          // 53: vmm.v1.PostActionTimelineItem
-	(*PostActionRequest)(nil),               // 54: vmm.v1.PostActionRequest
-	(*PostActionResponse)(nil),              // 55: vmm.v1.PostActionResponse
-	(*emptypb.Empty)(nil),                   // 56: google.protobuf.Empty
+	(ProfileBundleMode)(0),                  // 2: vmm.v1.ProfileBundleMode
+	(*HealthzResponse)(nil),                 // 3: vmm.v1.HealthzResponse
+	(*ProjectEntry)(nil),                    // 4: vmm.v1.ProjectEntry
+	(*UserEntry)(nil),                       // 5: vmm.v1.UserEntry
+	(*ListProjectsResponse)(nil),            // 6: vmm.v1.ListProjectsResponse
+	(*ResolveProjectRequest)(nil),           // 7: vmm.v1.ResolveProjectRequest
+	(*ResolveProjectResponse)(nil),          // 8: vmm.v1.ResolveProjectResponse
+	(*EnsureProjectRequest)(nil),            // 9: vmm.v1.EnsureProjectRequest
+	(*EnsureProjectResponse)(nil),           // 10: vmm.v1.EnsureProjectResponse
+	(*DeleteProjectRequest)(nil),            // 11: vmm.v1.DeleteProjectRequest
+	(*DeleteProjectResponse)(nil),           // 12: vmm.v1.DeleteProjectResponse
+	(*MigrateProjectRequest)(nil),           // 13: vmm.v1.MigrateProjectRequest
+	(*MigrateProjectResponse)(nil),          // 14: vmm.v1.MigrateProjectResponse
+	(*ResolveUserRequest)(nil),              // 15: vmm.v1.ResolveUserRequest
+	(*ResolveUserResponse)(nil),             // 16: vmm.v1.ResolveUserResponse
+	(*ListUsersResponse)(nil),               // 17: vmm.v1.ListUsersResponse
+	(*DeleteUserRequest)(nil),               // 18: vmm.v1.DeleteUserRequest
+	(*DeleteUserResponse)(nil),              // 19: vmm.v1.DeleteUserResponse
+	(*ProfileNodeEntry)(nil),                // 20: vmm.v1.ProfileNodeEntry
+	(*RetiredProfileNodeEntry)(nil),         // 21: vmm.v1.RetiredProfileNodeEntry
+	(*GetProfileNodesRequest)(nil),          // 22: vmm.v1.GetProfileNodesRequest
+	(*GetProfileNodesResponse)(nil),         // 23: vmm.v1.GetProfileNodesResponse
+	(*GetProfileBundleRequest)(nil),         // 24: vmm.v1.GetProfileBundleRequest
+	(*GetProfileBundleResponse)(nil),        // 25: vmm.v1.GetProfileBundleResponse
+	(*ApplyProfileInstructionRequest)(nil),  // 26: vmm.v1.ApplyProfileInstructionRequest
+	(*ApplyProfileInstructionResponse)(nil), // 27: vmm.v1.ApplyProfileInstructionResponse
+	(*SearchMemoryEventsRequest)(nil),       // 28: vmm.v1.SearchMemoryEventsRequest
+	(*MemorySearchHit)(nil),                 // 29: vmm.v1.MemorySearchHit
+	(*MemorySearchGroupResult)(nil),         // 30: vmm.v1.MemorySearchGroupResult
+	(*SearchMemoryEventsResponse)(nil),      // 31: vmm.v1.SearchMemoryEventsResponse
+	(*GetTurnDetailsRequest)(nil),           // 32: vmm.v1.GetTurnDetailsRequest
+	(*TurnDetailEntry)(nil),                 // 33: vmm.v1.TurnDetailEntry
+	(*GetTurnDetailsResponse)(nil),          // 34: vmm.v1.GetTurnDetailsResponse
+	(*WriteMemoryItem)(nil),                 // 35: vmm.v1.WriteMemoryItem
+	(*WriteMemoriesRequest)(nil),            // 36: vmm.v1.WriteMemoriesRequest
+	(*WriteMemoryResultItem)(nil),           // 37: vmm.v1.WriteMemoryResultItem
+	(*WriteMemoriesResponse)(nil),           // 38: vmm.v1.WriteMemoriesResponse
+	(*PreCheckRequest)(nil),                 // 39: vmm.v1.PreCheckRequest
+	(*ContextItem)(nil),                     // 40: vmm.v1.ContextItem
+	(*PreCheckResponse)(nil),                // 41: vmm.v1.PreCheckResponse
+	(*PostActionTimelineItem)(nil),          // 42: vmm.v1.PostActionTimelineItem
+	(*PostActionRequest)(nil),               // 43: vmm.v1.PostActionRequest
+	(*PostActionResponse)(nil),              // 44: vmm.v1.PostActionResponse
+	(*emptypb.Empty)(nil),                   // 45: google.protobuf.Empty
 }
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_depIdxs = []int32{
-	10, // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
-	10, // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	10, // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	10, // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	10, // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
-	10, // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
-	11, // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
-	11, // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
-	11, // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
-	2,  // 9: vmm.v1.MemoryRef.type:type_name -> vmm.v1.MemoryRefType
-	0,  // 10: vmm.v1.ProfileNodeEntry.target:type_name -> vmm.v1.ProfileTarget
-	1,  // 11: vmm.v1.ProfileNodeEntry.source_kind:type_name -> vmm.v1.ProfileNodeSourceKind
-	0,  // 12: vmm.v1.GetProfileNodesRequest.target:type_name -> vmm.v1.ProfileTarget
-	27, // 13: vmm.v1.GetProfileNodesResponse.nodes:type_name -> vmm.v1.ProfileNodeEntry
-	8,  // 14: vmm.v1.GetProfileBundleRequest.mode:type_name -> vmm.v1.ProfileBundleMode
-	8,  // 15: vmm.v1.GetProfileBundleResponse.mode:type_name -> vmm.v1.ProfileBundleMode
-	0,  // 16: vmm.v1.ApplyProfileInstructionRequest.target:type_name -> vmm.v1.ProfileTarget
-	27, // 17: vmm.v1.ApplyProfileInstructionResponse.accepted_nodes:type_name -> vmm.v1.ProfileNodeEntry
-	28, // 18: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
-	26, // 19: vmm.v1.MemorySearchHit.memory_ref:type_name -> vmm.v1.MemoryRef
-	26, // 20: vmm.v1.MemorySearchHit.source_ref:type_name -> vmm.v1.MemoryRef
-	3,  // 21: vmm.v1.MemorySearchHit.source_kind:type_name -> vmm.v1.MemorySourceKind
-	4,  // 22: vmm.v1.MemorySearchHit.scope_level:type_name -> vmm.v1.MemoryScopeLevel
-	36, // 23: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
-	37, // 24: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
-	53, // 25: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	40, // 26: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
-	26, // 27: vmm.v1.GetMemoryDetailsRequest.refs:type_name -> vmm.v1.MemoryRef
-	3,  // 28: vmm.v1.MemoryDetailEntry.source_kind:type_name -> vmm.v1.MemorySourceKind
-	4,  // 29: vmm.v1.MemoryDetailEntry.scope_level:type_name -> vmm.v1.MemoryScopeLevel
-	5,  // 30: vmm.v1.MemoryDetailEntry.memory_status:type_name -> vmm.v1.MemoryStatus
-	6,  // 31: vmm.v1.MemoryDetailEntry.priority:type_name -> vmm.v1.MemoryPriority
-	7,  // 32: vmm.v1.MemoryDetailEntry.memory_level:type_name -> vmm.v1.MemoryLevel
-	26, // 33: vmm.v1.MemoryDetailItem.ref:type_name -> vmm.v1.MemoryRef
-	43, // 34: vmm.v1.MemoryDetailItem.memory:type_name -> vmm.v1.MemoryDetailEntry
-	40, // 35: vmm.v1.MemoryDetailItem.turn:type_name -> vmm.v1.TurnDetailEntry
-	44, // 36: vmm.v1.GetMemoryDetailsResponse.items:type_name -> vmm.v1.MemoryDetailItem
-	4,  // 37: vmm.v1.WriteMemoryItem.scope_level:type_name -> vmm.v1.MemoryScopeLevel
-	6,  // 38: vmm.v1.WriteMemoryItem.priority:type_name -> vmm.v1.MemoryPriority
-	7,  // 39: vmm.v1.WriteMemoryItem.memory_level:type_name -> vmm.v1.MemoryLevel
-	46, // 40: vmm.v1.WriteMemoriesRequest.items:type_name -> vmm.v1.WriteMemoryItem
-	26, // 41: vmm.v1.WriteMemoryResultItem.memory_ref:type_name -> vmm.v1.MemoryRef
-	3,  // 42: vmm.v1.WriteMemoryResultItem.source_kind:type_name -> vmm.v1.MemorySourceKind
-	4,  // 43: vmm.v1.WriteMemoryResultItem.scope_level:type_name -> vmm.v1.MemoryScopeLevel
-	48, // 44: vmm.v1.WriteMemoriesResponse.items:type_name -> vmm.v1.WriteMemoryResultItem
-	51, // 45: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
-	53, // 46: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	56, // 47: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
-	56, // 48: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
-	13, // 49: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
-	15, // 50: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
-	17, // 51: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
-	19, // 52: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
-	21, // 53: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
-	56, // 54: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
-	24, // 55: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
-	29, // 56: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
-	31, // 57: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
-	33, // 58: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
-	35, // 59: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
-	39, // 60: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
-	42, // 61: vmm.v1.VMMService.GetMemoryDetails:input_type -> vmm.v1.GetMemoryDetailsRequest
-	47, // 62: vmm.v1.VMMService.WriteMemories:input_type -> vmm.v1.WriteMemoriesRequest
-	50, // 63: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
-	54, // 64: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
-	9,  // 65: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
-	12, // 66: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
-	14, // 67: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
-	16, // 68: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
-	18, // 69: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
-	20, // 70: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
-	22, // 71: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
-	23, // 72: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
-	25, // 73: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
-	30, // 74: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
-	32, // 75: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
-	34, // 76: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
-	38, // 77: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
-	41, // 78: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
-	45, // 79: vmm.v1.VMMService.GetMemoryDetails:output_type -> vmm.v1.GetMemoryDetailsResponse
-	49, // 80: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
-	52, // 81: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
-	55, // 82: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
-	65, // [65:83] is the sub-list for method output_type
-	47, // [47:65] is the sub-list for method input_type
-	47, // [47:47] is the sub-list for extension type_name
-	47, // [47:47] is the sub-list for extension extendee
-	0,  // [0:47] is the sub-list for field type_name
+	4,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
+	4,  // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	4,  // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	4,  // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	4,  // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
+	4,  // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
+	5,  // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
+	5,  // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
+	5,  // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
+	0,  // 9: vmm.v1.ProfileNodeEntry.target:type_name -> vmm.v1.ProfileTarget
+	1,  // 10: vmm.v1.ProfileNodeEntry.source_kind:type_name -> vmm.v1.ProfileNodeSourceKind
+	0,  // 11: vmm.v1.GetProfileNodesRequest.target:type_name -> vmm.v1.ProfileTarget
+	20, // 12: vmm.v1.GetProfileNodesResponse.nodes:type_name -> vmm.v1.ProfileNodeEntry
+	2,  // 13: vmm.v1.GetProfileBundleRequest.mode:type_name -> vmm.v1.ProfileBundleMode
+	2,  // 14: vmm.v1.GetProfileBundleResponse.mode:type_name -> vmm.v1.ProfileBundleMode
+	0,  // 15: vmm.v1.ApplyProfileInstructionRequest.target:type_name -> vmm.v1.ProfileTarget
+	20, // 16: vmm.v1.ApplyProfileInstructionResponse.accepted_nodes:type_name -> vmm.v1.ProfileNodeEntry
+	21, // 17: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
+	29, // 18: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
+	30, // 19: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
+	42, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	33, // 21: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
+	35, // 22: vmm.v1.WriteMemoriesRequest.items:type_name -> vmm.v1.WriteMemoryItem
+	37, // 23: vmm.v1.WriteMemoriesResponse.items:type_name -> vmm.v1.WriteMemoryResultItem
+	40, // 24: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
+	42, // 25: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	45, // 26: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
+	45, // 27: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
+	7,  // 28: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
+	9,  // 29: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
+	11, // 30: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
+	13, // 31: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
+	15, // 32: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
+	45, // 33: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
+	18, // 34: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
+	22, // 35: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
+	24, // 36: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
+	26, // 37: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
+	28, // 38: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
+	32, // 39: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
+	36, // 40: vmm.v1.VMMService.WriteMemories:input_type -> vmm.v1.WriteMemoriesRequest
+	39, // 41: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
+	43, // 42: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
+	3,  // 43: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
+	6,  // 44: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
+	8,  // 45: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
+	10, // 46: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
+	12, // 47: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
+	14, // 48: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
+	16, // 49: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
+	17, // 50: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
+	19, // 51: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
+	23, // 52: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
+	25, // 53: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
+	27, // 54: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
+	31, // 55: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
+	34, // 56: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
+	38, // 57: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
+	41, // 58: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
+	44, // 59: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
+	43, // [43:60] is the sub-list for method output_type
+	26, // [26:43] is the sub-list for method input_type
+	26, // [26:26] is the sub-list for extension type_name
+	26, // [26:26] is the sub-list for extension extendee
+	0,  // [0:26] is the sub-list for field type_name
 }
 
 func init() { file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() }
@@ -4745,18 +3664,14 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() {
 	if File_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto != nil {
 		return
 	}
-	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[22].OneofWrappers = []any{}
-	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[35].OneofWrappers = []any{
-		(*MemoryDetailItem_Memory)(nil),
-		(*MemoryDetailItem_Turn)(nil),
-	}
+	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc), len(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc)),
-			NumEnums:      9,
-			NumMessages:   47,
+			NumEnums:      3,
+			NumMessages:   42,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

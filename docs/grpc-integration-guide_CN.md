@@ -46,8 +46,12 @@
 - `GetProfileNodes`
 - `GetProfileBundle`
 - `ApplyProfileInstruction`
+
+### AI 工具记忆接口
+
 - `SearchMemoryEvents`
 - `GetTurnDetails`
+- `WriteMemories`
 
 ### 业务面
 
@@ -85,6 +89,12 @@
 如果你传入这个 metadata，服务端会继续沿用它。
 
 如果不传，服务端会自动生成新的 trace id。
+
+另外要注意：
+
+- `x-trace-id` 必须保持 ASCII-safe
+- 不要把原始中文 query、原始 JSON、或其他非 ASCII 内容直接拼进 metadata
+- 中文正文应该放在 protobuf 请求体里，而不是 metadata/header 里
 
 ## 五、大小限制
 
@@ -134,8 +144,9 @@
 - `ApplyProfileInstruction` 会同步触发一次 LLM 评审并落库
 - `ApplyProfileInstruction` 对同目标同指令的并发调用会复用第一次进行中的结果
 - `ApplyProfileInstruction` 对同一目标上的不同指令会串行执行，避免同一批旧节点并发写回
-- `SearchMemoryEvents` 用于按 `project_id + user_id + query_json` 主动搜索向量记忆
-- `GetTurnDetails` 用于按 `turn_ids[]` 回查脱水 turn 原文
+- `SearchMemoryEvents` 用于按 `project_id + user_id + queries[]` 主动搜索长期记忆
+- `GetTurnDetails` 用于按 `turn_ids[]` 回查结构化 turn 详情
+- `WriteMemories` 用于让 AI 工具主动写入长期记忆，不生成 turn
 - 如果默认 SQLite provider 返回 `SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA`，并通过 trailer 标记为可重试：
   - 服务端适配层会先做有界指数退避重试
 - 如果手工画像持久化阶段遇到关系库存储 provider 返回的“提交结果不确定”错误：
@@ -399,24 +410,42 @@
 
 用途：
 
-- 主动发起一次面向向量记忆的检索
+- 主动发起一次面向长期记忆的检索
+- 搜索目标是 memory 记录，不是 turn 记录
+- 返回结果只保留 AI 后续决策需要的最小字段
 
 请求字段：
 
 - `project_id`
 - `user_id`
-- `query_json`
+- `queries[]`
 - `top_k`
 
-其中 `query_json` 必须是 JSON 数组，每项结构为：
+其中：
+
+- `queries[]`
+  - 是字符串数组
+  - 每项都是一条完整查询语句
+  - 不再使用 `query_json`
+  - 不再使用 `background`
+  - 当前最大 `16` 条
+- `top_k`
+  - 单条 query 期望返回的命中上限
+  - transport 上限为 `64`
+  - 实现层会进一步做保护性截断
+
+请求示例：
 
 ```json
-[
-  {
-    "background": "用户最近一直在讨论水果和饮品。",
-    "query": "喜欢的水果"
-  }
-]
+{
+  "project_id": 9,
+  "user_id": 7,
+  "queries": [
+    "喜欢的水果",
+    "最近确认过的并发方案"
+  ],
+  "top_k": 5
+}
 ```
 
 ### PreCheck 检索范围配置
@@ -443,28 +472,52 @@
 服务端行为：
 
 - 先通过 `project_id + user_id` 解析当前检索 scope
-- 对每条查询项做 embedding
+- 对每条 query 做规范化、embedding 和统一召回
 - 在当前 `team / space / project / user` 范围内检索 LanceDB
-- 原样回显每条查询项的：
-  - `background`
+- 原样回显每条 query 的：
+  - `query_index`
   - `query`
 
 返回命中字段：
 
 - `memory_id`
-- `turn_id`
-- `session_id`
-- `content`
-- `details`
+- `source_turn_id`
+- `abstract`
+- `details_preview`
 - `category`
-- `score`
+
+字段说明：
+
+- `memory_id`
+  - 这条长期记忆自身的稳定 ID
+- `source_turn_id`
+  - 这条记忆若来自某条 turn 提炼，则返回该 turn id
+  - 若这条记忆是工具直接写入、没有来源 turn，则返回 `0`
+- `abstract`
+  - 这条记忆的摘要
+- `details_preview`
+  - 详情预览，不是完整 details
+- `category`
+  - 直接返回稳定英文标签，而不是内部数字
+
+`category` 当前标签：
+
+- `general`
+- `architecture_decision`
+- `tech_spec_api`
+- `business_logic`
+- `requirement_todo`
+- `project_context`
+- `logical_bug_debt`
+- `security_policy`
 
 ### GetTurnDetails
 
 用途：
 
-- 按 `turn_ids[]` 读取一条或多条脱水 turn 原文
-- 同时返回服务端已经拆好的具体对话字段，以及当前 turn 前后各 `3` 轮的编号
+- 按 `turn_ids[]` 读取一条或多条 turn 的结构化详情
+- 适合在 `SearchMemoryEvents` 命中后，按 `source_turn_id` 再追查原始对话
+- 不再直接返回脱水 JSON 原文和内部预算字段
 
 请求字段：
 
@@ -473,27 +526,97 @@
 返回字段：
 
 - `turn_id`
-- `session_id`
-- `project_id`
-- `dehydrated_content`
-- `user_content`
+- `user_question`
 - `timeline`
-- `assistant_content`
-- `dehydrated_budget`
-- `extracted_status`
-- `details`
-- `details_budget`
-- `created_timestamp`
-- `updated_timestamp`
+- `assistant_answer`
+- `detail`
 - `previous_turn_ids`
 - `next_turn_ids`
 
-典型联动方式：
+返回说明：
 
-1. 先调用 `SearchMemoryEvents`
-2. 从命中结果中拿到 `memory_ref / source_ref`
-3. 如果需要混合详情，调用 `GetMemoryDetails`
-4. 如果只想按旧接口回看 turn 原文，仍可对 `source_ref.type=TURN` 的条目调用 `GetTurnDetails`
+- `timeline`
+  - 直接返回 JSON 数组结构，不需要再解析字符串
+- `previous_turn_ids`
+  - 最多返回当前 turn 之前 `3` 条相邻 turn id
+- `next_turn_ids`
+  - 最多返回当前 turn 之后 `3` 条相邻 turn id
+
+### WriteMemories
+
+用途：
+
+- 让 AI 工具主动写入长期记忆
+- 这条接口只写入 memory，不会生成 turn
+- 适合把已经明确、值得长期保留的事实或约束直接落库
+
+请求字段：
+
+- `session_id`
+- `user_id`
+- `project_id`
+- `items[]`
+
+`items[]` 每项字段：
+
+- `scope_level`
+  - 使用紧凑数字概念值
+  - `1 = session`
+  - `2 = project`
+  - `3 = user`
+  - `0` 或省略时，由服务端按默认策略处理，默认落到 `project`
+- `abstract`
+  - 必填
+  - 用于摘要和 embedding
+- `details`
+  - 必填
+  - 用于保存完整记忆正文
+- `category`
+  - 必填
+  - 使用内部分类编号
+- `priority`
+  - 可选
+  - `1 = P0`
+  - `2 = P1`
+  - `3 = P2`
+  - `0` 或省略时，由服务端默认成 `P2`
+- `memory_level`
+  - 可选
+  - `1 = L0`
+  - `2 = L1`
+  - `3 = L2`
+  - `4 = L3`
+  - `0` 或省略时，由服务端按 scope 自动补默认值
+
+`category` 当前编号：
+
+- `0 = general`
+- `1 = architecture_decision`
+- `2 = tech_spec_api`
+- `3 = business_logic`
+- `4 = requirement_todo`
+- `5 = project_context`
+- `6 = logical_bug_debt`
+- `7 = security_policy`
+
+额外说明：
+
+- 不再接收 `expires_timestamp`
+- 有效期由服务端按标准算法自动计算
+- 写入链路会做软幂等，避免短时间重复写入同一条记忆
+
+返回字段：
+
+- `memory_id`
+- `deduped`
+
+返回说明：
+
+- `memory_id`
+  - 新建或复用的长期记忆 ID
+- `deduped`
+  - `true` 表示命中软幂等，复用了既有 memory
+  - `false` 表示这次实际创建了新 memory
 
 ### PreCheck
 

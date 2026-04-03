@@ -57,20 +57,16 @@ service VMMService {
   // ApplyProfileInstruction 用于接收单个目标上的显式手工画像指令，并持久化评审后的节点变更。
   rpc ApplyProfileInstruction(ApplyProfileInstructionRequest) returns (ApplyProfileInstructionResponse);
 
-  // SearchMemoryEvents embeds one grouped JSON query payload, searches vector memories inside the resolved scope, and returns unified memory refs plus optional source turn refs.
-  // SearchMemoryEvents 用于对一组 JSON 查询做向量检索，并返回统一 memory ref 以及可选的来源 turn ref。
+  // SearchMemoryEvents searches durable memories for one simple query list and returns only the AI-facing hit fields needed for follow-up tool decisions.
+  // SearchMemoryEvents 用于按简单查询字符串列表检索长期记忆，并只返回 AI 后续决策真正需要的命中字段。
   rpc SearchMemoryEvents(SearchMemoryEventsRequest) returns (SearchMemoryEventsResponse);
 
-  // GetTurnDetails loads one or more dehydrated turn rows by turn id so callers can inspect the original persisted dialogue payloads.
-  // GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，让调用方查看原始持久化对话载荷。
+  // GetTurnDetails loads one or more turn rows by turn id and returns AI-ready structured dialogue fields instead of dehydrated storage payloads.
+  // GetTurnDetails 用于按 turn id 读取一条或多条 turn 记录，并直接返回适合 AI 消费的结构化对话字段，而不是脱水存储载荷。
   rpc GetTurnDetails(GetTurnDetailsRequest) returns (GetTurnDetailsResponse);
 
-  // GetMemoryDetails loads one ordered `TYPE + ID` ref list and returns either unified memory details or turn details for each ref.
-  // GetMemoryDetails 用于按顺序读取一组 `TYPE + ID` 引用，并为每个引用返回统一记忆详情或 turn 详情。
-  rpc GetMemoryDetails(GetMemoryDetailsRequest) returns (GetMemoryDetailsResponse);
-
-  // WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns their unified refs.
-  // WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并返回它们的统一引用。
+  // WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
+  // WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
   rpc WriteMemories(WriteMemoriesRequest) returns (WriteMemoriesResponse);
 
   // PreCheck validates project_id/user_id through the interceptor, runs live intent extraction plus unified memory adoption, and returns the assembled context payload.
@@ -264,69 +260,6 @@ enum ProfileNodeSourceKind {
   PROFILE_NODE_SOURCE_KIND_RETAINED_AFTER_USER_DELETE = 4;
 }
 
-// MemoryRefType identifies whether one lookup ref targets a unified memory row or one persisted turn row.
-// MemoryRefType 用于标识某个查询引用指向统一记忆行，还是持久化 turn 行。
-enum MemoryRefType {
-  MEMORY_REF_TYPE_UNSPECIFIED = 0;
-  MEMORY_REF_TYPE_MEMORY = 1;
-  MEMORY_REF_TYPE_TURN = 2;
-}
-
-// MemorySourceKind describes where one durable memory row came from.
-// MemorySourceKind 用于描述一条长期记忆行的来源。
-enum MemorySourceKind {
-  MEMORY_SOURCE_KIND_UNSPECIFIED = 0;
-  MEMORY_SOURCE_KIND_TURN_EXTRACT = 1;
-  MEMORY_SOURCE_KIND_GRPC_AI_WRITE = 2;
-  MEMORY_SOURCE_KIND_SYSTEM_SEED = 3;
-  MEMORY_SOURCE_KIND_LEGACY_ENTRY = 4;
-}
-
-// MemoryScopeLevel describes the lifetime scope attached to one durable memory row.
-// MemoryScopeLevel 用于描述一条长期记忆行绑定的生命周期作用域。
-enum MemoryScopeLevel {
-  MEMORY_SCOPE_LEVEL_UNSPECIFIED = 0;
-  MEMORY_SCOPE_LEVEL_SESSION = 1;
-  MEMORY_SCOPE_LEVEL_PROJECT = 2;
-  MEMORY_SCOPE_LEVEL_USER = 3;
-}
-
-// MemoryStatus describes the current durable state of one memory row.
-// MemoryStatus 用于描述一条记忆行当前的长期状态。
-enum MemoryStatus {
-  MEMORY_STATUS_UNSPECIFIED = 0;
-  MEMORY_STATUS_ACTIVE = 1;
-  MEMORY_STATUS_SUPERSEDED = 2;
-  MEMORY_STATUS_DELETED = 3;
-  MEMORY_STATUS_EXPIRED = 4;
-}
-
-// MemoryPriority transports the compact P-level used by durable memories.
-// MemoryPriority 用于传输长期记忆使用的紧凑 P 级别。
-enum MemoryPriority {
-  MEMORY_PRIORITY_UNSPECIFIED = 0;
-  MEMORY_PRIORITY_P0 = 1;
-  MEMORY_PRIORITY_P1 = 2;
-  MEMORY_PRIORITY_P2 = 3;
-}
-
-// MemoryLevel transports the compact L-level used by durable memories.
-// MemoryLevel 用于传输长期记忆使用的紧凑 L 级别。
-enum MemoryLevel {
-  MEMORY_LEVEL_UNSPECIFIED = 0;
-  MEMORY_LEVEL_L0 = 1;
-  MEMORY_LEVEL_L1 = 2;
-  MEMORY_LEVEL_L2 = 3;
-  MEMORY_LEVEL_L3 = 4;
-}
-
-// MemoryRef transports one `TYPE + ID` reference for unified memory or turn-detail lookup.
-// MemoryRef 用于传输统一记忆或 turn 详情查询使用的 `TYPE + ID` 引用。
-message MemoryRef {
-  MemoryRefType type = 1;
-  uint64 id = 2;
-}
-
 // ProfileNodeEntry transports one active atomic profile node back to the caller.
 // ProfileNodeEntry 用于把一条 active 原子化画像节点返回给调用方。
 message ProfileNodeEntry {
@@ -418,141 +351,74 @@ message ApplyProfileInstructionResponse {
   string trace_id = 5;
 }
 
-// SearchMemoryEventsRequest carries one grouped JSON query payload together with the resolved user/project selectors.
-// SearchMemoryEventsRequest 用于承载一份分组 JSON 查询载荷，以及解析范围所需的 user/project 选择参数。
+// SearchMemoryEventsRequest carries one simple query list together with the resolved user/project selectors.
+// SearchMemoryEventsRequest 用于承载一个简单查询字符串列表，以及解析范围所需的 user/project 选择参数。
 message SearchMemoryEventsRequest {
   uint64 user_id = 1;
   uint64 project_id = 2;
-  string query_json = 3;
+  repeated string queries = 3;
   uint32 top_k = 4;
 }
 
-// MemorySearchHit transports one vector-memory hit plus its unified memory ref and optional source turn ref.
-// MemorySearchHit 用于承载一条向量记忆命中结果，以及它的统一记忆引用和可选来源 turn 引用。
+// MemorySearchHit transports one AI-facing memory hit with the optional source turn id kept for later turn-detail lookup.
+// MemorySearchHit 用于承载一条面向 AI 的记忆命中结果，并保留可选的来源 turn id 供后续查看详情。
 message MemorySearchHit {
-  MemoryRef memory_ref = 1;
-  MemoryRef source_ref = 2;
-  MemorySourceKind source_kind = 3;
-  MemoryScopeLevel scope_level = 4;
-  uint64 session_id = 5;
-  string abstract = 6;
-  string details_preview = 7;
-  int32 category = 8;
-  double score = 9;
+  uint64 memory_id = 1;
+  uint64 source_turn_id = 2;
+  string abstract = 3;
+  string details_preview = 4;
+  string category = 5;
 }
 
-// MemorySearchGroupResult echoes one grouped JSON query item and returns the hit list produced for that item.
-// MemorySearchGroupResult 用于原样回显一条分组 JSON 查询项，并返回针对该项生成的命中列表。
+// MemorySearchGroupResult echoes one normalized query string and returns the hit list produced for that query.
+// MemorySearchGroupResult 用于原样回显一条规范化后的查询字符串，并返回针对该查询生成的命中列表。
 message MemorySearchGroupResult {
   uint32 query_index = 1;
-  string background = 2;
-  string query = 3;
-  repeated MemorySearchHit hits = 4;
+  string query = 2;
+  repeated MemorySearchHit hits = 3;
 }
 
-// SearchMemoryEventsResponse returns all grouped vector-search results plus trace metadata.
-// SearchMemoryEventsResponse 用于返回全部分组向量检索结果和 trace 元数据。
+// SearchMemoryEventsResponse returns all grouped memory-search results plus trace metadata.
+// SearchMemoryEventsResponse 用于返回全部分组记忆检索结果和 trace 元数据。
 message SearchMemoryEventsResponse {
   repeated MemorySearchGroupResult results = 1;
   string trace_id = 2;
 }
 
-// GetTurnDetailsRequest carries one or more turn ids whose dehydrated payloads should be read back exactly as stored.
-// GetTurnDetailsRequest 用于承载一条或多条 turn id，让服务端按原样回读脱水持久化内容。
+// GetTurnDetailsRequest carries one or more turn ids whose structured dialogue fields should be loaded for AI-side inspection.
+// GetTurnDetailsRequest 用于承载一条或多条 turn id，让服务端读取适合 AI 查看的结构化对话字段。
 message GetTurnDetailsRequest {
   repeated uint64 turn_ids = 1;
 }
 
-// TurnDetailEntry transports one dehydrated turn row back to the caller for exact-detail inspection.
-// TurnDetailEntry 用于把一条脱水 turn 行返回给调用方，供精确查看详情。
+// TurnDetailEntry transports one AI-ready turn view so callers can inspect the structured dialogue and nearby turn ids without parsing storage JSON.
+// TurnDetailEntry 用于返回一条适合 AI 消费的 turn 视图，让调用方无需解析存储 JSON 也能查看结构化对话和相邻 turn id。
 message TurnDetailEntry {
   uint64 turn_id = 1;
-  uint64 session_id = 2;
-  uint64 project_id = 3;
-  string dehydrated_content = 4;
-  int32 dehydrated_budget = 5;
-  int32 extracted_status = 6;
-  string details = 7;
-  int32 details_budget = 8;
-  int64 created_timestamp = 9;
-  int64 updated_timestamp = 10;
-  string user_content = 11;
-  repeated PostActionTimelineItem timeline = 12;
-  string assistant_content = 13;
-  repeated uint64 previous_turn_ids = 14;
-  repeated uint64 next_turn_ids = 15;
+  string user_question = 2;
+  repeated PostActionTimelineItem timeline = 3;
+  string assistant_answer = 4;
+  string detail = 5;
+  repeated uint64 previous_turn_ids = 6;
+  repeated uint64 next_turn_ids = 7;
 }
 
-// GetTurnDetailsResponse returns the requested dehydrated turn rows plus trace metadata.
-// GetTurnDetailsResponse 用于返回请求的脱水 turn 行和 trace 元数据。
+// GetTurnDetailsResponse returns the requested structured turn details plus trace metadata.
+// GetTurnDetailsResponse 用于返回请求的结构化 turn 详情和 trace 元数据。
 message GetTurnDetailsResponse {
   repeated TurnDetailEntry turns = 1;
-  string trace_id = 2;
-}
-
-// GetMemoryDetailsRequest carries one or more `TYPE + ID` refs whose durable payloads should be read back exactly as stored.
-// GetMemoryDetailsRequest 用于承载一条或多条 `TYPE + ID` 引用，让服务端按原样回读长期持久化内容。
-message GetMemoryDetailsRequest {
-  repeated MemoryRef refs = 1;
-}
-
-// MemoryDetailEntry transports one unified durable memory row back to the caller for exact-detail inspection.
-// MemoryDetailEntry 用于把一条统一长期记忆行返回给调用方，供精确查看详情。
-message MemoryDetailEntry {
-  uint64 memory_id = 1;
-  MemorySourceKind source_kind = 2;
-  MemoryScopeLevel scope_level = 3;
-  MemoryStatus memory_status = 4;
-  uint64 team_id = 5;
-  uint64 space_id = 6;
-  uint64 project_id = 7;
-  uint64 user_id = 8;
-  uint64 origin_session_id = 9;
-  uint64 source_turn_id = 10;
-  int32 category = 11;
-  string abstract = 12;
-  string details = 13;
-  MemoryPriority priority = 14;
-  MemoryLevel memory_level = 15;
-  uint32 refresh_weight = 16;
-  string status_reason = 17;
-  int64 expires_timestamp = 18;
-  int64 last_recalled_timestamp = 19;
-  int64 last_adopted_timestamp = 20;
-  uint32 recalled_count = 21;
-  uint32 adopted_count = 22;
-  uint32 cross_session_adopted_count = 23;
-  int64 created_timestamp = 24;
-  int64 updated_timestamp = 25;
-}
-
-// MemoryDetailItem transports either one unified memory row or one turn row according to the requested ref type.
-// MemoryDetailItem 用于按请求引用类型承载统一记忆行或 turn 行中的一种。
-message MemoryDetailItem {
-  MemoryRef ref = 1;
-  oneof payload {
-    MemoryDetailEntry memory = 2;
-    TurnDetailEntry turn = 3;
-  }
-}
-
-// GetMemoryDetailsResponse returns the requested mixed refs plus trace metadata.
-// GetMemoryDetailsResponse 用于返回请求的混合引用详情和 trace 元数据。
-message GetMemoryDetailsResponse {
-  repeated MemoryDetailItem items = 1;
   string trace_id = 2;
 }
 
 // WriteMemoryItem carries one direct AI-written memory candidate before soft idempotency and persistence begin.
 // WriteMemoryItem 用于承载一条 AI 主动写入记忆候选，在软幂等和持久化开始前使用。
 message WriteMemoryItem {
-  MemoryScopeLevel scope_level = 1;
+  int32 scope_level = 1;
   string abstract = 2;
   string details = 3;
   int32 category = 4;
-  MemoryPriority priority = 5;
-  MemoryLevel memory_level = 6;
-  int64 expires_timestamp = 7;
+  int32 priority = 5;
+  int32 memory_level = 6;
 }
 
 // WriteMemoriesRequest carries the resolved scope coordinates plus the direct memory items that should be persisted immediately.
@@ -564,13 +430,11 @@ message WriteMemoriesRequest {
   repeated WriteMemoryItem items = 4;
 }
 
-// WriteMemoryResultItem returns the unified ref and effective write mode for one direct memory item.
-// WriteMemoryResultItem 用于返回单条主动记忆项的统一引用和实际写入模式。
+// WriteMemoryResultItem returns only the created or deduplicated memory id so AI callers can keep the write path minimal.
+// WriteMemoryResultItem 用于只返回新建或复用的 memory id，让 AI 调用方保持最小写入反馈。
 message WriteMemoryResultItem {
-  MemoryRef memory_ref = 1;
-  MemorySourceKind source_kind = 2;
-  MemoryScopeLevel scope_level = 3;
-  bool deduped = 4;
+  uint64 memory_id = 1;
+  bool deduped = 2;
 }
 
 // WriteMemoriesResponse returns the ordered direct-write results plus trace metadata.

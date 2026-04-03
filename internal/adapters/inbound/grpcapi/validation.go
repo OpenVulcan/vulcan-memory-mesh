@@ -138,26 +138,20 @@ func NormalizeApplyProfileInstructionRequest(req *vmmv1.ApplyProfileInstructionR
 	req.Instruction = strings.TrimSpace(req.GetInstruction())
 }
 
-// NormalizeSearchMemoryEventsRequest trims the grouped JSON payload before the memory-query use case validates and parses it.
-// NormalizeSearchMemoryEventsRequest 用于在记忆查询用例校验和解析前裁剪分组 JSON 载荷。
+// NormalizeSearchMemoryEventsRequest trims each query string before the memory-query use case validates and executes the AI-facing search request.
+// NormalizeSearchMemoryEventsRequest 用于在记忆查询用例校验和执行 AI 面向的搜索请求前，先裁剪每一条查询字符串。
 func NormalizeSearchMemoryEventsRequest(req *vmmv1.SearchMemoryEventsRequest) {
 	if req == nil {
 		return
 	}
-	req.QueryJson = strings.TrimSpace(req.GetQueryJson())
+	for idx, query := range req.GetQueries() {
+		req.Queries[idx] = strings.TrimSpace(query)
+	}
 }
 
 // NormalizeGetTurnDetailsRequest keeps the turn-detail lookup hook in place even though the current request only carries numeric ids.
 // NormalizeGetTurnDetailsRequest 用于为 turn 详情查询保留规范化入口，虽然当前请求只包含数字 id。
 func NormalizeGetTurnDetailsRequest(req *vmmv1.GetTurnDetailsRequest) {
-	if req == nil {
-		return
-	}
-}
-
-// NormalizeGetMemoryDetailsRequest keeps the mixed detail lookup hook in place even though the current request only carries numeric refs.
-// NormalizeGetMemoryDetailsRequest 用于为混合详情查询保留规范化入口，虽然当前请求只包含数字引用。
-func NormalizeGetMemoryDetailsRequest(req *vmmv1.GetMemoryDetailsRequest) {
 	if req == nil {
 		return
 	}
@@ -358,8 +352,8 @@ func (v *RequestValidator) ValidateApplyProfileInstruction(req *vmmv1.ApplyProfi
 	return requireString("instruction", req.GetInstruction(), 16000)
 }
 
-// ValidateSearchMemoryEvents checks the grouped JSON vector-search payload before hierarchy resolution, embedding, and vector recall begin.
-// ValidateSearchMemoryEvents 用于在层级解析、embedding 和向量召回开始前校验分组 JSON 检索载荷。
+// ValidateSearchMemoryEvents checks the simple query-list payload before hierarchy resolution, embedding, and vector recall begin.
+// ValidateSearchMemoryEvents 用于在层级解析、embedding 和向量召回开始前校验简单查询列表载荷。
 func (v *RequestValidator) ValidateSearchMemoryEvents(req *vmmv1.SearchMemoryEventsRequest) error {
 	if req == nil {
 		return logicdomain.ValidationError{Field: "search_memory_events", Message: "is required"}
@@ -370,8 +364,16 @@ func (v *RequestValidator) ValidateSearchMemoryEvents(req *vmmv1.SearchMemoryEve
 	if req.GetProjectId() == 0 {
 		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 	}
-	if err := requireString("query_json", req.GetQueryJson(), 64000); err != nil {
-		return err
+	if len(req.GetQueries()) == 0 {
+		return logicdomain.ValidationError{Field: "queries", Message: "must contain at least one query"}
+	}
+	if len(req.GetQueries()) > 16 {
+		return logicdomain.ValidationError{Field: "queries", Message: "must contain at most 16 queries"}
+	}
+	for idx, query := range req.GetQueries() {
+		if err := requireString(fmt.Sprintf("queries[%d]", idx), query, 4000); err != nil {
+			return err
+		}
 	}
 	if req.GetTopK() > 64 {
 		return logicdomain.ValidationError{Field: "top_k", Message: "must be <= 64"}
@@ -394,31 +396,6 @@ func (v *RequestValidator) ValidateGetTurnDetails(req *vmmv1.GetTurnDetailsReque
 	for idx, turnID := range req.GetTurnIds() {
 		if turnID == 0 {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("turn_ids[%d]", idx), Message: "must be a numeric id"}
-		}
-	}
-	return nil
-}
-
-// ValidateGetMemoryDetails checks the mixed detail lookup payload before relational reads begin.
-// ValidateGetMemoryDetails 用于在关系读取开始前校验混合详情查询载荷。
-func (v *RequestValidator) ValidateGetMemoryDetails(req *vmmv1.GetMemoryDetailsRequest) error {
-	if req == nil {
-		return logicdomain.ValidationError{Field: "get_memory_details", Message: "is required"}
-	}
-	if len(req.GetRefs()) == 0 {
-		return logicdomain.ValidationError{Field: "refs", Message: "must contain at least one ref"}
-	}
-	if len(req.GetRefs()) > 256 {
-		return logicdomain.ValidationError{Field: "refs", Message: "must contain at most 256 refs"}
-	}
-	for idx, ref := range req.GetRefs() {
-		switch ref.GetType() {
-		case vmmv1.MemoryRefType_MEMORY_REF_TYPE_MEMORY, vmmv1.MemoryRefType_MEMORY_REF_TYPE_TURN:
-		default:
-			return logicdomain.ValidationError{Field: fmt.Sprintf("refs[%d].type", idx), Message: "must be one supported ref type"}
-		}
-		if ref.GetId() == 0 {
-			return logicdomain.ValidationError{Field: fmt.Sprintf("refs[%d].id", idx), Message: "must be a numeric id"}
 		}
 	}
 	return nil
@@ -449,12 +426,7 @@ func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest
 		if item == nil {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d]", idx), Message: "item is required"}
 		}
-		switch item.GetScopeLevel() {
-		case vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_UNSPECIFIED,
-			vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_SESSION,
-			vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_PROJECT,
-			vmmv1.MemoryScopeLevel_MEMORY_SCOPE_LEVEL_USER:
-		default:
+		if item.GetScopeLevel() < 0 || item.GetScopeLevel() > 3 {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].scope_level", idx), Message: "must be one supported memory scope"}
 		}
 		if err := requireString(fmt.Sprintf("items[%d].abstract", idx), item.GetAbstract(), 16000); err != nil {
@@ -466,21 +438,10 @@ func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest
 		if item.GetCategory() < 0 {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].category", idx), Message: "must be >= 0"}
 		}
-		switch item.GetPriority() {
-		case vmmv1.MemoryPriority_MEMORY_PRIORITY_UNSPECIFIED,
-			vmmv1.MemoryPriority_MEMORY_PRIORITY_P0,
-			vmmv1.MemoryPriority_MEMORY_PRIORITY_P1,
-			vmmv1.MemoryPriority_MEMORY_PRIORITY_P2:
-		default:
+		if item.GetPriority() < 0 || item.GetPriority() > 3 {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].priority", idx), Message: "must be one supported memory priority"}
 		}
-		switch item.GetMemoryLevel() {
-		case vmmv1.MemoryLevel_MEMORY_LEVEL_UNSPECIFIED,
-			vmmv1.MemoryLevel_MEMORY_LEVEL_L0,
-			vmmv1.MemoryLevel_MEMORY_LEVEL_L1,
-			vmmv1.MemoryLevel_MEMORY_LEVEL_L2,
-			vmmv1.MemoryLevel_MEMORY_LEVEL_L3:
-		default:
+		if item.GetMemoryLevel() < 0 || item.GetMemoryLevel() > 4 {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].memory_level", idx), Message: "must be one supported memory level"}
 		}
 	}

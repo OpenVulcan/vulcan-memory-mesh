@@ -15,8 +15,8 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 )
 
-// TestMemoryUseCaseSearchEchoesGroupedQueries verifies the grouped JSON payload is parsed, echoed back, and resolved against the scoped vector filter.
-// TestMemoryUseCaseSearchEchoesGroupedQueries 用于验证分组 JSON 载荷会被解析、原样回显，并按已解析 scope 过滤向量检索。
+// TestMemoryUseCaseSearchEchoesQueries verifies the simplified query list is normalized, echoed back, and resolved against the scoped vector filter.
+// TestMemoryUseCaseSearchEchoesQueries 用于验证简化后的查询列表会被规范化、原样回显，并按已解析 scope 过滤向量检索。
 func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	profiles := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
@@ -81,7 +81,7 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"background":"用户最近一直在讨论水果和饮品。","query":"喜欢的水果"}]`,
+		Queries:   []string{"喜欢的水果"},
 		TopK:      5,
 	})
 	if err != nil {
@@ -91,7 +91,7 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 		t.Fatalf("results len = %d", len(result.Results))
 	}
 	group := result.Results[0]
-	if group.QueryIndex != 0 || group.Background != "用户最近一直在讨论水果和饮品。" || group.Query != "喜欢的水果" {
+	if group.QueryIndex != 0 || group.Query != "喜欢的水果" {
 		t.Fatalf("unexpected group echo: %+v", group)
 	}
 	if len(group.Hits) != 1 || group.Hits[0].MemoryRef.ID != 201 || group.Hits[0].SourceRef.ID != 41 || group.Hits[0].SessionID != 12 || group.Hits[0].Category != 3 {
@@ -100,7 +100,7 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	if group.Hits[0].SupportCount != 2 || group.Hits[0].RebuttalCount != 1 {
 		t.Fatalf("expected context evidence counts to be preserved, got %+v", group.Hits[0])
 	}
-	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 || !strings.Contains(embedding.requests[0].Texts[0], "关键语句") {
+	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 || embedding.requests[0].Texts[0] != "喜欢的水果" {
 		t.Fatalf("unexpected embedding request: %+v", embedding.requests)
 	}
 	if len(vector.searchFilters) != 1 {
@@ -112,8 +112,8 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	}
 }
 
-// TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace verifies the general MemoryQuery entry normalizes internal whitespace in background/query fields before echoing them back and before building embedding text.
-// TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace 用于验证通用 MemoryQuery 入口会先归一 background/query 的内部空白，再回显并构建 embedding 文本。
+// TestMemoryUseCaseSearchNormalizesQueryWhitespace verifies the general MemoryQuery entry normalizes query whitespace before echoing it back and before building embedding text.
+// TestMemoryUseCaseSearchNormalizesQueryWhitespace 用于验证通用 MemoryQuery 入口会先归一 query 空白，再回显并构建 embedding 文本。
 func TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace(t *testing.T) {
 	profiles := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
@@ -160,7 +160,7 @@ func TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: "[{\"background\":\"用户最近\\n一直在讨论   水果和饮品。\",\"query\":\"喜欢的\\n水果\"}]",
+		Queries:   []string{"喜欢的\n水果"},
 		TopK:      5,
 	})
 	if err != nil {
@@ -170,7 +170,7 @@ func TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace(t *testing.T) {
 		t.Fatalf("results len = %d", len(result.Results))
 	}
 	group := result.Results[0]
-	if group.Background != "用户最近 一直在讨论 水果和饮品。" || group.Query != "喜欢的 水果" {
+	if group.Query != "喜欢的 水果" {
 		t.Fatalf("expected normalized grouped echo, got %+v", group)
 	}
 	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 {
@@ -241,7 +241,7 @@ func TestMemoryUseCaseSearchAppliesScopeOverrideToFilters(t *testing.T) {
 			if _, err := uc.Search(context.Background(), MemoryQueryCommand{
 				UserID:        7,
 				ProjectID:     9,
-				QueryJSON:     `[{"background":"之前聊过买车。","query":"卡宴"}]`,
+				Queries:       []string{"卡宴"},
 				TopK:          5,
 				ScopeOverride: tc.scopeOverride,
 			}); err != nil {
@@ -324,7 +324,7 @@ func TestMemoryUseCaseSearchReusesEquivalentGroupedQueries(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: "[{\"background\":\"用户最近一直在讨论  水果偏好。\",\"query\":\"喜欢的水果\"},{\"background\":\"用户最近一直在讨论\\n水果偏好。\",\"query\":\"喜欢的水果\"}]",
+		Queries:   []string{"喜欢的水果", "喜欢的水果"},
 		TopK:      2,
 	})
 	if err != nil {
@@ -394,7 +394,7 @@ func TestMemoryUseCaseSearchReusesCaseEquivalentGroupedQueries(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"background":"SQLite Schema Compatibility","query":"Schema Version 13"},{"background":"sqlite schema compatibility","query":"schema version 13"}]`,
+		Queries:   []string{"Schema Version 13", "schema version 13"},
 		TopK:      2,
 	})
 	if err != nil {
@@ -406,7 +406,7 @@ func TestMemoryUseCaseSearchReusesCaseEquivalentGroupedQueries(t *testing.T) {
 	if len(result.Results[0].Hits) != 1 || len(result.Results[1].Hits) != 1 {
 		t.Fatalf("expected both groups to reuse one hit set, got %+v", result.Results)
 	}
-	if result.Results[0].Background != "SQLite Schema Compatibility" || result.Results[1].Background != "sqlite schema compatibility" {
+	if result.Results[0].Query != "Schema Version 13" || result.Results[1].Query != "schema version 13" {
 		t.Fatalf("expected original caller echo to stay intact, got %+v", result.Results)
 	}
 	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 {
@@ -466,7 +466,7 @@ func TestMemoryUseCaseSearchFusesHybridRecall(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"background":"最近在讨论排序和检索。","query":"混合检索"}]`,
+		Queries:   []string{"混合检索"},
 		TopK:      5,
 	})
 	if err != nil {
@@ -547,7 +547,7 @@ func TestMemoryUseCaseSearchLogsRetrievalStageCounts(t *testing.T) {
 	if _, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"background":"用户之前反复咨询买车建议。","query":"用户购车预算和车型偏好"}]`,
+		Queries:   []string{"用户购车预算和车型偏好"},
 		TopK:      5,
 	}); err != nil {
 		t.Fatalf("search memory events: %v", err)
@@ -624,7 +624,7 @@ func TestMemoryUseCaseSearchAppliesMMRDiversity(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"饮品偏好"}]`,
+		Queries:   []string{"饮品偏好"},
 		TopK:      2,
 	})
 	if err != nil {
@@ -687,7 +687,7 @@ func TestMemoryUseCaseSearchKeepsRankOrderWhenMMRDisabled(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"饮品偏好"}]`,
+		Queries:   []string{"饮品偏好"},
 		TopK:      2,
 	})
 	if err != nil {
@@ -752,7 +752,7 @@ func TestMemoryUseCaseSearchAppliesRerank(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"background":"最近在讨论排序。","query":"文本排序模型"}]`,
+		Queries:   []string{"文本排序模型"},
 		TopK:      5,
 	})
 	if err != nil {
@@ -802,7 +802,7 @@ func TestMemoryUseCaseSearchDegradesWhenRerankFails(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"文本排序模型"}]`,
+		Queries:   []string{"文本排序模型"},
 		TopK:      5,
 	})
 	if err != nil {
@@ -893,7 +893,7 @@ func TestMemoryUseCaseSearchAppliesWeibullDecay(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"当前实现方案"}]`,
+		Queries:   []string{"当前实现方案"},
 		TopK:      2,
 	})
 	if err != nil {
@@ -944,7 +944,7 @@ func TestMemoryUseCaseSearchAppliesContextAwareScoring(t *testing.T) {
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"background":"当前部署模式仍然是 local_oss。","query":"phase4 当前方案"}]`,
+		Queries:   []string{"当前部署模式仍然是 local_oss。 phase4 当前方案"},
 		TopK:      2,
 	})
 	if err != nil {
@@ -1021,7 +1021,7 @@ func TestMemoryUseCaseSearchRedactsDegradedQueryLogs(t *testing.T) {
 	if _, err := firstUseCase.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"` + firstQuery + `"}]`,
+		Queries:   []string{firstQuery},
 		TopK:      2,
 	}); err != nil {
 		t.Fatalf("search with lexical/rerank degradation: %v", err)
@@ -1043,7 +1043,7 @@ func TestMemoryUseCaseSearchRedactsDegradedQueryLogs(t *testing.T) {
 	if _, err := secondUseCase.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"` + secondQuery + `"}]`,
+		Queries:   []string{secondQuery},
 		TopK:      2,
 	}); err != nil {
 		t.Fatalf("search with lexical materialization degradation: %v", err)
@@ -1109,7 +1109,7 @@ func TestMemoryUseCaseSearchLogsRawQueriesWhenPayloadDebugEnabled(t *testing.T) 
 	if _, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"query":"` + query + `"}]`,
+		Queries:   []string{query},
 		TopK:      2,
 	}); err != nil {
 		t.Fatalf("search with payload-debug degradation logs: %v", err)
@@ -1158,7 +1158,7 @@ func TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches(t *testing.T) 
 	result, err := uc.Search(context.Background(), MemoryQueryCommand{
 		UserID:    7,
 		ProjectID: 9,
-		QueryJSON: `[{"background":"当前仍然是 local_oss。","query":"phase4 当前方案"}]`,
+		Queries:   []string{"当前仍然是 local_oss。 phase4 当前方案"},
 		TopK:      2,
 	})
 	if err != nil {
