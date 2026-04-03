@@ -92,6 +92,36 @@ func TestBuildRerankerFallsBackToLLMAPIKey(t *testing.T) {
 	}
 }
 
+// TestApplicationRunRejectsNilReceiver verifies exported startup fails with one deterministic error instead of panicking when callers invoke it on a nil application pointer.
+// TestApplicationRunRejectsNilReceiver 用于验证调用方在空应用指针上触发启动时，会收到确定性错误而不是直接 panic。
+func TestApplicationRunRejectsNilReceiver(t *testing.T) {
+	var app *Application
+
+	err := app.Run(context.Background())
+	if err == nil {
+		t.Fatal("expected run error")
+	}
+	if !strings.Contains(err.Error(), "application is nil") {
+		t.Fatalf("unexpected run error: %v", err)
+	}
+}
+
+// TestApplicationRunRejectsNilServer verifies exported startup rejects incomplete runtime wiring before a nil grpc.Server can panic inside Serve.
+// TestApplicationRunRejectsNilServer 用于验证导出启动入口会在 nil grpc.Server 进入 Serve 之前拒绝不完整装配，避免内部 panic。
+func TestApplicationRunRejectsNilServer(t *testing.T) {
+	app := &Application{
+		Config: config.DefaultLocal(),
+	}
+
+	err := app.Run(nil)
+	if err == nil {
+		t.Fatal("expected run error")
+	}
+	if !strings.Contains(err.Error(), "grpc server is not initialized") {
+		t.Fatalf("unexpected run error: %v", err)
+	}
+}
+
 // TestApplicationShutdownContinuesAfterDependencyError verifies graceful shutdown keeps draining later dependencies even when an earlier shutdown hook fails.
 // TestApplicationShutdownContinuesAfterDependencyError 用于验证优雅停机会在前一个依赖关闭失败后继续释放后续依赖。
 func TestApplicationShutdownContinuesAfterDependencyError(t *testing.T) {
