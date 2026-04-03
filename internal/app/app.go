@@ -285,10 +285,16 @@ func minSimilarityOrDefault(cfg config.Config) float64 {
 	return 0.75
 }
 
+// normalizeProviderAlias keeps runtime adapter selection aligned with config validation by trimming accidental surrounding whitespace before lower-casing provider aliases.
+// normalizeProviderAlias 用于在 provider 别名转小写前先裁掉意外的首尾空白，让运行时适配器选择与配置校验保持一致。
+func normalizeProviderAlias(provider string) string {
+	return strings.ToLower(strings.TrimSpace(provider))
+}
+
 // buildLLM selects the configured generation backend used by the debug-stage post-action summary probe and future LLM-driven workflows.
 // buildLLM 用于选择当前配置的生成后端，服务调试阶段的 post-action 摘要探测以及未来的 LLM 工作流。
 func buildLLM(cfg config.Config) (appports.LLMClient, error) {
-	switch strings.ToLower(cfg.LLM.Provider) {
+	switch normalizeProviderAlias(cfg.LLM.Provider) {
 	case "openai", "openai_native", "openai_go":
 		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project, cfg.LLM.Params, cfg.LLM.ModelParams), nil
 	default:
@@ -299,7 +305,7 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 // buildEmbedding selects the configured real embedding adapter for recall and semantic filtering.
 // buildEmbedding 用于为召回和语义过滤选择当前配置的真实 embedding 适配器。
 func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
-	switch strings.ToLower(cfg.Embedding.Provider) {
+	switch normalizeProviderAlias(cfg.Embedding.Provider) {
 	case "openai", "openai_native", "openai_go":
 		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams), nil
 	default:
@@ -317,7 +323,7 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 	if apiKey == "" {
 		apiKey = strings.TrimSpace(cfg.LLM.APIKey)
 	}
-	switch strings.ToLower(cfg.Rerank.Provider) {
+	switch normalizeProviderAlias(cfg.Rerank.Provider) {
 	case "dashscope":
 		return dashscope_rerank.NewClient(cfg.Rerank.Endpoint, apiKey, cfg.Rerank.Model, cfg.Rerank.Timeout.Duration, nil), nil
 	default:
@@ -328,7 +334,7 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 // buildVector selects the configured vector backend used by retrieval and destructive cleanup flows.
 // buildVector 用于选择当前配置的向量后端，服务检索和破坏性清理流程。
 func buildVector(cfg config.Config) (appports.VectorStore, error) {
-	switch strings.ToLower(cfg.Vector.Provider) {
+	switch normalizeProviderAlias(cfg.Vector.Provider) {
 	case "lancedb":
 		return vldb_lancedb.NewStore(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
 	default:
@@ -339,7 +345,7 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 // buildRelational selects the configured durable SQL backend used by workspace/session/turn persistence.
 // buildRelational 用于选择当前配置的长期 SQL 后端，服务层级、session 和 turn 持久化。
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
-	switch strings.ToLower(cfg.Relational.Provider) {
+	switch normalizeProviderAlias(cfg.Relational.Provider) {
 	case "sqlite":
 		return vldb_sqlite.NewStore(cfg.SQLite.Address, cfg.SQLite.Timeout.Duration)
 	default:

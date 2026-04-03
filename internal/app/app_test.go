@@ -94,6 +94,49 @@ func TestBuildRerankerFallsBackToLLMAPIKey(t *testing.T) {
 	}
 }
 
+// TestBuildAdaptersAllowTrimmedProviderAliases verifies runtime adapter construction stays aligned with config validation when provider aliases contain surrounding whitespace.
+// TestBuildAdaptersAllowTrimmedProviderAliases 用于验证当 provider 别名带有首尾空白时，运行时适配器构建仍与配置校验口径保持一致。
+func TestBuildAdaptersAllowTrimmedProviderAliases(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Provider = " openai "
+	cfg.LLM.Endpoint = "https://example.com/v1"
+	cfg.LLM.APIKey = "test-key"
+	cfg.LLM.Model = "test-llm"
+	cfg.Embedding.Provider = " openai "
+	cfg.Embedding.Endpoint = "https://example.com/v1"
+	cfg.Embedding.APIKey = "test-key"
+	cfg.Embedding.Model = "test-embedding"
+	cfg.Embedding.Dimension = 1024
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Provider = " dashscope "
+	cfg.Rerank.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+	cfg.Rerank.APIKey = "test-key"
+	cfg.Rerank.Model = "qwen3-vl-rerank"
+	cfg.Vector.Provider = " lancedb "
+	cfg.Relational.Provider = " sqlite "
+	cfg.SQLite.Address = "127.0.0.1:19501"
+	cfg.LanceDB.Address = "127.0.0.1:19301"
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config validation should accept trimmed provider aliases: %v", err)
+	}
+	if _, err := buildLLM(cfg); err != nil {
+		t.Fatalf("build llm with trimmed provider alias: %v", err)
+	}
+	if _, err := buildEmbedding(cfg); err != nil {
+		t.Fatalf("build embedding with trimmed provider alias: %v", err)
+	}
+	if _, err := buildReranker(cfg); err != nil {
+		t.Fatalf("build reranker with trimmed provider alias: %v", err)
+	}
+	if _, err := buildVector(cfg); err != nil {
+		t.Fatalf("build vector with trimmed provider alias: %v", err)
+	}
+	if _, err := buildRelational(cfg); err != nil {
+		t.Fatalf("build relational with trimmed provider alias: %v", err)
+	}
+}
+
 // TestApplicationRunRejectsNilReceiver verifies exported startup fails with one deterministic error instead of panicking when callers invoke it on a nil application pointer.
 // TestApplicationRunRejectsNilReceiver 用于验证调用方在空应用指针上触发启动时，会收到确定性错误而不是直接 panic。
 func TestApplicationRunRejectsNilReceiver(t *testing.T) {
