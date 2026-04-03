@@ -175,6 +175,22 @@ func TestApplicationShutdownAllowsNilReceiver(t *testing.T) {
 	}
 }
 
+// TestApplicationShutdownSkipsNilShutdowners verifies exported shutdown still drains valid dependencies when a partially assembled runtime leaves nil shutdown slots in the slice.
+// TestApplicationShutdownSkipsNilShutdowners 用于验证当部分装配运行时在 Shutdowns 切片中留下 nil 槽位时，导出的 shutdown 仍会跳过空槽并继续释放有效依赖。
+func TestApplicationShutdownSkipsNilShutdowners(t *testing.T) {
+	shutdowner := &stubShutdowner{}
+	app := &Application{
+		Shutdowns: []appports.Shutdowner{shutdowner, nil},
+	}
+
+	if err := app.Shutdown(nil); err != nil {
+		t.Fatalf("shutdown with nil shutdowner: %v", err)
+	}
+	if shutdowner.calls != 1 {
+		t.Fatalf("expected shutdowner to be called once, got %d", shutdowner.calls)
+	}
+}
+
 // TestApplicationRunDrainsShutdownsAfterExternalServerStop verifies exported startup still drains downstream shutdown hooks when another goroutine stops the gRPC server directly.
 // TestApplicationRunDrainsShutdownsAfterExternalServerStop 用于验证当其他 goroutine 直接停止 gRPC 服务时，导出启动入口仍会继续释放下游 shutdown 钩子。
 func TestApplicationRunDrainsShutdownsAfterExternalServerStop(t *testing.T) {
@@ -221,6 +237,59 @@ func TestApplicationRunDrainsShutdownsAfterExternalServerStop(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("run did not return after external stop")
+	}
+
+	if shutdowner.calls != 1 {
+		t.Fatalf("expected shutdowner to be called once, got %d", shutdowner.calls)
+	}
+}
+
+// TestApplicationRunAllowsNilLogger verifies exported startup still remains usable when direct tests or partial runtime assembly omit the logger field.
+// TestApplicationRunAllowsNilLogger 用于验证当直接测试或部分运行时装配遗漏 logger 字段时，导出的启动入口仍然可用，不会因为记录启动日志而直接 panic。
+func TestApplicationRunAllowsNilLogger(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listen addr: %v", err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	shutdowner := &stubShutdowner{}
+	app := &Application{
+		Config:    config.DefaultLocal(),
+		Logger:    nil,
+		Server:    grpc.NewServer(),
+		Shutdowns: []appports.Shutdowner{shutdowner},
+	}
+	app.Config.GRPC.ListenAddr = addr
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- app.Run(context.Background())
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		conn, dialErr := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not start listening: %v", dialErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	app.Server.Stop()
+
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("run with nil logger: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not return with nil logger")
 	}
 
 	if shutdowner.calls != 1 {

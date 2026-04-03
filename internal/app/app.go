@@ -263,6 +263,9 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	// 即便某个关闭步骤失败，也继续释放后续依赖，避免前一个适配器报错后导致后面的资源直接泄漏。
 	var shutdownErrors []error
 	for i := len(a.Shutdowns) - 1; i >= 0; i-- {
+		if a.Shutdowns[i] == nil {
+			continue
+		}
 		if err := a.Shutdowns[i].Shutdown(shutdownCtx); err != nil {
 			shutdownErrors = append(shutdownErrors, fmt.Errorf("shutdown dependency[%d]: %w", i, err))
 		}
