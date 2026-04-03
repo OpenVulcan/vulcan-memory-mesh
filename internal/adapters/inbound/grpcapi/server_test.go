@@ -62,7 +62,11 @@ func newTestFixture(t *testing.T, deps Dependencies, maxReceiveBytes int) *grpcF
 	}
 	logBuf := &bytes.Buffer{}
 	if deps.Logger == nil {
-		deps.Logger = logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+		deps.Logger = logx.New(logBuf, logx.Config{
+			Level:         "info",
+			Format:        "text",
+			DebugPayloads: deps.DebugRPCPayloads,
+		})
 	}
 	if deps.Validator == nil {
 		deps.Validator = NewRequestValidator()
@@ -778,17 +782,64 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 		t.Fatalf("pre-check with debug payload logs: %v", err)
 	}
 	logs := fixture.logs.String()
-	if !strings.Contains(logs, "TEXT(user_content)：") || !strings.Contains(logs, "继续昨天关于 SQLite schema 13 的排查") {
+	if !strings.Contains(logs, "JSON(request_payload)：") || !strings.Contains(logs, "继续昨天关于 SQLite schema 13 的排查") {
 		t.Fatalf("expected full pre-check request payload in debug logs, got %s", logs)
 	}
-	if !strings.Contains(logs, "TEXT(context_text)：") || !strings.Contains(logs, "项目画像：SQLite schema 13 已迁移") || !strings.Contains(logs, "JSON(context_items_json)：") {
+	if !strings.Contains(logs, "JSON(response_payload)：") || !strings.Contains(logs, "项目画像：SQLite schema 13 已迁移") || !strings.Contains(logs, `混合召回记忆`) {
 		t.Fatalf("expected full pre-check response payload fields in debug logs, got %s", logs)
 	}
 	if !strings.Contains(logs, `请优先检查 FTS 表是否已重建`) {
 		t.Fatalf("expected context item text in debug logs, got %s", logs)
 	}
-	if strings.Contains(logs, `user_content_present`) || strings.Contains(logs, `context_text_present`) {
-		t.Fatalf("expected debug logs to bypass redacted pre-check fields, got %s", logs)
+	if !strings.Contains(logs, `user_content_present`) || !strings.Contains(logs, `context_text_present`) {
+		t.Fatalf("expected debug logs to keep safe summary fields alongside payloads, got %s", logs)
+	}
+}
+
+// TestPreCheckLogsProtectedPayloadsWhenProtectionEnabled verifies pre-check request and response logs keep plaintext out of default operator output while still persisting encrypted audit envelopes when payload protection is enabled.
+// TestPreCheckLogsProtectedPayloadsWhenProtectionEnabled 用于验证启用受保护载荷后，pre-check 请求与返回日志会把明文排除在默认运维输出之外，同时仍保留加密审计信封。
+func TestPreCheckLogsProtectedPayloadsWhenProtectionEnabled(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		Logger: logx.New(logBuf, logx.Config{
+			Level:                "info",
+			Format:               "text",
+			ProtectPayloads:      true,
+			PayloadEncryptionKey: "0123456789abcdef0123456789abcdef",
+		}),
+		PreCheck: preCheckFunc(func(context.Context, usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+			return usecase.PreCheckResult{
+				ShouldInject: true,
+				ContextText:  "项目记忆：SQLite schema 13 已迁移",
+				ContextItems: []logicdomain.ContextItem{
+					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92},
+				},
+				Degraded: false,
+			}, nil
+		}),
+		ScopeResolver: stubScopeResolver{},
+	}, testBufSize)
+	fixture.logs = logBuf
+
+	_, err := fixture.client.PreCheck(context.Background(), &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "继续昨天关于 SQLite schema 13 的排查",
+	})
+	if err != nil {
+		t.Fatalf("pre-check with protected payload logs: %v", err)
+	}
+	logs := logBuf.String()
+	if strings.Contains(logs, `继续昨天关于 SQLite schema 13 的排查`) || strings.Contains(logs, `项目记忆：SQLite schema 13 已迁移`) {
+		t.Fatalf("expected protected pre-check logs to hide plaintext payloads, got %s", logs)
+	}
+	if !strings.Contains(logs, "JSON(request_payload_protected)：") || !strings.Contains(logs, "JSON(response_payload_protected)：") {
+		t.Fatalf("expected protected payload envelopes in pre-check logs, got %s", logs)
+	}
+	if !strings.Contains(logs, `"algorithm": "AES-256-GCM"`) || !strings.Contains(logs, `"ciphertext":`) {
+		t.Fatalf("expected AES-256-GCM protected payload metadata, got %s", logs)
 	}
 }
 

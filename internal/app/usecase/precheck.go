@@ -168,6 +168,15 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		degraded = true
 		u.logPreCheckWarn("pre-check recent turns degraded", traceID, cmd.Session, cmd.UserContent, err)
 		recentTurns = nil
+	} else {
+		u.logPreCheckStage("pre-check recent turns prepared", traceID, cmd.Session, []any{
+			"recent_turn_count", len(recentTurns),
+			"history_turn_limit", u.config.HistoryTurns,
+			"max_input_tokens", u.config.MaxInputTokens,
+		}, map[string]any{
+			"current_user_input": cmd.UserContent,
+			"recent_turns":       recentTurns,
+		})
 	}
 
 	// Run the first-stage intent extractor against the recent turn window and current request so recall only starts when memory is actually useful.
@@ -181,8 +190,19 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	// Normalize the stage-one output locally so vague deictic queries do not over-trigger long-term retrieval when recent turns already explain the request.
 	// 在本地归一第一层输出，避免最近 turn 已经足够解释请求时，模糊指代 query 仍过度触发长期检索。
 	intent = normalizePreCheckIntentResult(intent, cmd.UserContent, recentTurns)
+	u.logPreCheckStage("pre-check intent analyzed", traceID, cmd.Session, []any{
+		"need_memory", intent.NeedMemory,
+		"query_count", len(intent.Queries),
+		"intent_reason_present", strings.TrimSpace(intent.Reason) != "",
+	}, map[string]any{
+		"current_user_input": cmd.UserContent,
+		"recent_turns":       recentTurns,
+		"intent_result":      intent,
+	})
 	if !intent.NeedMemory {
-		return u.finalizePreCheck(ctx, traceID, nil, degraded)
+		result, finalizeErr := u.finalizePreCheck(ctx, traceID, nil, degraded)
+		u.logPreCheckFinal(traceID, cmd.Session, result)
+		return result, finalizeErr
 	}
 
 	// Recall unified memory using the search sentences returned by stage one, then number the final deduplicated candidate list for stage two.
@@ -192,21 +212,48 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		degraded = true
 		u.logPreCheckWarn("pre-check memory recall degraded", traceID, cmd.Session, cmd.UserContent, err)
 		candidates = nil
+	} else {
+		u.logPreCheckStage("pre-check memory candidates recalled", traceID, cmd.Session, []any{
+			"candidate_count", len(candidates),
+		}, map[string]any{
+			"current_user_input": cmd.UserContent,
+			"intent_queries":     normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+			"candidates":         candidates,
+		})
 	}
 	if len(candidates) == 0 {
-		return u.finalizePreCheck(ctx, traceID, nil, degraded)
+		result, finalizeErr := u.finalizePreCheck(ctx, traceID, nil, degraded)
+		u.logPreCheckFinal(traceID, cmd.Session, result)
+		return result, finalizeErr
 	}
 
 	// Let the second-stage reviewer choose candidate numbers in priority order, then map them back to memory ids for lifecycle write-back and final injection.
 	// 让第二层评审器按优先顺序选择候选编号，再映射回 memory id，用于生命周期回写和最终注入。
-	selectedCandidates, err := u.reviewMemoryCandidates(ctx, cmd, intent, candidates)
+	selectedCandidates, reviewReason, err := u.reviewMemoryCandidates(ctx, cmd, intent, candidates)
 	if err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, cmd.UserContent, err)
 		selectedCandidates = nil
+	} else {
+		selectedIDs := make([]uint64, 0, len(selectedCandidates))
+		for _, candidate := range selectedCandidates {
+			selectedIDs = append(selectedIDs, candidate.MemoryID)
+		}
+		u.logPreCheckStage("pre-check memory candidates reviewed", traceID, cmd.Session, []any{
+			"selected_candidate_count", len(selectedCandidates),
+			"review_reason_present", strings.TrimSpace(reviewReason) != "",
+		}, map[string]any{
+			"current_user_input":  cmd.UserContent,
+			"intent_queries":      normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+			"candidates":          candidates,
+			"selected_memory_ids": selectedIDs,
+			"review_reason":       strings.TrimSpace(reviewReason),
+		})
 	}
 	if len(selectedCandidates) == 0 {
-		return u.finalizePreCheck(ctx, traceID, nil, degraded)
+		result, finalizeErr := u.finalizePreCheck(ctx, traceID, nil, degraded)
+		u.logPreCheckFinal(traceID, cmd.Session, result)
+		return result, finalizeErr
 	}
 
 	// Write back lifecycle updates only for adopted memories so recall alone never refreshes expiry or weight.
@@ -214,8 +261,20 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if err := u.writeMemoryAdoption(ctx, cmd.Session, selectedCandidates); err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check lifecycle write-back degraded", traceID, cmd.Session, cmd.UserContent, err)
+	} else {
+		adoptedIDs := make([]uint64, 0, len(selectedCandidates))
+		for _, candidate := range selectedCandidates {
+			adoptedIDs = append(adoptedIDs, candidate.MemoryID)
+		}
+		u.logPreCheckStage("pre-check lifecycle write-back completed", traceID, cmd.Session, []any{
+			"adopted_memory_count", len(adoptedIDs),
+		}, map[string]any{
+			"adopted_memory_ids": adoptedIDs,
+		})
 	}
-	return u.finalizePreCheck(ctx, traceID, selectedCandidates, degraded)
+	result, finalizeErr := u.finalizePreCheck(ctx, traceID, selectedCandidates, degraded)
+	u.logPreCheckFinal(traceID, cmd.Session, result)
+	return result, finalizeErr
 }
 
 // extractIntent runs the first-stage intent extractor under the configured inner timeout budget.
@@ -323,6 +382,14 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	if err != nil {
 		return nil, err
 	}
+	u.logPreCheckStage("pre-check memory query prepared", trace.IDFromContext(ctx), cmd.Session, []any{
+		"top_k", u.config.TopK,
+		"normalized_query_count", len(normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent)),
+	}, map[string]any{
+		"current_user_input": cmd.UserContent,
+		"intent_queries":     normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"query_json":         json.RawMessage(queryJSON),
+	})
 	result, err := u.memories.Search(ctx, MemoryQueryCommand{
 		UserID:    cmd.Session.UserID,
 		ProjectID: cmd.Session.ProjectID,
@@ -415,11 +482,11 @@ func normalizePreCheckCandidateDerivedFields(candidate logicdomain.PreCheckMemor
 	return candidate
 }
 
-// reviewMemoryCandidates lets the second-stage reviewer choose candidate numbers and restores the selected candidate order for final injection.
-// reviewMemoryCandidates 用于让第二层评审器选择候选编号，并恢复最终注入使用的候选顺序。
-func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult, candidates []logicdomain.PreCheckMemoryCandidate) ([]logicdomain.PreCheckMemoryCandidate, error) {
+// reviewMemoryCandidates lets the second-stage reviewer choose candidate numbers, restores the selected candidate order for final injection, and returns the reviewer rationale for stage logging.
+// reviewMemoryCandidates 用于让第二层评审器选择候选编号、恢复最终注入使用的候选顺序，并返回评审理由供阶段日志记录。
+func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult, candidates []logicdomain.PreCheckMemoryCandidate) ([]logicdomain.PreCheckMemoryCandidate, string, error) {
 	if u.reviewer == nil {
-		return nil, fmt.Errorf("pre-check memory reviewer is nil")
+		return nil, "", fmt.Errorf("pre-check memory reviewer is nil")
 	}
 	searchQueries := normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent)
 	review, err := u.reviewer.Review(ctx, logicdomain.PreCheckMemoryReviewInput{
@@ -429,7 +496,7 @@ func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreChe
 		Candidates:    append([]logicdomain.PreCheckMemoryCandidate(nil), candidates...),
 	})
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
 	candidatesByNumber := make(map[int]logicdomain.PreCheckMemoryCandidate, len(candidates))
 	for _, candidate := range candidates {
@@ -441,7 +508,7 @@ func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreChe
 			selected = append(selected, candidate)
 		}
 	}
-	return selected, nil
+	return selected, strings.TrimSpace(review.Reason), nil
 }
 
 // writeMemoryAdoption persists lifecycle updates only for the final adopted memory ids selected by the second-stage reviewer.
@@ -672,8 +739,49 @@ func (u *PreCheckUseCase) logPreCheckWarn(message, traceID string, session logic
 	}
 	if u.logger.PayloadDebugEnabled() {
 		fields = append(fields, "user_content", strings.TrimSpace(userContent))
+	} else {
+		fields = u.logger.AppendPayloadFields(fields, "warning_payload", map[string]any{
+			"user_content": strings.TrimSpace(userContent),
+		})
 	}
 	u.logger.Warn(message, fields...)
+}
+
+// logPreCheckStage records one structured stage checkpoint so operators can follow the full pre-check flow, while payload details stay plaintext in debug mode or encrypted in protected mode.
+// logPreCheckStage 用于记录一条结构化阶段检查点，让运维可以串起完整 pre-check 流程；其中载荷详情会在 debug 模式下明文输出，在保护模式下加密输出。
+func (u *PreCheckUseCase) logPreCheckStage(message, traceID string, session logicdomain.SessionRef, fields []any, payload any) {
+	if u == nil || u.logger == nil {
+		return
+	}
+	baseFields := []any{
+		"trace_id", traceID,
+		"session_key", session.SessionKey,
+		"session_id", session.SessionID,
+		"team_id", session.TeamID,
+		"space_id", session.SpaceID,
+		"project_id", session.ProjectID,
+		"user_id", session.UserID,
+	}
+	baseFields = append(baseFields, fields...)
+	baseFields = u.logger.AppendPayloadFields(baseFields, "stage_payload", payload)
+	u.logger.Info(message, baseFields...)
+}
+
+// logPreCheckFinal records the final execution state so callers can distinguish “skipped recall”, “selected memories”, and degraded empty results without opening the surrounding stage logs first.
+// logPreCheckFinal 用于记录最终执行状态，让调用方无需先翻看上下游阶段日志，也能分辨“跳过检索”“选中了记忆”还是“降级为空结果”。
+func (u *PreCheckUseCase) logPreCheckFinal(traceID string, session logicdomain.SessionRef, result PreCheckResult) {
+	u.logPreCheckStage("pre-check finalized", traceID, session, []any{
+		"should_inject", result.ShouldInject,
+		"degraded", result.Degraded,
+		"context_item_count", len(result.ContextItems),
+		"context_text_present", strings.TrimSpace(result.ContextText) != "",
+	}, map[string]any{
+		"should_inject": result.ShouldInject,
+		"degraded":      result.Degraded,
+		"context_text":  result.ContextText,
+		"context_items": result.ContextItems,
+		"trace_id":      result.TraceID,
+	})
 }
 
 // validatePreCheck checks the resolved identifiers and current user content before the use case enters the live pre-check workflow.

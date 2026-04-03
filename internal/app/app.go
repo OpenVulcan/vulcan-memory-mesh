@@ -66,7 +66,13 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		}
 		_ = fileWriter.Close()
 	}()
-	logger := logx.New(io.MultiWriter(os.Stdout, fileWriter), logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format, DebugPayloads: cfg.Logging.DebugRPCPayloads})
+	logger := logx.New(io.MultiWriter(os.Stdout, fileWriter), logx.Config{
+		Level:                cfg.Logging.Level,
+		Format:               cfg.Logging.Format,
+		DebugPayloads:        cfg.Logging.DebugRPCPayloads,
+		ProtectPayloads:      cfg.Logging.ProtectPayloads,
+		PayloadEncryptionKey: cfg.Logging.PayloadEncryptionKey,
+	})
 	ids := xid.NewGenerator()
 
 	// Build outbound dependencies from the active configuration.

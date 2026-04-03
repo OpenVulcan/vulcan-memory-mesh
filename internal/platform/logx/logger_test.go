@@ -119,3 +119,48 @@ func TestLoggerPayloadDebugFlagPropagates(t *testing.T) {
 		t.Fatal("expected payload debug flag to propagate through child logger")
 	}
 }
+
+// TestLoggerPayloadProtectionFlagPropagates verifies the shared protected-payload switch survives child logger creation so business layers can safely add encrypted payload snapshots without re-reading config.
+// TestLoggerPayloadProtectionFlagPropagates 用于验证共享受保护载荷开关会在子日志器之间继承，确保业务层无需重新读取配置也能安全追加加密载荷快照。
+func TestLoggerPayloadProtectionFlagPropagates(t *testing.T) {
+	logger := New(&bytes.Buffer{}, Config{
+		Level:                "info",
+		Format:               "text",
+		ProtectPayloads:      true,
+		PayloadEncryptionKey: "0123456789abcdef0123456789abcdef",
+	}).With("component", "grpcapi")
+
+	if !logger.PayloadProtectionEnabled() {
+		t.Fatal("expected payload protection flag to propagate through child logger")
+	}
+}
+
+// TestLoggerAppendPayloadFieldsEncryptsPayloadWhenDebugIsDisabled verifies payload fields become encrypted JSON envelopes when plaintext debug logging is off but protected-payload logging is enabled.
+// TestLoggerAppendPayloadFieldsEncryptsPayloadWhenDebugIsDisabled 用于验证当明文调试关闭且受保护载荷日志开启时，载荷字段会被加密成 JSON 信封输出。
+func TestLoggerAppendPayloadFieldsEncryptsPayloadWhenDebugIsDisabled(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := New(logBuf, Config{
+		Level:                "info",
+		Format:               "text",
+		ProtectPayloads:      true,
+		PayloadEncryptionKey: "0123456789abcdef0123456789abcdef",
+	})
+
+	fields := logger.AppendPayloadFields([]any{"trace_id", "trc_123"}, "stage_payload", map[string]any{
+		"user_content": "用户的真实问题",
+		"queries":      []string{"为什么这样改"},
+	})
+	logger.Info("pre-check intent analyzed", fields...)
+
+	output := logBuf.String()
+	if strings.Contains(output, "用户的真实问题") || strings.Contains(output, "为什么这样改") {
+		t.Fatalf("expected protected payload logs to hide plaintext, got %s", output)
+	}
+	if !strings.Contains(output, "JSON(stage_payload_protected)：") ||
+		!strings.Contains(output, "\"algorithm\": \"AES-256-GCM\"") ||
+		!strings.Contains(output, "\"version\": \"v1\"") ||
+		!strings.Contains(output, "\"key_id\":") ||
+		!strings.Contains(output, "\"ciphertext\":") {
+		t.Fatalf("expected protected payload envelope in logs, got %s", output)
+	}
+}

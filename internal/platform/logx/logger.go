@@ -14,16 +14,19 @@ import (
 // Config carries the logging knobs used to build one structured runtime logger.
 // Config 用于承载构建结构化运行时日志器时使用的配置项。
 type Config struct {
-	Level         string
-	Format        string
-	DebugPayloads bool
+	Level                string
+	Format               string
+	DebugPayloads        bool
+	ProtectPayloads      bool
+	PayloadEncryptionKey string
 }
 
 // Logger wraps slog.Logger so adapters and use cases can share a small logging surface.
 // Logger 用于包装 slog.Logger，让适配层和用例层共享一套轻量日志接口。
 type Logger struct {
-	base          *slog.Logger
-	debugPayloads bool
+	base             *slog.Logger
+	debugPayloads    bool
+	payloadProtector *payloadProtector
 }
 
 // New creates a Logger instance backed by a text or JSON slog handler.
@@ -41,7 +44,11 @@ func New(w io.Writer, cfg Config) *Logger {
 	default:
 		handler = newMultilineTextHandler(w, opts)
 	}
-	return &Logger{base: slog.New(handler), debugPayloads: cfg.DebugPayloads}
+	return &Logger{
+		base:             slog.New(handler),
+		debugPayloads:    cfg.DebugPayloads,
+		payloadProtector: newPayloadProtector(cfg.ProtectPayloads, cfg.PayloadEncryptionKey),
+	}
 }
 
 // Default creates a Logger instance with stdout text output at info level.
@@ -56,7 +63,7 @@ func (l *Logger) With(args ...any) *Logger {
 	if l == nil {
 		return Default().With(args...)
 	}
-	return &Logger{base: l.base.With(args...), debugPayloads: l.debugPayloads}
+	return &Logger{base: l.base.With(args...), debugPayloads: l.debugPayloads, payloadProtector: l.payloadProtector}
 }
 
 // Debug writes one debug-level log entry.
@@ -123,6 +130,37 @@ func (l *Logger) Enabled(ctx context.Context, level slog.Level) bool {
 func (l *Logger) PayloadDebugEnabled() bool {
 	logger := resolve(l)
 	return logger.debugPayloads
+}
+
+// PayloadProtectionEnabled reports whether the current logger should persist protected payload snapshots when plaintext debug logging stays disabled.
+// PayloadProtectionEnabled 用于判断当前日志器是否应在明文调试关闭时，继续记录受保护的载荷快照。
+func (l *Logger) PayloadProtectionEnabled() bool {
+	logger := resolve(l)
+	return logger.payloadProtector != nil
+}
+
+// AppendPayloadFields appends one payload field in plaintext debug mode, encrypted form in protected mode, or omits it entirely when neither mode is enabled.
+// AppendPayloadFields 用于在明文调试模式下追加原始载荷字段、在保护模式下追加加密载荷字段；若两种模式都未开启，则直接省略该载荷。
+func (l *Logger) AppendPayloadFields(fields []any, field string, payload any) []any {
+	logger := resolve(l)
+	if payload == nil || strings.TrimSpace(field) == "" {
+		return fields
+	}
+	body, err := jsonMarshalPayload(payload)
+	if err != nil {
+		return append(fields, field+"_payload_error", err.Error())
+	}
+	if logger.debugPayloads {
+		return append(fields, field, body)
+	}
+	if logger.payloadProtector == nil {
+		return fields
+	}
+	protected, err := logger.payloadProtector.protect(body)
+	if err != nil {
+		return append(fields, field+"_payload_error", err.Error())
+	}
+	return append(fields, field+"_protected", protected)
 }
 
 // parseLevel normalizes string levels into slog levels.

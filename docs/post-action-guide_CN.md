@@ -508,7 +508,9 @@ grpcurl -plaintext `
     }
   },
   "logging": {
-    "debug_rpc_payloads": false
+    "debug_rpc_payloads": false,
+    "protect_payloads": false,
+    "payload_encryption_key": "${VMM_LOG_PAYLOAD_ENCRYPTION_KEY}"
   },
   "post_action": {
     "input_mode": "compat",
@@ -527,6 +529,8 @@ grpcurl -plaintext `
 - `grpc.request_timeout.post_action`
 - `logging.level`
 - `logging.debug_rpc_payloads`
+- `logging.protect_payloads`
+- `logging.payload_encryption_key`
 - `post_action.input_mode`
 - `post_action.session_analysis_turn_threshold`
 - `post_action.session_analysis_token_threshold`
@@ -558,9 +562,17 @@ grpcurl -plaintext `
 - `logging.debug_rpc_payloads`
   - 默认关闭
   - 关闭时：`PostAction`、`PreCheck`、`memory query` 等 payload 相关日志只输出安全元信息，不记录正文
-  - 开启时：`post-action received raw`、`post-action received cleaned`、`pre-check received`、`pre-check returned` 以及分析/降级日志会输出正文、timeline JSON、分析 JSON 或 query 文本，便于本地排障
+  - 开启时：`post-action received raw`、`post-action received cleaned`、`pre-check received`、`pre-check returned` 以及 `pre-check recent turns prepared` / `pre-check intent analyzed` / `pre-check memory query prepared` / `pre-check memory candidates recalled` / `pre-check memory candidates reviewed` / `pre-check lifecycle write-back completed` / `pre-check finalized` 等完整阶段日志会输出正文、timeline JSON、分析 JSON 或 query 文本，便于本地排障
   - 也可以通过环境变量 `VMM_LOG_DEBUG_RPC_PAYLOADS=true` 临时开启
   - 建议只在临时调试时开启
+- `logging.protect_payloads`
+  - 默认关闭
+  - 当 `logging.debug_rpc_payloads=false` 时，开启后会把 `PreCheck` 请求/返回、完整阶段日志，以及 `PostAction` / `memory query` 等 payload 类日志额外记录为加密的 `..._protected` JSON 信封，默认输出里仍不出现明文
+  - 也可以通过环境变量 `VMM_LOG_PROTECT_PAYLOADS=true` 临时开启
+- `logging.payload_encryption_key`
+  - 仅在 `logging.protect_payloads=true` 时使用
+  - 支持 32 字节原始字符串、64 位 hex 或 base64 编码后的 32 字节密钥
+  - 也可以通过环境变量 `VMM_LOG_PAYLOAD_ENCRYPTION_KEY` 注入
 
 运行时日志落盘规则：
 

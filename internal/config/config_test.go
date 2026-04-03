@@ -149,6 +149,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.Logging.DebugRPCPayloads {
 		t.Fatal("expected debug rpc payload logs to stay disabled by default")
 	}
+	if cfg.Logging.ProtectPayloads {
+		t.Fatal("expected protected payload logging to stay disabled by default")
+	}
 }
 
 // TestConfigNormalizeClampsSearchKeywordFanOut verifies the recall keyword fan-out remains capped even when callers provide an excessive value.
@@ -171,6 +174,7 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	cfg.LanceDB.Address = " 127.0.0.1:19301 "
 	cfg.LanceDB.TableName = " vmm_memory_vectors "
 	cfg.LanceDB.VectorColumn = " vector "
+	cfg.Logging.PayloadEncryptionKey = " 0123456789abcdef0123456789abcdef "
 	cfg.LLM.Provider = " openai "
 	cfg.LLM.Endpoint = " https://api.openai.com/v1 "
 	cfg.Embedding.Provider = " openai "
@@ -197,6 +201,9 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	}
 	if cfg.LanceDB.VectorColumn != "vector" {
 		t.Fatalf("lancedb vector column = %q", cfg.LanceDB.VectorColumn)
+	}
+	if cfg.Logging.PayloadEncryptionKey != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("payload encryption key = %q", cfg.Logging.PayloadEncryptionKey)
 	}
 	if cfg.LLM.Provider != "openai" {
 		t.Fatalf("llm provider = %q", cfg.LLM.Provider)
@@ -278,6 +285,17 @@ func TestConfigValidateRejectsUnknownLoggingLevel(t *testing.T) {
 	cfg.Logging.Level = "verbose"
 	if err := cfg.Validate(); err == nil || err.Error() != "logging.level must be one of debug, info, warn, error" {
 		t.Fatalf("unexpected logging level validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsInvalidPayloadEncryptionKey verifies protected payload logging cannot start with one malformed key that would silently disable encrypted audit fields at runtime.
+// TestConfigValidateRejectsInvalidPayloadEncryptionKey 用于验证受保护载荷日志不能在错误密钥下启动，避免运行时静默丢失加密审计字段。
+func TestConfigValidateRejectsInvalidPayloadEncryptionKey(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Logging.ProtectPayloads = true
+	cfg.Logging.PayloadEncryptionKey = "bad-key"
+	if err := cfg.Validate(); err == nil || err.Error() != "logging.payload_encryption_key is invalid: must be 32 raw bytes, 64 hex chars, or base64 for 32 bytes" {
+		t.Fatalf("unexpected payload encryption key validate error: %v", err)
 	}
 }
 
@@ -577,6 +595,23 @@ func TestApplyEnvOverridesSetsRPCPayloadLogging(t *testing.T) {
 
 	if !cfg.Logging.DebugRPCPayloads {
 		t.Fatal("expected debug rpc payload logs to be enabled by env override")
+	}
+}
+
+// TestApplyEnvOverridesSetsProtectedPayloadLogging verifies process-level overrides can enable protected payload logging and inject its encryption key without editing the base config file.
+// TestApplyEnvOverridesSetsProtectedPayloadLogging 用于验证进程级环境变量可以在不修改基础配置文件的前提下启用受保护载荷日志并注入加密密钥。
+func TestApplyEnvOverridesSetsProtectedPayloadLogging(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_LOG_PROTECT_PAYLOADS", "true")
+	t.Setenv("VMM_LOG_PAYLOAD_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
+
+	applyEnvOverrides(&cfg)
+
+	if !cfg.Logging.ProtectPayloads {
+		t.Fatal("expected protected payload logging to be enabled by env override")
+	}
+	if cfg.Logging.PayloadEncryptionKey != "0123456789abcdef0123456789abcdef" {
+		t.Fatalf("payload encryption key = %q", cfg.Logging.PayloadEncryptionKey)
 	}
 }
 

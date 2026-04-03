@@ -3,6 +3,8 @@
 package config
 
 import (
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -88,9 +90,11 @@ type GRPCRequestTimeout struct {
 // LoggingConfig holds the structured logging knobs shared by the local runtime.
 // LoggingConfig 用于保存本地运行时共享的结构化日志配置项。
 type LoggingConfig struct {
-	Level            string `json:"level"`
-	Format           string `json:"format"`
-	DebugRPCPayloads bool   `json:"debug_rpc_payloads"`
+	Level                string `json:"level"`
+	Format               string `json:"format"`
+	DebugRPCPayloads     bool   `json:"debug_rpc_payloads"`
+	ProtectPayloads      bool   `json:"protect_payloads"`
+	PayloadEncryptionKey string `json:"payload_encryption_key,omitempty"`
 }
 
 // PIIConfig holds the default language used by the fixed pii_rules layout.
@@ -224,7 +228,7 @@ func DefaultLocal() Config {
 			RequestTimeout:         GRPCRequestTimeout{Workspace: Duration{15 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
 		},
-		Logging:    LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false},
+		Logging:    LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, ProtectPayloads: false},
 		PII:        PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:      NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		SQLite:     SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
@@ -550,6 +554,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.GRPC.ListenAddr = strings.TrimSpace(c.GRPC.ListenAddr)
 	c.Logging.Level = strings.TrimSpace(c.Logging.Level)
 	c.Logging.Format = strings.TrimSpace(c.Logging.Format)
+	c.Logging.PayloadEncryptionKey = strings.TrimSpace(c.Logging.PayloadEncryptionKey)
 	c.PII.DefaultLanguage = strings.TrimSpace(c.PII.DefaultLanguage)
 	c.Noise.DefaultLanguage = strings.TrimSpace(c.Noise.DefaultLanguage)
 	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
@@ -612,6 +617,11 @@ func (c Config) Validate() error {
 	case "text", "json":
 	default:
 		return errors.New("logging.format must be either text or json")
+	}
+	if c.Logging.ProtectPayloads {
+		if _, err := validatePayloadEncryptionKey(c.Logging.PayloadEncryptionKey); err != nil {
+			return fmt.Errorf("logging.payload_encryption_key is invalid: %w", err)
+		}
 	}
 	if c.PreCheck.TopK <= 0 {
 		return errors.New("precheck.top_k must be > 0")
@@ -798,6 +808,8 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
 	setBool("VMM_LOG_DEBUG_RPC_PAYLOADS", &cfg.Logging.DebugRPCPayloads)
+	setBool("VMM_LOG_PROTECT_PAYLOADS", &cfg.Logging.ProtectPayloads)
+	setString("VMM_LOG_PAYLOAD_ENCRYPTION_KEY", &cfg.Logging.PayloadEncryptionKey)
 	setString("VMM_PII_DEFAULT_LANGUAGE", &cfg.PII.DefaultLanguage)
 	setBool("VMM_NOISE_ENABLED", &cfg.Noise.Enabled)
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
@@ -864,4 +876,23 @@ func isOpenAIProvider(provider string) bool {
 	default:
 		return false
 	}
+}
+
+// validatePayloadEncryptionKey checks the optional protected-log key format so startup can fail fast instead of silently dropping encrypted payload logging.
+// validatePayloadEncryptionKey 用于校验受保护日志密钥格式，让启动流程能尽早失败，而不是静默丢失加密载荷日志能力。
+func validatePayloadEncryptionKey(raw string) ([]byte, error) {
+	trimmed := strings.TrimSpace(raw)
+	if trimmed == "" {
+		return nil, errors.New("must not be empty when logging.protect_payloads is enabled")
+	}
+	if decoded, err := hex.DecodeString(trimmed); err == nil && len(decoded) == 32 {
+		return decoded, nil
+	}
+	if decoded, err := base64.StdEncoding.DecodeString(trimmed); err == nil && len(decoded) == 32 {
+		return decoded, nil
+	}
+	if len(trimmed) == 32 {
+		return []byte(trimmed), nil
+	}
+	return nil, errors.New("must be 32 raw bytes, 64 hex chars, or base64 for 32 bytes")
 }

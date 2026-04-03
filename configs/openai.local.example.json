@@ -12,7 +12,9 @@
   "logging": {
     "level": "info",
     "format": "text",
-    "debug_rpc_payloads": false
+    "debug_rpc_payloads": false,
+    "protect_payloads": false,
+    "payload_encryption_key": "${VMM_LOG_PAYLOAD_ENCRYPTION_KEY}"
   },
   "pii": {
     "default_language": "zh-CN"

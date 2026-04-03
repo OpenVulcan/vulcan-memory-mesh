@@ -365,6 +365,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `grpc.request_timeout.post_action`
 - `logging.level`
 - `logging.debug_rpc_payloads`
+- `logging.protect_payloads`
+- `logging.payload_encryption_key`
 - `relational.provider`
 - `sqlite.address`
 - `lancedb.address`
@@ -392,9 +394,20 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `debug_rpc_payloads`
   - 默认 `false`
   - 关闭时：`PreCheck`、`PostAction`、`memory query` 等 payload 相关日志只输出存在性、计数、长度、摘要和执行状态等安全字段，不写正文
-  - 开启时：`pre-check received` / `pre-check returned` 会输出请求正文和组装上下文；`post-action received raw` / `post-action received cleaned` 会输出正文和 timeline JSON；`post-action turn analysis result`、`memory ... degraded`、`pre-check ... degraded` 等日志会输出完整 payload 诊断内容，便于本地排障
+  - 开启时：`pre-check received` / `pre-check returned` 会输出请求正文和组装上下文；`pre-check recent turns prepared` / `pre-check intent analyzed` / `pre-check memory query prepared` / `pre-check memory candidates recalled` / `pre-check memory candidates reviewed` / `pre-check lifecycle write-back completed` / `pre-check finalized` 会输出完整阶段诊断；`post-action received raw` / `post-action received cleaned` 会输出正文和 timeline JSON；`post-action turn analysis result`、`memory ... degraded`、`pre-check ... degraded` 等日志会输出完整 payload 诊断内容，便于本地排障
   - 也可通过环境变量 `VMM_LOG_DEBUG_RPC_PAYLOADS=true` 显式开启
   - 建议仅在本地调试或受控环境下临时开启
+- `protect_payloads`
+  - 默认 `false`
+  - 关闭时：当 `debug_rpc_payloads=false`，payload 类日志只保留安全摘要
+  - 开启时：当 `debug_rpc_payloads=false`，`PreCheck` 请求/返回与完整阶段诊断、`PostAction`/`memory query` 等 payload 日志会额外写入加密后的 `..._protected` JSON 信封，便于事后审计
+  - 也可通过环境变量 `VMM_LOG_PROTECT_PAYLOADS=true` 临时开启
+  - 建议与专用密钥一起使用，而不是在没有密钥治理的场景下长期开启
+- `payload_encryption_key`
+  - 仅在 `logging.protect_payloads=true` 时生效
+  - 支持 32 字节原始字符串、64 位 hex，或 base64 编码后的 32 字节密钥
+  - 对应环境变量：`VMM_LOG_PAYLOAD_ENCRYPTION_KEY`
+  - 推荐通过环境变量注入，不建议把真实密钥直接写进仓库配置文件
 
 日志文件落盘规则：
 

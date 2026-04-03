@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"os"
 	"time"
 
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
@@ -63,7 +64,11 @@ type Server struct {
 // NewServer 用于根据输入依赖创建一个 gRPC 服务实现。
 func NewServer(deps Dependencies) *Server {
 	if deps.Logger == nil {
-		deps.Logger = logx.Default()
+		deps.Logger = logx.New(os.Stdout, logx.Config{
+			Level:         "info",
+			Format:        "text",
+			DebugPayloads: deps.DebugRPCPayloads,
+		})
 	}
 	if deps.Validator == nil {
 		deps.Validator = NewRequestValidator()
@@ -737,31 +742,26 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	}, nil
 }
 
-// logPreCheckReceipt writes one accepted pre-check request snapshot into the runtime logger, defaulting to redacted metadata and only emitting full request text when the explicit RPC payload debug switch is enabled.
-// logPreCheckReceipt 用于把已接收的 pre-check 请求快照写入运行时日志；默认只输出脱敏元信息，只有显式 RPC 载荷调试开关开启时才会输出完整请求正文。
+// logPreCheckReceipt writes one accepted pre-check request snapshot into the runtime logger, defaulting to redacted metadata and optionally appending plaintext or protected payload snapshots depending on the shared logger configuration.
+// logPreCheckReceipt 用于把已接收的 pre-check 请求快照写入运行时日志；默认只输出脱敏元信息，并根据共享日志配置选择追加明文或受保护的载荷快照。
 func (s *Server) logPreCheckReceipt(traceID, message string, req *vmmv1.PreCheckRequest) {
 	if s == nil || s.logger == nil || req == nil {
 		return
 	}
-	if s.debugRPCPayloads {
-		s.logger.Info(
-			message,
-			"trace_id", traceID,
-			"session_id", req.GetSessionId(),
-			"user_content", req.GetUserContent(),
-		)
-		return
-	}
-	s.logger.Info(
-		message,
+	fields := []any{
 		"trace_id", traceID,
 		"session_id", req.GetSessionId(),
 		"user_content_present", req.GetUserContent() != "",
-	)
+	}
+	fields = s.logger.AppendPayloadFields(fields, "request_payload", map[string]any{
+		"session_id":   req.GetSessionId(),
+		"user_content": req.GetUserContent(),
+	})
+	s.logger.Info(message, fields...)
 }
 
-// logPreCheckResult writes one pre-check response snapshot into the runtime logger, defaulting to safe execution metadata and only emitting the assembled context payload when the explicit RPC payload debug switch is enabled.
-// logPreCheckResult 用于把 pre-check 返回结果快照写入运行时日志；默认只输出安全执行元信息，只有显式 RPC 载荷调试开关开启时才会输出组装后的完整上下文。
+// logPreCheckResult writes one pre-check response snapshot into the runtime logger, defaulting to safe execution metadata and optionally appending plaintext or protected assembled-context snapshots depending on the shared logger configuration.
+// logPreCheckResult 用于把 pre-check 返回结果快照写入运行时日志；默认只输出安全执行元信息，并根据共享日志配置选择追加明文或受保护的组装上下文快照。
 func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckRequest, result usecase.PreCheckResult) {
 	if s == nil || s.logger == nil {
 		return
@@ -772,37 +772,7 @@ func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckR
 			nonEmptyContextItems++
 		}
 	}
-	if s.debugRPCPayloads {
-		contextItemsJSON, err := json.Marshal(result.ContextItems)
-		if err != nil {
-			s.logger.Warn(message+" context items marshal failed", "trace_id", traceID, "session_id", req.GetSessionId(), "err", err)
-			s.logger.Info(
-				message,
-				"trace_id", traceID,
-				"session_id", req.GetSessionId(),
-				"should_inject", result.ShouldInject,
-				"degraded", result.Degraded,
-				"context_text", result.ContextText,
-				"context_items", len(result.ContextItems),
-				"context_nonempty_items", nonEmptyContextItems,
-			)
-			return
-		}
-		s.logger.Info(
-			message,
-			"trace_id", traceID,
-			"session_id", req.GetSessionId(),
-			"should_inject", result.ShouldInject,
-			"degraded", result.Degraded,
-			"context_text", result.ContextText,
-			"context_items", len(result.ContextItems),
-			"context_nonempty_items", nonEmptyContextItems,
-			"context_items_json", string(contextItemsJSON),
-		)
-		return
-	}
-	s.logger.Info(
-		message,
+	fields := []any{
 		"trace_id", traceID,
 		"session_id", req.GetSessionId(),
 		"should_inject", result.ShouldInject,
@@ -810,7 +780,14 @@ func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckR
 		"context_text_present", result.ContextText != "",
 		"context_items", len(result.ContextItems),
 		"context_nonempty_items", nonEmptyContextItems,
-	)
+	}
+	fields = s.logger.AppendPayloadFields(fields, "response_payload", map[string]any{
+		"should_inject": result.ShouldInject,
+		"degraded":      result.Degraded,
+		"context_text":  result.ContextText,
+		"context_items": result.ContextItems,
+	})
+	s.logger.Info(message, fields...)
 }
 
 // PostAction validates the request, logs raw and cleaned payloads, then completes synchronous persistence before returning.
