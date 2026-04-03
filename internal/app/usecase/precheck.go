@@ -160,6 +160,9 @@ func NewPreCheckUseCase(profiles PreCheckProfileBundleLoader, memories PreCheckM
 // Execute validates the resolved scope, runs the turn-centric two-stage memory flow, and returns the final assembled context or a degraded fallback.
 // Execute 用于校验已解析范围、执行基于 turn 的两层记忆流程，并返回最终组装后的上下文或降级回退结果。
 func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (PreCheckResult, error) {
+	if u == nil {
+		return PreCheckResult{}, fmt.Errorf("pre-check use case is nil")
+	}
 	if err := validatePreCheck(cmd); err != nil {
 		return PreCheckResult{}, err
 	}

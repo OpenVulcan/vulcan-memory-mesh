@@ -13,6 +13,25 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
+// TestPreCheckExecuteRejectsNilReceiver verifies the exported pre-check use case returns one stable error instead of panicking when direct tests or manual integrations accidentally invoke Execute on a nil receiver.
+// TestPreCheckExecuteRejectsNilReceiver 用于验证导出的 pre-check 用例在直接测试或手工集成误把 Execute 调到 nil 接收者上时，会返回稳定错误，而不是直接 panic。
+func TestPreCheckExecuteRejectsNilReceiver(t *testing.T) {
+	var uc *PreCheckUseCase
+
+	_, err := uc.Execute(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			ProjectID:  9,
+		},
+		UserContent: "这次接口要怎么设计？",
+	})
+	if err == nil || err.Error() != "pre-check use case is nil" {
+		t.Fatalf("unexpected nil receiver error: %v", err)
+	}
+}
+
 // TestValidatePreCheckRejectsMissingScope verifies the live pre-check contract still requires one resolved session/user/project scope.
 // TestValidatePreCheckRejectsMissingScope 用于验证实时 pre-check 契约仍要求必须带上已解析的 session/user/project 范围。
 func TestValidatePreCheckRejectsMissingScope(t *testing.T) {
