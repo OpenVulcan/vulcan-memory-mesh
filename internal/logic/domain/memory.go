@@ -2,7 +2,10 @@
 // memory.go 用于声明 gRPC、用例层、处理器和关系适配器共享的统一长期记忆模型。
 package domain
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 const (
 	// MemoryRefTypeMemory identifies one unified memory record that should be loaded from the durable memory table.
@@ -187,6 +190,28 @@ type MemorySearchRecord struct {
 type MemoryLexicalHit struct {
 	MemoryID uint64
 	Score    float64
+}
+
+// NormalizeMemoryContextKey converts free-form context keys into stable lower snake-style labels so processors, stores, and retrieval all index the same contextual dimension name.
+// NormalizeMemoryContextKey 用于把自由形式的情境键转成稳定的小写 snake 风格标签，确保处理器、存储和检索使用同一套情境维度名称。
+func NormalizeMemoryContextKey(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer(" ", "_", "-", "_", "/", "_", "\\", "_")
+	return replacer.Replace(raw)
+}
+
+// NormalizeMemoryContextValue converts one free-form contextual value into the shared lexical surface used by durable edges and query-time matching, so equivalent labels do not fork into separate evidence rows.
+// NormalizeMemoryContextValue 用于把自由形式的情境值转成长期边和查询期匹配共享的词法表面，避免等价标签分裂成多条独立证据行。
+func NormalizeMemoryContextValue(raw string) string {
+	raw = strings.TrimSpace(strings.ToLower(raw))
+	if raw == "" {
+		return ""
+	}
+	replacer := strings.NewReplacer("_", " ", "-", " ", "/", " ", "\\", " ", ".", " ")
+	return strings.Join(strings.Fields(replacer.Replace(raw)), " ")
 }
 
 // ValidMemoryRefType reports whether one memory reference type belongs to the supported enum set.

@@ -849,6 +849,20 @@ func TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches(t *testing.T) 
 	}
 }
 
+// TestAppendUniqueMemoryContextEvidenceValueDeduplicatesEquivalentLabels verifies query-time explanations collapse legacy context-value formatting variants so one semantic context does not appear twice in the returned evidence list.
+// TestAppendUniqueMemoryContextEvidenceValueDeduplicatesEquivalentLabels 用于验证查询期解释会折叠历史 context value 的格式变体，避免同一个语义情境在返回证据里出现两次。
+func TestAppendUniqueMemoryContextEvidenceValueDeduplicatesEquivalentLabels(t *testing.T) {
+	values := appendUniqueMemoryContextEvidenceValue(nil, "deployment_mode", "LOCAL_OSS")
+	values = appendUniqueMemoryContextEvidenceValue(values, "deployment mode", "local oss")
+	values = appendUniqueMemoryContextEvidenceValue(values, "deployment-mode", " local-oss ")
+	if len(values) != 1 {
+		t.Fatalf("expected equivalent context labels to collapse into one canonical explanation, got %+v", values)
+	}
+	if values[0] != "deployment_mode=local oss" {
+		t.Fatalf("expected canonical explanation label, got %+v", values)
+	}
+}
+
 // TestMemoryUseCaseGetTurnsPreservesRequestedOrder verifies turn lookups keep the caller-supplied order while deduplicating repeated ids.
 // TestMemoryUseCaseGetTurnsPreservesRequestedOrder 用于验证 turn 查询会在去重后保持调用方给定的顺序。
 func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {

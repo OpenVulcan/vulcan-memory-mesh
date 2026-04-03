@@ -233,18 +233,13 @@ func mergeMemoryContextEdgeCandidates(base, extra []logicdomain.MemoryContextEdg
 // normalizeMemoryContextKey converts free-form context keys into lower snake-like labels so later indexing and filtering stay stable across model wording drift.
 // normalizeMemoryContextKey 用于把自由形式的情境键归一成小写、接近 snake_case 的标签，降低模型措辞波动对索引和过滤的影响。
 func normalizeMemoryContextKey(raw string) string {
-	raw = strings.TrimSpace(strings.ToLower(raw))
-	if raw == "" {
-		return ""
-	}
-	replacer := strings.NewReplacer(" ", "_", "-", "_", "/", "_")
-	return replacer.Replace(raw)
+	return logicdomain.NormalizeMemoryContextKey(raw)
 }
 
-// normalizeMemoryContextValue trims and collapses surrounding whitespace so repeated contextual values do not fork into duplicate durable edges.
-// normalizeMemoryContextValue 用于裁剪并压缩两端空白，避免同一情境值因为格式差异被拆成重复的长期边。
+// normalizeMemoryContextValue converts free-form contextual values into the shared durable lexical surface so semantically equivalent labels stop forking into separate evidence rows.
+// normalizeMemoryContextValue 用于把自由形式的情境值转成共享的长期词法表面，避免语义等价的标签继续分裂成多条证据行。
 func normalizeMemoryContextValue(raw string) string {
-	return strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+	return logicdomain.NormalizeMemoryContextValue(raw)
 }
 
 // normalizeUint64Set removes zeros and duplicates from one uint64 list while keeping the first-seen order stable for deterministic persistence and tests.

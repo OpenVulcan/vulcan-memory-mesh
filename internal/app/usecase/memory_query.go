@@ -1298,12 +1298,7 @@ func buildMemoryQueryContextSignals(item MemoryQueryItem) memoryQueryContextSign
 // normalizeMemoryContextMatchText normalizes a contextual phrase into the same lexical surface used by query-time matching and edge values.
 // normalizeMemoryContextMatchText 用于把情境短语归一成查询期匹配和 edge 值共享的词法表面形式。
 func normalizeMemoryContextMatchText(raw string) string {
-	raw = strings.ToLower(textutil.NormalizeWhitespace(raw))
-	if raw == "" {
-		return ""
-	}
-	replacer := strings.NewReplacer("_", " ", "-", " ", "/", " ", "\\", " ", ".", " ")
-	return textutil.NormalizeWhitespace(replacer.Replace(raw))
+	return logicdomain.NormalizeMemoryContextValue(raw)
 }
 
 // computeMemoryContextEvidenceDelta converts matched support/rebuttal counts into one bounded score delta so context evidence influences ranking without dominating the whole retrieval pipeline.
@@ -1317,8 +1312,8 @@ func computeMemoryContextEvidenceDelta(evidence memoryContextEvidenceScore) floa
 // appendUniqueMemoryContextEvidenceValue keeps the matched context summary deterministic and de-duplicated so upper layers can surface a compact explanation of why a memory matched.
 // appendUniqueMemoryContextEvidenceValue 用于保持命中的 context 摘要确定且去重，方便上层输出“这条记忆为什么命中”的紧凑说明。
 func appendUniqueMemoryContextEvidenceValue(values []string, key, value string) []string {
-	key = strings.TrimSpace(key)
-	value = strings.TrimSpace(value)
+	key = logicdomain.NormalizeMemoryContextKey(key)
+	value = logicdomain.NormalizeMemoryContextValue(value)
 	if value == "" {
 		return values
 	}
@@ -1327,11 +1322,33 @@ func appendUniqueMemoryContextEvidenceValue(values []string, key, value string) 
 		label = key + "=" + value
 	}
 	for _, existing := range values {
-		if existing == label {
+		if normalizeMemoryContextEvidenceLabel(existing) == label {
 			return values
 		}
 	}
 	return append(values, label)
+}
+
+// normalizeMemoryContextEvidenceLabel converts one already-rendered evidence label back into the shared canonical key=value surface so legacy rows with formatting drift do not appear twice in explanations.
+// normalizeMemoryContextEvidenceLabel 用于把已渲染的证据标签重新归一到共享的 key=value 规范表面，避免历史格式漂移的旧行在解释里重复出现。
+func normalizeMemoryContextEvidenceLabel(raw string) string {
+	raw = textutil.NormalizeWhitespace(strings.TrimSpace(raw))
+	if raw == "" {
+		return ""
+	}
+	parts := strings.SplitN(raw, "=", 2)
+	if len(parts) == 1 {
+		return logicdomain.NormalizeMemoryContextValue(parts[0])
+	}
+	key := logicdomain.NormalizeMemoryContextKey(parts[0])
+	value := logicdomain.NormalizeMemoryContextValue(parts[1])
+	if value == "" {
+		return ""
+	}
+	if key == "" {
+		return value
+	}
+	return key + "=" + value
 }
 
 // collectMemoryQueryHitIDs returns the distinct durable memory ids present in one candidate slice so query-time enrichment can batch-load relational evidence once.

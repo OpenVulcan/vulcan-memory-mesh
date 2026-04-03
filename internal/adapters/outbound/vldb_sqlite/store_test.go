@@ -380,7 +380,7 @@ func TestNormalizeTurnMemoryContextEdgesAggregatesCounts(t *testing.T) {
 	if len(edges) != 2 {
 		t.Fatalf("expected two aggregated context edges, got %+v", edges)
 	}
-	if edges[0].MemoryID != 201 || edges[0].ContextKey != "deployment_mode" || edges[0].SupportCount != 1 || edges[0].RebuttalCount != 0 {
+	if edges[0].MemoryID != 201 || edges[0].ContextKey != "deployment_mode" || edges[0].ContextValue != "local oss" || edges[0].SupportCount != 1 || edges[0].RebuttalCount != 0 {
 		t.Fatalf("unexpected first edge aggregation: %+v", edges[0])
 	}
 	if edges[1].ContextKey != "task_stage" || edges[1].SupportCount != 2 || edges[1].RebuttalCount != 1 {

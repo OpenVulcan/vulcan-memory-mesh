@@ -138,6 +138,36 @@ func TestParseTurnAnalysisResponseRejectsInvalidContextRelation(t *testing.T) {
 	}
 }
 
+// TestParseTurnAnalysisResponseNormalizesEquivalentContextValues verifies semantically equivalent context values collapse onto one canonical durable label instead of forking into multiple edge candidates.
+// TestParseTurnAnalysisResponseNormalizesEquivalentContextValues 用于验证语义等价的 context value 会折叠成同一个规范长期标签，而不会分裂成多个 edge 候选。
+func TestParseTurnAnalysisResponseNormalizesEquivalentContextValues(t *testing.T) {
+	analysis, err := parseTurnAnalysisResponse(`{
+		"turn_id": 1,
+		"details": "",
+		"memory_nodes": [{
+			"category": 4,
+			"abstract": "schema compatibility",
+			"details": "schema compatibility",
+			"context_edges": [
+				{"context_key":"deployment-mode","context_value":"LOCAL_OSS","relation":"support"},
+				{"context_key":"deployment mode","context_value":"local oss","relation":"support"}
+			]
+		}],
+		"profile_nodes": [],
+		"superseded_memory_ids": []
+	}`)
+	if err != nil {
+		t.Fatalf("parse turn analysis response: %v", err)
+	}
+	if len(analysis.MemoryNodes) != 1 || len(analysis.MemoryNodes[0].ContextEdges) != 1 {
+		t.Fatalf("expected equivalent context values to collapse, got %+v", analysis.MemoryNodes)
+	}
+	edge := analysis.MemoryNodes[0].ContextEdges[0]
+	if edge.ContextKey != "deployment_mode" || edge.ContextValue != "local oss" {
+		t.Fatalf("expected normalized context edge, got %+v", edge)
+	}
+}
+
 // TestTurnAnalyzerRejectsMismatchedTurnID verifies the model output cannot silently drift onto another target turn when the analyzer already knows which turn it is extracting.
 // TestTurnAnalyzerRejectsMismatchedTurnID 用于验证分析器在已知目标 turn 的前提下，不会默默接受模型返回的错误 turn_id。
 func TestTurnAnalyzerRejectsMismatchedTurnID(t *testing.T) {

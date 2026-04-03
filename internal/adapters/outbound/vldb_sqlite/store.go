@@ -3769,8 +3769,8 @@ func normalizeTurnMemoryContextEdges(memoryID uint64, candidates []logicdomain.M
 	}
 	aggregated := make(map[string]logicdomain.MemoryContextEdge, len(candidates))
 	for _, candidate := range candidates {
-		contextKey := strings.TrimSpace(candidate.ContextKey)
-		contextValue := strings.TrimSpace(candidate.ContextValue)
+		contextKey := logicdomain.NormalizeMemoryContextKey(candidate.ContextKey)
+		contextValue := logicdomain.NormalizeMemoryContextValue(candidate.ContextValue)
 		relation := strings.TrimSpace(candidate.Relation)
 		if contextKey == "" || contextValue == "" || !logicdomain.ValidMemoryContextRelation(relation) {
 			continue
