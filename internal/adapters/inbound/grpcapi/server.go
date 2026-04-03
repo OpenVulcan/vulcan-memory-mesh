@@ -90,6 +90,15 @@ func (s *Server) validator() *RequestValidator {
 	return s.validate
 }
 
+// postActionSanitizer returns the configured post-action sanitizer and falls back to the default storage-oriented sanitizer when direct tests or manual integrations build one partial Server without calling NewServer.
+// postActionSanitizer 用于返回当前配置的 post-action 清洗器；当直接测试或手工集成绕过 NewServer 构造了一个部分装配的 Server 时，会回退到默认的存储型清洗器。
+func (s *Server) postActionSanitizer() *textutil.PostActionTextSanitizer {
+	if s == nil || s.sanitizer == nil {
+		return textutil.NewPostActionTextSanitizer()
+	}
+	return s.sanitizer
+}
+
 // BuildUnaryInterceptors returns the standard unary interceptor chain used by the gRPC server.
 // BuildUnaryInterceptors 用于返回 gRPC 服务使用的标准一元拦截器链。
 func BuildUnaryInterceptors(deps Dependencies) []grpc.UnaryServerInterceptor {
@@ -900,13 +909,17 @@ func toMemoryDetailEntry(memory logicdomain.MemoryNodeRecord) *vmmv1.MemoryDetai
 // sanitizePostActionRequest 用于把已校验请求复制成一份面向存储的版本，让原始日志与入库文本可以安全分离。
 func (s *Server) sanitizePostActionRequest(req *vmmv1.PostActionRequest) *vmmv1.PostActionRequest {
 	cloned := clonePostActionRequest(req)
-	if cloned == nil || s == nil || s.sanitizer == nil {
+	if cloned == nil {
 		return cloned
 	}
-	cloned.UserContent = s.sanitizer.Sanitize(cloned.GetUserContent())
-	cloned.AssistantContent = s.sanitizer.Sanitize(cloned.GetAssistantContent())
+
+	// Reuse the default storage sanitizer for partially constructed servers so direct tests and manual integrations still see the same cleaned payload contract as the main runtime path.
+	// 对于部分装配的服务实例，这里仍复用默认的存储型清洗器，保证直接测试和手工集成拿到与主运行时一致的清洗后载荷契约。
+	sanitizer := s.postActionSanitizer()
+	cloned.UserContent = sanitizer.Sanitize(cloned.GetUserContent())
+	cloned.AssistantContent = sanitizer.Sanitize(cloned.GetAssistantContent())
 	for _, item := range cloned.GetTimeline() {
-		item.Content = s.sanitizer.Sanitize(item.GetContent())
+		item.Content = sanitizer.Sanitize(item.GetContent())
 	}
 	return cloned
 }

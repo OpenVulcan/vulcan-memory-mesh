@@ -704,6 +704,50 @@ func TestPostActionReturnsAcceptedSynchronously(t *testing.T) {
 	}
 }
 
+// TestPostActionDirectCallUsesDefaultSanitizer verifies one partially constructed server still applies the default storage sanitizer when direct tests or manual integrations bypass NewServer and call PostAction directly.
+// TestPostActionDirectCallUsesDefaultSanitizer 用于验证当直接测试或手工集成绕过 NewServer 并直接调用 PostAction 时，部分装配的服务实例仍会应用默认的存储型清洗器。
+func TestPostActionDirectCallUsesDefaultSanitizer(t *testing.T) {
+	var received usecase.PostActionCommand
+	server := &Server{
+		postAction: postActionFunc(func(_ context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
+			received = cmd
+			return usecase.PostActionResult{Accepted: true}, nil
+		}),
+	}
+	ctx := withResolvedSessionRef(context.Background(), logicdomain.SessionRef{
+		SessionID:  41,
+		SessionKey: "sess-1",
+		UserID:     7,
+		ProjectID:  9,
+	})
+
+	resp, err := server.PostAction(ctx, &vmmv1.PostActionRequest{
+		SessionId:        "sess-1",
+		UserId:           7,
+		ProjectId:        9,
+		UserContent:      "<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)",
+		AssistantContent: "最终回答",
+		Timeline: []*vmmv1.PostActionTimelineItem{
+			{Type: "assistant", Content: "中间回答 data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("post-action direct call: %v", err)
+	}
+	if !resp.GetAccepted() {
+		t.Fatal("expected accepted=true")
+	}
+	if received.UserContent != "第一问 [Image: 猫]" {
+		t.Fatalf("unexpected cleaned user content: %q", received.UserContent)
+	}
+	if len(received.Timeline) != 1 || received.Timeline[0].Content != "中间回答 [Image filtered]" {
+		t.Fatalf("unexpected cleaned timeline: %+v", received.Timeline)
+	}
+	if received.RawUserContent != "<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)" {
+		t.Fatalf("unexpected raw user content: %q", received.RawUserContent)
+	}
+}
+
 // TestPostActionRejectsNilTimelineItem verifies the transport returns one validation error instead of panicking when direct tests or manual integrations pass a nil timeline item.
 // TestPostActionRejectsNilTimelineItem 用于验证当直接测试或手工集成传入 nil timeline 项时，传输层会返回校验错误，而不是直接 panic。
 func TestPostActionRejectsNilTimelineItem(t *testing.T) {
