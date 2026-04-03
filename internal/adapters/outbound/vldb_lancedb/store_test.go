@@ -122,6 +122,40 @@ func TestSearchMapsRowsAndFilter(t *testing.T) {
 	}
 }
 
+// TestSearchRejectsMalformedNumericFields verifies malformed numeric strings from the LanceDB gateway fail fast instead of being silently coerced to zero-value ids or distances.
+// TestSearchRejectsMalformedNumericFields 用于验证当 LanceDB 网关返回畸形数字字符串时，适配器会快速报错，而不是悄悄把它们吞成零值 id 或距离。
+func TestSearchRejectsMalformedNumericFields(t *testing.T) {
+	server := &fakeLanceDBServer{
+		searchData: []byte(`[
+			{
+				"id":"mem-1",
+				"content":"hello from gateway",
+				"team_id":"not-a-number",
+				"space_id":5,
+				"project_id":9,
+				"session_id":11,
+				"user_id":7,
+				"metadata_json":"{}",
+				"_distance":"bad-distance"
+			}
+		]`),
+	}
+	store := newLanceDBTestStore(t, server)
+
+	_, err := store.Search(context.Background(), []float32{0.2, 0.3, 0.4}, 3, logicdomain.SearchFilter{
+		UserID:    7,
+		TeamID:    3,
+		SpaceID:   5,
+		ProjectID: 9,
+	})
+	if err == nil {
+		t.Fatal("expected malformed numeric search row to fail")
+	}
+	if !strings.Contains(err.Error(), "decode lancedb search rows") || !strings.Contains(err.Error(), "team_id") {
+		t.Fatalf("expected wrapped numeric decode error, got %v", err)
+	}
+}
+
 // TestInitIgnoresAlreadyExistsResponses verifies repeated boots treat existing tables as a successful idempotent state.
 // TestInitIgnoresAlreadyExistsResponses 用于验证重复启动会把“表已存在”视为成功的幂等状态。
 func TestInitIgnoresAlreadyExistsResponses(t *testing.T) {

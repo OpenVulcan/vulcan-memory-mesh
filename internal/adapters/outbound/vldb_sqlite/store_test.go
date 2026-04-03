@@ -96,6 +96,46 @@ func TestStoreLoadUserByIDUsesTypedSQLiteParams(t *testing.T) {
 	}
 }
 
+// TestStoreLoadRenderedProfileUsesTypedSQLiteParams verifies scope-profile lookups now keep the target id in typed sqlite params instead of interpolating it into raw SQL.
+// TestStoreLoadRenderedProfileUsesTypedSQLiteParams 用于验证 scope 画像读取现在会把目标 id 保持在 sqlite 强类型参数里，而不是直接插入原始 SQL。
+func TestStoreLoadRenderedProfileUsesTypedSQLiteParams(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var captured *sqlitev1.QueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		captured = req
+		return &sqlitev1.QueryJsonResponse{JsonData: `[{"profile":"project profile"}]`}, nil
+	}
+
+	profile, err := store.LoadRenderedProfile(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+	})
+	if err != nil {
+		t.Fatalf("LoadRenderedProfile returned error: %v", err)
+	}
+	if profile != "project profile" {
+		t.Fatalf("unexpected rendered profile: %q", profile)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJson request to be captured")
+	}
+	if strings.TrimSpace(captured.GetParamsJson()) != "" {
+		t.Fatalf("expected typed params only, got params_json=%q", captured.GetParamsJson())
+	}
+	if !strings.Contains(captured.GetSql(), "WHERE id = ? LIMIT 1") {
+		t.Fatalf("expected placeholder-based profile lookup sql, got %q", captured.GetSql())
+	}
+	if len(captured.GetParams()) != 1 {
+		t.Fatalf("expected one typed param, got %d", len(captured.GetParams()))
+	}
+	value, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_Int64Value)
+	if !ok || value.Int64Value != 9 {
+		t.Fatalf("expected int64 sqlite param 9, got %#v", captured.GetParams()[0].Kind)
+	}
+}
+
 // TestStoreExecRetriesRetryableGatewayErrors verifies SQLITE_BUSY / SQLITE_LOCKED style responses are retried inside the adapter before surfacing to callers.
 // TestStoreExecRetriesRetryableGatewayErrors 用于验证 SQLITE_BUSY / SQLITE_LOCKED 这类响应会先在适配器内部重试，而不是立刻暴露给调用方。
 func TestStoreExecRetriesRetryableGatewayErrors(t *testing.T) {
@@ -242,6 +282,37 @@ func TestStoreSearchLexicalMemoryUsesTypedSQLiteParams(t *testing.T) {
 	queryValue, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_StringValue)
 	if !ok || !strings.Contains(queryValue.StringValue, "文本排序模型") {
 		t.Fatalf("expected sanitized lexical query as first param, got %#v", captured.GetParams()[0].Kind)
+	}
+}
+
+// TestBuildProjectProfileNodesDeleteSQLUsesTypedParams verifies the project-profile delete/count helpers now emit placeholder SQL plus a stable typed-param order instead of embedding ids directly into the statement text.
+// TestBuildProjectProfileNodesDeleteSQLUsesTypedParams 用于验证项目画像节点删除与统计辅助逻辑现在会输出占位符 SQL 和稳定参数顺序，而不是把 id 直接嵌进语句文本。
+func TestBuildProjectProfileNodesDeleteSQLUsesTypedParams(t *testing.T) {
+	deleteSQL, deleteParams := buildProjectProfileNodesDeleteSQL(9, 5, 3, true, true)
+	if strings.Contains(deleteSQL, "bind_id = 9") || strings.Contains(deleteSQL, "project_id = 9") {
+		t.Fatalf("expected placeholder-based delete sql, got %q", deleteSQL)
+	}
+	if strings.Count(deleteSQL, "?") != 7 {
+		t.Fatalf("expected seven placeholders in delete sql, got %q", deleteSQL)
+	}
+	expectedDeleteParams := []any{
+		logicdomain.ProfileTypeProject, uint64(9), uint64(9),
+		logicdomain.ProfileTypeSpace, uint64(5),
+		logicdomain.ProfileTypeTeam, uint64(3),
+	}
+	if fmt.Sprint(deleteParams) != fmt.Sprint(expectedDeleteParams) {
+		t.Fatalf("unexpected delete params: got=%v want=%v", deleteParams, expectedDeleteParams)
+	}
+
+	countSQL, countParams := buildProjectProfileNodesCountSQL(9, 5, 3, true, true)
+	if strings.Contains(countSQL, "bind_id = 9") || strings.Contains(countSQL, "project_id = 9") {
+		t.Fatalf("expected placeholder-based count sql, got %q", countSQL)
+	}
+	if strings.Count(countSQL, "?") != 7 {
+		t.Fatalf("expected seven placeholders in count sql, got %q", countSQL)
+	}
+	if fmt.Sprint(countParams) != fmt.Sprint(expectedDeleteParams) {
+		t.Fatalf("unexpected count params: got=%v want=%v", countParams, expectedDeleteParams)
 	}
 }
 

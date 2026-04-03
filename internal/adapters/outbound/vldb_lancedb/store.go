@@ -435,50 +435,80 @@ func (r *searchRow) UnmarshalJSON(data []byte) error {
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
+	var err error
 	r.ID = asString(raw["id"])
 	r.Content = asString(raw["content"])
-	r.TeamID = asUint64(raw["team_id"])
-	r.SpaceID = asUint64(raw["space_id"])
-	r.ProjectID = asUint64(raw["project_id"])
-	r.SessionID = asUint64(raw["session_id"])
-	r.UserID = asUint64(raw["user_id"])
+	if r.TeamID, err = asUint64(raw["team_id"]); err != nil {
+		return fmt.Errorf("decode search row team_id: %w", err)
+	}
+	if r.SpaceID, err = asUint64(raw["space_id"]); err != nil {
+		return fmt.Errorf("decode search row space_id: %w", err)
+	}
+	if r.ProjectID, err = asUint64(raw["project_id"]); err != nil {
+		return fmt.Errorf("decode search row project_id: %w", err)
+	}
+	if r.SessionID, err = asUint64(raw["session_id"]); err != nil {
+		return fmt.Errorf("decode search row session_id: %w", err)
+	}
+	if r.UserID, err = asUint64(raw["user_id"]); err != nil {
+		return fmt.Errorf("decode search row user_id: %w", err)
+	}
 	r.MetadataJSON = asString(raw["metadata_json"])
-	r.Distance = asFloat64(raw["_distance"])
-	r.Score = asFloat64(raw["distance"])
+	if r.Distance, err = asFloat64(raw["_distance"]); err != nil {
+		return fmt.Errorf("decode search row _distance: %w", err)
+	}
+	if r.Score, err = asFloat64(raw["distance"]); err != nil {
+		return fmt.Errorf("decode search row distance: %w", err)
+	}
 	return nil
 }
 
 // asUint64 converts one generic JSON field into uint64 while tolerating float and string encodings from the gateway.
 // asUint64 用于把通用 JSON 字段转换成 uint64，并兼容网关返回的浮点或字符串编码。
-func asUint64(value any) uint64 {
+func asUint64(value any) (uint64, error) {
 	switch typed := value.(type) {
+	case nil:
+		return 0, nil
 	case float64:
 		if typed < 0 {
-			return 0
+			return 0, nil
 		}
-		return uint64(typed)
+		return uint64(typed), nil
 	case float32:
 		if typed < 0 {
-			return 0
+			return 0, nil
 		}
-		return uint64(typed)
+		return uint64(typed), nil
 	case int:
 		if typed < 0 {
-			return 0
+			return 0, nil
 		}
-		return uint64(typed)
+		return uint64(typed), nil
 	case int64:
 		if typed < 0 {
-			return 0
+			return 0, nil
 		}
-		return uint64(typed)
+		return uint64(typed), nil
 	case uint64:
-		return typed
+		return typed, nil
+	case json.Number:
+		number, err := strconv.ParseUint(strings.TrimSpace(string(typed)), 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return number, nil
 	case string:
-		number, _ := strconv.ParseUint(strings.TrimSpace(typed), 10, 64)
-		return number
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, nil
+		}
+		number, err := strconv.ParseUint(trimmed, 10, 64)
+		if err != nil {
+			return 0, err
+		}
+		return number, nil
 	default:
-		return 0
+		return 0, nil
 	}
 }
 
@@ -497,29 +527,41 @@ func asString(value any) string {
 
 // asFloat64 converts one generic JSON field into a float64 while tolerating integer and string values.
 // asFloat64 用于把通用 JSON 字段转换成 float64，同时兼容整数和字符串值。
-func asFloat64(value any) float64 {
+func asFloat64(value any) (float64, error) {
 	switch typed := value.(type) {
+	case nil:
+		return 0, nil
 	case float64:
-		return typed
+		return typed, nil
 	case float32:
-		return float64(typed)
+		return float64(typed), nil
 	case int:
-		return float64(typed)
+		return float64(typed), nil
 	case int32:
-		return float64(typed)
+		return float64(typed), nil
 	case int64:
-		return float64(typed)
+		return float64(typed), nil
 	case uint32:
-		return float64(typed)
+		return float64(typed), nil
 	case uint64:
-		return float64(typed)
+		return float64(typed), nil
 	case json.Number:
-		number, _ := typed.Float64()
-		return number
+		number, err := typed.Float64()
+		if err != nil {
+			return 0, err
+		}
+		return number, nil
 	case string:
-		number, _ := strconv.ParseFloat(strings.TrimSpace(typed), 64)
-		return number
+		trimmed := strings.TrimSpace(typed)
+		if trimmed == "" {
+			return 0, nil
+		}
+		number, err := strconv.ParseFloat(trimmed, 64)
+		if err != nil {
+			return 0, err
+		}
+		return number, nil
 	default:
-		return 0
+		return 0, nil
 	}
 }

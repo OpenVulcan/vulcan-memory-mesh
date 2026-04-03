@@ -1256,17 +1256,17 @@ func (s *Store) loadRenderedProfileByTarget(ctx context.Context, profileType int
 	query := ""
 	switch profileType {
 	case logicdomain.ProfileTypeUser:
-		query = fmt.Sprintf(`SELECT profile FROM vmm_users WHERE id = %d LIMIT 1`, bindID)
+		query = `SELECT profile FROM vmm_users WHERE id = ? LIMIT 1`
 	case logicdomain.ProfileTypeTeam:
-		query = fmt.Sprintf(`SELECT profile FROM vmm_teams WHERE id = %d LIMIT 1`, bindID)
+		query = `SELECT profile FROM vmm_teams WHERE id = ? LIMIT 1`
 	case logicdomain.ProfileTypeSpace:
-		query = fmt.Sprintf(`SELECT profile FROM vmm_spaces WHERE id = %d LIMIT 1`, bindID)
+		query = `SELECT profile FROM vmm_spaces WHERE id = ? LIMIT 1`
 	case logicdomain.ProfileTypeProject:
-		query = fmt.Sprintf(`SELECT profile FROM vmm_projects WHERE id = %d LIMIT 1`, bindID)
+		query = `SELECT profile FROM vmm_projects WHERE id = ? LIMIT 1`
 	default:
 		return "", logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile target"}
 	}
-	rows, err := queryRows[profileBlobRow](s, ctx, query)
+	rows, err := queryRows[profileBlobRow](s, ctx, query, bindID)
 	if err != nil {
 		return "", err
 	}
@@ -2712,7 +2712,8 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	// Remove all profile nodes that belong to the project itself, were derived from its turns,
 	// or belong to one now-empty parent scope that will be deleted together with the project.
 	// 删除项目自身、其 turn 派生、以及随空父级一并删除的 scope 所关联的画像节点。
-	if err := s.exec(ctx, buildProjectProfileNodesDeleteSQL(project.ID, project.SpaceID, project.TeamID, deletePlan.DeletedSpaces > 0, deletePlan.DeletedTeams > 0)); err != nil {
+	deleteSQL, deleteParams := buildProjectProfileNodesDeleteSQL(project.ID, project.SpaceID, project.TeamID, deletePlan.DeletedSpaces > 0, deletePlan.DeletedTeams > 0)
+	if err := s.exec(ctx, deleteSQL, deleteParams...); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project profile nodes: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE project_id = ?`, project.ID); err != nil {
@@ -3199,7 +3200,8 @@ func (s *Store) planProjectDelete(ctx context.Context, project logicdomain.Proje
 		}
 		deleteTeam = remainingSpacesInTeam == 0
 	}
-	deletedProfiles, err := s.countRows(ctx, buildProjectProfileNodesCountSQL(project.ID, project.SpaceID, project.TeamID, deleteSpace, deleteTeam))
+	countSQL, countParams := buildProjectProfileNodesCountSQL(project.ID, project.SpaceID, project.TeamID, deleteSpace, deleteTeam)
+	deletedProfiles, err := s.countRows(ctx, countSQL, countParams...)
 	if err != nil {
 		return projectDeletePlan{}, fmt.Errorf("count project profile nodes: %w", err)
 	}
@@ -3244,32 +3246,37 @@ func (s *Store) planUserDelete(ctx context.Context, userID uint64) (userDeletePl
 // actually owned by the project-delete path, including optional empty-parent scopes.
 // buildProjectProfileNodesDeleteSQL 用于渲染一条原始 DELETE，
 // 删除项目删除路径真正负责的全部画像节点，并在需要时覆盖变空的父级 scope。
-func buildProjectProfileNodesDeleteSQL(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) string {
-	return fmt.Sprintf("DELETE FROM vmm_profile_nodes WHERE %s", buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID, deleteSpace, deleteTeam))
+func buildProjectProfileNodesDeleteSQL(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) (string, []any) {
+	whereSQL, params := buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID, deleteSpace, deleteTeam)
+	return fmt.Sprintf("DELETE FROM vmm_profile_nodes WHERE %s", whereSQL), params
 }
 
 // buildProjectProfileNodesCountSQL renders one raw COUNT query that matches the same profile-node scope deleted by project removal.
 // buildProjectProfileNodesCountSQL 用于渲染一条原始 COUNT 查询，并与项目删除时的画像节点删除范围保持完全一致。
-func buildProjectProfileNodesCountSQL(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) string {
-	return fmt.Sprintf("SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE %s", buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID, deleteSpace, deleteTeam))
+func buildProjectProfileNodesCountSQL(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) (string, []any) {
+	whereSQL, params := buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID, deleteSpace, deleteTeam)
+	return fmt.Sprintf("SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE %s", whereSQL), params
 }
 
 // buildProjectProfileNodesDeleteWhere centralizes the delete/count predicate used by project deletion
 // so statistics and actual row removal stay locked to the same scope definition.
 // buildProjectProfileNodesDeleteWhere 用于集中维护项目删除时的画像节点条件，
 // 让删除统计与实际删行始终共享同一套范围定义。
-func buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) string {
+func buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) (string, []any) {
 	conditions := []string{
-		fmt.Sprintf("(profile_type = %d AND bind_id = %d)", logicdomain.ProfileTypeProject, projectID),
-		fmt.Sprintf("(turn_id IN (SELECT id FROM vmm_turn_records WHERE project_id = %d))", projectID),
+		"(profile_type = ? AND bind_id = ?)",
+		"(turn_id IN (SELECT id FROM vmm_turn_records WHERE project_id = ?))",
 	}
+	params := []any{logicdomain.ProfileTypeProject, projectID, projectID}
 	if deleteSpace {
-		conditions = append(conditions, fmt.Sprintf("(profile_type = %d AND bind_id = %d)", logicdomain.ProfileTypeSpace, spaceID))
+		conditions = append(conditions, "(profile_type = ? AND bind_id = ?)")
+		params = append(params, logicdomain.ProfileTypeSpace, spaceID)
 	}
 	if deleteTeam {
-		conditions = append(conditions, fmt.Sprintf("(profile_type = %d AND bind_id = %d)", logicdomain.ProfileTypeTeam, teamID))
+		conditions = append(conditions, "(profile_type = ? AND bind_id = ?)")
+		params = append(params, logicdomain.ProfileTypeTeam, teamID)
 	}
-	return strings.Join(conditions, " OR ")
+	return strings.Join(conditions, " OR "), params
 }
 
 // buildProjectConfirmMessage generates the stable confirmation text returned when missing Team/Space nodes require explicit confirmation.
