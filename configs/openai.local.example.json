@@ -12,8 +12,8 @@
   "logging": {
     "level": "info",
     "format": "text",
-    "debug_rpc_payloads": false,
-    "protect_payloads": false,
+    "debug_rpc_payloads": true,
+    "protect_payloads": true,
     "payload_encryption_key": "${VMM_LOG_PAYLOAD_ENCRYPTION_KEY}"
   },
   "pii": {
@@ -58,7 +58,9 @@
     "model": "${OPENAI_EMBEDDING_MODEL}",
     "dimension": 1024,
     "organization": "${OPENAI_ORGANIZATION}",
-    "project": "${OPENAI_PROJECT}"
+    "project": "${OPENAI_PROJECT}",
+    "params": {},
+    "model_params": {}
   },
   "rerank": {
     "enabled": false,
@@ -85,7 +87,9 @@
   },
   "pre_check": {
     "intent_timeout": "5s",
-    "top_k": 5
+    "top_k": 5,
+    "search_scope": "space",
+    "similarity_threshold": 0
   },
   "memory_pipeline": {
     "max_search_keywords": 5,
