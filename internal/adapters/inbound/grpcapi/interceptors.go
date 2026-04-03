@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
@@ -64,10 +65,11 @@ func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 		ctx = normalizedUnaryContext(ctx)
+		method := unaryMethodName(info)
 
 		// Only the business-chain RPCs that depend on one resolved session need deterministic scope resolution before the handler starts.
 		// 只有依赖已解析 session 的业务链路 RPC，才需要在处理器执行前完成确定性范围解析。
-		if info == nil || !requiresResolvedScope(info.FullMethod) {
+		if !requiresResolvedScopeInvocation(info, req) {
 			return invokeUnaryHandler(ctx, req, handler)
 		}
 		if resolver == nil {
@@ -81,7 +83,7 @@ func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *
 		if err != nil {
 			return nil, toStatus(describeError(err))
 		}
-		logger.Info("grpc scope resolved", "trace_id", trace.IDFromContext(ctx), "method", info.FullMethod, "session_key", session.SessionKey, "session_id", session.SessionID, "user_id", session.UserID, "project_id", session.ProjectID)
+		logger.Info("grpc scope resolved", "trace_id", trace.IDFromContext(ctx), "method", method, "session_key", session.SessionKey, "session_id", session.SessionID, "user_id", session.UserID, "project_id", session.ProjectID)
 		return invokeUnaryHandler(withResolvedSessionRef(ctx, session), req, handler)
 	}
 }
@@ -204,6 +206,28 @@ func resolvedSessionRefFromContext(ctx context.Context) (logicdomain.SessionRef,
 func requiresResolvedScope(fullMethod string) bool {
 	switch fullMethod {
 	case "/vmm.v1.VMMService/PreCheck", "/vmm.v1.VMMService/PostAction", "/vmm.v1.VMMService/WriteMemories":
+		return true
+	default:
+		return false
+	}
+}
+
+// requiresResolvedScopeInvocation decides whether one interceptor invocation should resolve scope, and falls back to the concrete request type when direct tests or manual integrations omit UnaryServerInfo.
+// requiresResolvedScopeInvocation 用于判断某次拦截器调用是否需要执行范围解析；当直接测试或手工集成缺少 UnaryServerInfo 时，会退回到具体请求类型做判断。
+func requiresResolvedScopeInvocation(info *grpc.UnaryServerInfo, req any) bool {
+	if info != nil {
+		if requiresResolvedScope(strings.TrimSpace(info.FullMethod)) {
+			return true
+		}
+		if strings.TrimSpace(info.FullMethod) != "" {
+			return false
+		}
+	}
+
+	// Keep exported direct-call behavior aligned with the runtime business chain by inferring the scope-dependent RPCs from their concrete request types when method metadata is absent.
+	// 在缺少方法元数据时，根据具体请求类型推断依赖范围解析的业务 RPC，保证导出的直接调用行为与运行时业务链保持一致。
+	switch req.(type) {
+	case *vmmv1.PreCheckRequest, *vmmv1.PostActionRequest, *vmmv1.WriteMemoriesRequest:
 		return true
 	default:
 		return false

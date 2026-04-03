@@ -910,6 +910,34 @@ func TestScopeResolutionInterceptorAllowsNilContext(t *testing.T) {
 	}
 }
 
+// TestScopeResolutionInterceptorInfersBusinessRPCWithoutInfo verifies the exported scope interceptor still resolves the session for business-chain requests when direct tests or manual integrations omit UnaryServerInfo.
+// TestScopeResolutionInterceptorInfersBusinessRPCWithoutInfo 用于验证当直接测试或手工集成缺少 UnaryServerInfo 时，导出的范围拦截器仍会为业务链请求解析 session。
+func TestScopeResolutionInterceptorInfersBusinessRPCWithoutInfo(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := ScopeResolutionInterceptor(stubScopeResolver{}, logger)
+	req := &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "当前项目怎么样",
+	}
+
+	_, err := interceptor(context.Background(), req, nil, func(ctx context.Context, _ any) (any, error) {
+		session, ok := resolvedSessionRefFromContext(ctx)
+		if !ok {
+			t.Fatal("expected resolved session in context")
+		}
+		if session.SessionID != 41 || session.UserID != 7 || session.ProjectID != 9 {
+			t.Fatalf("unexpected resolved session: %+v", session)
+		}
+		return &emptypb.Empty{}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected scope interceptor error: %v", err)
+	}
+}
+
 // TestRequestLoggerInterceptorAllowsNilContext verifies the exported request logger remains safe when direct tests invoke it without a request context.
 // TestRequestLoggerInterceptorAllowsNilContext 用于验证导出的请求日志拦截器在直接测试缺少请求 context 时仍然安全，不会因为读取 peer 信息而崩溃。
 func TestRequestLoggerInterceptorAllowsNilContext(t *testing.T) {
