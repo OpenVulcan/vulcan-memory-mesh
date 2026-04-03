@@ -861,7 +861,7 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 	lexicalHits, err := u.memories.SearchLexicalMemory(ctx, query, poolK, filter)
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory lexical search degraded", "query", strings.TrimSpace(query), "err", err)
+			u.logger.Warn("memory lexical search degraded", append(redactedMemoryQueryLogFields(query), "err", err)...)
 		}
 		return trimSearchHits(vectorHits, poolK)
 	}
@@ -871,7 +871,7 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 	materialized, err := u.materializeLexicalHits(ctx, lexicalHits)
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory lexical materialization degraded", "query", strings.TrimSpace(query), "err", err)
+			u.logger.Warn("memory lexical materialization degraded", append(redactedMemoryQueryLogFields(query), "err", err)...)
 		}
 		return trimSearchHits(vectorHits, poolK)
 	}
@@ -1590,7 +1590,7 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 	results, err := u.reranker.Rerank(ctx, strings.TrimSpace(query), buildRerankDocuments(primary), len(primary))
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory search rerank degraded", "query", strings.TrimSpace(query), "candidate_count", len(primary), "err", err)
+			u.logger.Warn("memory search rerank degraded", append(redactedMemoryQueryLogFields(query), "candidate_count", len(primary), "err", err)...)
 		}
 		return hits
 	}
@@ -1714,6 +1714,26 @@ func buildMemorySearchCandidateText(hit MemoryQueryHit) string {
 	default:
 		return abstract + "\n" + details
 	}
+}
+
+// redactedMemoryQueryLogFields converts one live search query into length and digest fields so degraded retrieval logs stay debuggable without writing user text into runtime logs.
+// redactedMemoryQueryLogFields 用于把实时检索 query 转成长度和摘要字段，让降级日志在可排障的同时不把用户文本写入运行时日志。
+func redactedMemoryQueryLogFields(query string) []any {
+	normalized := strings.TrimSpace(query)
+	return []any{
+		"query_len", len(normalized),
+		"query_sha256", shortLogDigest(normalized),
+	}
+}
+
+// shortLogDigest produces one short stable digest for sensitive runtime strings so logs can correlate repeated failures without leaking the underlying text.
+// shortLogDigest 用于为敏感运行时字符串生成短且稳定的摘要，让日志能够关联重复故障，同时不泄露底层文本。
+func shortLogDigest(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:8])
 }
 
 // mapSearchHits enriches vector hits with relational unified-memory rows so the search response can return durable memory refs instead of bare turn anchors.

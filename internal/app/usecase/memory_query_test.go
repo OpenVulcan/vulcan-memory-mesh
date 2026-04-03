@@ -3,13 +3,16 @@
 package usecase
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 )
 
 // TestMemoryUseCaseSearchEchoesGroupedQueries verifies the grouped JSON payload is parsed, echoed back, and resolved against the scoped vector filter.
@@ -798,6 +801,94 @@ func TestMemoryUseCaseSearchAppliesContextAwareScoring(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchRedactsDegradedQueryLogs verifies retrieval degradation logs keep query diagnostics without writing the raw user query into runtime logs.
+// TestMemoryUseCaseSearchRedactsDegradedQueryLogs 用于验证检索降级日志会保留 query 诊断信息，但不会把原始用户 query 写入运行时日志。
+func TestMemoryUseCaseSearchRedactsDegradedQueryLogs(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "部署方案", Score: 0.91},
+			{ID: "vec-2", Text: "备用方案", Score: 0.87},
+		},
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "warn", Format: "text"})
+
+	firstStore := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "部署方案", Details: "向量召回仍然命中。", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "备用方案", Details: "用于触发 rerank 降级。", VectorID: "vec-2"},
+		},
+		lexicalErr: errors.New("fts gateway unavailable"),
+	}
+	firstReranker := &stubRerankerClient{err: errors.New("rerank timeout")}
+	firstQuery := "用户银行卡 1234 的部署方案"
+	firstUseCase := NewMemoryUseCase(profiles, firstStore, embedding, vector, logger)
+	firstUseCase.ConfigureHybrid(true, 5, 60)
+	firstUseCase.ConfigureRerank(firstReranker, 2)
+
+	if _, err := firstUseCase.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"query":"` + firstQuery + `"}]`,
+		TopK:      2,
+	}); err != nil {
+		t.Fatalf("search with lexical/rerank degradation: %v", err)
+	}
+
+	secondStore := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "本地部署", Details: "向量召回仍然命中。", VectorID: "vec-1"},
+		},
+		lexicalHits: []logicdomain.MemoryLexicalHit{
+			{MemoryID: 201, Score: 0.99},
+		},
+		memoryRowsByIDErr: errors.New("load lexical rows failed"),
+	}
+	secondQuery := "用户身份证 5678 的本地部署"
+	secondUseCase := NewMemoryUseCase(profiles, secondStore, embedding, vector, logger)
+	secondUseCase.ConfigureHybrid(true, 5, 60)
+
+	if _, err := secondUseCase.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: `[{"query":"` + secondQuery + `"}]`,
+		TopK:      2,
+	}); err != nil {
+		t.Fatalf("search with lexical materialization degradation: %v", err)
+	}
+
+	logs := logBuf.String()
+	if strings.Contains(logs, firstQuery) || strings.Contains(logs, secondQuery) {
+		t.Fatalf("expected degraded logs to redact raw queries, got %s", logs)
+	}
+	if !strings.Contains(logs, "memory lexical search degraded") || !strings.Contains(logs, "memory lexical materialization degraded") || !strings.Contains(logs, "memory search rerank degraded") {
+		t.Fatalf("expected all degradation events to be logged, got %s", logs)
+	}
+	if !strings.Contains(logs, "query_len") || !strings.Contains(logs, "query_sha256") {
+		t.Fatalf("expected redacted query diagnostics in logs, got %s", logs)
+	}
+}
+
 // TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches verifies unrelated context edges do not perturb the existing ranked order.
 // TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches 用于验证无关 context edge 不会扰动现有排序。
 func TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches(t *testing.T) {
@@ -899,9 +990,11 @@ type stubTurnLookupStore struct {
 	rows               []logicdomain.SessionTurnRecord
 	windows            map[uint64]logicdomain.TurnDetailWindow
 	memoryRowsByID     []logicdomain.MemoryNodeRecord
+	memoryRowsByIDErr  error
 	memoryContextEdges []logicdomain.MemoryContextEdge
 	memoryRowsByVector []logicdomain.MemoryNodeRecord
 	lexicalHits        []logicdomain.MemoryLexicalHit
+	lexicalErr         error
 	lexicalQueries     []string
 	lexicalTopKs       []int
 	lexicalFilters     []logicdomain.SearchFilter
@@ -942,6 +1035,9 @@ func (s *stubTurnLookupStore) LoadTurnWindows(_ context.Context, _ []uint64, _ i
 // LoadMemoryNodesByIDs returns canned memory rows for mixed memory-detail assertions.
 // LoadMemoryNodesByIDs 用于返回混合记忆详情断言所需的预设记忆行。
 func (s *stubTurnLookupStore) LoadMemoryNodesByIDs(_ context.Context, _ []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+	if s.memoryRowsByIDErr != nil {
+		return nil, s.memoryRowsByIDErr
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
@@ -973,6 +1069,9 @@ func (s *stubTurnLookupStore) SearchLexicalMemory(_ context.Context, query strin
 	s.lexicalQueries = append(s.lexicalQueries, query)
 	s.lexicalTopKs = append(s.lexicalTopKs, topK)
 	s.lexicalFilters = append(s.lexicalFilters, filter)
+	if s.lexicalErr != nil {
+		return nil, s.lexicalErr
+	}
 	if s.err != nil {
 		return nil, s.err
 	}
