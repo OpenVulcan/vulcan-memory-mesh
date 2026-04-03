@@ -90,3 +90,52 @@ func TestParseProfileReviewResponseRejectsMissingCoverage(t *testing.T) {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }
+
+// TestParseProfileReviewResponseRecoversDuplicateAcceptedCandidateIndexes verifies duplicate accepted candidate indexes are collapsed into one stable winner so one repeated LLM item no longer invalidates the whole review block.
+// TestParseProfileReviewResponseRecoversDuplicateAcceptedCandidateIndexes 用于验证重复的 accepted candidate index 会被收敛成一个稳定结果，避免模型重复输出同一候选时整块评审直接失效。
+func TestParseProfileReviewResponseRecoversDuplicateAcceptedCandidateIndexes(t *testing.T) {
+	result, err := parseProfileReviewResponse(`{
+  "user": {
+    "accepted_candidates": [
+      {
+        "candidate_index": 0,
+        "normalized_content": "喜欢喝咖啡",
+        "priority": "P2",
+        "level": "L1",
+        "level_reason": "阶段性习惯",
+        "supersede_node_ids": [12]
+      },
+      {
+        "candidate_index": 0,
+        "normalized_content": "用户有稳定的生活习惯：喜欢喝咖啡",
+        "priority": "P2",
+        "level": "L2",
+        "level_reason": "这是更稳定的生活习惯偏好。",
+        "supersede_node_ids": [12, 13]
+      }
+    ],
+    "invalid_candidate_indexes": [],
+    "retire_only_node_ids": [],
+    "reason": "重复输出了同一候选。"
+  }
+}`, 1, 0)
+	if err != nil {
+		t.Fatalf("unexpected parse error: %v", err)
+	}
+	if result.User == nil || len(result.User.AcceptedCandidates) != 1 {
+		t.Fatalf("expected one accepted candidate after duplicate recovery, got %+v", result)
+	}
+	accepted := result.User.AcceptedCandidates[0]
+	if accepted.CandidateIndex != 0 {
+		t.Fatalf("unexpected candidate index: %+v", accepted)
+	}
+	if accepted.NormalizedContent != "用户有稳定的生活习惯：喜欢喝咖啡" {
+		t.Fatalf("expected richer normalized content to survive duplicate recovery, got %+v", accepted)
+	}
+	if accepted.ProfileLevel != logicdomain.ProfileLevelStable {
+		t.Fatalf("expected stronger level metadata to survive duplicate recovery, got %+v", accepted)
+	}
+	if len(accepted.SupersedeNodeIDs) != 2 || accepted.SupersedeNodeIDs[0] != 12 || accepted.SupersedeNodeIDs[1] != 13 {
+		t.Fatalf("expected supersede ids to be merged and normalized, got %+v", accepted.SupersedeNodeIDs)
+	}
+}

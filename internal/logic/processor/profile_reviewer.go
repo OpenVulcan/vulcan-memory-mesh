@@ -215,9 +215,13 @@ func parseProfileReviewSection(payload *profileReviewSectionPayload, expectedCou
 	if payload == nil {
 		return nil, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("missing %s block", label), Raw: raw}
 	}
-	accepted := make([]logicdomain.ProfileReviewAcceptedCandidate, 0, len(payload.AcceptedCandidates))
+
+	// Recover from duplicate candidate indexes before field validation so one repeated LLM item does not discard the whole review block.
+	// 先对重复 candidate_index 做恢复性去重，再进入字段校验，避免模型偶发重复输出一项时整块评审结果被直接丢弃。
+	acceptedPayloads := canonicalizeProfileReviewAcceptedPayloads(payload.AcceptedCandidates)
+	accepted := make([]logicdomain.ProfileReviewAcceptedCandidate, 0, len(acceptedPayloads))
 	seenAccepted := map[int]struct{}{}
-	for idx, item := range payload.AcceptedCandidates {
+	for idx, item := range acceptedPayloads {
 		if item.CandidateIndex < 0 || item.CandidateIndex >= expectedCount {
 			return nil, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s.accepted_candidates[%d].candidate_index out of range", label, idx), Raw: raw}
 		}
@@ -259,6 +263,97 @@ func parseProfileReviewSection(payload *profileReviewSectionPayload, expectedCou
 		RetireOnlyNodeIDs:       normalizeUint64IDs(payload.RetireOnlyNodeIDs),
 		Reason:                  strings.TrimSpace(payload.Reason),
 	}, nil
+}
+
+// canonicalizeProfileReviewAcceptedPayloads collapses duplicate candidate_index entries into one deterministic winner so a repeated LLM item does not turn into a full review failure.
+// canonicalizeProfileReviewAcceptedPayloads 用于把重复的 candidate_index 项收敛成一个确定性的胜出结果，避免模型重复输出同一候选时整次评审失败。
+func canonicalizeProfileReviewAcceptedPayloads(items []profileReviewAcceptedPayload) []profileReviewAcceptedPayload {
+	if len(items) == 0 {
+		return nil
+	}
+	merged := make([]profileReviewAcceptedPayload, 0, len(items))
+	indexByCandidate := make(map[int]int, len(items))
+	for _, item := range items {
+		item = normalizeProfileReviewAcceptedPayload(item)
+		if existingIdx, ok := indexByCandidate[item.CandidateIndex]; ok {
+			merged[existingIdx] = preferProfileReviewAcceptedPayload(merged[existingIdx], item)
+			continue
+		}
+		indexByCandidate[item.CandidateIndex] = len(merged)
+		merged = append(merged, item)
+	}
+	return merged
+}
+
+// normalizeProfileReviewAcceptedPayload trims free-form text fields before duplicate recovery so semantically equivalent entries merge on stable content.
+// normalizeProfileReviewAcceptedPayload 用于在重复恢复前裁剪自由文本字段，让语义等价的项基于稳定内容完成合并。
+func normalizeProfileReviewAcceptedPayload(item profileReviewAcceptedPayload) profileReviewAcceptedPayload {
+	item.NormalizedContent = strings.TrimSpace(item.NormalizedContent)
+	item.Priority = strings.TrimSpace(item.Priority)
+	item.Level = strings.TrimSpace(item.Level)
+	item.LevelReason = strings.TrimSpace(item.LevelReason)
+	item.SupersedeNodeIDs = normalizeUint64IDs(item.SupersedeNodeIDs)
+	return item
+}
+
+// preferProfileReviewAcceptedPayload chooses the stronger duplicate accepted-candidate record and fills any missing fields from the weaker copy so runtime recovery stays deterministic.
+// preferProfileReviewAcceptedPayload 用于在重复 accepted-candidate 记录里选择更强的一条，并用较弱副本补齐缺失字段，保证运行时恢复保持确定性。
+func preferProfileReviewAcceptedPayload(primary, secondary profileReviewAcceptedPayload) profileReviewAcceptedPayload {
+	primary = normalizeProfileReviewAcceptedPayload(primary)
+	secondary = normalizeProfileReviewAcceptedPayload(secondary)
+
+	preferred := primary
+	fallback := secondary
+	if profileReviewAcceptedPayloadStrength(secondary) > profileReviewAcceptedPayloadStrength(primary) {
+		preferred = secondary
+		fallback = primary
+	}
+
+	preferred.NormalizedContent = richerProfileReviewContent(preferred.NormalizedContent, fallback.NormalizedContent)
+	if preferred.Priority == "" {
+		preferred.Priority = fallback.Priority
+	}
+	if preferred.Level == "" {
+		preferred.Level = fallback.Level
+	}
+	preferred.LevelReason = richerProfileReviewContent(preferred.LevelReason, fallback.LevelReason)
+	preferred.SupersedeNodeIDs = normalizeUint64IDs(append(preferred.SupersedeNodeIDs, fallback.SupersedeNodeIDs...))
+	return preferred
+}
+
+// profileReviewAcceptedPayloadStrength scores one duplicate accepted-candidate item so recovery prefers richer content and more complete lifecycle metadata.
+// profileReviewAcceptedPayloadStrength 用于给重复 accepted-candidate 项打分，让恢复逻辑优先保留内容更丰富、生命周期元数据更完整的结果。
+func profileReviewAcceptedPayloadStrength(item profileReviewAcceptedPayload) int {
+	score := 0
+	if text := strings.TrimSpace(item.NormalizedContent); text != "" {
+		score += 1000 + len(text)
+	}
+	if strings.TrimSpace(item.Priority) != "" {
+		score += 100
+	}
+	if strings.TrimSpace(item.Level) != "" {
+		score += 100
+	}
+	score += len(strings.TrimSpace(item.LevelReason))
+	score += len(normalizeUint64IDs(item.SupersedeNodeIDs)) * 10
+	return score
+}
+
+// richerProfileReviewContent keeps the more informative non-empty string so duplicate recovery preserves the highest-density wording returned by the reviewer.
+// richerProfileReviewContent 用于保留信息量更高的非空字符串，让重复恢复尽量继承 reviewer 返回的高密度表述。
+func richerProfileReviewContent(primary, secondary string) string {
+	primary = strings.TrimSpace(primary)
+	secondary = strings.TrimSpace(secondary)
+	switch {
+	case primary == "":
+		return secondary
+	case secondary == "":
+		return primary
+	case len([]rune(secondary)) > len([]rune(primary)):
+		return secondary
+	default:
+		return primary
+	}
 }
 
 // ensureProfileReviewCoverage enforces that every candidate is classified exactly once across accepted and invalid outputs.
