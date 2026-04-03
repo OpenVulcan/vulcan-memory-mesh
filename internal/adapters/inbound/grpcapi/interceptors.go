@@ -35,6 +35,8 @@ type scopeResolvedRequest interface {
 // TraceIDInterceptor 用于在 RPC 进入业务代码前复用上游 trace id，或生成新的 trace id。
 func TraceIDInterceptor(ids appports.IDGenerator) grpc.UnaryServerInterceptor {
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx = normalizedUnaryContext(ctx)
+
 		// Resolve the canonical trace id first so every downstream log line can share the same identifier.
 		// 先解析标准 trace id，确保下游所有日志行都能共享同一个标识。
 		traceID := ""
@@ -61,6 +63,8 @@ func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *
 		logger = logx.Default()
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx = normalizedUnaryContext(ctx)
+
 		// Only the business-chain RPCs that depend on one resolved session need deterministic scope resolution before the handler starts.
 		// 只有依赖已解析 session 的业务链路 RPC，才需要在处理器执行前完成确定性范围解析。
 		if info == nil || !requiresResolvedScope(info.FullMethod) {
@@ -89,6 +93,8 @@ func RequestLoggerInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 		logger = logx.Default()
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx = normalizedUnaryContext(ctx)
+
 		// Capture timing, peer address, and status code after the RPC completes.
 		// 在 RPC 完成后采集耗时、对端地址和状态码。
 		start := time.Now()
@@ -120,6 +126,8 @@ func RecoveryInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 		logger = logx.Default()
 	}
 	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (_ any, err error) {
+		ctx = normalizedUnaryContext(ctx)
+
 		// Recover at the transport edge so panics never leak across the gRPC boundary.
 		// 在传输层边界做 recover，确保 panic 不会越过 gRPC 边界泄露出去。
 		method := unaryMethodName(info)
@@ -134,6 +142,15 @@ func RecoveryInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 		}()
 		return handler(ctx, req)
 	}
+}
+
+// normalizedUnaryContext converts nil unary interceptor contexts into context.Background so exported helpers remain safe in direct tests and manual integration probes.
+// normalizedUnaryContext 用于把一元拦截器收到的 nil context 转换为 context.Background，保证导出辅助逻辑在直接测试和手工集成探测时仍然安全。
+func normalizedUnaryContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // redactedPanicLogFields converts one panic value into stable diagnostics so recovery logs stay useful without writing raw panic payloads into runtime logs.
@@ -159,12 +176,16 @@ func unaryMethodName(info *grpc.UnaryServerInfo) string {
 // withResolvedSessionRef stores the resolved session scope into context so handlers can reuse one shared lookup result.
 // withResolvedSessionRef 用于把解析好的 session 范围写入上下文，让处理器复用同一份查询结果。
 func withResolvedSessionRef(ctx context.Context, session logicdomain.SessionRef) context.Context {
+	ctx = normalizedUnaryContext(ctx)
 	return context.WithValue(ctx, resolvedSessionContextKey{}, session)
 }
 
 // resolvedSessionRefFromContext extracts the resolved session scope prepared by the scope interceptor.
 // resolvedSessionRefFromContext 用于提取由范围拦截器预先放入上下文的 session 范围。
 func resolvedSessionRefFromContext(ctx context.Context) (logicdomain.SessionRef, bool) {
+	if ctx == nil {
+		return logicdomain.SessionRef{}, false
+	}
 	session, ok := ctx.Value(resolvedSessionContextKey{}).(logicdomain.SessionRef)
 	return session, ok
 }

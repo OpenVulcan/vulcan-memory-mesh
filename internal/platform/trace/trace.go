@@ -12,9 +12,12 @@ type contextKey string
 // traceIDKey 用于表示在请求上下文中存储 trace id 的具体键。
 const traceIDKey contextKey = "trace_id"
 
-// WithTraceID executes the WithTraceID logic.
-// WithTraceID 用于执行 WithTraceID 逻辑。
+// WithTraceID stores one trace id in the current request context and falls back to context.Background when direct tests or manual integrations pass a nil context.
+// WithTraceID 用于把 trace id 写入当前请求上下文，并在直接测试或手工集成传入 nil context 时回退到 context.Background。
 func WithTraceID(ctx context.Context, traceID string) context.Context {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	return context.WithValue(ctx, traceIDKey, traceID)
 }
 

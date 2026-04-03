@@ -15,6 +15,7 @@ import (
 	"github.com/openvulcan/vmm/internal/app/usecase"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/trace"
 	"github.com/openvulcan/vmm/internal/platform/xid"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
@@ -257,15 +258,15 @@ func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 						Query:      "喜欢的水果",
 						Hits: []usecase.MemoryQueryHit{
 							{
-								MemoryRef: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 201},
-								SourceRef: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 41},
-								SourceKind: logicdomain.MemorySourceKindTurnExtract,
-								ScopeLevel: logicdomain.MemoryScopeLevelProject,
-								SessionID:  12,
-								Abstract:   "用户喜欢吃香蕉。",
+								MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 201},
+								SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 41},
+								SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+								SessionID:      12,
+								Abstract:       "用户喜欢吃香蕉。",
 								DetailsPreview: "来自近期饮食偏好提炼。",
-								Category:   3,
-								Score:      0.91,
+								Category:       3,
+								Score:          0.91,
 							},
 						},
 					},
@@ -764,6 +765,69 @@ func TestRecoveryInterceptorAllowsNilInfo(t *testing.T) {
 	}
 }
 
+// TestTraceIDInterceptorAllowsNilContext verifies the exported trace interceptor remains safe when direct tests or manual probes invoke it with a nil context.
+// TestTraceIDInterceptorAllowsNilContext 用于验证导出的 trace 拦截器在直接测试或手工探测以 nil context 调用时仍然安全，不会直接崩溃。
+func TestTraceIDInterceptorAllowsNilContext(t *testing.T) {
+	interceptor := TraceIDInterceptor(stubIDGenerator{id: "trc-test"})
+
+	_, err := interceptor(nil, nil, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/Healthz"}, func(ctx context.Context, _ any) (any, error) {
+		if got := trace.IDFromContext(ctx); got != "trc-test" {
+			t.Fatalf("trace id = %q", got)
+		}
+		return &emptypb.Empty{}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected trace interceptor error: %v", err)
+	}
+}
+
+// TestScopeResolutionInterceptorAllowsNilContext verifies scope resolution still succeeds when direct interceptor calls omit the request context.
+// TestScopeResolutionInterceptorAllowsNilContext 用于验证直接调用范围拦截器且缺少请求 context 时，范围解析仍能成功完成。
+func TestScopeResolutionInterceptorAllowsNilContext(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := ScopeResolutionInterceptor(stubScopeResolver{}, logger)
+	req := &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "当前项目怎么样",
+	}
+
+	_, err := interceptor(nil, req, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/PreCheck"}, func(ctx context.Context, _ any) (any, error) {
+		session, ok := resolvedSessionRefFromContext(ctx)
+		if !ok {
+			t.Fatal("expected resolved session in context")
+		}
+		if session.SessionID != 41 || session.UserID != 7 || session.ProjectID != 9 {
+			t.Fatalf("unexpected resolved session: %+v", session)
+		}
+		return &emptypb.Empty{}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected scope interceptor error: %v", err)
+	}
+}
+
+// TestRequestLoggerInterceptorAllowsNilContext verifies the exported request logger remains safe when direct tests invoke it without a request context.
+// TestRequestLoggerInterceptorAllowsNilContext 用于验证导出的请求日志拦截器在直接测试缺少请求 context 时仍然安全，不会因为读取 peer 信息而崩溃。
+func TestRequestLoggerInterceptorAllowsNilContext(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := RequestLoggerInterceptor(logger)
+
+	_, err := interceptor(nil, nil, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/Healthz"}, func(context.Context, any) (any, error) {
+		return &emptypb.Empty{}, nil
+	})
+	if err != nil {
+		t.Fatalf("unexpected request logger error: %v", err)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, `MSG："grpc request"`) {
+		t.Fatalf("expected grpc request log, got %s", logs)
+	}
+}
+
 // preCheckFunc adapts a plain function to the current PreCheckExecutor interface.
 // preCheckFunc 用于把普通函数适配到当前 PreCheckExecutor 接口。
 type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error)
@@ -782,6 +846,18 @@ type postActionFunc func(ctx context.Context, cmd usecase.PostActionCommand) (us
 // Execute 用于把 post-action 执行委托给包装函数。
 func (f postActionFunc) Execute(ctx context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
 	return f(ctx, cmd)
+}
+
+// stubIDGenerator returns one deterministic id so interceptor tests can assert the injected trace id without depending on xid randomness.
+// stubIDGenerator 用于返回固定 id，让拦截器测试可以稳定断言注入的 trace id，而不依赖 xid 随机结果。
+type stubIDGenerator struct {
+	id string
+}
+
+// NewID returns the canned identifier expected by the current interceptor test.
+// NewID 用于返回当前拦截器测试预期的固定标识。
+func (s stubIDGenerator) NewID(string) string {
+	return s.id
 }
 
 // stubScopeResolver returns one deterministic resolved session so transport tests can focus on adapter behavior.
