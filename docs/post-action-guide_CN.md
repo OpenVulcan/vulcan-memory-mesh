@@ -562,6 +562,12 @@ grpcurl -plaintext `
   - 也可以通过环境变量 `VMM_LOG_DEBUG_RPC_PAYLOADS=true` 临时开启
   - 建议只在临时调试时开启
 
+运行时日志落盘规则：
+
+- 日志会同时输出到 stdout 和文件
+- 标准打包产物默认写入：`output/logs/<YYYYMMDD>/<YYYYMMDDHH>.log`
+- 如果是在仓库里直接调试运行，则会写入仓库根下的：`logs/<YYYYMMDD>/<YYYYMMDDHH>.log`
+
 当前已经接入的行为是：
 
 - `PostAction` 成功写入 turn 并完成入队后，后台会尽快触发一次 `analyze_turn`

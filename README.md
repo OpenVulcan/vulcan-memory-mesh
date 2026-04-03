@@ -311,6 +311,13 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 标准配置目录：
 
 - `output/configs/`
+- `output/logs/<YYYYMMDD>/<YYYYMMDDHH>.log`
+
+说明：
+
+- 运行时日志会同时输出到 stdout 和文件。
+- 标准打包产物默认写入 `output/logs/`。
+- 如果是 `go run` 或直接在仓库内调试，日志会写入仓库根目录下的 `logs/`。
 
 ### 启动示例
 
@@ -384,6 +391,12 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - 开启时：`pre-check received` / `pre-check returned` 会输出请求正文和组装上下文；`post-action received raw` / `post-action received cleaned` 会输出正文和 timeline JSON；`post-action turn analysis result`、`memory ... degraded`、`pre-check ... degraded` 等日志会输出完整 payload 诊断内容，便于本地排障
   - 也可通过环境变量 `VMM_LOG_DEBUG_RPC_PAYLOADS=true` 显式开启
   - 建议仅在本地调试或受控环境下临时开启
+
+日志文件落盘规则：
+
+- 每天一个目录：`logs/<YYYYMMDD>/`
+- 每小时一个文件：`<YYYYMMDDHH>.log`
+- 例如：`output/logs/20260403/2026040316.log`
 
 `memory_pipeline` 下当前新增的是“向量 + SQLite FTS5 混合召回”参数：
 

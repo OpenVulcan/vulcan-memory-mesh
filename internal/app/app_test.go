@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -71,6 +72,113 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 	}
 	if _, ok := info["vmm.v1.VMMService"]; !ok {
 		t.Fatalf("expected VMM service to be registered, got services: %#v", info)
+	}
+}
+
+// TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs verifies runtime file logs stay next to the resolved system config root so packaged binaries use `output/logs` while go-run development uses the repository `logs` directory.
+// TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs 用于验证运行时文件日志会落在系统配置根的同级目录；这样打包二进制走 `output/logs`，而 go run 调试走仓库根 `logs`。
+func TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs(t *testing.T) {
+	logDir, err := resolveRuntimeLogDir(config.PromptLayout{SystemDir: filepath.Join("D:", "repo", "output", "configs")})
+	if err != nil {
+		t.Fatalf("resolve runtime log dir for packaged layout: %v", err)
+	}
+	if want := filepath.Join("D:", "repo", "output", "logs"); logDir != want {
+		t.Fatalf("packaged log dir = %q, want %q", logDir, want)
+	}
+
+	logDir, err = resolveRuntimeLogDir(config.PromptLayout{SystemDir: filepath.Join("D:", "repo", "configs")})
+	if err != nil {
+		t.Fatalf("resolve runtime log dir for go-run layout: %v", err)
+	}
+	if want := filepath.Join("D:", "repo", "logs"); logDir != want {
+		t.Fatalf("go-run log dir = %q, want %q", logDir, want)
+	}
+}
+
+// TestNewLocalCreatesRuntimeLogFile verifies application composition eagerly creates the day/hour log file under the resolved runtime log root so startup fails early on invalid paths instead of silently dropping logs later.
+// TestNewLocalCreatesRuntimeLogFile 用于验证应用装配会在解析出的运行时日志根目录下立即创建按天/小时的日志文件，让路径异常在启动阶段就暴露出来，而不是之后静默丢日志。
+func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
+	wd, err := filepath.Abs(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Clean(filepath.Join(wd, "..", ".."))
+	layout, err := config.ResolvePromptLayout(
+		filepath.Join(root, "output", "bin", "vmm-local.exe"),
+		filepath.Join(root, "cmd", "vmm-local"),
+		"",
+		"local",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sqliteAddr, stopSQLite := startFakeSQLiteGateway(t)
+	defer stopSQLite()
+	lanceAddr, stopLance := startFakeLanceDBGateway(t)
+	defer stopLance()
+
+	cfg := config.DefaultLocal()
+	cfg.SQLite.Address = sqliteAddr
+	cfg.LanceDB.Address = lanceAddr
+	cfg.LLM.Endpoint = "https://example.com/v1"
+	cfg.LLM.APIKey = "test-key"
+	cfg.LLM.Model = "test-llm"
+	cfg.Embedding.Endpoint = "https://example.com/v1"
+	cfg.Embedding.APIKey = "test-key"
+	cfg.Embedding.Model = "test-embedding"
+	cfg.Embedding.Dimension = 1024
+
+	application, err := NewLocal(cfg, prompts, layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = application.Shutdown(context.Background())
+	})
+
+	logDir, err := resolveRuntimeLogDir(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dayDir := filepath.Join(logDir, time.Now().Local().Format("20060102"))
+	entries, err := os.ReadDir(dayDir)
+	if err != nil {
+		t.Fatalf("read runtime log dir: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("expected at least one hourly log file in %s", dayDir)
+	}
+}
+
+// TestNewLocalClosesRuntimeLogFileOnInitFailure verifies startup closes the eagerly opened runtime log file again when later dependency wiring fails, so callers do not inherit leaked file handles on Windows or other strict filesystems.
+// TestNewLocalClosesRuntimeLogFileOnInitFailure 用于验证当后续依赖装配失败时，启动流程会把提前打开的运行时日志文件重新关闭，避免调用方在 Windows 等严格文件系统上继承泄露的文件句柄。
+func TestNewLocalClosesRuntimeLogFileOnInitFailure(t *testing.T) {
+	root := t.TempDir()
+	layout := config.PromptLayout{
+		SystemDir: filepath.Join(root, "configs"),
+	}
+	cfg := config.DefaultLocal()
+	cfg.LLM.Provider = "unsupported"
+
+	_, err := NewLocal(cfg, nil, layout)
+	if err == nil {
+		t.Fatal("expected startup error")
+	}
+
+	logDir, err := resolveRuntimeLogDir(layout)
+	if err != nil {
+		t.Fatalf("resolve runtime log dir: %v", err)
+	}
+	if err := os.RemoveAll(logDir); err != nil {
+		t.Fatalf("remove runtime log dir after init failure: %v", err)
+	}
+	if _, statErr := os.Stat(logDir); !os.IsNotExist(statErr) {
+		t.Fatalf("expected runtime log dir to be removable after init failure, stat err=%v", statErr)
 	}
 }
 

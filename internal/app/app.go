@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -48,7 +49,24 @@ func NewLocal(cfg config.Config, prompts appports.PromptSource, layout config.Pr
 func newApplication(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
 	// Initialize shared runtime utilities such as logging and ID generation first.
 	// 先初始化日志和 ID 生成器等共享运行时能力。
-	logger := logx.New(os.Stdout, logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format, DebugPayloads: cfg.Logging.DebugRPCPayloads})
+	logDir, err := resolveRuntimeLogDir(layout)
+	if err != nil {
+		return nil, err
+	}
+	fileWriter, err := logx.NewHourlyFileWriter(logDir)
+	if err != nil {
+		return nil, fmt.Errorf("init runtime log file writer: %w", err)
+	}
+	// Close eager startup resources again when later dependency wiring fails, so a half-built runtime does not leave file handles behind.
+	// 当后续依赖装配失败时，及时关闭这些提前创建的启动资源，避免半装配运行时留下文件句柄。
+	initSucceeded := false
+	defer func() {
+		if initSucceeded {
+			return
+		}
+		_ = fileWriter.Close()
+	}()
+	logger := logx.New(io.MultiWriter(os.Stdout, fileWriter), logx.Config{Level: cfg.Logging.Level, Format: cfg.Logging.Format, DebugPayloads: cfg.Logging.DebugRPCPayloads})
 	ids := xid.NewGenerator()
 
 	// Build outbound dependencies from the active configuration.
@@ -172,7 +190,8 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
 	reflection.Register(server)
 
-	shutdowns := []appports.Shutdowner{relational, vector, post}
+	shutdowns := []appports.Shutdowner{fileWriter, relational, vector, post}
+	initSucceeded = true
 	return &Application{Config: cfg, Logger: logger, Server: server, Shutdowns: shutdowns}, nil
 }
 
