@@ -242,6 +242,50 @@ func TestProfileUseCaseApplyInstructionRaisesTeamAuthority(t *testing.T) {
 	}
 }
 
+// TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction verifies direct tests or manual integrations that bypass NewProfileUseCase still get lazily initialized dedupe state instead of crashing on nil maps.
+// TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction 用于验证当直接测试或手工集成绕过 NewProfileUseCase 时，画像用例仍会懒初始化去重状态，而不是因为 nil map 直接崩溃。
+func TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction(t *testing.T) {
+	store := &stubProfileStore{
+		target: logicdomain.ProfileTargetRef{
+			ProfileType: logicdomain.ProfileTypeProject,
+			BindID:      9,
+			ProjectID:   9,
+		},
+	}
+	reviewer := &stubManualProfileReviewer{
+		review: logicdomain.ManualProfileInstructionReview{
+			AcceptedNodes: []logicdomain.ManualProfileAcceptedNode{
+				{
+					NormalizedContent: "项目统一使用 Go 语言实现。",
+					Priority:          logicdomain.ProfilePriorityP0,
+					ProfileLevel:      logicdomain.ProfileLevelStable,
+					LevelReason:       "显式项目指令。",
+				},
+			},
+			Reason: "部分装配实例也应保持稳定。",
+		},
+	}
+	uc := &ProfileUseCase{
+		store:    store,
+		reviewer: reviewer,
+	}
+
+	result, err := uc.ApplyInstruction(context.Background(), ProfileInstructionCommand{
+		ProfileType: logicdomain.ProfileTypeProject,
+		ProjectID:   9,
+		Instruction: "项目统一使用 Go 语言实现。",
+	})
+	if err != nil {
+		t.Fatalf("apply profile instruction on partial use case: %v", err)
+	}
+	if result.InstructionID == 0 {
+		t.Fatalf("expected persisted instruction result, got %+v", result)
+	}
+	if store.createInstructionCount() != 1 || store.applyInstructionCount() != 1 {
+		t.Fatalf("expected one create/apply pair, got create=%d apply=%d", store.createInstructionCount(), store.applyInstructionCount())
+	}
+}
+
 // TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls verifies identical concurrent manual instructions
 // on the same target reuse one in-flight LLM review instead of creating duplicate instruction rows and duplicate node writes.
 // TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls 用于验证同一目标上的相同手工画像指令在并发时会复用同一条进行中的 LLM 评审，

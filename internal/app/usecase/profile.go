@@ -90,6 +90,17 @@ func NewProfileUseCase(store appports.ProfileStore, reviewer ManualProfileInstru
 	}
 }
 
+// ensureInstructionStateLocked initializes the in-flight dedupe map and per-target gate map for partially constructed profile use cases while the caller already holds u.mu.
+// ensureInstructionStateLocked 用于在调用方已持有 u.mu 的前提下，为部分装配的画像用例补齐进行中去重映射和目标级串行闸门映射。
+func (u *ProfileUseCase) ensureInstructionStateLocked() {
+	if u.flights == nil {
+		u.flights = map[string]*profileInstructionFlight{}
+	}
+	if u.gates == nil {
+		u.gates = map[string]*profileInstructionGate{}
+	}
+}
+
 // profileInstructionFlight stores one in-flight ApplyProfileInstruction result so duplicate concurrent gRPC calls
 // can reuse the first LLM review instead of triggering the same reviewer flow twice.
 // profileInstructionFlight 用于保存一条正在进行中的 ApplyProfileInstruction 结果，
@@ -228,6 +239,7 @@ func (u *ProfileUseCase) profileInstructionFlightKey(target logicdomain.ProfileT
 func (u *ProfileUseCase) profileInstructionGate(target logicdomain.ProfileTargetRef) *profileInstructionGate {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.ensureInstructionStateLocked()
 	key := fmt.Sprintf("%d:%d", target.ProfileType, target.BindID)
 	gate, ok := u.gates[key]
 	if ok {
@@ -245,6 +257,7 @@ func (u *ProfileUseCase) profileInstructionGate(target logicdomain.ProfileTarget
 func (u *ProfileUseCase) loadOrCreateProfileInstructionFlight(key string) (*profileInstructionFlight, bool) {
 	u.mu.Lock()
 	defer u.mu.Unlock()
+	u.ensureInstructionStateLocked()
 	if flight, ok := u.flights[key]; ok {
 		return flight, true
 	}
