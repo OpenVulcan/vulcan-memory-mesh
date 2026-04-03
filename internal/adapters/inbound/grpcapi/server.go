@@ -105,15 +105,30 @@ func BuildUnaryInterceptors(deps Dependencies) []grpc.UnaryServerInterceptor {
 	return interceptors
 }
 
+// requireReceiver ensures direct tests and manual integrations get one stable internal error instead of a panic when they accidentally invoke exported RPC methods on a nil Server receiver.
+// requireReceiver 用于保证直接测试和手工集成在误把导出 RPC 方法调用到 nil Server 接收者上时，拿到稳定的内部错误，而不是直接 panic。
+func (s *Server) requireReceiver() error {
+	if s == nil {
+		return toStatus(withMessage(errInternal, "grpc server is not initialized"))
+	}
+	return nil
+}
+
 // Healthz reports a healthy status for the local runtime.
 // Healthz 用于报告本地运行时的健康状态。
 func (s *Server) Healthz(ctx context.Context, _ *emptypb.Empty) (*vmmv1.HealthzResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	return &vmmv1.HealthzResponse{Status: "ok", TraceId: trace.IDFromContext(ctx)}, nil
 }
 
 // ListProjects returns the deterministic Team/Space/Project list used by clients to browse available project scopes.
 // ListProjects 用于返回客户端浏览可用项目范围时需要的确定性 Team/Space/Project 列表。
 func (s *Server) ListProjects(ctx context.Context, _ *emptypb.Empty) (*vmmv1.ListProjectsResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -133,6 +148,9 @@ func (s *Server) ListProjects(ctx context.Context, _ *emptypb.Empty) (*vmmv1.Lis
 // ResolveProject resolves one project by numeric id or canonical Team/Space/Project path.
 // ResolveProject 用于按数字 ID 或标准 Team/Space/Project 路径解析单个项目。
 func (s *Server) ResolveProject(ctx context.Context, req *vmmv1.ResolveProjectRequest) (*vmmv1.ResolveProjectResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -156,6 +174,9 @@ func (s *Server) ResolveProject(ctx context.Context, req *vmmv1.ResolveProjectRe
 // EnsureProject resolves or creates one canonical Team/Space/Project path according to the confirm-create contract.
 // EnsureProject 用于按 confirm_create 规则解析或创建一条标准 Team/Space/Project 路径。
 func (s *Server) EnsureProject(ctx context.Context, req *vmmv1.EnsureProjectRequest) (*vmmv1.EnsureProjectResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -186,6 +207,9 @@ func (s *Server) EnsureProject(ctx context.Context, req *vmmv1.EnsureProjectRequ
 // DeleteProject deletes one canonical project path and reports SQL/vector cleanup counts after explicit confirmation.
 // DeleteProject 用于删除单个标准项目路径，并在显式确认后返回 SQL/向量清理计数。
 func (s *Server) DeleteProject(ctx context.Context, req *vmmv1.DeleteProjectRequest) (*vmmv1.DeleteProjectResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -218,6 +242,9 @@ func (s *Server) DeleteProject(ctx context.Context, req *vmmv1.DeleteProjectRequ
 // MigrateProject migrates all SQL/vector data from one source project path onto another target project path.
 // MigrateProject 用于把某个源项目路径下的全部 SQL/向量数据迁移到目标项目路径。
 func (s *Server) MigrateProject(ctx context.Context, req *vmmv1.MigrateProjectRequest) (*vmmv1.MigrateProjectResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -247,6 +274,9 @@ func (s *Server) MigrateProject(ctx context.Context, req *vmmv1.MigrateProjectRe
 // ResolveUser resolves one user by numeric id or unique name, and can optionally create it when confirm_create is true.
 // ResolveUser 用于按数字 ID 或唯一名称解析单个用户，并可在 confirm_create 为真时按需创建。
 func (s *Server) ResolveUser(ctx context.Context, req *vmmv1.ResolveUserRequest) (*vmmv1.ResolveUserResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -272,6 +302,9 @@ func (s *Server) ResolveUser(ctx context.Context, req *vmmv1.ResolveUserRequest)
 // ListUsers returns the durable user list used by admin clients.
 // ListUsers 用于返回管理客户端使用的长期用户列表。
 func (s *Server) ListUsers(ctx context.Context, _ *emptypb.Empty) (*vmmv1.ListUsersResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -291,6 +324,9 @@ func (s *Server) ListUsers(ctx context.Context, _ *emptypb.Empty) (*vmmv1.ListUs
 // DeleteUser deletes one user plus all SQL/vector rows after the caller presents the generated confirmation code.
 // DeleteUser 用于在调用方提交生成的确认码后，删除单个用户以及其全部 SQL/向量数据。
 func (s *Server) DeleteUser(ctx context.Context, req *vmmv1.DeleteUserRequest) (*vmmv1.DeleteUserResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.workspace == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -322,6 +358,9 @@ func (s *Server) DeleteUser(ctx context.Context, req *vmmv1.DeleteUserRequest) (
 // GetProfileNodes resolves one concrete target and returns only its current active atomic profile nodes.
 // GetProfileNodes 用于解析一个具体目标，并只返回它当前 active 的原子化画像节点。
 func (s *Server) GetProfileNodes(ctx context.Context, req *vmmv1.GetProfileNodesRequest) (*vmmv1.GetProfileNodesResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.profiles == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -357,6 +396,9 @@ func (s *Server) GetProfileNodes(ctx context.Context, req *vmmv1.GetProfileNodes
 // GetProfileBundle resolves one user/project pair and returns either one combined prompt bundle or split TEAM/SPACE/PROJECT/USER sections.
 // GetProfileBundle 用于解析一个 user/project 组合，并返回完整组合提示词或拆分后的 TEAM/SPACE/PROJECT/USER 段落。
 func (s *Server) GetProfileBundle(ctx context.Context, req *vmmv1.GetProfileBundleRequest) (*vmmv1.GetProfileBundleResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.profiles == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -396,6 +438,9 @@ func (s *Server) GetProfileBundle(ctx context.Context, req *vmmv1.GetProfileBund
 // ApplyProfileInstruction reviews one explicit manual instruction for one target and persists the resulting node mutations synchronously.
 // ApplyProfileInstruction 用于同步评审单个目标上的显式手工画像指令，并持久化得到的节点变更。
 func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyProfileInstructionRequest) (*vmmv1.ApplyProfileInstructionResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.profiles == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -441,6 +486,9 @@ func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyPr
 // SearchMemoryEvents parses one grouped JSON payload, embeds each query item, searches vector memories inside the resolved scope, and returns unified memory refs plus optional source-turn refs.
 // SearchMemoryEvents 用于解析分组 JSON 载荷、对每条查询做 embedding、在已解析范围内搜索向量记忆，并返回统一 memory ref 以及可选来源 turn ref。
 func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemoryEventsRequest) (*vmmv1.SearchMemoryEventsResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.memory == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -491,6 +539,9 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 // GetTurnDetails loads one or more dehydrated turn rows by turn id and expands them with parsed dialogue fields plus nearby turn ids.
 // GetTurnDetails 用于按 turn id 读取一条或多条脱水 turn 行，并补充解析后的对话字段和相邻 turn 编号。
 func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRequest) (*vmmv1.GetTurnDetailsResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.memory == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -517,6 +568,9 @@ func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRe
 // GetMemoryDetails loads one ordered `TYPE + ID` ref list and returns mixed unified memory or turn details.
 // GetMemoryDetails 用于按顺序读取一组 `TYPE + ID` 引用，并返回混合的统一记忆详情或 turn 详情。
 func (s *Server) GetMemoryDetails(ctx context.Context, req *vmmv1.GetMemoryDetailsRequest) (*vmmv1.GetMemoryDetailsResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.memory == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -558,6 +612,9 @@ func (s *Server) GetMemoryDetails(ctx context.Context, req *vmmv1.GetMemoryDetai
 // WriteMemories persists one batch of direct AI-written memory items inside the resolved session scope and returns unified refs.
 // WriteMemories 用于在已解析 session 范围内持久化一批 AI 主动写入的记忆项，并返回统一引用。
 func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequest) (*vmmv1.WriteMemoriesResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.memory == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -612,6 +669,9 @@ func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequ
 // PreCheck validates the request, consumes the scope resolved by the interceptor, and returns the live assembled pre-check context.
 // PreCheck 用于校验请求、消费拦截器解析出的范围，并返回实时组装完成的 pre-check 上下文。
 func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmmv1.PreCheckResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.preCheck == nil {
 		return nil, toStatus(errRouteDisabled)
 	}
@@ -654,6 +714,9 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 // PostAction validates the request, logs raw and cleaned payloads, then completes synchronous persistence before returning.
 // PostAction 用于校验请求、记录原始与清洗后载荷，并在返回前完成同步持久化。
 func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (*vmmv1.PostActionResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
 	if s.postAction == nil {
 		return nil, toStatus(errRouteDisabled)
 	}

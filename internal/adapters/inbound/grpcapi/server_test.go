@@ -941,6 +941,28 @@ func TestResolveProjectAllowsNilValidator(t *testing.T) {
 	}
 }
 
+// TestHealthzRejectsNilReceiver verifies the exported health check no longer reports success when direct tests accidentally invoke it on a nil Server receiver.
+// TestHealthzRejectsNilReceiver 用于验证导出的健康检查在直接测试误把它调用到 nil Server 接收者上时，不会再错误地返回成功。
+func TestHealthzRejectsNilReceiver(t *testing.T) {
+	var server *Server
+
+	_, err := server.Healthz(context.Background(), &emptypb.Empty{})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+}
+
+// TestListProjectsRejectsNilReceiver verifies admin RPCs return one stable internal error instead of panicking when direct tests invoke them on a nil Server receiver.
+// TestListProjectsRejectsNilReceiver 用于验证管理类 RPC 在直接测试把它们调用到 nil Server 接收者上时，会返回稳定的内部错误，而不是直接 panic。
+func TestListProjectsRejectsNilReceiver(t *testing.T) {
+	var server *Server
+
+	_, err := server.ListProjects(context.Background(), &emptypb.Empty{})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+}
+
 // preCheckFunc adapts a plain function to the current PreCheckExecutor interface.
 // preCheckFunc 用于把普通函数适配到当前 PreCheckExecutor 接口。
 type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error)
