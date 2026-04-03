@@ -507,6 +507,9 @@ grpcurl -plaintext `
       "post_action": "8s"
     }
   },
+  "logging": {
+    "debug_rpc_payloads": false
+  },
   "post_action": {
     "input_mode": "compat",
     "session_analysis_turn_threshold": 2,
@@ -522,6 +525,7 @@ grpcurl -plaintext `
 
 - `grpc.max_receive_message_bytes`
 - `grpc.request_timeout.post_action`
+- `logging.debug_rpc_payloads`
 - `post_action.input_mode`
 - `post_action.session_analysis_turn_threshold`
 - `post_action.session_analysis_token_threshold`
@@ -545,6 +549,12 @@ grpcurl -plaintext `
   - 表示每次单轮 `analyze_turn` 最多回带多少条历史 `details` 精要
 - `post_action.session_analysis_max_input_tokens`
   - 表示单次 `analyze_turn` 允许送给 LLM 的总输入预算上限
+- `logging.debug_rpc_payloads`
+  - 默认关闭
+  - 关闭时：`PostAction` 与 `PreCheck` 相关日志只输出安全元信息，不记录正文
+  - 开启时：`post-action received raw`、`post-action received cleaned`、`pre-check received`、`pre-check returned` 会输出正文、timeline JSON 或组装上下文，便于本地排障
+  - 也可以通过环境变量 `VMM_LOG_DEBUG_RPC_PAYLOADS=true` 临时开启
+  - 建议只在临时调试时开启
 
 当前已经接入的行为是：
 

@@ -11,7 +11,8 @@
   },
   "logging": {
     "level": "info",
-    "format": "text"
+    "format": "text",
+    "debug_rpc_payloads": false
   },
   "pii": {
     "default_language": "zh-CN"

@@ -88,8 +88,9 @@ type GRPCRequestTimeout struct {
 // LoggingConfig holds the structured logging knobs shared by the local runtime.
 // LoggingConfig 用于保存本地运行时共享的结构化日志配置项。
 type LoggingConfig struct {
-	Level  string `json:"level"`
-	Format string `json:"format"`
+	Level            string `json:"level"`
+	Format           string `json:"format"`
+	DebugRPCPayloads bool   `json:"debug_rpc_payloads"`
 }
 
 // PIIConfig holds the default language used by the fixed pii_rules layout.
@@ -223,7 +224,7 @@ func DefaultLocal() Config {
 			RequestTimeout:         GRPCRequestTimeout{Workspace: Duration{15 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
 		},
-		Logging:    LoggingConfig{Level: "info", Format: "text"},
+		Logging:    LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false},
 		PII:        PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:      NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		SQLite:     SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
@@ -791,6 +792,7 @@ func applyEnvOverrides(cfg *Config) {
 	setDuration("VMM_GRPC_SHUTDOWN_TIMEOUT", &cfg.GRPC.ShutdownTimeout)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
+	setBool("VMM_LOG_DEBUG_RPC_PAYLOADS", &cfg.Logging.DebugRPCPayloads)
 	setString("VMM_PII_DEFAULT_LANGUAGE", &cfg.PII.DefaultLanguage)
 	setBool("VMM_NOISE_ENABLED", &cfg.Noise.Enabled)
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)

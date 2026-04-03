@@ -159,6 +159,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		ScopeResolver:     scopeResolver,
 		Logger:            logger,
 		Validator:         grpcapi.NewRequestValidator(),
+		DebugRPCPayloads:  cfg.Logging.DebugRPCPayloads,
 		WorkspaceTimeout:  cfg.GRPC.RequestTimeout.Workspace.Duration,
 		PreCheckTimeout:   cfg.GRPC.RequestTimeout.PreCheck.Duration,
 		PostActionTimeout: cfg.GRPC.RequestTimeout.PostAction.Duration,

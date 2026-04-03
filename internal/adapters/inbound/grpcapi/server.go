@@ -33,6 +33,7 @@ type Dependencies struct {
 	ScopeResolver     appports.RequestScopeResolver
 	Logger            *logx.Logger
 	Validator         *RequestValidator
+	DebugRPCPayloads  bool
 	WorkspaceTimeout  time.Duration
 	PreCheckTimeout   time.Duration
 	PostActionTimeout time.Duration
@@ -55,6 +56,7 @@ type Server struct {
 	logger           *logx.Logger
 	validate         *RequestValidator
 	sanitizer        *textutil.PostActionTextSanitizer
+	debugRPCPayloads bool
 }
 
 // NewServer creates one gRPC server implementation from the supplied dependencies.
@@ -78,6 +80,7 @@ func NewServer(deps Dependencies) *Server {
 		logger:           deps.Logger,
 		validate:         deps.Validator,
 		sanitizer:        textutil.NewPostActionTextSanitizer(),
+		debugRPCPayloads: deps.DebugRPCPayloads,
 	}
 }
 
@@ -706,6 +709,7 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	}
 	ctx, cancel := withTimeout(ctx, s.preTimeout)
 	defer cancel()
+	s.logPreCheckReceipt(trace.IDFromContext(ctx), "pre-check received", req)
 	result, err := s.preCheck.Execute(ctx, usecase.PreCheckCommand{
 		Session:     session,
 		UserContent: req.GetUserContent(),
@@ -713,6 +717,7 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	if err != nil {
 		return nil, toStatus(describeError(err))
 	}
+	s.logPreCheckResult(trace.IDFromContext(ctx), "pre-check returned", req, result)
 	items := make([]*vmmv1.ContextItem, 0, len(result.ContextItems))
 	for _, item := range result.ContextItems {
 		items = append(items, &vmmv1.ContextItem{
@@ -730,6 +735,82 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 		Degraded:     result.Degraded,
 		TraceId:      trace.IDFromContext(ctx),
 	}, nil
+}
+
+// logPreCheckReceipt writes one accepted pre-check request snapshot into the runtime logger, defaulting to redacted metadata and only emitting full request text when the explicit RPC payload debug switch is enabled.
+// logPreCheckReceipt 用于把已接收的 pre-check 请求快照写入运行时日志；默认只输出脱敏元信息，只有显式 RPC 载荷调试开关开启时才会输出完整请求正文。
+func (s *Server) logPreCheckReceipt(traceID, message string, req *vmmv1.PreCheckRequest) {
+	if s == nil || s.logger == nil || req == nil {
+		return
+	}
+	if s.debugRPCPayloads {
+		s.logger.Info(
+			message,
+			"trace_id", traceID,
+			"session_id", req.GetSessionId(),
+			"user_content", req.GetUserContent(),
+		)
+		return
+	}
+	s.logger.Info(
+		message,
+		"trace_id", traceID,
+		"session_id", req.GetSessionId(),
+		"user_content_present", req.GetUserContent() != "",
+	)
+}
+
+// logPreCheckResult writes one pre-check response snapshot into the runtime logger, defaulting to safe execution metadata and only emitting the assembled context payload when the explicit RPC payload debug switch is enabled.
+// logPreCheckResult 用于把 pre-check 返回结果快照写入运行时日志；默认只输出安全执行元信息，只有显式 RPC 载荷调试开关开启时才会输出组装后的完整上下文。
+func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckRequest, result usecase.PreCheckResult) {
+	if s == nil || s.logger == nil {
+		return
+	}
+	nonEmptyContextItems := 0
+	for _, item := range result.ContextItems {
+		if item.Kind != "" || item.Title != "" || item.Text != "" || item.Source != "" || item.Score != 0 {
+			nonEmptyContextItems++
+		}
+	}
+	if s.debugRPCPayloads {
+		contextItemsJSON, err := json.Marshal(result.ContextItems)
+		if err != nil {
+			s.logger.Warn(message+" context items marshal failed", "trace_id", traceID, "session_id", req.GetSessionId(), "err", err)
+			s.logger.Info(
+				message,
+				"trace_id", traceID,
+				"session_id", req.GetSessionId(),
+				"should_inject", result.ShouldInject,
+				"degraded", result.Degraded,
+				"context_text", result.ContextText,
+				"context_items", len(result.ContextItems),
+				"context_nonempty_items", nonEmptyContextItems,
+			)
+			return
+		}
+		s.logger.Info(
+			message,
+			"trace_id", traceID,
+			"session_id", req.GetSessionId(),
+			"should_inject", result.ShouldInject,
+			"degraded", result.Degraded,
+			"context_text", result.ContextText,
+			"context_items", len(result.ContextItems),
+			"context_nonempty_items", nonEmptyContextItems,
+			"context_items_json", string(contextItemsJSON),
+		)
+		return
+	}
+	s.logger.Info(
+		message,
+		"trace_id", traceID,
+		"session_id", req.GetSessionId(),
+		"should_inject", result.ShouldInject,
+		"degraded", result.Degraded,
+		"context_text_present", result.ContextText != "",
+		"context_items", len(result.ContextItems),
+		"context_nonempty_items", nonEmptyContextItems,
+	)
 }
 
 // PostAction validates the request, logs raw and cleaned payloads, then completes synchronous persistence before returning.
@@ -975,8 +1056,8 @@ func clonePostActionRequest(req *vmmv1.PostActionRequest) *vmmv1.PostActionReque
 	return cloned
 }
 
-// logPostActionReceipt writes one accepted payload snapshot into the runtime logger for local debugging.
-// logPostActionReceipt 用于把已接收载荷快照写入运行时日志，方便本地调试。
+// logPostActionReceipt writes one accepted payload snapshot into the runtime logger, defaulting to redacted metadata and only emitting full payload text when the explicit RPC payload debug switch is enabled.
+// logPostActionReceipt 用于把已接收载荷快照写入运行时日志；默认只输出脱敏元信息，只有显式 RPC 载荷调试开关开启时才会输出完整正文。
 func (s *Server) logPostActionReceipt(traceID, message string, req *vmmv1.PostActionRequest) {
 	if s == nil || s.logger == nil || req == nil {
 		return
@@ -989,6 +1070,38 @@ func (s *Server) logPostActionReceipt(traceID, message string, req *vmmv1.PostAc
 		if item.GetType() != "" || item.GetContent() != "" {
 			nonEmptyTimelineItems++
 		}
+	}
+
+	// Keep raw payload text behind one explicit debug-only switch so production-safe logs
+	// remain redacted by default while local troubleshooting can still opt into full receipts.
+	// 把原始载荷正文放到显式调试开关之后，让默认日志继续保持安全脱敏，
+	// 同时在本地排障场景下仍然可以选择输出完整收据。
+	if s.debugRPCPayloads {
+		timelineJSON, err := json.Marshal(req.GetTimeline())
+		if err != nil {
+			s.logger.Warn(message+" timeline marshal failed", "trace_id", traceID, "session_id", req.GetSessionId(), "err", err)
+			s.logger.Info(
+				message,
+				"trace_id", traceID,
+				"session_id", req.GetSessionId(),
+				"user_content", req.GetUserContent(),
+				"assistant_content", req.GetAssistantContent(),
+				"timeline_items", len(req.GetTimeline()),
+				"timeline_nonempty_items", nonEmptyTimelineItems,
+			)
+			return
+		}
+		s.logger.Info(
+			message,
+			"trace_id", traceID,
+			"session_id", req.GetSessionId(),
+			"user_content", req.GetUserContent(),
+			"assistant_content", req.GetAssistantContent(),
+			"timeline_items", len(req.GetTimeline()),
+			"timeline_nonempty_items", nonEmptyTimelineItems,
+			"timeline_json", string(timelineJSON),
+		)
+		return
 	}
 	timelineJSON, err := json.Marshal(req.GetTimeline())
 	if err != nil {

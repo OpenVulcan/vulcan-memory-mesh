@@ -146,6 +146,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.Rerank.Timeout.Duration != 8*time.Second {
 		t.Fatalf("rerank timeout = %v", cfg.Rerank.Timeout.Duration)
 	}
+	if cfg.Logging.DebugRPCPayloads {
+		t.Fatal("expected debug rpc payload logs to stay disabled by default")
+	}
 }
 
 // TestConfigNormalizeClampsSearchKeywordFanOut verifies the recall keyword fan-out remains capped even when callers provide an excessive value.
@@ -551,6 +554,19 @@ func TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds(t *testing.T) 
 	}
 	if cfg.PostAction.SessionAnalysisMaxInputTokens != 7200 {
 		t.Fatalf("post action session analysis max input tokens = %d", cfg.PostAction.SessionAnalysisMaxInputTokens)
+	}
+}
+
+// TestApplyEnvOverridesSetsRPCPayloadLogging verifies process-level overrides can explicitly enable shared RPC payload debug logging for local troubleshooting without changing the base config file.
+// TestApplyEnvOverridesSetsRPCPayloadLogging 用于验证进程级环境变量可以在不修改基础配置文件的前提下显式开启共享 RPC 载荷调试日志。
+func TestApplyEnvOverridesSetsRPCPayloadLogging(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_LOG_DEBUG_RPC_PAYLOADS", "true")
+
+	applyEnvOverrides(&cfg)
+
+	if !cfg.Logging.DebugRPCPayloads {
+		t.Fatal("expected debug rpc payload logs to be enabled by env override")
 	}
 }
 

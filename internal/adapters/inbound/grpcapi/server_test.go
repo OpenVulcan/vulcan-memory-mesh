@@ -707,6 +707,128 @@ func TestPostActionReturnsAcceptedSynchronously(t *testing.T) {
 	}
 }
 
+// TestPreCheckKeepsPayloadLogsRedactedByDefault verifies the shared RPC payload debug switch stays secure-by-default for pre-check traffic and only records safe metadata when callers do not explicitly opt in.
+// TestPreCheckKeepsPayloadLogsRedactedByDefault 用于验证共享 RPC 载荷调试开关在 pre-check 链路上默认仍保持安全输出；调用方未显式开启时，只会记录安全元信息。
+func TestPreCheckKeepsPayloadLogsRedactedByDefault(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		PreCheck: preCheckFunc(func(context.Context, usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+			return usecase.PreCheckResult{
+				ShouldInject: true,
+				ContextText:  "项目画像：SQLite schema 13 已迁移",
+				ContextItems: []logicdomain.ContextItem{
+					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92},
+				},
+				Degraded: false,
+			}, nil
+		}),
+		ScopeResolver: stubScopeResolver{},
+	}, testBufSize)
+
+	_, err := fixture.client.PreCheck(context.Background(), &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "继续昨天关于 SQLite schema 13 的排查",
+	})
+	if err != nil {
+		t.Fatalf("pre-check: %v", err)
+	}
+	logs := fixture.logs.String()
+	if !strings.Contains(logs, `MSG："pre-check received"`) || !strings.Contains(logs, `MSG："pre-check returned"`) {
+		t.Fatalf("expected pre-check request and response logs, got %s", logs)
+	}
+	if strings.Contains(logs, `继续昨天关于 SQLite schema 13 的排查`) || strings.Contains(logs, `项目画像：SQLite schema 13 已迁移`) {
+		t.Fatalf("expected pre-check payloads to stay out of default logs, got %s", logs)
+	}
+	if !strings.Contains(logs, `user_content_present`) || !strings.Contains(logs, `context_text_present`) || !strings.Contains(logs, `context_nonempty_items`) {
+		t.Fatalf("expected redacted pre-check payload metadata, got %s", logs)
+	}
+	if strings.Contains(logs, `context_items_json`) {
+		t.Fatalf("expected default logs to avoid serialized context items, got %s", logs)
+	}
+}
+
+// TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled verifies the shared RPC payload debug switch can opt pre-check request and assembled context output back into full logs for local troubleshooting.
+// TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled 用于验证共享 RPC 载荷调试开关开启后，pre-check 的请求与组装上下文输出会重新写入完整日志，方便本地排障。
+func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		PreCheck: preCheckFunc(func(context.Context, usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+			return usecase.PreCheckResult{
+				ShouldInject: true,
+				ContextText:  "项目画像：SQLite schema 13 已迁移",
+				ContextItems: []logicdomain.ContextItem{
+					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92},
+				},
+				Degraded: true,
+			}, nil
+		}),
+		ScopeResolver:    stubScopeResolver{},
+		DebugRPCPayloads: true,
+	}, testBufSize)
+
+	_, err := fixture.client.PreCheck(context.Background(), &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "继续昨天关于 SQLite schema 13 的排查",
+	})
+	if err != nil {
+		t.Fatalf("pre-check with debug payload logs: %v", err)
+	}
+	logs := fixture.logs.String()
+	if !strings.Contains(logs, "TEXT(user_content)：") || !strings.Contains(logs, "继续昨天关于 SQLite schema 13 的排查") {
+		t.Fatalf("expected full pre-check request payload in debug logs, got %s", logs)
+	}
+	if !strings.Contains(logs, "TEXT(context_text)：") || !strings.Contains(logs, "项目画像：SQLite schema 13 已迁移") || !strings.Contains(logs, "JSON(context_items_json)：") {
+		t.Fatalf("expected full pre-check response payload fields in debug logs, got %s", logs)
+	}
+	if !strings.Contains(logs, `请优先检查 FTS 表是否已重建`) {
+		t.Fatalf("expected context item text in debug logs, got %s", logs)
+	}
+	if strings.Contains(logs, `user_content_present`) || strings.Contains(logs, `context_text_present`) {
+		t.Fatalf("expected debug logs to bypass redacted pre-check fields, got %s", logs)
+	}
+}
+
+// TestPostActionLogsFullPayloadsWhenDebugSwitchEnabled verifies one explicit debug-only switch can opt receipt logs back into raw payload output for local troubleshooting.
+// TestPostActionLogsFullPayloadsWhenDebugSwitchEnabled 用于验证显式调试开关开启后，收据日志会重新输出原始载荷，方便本地排障。
+func TestPostActionLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		PostAction: postActionFunc(func(_ context.Context, cmd usecase.PostActionCommand) (usecase.PostActionResult, error) {
+			return usecase.PostActionResult{Accepted: true}, nil
+		}),
+		ScopeResolver:    stubScopeResolver{},
+		DebugRPCPayloads: true,
+	}, testBufSize)
+
+	_, err := fixture.client.PostAction(context.Background(), &vmmv1.PostActionRequest{
+		SessionId:        "sess-1",
+		UserId:           7,
+		ProjectId:        9,
+		UserContent:      "<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)",
+		AssistantContent: "最终回答",
+		Timeline: []*vmmv1.PostActionTimelineItem{
+			{Type: "assistant", Content: "中间回答 data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAUA"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("post-action with debug payload logs: %v", err)
+	}
+	logs := fixture.logs.String()
+	if !strings.Contains(logs, "TEXT(user_content)：") || !strings.Contains(logs, `assistant_content："最终回答"`) || !strings.Contains(logs, "JSON(timeline_json)：") {
+		t.Fatalf("expected full payload fields in debug logs, got %s", logs)
+	}
+	if !strings.Contains(logs, `<think>hidden</think> 第一问 ![猫](https://cdn.example.com/cat.jpg)`) {
+		t.Fatalf("expected raw user payload in debug logs, got %s", logs)
+	}
+	if strings.Contains(logs, `user_content_present`) || strings.Contains(logs, `timeline_marshaled`) {
+		t.Fatalf("expected debug logs to bypass redacted receipt fields, got %s", logs)
+	}
+}
+
 // TestPostActionDirectCallUsesDefaultSanitizer verifies one partially constructed server still applies the default storage sanitizer when direct tests or manual integrations bypass NewServer and call PostAction directly.
 // TestPostActionDirectCallUsesDefaultSanitizer 用于验证当直接测试或手工集成绕过 NewServer 并直接调用 PostAction 时，部分装配的服务实例仍会应用默认的存储型清洗器。
 func TestPostActionDirectCallUsesDefaultSanitizer(t *testing.T) {

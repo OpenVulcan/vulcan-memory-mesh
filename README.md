@@ -352,6 +352,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `grpc.request_timeout.workspace`
 - `grpc.request_timeout.pre_check`
 - `grpc.request_timeout.post_action`
+- `logging.debug_rpc_payloads`
 - `relational.provider`
 - `sqlite.address`
 - `lancedb.address`
@@ -368,6 +369,15 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `post_action.session_analysis_idle_timeout`
 - `post_action.session_analysis_history_turns`
 - `post_action.session_analysis_max_input_tokens`
+
+`logging` 下当前与业务链 RPC 载荷调试相关的新增项：
+
+- `debug_rpc_payloads`
+  - 默认 `false`
+  - 关闭时：`PreCheck` 和 `PostAction` 相关日志只输出存在性、计数和执行状态等安全字段，不写正文
+  - 开启时：`pre-check received` / `pre-check returned` 会输出请求正文和组装上下文；`post-action received raw` / `post-action received cleaned` 会输出正文和 timeline JSON，便于本地排障
+  - 也可通过环境变量 `VMM_LOG_DEBUG_RPC_PAYLOADS=true` 显式开启
+  - 建议仅在本地调试或受控环境下临时开启
 
 `memory_pipeline` 下当前新增的是“向量 + SQLite FTS5 混合召回”参数：
 
