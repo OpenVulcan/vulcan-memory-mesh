@@ -393,6 +393,10 @@ func float64Ptr(v float64) *float64 { return &v }
 // Normalize executes the Normalize logic.
 // Normalize 用于执行 Normalize 逻辑。
 func (c *Config) Normalize() {
+	// Canonicalize runtime-facing string fields first so validation, startup, and adapter selection all observe the same trimmed values.
+	// 先规范化面向运行时的字符串字段，让校验、启动和适配器选择都看到同一份裁剪后的值。
+	c.normalizeRuntimeStrings()
+
 	// Backfill safe defaults for gRPC timeouts and shutdown behavior.
 	// 为 gRPC 超时和关闭行为补齐安全默认值。
 	if c.GRPC.RequestTimeout.PreCheck.Duration <= 0 {
@@ -535,6 +539,39 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Relational.Provider) == "" {
 		c.Relational.Provider = "sqlite"
 	}
+}
+
+// normalizeRuntimeStrings trims user-provided string fields that participate in runtime wiring so config validation and runtime composition stay aligned even when configs contain accidental surrounding whitespace.
+// normalizeRuntimeStrings 用于裁剪参与运行时装配的用户字符串字段，保证即使配置里带了意外的首尾空白，配置校验与运行时装配也能保持一致。
+func (c *Config) normalizeRuntimeStrings() {
+	c.GRPC.ListenAddr = strings.TrimSpace(c.GRPC.ListenAddr)
+	c.Logging.Level = strings.TrimSpace(c.Logging.Level)
+	c.Logging.Format = strings.TrimSpace(c.Logging.Format)
+	c.PII.DefaultLanguage = strings.TrimSpace(c.PII.DefaultLanguage)
+	c.Noise.DefaultLanguage = strings.TrimSpace(c.Noise.DefaultLanguage)
+	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
+	c.LanceDB.Address = strings.TrimSpace(c.LanceDB.Address)
+	c.LanceDB.TableName = strings.TrimSpace(c.LanceDB.TableName)
+	c.LanceDB.VectorColumn = strings.TrimSpace(c.LanceDB.VectorColumn)
+	c.LLM.Provider = strings.TrimSpace(c.LLM.Provider)
+	c.LLM.Endpoint = strings.TrimSpace(c.LLM.Endpoint)
+	c.LLM.APIKey = strings.TrimSpace(c.LLM.APIKey)
+	c.LLM.Model = strings.TrimSpace(c.LLM.Model)
+	c.LLM.Organization = strings.TrimSpace(c.LLM.Organization)
+	c.LLM.Project = strings.TrimSpace(c.LLM.Project)
+	c.Embedding.Provider = strings.TrimSpace(c.Embedding.Provider)
+	c.Embedding.Endpoint = strings.TrimSpace(c.Embedding.Endpoint)
+	c.Embedding.APIKey = strings.TrimSpace(c.Embedding.APIKey)
+	c.Embedding.Model = strings.TrimSpace(c.Embedding.Model)
+	c.Embedding.Organization = strings.TrimSpace(c.Embedding.Organization)
+	c.Embedding.Project = strings.TrimSpace(c.Embedding.Project)
+	c.Rerank.Provider = strings.TrimSpace(c.Rerank.Provider)
+	c.Rerank.Endpoint = strings.TrimSpace(c.Rerank.Endpoint)
+	c.Rerank.APIKey = strings.TrimSpace(c.Rerank.APIKey)
+	c.Rerank.Model = strings.TrimSpace(c.Rerank.Model)
+	c.Vector.Provider = strings.TrimSpace(c.Vector.Provider)
+	c.Relational.Provider = strings.TrimSpace(c.Relational.Provider)
+	c.PostAction.InputMode = strings.TrimSpace(c.PostAction.InputMode)
 }
 
 // Validate validates the input value.

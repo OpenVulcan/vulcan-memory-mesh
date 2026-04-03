@@ -159,6 +159,71 @@ func TestConfigNormalizeClampsSearchKeywordFanOut(t *testing.T) {
 	}
 }
 
+// TestConfigNormalizeTrimsRuntimeStrings verifies Normalize trims runtime-facing string fields so values accepted by validation do not later fail during listener binding or adapter composition because of surrounding whitespace.
+// TestConfigNormalizeTrimsRuntimeStrings 用于验证 Normalize 会裁剪面向运行时的字符串字段，避免已经通过校验的值因首尾空白而在监听绑定或适配器装配阶段再失败。
+func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.GRPC.ListenAddr = " 127.0.0.1:8080 "
+	cfg.SQLite.Address = " 127.0.0.1:19501 "
+	cfg.LanceDB.Address = " 127.0.0.1:19301 "
+	cfg.LanceDB.TableName = " vmm_memory_vectors "
+	cfg.LanceDB.VectorColumn = " vector "
+	cfg.LLM.Provider = " openai "
+	cfg.LLM.Endpoint = " https://api.openai.com/v1 "
+	cfg.Embedding.Provider = " openai "
+	cfg.Embedding.Endpoint = " https://api.openai.com/v1 "
+	cfg.Rerank.Provider = " dashscope "
+	cfg.Rerank.Endpoint = " https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank "
+	cfg.Vector.Provider = " lancedb "
+	cfg.Relational.Provider = " sqlite "
+	cfg.PostAction.InputMode = " compat "
+
+	cfg.Normalize()
+
+	if cfg.GRPC.ListenAddr != "127.0.0.1:8080" {
+		t.Fatalf("grpc listen addr = %q", cfg.GRPC.ListenAddr)
+	}
+	if cfg.SQLite.Address != "127.0.0.1:19501" {
+		t.Fatalf("sqlite address = %q", cfg.SQLite.Address)
+	}
+	if cfg.LanceDB.Address != "127.0.0.1:19301" {
+		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
+	}
+	if cfg.LanceDB.TableName != "vmm_memory_vectors" {
+		t.Fatalf("lancedb table name = %q", cfg.LanceDB.TableName)
+	}
+	if cfg.LanceDB.VectorColumn != "vector" {
+		t.Fatalf("lancedb vector column = %q", cfg.LanceDB.VectorColumn)
+	}
+	if cfg.LLM.Provider != "openai" {
+		t.Fatalf("llm provider = %q", cfg.LLM.Provider)
+	}
+	if cfg.LLM.Endpoint != "https://api.openai.com/v1" {
+		t.Fatalf("llm endpoint = %q", cfg.LLM.Endpoint)
+	}
+	if cfg.Embedding.Provider != "openai" {
+		t.Fatalf("embedding provider = %q", cfg.Embedding.Provider)
+	}
+	if cfg.Embedding.Endpoint != "https://api.openai.com/v1" {
+		t.Fatalf("embedding endpoint = %q", cfg.Embedding.Endpoint)
+	}
+	if cfg.Rerank.Provider != "dashscope" {
+		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
+	}
+	if cfg.Rerank.Endpoint != "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank" {
+		t.Fatalf("rerank endpoint = %q", cfg.Rerank.Endpoint)
+	}
+	if cfg.Vector.Provider != "lancedb" {
+		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
+	}
+	if cfg.Relational.Provider != "sqlite" {
+		t.Fatalf("relational provider = %q", cfg.Relational.Provider)
+	}
+	if cfg.PostAction.InputMode != "compat" {
+		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
+	}
+}
+
 // TestConfigValidateRejectsInvalidHybridRetrievalKnobs verifies the new lexical recall and RRF parameters stay strictly positive once configured.
 // TestConfigValidateRejectsInvalidHybridRetrievalKnobs 用于验证新增的 lexical 召回和 RRF 参数一旦配置后必须保持严格正数。
 func TestConfigValidateRejectsInvalidHybridRetrievalKnobs(t *testing.T) {
