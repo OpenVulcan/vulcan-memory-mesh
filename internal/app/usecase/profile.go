@@ -90,6 +90,15 @@ func NewProfileUseCase(store appports.ProfileStore, reviewer ManualProfileInstru
 	}
 }
 
+// normalizeProfileUseCaseContext keeps exported profile flows and shared-flight waits nil-safe for direct tests or partial integrations that bypass gRPC and accidentally pass a nil context.
+// normalizeProfileUseCaseContext 用于让导出的画像流程和共享 flight 等待逻辑在直接测试或部分集成误传 nil context 时仍保持安全，不会因为绕过 gRPC 而触发 panic。
+func normalizeProfileUseCaseContext(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
+}
+
 // ensureInstructionStateLocked initializes the in-flight dedupe map and per-target gate map for partially constructed profile use cases while the caller already holds u.mu.
 // ensureInstructionStateLocked 用于在调用方已持有 u.mu 的前提下，为部分装配的画像用例补齐进行中去重映射和目标级串行闸门映射。
 func (u *ProfileUseCase) ensureInstructionStateLocked() {
@@ -124,6 +133,7 @@ func (u *ProfileUseCase) GetNodes(ctx context.Context, cmd ProfileQueryCommand) 
 	if u == nil || u.store == nil {
 		return ProfileQueryResult{}, fmt.Errorf("profile store is nil")
 	}
+	ctx = normalizeProfileUseCaseContext(ctx)
 	if err := validateProfileQueryCommand(cmd); err != nil {
 		return ProfileQueryResult{}, err
 	}
@@ -144,6 +154,7 @@ func (u *ProfileUseCase) ApplyInstruction(ctx context.Context, cmd ProfileInstru
 	if u == nil || u.store == nil {
 		return ProfileInstructionResult{}, fmt.Errorf("profile store is nil")
 	}
+	ctx = normalizeProfileUseCaseContext(ctx)
 	if u.reviewer == nil {
 		return ProfileInstructionResult{}, fmt.Errorf("manual profile reviewer is nil")
 	}
@@ -269,6 +280,7 @@ func (u *ProfileUseCase) loadOrCreateProfileInstructionFlight(key string) (*prof
 // waitProfileInstructionFlight waits for one identical in-flight instruction call to finish and reuses its result.
 // waitProfileInstructionFlight 用于等待一条相同的进行中画像指令完成，并复用它的结果。
 func (u *ProfileUseCase) waitProfileInstructionFlight(ctx context.Context, flight *profileInstructionFlight) (ProfileInstructionResult, error) {
+	ctx = normalizeProfileUseCaseContext(ctx)
 	select {
 	case <-ctx.Done():
 		return ProfileInstructionResult{}, ctx.Err()

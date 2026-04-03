@@ -286,6 +286,49 @@ func TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction(t 
 	}
 }
 
+// TestProfileUseCaseApplyInstructionReusesSharedFlightWithNilContext verifies direct callers that accidentally pass a nil context still reuse an identical in-flight manual instruction instead of panicking on ctx.Done().
+// TestProfileUseCaseApplyInstructionReusesSharedFlightWithNilContext 用于验证直接调用方即使误传 nil context，也能复用相同的进行中手工画像指令，而不会因为 ctx.Done() 触发 panic。
+func TestProfileUseCaseApplyInstructionReusesSharedFlightWithNilContext(t *testing.T) {
+	store := &stubProfileStore{
+		target: logicdomain.ProfileTargetRef{
+			ProfileType: logicdomain.ProfileTypeUser,
+			BindID:      7,
+			UserID:      7,
+			ProjectID:   9,
+		},
+	}
+	reviewer := &stubManualProfileReviewer{}
+	uc := NewProfileUseCase(store, reviewer, nil)
+	cmd := ProfileInstructionCommand{
+		ProfileType: logicdomain.ProfileTypeUser,
+		UserID:      7,
+		ProjectID:   9,
+		Instruction: "以后默认优先给出 Rust 方案。",
+	}
+	flightKey := uc.profileInstructionFlightKey(store.target, cmd.Instruction)
+	flight := &profileInstructionFlight{
+		done: make(chan struct{}),
+		result: ProfileInstructionResult{
+			Target:        store.target,
+			InstructionID: 88,
+			ReviewReason:  "reuse existing in-flight result",
+		},
+	}
+	close(flight.done)
+	uc.flights[flightKey] = flight
+
+	result, err := uc.ApplyInstruction(nil, cmd)
+	if err != nil {
+		t.Fatalf("apply instruction with nil context should reuse shared flight: %v", err)
+	}
+	if result.InstructionID != 88 || result.ReviewReason != "reuse existing in-flight result" {
+		t.Fatalf("unexpected shared-flight result: %+v", result)
+	}
+	if store.createInstructionCount() != 0 || store.applyInstructionCount() != 0 {
+		t.Fatalf("expected shared flight reuse to skip persistence work, got create=%d apply=%d", store.createInstructionCount(), store.applyInstructionCount())
+	}
+}
+
 // TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls verifies identical concurrent manual instructions
 // on the same target reuse one in-flight LLM review instead of creating duplicate instruction rows and duplicate node writes.
 // TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls 用于验证同一目标上的相同手工画像指令在并发时会复用同一条进行中的 LLM 评审，

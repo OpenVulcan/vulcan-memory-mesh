@@ -87,6 +87,7 @@ func (u *ProfileUseCase) GetBundle(ctx context.Context, cmd ProfileBundleCommand
 	if u == nil || u.store == nil {
 		return ProfileBundleResult{}, fmt.Errorf("profile store is nil")
 	}
+	ctx = normalizeProfileUseCaseContext(ctx)
 	if err := validateProfileBundleCommand(cmd); err != nil {
 		return ProfileBundleResult{}, err
 	}
