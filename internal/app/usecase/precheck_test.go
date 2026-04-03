@@ -560,7 +560,7 @@ func TestPreCheckExecuteDeduplicatesSearchQueries(t *testing.T) {
 		},
 		&stubPreCheckIntentExtractor{
 			result: logicdomain.IntentResult{
-				Queries:    []string{"phase4 当前方案", " phase4 当前方案 ", "phase4 当前方案"},
+				Queries:    []string{"phase4 当前方案", " phase4   当前方案 ", "phase4\n当前方案"},
 				NeedMemory: true,
 				Reason:     "needs architecture memory",
 			},

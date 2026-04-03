@@ -578,7 +578,7 @@ func normalizePreCheckMemoryQueries(queries []string, userContent string) []stri
 	normalized := make([]string, 0, len(queries))
 	seen := make(map[string]struct{}, len(queries))
 	for _, query := range queries {
-		query = strings.TrimSpace(query)
+		query = textutil.NormalizeWhitespace(query)
 		if query == "" {
 			continue
 		}
@@ -591,7 +591,7 @@ func normalizePreCheckMemoryQueries(queries []string, userContent string) []stri
 	if len(normalized) > 0 {
 		return normalized
 	}
-	userContent = strings.TrimSpace(userContent)
+	userContent = textutil.NormalizeWhitespace(userContent)
 	if userContent == "" {
 		return nil
 	}
