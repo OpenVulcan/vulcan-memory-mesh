@@ -357,6 +357,34 @@ func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
 	}
 }
 
+// TestLoadTrimsConfigPathWhitespace verifies one config path with surrounding whitespace still resolves its colocated config file and root-level .env.
+// TestLoadTrimsConfigPathWhitespace 用于验证单个带首尾空白的配置路径仍能解析同目录配置文件和根目录 .env。
+func TestLoadTrimsConfigPathWhitespace(t *testing.T) {
+	const key = "TEST_TRIMMED_LOAD_KEY"
+	restoreEnv(t, key)
+
+	rootDir := t.TempDir()
+	configDir := filepath.Join(rootDir, "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, ".env"), []byte(key+"=trimmed-dotenv\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	configPath := filepath.Join(configDir, "local.json")
+	if err := os.WriteFile(configPath, []byte(currentTestConfigBody("${"+key+"}")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load("  "+configPath+"  ", DefaultLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.APIKey != "trimmed-dotenv" {
+		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	}
+}
+
 // TestLoadPathsMergesSystemAndOverrideConfigs verifies later config files override earlier ones while their colocated .env files also override earlier values.
 // TestLoadPathsMergesSystemAndOverrideConfigs 用于验证后面的配置文件会覆盖前面的配置，同时其同目录的 .env 也会覆盖更早的值。
 func TestLoadPathsMergesSystemAndOverrideConfigs(t *testing.T) {
@@ -393,6 +421,49 @@ func TestLoadPathsMergesSystemAndOverrideConfigs(t *testing.T) {
 		t.Fatal(err)
 	}
 	if cfg.LLM.Model != "user-model" {
+		t.Fatalf("llm model = %q", cfg.LLM.Model)
+	}
+	if cfg.LLM.APIKey != "user-dotenv" {
+		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	}
+}
+
+// TestLoadPathsTrimsConfigPathWhitespace verifies layered loading trims surrounding whitespace before deduplicating config paths and resolving neighboring .env files.
+// TestLoadPathsTrimsConfigPathWhitespace 用于验证分层加载会在配置路径去重和相邻 .env 解析前先裁剪首尾空白。
+func TestLoadPathsTrimsConfigPathWhitespace(t *testing.T) {
+	const key = "TEST_TRIMMED_LOAD_PATHS_KEY"
+	restoreEnv(t, key)
+
+	rootDir := t.TempDir()
+	systemConfigDir := filepath.Join(rootDir, "configs")
+	overrideDir := filepath.Join(rootDir, "user")
+	if err := os.MkdirAll(systemConfigDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(rootDir, ".env"), []byte(key+"=system-dotenv\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(overrideDir, ".env"), []byte(key+"=user-dotenv\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	systemConfig := filepath.Join(systemConfigDir, "local.json")
+	overrideConfig := filepath.Join(overrideDir, "local.json")
+	if err := os.WriteFile(systemConfig, []byte(currentTestConfigBody("${"+key+"}")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overrideConfig, []byte(`{"llm":{"model":"trimmed-user-model"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadPaths([]string{"  " + systemConfig + "  ", "\n" + overrideConfig + "\t"}, DefaultLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.Model != "trimmed-user-model" {
 		t.Fatalf("llm model = %q", cfg.LLM.Model)
 	}
 	if cfg.LLM.APIKey != "user-dotenv" {

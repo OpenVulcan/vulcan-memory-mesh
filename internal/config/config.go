@@ -305,10 +305,11 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 func normalizeConfigPaths(paths []string) []string {
 	normalized := make([]string, 0, len(paths))
 	for _, raw := range paths {
-		if strings.TrimSpace(raw) == "" {
+		trimmed := strings.TrimSpace(raw)
+		if trimmed == "" {
 			continue
 		}
-		cleaned := filepath.Clean(raw)
+		cleaned := filepath.Clean(trimmed)
 		duplicate := false
 		for _, existing := range normalized {
 			if existing == cleaned {
@@ -364,10 +365,11 @@ func dotEnvCandidates(configPath string) []string {
 	candidates := make([]string, 0, 2)
 	seen := map[string]struct{}{}
 	addCandidate := func(path string) {
-		if strings.TrimSpace(path) == "" {
+		trimmed := strings.TrimSpace(path)
+		if trimmed == "" {
 			return
 		}
-		cleaned := filepath.Clean(path)
+		cleaned := filepath.Clean(trimmed)
 		if _, ok := seen[cleaned]; ok {
 			return
 		}
