@@ -4,6 +4,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"net"
 	"path/filepath"
 	"strings"
@@ -11,6 +12,7 @@ import (
 
 	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
 	sqlitev1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite/proto/v1"
+	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 	"google.golang.org/grpc"
 )
@@ -90,6 +92,57 @@ func TestBuildRerankerFallsBackToLLMAPIKey(t *testing.T) {
 	}
 }
 
+// TestApplicationShutdownContinuesAfterDependencyError verifies graceful shutdown keeps draining later dependencies even when an earlier shutdown hook fails.
+// TestApplicationShutdownContinuesAfterDependencyError 用于验证优雅停机会在前一个依赖关闭失败后继续释放后续依赖。
+func TestApplicationShutdownContinuesAfterDependencyError(t *testing.T) {
+	cfg := config.DefaultLocal()
+	first := &stubShutdowner{err: errors.New("first failed")}
+	second := &stubShutdowner{}
+	app := &Application{
+		Config:    cfg,
+		Logger:    nil,
+		Server:    grpc.NewServer(),
+		Shutdowns: []appports.Shutdowner{second, first},
+	}
+
+	err := app.Shutdown(context.Background())
+	if err == nil {
+		t.Fatal("expected shutdown error")
+	}
+	if first.calls != 1 || second.calls != 1 {
+		t.Fatalf("expected both shutdowners to be called once, got first=%d second=%d", first.calls, second.calls)
+	}
+	if !strings.Contains(err.Error(), "shutdown dependency[1]") {
+		t.Fatalf("expected aggregated shutdown error to mention failing dependency, got %v", err)
+	}
+}
+
+// TestApplicationShutdownAllowsNilServer verifies exported shutdown can still drain dependencies when tests or partial construction leave the gRPC server unset.
+// TestApplicationShutdownAllowsNilServer 用于验证当测试替身或部分装配过程未设置 gRPC 服务时，导出的 shutdown 仍能继续释放依赖而不崩溃。
+func TestApplicationShutdownAllowsNilServer(t *testing.T) {
+	shutdowner := &stubShutdowner{}
+	app := &Application{
+		Shutdowns: []appports.Shutdowner{shutdowner},
+	}
+
+	if err := app.Shutdown(nil); err != nil {
+		t.Fatalf("shutdown with nil server: %v", err)
+	}
+	if shutdowner.calls != 1 {
+		t.Fatalf("expected shutdowner to be called once, got %d", shutdowner.calls)
+	}
+}
+
+// TestApplicationShutdownAllowsNilReceiver verifies nil application pointers do not crash shared cleanup paths.
+// TestApplicationShutdownAllowsNilReceiver 用于验证空应用指针不会把共享清理路径直接打崩。
+func TestApplicationShutdownAllowsNilReceiver(t *testing.T) {
+	var app *Application
+
+	if err := app.Shutdown(nil); err != nil {
+		t.Fatalf("shutdown nil application: %v", err)
+	}
+}
+
 // startFakeSQLiteGateway serves the minimal SQLite RPC surface needed by runtime composition tests.
 // startFakeSQLiteGateway 用于提供运行时装配测试所需的最小 SQLite RPC 面。
 func startFakeSQLiteGateway(t *testing.T) (string, func()) {
@@ -105,6 +158,20 @@ func startFakeSQLiteGateway(t *testing.T) (string, func()) {
 		server.Stop()
 		_ = listener.Close()
 	}
+}
+
+// stubShutdowner records shutdown attempts for application lifecycle tests.
+// stubShutdowner 用于为应用生命周期测试记录 shutdown 调用次数。
+type stubShutdowner struct {
+	calls int
+	err   error
+}
+
+// Shutdown increments the call counter and returns the configured error.
+// Shutdown 用于增加调用计数，并返回预设错误。
+func (s *stubShutdowner) Shutdown(context.Context) error {
+	s.calls++
+	return s.err
 }
 
 // startFakeLanceDBGateway serves the minimal LanceDB RPC surface needed by runtime composition tests.

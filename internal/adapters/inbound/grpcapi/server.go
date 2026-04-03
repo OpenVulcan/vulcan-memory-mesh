@@ -4,6 +4,8 @@ package grpcapi
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"time"
@@ -882,10 +884,39 @@ func (s *Server) logPostActionReceipt(traceID, message string, req *vmmv1.PostAc
 	timelineJSON, err := json.Marshal(req.GetTimeline())
 	if err != nil {
 		s.logger.Warn(message+" timeline marshal failed", "trace_id", traceID, "session_id", req.GetSessionId(), "err", err)
-		s.logger.Info(message, "trace_id", traceID, "session_id", req.GetSessionId(), "user_content", req.GetUserContent(), "assistant_content", req.GetAssistantContent(), "timeline_items", len(req.GetTimeline()))
+		s.logger.Info(
+			message,
+			"trace_id", traceID,
+			"session_id", req.GetSessionId(),
+			"user_content_len", len(req.GetUserContent()),
+			"user_content_sha256", shortContentDigest(req.GetUserContent()),
+			"assistant_content_len", len(req.GetAssistantContent()),
+			"assistant_content_sha256", shortContentDigest(req.GetAssistantContent()),
+			"timeline_items", len(req.GetTimeline()),
+		)
 		return
 	}
-	s.logger.Info(message, "trace_id", traceID, "session_id", req.GetSessionId(), "user_content", req.GetUserContent(), "assistant_content", req.GetAssistantContent(), "timeline", string(timelineJSON))
+	s.logger.Info(
+		message,
+		"trace_id", traceID,
+		"session_id", req.GetSessionId(),
+		"user_content_len", len(req.GetUserContent()),
+		"user_content_sha256", shortContentDigest(req.GetUserContent()),
+		"assistant_content_len", len(req.GetAssistantContent()),
+		"assistant_content_sha256", shortContentDigest(req.GetAssistantContent()),
+		"timeline_items", len(req.GetTimeline()),
+		"timeline_sha256", shortContentDigest(string(timelineJSON)),
+	)
+}
+
+// shortContentDigest produces one short stable digest for sensitive payloads so logs can still correlate raw/cleaned receipts without writing the underlying text into runtime logs.
+// shortContentDigest 用于为敏感载荷生成短且稳定的摘要，让日志在不暴露底层文本的前提下仍能关联 raw/cleaned 两次收据。
+func shortContentDigest(raw string) string {
+	if raw == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(raw))
+	return hex.EncodeToString(sum[:8])
 }
 
 // fromProtoProfileTarget converts the protobuf profile target enum into the internal profile-type enum.

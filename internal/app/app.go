@@ -212,23 +212,44 @@ func (a *Application) Run(ctx context.Context) error {
 // Shutdown stops the gRPC server and releases downstream resources in reverse construction order.
 // Shutdown 用于停止 gRPC 服务，并按构建逆序释放下游资源。
 func (a *Application) Shutdown(ctx context.Context) error {
-	shutdownCtx, cancel := context.WithTimeout(ctx, a.Config.GRPC.ShutdownTimeout.Duration)
+	if a == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout := a.Config.GRPC.ShutdownTimeout.Duration
+	if timeout <= 0 {
+		timeout = config.DefaultLocal().GRPC.ShutdownTimeout.Duration
+	}
+	shutdownCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	stopped := make(chan struct{})
-	go func() {
-		a.Server.GracefulStop()
-		close(stopped)
-	}()
-	select {
-	case <-shutdownCtx.Done():
-		a.Server.Stop()
-	case <-stopped:
+
+	// Only stop gRPC when the runtime actually finished wiring the server, so partial construction or test doubles can still reuse the shutdown path safely.
+	// 只有在运行时确实完成 gRPC 服务装配时才执行停服，这样部分装配对象或测试替身也能安全复用 shutdown 路径。
+	if a.Server != nil {
+		stopped := make(chan struct{})
+		go func() {
+			a.Server.GracefulStop()
+			close(stopped)
+		}()
+		select {
+		case <-shutdownCtx.Done():
+			a.Server.Stop()
+		case <-stopped:
+		}
 	}
 
+	// Continue draining every dependency even if one shutdown step fails, so later resources do not leak simply because an earlier adapter returned an error.
+	// 即便某个关闭步骤失败，也继续释放后续依赖，避免前一个适配器报错后导致后面的资源直接泄漏。
+	var shutdownErrors []error
 	for i := len(a.Shutdowns) - 1; i >= 0; i-- {
 		if err := a.Shutdowns[i].Shutdown(shutdownCtx); err != nil {
-			return fmt.Errorf("shutdown dependency[%d]: %w", i, err)
+			shutdownErrors = append(shutdownErrors, fmt.Errorf("shutdown dependency[%d]: %w", i, err))
 		}
+	}
+	if len(shutdownErrors) > 0 {
+		return fmt.Errorf("shutdown completed with dependency errors: %w", errors.Join(shutdownErrors...))
 	}
 	return nil
 }
