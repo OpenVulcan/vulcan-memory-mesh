@@ -18,6 +18,7 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
+	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
 const (
@@ -429,6 +430,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	}
 	cachedHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
 	for idx, item := range uniqueItems {
+		queryText := buildMemorySearchText(item)
 		hits, err := u.vector.Search(ctx, embedResp.Vectors[idx], candidatePoolK, filter)
 		if err != nil {
 			return MemoryQueryResult{}, err
@@ -437,11 +439,36 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
+		u.logMemorySearchStage(ctx, "memory search vector stage completed", queryText, []any{
+			"query_index", idx,
+			"candidate_pool_k", candidatePoolK,
+			"vector_hit_count", len(hits),
+			"mapped_hit_count", len(mapped),
+			"hybrid_enabled", u.hybridEnabled,
+			"rerank_enabled", u.reranker != nil,
+			"mmr_enabled", u.mmrEnabled,
+		}, map[string]any{
+			"query_index":    idx,
+			"background":     item.Background,
+			"query":          item.Query,
+			"top_vector_hit": summarizeRawMemoryHitForLog(firstRawMemoryHit(hits)),
+			"top_mapped_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
+		})
 		mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
-		mapped = u.rerankSearchHits(ctx, buildMemorySearchText(item), mapped)
+		mapped = u.rerankSearchHits(ctx, queryText, mapped)
 		mapped = u.applyWeibullDecaySearchHits(mapped)
 		mapped = u.applyContextEvidenceScoring(ctx, item, mapped)
 		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
+		u.logMemorySearchStage(ctx, "memory search final stage completed", queryText, []any{
+			"query_index", idx,
+			"final_hit_count", len(mapped),
+			"top_k", topK,
+		}, map[string]any{
+			"query_index":   idx,
+			"background":    item.Background,
+			"query":         item.Query,
+			"top_final_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
+		})
 		cachedHits[uniqueKeys[idx]] = cloneMemoryQueryHits(trimSearchHits(mapped, topK))
 	}
 	results := make([]MemoryQueryGroupResult, 0, len(items))
@@ -866,6 +893,18 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 		return trimSearchHits(vectorHits, poolK)
 	}
 	if len(lexicalHits) == 0 {
+		u.logMemorySearchStage(ctx, "memory search hybrid stage completed", buildMemorySearchText(item), []any{
+			"vector_candidate_count", len(vectorHits),
+			"lexical_hit_count", 0,
+			"lexical_materialized_count", 0,
+			"hybrid_candidate_count", len(trimSearchHits(vectorHits, poolK)),
+		}, map[string]any{
+			"background":            item.Background,
+			"query":                 item.Query,
+			"top_vector_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(vectorHits)),
+			"top_lexical_candidate": nil,
+			"top_hybrid_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(trimSearchHits(vectorHits, poolK))),
+		})
 		return trimSearchHits(vectorHits, poolK)
 	}
 	materialized, err := u.materializeLexicalHits(ctx, lexicalHits)
@@ -875,7 +914,20 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 		}
 		return trimSearchHits(vectorHits, poolK)
 	}
-	return fuseSearchHitsByRRF(vectorHits, materialized, poolK, u.rrfK)
+	fused := fuseSearchHitsByRRF(vectorHits, materialized, poolK, u.rrfK)
+	u.logMemorySearchStage(ctx, "memory search hybrid stage completed", buildMemorySearchText(item), []any{
+		"vector_candidate_count", len(vectorHits),
+		"lexical_hit_count", len(lexicalHits),
+		"lexical_materialized_count", len(materialized),
+		"hybrid_candidate_count", len(fused),
+	}, map[string]any{
+		"background":            item.Background,
+		"query":                 item.Query,
+		"top_vector_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(vectorHits)),
+		"top_lexical_candidate": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(materialized)),
+		"top_hybrid_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(fused)),
+	})
+	return fused
 }
 
 // buildMemoryLexicalQuery keeps lexical recall focused on the key query instead of the full embedding background text.
@@ -1629,6 +1681,13 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 	if limit < len(hits) {
 		ordered = append(ordered, hits[limit:]...)
 	}
+	u.logMemorySearchStage(ctx, "memory search rerank stage completed", query, []any{
+		"rerank_input_count", len(primary),
+		"rerank_output_count", len(ordered),
+	}, map[string]any{
+		"top_input_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(primary)),
+		"top_output_candidate": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(ordered)),
+	})
 	return ordered
 }
 
@@ -1726,6 +1785,81 @@ func memoryQueryLogFields(logger *logx.Logger, query string) []any {
 	return []any{
 		"query_len", len(normalized),
 		"query_sha256", shortLogDigest(normalized),
+	}
+}
+
+// memoryQueryHitLogPayload stores one compact search-hit snapshot for diagnostics so operators can see the best candidate without dumping the full hit list every time.
+// memoryQueryHitLogPayload 用于保存一条紧凑的检索命中快照，便于运维看到最佳候选，而不用每次都把整份命中列表全部打进日志。
+type memoryQueryHitLogPayload struct {
+	VectorID       string  `json:"vector_id,omitempty"`
+	MemoryID       uint64  `json:"memory_id,omitempty"`
+	SourceTurnID   uint64  `json:"source_turn_id,omitempty"`
+	Score          float64 `json:"score"`
+	Origin         string  `json:"origin,omitempty"`
+	Abstract       string  `json:"abstract,omitempty"`
+	DetailsPreview string  `json:"details_preview,omitempty"`
+	TextPreview    string  `json:"text_preview,omitempty"`
+}
+
+// logMemorySearchStage records one searchable retrieval checkpoint so operators can tell whether a miss happened in vector recall, hybrid fusion, rerank, or later pruning.
+// logMemorySearchStage 用于记录一条可检索的检索阶段检查点，让运维可以分辨未命中是发生在向量召回、混合融合、rerank 还是更后面的裁剪步骤。
+func (u *MemoryUseCase) logMemorySearchStage(ctx context.Context, message, query string, fields []any, payload any) {
+	if u == nil || u.logger == nil {
+		return
+	}
+	baseFields := []any{
+		"trace_id", trace.IDFromContext(ctx),
+	}
+	baseFields = append(baseFields, memoryQueryLogFields(u.logger, query)...)
+	baseFields = append(baseFields, fields...)
+	baseFields = u.logger.AppendPayloadFields(baseFields, "stage_payload", payload)
+	u.logger.Info(message, baseFields...)
+}
+
+// firstRawMemoryHit returns the first raw vector-store hit when one exists so the caller can summarize the top ANN candidate safely.
+// firstRawMemoryHit 用于在存在结果时返回第一条原始向量命中，让调用方可以安全地概括最靠前的 ANN 候选。
+func firstRawMemoryHit(hits []logicdomain.MemoryHit) *logicdomain.MemoryHit {
+	if len(hits) == 0 {
+		return nil
+	}
+	return &hits[0]
+}
+
+// firstMemoryQueryHit returns the first mapped public hit when one exists so stage logs can surface the current top candidate after each ranking step.
+// firstMemoryQueryHit 用于在存在结果时返回第一条公开命中，让阶段日志能在每个排序步骤后展示当前 top candidate。
+func firstMemoryQueryHit(hits []MemoryQueryHit) *MemoryQueryHit {
+	if len(hits) == 0 {
+		return nil
+	}
+	return &hits[0]
+}
+
+// summarizeRawMemoryHitForLog converts one raw vector-store hit into a compact log payload that keeps only the fields needed to diagnose recall quality.
+// summarizeRawMemoryHitForLog 用于把一条原始向量命中转换成紧凑日志载荷，只保留排查召回质量所需的字段。
+func summarizeRawMemoryHitForLog(hit *logicdomain.MemoryHit) *memoryQueryHitLogPayload {
+	if hit == nil {
+		return nil
+	}
+	return &memoryQueryHitLogPayload{
+		VectorID:    strings.TrimSpace(hit.ID),
+		Score:       hit.Score,
+		TextPreview: strings.TrimSpace(hit.Text),
+	}
+}
+
+// summarizeMemoryQueryHitForLog converts one mapped hit into a compact log payload so later filters can still report “the best available memory” even when nothing survives.
+// summarizeMemoryQueryHitForLog 用于把一条映射后的命中转换成紧凑日志载荷，使后续过滤即便把所有候选都裁掉，日志里仍能报告“最接近的那条记忆”。
+func summarizeMemoryQueryHitForLog(hit *MemoryQueryHit) *memoryQueryHitLogPayload {
+	if hit == nil {
+		return nil
+	}
+	return &memoryQueryHitLogPayload{
+		MemoryID:       hit.MemoryRef.ID,
+		SourceTurnID:   hit.SourceRef.ID,
+		Score:          hit.Score,
+		Origin:         strings.TrimSpace(hit.Origin),
+		Abstract:       strings.TrimSpace(hit.Abstract),
+		DetailsPreview: strings.TrimSpace(hit.DetailsPreview),
 	}
 }
 

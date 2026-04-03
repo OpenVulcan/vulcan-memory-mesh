@@ -588,6 +588,96 @@ func TestPreCheckExecuteLogsFullStagePayloadsWhenPayloadDebugEnabled(t *testing.
 	}
 }
 
+// TestPreCheckExecuteLogsRawRecallAndBestRejectedHit verifies pre-check now emits the grouped raw recall count plus the strongest filtered-out candidate so zero-candidate outcomes remain explainable.
+// TestPreCheckExecuteLogsRawRecallAndBestRejectedHit 用于验证 pre-check 现在会记录分组原始召回数量以及最强的被过滤候选，让零候选结果仍然可解释。
+func TestPreCheckExecuteLogsRawRecallAndBestRejectedHit(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text", DebugPayloads: true})
+	memories := &stubPreCheckMemories{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{
+				{
+					QueryIndex: 0,
+					Background: "之前我询问了你买车的事情，你还记得么",
+					Query:      "用户购车计划的历史记录和相关偏好",
+					Hits: []MemoryQueryHit{
+						{
+							MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 601},
+							SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 77},
+							SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+							ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+							Abstract:       "用户购车预算曾在 100-150 万之间。",
+							DetailsPreview: "用户考虑过保时捷卡宴并关注性能与空间。",
+							Category:       logicdomain.MemoryNodeCategoryGeneral,
+							Score:          0.61,
+							Origin:         "hybrid_rrf",
+						},
+					},
+				},
+			},
+		},
+	}
+	uc := NewPreCheckUseCase(
+		memories,
+		&stubPreCheckStore{},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"用户购车计划的历史记录和相关偏好"},
+				NeedMemory: true,
+				Reason:     "需要长期记忆",
+			},
+		},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 5, MinSimilarityScore: 0.8, HistoryTurns: 3, MaxInputTokens: 200},
+		logger,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-threshold-log"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  7,
+			SessionKey: "sess-car",
+			UserID:     1,
+			TeamID:     1,
+			SpaceID:    1,
+			ProjectID:  1,
+		},
+		UserContent: "之前我询问了你买车的事情，你还记得么",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if result.ShouldInject {
+		t.Fatalf("expected zero adopted candidates when all raw hits fall below threshold, got %#v", result)
+	}
+
+	logs := logBuf.String()
+	expectedMessages := []string{
+		`MSG："pre-check raw memory hits returned"`,
+		`MSG："pre-check memory candidate filtering applied"`,
+		`MSG："pre-check memory candidates recalled"`,
+	}
+	for _, message := range expectedMessages {
+		if !strings.Contains(logs, message) {
+			t.Fatalf("expected stage log %s, got %s", message, logs)
+		}
+	}
+	expectedFragments := []string{
+		`raw_hit_count：1`,
+		`below_threshold_count：1`,
+		`review_candidate_count：0`,
+		`"best_raw_hit":`,
+		`"best_below_threshold_hit":`,
+		`"memory_id": 601`,
+		`"review_score": 0.61`,
+	}
+	for _, fragment := range expectedFragments {
+		if !strings.Contains(logs, fragment) {
+			t.Fatalf("expected logs to contain %s, got %s", fragment, logs)
+		}
+	}
+}
+
 // TestPreCheckExecuteEncryptsStagePayloadsWhenPayloadProtectionEnabled verifies the live pre-check flow keeps its stage payloads out of plaintext logs while still leaving encrypted audit envelopes for later forensic inspection.
 // TestPreCheckExecuteEncryptsStagePayloadsWhenPayloadProtectionEnabled 用于验证实时 pre-check 流程在保护模式下不会把阶段载荷写成明文，但仍会留下可供后续取证的加密信封。
 func TestPreCheckExecuteEncryptsStagePayloadsWhenPayloadProtectionEnabled(t *testing.T) {

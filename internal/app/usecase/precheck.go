@@ -399,16 +399,24 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	if err != nil {
 		return nil, err
 	}
+	rawGroups, rawHitCount := buildPreCheckRawRecallLogs(result.Results)
 	merged := make(map[uint64]logicdomain.PreCheckMemoryCandidate)
 	firstSeenOrder := make(map[uint64]int)
 	nextSeenOrder := 0
+	belowThresholdCount := 0
+	var bestRawHit *preCheckThresholdHitLogPayload
+	var bestBelowThresholdHit *preCheckThresholdHitLogPayload
 	for _, group := range result.Results {
 		for hitIdx, hit := range group.Hits {
 			if hit.MemoryRef.Type != logicdomain.MemoryRefTypeMemory || hit.MemoryRef.ID == 0 {
 				continue
 			}
 			candidateScore := normalizePreCheckReviewScore(hit.Score, hit.Origin, hitIdx+1, len(group.Hits))
+			logHit := summarizePreCheckThresholdHitForLog(hit, candidateScore)
+			bestRawHit = choosePreferredPreCheckThresholdHit(bestRawHit, logHit)
 			if candidateScore < u.config.MinSimilarityScore {
+				belowThresholdCount++
+				bestBelowThresholdHit = choosePreferredPreCheckThresholdHit(bestBelowThresholdHit, logHit)
 				continue
 			}
 			candidate := logicdomain.PreCheckMemoryCandidate{
@@ -445,6 +453,16 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 			merged[candidate.MemoryID] = candidate
 		}
 	}
+	u.logPreCheckStage("pre-check raw memory hits returned", trace.IDFromContext(ctx), cmd.Session, []any{
+		"group_count", len(result.Results),
+		"raw_hit_count", rawHitCount,
+		"similarity_threshold", u.config.MinSimilarityScore,
+	}, map[string]any{
+		"current_user_input": cmd.UserContent,
+		"intent_queries":     normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"raw_groups":         rawGroups,
+		"best_raw_hit":       bestRawHit,
+	})
 	out := make([]logicdomain.PreCheckMemoryCandidate, 0, len(merged))
 	for _, candidate := range merged {
 		candidate = normalizePreCheckCandidateDerivedFields(candidate, u.config.MinSimilarityScore)
@@ -467,7 +485,116 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	for idx := range out {
 		out[idx].CandidateNumber = idx + 1
 	}
+	u.logPreCheckStage("pre-check memory candidate filtering applied", trace.IDFromContext(ctx), cmd.Session, []any{
+		"group_count", len(result.Results),
+		"raw_hit_count", rawHitCount,
+		"below_threshold_count", belowThresholdCount,
+		"deduplicated_candidate_count", len(merged),
+		"review_candidate_count", len(out),
+		"similarity_threshold", u.config.MinSimilarityScore,
+	}, map[string]any{
+		"current_user_input":       cmd.UserContent,
+		"intent_queries":           normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"best_raw_hit":             bestRawHit,
+		"best_below_threshold_hit": bestBelowThresholdHit,
+	})
 	return out, nil
+}
+
+// preCheckRawRecallGroupLogPayload stores one grouped unified-search snapshot before the pre-check similarity floor removes weak hits.
+// preCheckRawRecallGroupLogPayload 用于保存 pre-check 相似度阈值裁剪前的一组 unified-search 命中快照。
+type preCheckRawRecallGroupLogPayload struct {
+	QueryIndex  int                       `json:"query_index"`
+	Background  string                    `json:"background,omitempty"`
+	Query       string                    `json:"query,omitempty"`
+	RawHitCount int                       `json:"raw_hit_count"`
+	TopRawHit   *memoryQueryHitLogPayload `json:"top_raw_hit,omitempty"`
+}
+
+// preCheckThresholdHitLogPayload stores the strongest available candidate around the similarity floor so operators can still inspect the nearest memory when nothing survives.
+// preCheckThresholdHitLogPayload 用于保存围绕相似度阈值的最强候选，让运维即便在最终无命中时仍能看到最接近的记忆。
+type preCheckThresholdHitLogPayload struct {
+	MemoryID       uint64  `json:"memory_id,omitempty"`
+	SourceTurnID   uint64  `json:"source_turn_id,omitempty"`
+	RawScore       float64 `json:"raw_score"`
+	ReviewScore    float64 `json:"review_score"`
+	Origin         string  `json:"origin,omitempty"`
+	Abstract       string  `json:"abstract,omitempty"`
+	DetailsPreview string  `json:"details_preview,omitempty"`
+}
+
+// buildPreCheckRawRecallLogs summarizes each grouped unified-search result before threshold filtering so operators can distinguish “no recall” from “recalled then filtered”.
+// buildPreCheckRawRecallLogs 用于在阈值过滤前汇总每组 unified-search 结果，让运维能区分“根本没召回”和“召回后被过滤”。
+func buildPreCheckRawRecallLogs(results []MemoryQueryGroupResult) ([]preCheckRawRecallGroupLogPayload, int) {
+	if len(results) == 0 {
+		return nil, 0
+	}
+	groups := make([]preCheckRawRecallGroupLogPayload, 0, len(results))
+	rawHitCount := 0
+	for _, group := range results {
+		rawHitCount += len(group.Hits)
+		groups = append(groups, preCheckRawRecallGroupLogPayload{
+			QueryIndex:  group.QueryIndex,
+			Background:  group.Background,
+			Query:       group.Query,
+			RawHitCount: len(group.Hits),
+			TopRawHit:   summarizeMemoryQueryHitForLog(firstMemoryQueryHit(group.Hits)),
+		})
+	}
+	return groups, rawHitCount
+}
+
+// summarizePreCheckThresholdHitForLog converts one unified-search hit plus its reviewer-facing score into a compact log payload for threshold debugging.
+// summarizePreCheckThresholdHitForLog 用于把 unified-search 命中及其 reviewer 侧分数转换成紧凑日志载荷，方便排查阈值过滤。
+func summarizePreCheckThresholdHitForLog(hit MemoryQueryHit, reviewScore float64) *preCheckThresholdHitLogPayload {
+	return &preCheckThresholdHitLogPayload{
+		MemoryID:       hit.MemoryRef.ID,
+		SourceTurnID:   hit.SourceRef.ID,
+		RawScore:       hit.Score,
+		ReviewScore:    reviewScore,
+		Origin:         strings.TrimSpace(hit.Origin),
+		Abstract:       strings.TrimSpace(hit.Abstract),
+		DetailsPreview: strings.TrimSpace(hit.DetailsPreview),
+	}
+}
+
+// choosePreferredPreCheckThresholdHit keeps the stronger threshold-debug candidate so logs always surface the nearest available memory first.
+// choosePreferredPreCheckThresholdHit 用于保留更强的阈值调试候选，保证日志总是优先展示最接近的那条记忆。
+func choosePreferredPreCheckThresholdHit(current, incoming *preCheckThresholdHitLogPayload) *preCheckThresholdHitLogPayload {
+	if incoming == nil {
+		return current
+	}
+	if current == nil {
+		return incoming
+	}
+	if incoming.ReviewScore != current.ReviewScore {
+		if incoming.ReviewScore > current.ReviewScore {
+			return incoming
+		}
+		return current
+	}
+	if incoming.RawScore != current.RawScore {
+		if incoming.RawScore > current.RawScore {
+			return incoming
+		}
+		return current
+	}
+	if len(incoming.DetailsPreview) != len(current.DetailsPreview) {
+		if len(incoming.DetailsPreview) > len(current.DetailsPreview) {
+			return incoming
+		}
+		return current
+	}
+	if len(incoming.Abstract) != len(current.Abstract) {
+		if len(incoming.Abstract) > len(current.Abstract) {
+			return incoming
+		}
+		return current
+	}
+	if incoming.MemoryID < current.MemoryID {
+		return incoming
+	}
+	return current
 }
 
 // normalizePreCheckCandidateDerivedFields recomputes reviewer-facing derived explanations from the final merged candidate values so score/origin labels never lag behind later merge decisions.
