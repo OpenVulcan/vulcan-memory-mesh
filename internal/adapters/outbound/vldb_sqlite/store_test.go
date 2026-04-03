@@ -13,6 +13,7 @@ import (
 
 	sqlitev1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/metadata"
@@ -282,6 +283,63 @@ func TestStoreSearchLexicalMemoryUsesTypedSQLiteParams(t *testing.T) {
 	queryValue, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_StringValue)
 	if !ok || !strings.Contains(queryValue.StringValue, "文本排序模型") {
 		t.Fatalf("expected sanitized lexical query as first param, got %#v", captured.GetParams()[0].Kind)
+	}
+}
+
+// TestStoreSearchLexicalMemoryPretokenizesChineseQuery verifies the sqlite adapter emits tokenized MATCH input when application-side Chinese pre-tokenization is enabled.
+// TestStoreSearchLexicalMemoryPretokenizesChineseQuery 用于验证当启用应用层中文预分词时，sqlite 适配器会发出分词后的 MATCH 查询参数。
+func TestStoreSearchLexicalMemoryPretokenizesChineseQuery(t *testing.T) {
+	tokenizer, err := textutil.NewLexicalTokenizer(textutil.LexicalTokenizerConfig{EnablePreTokenize: true})
+	if err != nil {
+		t.Fatalf("NewLexicalTokenizer returned error: %v", err)
+	}
+
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second, lexicalTokenizer: tokenizer}
+
+	var captured *sqlitev1.QueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		captured = req
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	}
+
+	_, err = store.SearchLexicalMemory(context.Background(), "文本排序模型", 5, logicdomain.SearchFilter{})
+	if err != nil {
+		t.Fatalf("SearchLexicalMemory returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJson request to be captured")
+	}
+	queryValue, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_StringValue)
+	if !ok {
+		t.Fatalf("expected string sqlite param, got %#v", captured.GetParams()[0].Kind)
+	}
+	want := `"文本 排序 模型" OR "文本" OR "排序" OR "模型"`
+	if queryValue.StringValue != want {
+		t.Fatalf("tokenized lexical query = %q, want %q", queryValue.StringValue, want)
+	}
+}
+
+// TestStoreBuildMemoryNodeFTSUpsertSQLPretokenizesIndexText verifies durable memory rows are mirrored into FTS with application-side token spacing instead of raw unsplit Chinese text.
+// TestStoreBuildMemoryNodeFTSUpsertSQLPretokenizesIndexText 用于验证长期记忆行写入 FTS 时会使用应用层预分词后的空格文本，而不是未切分的原始中文。
+func TestStoreBuildMemoryNodeFTSUpsertSQLPretokenizesIndexText(t *testing.T) {
+	tokenizer, err := textutil.NewLexicalTokenizer(textutil.LexicalTokenizerConfig{EnablePreTokenize: true})
+	if err != nil {
+		t.Fatalf("NewLexicalTokenizer returned error: %v", err)
+	}
+
+	store := &Store{lexicalTokenizer: tokenizer}
+	sqlText := store.buildMemoryNodeFTSUpsertSQL(logicdomain.MemoryNodeRecord{
+		ID:       101,
+		Abstract: "文本排序模型",
+		Details:  "vmm-local FTS5 中文分词",
+	})
+
+	if !strings.Contains(sqlText, `'文本 排序 模型'`) {
+		t.Fatalf("expected pretokenized abstract in sql, got %q", sqlText)
+	}
+	if !strings.Contains(sqlText, `'vmm local fts5 中文 分词 vmm-local'`) {
+		t.Fatalf("expected pretokenized details in sql, got %q", sqlText)
 	}
 }
 

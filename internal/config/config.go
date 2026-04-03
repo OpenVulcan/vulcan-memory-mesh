@@ -207,6 +207,7 @@ type MemoryPipelineConfig struct {
 	MaxSearchKeywords        int      `json:"max_search_keywords"`
 	MinSimilarityScore       *float64 `json:"min_similarity_score,omitempty"`
 	HybridEnabled            bool     `json:"hybrid_enabled"`
+	LexicalPreTokenize       bool     `json:"lexical_pre_tokenize"`
 	LexicalTopK              int      `json:"lexical_top_k,omitempty"`
 	RRFK                     int      `json:"rrf_k,omitempty"`
 	MMREnabled               bool     `json:"mmr_enabled"`
@@ -252,6 +253,7 @@ func DefaultLocal() Config {
 			MaxSearchKeywords:        5,
 			MinSimilarityScore:       float64Ptr(0.75),
 			HybridEnabled:            true,
+			LexicalPreTokenize:       true,
 			LexicalTopK:              8,
 			RRFK:                     60,
 			MMREnabled:               true,
@@ -891,6 +893,7 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
 	setBool("VMM_MEMORY_HYBRID_ENABLED", &cfg.MemoryPipeline.HybridEnabled)
+	setBool("VMM_MEMORY_LEXICAL_PRETOKENIZE", &cfg.MemoryPipeline.LexicalPreTokenize)
 	setInt("VMM_MEMORY_LEXICAL_TOP_K", &cfg.MemoryPipeline.LexicalTopK)
 	setInt("VMM_MEMORY_RRF_K", &cfg.MemoryPipeline.RRFK)
 	setBool("VMM_MEMORY_MMR_ENABLED", &cfg.MemoryPipeline.MMREnabled)

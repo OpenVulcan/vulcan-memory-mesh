@@ -104,6 +104,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if !cfg.MemoryPipeline.HybridEnabled {
 		t.Fatal("expected hybrid retrieval to stay enabled by default")
 	}
+	if !cfg.MemoryPipeline.LexicalPreTokenize {
+		t.Fatal("expected lexical pre-tokenization to stay enabled by default")
+	}
 	if cfg.MemoryPipeline.LexicalTopK != 8 {
 		t.Fatalf("lexical top_k = %d", cfg.MemoryPipeline.LexicalTopK)
 	}
@@ -684,6 +687,7 @@ func TestApplyEnvOverridesSetsRerankSettings(t *testing.T) {
 func TestApplyEnvOverridesSetsHybridRetrievalSettings(t *testing.T) {
 	cfg := newValidConfigForTest()
 	t.Setenv("VMM_MEMORY_HYBRID_ENABLED", "false")
+	t.Setenv("VMM_MEMORY_LEXICAL_PRETOKENIZE", "false")
 	t.Setenv("VMM_MEMORY_LEXICAL_TOP_K", "11")
 	t.Setenv("VMM_MEMORY_RRF_K", "77")
 	t.Setenv("VMM_MEMORY_MMR_ENABLED", "false")
@@ -699,6 +703,9 @@ func TestApplyEnvOverridesSetsHybridRetrievalSettings(t *testing.T) {
 
 	if cfg.MemoryPipeline.HybridEnabled {
 		t.Fatal("expected hybrid retrieval to be disabled by env override")
+	}
+	if cfg.MemoryPipeline.LexicalPreTokenize {
+		t.Fatal("expected lexical pre-tokenization to be disabled by env override")
 	}
 	if cfg.MemoryPipeline.LexicalTopK != 11 {
 		t.Fatalf("memory pipeline lexical top_k = %d", cfg.MemoryPipeline.LexicalTopK)

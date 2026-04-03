@@ -63,9 +63,9 @@
   "rerank": {
     "enabled": false,
     "provider": "dashscope",
-    "endpoint": "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+    "endpoint": "${OPENAI_RERANK_URL}",
     "api_key": "${OPENAI_API_KEY}",
-    "model": "qwen3-vl-rerank",
+    "model": "${OPENAI_RERANK_MODEL}",
     "top_n": 8,
     "timeout": "8s"
   },
@@ -93,6 +93,7 @@
     "max_search_keywords": 5,
     "min_similarity_score": 0.75,
     "hybrid_enabled": true,
+    "lexical_pre_tokenize": true,
     "lexical_top_k": 8,
     "rrf_k": 60,
     "mmr_enabled": true,

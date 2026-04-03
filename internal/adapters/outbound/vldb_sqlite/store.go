@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 13
+	currentSchemaVersion = 14
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -218,7 +218,7 @@ CREATE VIRTUAL TABLE IF NOT EXISTS vmm_memory_nodes_fts USING fts5(
   memory_id UNINDEXED,
   abstract,
   details,
-  tokenize='unicode61'
+  tokenize='unicode61 remove_diacritics 2'
 );
 
 CREATE TABLE IF NOT EXISTS vmm_memory_context_edges (
@@ -279,15 +279,22 @@ CREATE INDEX IF NOT EXISTS idx_vmm_profile_instructions_target ON vmm_profile_in
 // Store is the SQLite-gateway adapter used for hierarchy metadata, session/turn persistence, and cache storage.
 // Store 用于作为 SQLite 网关适配器，承接层级元数据、session/turn 持久化以及缓存存储。
 type Store struct {
-	conn    *grpc.ClientConn
-	client  sqlitev1.SqliteServiceClient
-	timeout time.Duration
-	writeMu sync.Mutex
+	conn             *grpc.ClientConn
+	client           sqlitev1.SqliteServiceClient
+	timeout          time.Duration
+	writeMu          sync.Mutex
+	lexicalTokenizer *textutil.LexicalTokenizer
+}
+
+// StoreOptions collects optional SQLite adapter features that change lexical indexing behavior without affecting unrelated callers.
+// StoreOptions 用于收集会改变 lexical 索引行为、但不会影响其他调用方的 SQLite 适配器可选特性。
+type StoreOptions struct {
+	LexicalPreTokenize bool
 }
 
 // NewStore dials the SQLite gateway and ensures the local schema is initialized before serving traffic.
 // NewStore 用于连接 SQLite 网关，并在对外提供服务前确保本地表结构已经初始化。
-func NewStore(address string, timeout time.Duration) (*Store, error) {
+func NewStore(address string, timeout time.Duration, options ...StoreOptions) (*Store, error) {
 	// Validate and normalize the gateway endpoint first so startup failures remain easy to diagnose.
 	// 先校验并规范化网关地址，确保启动失败原因保持易于诊断。
 	if strings.TrimSpace(address) == "" {
@@ -295,6 +302,19 @@ func NewStore(address string, timeout time.Duration) (*Store, error) {
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
+	}
+	storeOptions := StoreOptions{LexicalPreTokenize: true}
+	if len(options) > 0 {
+		storeOptions = options[0]
+	}
+
+	// Initialize the tokenizer before dialing so lexical configuration errors fail during startup instead of the first recall request.
+	// 在建立连接前初始化分词器，让 lexical 配置错误在启动阶段暴露，而不是拖到首次召回时才失败。
+	lexicalTokenizer, err := textutil.NewLexicalTokenizer(textutil.LexicalTokenizerConfig{
+		EnablePreTokenize: storeOptions.LexicalPreTokenize,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("init lexical tokenizer: %w", err)
 	}
 
 	// Dial the gateway eagerly so configuration drift is caught during application boot.
@@ -312,9 +332,10 @@ func NewStore(address string, timeout time.Duration) (*Store, error) {
 	}
 
 	store := &Store{
-		conn:    conn,
-		client:  sqlitev1.NewSqliteServiceClient(conn),
-		timeout: timeout,
+		conn:             conn,
+		client:           sqlitev1.NewSqliteServiceClient(conn),
+		timeout:          timeout,
+		lexicalTokenizer: lexicalTokenizer,
 	}
 	if err := store.init(context.Background()); err != nil {
 		_ = conn.Close()
@@ -988,7 +1009,7 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		contextEdges := normalizeTurnMemoryContextEdges(record.ID, node.ContextEdges, now)
 		record.SupportCount, record.RebuttalCount = summarizeMemoryContextEdges(contextEdges)
 		script += buildMemoryNodeInsertSQL(record)
-		script += buildMemoryNodeFTSUpsertSQL(record)
+		script += s.buildMemoryNodeFTSUpsertSQL(record)
 		script += buildMemoryContextEdgesReplaceSQL(record.ID, contextEdges)
 		insertedMemoryNodes = append(insertedMemoryNodes, record)
 	}
@@ -2060,7 +2081,7 @@ ORDER BY created_timestamp ASC, id ASC
 // SearchLexicalMemory runs one SQLite FTS recall over durable memory text and returns ranked memory ids for later relational materialization plus RRF fusion.
 // SearchLexicalMemory 用于在长期记忆文本上执行一次 SQLite FTS 召回，并返回后续回表与 RRF 融合所需的排序 memory id。
 func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
-	query = sanitizeSQLiteFTSQuery(query)
+	query = s.lexicalTokenizerOrFallback().BuildSQLiteFTSMatchExpression(query)
 	if query == "" || topK <= 0 {
 		return []logicdomain.MemoryLexicalHit{}, nil
 	}
@@ -2174,7 +2195,7 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 	}
 	now := time.Now().UTC()
 	record = normalizeDirectMemoryNodeRecord(session, record, nextID, now)
-	script := buildMemoryNodeInsertSQL(record) + buildMemoryNodeFTSUpsertSQL(record)
+	script := buildMemoryNodeInsertSQL(record) + s.buildMemoryNodeFTSUpsertSQL(record)
 	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("insert direct memory node: %w", err)
 	}
@@ -3477,13 +3498,14 @@ INSERT INTO vmm_memory_nodes (
 		boolToSQLiteInt(record.DecayDisabled), sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
 }
 
-// buildMemoryNodeFTSUpsertSQL mirrors one durable memory row into the SQLite FTS table so hybrid lexical recall can search abstract and details together.
-// buildMemoryNodeFTSUpsertSQL 用于把长期记忆行同步镜像到 SQLite FTS 表，让混合 lexical 召回可以同时搜索 abstract 和 details。
-func buildMemoryNodeFTSUpsertSQL(record logicdomain.MemoryNodeRecord) string {
+// buildMemoryNodeFTSUpsertSQL mirrors one durable memory row into the SQLite FTS table and pre-tokenizes Chinese text before it reaches unicode61.
+// buildMemoryNodeFTSUpsertSQL 用于把长期记忆行同步镜像到 SQLite FTS 表，并在写入 unicode61 之前先完成中文预分词。
+func (s *Store) buildMemoryNodeFTSUpsertSQL(record logicdomain.MemoryNodeRecord) string {
+	tokenizer := s.lexicalTokenizerOrFallback()
 	return fmt.Sprintf(`
 INSERT OR REPLACE INTO vmm_memory_nodes_fts (rowid, memory_id, abstract, details)
 VALUES (%d, %d, %s, %s);
-`, record.ID, record.ID, sqlStringLiteral(strings.TrimSpace(record.Abstract)), sqlStringLiteral(strings.TrimSpace(record.Details)))
+`, record.ID, record.ID, sqlStringLiteral(tokenizer.BuildSQLiteFTSIndexText(record.Abstract)), sqlStringLiteral(tokenizer.BuildSQLiteFTSIndexText(record.Details)))
 }
 
 // buildMemoryNodesFTSDeleteSQL removes superseded durable rows from the SQLite FTS mirror so lexical recall does not waste work on dead memories.
@@ -4073,36 +4095,13 @@ func buildActiveUnexpiredMemoryCondition(alias string, nowMs int64) string {
 	return fmt.Sprintf(`%smemory_status = %d AND (%sexpires_timestamp <= 0 OR %sexpires_timestamp > %d)`, alias, logicdomain.MemoryStatusActive, alias, alias, nowMs)
 }
 
-// sanitizeSQLiteFTSQuery converts free-form user text into a conservative FTS5 MATCH expression so punctuation or mixed-language input does not break lexical recall.
-// sanitizeSQLiteFTSQuery 用于把自由文本转换成保守的 FTS5 MATCH 表达式，避免标点或中英混合输入直接打断 lexical 召回。
-func sanitizeSQLiteFTSQuery(raw string) string {
-	normalized := textutil.NormalizeWhitespace(raw)
-	if normalized == "" {
-		return ""
+// lexicalTokenizerOrFallback returns the configured tokenizer when available, otherwise one shared disabled tokenizer so tests that instantiate Store manually keep deterministic legacy behavior.
+// lexicalTokenizerOrFallback 用于在存在配置分词器时返回该实例；否则回退到共享的 disabled tokenizer，让手工构造 Store 的测试继续保持确定性的旧行为。
+func (s *Store) lexicalTokenizerOrFallback() *textutil.LexicalTokenizer {
+	if s != nil && s.lexicalTokenizer != nil {
+		return s.lexicalTokenizer
 	}
-	tokens := textutil.Tokenize(normalized)
-	if len(tokens) == 0 {
-		return ""
-	}
-	parts := make([]string, 0, len(tokens)+1)
-	seen := make(map[string]struct{}, len(tokens)+1)
-	appendPart := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			return
-		}
-		value = `"` + strings.ReplaceAll(value, `"`, `""`) + `"`
-		if _, ok := seen[value]; ok {
-			return
-		}
-		seen[value] = struct{}{}
-		parts = append(parts, value)
-	}
-	appendPart(normalized)
-	for _, token := range tokens {
-		appendPart(token)
-	}
-	return strings.Join(parts, " OR ")
+	return textutil.DisabledLexicalTokenizer()
 }
 
 // sortedProfileBindingIDs returns one deterministic ascending id slice from a rendered-profile update map so SQL scripts remain stable in tests and logs.

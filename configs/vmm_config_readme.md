@@ -1,0 +1,539 @@
+# VMM Config README
+
+这份文档用于帮助运维、开发和调试人员理解当前 VulcanMemoryMesh 本地版配置文件里每个节点的作用。
+
+说明原则：
+
+- 以当前代码中的真实配置结构为准，来源是 [config.go](D:/projects/VulcanMemoryMesh/internal/config/config.go)
+- 默认值以 `DefaultLocal()` 为基准
+- 示例配置以 [local.json](D:/projects/VulcanMemoryMesh/configs/local.json) 和 [openai.local.example.json](D:/projects/VulcanMemoryMesh/configs/openai.local.example.json) 为参考
+- 环境变量覆盖以 [configs/.env.example](D:/projects/VulcanMemoryMesh/configs/.env.example) 为参考
+
+## 1. 根节点总览
+
+当前根配置节点如下：
+
+- `grpc`
+- `logging`
+- `pii`
+- `noise`
+- `sqlite`
+- `lancedb`
+- `llm`
+- `embedding`
+- `rerank`
+- `vector`
+- `relational`
+- `post_action`
+- `pre_check`
+- `memory_pipeline`
+
+## 2. grpc
+
+### `grpc.listen_addr`
+
+- 作用：gRPC 服务监听地址
+- 默认值：`:8080`
+- 常见示例：`127.0.0.1:17625`
+- 建议：
+  - 本地调试可绑定 `127.0.0.1`
+  - 如果前面接 Caddy/Nginx，一般仍建议只监听内网或本机地址
+
+### `grpc.max_receive_message_bytes`
+
+- 作用：gRPC 单次请求允许接收的最大消息大小
+- 默认值：`1048576`
+- 说明：
+  - 单位是字节
+  - 过大可能放大异常请求的资源占用
+
+### `grpc.request_timeout.workspace`
+
+- 作用：管理类接口的超时预算
+- 默认值：`15s`
+
+### `grpc.request_timeout.pre_check`
+
+- 作用：`PreCheck` RPC 的总超时预算
+- 默认值：`8s`
+- 注意：
+  - 必须大于 `pre_check.intent_timeout`
+
+### `grpc.request_timeout.post_action`
+
+- 作用：`PostAction` RPC 的总超时预算
+- 默认值：`8s`
+
+### `grpc.shutdown_timeout`
+
+- 作用：应用关闭时等待 gRPC 服务与依赖收尾的预算
+- 默认值：`10s`
+
+## 3. logging
+
+### `logging.level`
+
+- 作用：运行时日志级别
+- 默认值：`info`
+- 常见值：
+  - `debug`
+  - `info`
+  - `warn`
+  - `error`
+- 建议：
+  - `release` 环境可设为 `error`
+  - 排障时再临时切到 `info` 或 `debug`
+
+### `logging.format`
+
+- 作用：日志输出格式
+- 默认值：`text`
+- 当前建议值：
+  - `text`
+
+### `logging.debug_rpc_payloads`
+
+- 作用：是否输出明文调试载荷
+- 默认值：`false`
+- 影响：
+  - 开启后，`PreCheck`、`PostAction`、检索阶段等日志会输出更多完整调试内容
+- 建议：
+  - 仅在本地排障时开启
+
+### `logging.protect_payloads`
+
+- 作用：当不输出明文时，是否把阶段载荷加密记录到日志
+- 默认值：`false`
+- 说明：
+  - 用于保留可审计能力，但避免直接明文落日志
+
+### `logging.payload_encryption_key`
+
+- 作用：受保护载荷日志的加密密钥
+- 默认值：空
+- 注意：
+  - 只有 `logging.protect_payloads=true` 时才需要
+  - 当前要求是可解析成 32 字节密钥
+
+## 4. pii
+
+### `pii.default_language`
+
+- 作用：PII 规则加载时使用的默认语言目录
+- 默认值：`zh-CN`
+- 建议：
+  - 当前仓库主要按中文规则组织，通常保持默认即可
+
+## 5. noise
+
+### `noise.enabled`
+
+- 作用：是否启用写库前的噪声过滤
+- 默认值：`true`
+
+### `noise.default_language`
+
+- 作用：噪声规则默认语言
+- 默认值：`zh-CN`
+
+### `noise.semantic_enabled`
+
+- 作用：是否启用语义噪声门
+- 默认值：`true`
+- 说明：
+  - 如果 embedding 接口不可用，系统会降级为 regex-only
+
+### `noise.semantic_threshold`
+
+- 作用：语义噪声判定阈值
+- 默认值：`0.88`
+- 建议：
+  - 阈值越高越保守
+  - 调低会增加“拦截为噪声”的概率
+
+## 6. sqlite
+
+### `sqlite.address`
+
+- 作用：SQLite gRPC 网关地址
+- 默认值：`127.0.0.1:19501`
+- 说明：
+  - 这是关系存储层，不是 SQLite 文件路径
+
+### `sqlite.timeout`
+
+- 作用：SQLite 网关调用超时
+- 默认值：`5s`
+
+## 7. lancedb
+
+### `lancedb.address`
+
+- 作用：LanceDB gRPC 网关地址
+- 默认值：`127.0.0.1:19301`
+
+### `lancedb.timeout`
+
+- 作用：LanceDB 网关调用超时
+- 默认值：`5s`
+
+### `lancedb.table_name`
+
+- 作用：向量表基础名称
+- 默认值：`vmm_memory_vectors`
+- 说明：
+  - 运行时会自动拼接 embedding 维度，例如 `vmm_memory_vectors_1024`
+
+### `lancedb.vector_column`
+
+- 作用：向量列名
+- 默认值：`vector`
+
+## 8. llm
+
+### `llm.provider`
+
+- 作用：LLM 提供方别名
+- 默认值：`openai`
+- 当前要求：
+  - 必须是 OpenAI-compatible 提供方
+
+### `llm.endpoint`
+
+- 作用：LLM 接口根地址
+- 默认值：空，但启动时必填
+- 常见示例：
+  - `https://api.openai.com/v1`
+  - 其他兼容 `/v1` 接口
+
+### `llm.api_key`
+
+- 作用：LLM 鉴权密钥
+- 默认值：空，但启动时必填
+
+### `llm.model`
+
+- 作用：默认 LLM 模型名
+- 默认值：`gpt-4.1-mini`
+
+### `llm.organization`
+
+- 作用：可选组织标识
+- 默认值：空
+
+### `llm.project`
+
+- 作用：可选 project 标识
+- 默认值：空
+
+### `llm.params`
+
+- 作用：全局 LLM 附加参数
+- 默认值：空对象
+- 常见用途：
+  - provider 特定开关
+  - 通用补充参数
+
+### `llm.model_params`
+
+- 作用：按模型名细分的附加参数
+- 默认值：空对象
+- 常见用途：
+  - 按模型关闭 `thinking`
+  - 对不同模型单独调节参数
+
+## 9. embedding
+
+### `embedding.provider`
+
+- 作用：Embedding 提供方别名
+- 默认值：`openai`
+
+### `embedding.endpoint`
+
+- 作用：Embedding 接口根地址
+- 默认值：空，但启动时必填
+
+### `embedding.api_key`
+
+- 作用：Embedding 鉴权密钥
+- 默认值：空，但启动时必填
+
+### `embedding.model`
+
+- 作用：Embedding 模型名
+- 默认值：`text-embedding-3-large`
+
+### `embedding.dimension`
+
+- 作用：Embedding 维度
+- 默认值：`1024`
+- 注意：
+  - 必须和 LanceDB 实际表维度一致
+
+### `embedding.organization`
+
+- 作用：可选组织标识
+- 默认值：空
+
+### `embedding.project`
+
+- 作用：可选 project 标识
+- 默认值：空
+
+### `embedding.params`
+
+- 作用：Embedding 全局附加参数
+- 默认值：空对象
+
+### `embedding.model_params`
+
+- 作用：按模型名细分的 Embedding 附加参数
+- 默认值：空对象
+
+## 10. rerank
+
+### `rerank.enabled`
+
+- 作用：是否启用重排序
+- 默认值：`false`
+
+### `rerank.provider`
+
+- 作用：重排序提供方
+- 默认值：`dashscope`
+
+### `rerank.endpoint`
+
+- 作用：重排序接口地址
+- 默认值：`https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank`
+
+### `rerank.api_key`
+
+- 作用：重排序接口密钥
+- 默认值：空
+- 说明：
+  - 如果未单独设置，运行时可能回退复用现有 LLM key
+
+### `rerank.model`
+
+- 作用：重排序模型名
+- 默认值：`qwen3-vl-rerank`
+
+### `rerank.top_n`
+
+- 作用：进入 rerank 的候选数
+- 默认值：`8`
+
+### `rerank.timeout`
+
+- 作用：rerank 调用超时
+- 默认值：`8s`
+
+## 11. vector
+
+### `vector.provider`
+
+- 作用：向量后端选择
+- 默认值：`lancedb`
+- 当前有效值：
+  - `lancedb`
+
+## 12. relational
+
+### `relational.provider`
+
+- 作用：关系存储后端选择
+- 默认值：`sqlite`
+- 当前有效值：
+  - `sqlite`
+
+## 13. post_action
+
+### `post_action.input_mode`
+
+- 作用：`PostAction` 输入模式
+- 默认值：`compat`
+- 当前常见值：
+  - `compat`
+  - `strict`
+
+### `post_action.session_analysis_turn_threshold`
+
+- 作用：触发 session 级分析的轮次阈值
+- 默认值：`2`
+
+### `post_action.session_analysis_token_threshold`
+
+- 作用：触发 session 级分析的 token 阈值
+- 默认值：`12000`
+
+### `post_action.session_analysis_idle_timeout`
+
+- 作用：空闲多长时间后触发 session 分析
+- 默认值：`15m`
+
+### `post_action.session_analysis_history_turns`
+
+- 作用：分析时纳入多少条最近历史 turn
+- 默认值：`3`
+
+### `post_action.session_analysis_max_input_tokens`
+
+- 作用：session 分析的最大输入 token 预算
+- 默认值：`6000`
+
+## 14. pre_check
+
+### `pre_check.intent_timeout`
+
+- 作用：`PreCheck` 第一层 LLM 意图提取的内部超时
+- 默认值：`5s`
+- 注意：
+  - 必须小于 `grpc.request_timeout.pre_check`
+
+### `pre_check.top_k`
+
+- 作用：每个 pre-check 检索语句的候选上限
+- 默认值：`5`
+
+### `pre_check.search_scope`
+
+- 作用：`PreCheck` 长期记忆检索范围
+- 默认值：`space`
+- 可选值：
+  - `team`
+  - `space`
+  - `project`
+- 语义：
+  - `team`：检索当前 team 范围共享记忆
+  - `space`：检索当前 space 范围共享记忆
+  - `project`：只检索当前 project
+
+### `pre_check.similarity_threshold`
+
+- 作用：旧桥接字段，仅在 `memory_pipeline.min_similarity_score` 为空时用于回填
+- 默认值：`0`
+- 建议：
+  - 新配置优先直接使用 `memory_pipeline.min_similarity_score`
+
+## 15. memory_pipeline
+
+### `memory_pipeline.max_search_keywords`
+
+- 作用：第一层意图提取最多生成多少个搜索关键词/检索句
+- 默认值：`5`
+
+### `memory_pipeline.min_similarity_score`
+
+- 作用：`PreCheck` 候选进入第二层评审前的最小相似度阈值
+- 默认值：`0.75`
+
+### `memory_pipeline.hybrid_enabled`
+
+- 作用：是否启用混合检索
+- 默认值：`true`
+- 说明：
+  - 开启后会尝试 `vector + lexical + RRF`
+
+### `memory_pipeline.lexical_pre_tokenize`
+
+- 作用：是否启用“应用层预分词后再写入 SQLite FTS5”的 lexical 检索模式
+- 默认值：`true`
+- 说明：
+  - 开启时，运行时会在应用层使用纯 Go 的 `github.com/go-ego/gse` 预分词，并把结果以空格形式写入 `unicode61` FTS5 表
+  - 查询阶段会对原始 query 做同样的预分词，再组装成 `MATCH` 表达式，以修复中文 BM25 对整句汉字难以切词的问题
+  - 关闭时，会回退到仓库原有的正则分词与原始文本写入方式，适合纯英文或希望完全保持旧行为的部署
+
+### `memory_pipeline.lexical_top_k`
+
+- 作用：lexical 召回阶段的候选数
+- 默认值：`8`
+
+### `memory_pipeline.rrf_k`
+
+- 作用：RRF 融合参数
+- 默认值：`60`
+
+### `memory_pipeline.mmr_enabled`
+
+- 作用：是否启用 MMR 多样性控制
+- 默认值：`true`
+
+### `memory_pipeline.mmr_lambda`
+
+- 作用：MMR 权重
+- 默认值：`0.75`
+
+### `memory_pipeline.weibull_enabled`
+
+- 作用：是否启用读时 Weibull 衰减
+- 默认值：`true`
+
+### `memory_pipeline.weibull_shape`
+
+- 作用：Weibull 形状参数
+- 默认值：`1.35`
+
+### `memory_pipeline.weibull_scale_hours`
+
+- 作用：Weibull 时间尺度，单位小时
+- 默认值：`2160`
+
+### `memory_pipeline.weibull_min_multiplier`
+
+- 作用：衰减乘子的最小值
+- 默认值：`0.4`
+
+### `memory_pipeline.weibull_reinforce_weight`
+
+- 作用：强化次数对衰减速度的影响权重
+- 默认值：`0.18`
+
+### `memory_pipeline.weibull_cross_session_boost`
+
+- 作用：跨 session 采纳对衰减速度的提升权重
+- 默认值：`0.12`
+
+## 16. 配置优先级
+
+当前配置来源优先级可以简单理解为：
+
+1. 代码默认值
+2. `configs/*.json`
+3. 环境变量覆盖
+
+如果同一个字段同时出现在 JSON 和环境变量里，环境变量优先。
+
+## 17. 推荐做法
+
+### 本地开发
+
+- 用 `configs/local.json` 作为主配置
+- 敏感信息通过 `.env` 或本地环境变量注入
+- 调试时再临时开启：
+  - `logging.debug_rpc_payloads=true`
+
+### 线上 / 半生产环境
+
+- `logging.level=error`
+- `logging.debug_rpc_payloads=false`
+- 如需保留审计载荷：
+  - `logging.protect_payloads=true`
+  - 配置合法的 `logging.payload_encryption_key`
+
+### 检索范围
+
+- 想让同空间项目共享记忆：
+  - `pre_check.search_scope=space`
+- 想严格项目隔离：
+  - `pre_check.search_scope=project`
+- 想扩大到 team 共享：
+  - `pre_check.search_scope=team`
+
+## 18. 参考文件
+
+- [local.json](D:/projects/VulcanMemoryMesh/configs/local.json)
+- [openai.local.example.json](D:/projects/VulcanMemoryMesh/configs/openai.local.example.json)
+- [.env.example](D:/projects/VulcanMemoryMesh/configs/.env.example)
+- [config.go](D:/projects/VulcanMemoryMesh/internal/config/config.go)

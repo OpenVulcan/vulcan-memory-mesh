@@ -423,6 +423,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - 仍用于 `PreCheck` 过滤低质量召回候选
 - `hybrid_enabled`
   - 是否启用“向量召回 + SQLite FTS5 lexical 召回 + RRF 融合”链路；关闭时保持纯向量检索
+- `lexical_pre_tokenize`
+  - 是否启用“应用层 GSE 预分词 + SQLite FTS5 unicode61”模式；默认开启，用来修复中文 BM25 只能把整句汉字当成单个 token 的问题
+  - 开启后，记忆写入会先把 `abstract/details` 切成空格分隔 token，再写入独立 FTS5 表；查询时会把原始 query 组装成 tokenized phrase + OR tokens 的 `MATCH` 表达式
+  - 关闭时，会回退到仓库原有的正则分词与原始文本索引方式，适合纯英文或需要完全保留旧行为的环境
 - `lexical_top_k`
   - 每个 query group 最多取多少条 lexical 候选参与 RRF 融合
 - `rrf_k`

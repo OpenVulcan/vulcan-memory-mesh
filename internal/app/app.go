@@ -373,7 +373,9 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 	switch normalizeProviderAlias(cfg.Relational.Provider) {
 	case "sqlite":
-		return vldb_sqlite.NewStore(cfg.SQLite.Address, cfg.SQLite.Timeout.Duration)
+		return vldb_sqlite.NewStore(cfg.SQLite.Address, cfg.SQLite.Timeout.Duration, vldb_sqlite.StoreOptions{
+			LexicalPreTokenize: cfg.MemoryPipeline.LexicalPreTokenize,
+		})
 	default:
 		return nil, fmt.Errorf("unsupported relational provider: %s", cfg.Relational.Provider)
 	}
