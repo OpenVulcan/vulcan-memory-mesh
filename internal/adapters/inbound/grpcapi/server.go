@@ -81,6 +81,15 @@ func NewServer(deps Dependencies) *Server {
 	}
 }
 
+// validator returns the configured request validator and falls back to the default transport validator when direct tests or manual integrations build one partial Server without calling NewServer.
+// validator 用于返回当前配置的请求校验器；当直接测试或手工集成绕过 NewServer 构造了一个部分装配的 Server 时，会回退到默认传输层校验器。
+func (s *Server) validator() *RequestValidator {
+	if s == nil || s.validate == nil {
+		return NewRequestValidator()
+	}
+	return s.validate
+}
+
 // BuildUnaryInterceptors returns the standard unary interceptor chain used by the gRPC server.
 // BuildUnaryInterceptors 用于返回 gRPC 服务使用的标准一元拦截器链。
 func BuildUnaryInterceptors(deps Dependencies) []grpc.UnaryServerInterceptor {
@@ -128,7 +137,7 @@ func (s *Server) ResolveProject(ctx context.Context, req *vmmv1.ResolveProjectRe
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeResolveProjectRequest(req)
-	if err := s.validate.ValidateResolveProject(req); err != nil {
+	if err := s.validator().ValidateResolveProject(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -151,7 +160,7 @@ func (s *Server) EnsureProject(ctx context.Context, req *vmmv1.EnsureProjectRequ
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeEnsureProjectRequest(req)
-	if err := s.validate.ValidateEnsureProject(req); err != nil {
+	if err := s.validator().ValidateEnsureProject(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -181,7 +190,7 @@ func (s *Server) DeleteProject(ctx context.Context, req *vmmv1.DeleteProjectRequ
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeDeleteProjectRequest(req)
-	if err := s.validate.ValidateDeleteProject(req); err != nil {
+	if err := s.validator().ValidateDeleteProject(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -213,7 +222,7 @@ func (s *Server) MigrateProject(ctx context.Context, req *vmmv1.MigrateProjectRe
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeMigrateProjectRequest(req)
-	if err := s.validate.ValidateMigrateProject(req); err != nil {
+	if err := s.validator().ValidateMigrateProject(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -242,7 +251,7 @@ func (s *Server) ResolveUser(ctx context.Context, req *vmmv1.ResolveUserRequest)
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeResolveUserRequest(req)
-	if err := s.validate.ValidateResolveUser(req); err != nil {
+	if err := s.validator().ValidateResolveUser(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -286,7 +295,7 @@ func (s *Server) DeleteUser(ctx context.Context, req *vmmv1.DeleteUserRequest) (
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeDeleteUserRequest(req)
-	if err := s.validate.ValidateDeleteUser(req); err != nil {
+	if err := s.validator().ValidateDeleteUser(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -317,7 +326,7 @@ func (s *Server) GetProfileNodes(ctx context.Context, req *vmmv1.GetProfileNodes
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeGetProfileNodesRequest(req)
-	if err := s.validate.ValidateGetProfileNodes(req); err != nil {
+	if err := s.validator().ValidateGetProfileNodes(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	targetType, err := fromProtoProfileTarget(req.GetTarget())
@@ -352,7 +361,7 @@ func (s *Server) GetProfileBundle(ctx context.Context, req *vmmv1.GetProfileBund
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeGetProfileBundleRequest(req)
-	if err := s.validate.ValidateGetProfileBundle(req); err != nil {
+	if err := s.validator().ValidateGetProfileBundle(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	mode, err := fromProtoProfileBundleMode(req.GetMode())
@@ -391,7 +400,7 @@ func (s *Server) ApplyProfileInstruction(ctx context.Context, req *vmmv1.ApplyPr
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeApplyProfileInstructionRequest(req)
-	if err := s.validate.ValidateApplyProfileInstruction(req); err != nil {
+	if err := s.validator().ValidateApplyProfileInstruction(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	targetType, err := fromProtoProfileTarget(req.GetTarget())
@@ -436,7 +445,7 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeSearchMemoryEventsRequest(req)
-	if err := s.validate.ValidateSearchMemoryEvents(req); err != nil {
+	if err := s.validator().ValidateSearchMemoryEvents(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -486,7 +495,7 @@ func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRe
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeGetTurnDetailsRequest(req)
-	if err := s.validate.ValidateGetTurnDetails(req); err != nil {
+	if err := s.validator().ValidateGetTurnDetails(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -512,7 +521,7 @@ func (s *Server) GetMemoryDetails(ctx context.Context, req *vmmv1.GetMemoryDetai
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeGetMemoryDetailsRequest(req)
-	if err := s.validate.ValidateGetMemoryDetails(req); err != nil {
+	if err := s.validator().ValidateGetMemoryDetails(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
@@ -553,7 +562,7 @@ func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequ
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizeWriteMemoriesRequest(req)
-	if err := s.validate.ValidateWriteMemories(req); err != nil {
+	if err := s.validator().ValidateWriteMemories(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	session, ok := resolvedSessionRefFromContext(ctx)
@@ -607,7 +616,7 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizePreCheckRequest(req)
-	if err := s.validate.ValidatePreCheck(req); err != nil {
+	if err := s.validator().ValidatePreCheck(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	session, ok := resolvedSessionRefFromContext(ctx)
@@ -649,7 +658,7 @@ func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (
 		return nil, toStatus(errRouteDisabled)
 	}
 	NormalizePostActionRequest(req)
-	if err := s.validate.ValidatePostAction(req); err != nil {
+	if err := s.validator().ValidatePostAction(req); err != nil {
 		return nil, toStatus(describeError(err))
 	}
 	session, ok := resolvedSessionRefFromContext(ctx)
@@ -679,8 +688,11 @@ func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (
 }
 
 // withTimeout wraps one RPC context with a configured timeout when the timeout is positive.
-// withTimeout 用于在超时为正数时给 RPC 上下文包一层配置化超时。
+// withTimeout 用于在超时为正数时给 RPC 上下文包一层配置化超时，并在直接测试或手工集成传入 nil context 时回退到 background context。
 func withTimeout(ctx context.Context, timeout time.Duration) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	if timeout <= 0 {
 		return context.WithCancel(ctx)
 	}

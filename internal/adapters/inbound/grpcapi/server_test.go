@@ -891,6 +891,56 @@ func TestRecoveryInterceptorAllowsNilHandler(t *testing.T) {
 	}
 }
 
+// TestListProjectsAllowsNilContext verifies the exported server method remains safe when direct tests or manual integrations call it with a nil context.
+// TestListProjectsAllowsNilContext 用于验证导出的服务端方法在直接测试或手工集成以 nil context 调用时仍然安全，而不会在超时包装阶段直接 panic。
+func TestListProjectsAllowsNilContext(t *testing.T) {
+	server := &Server{
+		workspace: &stubWorkspaceExecutor{
+			projects: []logicdomain.ProjectRecord{{
+				ID:        9,
+				TeamID:    3,
+				SpaceID:   5,
+				TeamName:  "TeamA",
+				SpaceName: "SpaceA",
+				Name:      "ProjectA",
+			}},
+		},
+	}
+
+	resp, err := server.ListProjects(nil, &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("unexpected list projects error: %v", err)
+	}
+	if len(resp.GetProjects()) != 1 || resp.GetProjects()[0].GetProjectId() != 9 {
+		t.Fatalf("unexpected list projects response: %+v", resp)
+	}
+}
+
+// TestResolveProjectAllowsNilValidator verifies one partially assembled server can still fall back to the default validator instead of panicking on a nil validate field.
+// TestResolveProjectAllowsNilValidator 用于验证部分装配的服务端在 validate 字段为 nil 时会回退到默认校验器，而不是直接 panic。
+func TestResolveProjectAllowsNilValidator(t *testing.T) {
+	server := &Server{
+		workspace: &stubWorkspaceExecutor{
+			resolvedProject: logicdomain.ProjectRecord{
+				ID:        9,
+				TeamID:    3,
+				SpaceID:   5,
+				TeamName:  "TeamA",
+				SpaceName: "SpaceA",
+				Name:      "ProjectA",
+			},
+		},
+	}
+
+	resp, err := server.ResolveProject(context.Background(), &vmmv1.ResolveProjectRequest{ProjectRef: "9"})
+	if err != nil {
+		t.Fatalf("unexpected resolve project error: %v", err)
+	}
+	if resp.GetProject().GetProjectId() != 9 {
+		t.Fatalf("unexpected resolved project: %+v", resp.GetProject())
+	}
+}
+
 // preCheckFunc adapts a plain function to the current PreCheckExecutor interface.
 // preCheckFunc 用于把普通函数适配到当前 PreCheckExecutor 接口。
 type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error)
@@ -947,7 +997,8 @@ func (stubScopeResolver) ResolveRequestScope(_ context.Context, sessionKey strin
 // stubWorkspaceExecutor supplies just enough admin behavior for gRPC transport tests.
 // stubWorkspaceExecutor 用于为 gRPC 传输测试提供最小但足够的管理行为。
 type stubWorkspaceExecutor struct {
-	projects []logicdomain.ProjectRecord
+	projects        []logicdomain.ProjectRecord
+	resolvedProject logicdomain.ProjectRecord
 }
 
 // ListProjects returns the canned project list for deterministic transport assertions.
@@ -959,7 +1010,7 @@ func (s *stubWorkspaceExecutor) ListProjects(context.Context) ([]logicdomain.Pro
 // ResolveProject keeps the test double interface-complete while focused tests only cover project listing.
 // ResolveProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
 func (s *stubWorkspaceExecutor) ResolveProject(_ context.Context, _ string) (logicdomain.ProjectRecord, error) {
-	return logicdomain.ProjectRecord{}, nil
+	return s.resolvedProject, nil
 }
 
 // EnsureProject keeps the test double interface-complete while focused tests only cover project listing.
