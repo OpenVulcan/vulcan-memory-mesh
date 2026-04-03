@@ -828,6 +828,69 @@ func TestRequestLoggerInterceptorAllowsNilContext(t *testing.T) {
 	}
 }
 
+// TestTraceIDInterceptorAllowsNilHandler verifies the exported trace interceptor returns a stable internal error instead of panicking when direct tests forget to pass a unary handler.
+// TestTraceIDInterceptorAllowsNilHandler 用于验证导出的 trace 拦截器在直接测试忘记传入 unary handler 时，会返回稳定的内部错误，而不是直接 panic。
+func TestTraceIDInterceptorAllowsNilHandler(t *testing.T) {
+	interceptor := TraceIDInterceptor(stubIDGenerator{id: "trc-test"})
+
+	_, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/Healthz"}, nil)
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+}
+
+// TestScopeResolutionInterceptorAllowsNilHandler verifies the scope interceptor degrades into a stable internal error when direct invocations omit the unary handler after scope resolution succeeds.
+// TestScopeResolutionInterceptorAllowsNilHandler 用于验证范围拦截器在完成 scope 解析后若直接调用缺少 unary handler，会退化为稳定的内部错误。
+func TestScopeResolutionInterceptorAllowsNilHandler(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := ScopeResolutionInterceptor(stubScopeResolver{}, logger)
+	req := &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "当前项目怎么样",
+	}
+
+	_, err := interceptor(context.Background(), req, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/PreCheck"}, nil)
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+}
+
+// TestRequestLoggerInterceptorAllowsNilHandler verifies the exported request logger emits one degraded request log instead of panicking when direct tests omit the unary handler.
+// TestRequestLoggerInterceptorAllowsNilHandler 用于验证导出的请求日志拦截器在直接测试缺少 unary handler 时，会输出一条降级请求日志，而不是直接 panic。
+func TestRequestLoggerInterceptorAllowsNilHandler(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := RequestLoggerInterceptor(logger)
+
+	_, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/Healthz"}, nil)
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, `MSG："grpc request"`) {
+		t.Fatalf("expected grpc request log, got %s", logs)
+	}
+	if !strings.Contains(logs, `code："Internal"`) {
+		t.Fatalf("expected degraded internal status in logs, got %s", logs)
+	}
+}
+
+// TestRecoveryInterceptorAllowsNilHandler verifies the exported recovery interceptor returns a stable internal error when direct tests omit the unary handler and therefore no panic recovery path can run.
+// TestRecoveryInterceptorAllowsNilHandler 用于验证导出的恢复拦截器在直接测试缺少 unary handler 时，会返回稳定的内部错误，因为这时不存在可恢复的下游 panic 路径。
+func TestRecoveryInterceptorAllowsNilHandler(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := RecoveryInterceptor(logger)
+
+	_, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/Healthz"}, nil)
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+}
+
 // preCheckFunc adapts a plain function to the current PreCheckExecutor interface.
 // preCheckFunc 用于把普通函数适配到当前 PreCheckExecutor 接口。
 type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error)

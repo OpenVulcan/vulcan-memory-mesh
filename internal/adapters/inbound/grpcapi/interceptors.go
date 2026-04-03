@@ -52,7 +52,7 @@ func TraceIDInterceptor(ids appports.IDGenerator) grpc.UnaryServerInterceptor {
 			_ = grpc.SetHeader(ctx, metadata.Pairs(traceIDHeader, traceID))
 			ctx = trace.WithTraceID(ctx, traceID)
 		}
-		return handler(ctx, req)
+		return invokeUnaryHandler(ctx, req, handler)
 	}
 }
 
@@ -68,7 +68,7 @@ func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *
 		// Only the business-chain RPCs that depend on one resolved session need deterministic scope resolution before the handler starts.
 		// 只有依赖已解析 session 的业务链路 RPC，才需要在处理器执行前完成确定性范围解析。
 		if info == nil || !requiresResolvedScope(info.FullMethod) {
-			return handler(ctx, req)
+			return invokeUnaryHandler(ctx, req, handler)
 		}
 		if resolver == nil {
 			return nil, toStatus(withMessage(errInternal, "request scope resolver is not configured"))
@@ -82,7 +82,7 @@ func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *
 			return nil, toStatus(describeError(err))
 		}
 		logger.Info("grpc scope resolved", "trace_id", trace.IDFromContext(ctx), "method", info.FullMethod, "session_key", session.SessionKey, "session_id", session.SessionID, "user_id", session.UserID, "project_id", session.ProjectID)
-		return handler(withResolvedSessionRef(ctx, session), req)
+		return invokeUnaryHandler(withResolvedSessionRef(ctx, session), req, handler)
 	}
 }
 
@@ -99,7 +99,7 @@ func RequestLoggerInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 		// 在 RPC 完成后采集耗时、对端地址和状态码。
 		start := time.Now()
 		method := unaryMethodName(info)
-		resp, err := handler(ctx, req)
+		resp, err := invokeUnaryHandler(ctx, req, handler)
 		code := status.Code(err)
 		args := []any{
 			"trace_id", trace.IDFromContext(ctx),
@@ -140,7 +140,7 @@ func RecoveryInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 				err = toStatus(errInternal)
 			}
 		}()
-		return handler(ctx, req)
+		return invokeUnaryHandler(ctx, req, handler)
 	}
 }
 
@@ -151,6 +151,15 @@ func normalizedUnaryContext(ctx context.Context) context.Context {
 		return context.Background()
 	}
 	return ctx
+}
+
+// invokeUnaryHandler centralizes direct handler invocation so exported interceptors degrade into a stable internal error when tests or manual integrations forget to provide the unary handler.
+// invokeUnaryHandler 用于统一执行下游 handler，让导出拦截器在测试或手工集成忘记传入 unary handler 时退化为稳定的内部错误，而不是直接 panic。
+func invokeUnaryHandler(ctx context.Context, req any, handler grpc.UnaryHandler) (any, error) {
+	if handler == nil {
+		return nil, toStatus(withMessage(errInternal, "grpc unary handler is not configured"))
+	}
+	return handler(ctx, req)
 }
 
 // redactedPanicLogFields converts one panic value into stable diagnostics so recovery logs stay useful without writing raw panic payloads into runtime logs.
