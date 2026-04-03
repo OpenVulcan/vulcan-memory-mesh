@@ -184,9 +184,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
     - 服务端直接返回可注入的组合提示词
     - 这是权威输出，调用方应直接消费 `combined_text`
     - 为避免重复拼接，辅助说明字段和拆分字段会留空
+    - 只会保留实际存在正文的 scope；不存在的 `TEAM / SPACE / PROJECT / USER` 不会额外生成对应说明或标签
+    - 如果四个 scope 都没有画像正文，则 `combined_text` 直接为空字符串
     - `include_explanation`
       - 省略时默认开启
-      - 打开时，会把 `P/L/W` 说明与 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 的含义直接内嵌进 `combined_text`
+      - 打开时，会把 `P/L/W` 说明与“当前实际存在的 scope”含义直接内嵌进 `combined_text`
       - 关闭时，只返回正文结构
   - `split`
     - 服务端只分别返回 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 四段正文
@@ -194,7 +196,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
     - `include_explanation` 在该模式下不会额外返回说明字段
 - 组合文本固定强调环境约束优先级：
   - `Project > Space > Team`
-- 组合结果始终显式保留结构标签：
+- 组合结果只为实际存在正文的 scope 显式保留结构标签：
   - `[TEAM]`
   - `[SPACE]`
   - `[PROJECT]`

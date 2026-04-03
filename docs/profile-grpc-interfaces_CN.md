@@ -102,9 +102,11 @@
   - 服务端直接返回完整组合文本
   - 这是权威输出，调用方应直接消费 `combined_text`
   - 为避免重复拼接，辅助说明字段和拆分字段保持为空
+  - 只会输出存在真实正文的 scope；不存在的 `TEAM / SPACE / PROJECT / USER` 不会补空标签或额外说明
+  - 如果四个 scope 都没有画像正文，则 `combined_text` 直接为空字符串
   - `include_explanation`
     - 省略时默认开启
-    - 打开时，把 `P/L/W` 与 `[TEAM] / [SPACE] / [PROJECT] / [USER]` 的含义直接内嵌到 `combined_text`
+    - 打开时，只为当前实际存在正文的 scope 内嵌 `P/L/W` 与对应结构含义
     - 关闭时，只返回正文结构
 - `SPLIT`
   - 服务端分别返回 `TEAM / SPACE / PROJECT / USER` 四段正文
@@ -121,7 +123,7 @@
 
 - 环境约束优先级：
   - `Project > Space > Team`
-- 正文结构显式保留：
+- 正文结构只为实际存在正文的 scope 显式保留：
   - `[TEAM]`
   - `[SPACE]`
   - `[PROJECT]`

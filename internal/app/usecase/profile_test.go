@@ -95,6 +95,9 @@ func TestProfileUseCaseGetBundleBuildsCombinedPrompt(t *testing.T) {
 	if !strings.Contains(result.CombinedText, "P/L/W 说明") || !strings.Contains(result.CombinedText, "结构说明") {
 		t.Fatalf("expected explanation text in combined bundle, got %q", result.CombinedText)
 	}
+	if strings.Contains(result.CombinedText, "[SPACE]：") {
+		t.Fatalf("did not expect explanation text for empty space scope, got %q", result.CombinedText)
+	}
 	if !strings.Contains(result.CombinedText, "[TEAM]\n2026-03-29:\n[P0][L3][W1] 团队统一使用英文提交信息。") {
 		t.Fatalf("expected team section in combined bundle, got %q", result.CombinedText)
 	}
@@ -109,6 +112,49 @@ func TestProfileUseCaseGetBundleBuildsCombinedPrompt(t *testing.T) {
 	}
 	if !strings.Contains(result.CombinedText, "[USER]\n2026-03-31:\n[P1][L2][W2] 用户偏好使用 Rust。") {
 		t.Fatalf("expected user section in combined bundle, got %q", result.CombinedText)
+	}
+	if result.ExplanationText != "" || result.EnvironmentPriority != "" {
+		t.Fatalf("expected helper fields to stay empty in full mode, got %+v", result)
+	}
+	if result.TeamProfile != "" || result.SpaceProfile != "" || result.ProjectProfile != "" || result.UserProfile != "" {
+		t.Fatalf("expected split sections to stay empty in full mode, got %+v", result)
+	}
+}
+
+// TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing verifies full mode returns an empty string instead of a legend-only prompt when every scope profile is empty.
+// TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing 用于验证当所有 scope 画像都为空时，full 模式会直接返回空字符串，而不是只返回说明文案。
+func TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing(t *testing.T) {
+	store := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+		renderedProfiles: map[string]string{},
+	}
+	uc := NewProfileUseCase(store, nil, nil)
+
+	result, err := uc.GetBundle(context.Background(), ProfileBundleCommand{
+		UserID:             7,
+		ProjectID:          9,
+		Mode:               ProfileBundleModeFull,
+		IncludeExplanation: true,
+	})
+	if err != nil {
+		t.Fatalf("get empty profile bundle: %v", err)
+	}
+	if result.CombinedText != "" {
+		t.Fatalf("expected empty combined text when all scopes are empty, got %q", result.CombinedText)
 	}
 	if result.ExplanationText != "" || result.EnvironmentPriority != "" {
 		t.Fatalf("expected helper fields to stay empty in full mode, got %+v", result)

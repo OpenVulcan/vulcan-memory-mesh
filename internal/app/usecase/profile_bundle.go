@@ -33,9 +33,9 @@ const (
 	// profileBundleUserHeader 用于说明 USER 偏好需要在不违反环境约束的前提下尽量满足。
 	profileBundleUserHeader = "以下是你当前正在服务的目标用户偏好（请在不违反环境约束的前提下，尽量迎合用户）："
 
-	// profileBundleExplanationText keeps the optional P/L/W legend outside the stored scope profile body so callers can turn it on only when they need help text.
-	// profileBundleExplanationText 用于把可选的 P/L/W 说明放在存储画像正文之外，让调用方只在需要帮助说明时才打开。
-	profileBundleExplanationText = `以下是等级与偏好权重说明：
+	// profileBundleExplanationBaseText keeps the optional P/L/W legend outside the stored scope profile body so callers can turn it on only when they need help text.
+	// profileBundleExplanationBaseText 用于把可选的 P/L/W 说明放在存储画像正文之外，让调用方只在需要帮助说明时才打开。
+	profileBundleExplanationBaseText = `以下是等级与偏好权重说明：
 - P/L/W 说明：
 - P = Priority（优先级）
   - P0：硬约束 / 不可违背的规则
@@ -47,13 +47,7 @@ const (
   - L2：稳定习惯或长期偏好
   - L3：持久规则 / 强约束 / 身份特征
 - W = Refresh Weight（刷新权重）
-  - 更高的 W 代表这条记忆被再次确认或续期的次数更多。
-
-结构说明：
-- [TEAM]：团队级画像，表示团队范围内共享的长期规则与约定。
-- [SPACE]：空间级画像，表示当前空间内共享的规则与上下文。
-- [PROJECT]：当前项目画像，表示当前项目的具体约束、目标与工程约定。
-- [USER]：当前正在服务的目标用户偏好，需要在不违反环境约束的前提下尽量满足。`
+  - 更高的 W 代表这条记忆被再次确认或续期的次数更多。`
 )
 
 // ProfileBundleCommand carries the user/project pair plus the output mode used to assemble one deterministic profile prompt bundle.
@@ -160,7 +154,7 @@ func (u *ProfileUseCase) GetBundle(ctx context.Context, cmd ProfileBundleCommand
 		result.IncludeExplanation = false
 	}
 	if cmd.Mode == ProfileBundleModeFull && cmd.IncludeExplanation {
-		result.ExplanationText = profileBundleExplanationText
+		result.ExplanationText = buildProfileBundleExplanationText(result)
 	}
 	if cmd.Mode == ProfileBundleModeFull {
 		result.CombinedText = buildProfileBundleText(result)
@@ -209,15 +203,31 @@ func validateProfileBundleCommand(cmd ProfileBundleCommand) error {
 	}
 }
 
+// buildProfileBundleExplanationText renders only the scope legend lines that correspond to profiles actually present in the bundle.
+// buildProfileBundleExplanationText 用于仅为当前 bundle 中真实存在正文的 scope 生成说明行，避免向调用方暗示不存在的画像层级。
+func buildProfileBundleExplanationText(result ProfileBundleResult) string {
+	scopeLines := make([]string, 0, 4)
+	if strings.TrimSpace(result.TeamProfile) != "" {
+		scopeLines = append(scopeLines, "- [TEAM]：团队级画像，表示团队范围内共享的长期规则与约定。")
+	}
+	if strings.TrimSpace(result.SpaceProfile) != "" {
+		scopeLines = append(scopeLines, "- [SPACE]：空间级画像，表示当前空间内共享的规则与上下文。")
+	}
+	if strings.TrimSpace(result.ProjectProfile) != "" {
+		scopeLines = append(scopeLines, "- [PROJECT]：当前项目画像，表示当前项目的具体约束、目标与工程约定。")
+	}
+	if strings.TrimSpace(result.UserProfile) != "" {
+		scopeLines = append(scopeLines, "- [USER]：当前正在服务的目标用户偏好，需要在不违反环境约束的前提下尽量满足。")
+	}
+	if len(scopeLines) == 0 {
+		return ""
+	}
+	return strings.TrimSpace(profileBundleExplanationBaseText + "\n\n结构说明：\n" + strings.Join(scopeLines, "\n"))
+}
+
 // buildProfileBundleText assembles the final injection-ready prompt text with deterministic section ordering and optional explanation text.
 // buildProfileBundleText 用于按确定性 section 顺序组装最终可注入提示词，并按需包含解释说明。
 func buildProfileBundleText(result ProfileBundleResult) string {
-	blocks := make([]string, 0, 4)
-	blocks = append(blocks, profileBundleIntroText)
-	if strings.TrimSpace(result.ExplanationText) != "" {
-		blocks = append(blocks, strings.TrimSpace(result.ExplanationText))
-	}
-
 	environmentSections := make([]string, 0, 3)
 	if strings.TrimSpace(result.TeamProfile) != "" {
 		environmentSections = append(environmentSections, "[TEAM]\n"+strings.TrimSpace(result.TeamProfile))
@@ -228,12 +238,29 @@ func buildProfileBundleText(result ProfileBundleResult) string {
 	if strings.TrimSpace(result.ProjectProfile) != "" {
 		environmentSections = append(environmentSections, "[PROJECT]\n"+strings.TrimSpace(result.ProjectProfile))
 	}
+	userProfile := strings.TrimSpace(result.UserProfile)
+
+	// Return an empty string when every scope is empty so callers do not receive
+	// a misleading "full" bundle that only contains legends or intro copy.
+	// 当所有 scope 都为空时，直接返回空字符串，避免调用方拿到只有说明文案的伪“完整画像”结果。
+	if len(environmentSections) == 0 && userProfile == "" {
+		return ""
+	}
+
+	blocks := make([]string, 0, 4)
+	blocks = append(blocks, profileBundleIntroText)
+	if strings.TrimSpace(result.ExplanationText) != "" {
+		blocks = append(blocks, strings.TrimSpace(result.ExplanationText))
+	}
+
+	// Only render section headers for scopes that already have real profile bodies,
+	// so the combined prompt never advertises nonexistent TEAM/SPACE/PROJECT content.
+	// 只有在对应 scope 存在真实画像正文时才输出分段头，避免组合文本暗示不存在的 TEAM/SPACE/PROJECT 内容。
 	if len(environmentSections) > 0 {
 		blocks = append(blocks, profileBundleEnvironmentHeader+"\n"+strings.Join(environmentSections, "\n\n"))
 	}
-
-	if strings.TrimSpace(result.UserProfile) != "" {
-		blocks = append(blocks, profileBundleUserHeader+"\n[USER]\n"+strings.TrimSpace(result.UserProfile))
+	if userProfile != "" {
+		blocks = append(blocks, profileBundleUserHeader+"\n[USER]\n"+userProfile)
 	}
 	return strings.TrimSpace(strings.Join(blocks, "\n\n"))
 }

@@ -354,6 +354,8 @@
   - 返回一段可直接注入的大模型提示词
   - 这是权威输出，调用方应直接消费 `combined_text`
   - 为避免重复拼接，辅助说明字段和拆分字段会保持为空
+  - 只会输出存在真实正文的 scope；不存在的 `TEAM / SPACE / PROJECT / USER` 不会补空标签或额外说明
+  - 如果四个 scope 都没有画像正文，则 `combined_text` 直接为空字符串
   - 结果中显式保留：
     - `[TEAM]`
     - `[SPACE]`
@@ -363,7 +365,7 @@
     - `Project > Space > Team`
   - `include_explanation`
     - 省略时默认开启
-    - 打开时，会把 `P/L/W` 与 `[TEAM]/[SPACE]/[PROJECT]/[USER]` 的含义直接内嵌到 `combined_text`
+    - 打开时，会把 `P/L/W` 与“当前实际存在的 scope”含义直接内嵌到 `combined_text`
     - 关闭时，只返回正文结构
 - `SPLIT`
   - 不返回完整合并文本
