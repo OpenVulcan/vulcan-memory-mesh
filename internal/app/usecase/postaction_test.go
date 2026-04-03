@@ -15,6 +15,46 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 )
 
+// TestPostActionExecuteRejectsNilReceiver verifies the exported post-action use case returns one stable error instead of panicking when direct tests or manual integrations accidentally invoke Execute on a nil receiver.
+// TestPostActionExecuteRejectsNilReceiver 用于验证导出的 post-action 用例在直接测试或手工集成误把 Execute 调到 nil 接收者上时，会返回稳定错误，而不是直接 panic。
+func TestPostActionExecuteRejectsNilReceiver(t *testing.T) {
+	var uc *PostActionUseCase
+
+	_, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			ProjectID:  9,
+		},
+		UserContent:      "第一问",
+		AssistantContent: "收到",
+	})
+	if err == nil || err.Error() != "post-action use case is nil" {
+		t.Fatalf("unexpected nil receiver error: %v", err)
+	}
+}
+
+// TestPostActionExecuteRejectsNilStore verifies the exported post-action use case fails fast with one stable error when partial construction omits the relational store required for durable turn persistence.
+// TestPostActionExecuteRejectsNilStore 用于验证当部分装配遗漏 turn 持久化所需的关系存储时，导出的 post-action 用例会快速返回稳定错误。
+func TestPostActionExecuteRejectsNilStore(t *testing.T) {
+	uc := newPostActionUseCase(nil, nil, nil, nil, &stubPostActionTurnAnalyzer{}, nil, PostActionAnalysisConfig{}, nil, false)
+
+	_, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			ProjectID:  9,
+		},
+		UserContent:      "第一问",
+		AssistantContent: "收到",
+	})
+	if err == nil || err.Error() != "post-action relational store is nil" {
+		t.Fatalf("unexpected nil store error: %v", err)
+	}
+}
+
 // TestPostActionUseCaseDropsSingleRoundNoise verifies simple user-assistant pairs can still be rejected by the noise gate before relational persistence.
 // TestPostActionUseCaseDropsSingleRoundNoise 用于验证简单的单轮 user-assistant 问答仍然会在关系持久化前被噪声门拒绝。
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
@@ -234,8 +274,8 @@ func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		TurnID:   88,
-		Details:  "用户银行卡 1234 的部署方案需要切到本地模式。",
+		TurnID:  88,
+		Details: "用户银行卡 1234 的部署方案需要切到本地模式。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "用户身份证 5678 的部署偏好", Details: "这是敏感派生文本。"},
 		},

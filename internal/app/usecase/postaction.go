@@ -148,6 +148,13 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 // Execute persists one cleaned turn into the resolved session, enqueues background extraction, and returns immediately without blocking on LLM work.
 // Execute 用于把清洗后的单条 turn 持久化到已解析的 session 中、把后台提炼工作入队，并在不等待 LLM 完成的情况下立即返回。
 func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error) {
+	if u == nil {
+		return PostActionResult{}, fmt.Errorf("post-action use case is nil")
+	}
+	if u.store == nil {
+		return PostActionResult{}, fmt.Errorf("post-action relational store is nil")
+	}
+
 	// Validate the resolved session scope and the new text-only payload before touching storage.
 	// 在访问存储前先校验已解析的 session 范围和新的纯文本载荷。
 	if err := validatePostAction(cmd); err != nil {
