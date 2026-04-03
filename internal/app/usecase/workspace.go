@@ -36,28 +36,53 @@ func NewWorkspaceUseCase(store appports.WorkspaceStore, vector appports.VectorSt
 	return &WorkspaceUseCase{store: store, vector: vector}
 }
 
+// workspaceStore returns the configured workspace store and fails fast with one stable error when direct tests or manual integrations call the exported admin use case through a nil or partially constructed receiver.
+// workspaceStore 用于返回当前配置的 workspace store；当直接测试或手工集成通过 nil 或部分装配的接收者调用导出管理用例时，会快速返回稳定错误。
+func (u *WorkspaceUseCase) workspaceStore() (appports.WorkspaceStore, error) {
+	if u == nil || u.store == nil {
+		return nil, fmt.Errorf("workspace store is nil")
+	}
+	return u.store, nil
+}
+
 // ListProjects returns all canonical project nodes ordered by their Team/Space/Project display path.
 // ListProjects 用于返回按 Team/Space/Project 展示路径排序的全部项目节点。
 func (u *WorkspaceUseCase) ListProjects(ctx context.Context) ([]logicdomain.ProjectRecord, error) {
-	return u.store.ListProjects(ctx)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.ListProjects(ctx)
 }
 
 // ResolveProject resolves one project from either numeric id or canonical Team/Space/Project path.
 // ResolveProject 用于按数字 ID 或标准 Team/Space/Project 路径解析单个项目。
 func (u *WorkspaceUseCase) ResolveProject(ctx context.Context, projectRef string) (logicdomain.ProjectRecord, error) {
-	return u.store.ResolveProjectRef(ctx, projectRef)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return logicdomain.ProjectRecord{}, err
+	}
+	return store.ResolveProjectRef(ctx, projectRef)
 }
 
 // EnsureProject resolves or creates one canonical project path according to the confirm-create contract.
 // EnsureProject 用于按确认创建规则解析或创建标准项目路径。
 func (u *WorkspaceUseCase) EnsureProject(ctx context.Context, projectPath string, confirmCreate bool) (logicdomain.ProjectMutationResult, error) {
-	return u.store.EnsureProjectPath(ctx, projectPath, confirmCreate)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return logicdomain.ProjectMutationResult{}, err
+	}
+	return store.EnsureProjectPath(ctx, projectPath, confirmCreate)
 }
 
 // DeleteProject removes one project from the relational store and then clears all vector rows under the same flattened hierarchy filter.
 // DeleteProject 用于先从关系库存储删除单个项目，再清理同一扁平层级范围下的全部向量行。
 func (u *WorkspaceUseCase) DeleteProject(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
-	result, err := u.store.DeleteProjectPath(ctx, projectPath, confirmDelete)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
+	result, err := store.DeleteProjectPath(ctx, projectPath, confirmDelete)
 	if err != nil || result.NeedsConfirm {
 		return result, err
 	}
@@ -78,7 +103,11 @@ func (u *WorkspaceUseCase) DeleteProject(ctx context.Context, projectPath string
 // MigrateProject moves SQL rows first, then rebuilds target project vectors from the durable SQL-side memory entries.
 // MigrateProject 用于先迁移 SQL 数据，再根据长期 SQL 侧记忆条目重建目标项目的向量数据。
 func (u *WorkspaceUseCase) MigrateProject(ctx context.Context, sourcePath, targetPath string, confirm bool) (logicdomain.ProjectMigrationResult, error) {
-	result, err := u.store.MigrateProjectPath(ctx, sourcePath, targetPath, confirm)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
+	}
+	result, err := store.MigrateProjectPath(ctx, sourcePath, targetPath, confirm)
 	if err != nil || result.NeedsConfirm {
 		return result, err
 	}
@@ -92,7 +121,7 @@ func (u *WorkspaceUseCase) MigrateProject(ctx context.Context, sourcePath, targe
 	}); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("delete source project vectors: %w", err)
 	}
-	memories, err := u.store.ListProjectMemories(ctx, result.Target.ID)
+	memories, err := store.ListProjectMemories(ctx, result.Target.ID)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("list target project memories: %w", err)
 	}
@@ -111,10 +140,14 @@ func (u *WorkspaceUseCase) MigrateProject(ctx context.Context, sourcePath, targe
 // ResolveUser resolves one user by numeric id or unique name, and optionally creates the user when confirmCreate is true.
 // ResolveUser 用于按数字 ID 或唯一名称解析用户，并在 confirmCreate 为真时按需创建该用户。
 func (u *WorkspaceUseCase) ResolveUser(ctx context.Context, userRef string, confirmCreate bool) (logicdomain.UserResolveResult, error) {
-	if confirmCreate {
-		return u.store.EnsureUserName(ctx, userRef, true)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return logicdomain.UserResolveResult{}, err
 	}
-	user, err := u.store.ResolveUserRef(ctx, userRef)
+	if confirmCreate {
+		return store.EnsureUserName(ctx, userRef, true)
+	}
+	user, err := store.ResolveUserRef(ctx, userRef)
 	if err != nil {
 		return logicdomain.UserResolveResult{}, err
 	}
@@ -124,13 +157,21 @@ func (u *WorkspaceUseCase) ResolveUser(ctx context.Context, userRef string, conf
 // ListUsers returns all users ordered by id for deterministic admin output.
 // ListUsers 用于按 ID 稳定返回所有用户。
 func (u *WorkspaceUseCase) ListUsers(ctx context.Context) ([]logicdomain.UserRecord, error) {
-	return u.store.ListUsers(ctx)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return nil, err
+	}
+	return store.ListUsers(ctx)
 }
 
 // DeleteUser removes one user from the relational store and then clears all vector rows associated with that user.
 // DeleteUser 用于先从关系库存储删除用户，再清理与该用户关联的全部向量行。
 func (u *WorkspaceUseCase) DeleteUser(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error) {
-	result, err := u.store.DeleteUserRef(ctx, userRef, confirmationCode)
+	store, err := u.workspaceStore()
+	if err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	result, err := store.DeleteUserRef(ctx, userRef, confirmationCode)
 	if err != nil || result.RequiresConfirmation {
 		return result, err
 	}
