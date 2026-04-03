@@ -419,6 +419,27 @@
 ]
 ```
 
+### PreCheck 检索范围配置
+
+- `pre_check.search_scope`
+  - 控制 `PreCheck` 长期记忆召回的层级范围
+  - 可选值：`team`、`space`、`project`
+  - 默认值：`space`
+
+语义说明：
+
+- `team`
+  - 允许当前 team 下的共享长期记忆参与 `PreCheck`
+- `space`
+  - 允许当前 space 下的共享长期记忆参与 `PreCheck`
+- `project`
+  - 仅允许当前 project 下的长期记忆参与 `PreCheck`
+
+注意：
+
+- 这个配置只影响 `PreCheck`
+- 通用 `SearchMemoryEvents` 仍保持项目级过滤默认语义
+
 服务端行为：
 
 - 先通过 `project_id + user_id` 解析当前检索 scope

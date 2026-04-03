@@ -197,6 +197,7 @@ type PostActionConfig struct {
 type PreCheckConfig struct {
 	IntentTimeout       Duration `json:"intent_timeout"`
 	TopK                int      `json:"top_k"`
+	SearchScope         string   `json:"search_scope,omitempty"`
 	SimilarityThreshold float64  `json:"similarity_threshold,omitempty"`
 }
 
@@ -246,7 +247,7 @@ func DefaultLocal() Config {
 			SessionAnalysisHistoryTurns:   3,
 			SessionAnalysisMaxInputTokens: 6000,
 		},
-		PreCheck: PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5},
+		PreCheck: PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5, SearchScope: "space"},
 		MemoryPipeline: MemoryPipelineConfig{
 			MaxSearchKeywords:        5,
 			MinSimilarityScore:       float64Ptr(0.75),
@@ -397,6 +398,35 @@ func dotEnvCandidates(configPath string) []string {
 // float64Ptr 用于执行 float64Ptr 逻辑。
 func float64Ptr(v float64) *float64 { return &v }
 
+// normalizePreCheckSearchScopeValue canonicalizes the pre-check search-scope enum so config defaults, env overrides, and validation all compare the same token.
+// normalizePreCheckSearchScopeValue 用于规范化 pre-check 检索作用域枚举，让配置默认值、环境变量覆盖和校验始终比较同一个 token。
+func normalizePreCheckSearchScopeValue(scope string) string {
+	normalized := strings.ToLower(strings.TrimSpace(scope))
+	switch normalized {
+	case "team":
+		return "team"
+	case "project":
+		return "project"
+	case "space":
+		return "space"
+	case "":
+		return "space"
+	default:
+		return normalized
+	}
+}
+
+// isSupportedPreCheckSearchScopeValue reports whether one caller-provided config token is an explicitly supported pre-check search scope before defaults are applied.
+// isSupportedPreCheckSearchScopeValue 用于判断调用方提供的配置 token 在默认值介入前，是否属于受支持的 pre-check 检索作用域。
+func isSupportedPreCheckSearchScopeValue(scope string) bool {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "team", "space", "project":
+		return true
+	default:
+		return false
+	}
+}
+
 // Normalize executes the Normalize logic.
 // Normalize 用于执行 Normalize 逻辑。
 func (c *Config) Normalize() {
@@ -427,6 +457,7 @@ func (c *Config) Normalize() {
 	if c.PreCheck.TopK <= 0 {
 		c.PreCheck.TopK = 5
 	}
+	c.PreCheck.SearchScope = normalizePreCheckSearchScopeValue(c.PreCheck.SearchScope)
 	if c.PostAction.SessionAnalysisTurnThreshold <= 0 {
 		c.PostAction.SessionAnalysisTurnThreshold = 2
 	}
@@ -561,6 +592,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.LanceDB.Address = strings.TrimSpace(c.LanceDB.Address)
 	c.LanceDB.TableName = strings.TrimSpace(c.LanceDB.TableName)
 	c.LanceDB.VectorColumn = strings.TrimSpace(c.LanceDB.VectorColumn)
+	c.PreCheck.SearchScope = strings.TrimSpace(c.PreCheck.SearchScope)
 	c.LLM.Provider = strings.TrimSpace(c.LLM.Provider)
 	c.LLM.Endpoint = strings.TrimSpace(c.LLM.Endpoint)
 	c.LLM.APIKey = strings.TrimSpace(c.LLM.APIKey)
@@ -625,6 +657,9 @@ func (c Config) Validate() error {
 	}
 	if c.PreCheck.TopK <= 0 {
 		return errors.New("precheck.top_k must be > 0")
+	}
+	if scope := strings.TrimSpace(c.PreCheck.SearchScope); scope != "" && !isSupportedPreCheckSearchScopeValue(scope) {
+		return errors.New("pre_check.search_scope must be one of team, space, or project")
 	}
 	if c.GRPC.RequestTimeout.PreCheck.Duration <= c.PreCheck.IntentTimeout.Duration {
 		return errors.New("grpc.request_timeout.pre_check must be greater than pre_check.intent_timeout")
@@ -851,6 +886,7 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", &cfg.PostAction.SessionAnalysisMaxInputTokens)
 	setDuration("VMM_PRE_CHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
 	setInt("VMM_PRE_CHECK_TOPK", &cfg.PreCheck.TopK)
+	setString("VMM_PRE_CHECK_SEARCH_SCOPE", &cfg.PreCheck.SearchScope)
 	setFloat("VMM_PRE_CHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)

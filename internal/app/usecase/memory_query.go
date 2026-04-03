@@ -69,13 +69,14 @@ var (
 	defaultUserMemoryTTL = 365 * 24 * time.Hour
 )
 
-// MemoryQueryCommand carries one grouped JSON search payload together with the resolved user/project selectors.
-// MemoryQueryCommand 用于承载一份分组 JSON 搜索载荷，以及解析范围所需的 user/project 选择参数。
+// MemoryQueryCommand carries one grouped JSON search payload together with the resolved user/project selectors and one optional scope override for specialized callers such as pre-check.
+// MemoryQueryCommand 用于承载一份分组 JSON 搜索载荷、解析范围所需的 user/project 选择参数，以及供 pre-check 等特殊调用方使用的可选作用域覆盖。
 type MemoryQueryCommand struct {
-	UserID    uint64
-	ProjectID uint64
-	QueryJSON string
-	TopK      int
+	UserID        uint64
+	ProjectID     uint64
+	QueryJSON     string
+	TopK          int
+	ScopeOverride string
 }
 
 // MemoryQueryItem stores one parsed JSON query-group item before embedding and vector search begin.
@@ -409,12 +410,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 
 	// Keep vector recall inside the resolved project hierarchy and enrich the returned vector rows with relational memory refs.
 	// 将向量召回限制在已解析项目层级内，并使用关系记忆行补全向量结果中的长期引用。
-	filter := logicdomain.SearchFilter{
-		UserID:    userTarget.UserID,
-		TeamID:    projectTarget.TeamID,
-		SpaceID:   projectTarget.SpaceID,
-		ProjectID: projectTarget.ProjectID,
-	}
+	filter := buildScopedMemorySearchFilter(userTarget, projectTarget, cmd.ScopeOverride)
 	topK := normalizeMemorySearchTopK(cmd.TopK)
 	candidatePoolK := topK
 	if u.hybridEnabled || u.reranker != nil || u.mmrEnabled {
@@ -702,6 +698,9 @@ func validateMemoryQueryCommand(cmd MemoryQueryCommand) error {
 	}
 	if cmd.TopK < 0 {
 		return logicdomain.ValidationError{Field: "top_k", Message: "must be >= 0"}
+	}
+	if scope := strings.TrimSpace(cmd.ScopeOverride); scope != "" && !isSupportedPreCheckSearchScope(scope) {
+		return logicdomain.ValidationError{Field: "scope_override", Message: "must be team, space, or project when set"}
 	}
 	return nil
 }

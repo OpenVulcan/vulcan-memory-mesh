@@ -1203,6 +1203,56 @@ func TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary(t *testing.T) 
 	}
 }
 
+// TestPreCheckSearchCandidatesPassesConfiguredSearchScope verifies pre-check forwards its dedicated recall-scope config into the unified memory search command so scope policy stays caller-configurable.
+// TestPreCheckSearchCandidatesPassesConfiguredSearchScope 用于验证 pre-check 会把自己的召回作用域配置透传给统一记忆搜索命令，确保作用域策略保持可配置。
+func TestPreCheckSearchCandidatesPassesConfiguredSearchScope(t *testing.T) {
+	cases := []struct {
+		name      string
+		cfgScope  string
+		wantScope string
+	}{
+		{name: "default space", cfgScope: "", wantScope: "space"},
+		{name: "project explicit", cfgScope: "project", wantScope: "project"},
+		{name: "team explicit", cfgScope: "team", wantScope: "team"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			memories := &stubPreCheckMemories{}
+			uc := NewPreCheckUseCase(
+				memories,
+				&stubPreCheckStore{},
+				&stubPreCheckIntentExtractor{},
+				&stubPreCheckReviewer{},
+				&stubPreCheckAssembler{},
+				PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, SearchScope: tc.cfgScope},
+				nil,
+			)
+
+			_, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+				Session: logicdomain.SessionRef{
+					SessionID:  41,
+					SessionKey: "sess-1",
+					UserID:     7,
+					TeamID:     3,
+					SpaceID:    5,
+					ProjectID:  9,
+				},
+				UserContent: "我之前考虑的 MC20 汽车你还记得么",
+			}, logicdomain.IntentResult{
+				NeedMemory: true,
+				Queries:    []string{"用户之前考虑的 MC20 汽车相关信息"},
+			})
+			if err != nil {
+				t.Fatalf("search memory candidates: %v", err)
+			}
+			if memories.cmd.ScopeOverride != tc.wantScope {
+				t.Fatalf("scope override = %q, want %q", memories.cmd.ScopeOverride, tc.wantScope)
+			}
+		})
+	}
+}
+
 // TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores verifies that when the unified search layer already decided an equal-score order, pre-check preserves that order instead of reordering ties by memory id.
 // TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores 用于验证当 unified search 层已经决定了同分顺序时，pre-check 会保留该顺序，而不是再按 memory id 改写 tie-break。
 func TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores(t *testing.T) {

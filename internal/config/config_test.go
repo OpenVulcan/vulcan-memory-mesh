@@ -62,6 +62,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.PreCheck.IntentTimeout.Duration != 5*time.Second {
 		t.Fatalf("pre-check intent timeout = %v", cfg.PreCheck.IntentTimeout.Duration)
 	}
+	if cfg.PreCheck.SearchScope != "space" {
+		t.Fatalf("pre-check search scope = %q", cfg.PreCheck.SearchScope)
+	}
 	if cfg.PostAction.InputMode != "compat" {
 		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
 	}
@@ -344,6 +347,19 @@ func TestConfigValidateRejectsPreCheckTimeoutBudget(t *testing.T) {
 	}
 }
 
+// TestConfigValidateRejectsUnsupportedPreCheckSearchScope verifies startup validation rejects unsupported pre-check scope tokens instead of silently broadening recall.
+// TestConfigValidateRejectsUnsupportedPreCheckSearchScope 用于验证启动校验会拒绝不受支持的 pre-check 作用域 token，而不是静默放宽召回范围。
+func TestConfigValidateRejectsUnsupportedPreCheckSearchScope(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.PreCheck.SearchScope = "workspace"
+	cfg.Normalize()
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "pre_check.search_scope must be one of team, space, or project" {
+		t.Fatalf("unexpected pre-check search scope error: %v", err)
+	}
+}
+
 // TestConfigValidateRejectsRemovedProviders verifies the runtime no longer accepts removed fallback providers and only keeps SQLite as the relational backend.
 // TestConfigValidateRejectsRemovedProviders 用于验证运行时已经不再接受被移除的回退 provider，并且关系库存储只保留 SQLite。
 func TestConfigValidateRejectsRemovedProviders(t *testing.T) {
@@ -582,6 +598,20 @@ func TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds(t *testing.T) 
 	}
 	if cfg.PostAction.SessionAnalysisMaxInputTokens != 7200 {
 		t.Fatalf("post action session analysis max input tokens = %d", cfg.PostAction.SessionAnalysisMaxInputTokens)
+	}
+}
+
+// TestApplyEnvOverridesSetsPreCheckSearchScope verifies process-level overrides can widen or narrow the pre-check recall scope without editing the base JSON config.
+// TestApplyEnvOverridesSetsPreCheckSearchScope 用于验证进程级环境变量可以在不修改基础 JSON 配置的前提下调整 pre-check 召回作用域。
+func TestApplyEnvOverridesSetsPreCheckSearchScope(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_PRE_CHECK_SEARCH_SCOPE", "team")
+
+	applyEnvOverrides(&cfg)
+	cfg.Normalize()
+
+	if cfg.PreCheck.SearchScope != "team" {
+		t.Fatalf("pre-check search scope = %q", cfg.PreCheck.SearchScope)
 	}
 }
 

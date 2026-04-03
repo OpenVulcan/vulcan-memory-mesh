@@ -516,6 +516,24 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 - `grpc.request_timeout.pre_check > pre_check.intent_timeout`
 
+### PreCheck 检索范围
+
+- `pre_check.search_scope`
+  - 控制 `PreCheck` 长期记忆检索的层级范围
+  - 可选值：`team`、`space`、`project`
+  - 默认值：`space`
+
+当前语义：
+
+- `team`
+  - 在当前 team 范围内召回长期记忆
+- `space`
+  - 在当前 space 范围内召回长期记忆，不再限制到单个 project
+- `project`
+  - 仅在当前 project 范围内召回长期记忆
+
+这个开关只影响 `PreCheck` 这条链路，不改变通用 `SearchMemoryEvents` 的默认项目级检索语义。
+
 ### LanceDB 表名规则
 
 `lancedb.table_name` 现在是基础表名。

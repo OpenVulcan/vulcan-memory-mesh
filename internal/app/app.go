@@ -148,6 +148,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 			IntentTimeout:      cfg.PreCheck.IntentTimeout.Duration,
 			TopK:               cfg.PreCheck.TopK,
 			MinSimilarityScore: minSimilarityOrDefault(cfg),
+			SearchScope:        cfg.PreCheck.SearchScope,
 			HistoryTurns:       cfg.PostAction.SessionAnalysisHistoryTurns,
 			MaxInputTokens:     cfg.PostAction.SessionAnalysisMaxInputTokens,
 		},

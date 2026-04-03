@@ -100,6 +100,7 @@ type PreCheckConfig struct {
 	IntentTimeout        time.Duration
 	TopK                 int
 	MinSimilarityScore   float64
+	SearchScope          string
 	HistoryTurns         int
 	MaxInputTokens       int
 	ReviewCandidateLimit int
@@ -138,6 +139,7 @@ func NewPreCheckUseCase(memories PreCheckMemorySearcher, store PreCheckStore, in
 	if cfg.MinSimilarityScore <= 0 || cfg.MinSimilarityScore > 1 {
 		cfg.MinSimilarityScore = defaultPreCheckSimilarity
 	}
+	cfg.SearchScope = normalizePreCheckSearchScope(cfg.SearchScope)
 	return &PreCheckUseCase{
 		memories:  memories,
 		store:     store,
@@ -384,17 +386,20 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	}
 	u.logPreCheckStage("pre-check memory query prepared", trace.IDFromContext(ctx), cmd.Session, []any{
 		"top_k", u.config.TopK,
+		"search_scope", u.config.SearchScope,
 		"normalized_query_count", len(normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent)),
 	}, map[string]any{
 		"current_user_input": cmd.UserContent,
 		"intent_queries":     normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"search_scope":       u.config.SearchScope,
 		"query_json":         json.RawMessage(queryJSON),
 	})
 	result, err := u.memories.Search(ctx, MemoryQueryCommand{
-		UserID:    cmd.Session.UserID,
-		ProjectID: cmd.Session.ProjectID,
-		QueryJSON: queryJSON,
-		TopK:      u.config.TopK,
+		UserID:        cmd.Session.UserID,
+		ProjectID:     cmd.Session.ProjectID,
+		QueryJSON:     queryJSON,
+		TopK:          u.config.TopK,
+		ScopeOverride: u.config.SearchScope,
 	})
 	if err != nil {
 		return nil, err
@@ -456,10 +461,12 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	u.logPreCheckStage("pre-check raw memory hits returned", trace.IDFromContext(ctx), cmd.Session, []any{
 		"group_count", len(result.Results),
 		"raw_hit_count", rawHitCount,
+		"search_scope", u.config.SearchScope,
 		"similarity_threshold", u.config.MinSimilarityScore,
 	}, map[string]any{
 		"current_user_input": cmd.UserContent,
 		"intent_queries":     normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"search_scope":       u.config.SearchScope,
 		"raw_groups":         rawGroups,
 		"best_raw_hit":       bestRawHit,
 	})
@@ -488,6 +495,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	u.logPreCheckStage("pre-check memory candidate filtering applied", trace.IDFromContext(ctx), cmd.Session, []any{
 		"group_count", len(result.Results),
 		"raw_hit_count", rawHitCount,
+		"search_scope", u.config.SearchScope,
 		"below_threshold_count", belowThresholdCount,
 		"deduplicated_candidate_count", len(merged),
 		"review_candidate_count", len(out),
@@ -495,6 +503,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	}, map[string]any{
 		"current_user_input":       cmd.UserContent,
 		"intent_queries":           normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
+		"search_scope":             u.config.SearchScope,
 		"best_raw_hit":             bestRawHit,
 		"best_below_threshold_hit": bestBelowThresholdHit,
 	})

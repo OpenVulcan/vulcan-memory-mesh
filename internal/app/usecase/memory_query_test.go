@@ -181,6 +181,94 @@ func TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchAppliesScopeOverrideToFilters verifies specialized callers can widen memory recall from project to space or team without changing the default grouped search behavior.
+// TestMemoryUseCaseSearchAppliesScopeOverrideToFilters 用于验证特殊调用方可以把记忆召回从 project 放宽到 space 或 team，同时不改变默认分组搜索行为。
+func TestMemoryUseCaseSearchAppliesScopeOverrideToFilters(t *testing.T) {
+	cases := []struct {
+		name          string
+		scopeOverride string
+		wantTeamID    uint64
+		wantSpaceID   uint64
+		wantProjectID uint64
+	}{
+		{name: "default project", scopeOverride: "", wantTeamID: 3, wantSpaceID: 5, wantProjectID: 9},
+		{name: "project explicit", scopeOverride: "project", wantTeamID: 3, wantSpaceID: 5, wantProjectID: 9},
+		{name: "space", scopeOverride: "space", wantTeamID: 3, wantSpaceID: 5, wantProjectID: 0},
+		{name: "team", scopeOverride: "team", wantTeamID: 3, wantSpaceID: 0, wantProjectID: 0},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			profiles := &stubProfileStore{
+				targets: map[int]logicdomain.ProfileTargetRef{
+					logicdomain.ProfileTypeUser: {
+						ProfileType: logicdomain.ProfileTypeUser,
+						BindID:      7,
+						UserID:      7,
+					},
+					logicdomain.ProfileTypeProject: {
+						ProfileType: logicdomain.ProfileTypeProject,
+						BindID:      9,
+						UserID:      7,
+						TeamID:      3,
+						SpaceID:     5,
+						ProjectID:   9,
+					},
+				},
+			}
+			turns := &stubTurnLookupStore{
+				memoryRowsByID: []logicdomain.MemoryNodeRecord{
+					{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "卡宴偏好", Details: "用户曾考虑卡宴。", VectorID: "vec-1"},
+				},
+				memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+					{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "卡宴偏好", Details: "用户曾考虑卡宴。", VectorID: "vec-1"},
+				},
+				lexicalHits: []logicdomain.MemoryLexicalHit{
+					{MemoryID: 201, Score: 0.9},
+				},
+			}
+			embedding := &stubEmbeddingClient{
+				response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+			}
+			vector := &stubVectorStore{
+				searchHits: []logicdomain.MemoryHit{
+					{ID: "vec-1", Text: "用户曾考虑卡宴。", Score: 0.91},
+				},
+			}
+			uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+			uc.ConfigureHybrid(true, 5, 60)
+
+			if _, err := uc.Search(context.Background(), MemoryQueryCommand{
+				UserID:        7,
+				ProjectID:     9,
+				QueryJSON:     `[{"background":"之前聊过买车。","query":"卡宴"}]`,
+				TopK:          5,
+				ScopeOverride: tc.scopeOverride,
+			}); err != nil {
+				t.Fatalf("search memory events: %v", err)
+			}
+
+			if len(vector.searchFilters) != 1 {
+				t.Fatalf("vector search filter count = %d", len(vector.searchFilters))
+			}
+			if len(turns.lexicalFilters) != 1 {
+				t.Fatalf("lexical filter count = %d", len(turns.lexicalFilters))
+			}
+			vectorFilter := vector.searchFilters[0]
+			lexicalFilter := turns.lexicalFilters[0]
+			if vectorFilter.TeamID != tc.wantTeamID || vectorFilter.SpaceID != tc.wantSpaceID || vectorFilter.ProjectID != tc.wantProjectID {
+				t.Fatalf("unexpected vector filter: %+v", vectorFilter)
+			}
+			if lexicalFilter.TeamID != tc.wantTeamID || lexicalFilter.SpaceID != tc.wantSpaceID || lexicalFilter.ProjectID != tc.wantProjectID {
+				t.Fatalf("unexpected lexical filter: %+v", lexicalFilter)
+			}
+			if vectorFilter.UserID != 7 || lexicalFilter.UserID != 7 {
+				t.Fatalf("expected user filter to stay intact, got vector=%+v lexical=%+v", vectorFilter, lexicalFilter)
+			}
+		})
+	}
+}
+
 // TestMemoryUseCaseSearchReusesEquivalentGroupedQueries verifies one request reuses the full retrieval chain for equivalent query groups instead of repeating embedding/vector/hybrid/rerank work.
 // TestMemoryUseCaseSearchReusesEquivalentGroupedQueries 用于验证同一次请求里的等价 query group 会复用整条检索链，而不是重复触发 embedding、向量、hybrid 和 rerank 工作。
 func TestMemoryUseCaseSearchReusesEquivalentGroupedQueries(t *testing.T) {
