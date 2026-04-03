@@ -217,7 +217,14 @@ func (a *Application) Run(ctx context.Context) error {
 		a.Logger.Info("received shutdown signal", "signal", sig.String())
 		return a.Shutdown(context.Background())
 	case err := <-errCh:
-		return err
+		shutdownErr := a.Shutdown(context.Background())
+		if err != nil {
+			if shutdownErr != nil {
+				return errors.Join(err, shutdownErr)
+			}
+			return err
+		}
+		return shutdownErr
 	}
 }
 

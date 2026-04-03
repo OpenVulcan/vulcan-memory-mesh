@@ -9,11 +9,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
 	sqlitev1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite/proto/v1"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"google.golang.org/grpc"
 )
 
@@ -170,6 +172,59 @@ func TestApplicationShutdownAllowsNilReceiver(t *testing.T) {
 
 	if err := app.Shutdown(nil); err != nil {
 		t.Fatalf("shutdown nil application: %v", err)
+	}
+}
+
+// TestApplicationRunDrainsShutdownsAfterExternalServerStop verifies exported startup still drains downstream shutdown hooks when another goroutine stops the gRPC server directly.
+// TestApplicationRunDrainsShutdownsAfterExternalServerStop 用于验证当其他 goroutine 直接停止 gRPC 服务时，导出启动入口仍会继续释放下游 shutdown 钩子。
+func TestApplicationRunDrainsShutdownsAfterExternalServerStop(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listen addr: %v", err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	shutdowner := &stubShutdowner{}
+	app := &Application{
+		Config:    config.DefaultLocal(),
+		Logger:    logx.Default(),
+		Server:    grpc.NewServer(),
+		Shutdowns: []appports.Shutdowner{shutdowner},
+	}
+	app.Config.GRPC.ListenAddr = addr
+
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- app.Run(context.Background())
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		conn, dialErr := net.DialTimeout("tcp", addr, 50*time.Millisecond)
+		if dialErr == nil {
+			_ = conn.Close()
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("server did not start listening: %v", dialErr)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	app.Server.Stop()
+
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("run after external stop: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not return after external stop")
+	}
+
+	if shutdowner.calls != 1 {
+		t.Fatalf("expected shutdowner to be called once, got %d", shutdowner.calls)
 	}
 }
 
