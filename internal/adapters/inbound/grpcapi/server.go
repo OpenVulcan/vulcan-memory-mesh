@@ -101,8 +101,20 @@ func BuildUnaryInterceptors(deps Dependencies) []grpc.UnaryServerInterceptor {
 		interceptors = append(interceptors, ScopeResolutionInterceptor(deps.ScopeResolver, deps.Logger))
 	}
 	interceptors = append(interceptors, RequestLoggerInterceptor(deps.Logger))
-	interceptors = append(interceptors, deps.ExtraInterceptors...)
+	interceptors = appendNonNilUnaryInterceptors(interceptors, deps.ExtraInterceptors...)
 	return interceptors
+}
+
+// appendNonNilUnaryInterceptors keeps the transport chain deterministic by dropping nil interceptor slots before gRPC chains them into one executable pipeline.
+// appendNonNilUnaryInterceptors 用于在 gRPC 把拦截器链接成可执行流水线之前，先丢弃 nil 槽位，保证传输链路保持确定性。
+func appendNonNilUnaryInterceptors(base []grpc.UnaryServerInterceptor, extras ...grpc.UnaryServerInterceptor) []grpc.UnaryServerInterceptor {
+	for _, interceptor := range extras {
+		if interceptor == nil {
+			continue
+		}
+		base = append(base, interceptor)
+	}
+	return base
 }
 
 // requireReceiver ensures direct tests and manual integrations get one stable internal error instead of a panic when they accidentally invoke exported RPC methods on a nil Server receiver.

@@ -122,6 +122,23 @@ func TestHealthzReturnsTraceHeader(t *testing.T) {
 	}
 }
 
+// TestHealthzIgnoresNilExtraInterceptor verifies transport startup filters accidental nil extra interceptors so one configuration hole does not degrade every request into Internal.
+// TestHealthzIgnoresNilExtraInterceptor 用于验证传输层启动时会过滤误传入的 nil 额外拦截器，避免一个配置空洞把全部请求都降级成 Internal。
+func TestHealthzIgnoresNilExtraInterceptor(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs:               xid.NewGenerator(),
+		ExtraInterceptors: []grpc.UnaryServerInterceptor{nil},
+	}, testBufSize)
+
+	resp, err := fixture.client.Healthz(context.Background(), &emptypb.Empty{})
+	if err != nil {
+		t.Fatalf("healthz with nil extra interceptor: %v", err)
+	}
+	if resp.GetStatus() != "ok" {
+		t.Fatalf("status = %q", resp.GetStatus())
+	}
+}
+
 // TestListProjectsReturnsDisplayPath verifies admin project listing exposes the requested [PROJECT_ID]Team/Space/Project display string.
 // TestListProjectsReturnsDisplayPath 用于验证项目列表会输出要求的 [PROJECT_ID]Team/Space/Project 展示字符串。
 func TestListProjectsReturnsDisplayPath(t *testing.T) {
