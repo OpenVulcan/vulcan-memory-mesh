@@ -45,6 +45,14 @@ func (u *PostActionUseCase) Shutdown(ctx context.Context) error {
 	if u == nil || u.queueCancel == nil {
 		return nil
 	}
+
+	// Normalize nil shutdown contexts so direct tests and partial integrations can still
+	// wait for the queue worker to stop without panicking on ctx.Done().
+	// 这里先把 nil 的 shutdown context 归一成 Background，
+	// 这样直接测试或部分集成调用在等待队列工作器退出时就不会因为 ctx.Done() 而 panic。
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	u.queueCancel()
 	done := make(chan struct{})
 	go func() {
@@ -102,12 +110,22 @@ func (u *PostActionUseCase) pushQueueID(sessionID uint64) {
 	select {
 	case u.queueCh <- sessionID:
 	default:
-		go func() {
+		queueCtx := u.queueCtx
+
+		// Only spawn the fallback sender when the queue worker lifetime context exists.
+		// Partially constructed test instances may provide queueCh without queueCtx, and
+		// in that case the safer behavior is to skip the async fallback instead of panicking.
+		// 只有在队列工作器生命周期 context 已存在时才启动兜底发送 goroutine。
+		// 部分装配的测试实例可能只提供 queueCh 而没有 queueCtx，这时跳过异步兜底比 panic 更安全。
+		if queueCtx == nil {
+			return
+		}
+		go func(ctx context.Context) {
 			select {
 			case u.queueCh <- sessionID:
-			case <-u.queueCtx.Done():
+			case <-ctx.Done():
 			}
-		}()
+		}(queueCtx)
 	}
 }
 

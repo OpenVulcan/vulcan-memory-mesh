@@ -55,6 +55,36 @@ func TestPostActionExecuteRejectsNilStore(t *testing.T) {
 	}
 }
 
+// TestPostActionShutdownAcceptsNilContext verifies the exported queue shutdown hook normalizes nil contexts so direct callers can stop a partially constructed worker without panicking on ctx.Done().
+// TestPostActionShutdownAcceptsNilContext 用于验证导出的队列关闭钩子会归一 nil context，确保直接调用方在关闭部分装配工作器时不会因为 ctx.Done() 触发 panic。
+func TestPostActionShutdownAcceptsNilContext(t *testing.T) {
+	queueCtx, queueCancel := context.WithCancel(context.Background())
+	uc := &PostActionUseCase{
+		queueCtx:    queueCtx,
+		queueCancel: queueCancel,
+	}
+
+	if err := uc.Shutdown(nil); err != nil {
+		t.Fatalf("unexpected shutdown error: %v", err)
+	}
+}
+
+// TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext verifies a partially constructed queue path can still absorb one overflowing enqueue attempt without panicking when the worker lifetime context is missing.
+// TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext 用于验证在缺少工作器生命周期 context 的部分装配场景下，队列满载时的兜底入队会被安全跳过，而不是 panic。
+func TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext(t *testing.T) {
+	uc := &PostActionUseCase{
+		queueCh: make(chan uint64, 1),
+	}
+	uc.queueCh <- 1
+
+	uc.pushQueueID(2)
+	time.Sleep(20 * time.Millisecond)
+
+	if got := len(uc.queueCh); got != 1 {
+		t.Fatalf("expected queue length to remain 1, got %d", got)
+	}
+}
+
 // TestPostActionUseCaseDropsSingleRoundNoise verifies simple user-assistant pairs can still be rejected by the noise gate before relational persistence.
 // TestPostActionUseCaseDropsSingleRoundNoise 用于验证简单的单轮 user-assistant 问答仍然会在关系持久化前被噪声门拒绝。
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
