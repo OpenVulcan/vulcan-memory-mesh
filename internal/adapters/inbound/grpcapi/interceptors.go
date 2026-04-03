@@ -4,6 +4,7 @@ package grpcapi
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -122,11 +123,25 @@ func RecoveryInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 		// 在传输层边界做 recover，确保 panic 不会越过 gRPC 边界泄露出去。
 		defer func() {
 			if rec := recover(); rec != nil {
-				logger.Error("panic recovered", "trace_id", trace.IDFromContext(ctx), "method", info.FullMethod, "err", rec)
+				logger.Error("panic recovered", append([]any{
+					"trace_id", trace.IDFromContext(ctx),
+					"method", info.FullMethod,
+				}, redactedPanicLogFields(rec)...)...)
 				err = toStatus(errInternal)
 			}
 		}()
 		return handler(ctx, req)
+	}
+}
+
+// redactedPanicLogFields converts one panic value into stable diagnostics so recovery logs stay useful without writing raw panic payloads into runtime logs.
+// redactedPanicLogFields 用于把 panic 值转换成稳定的诊断字段，让 recovery 日志保持可排障，同时不把原始 panic 载荷写入运行时日志。
+func redactedPanicLogFields(rec any) []any {
+	raw := strings.TrimSpace(fmt.Sprint(rec))
+	return []any{
+		"panic_type", fmt.Sprintf("%T", rec),
+		"panic_len", len(raw),
+		"panic_sha256", shortContentDigest(raw),
 	}
 }
 

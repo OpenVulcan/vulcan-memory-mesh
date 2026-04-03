@@ -693,6 +693,32 @@ func TestServerRejectsOversizedPayload(t *testing.T) {
 	}
 }
 
+// TestRecoveryInterceptorRedactsRawPanic verifies panic recovery logs keep stable diagnostics without writing the raw panic payload into runtime logs.
+// TestRecoveryInterceptorRedactsRawPanic 用于验证 panic 恢复日志会保留稳定诊断字段，但不会把原始 panic 载荷写入运行时日志。
+func TestRecoveryInterceptorRedactsRawPanic(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	interceptor := RecoveryInterceptor(logger)
+	panicText := "user bank 1234 secret"
+
+	_, err := interceptor(context.Background(), nil, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/PreCheck"}, func(context.Context, any) (any, error) {
+		panic(panicText)
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, `MSG："panic recovered"`) {
+		t.Fatalf("expected panic recovery log, got %s", logs)
+	}
+	if strings.Contains(logs, panicText) {
+		t.Fatalf("expected panic text to stay out of logs, got %s", logs)
+	}
+	if !strings.Contains(logs, "panic_type") || !strings.Contains(logs, "panic_len") || !strings.Contains(logs, "panic_sha256") {
+		t.Fatalf("expected redacted panic diagnostics, got %s", logs)
+	}
+}
+
 // preCheckFunc adapts a plain function to the current PreCheckExecutor interface.
 // preCheckFunc 用于把普通函数适配到当前 PreCheckExecutor 接口。
 type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error)
