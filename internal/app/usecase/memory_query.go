@@ -753,8 +753,8 @@ func parseMemoryQueryJSON(raw string) ([]MemoryQueryItem, error) {
 		return nil, logicdomain.ValidationError{Field: "query_json", Message: fmt.Sprintf("must contain at most %d query items", maxMemoryQueryItems)}
 	}
 	for idx := range items {
-		items[idx].Background = strings.TrimSpace(items[idx].Background)
-		items[idx].Query = strings.TrimSpace(items[idx].Query)
+		items[idx].Background = textutil.NormalizeWhitespace(items[idx].Background)
+		items[idx].Query = textutil.NormalizeWhitespace(items[idx].Query)
 		if items[idx].Query == "" {
 			return nil, logicdomain.ValidationError{Field: "query_json[" + strconv.Itoa(idx) + "].query", Message: "is required"}
 		}

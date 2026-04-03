@@ -109,6 +109,75 @@ func TestMemoryUseCaseSearchEchoesGroupedQueries(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace verifies the general MemoryQuery entry normalizes internal whitespace in background/query fields before echoing them back and before building embedding text.
+// TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace 用于验证通用 MemoryQuery 入口会先归一 background/query 的内部空白，再回显并构建 embedding 文本。
+func TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{
+				ID:              201,
+				OriginSessionID: 12,
+				SourceTurnID:    41,
+				SourceKind:      logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel:      logicdomain.MemoryScopeLevelProject,
+				Category:        3,
+				Abstract:        "用户喜欢吃香蕉。",
+				Details:         "来自近期饮食偏好提炼。",
+				VectorID:        "vec-1",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "用户喜欢吃香蕉。", Score: 0.91},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: "[{\"background\":\"用户最近\\n一直在讨论   水果和饮品。\",\"query\":\"喜欢的\\n水果\"}]",
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events: %v", err)
+	}
+	if len(result.Results) != 1 {
+		t.Fatalf("results len = %d", len(result.Results))
+	}
+	group := result.Results[0]
+	if group.Background != "用户最近 一直在讨论 水果和饮品。" || group.Query != "喜欢的 水果" {
+		t.Fatalf("expected normalized grouped echo, got %+v", group)
+	}
+	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 {
+		t.Fatalf("unexpected embedding request: %+v", embedding.requests)
+	}
+	if strings.Contains(embedding.requests[0].Texts[0], "\n一直在讨论   ") || strings.Contains(embedding.requests[0].Texts[0], "喜欢的\n水果") {
+		t.Fatalf("expected normalized embedding text, got %q", embedding.requests[0].Texts[0])
+	}
+}
+
 // TestMemoryUseCaseSearchFusesHybridRecall verifies vector recall and lexical recall are fused through RRF before the grouped response is returned.
 // TestMemoryUseCaseSearchFusesHybridRecall 用于验证向量召回和 lexical 召回会先经过 RRF 融合，再返回最终的分组结果。
 func TestMemoryUseCaseSearchFusesHybridRecall(t *testing.T) {
