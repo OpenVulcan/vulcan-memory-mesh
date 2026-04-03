@@ -375,21 +375,35 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	}
 
 	// Parse the grouped JSON payload once, then embed each composed search text in order so the result can be echoed back item-by-item.
-	// 先一次性解析分组 JSON 载荷，再按顺序对每条组合后的搜索文本做 embedding，方便逐项原样回显结果。
+	// 先一次性解析分组 JSON 载荷，再按顺序整理等价 group，避免同一次请求里的重复项把 embedding 和检索成本直接放大。
 	items, err := parseMemoryQueryJSON(cmd.QueryJSON)
 	if err != nil {
 		return MemoryQueryResult{}, err
 	}
-	texts := make([]string, 0, len(items))
-	for _, item := range items {
+	keys := make([]string, len(items))
+	uniqueItems := make([]MemoryQueryItem, 0, len(items))
+	uniqueKeys := make([]string, 0, len(items))
+	seenGroups := make(map[string]struct{}, len(items))
+	for idx, item := range items {
+		key := buildMemoryQueryCacheKey(item)
+		keys[idx] = key
+		if _, ok := seenGroups[key]; ok {
+			continue
+		}
+		seenGroups[key] = struct{}{}
+		uniqueKeys = append(uniqueKeys, key)
+		uniqueItems = append(uniqueItems, item)
+	}
+	texts := make([]string, 0, len(uniqueItems))
+	for _, item := range uniqueItems {
 		texts = append(texts, buildMemorySearchText(item))
 	}
 	embedResp, err := u.embedding.Embed(ctx, appports.EmbeddingRequest{Texts: texts})
 	if err != nil {
 		return MemoryQueryResult{}, err
 	}
-	if len(embedResp.Vectors) != len(items) {
-		return MemoryQueryResult{}, fmt.Errorf("embedding result count mismatch: got %d want %d", len(embedResp.Vectors), len(items))
+	if len(embedResp.Vectors) != len(uniqueItems) {
+		return MemoryQueryResult{}, fmt.Errorf("embedding result count mismatch: got %d want %d", len(embedResp.Vectors), len(uniqueItems))
 	}
 
 	// Keep vector recall inside the resolved project hierarchy and enrich the returned vector rows with relational memory refs.
@@ -413,8 +427,8 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		}
 		candidatePoolK = normalizeMemoryCandidatePoolK(topK, lexicalTopK, rerankTopN, u.mmrEnabled)
 	}
-	results := make([]MemoryQueryGroupResult, 0, len(items))
-	for idx, item := range items {
+	cachedHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
+	for idx, item := range uniqueItems {
 		hits, err := u.vector.Search(ctx, embedResp.Vectors[idx], candidatePoolK, filter)
 		if err != nil {
 			return MemoryQueryResult{}, err
@@ -428,11 +442,15 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		mapped = u.applyWeibullDecaySearchHits(mapped)
 		mapped = u.applyContextEvidenceScoring(ctx, item, mapped)
 		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
+		cachedHits[uniqueKeys[idx]] = cloneMemoryQueryHits(trimSearchHits(mapped, topK))
+	}
+	results := make([]MemoryQueryGroupResult, 0, len(items))
+	for idx, item := range items {
 		results = append(results, MemoryQueryGroupResult{
 			QueryIndex: idx,
 			Background: item.Background,
 			Query:      item.Query,
-			Hits:       trimSearchHits(mapped, topK),
+			Hits:       cloneMemoryQueryHits(cachedHits[keys[idx]]),
 		})
 	}
 	return MemoryQueryResult{
@@ -769,6 +787,28 @@ func buildMemorySearchText(item MemoryQueryItem) string {
 		return item.Query
 	}
 	return strings.TrimSpace(item.Background) + "\n\n关键语句：\n" + strings.TrimSpace(item.Query)
+}
+
+// buildMemoryQueryCacheKey converts one normalized query group into a stable in-request cache key so repeated groups can reuse one retrieval execution without changing the caller-facing result shape.
+// buildMemoryQueryCacheKey 用于把一条已归一的 query group 转成稳定的单请求缓存键，让重复 group 能复用一次检索执行，同时不改变调用方看到的结果结构。
+func buildMemoryQueryCacheKey(item MemoryQueryItem) string {
+	return item.Background + "\x00" + item.Query
+}
+
+// cloneMemoryQueryHits deep-copies one hit slice before it is shared across repeated groups so later callers cannot accidentally mutate another group's cached result.
+// cloneMemoryQueryHits 用于在重复 group 复用结果前深拷贝命中切片，避免后续调用方意外修改到另一组共享的缓存结果。
+func cloneMemoryQueryHits(hits []MemoryQueryHit) []MemoryQueryHit {
+	if len(hits) == 0 {
+		return nil
+	}
+	cloned := make([]MemoryQueryHit, 0, len(hits))
+	for _, hit := range hits {
+		copyHit := hit
+		copyHit.Vector = append([]float32(nil), hit.Vector...)
+		copyHit.MatchedContextValues = append([]string(nil), hit.MatchedContextValues...)
+		cloned = append(cloned, copyHit)
+	}
+	return cloned
 }
 
 // normalizeMemorySearchTopK applies the RPC defaults and caps so callers can omit top_k safely without creating oversized result sets.

@@ -178,6 +178,90 @@ func TestMemoryUseCaseSearchNormalizesGroupedQueryWhitespace(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchReusesEquivalentGroupedQueries verifies one request reuses the full retrieval chain for equivalent query groups instead of repeating embedding/vector/hybrid/rerank work.
+// TestMemoryUseCaseSearchReusesEquivalentGroupedQueries 用于验证同一次请求里的等价 query group 会复用整条检索链，而不是重复触发 embedding、向量、hybrid 和 rerank 工作。
+func TestMemoryUseCaseSearchReusesEquivalentGroupedQueries(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "香蕉偏好", Details: "用户更常提到香蕉。", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "苹果偏好", Details: "用户也常提到苹果。", VectorID: "vec-2"},
+		},
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "香蕉偏好", Details: "用户更常提到香蕉。", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "苹果偏好", Details: "用户也常提到苹果。", VectorID: "vec-2"},
+		},
+		lexicalHits: []logicdomain.MemoryLexicalHit{
+			{MemoryID: 202, Score: 0.99},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "香蕉偏好", Score: 0.91},
+			{ID: "vec-2", Text: "苹果偏好", Score: 0.84},
+		},
+	}
+	reranker := &stubRerankerClient{
+		results: []appports.RerankerResult{
+			{ID: "202", Score: 0.97},
+			{ID: "201", Score: 0.88},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureHybrid(true, 5, 60)
+	uc.ConfigureRerank(reranker, 2)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		QueryJSON: "[{\"background\":\"用户最近一直在讨论  水果偏好。\",\"query\":\"喜欢的水果\"},{\"background\":\"用户最近一直在讨论\\n水果偏好。\",\"query\":\"喜欢的水果\"}]",
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events: %v", err)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("results len = %d", len(result.Results))
+	}
+	if len(result.Results[0].Hits) != 2 || len(result.Results[1].Hits) != 2 {
+		t.Fatalf("expected duplicated groups to keep full hit lists, got %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[1].Hits[0].MemoryRef.ID != 202 {
+		t.Fatalf("expected reused reranked order, got %+v", result.Results)
+	}
+	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 {
+		t.Fatalf("expected one deduped embedding request, got %+v", embedding.requests)
+	}
+	if len(vector.searchTopKs) != 1 {
+		t.Fatalf("expected one deduped vector search, got %+v", vector.searchTopKs)
+	}
+	if len(turns.lexicalQueries) != 1 {
+		t.Fatalf("expected one deduped lexical search, got %+v", turns.lexicalQueries)
+	}
+	if len(reranker.requests) != 1 {
+		t.Fatalf("expected one deduped rerank request, got %+v", reranker.requests)
+	}
+}
+
 // TestMemoryUseCaseSearchFusesHybridRecall verifies vector recall and lexical recall are fused through RRF before the grouped response is returned.
 // TestMemoryUseCaseSearchFusesHybridRecall 用于验证向量召回和 lexical 召回会先经过 RRF 融合，再返回最终的分组结果。
 func TestMemoryUseCaseSearchFusesHybridRecall(t *testing.T) {
