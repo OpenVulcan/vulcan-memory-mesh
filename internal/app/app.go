@@ -132,6 +132,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support session compact updates")
 	}
+	retentionStore, err := usecase.EnsureRetentionStore(relational)
+	if err != nil {
+		return nil, err
+	}
 	if storageDeps.ManageVectorSchema {
 		if err := ensureVectorSchema(context.Background(), schemaVersions, workspaceStore, vector, logger); err != nil {
 			return nil, err
@@ -197,6 +201,14 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		},
 		logger,
 	)
+	retention := usecase.NewRetentionUseCase(retentionStore, vector, usecase.RetentionConfig{
+		Enabled:                     cfg.Retention.Enabled,
+		RecycleScanInterval:         cfg.Retention.RecycleScanInterval.Duration,
+		TrashRetention:              cfg.Retention.TrashRetention.Duration,
+		ProtectPriorityFloor:        cfg.Retention.ProtectPriorityFloor,
+		ProtectMemoryLevelFloor:     cfg.Retention.ProtectMemoryLevelFloor,
+		SkipProtectedSharedMemories: cfg.Retention.SkipProtectedSharedMemories,
+	}, logger)
 
 	// Wire gRPC handlers and shutdown dependencies into the application container.
 	// 将 gRPC 处理器和关闭依赖接入应用容器。
@@ -224,7 +236,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
 	reflection.Register(server)
 
-	shutdowns := []appports.Shutdowner{fileWriter, relational, vector, post}
+	shutdowns := []appports.Shutdowner{fileWriter, relational, vector, post, retention}
 	initSucceeded = true
 	return &Application{Config: cfg, Logger: logger, Server: server, Shutdowns: shutdowns}, nil
 }

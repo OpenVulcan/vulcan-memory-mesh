@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 15
+	currentSchemaVersion = 16
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -66,6 +66,10 @@ const (
 const resetManagedSchemaSQL = `
 DROP TABLE IF EXISTS vmm_profile_nodes;
 DROP TABLE IF EXISTS vmm_profile_instructions;
+DROP TABLE IF EXISTS vmm_memory_context_edges_trash;
+DROP TABLE IF EXISTS vmm_memory_nodes_trash;
+DROP TABLE IF EXISTS vmm_recycle_batches;
+DROP TABLE IF EXISTS vmm_vector_gc_jobs;
 DROP TABLE IF EXISTS vmm_memory_nodes_fts;
 DROP TABLE IF EXISTS vmm_memory_context_edges;
 DROP TABLE IF EXISTS vmm_memory_nodes;
@@ -239,6 +243,97 @@ CREATE TABLE IF NOT EXISTS vmm_memory_context_edges (
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_lookup ON vmm_memory_context_edges(context_key, context_value, memory_id);
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_memory ON vmm_memory_context_edges(memory_id);
+
+CREATE TABLE IF NOT EXISTS vmm_recycle_batches (
+  id BIGINT PRIMARY KEY,
+  recycle_type TEXT NOT NULL,
+  session_id BIGINT NOT NULL DEFAULT 0,
+  project_id BIGINT NOT NULL DEFAULT 0,
+  reason TEXT NOT NULL DEFAULT '',
+  recycled_at BIGINT NOT NULL DEFAULT 0,
+  purged_at BIGINT NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_recycle_batches_lookup ON vmm_recycle_batches(recycle_type, recycled_at, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_recycle_batches_session ON vmm_recycle_batches(session_id, project_id, id);
+
+CREATE TABLE IF NOT EXISTS vmm_memory_nodes_trash (
+  batch_id BIGINT NOT NULL,
+  recycled_at BIGINT NOT NULL DEFAULT 0,
+  recycle_reason TEXT NOT NULL DEFAULT '',
+  id BIGINT NOT NULL,
+  team_id BIGINT NOT NULL,
+  space_id BIGINT NOT NULL,
+  project_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  origin_session_id BIGINT NOT NULL DEFAULT 0,
+  source_turn_id BIGINT,
+  vector_id TEXT NOT NULL,
+  vector_json TEXT NOT NULL DEFAULT '[]',
+  source_kind INTEGER NOT NULL DEFAULT 0,
+  scope_level INTEGER NOT NULL DEFAULT 1,
+  category INTEGER NOT NULL,
+  abstract TEXT NOT NULL,
+  details TEXT NOT NULL,
+  memory_status INTEGER NOT NULL DEFAULT 0,
+  priority INTEGER NOT NULL DEFAULT 2,
+  memory_level INTEGER NOT NULL DEFAULT 2,
+  refresh_weight INTEGER NOT NULL DEFAULT 0,
+  support_count INTEGER NOT NULL DEFAULT 0,
+  rebuttal_count INTEGER NOT NULL DEFAULT 0,
+  status_reason TEXT NOT NULL DEFAULT '',
+  expires_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_recalled_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_adopted_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_reinforced_timestamp BIGINT NOT NULL DEFAULT 0,
+  recalled_count INTEGER NOT NULL DEFAULT 0,
+  adopted_count INTEGER NOT NULL DEFAULT 0,
+  reinforcement_count INTEGER NOT NULL DEFAULT 0,
+  cross_session_adopted_count INTEGER NOT NULL DEFAULT 0,
+  decay_disabled INTEGER NOT NULL DEFAULT 0,
+  dedupe_hash TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (batch_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_trash_recycled ON vmm_memory_nodes_trash(recycled_at, batch_id, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_trash_batch ON vmm_memory_nodes_trash(batch_id, id);
+
+CREATE TABLE IF NOT EXISTS vmm_memory_context_edges_trash (
+  batch_id BIGINT NOT NULL,
+  recycled_at BIGINT NOT NULL DEFAULT 0,
+  recycle_reason TEXT NOT NULL DEFAULT '',
+  memory_id BIGINT NOT NULL,
+  context_key TEXT NOT NULL,
+  context_value TEXT NOT NULL,
+  support_count INTEGER NOT NULL DEFAULT 0,
+  rebuttal_count INTEGER NOT NULL DEFAULT 0,
+  last_supported_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_rebutted_timestamp BIGINT NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (batch_id, memory_id, context_key, context_value)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_trash_recycled ON vmm_memory_context_edges_trash(recycled_at, batch_id, memory_id);
+CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_trash_batch ON vmm_memory_context_edges_trash(batch_id, memory_id);
+
+CREATE TABLE IF NOT EXISTS vmm_vector_gc_jobs (
+  id BIGINT PRIMARY KEY,
+  batch_id BIGINT NOT NULL DEFAULT 0,
+  vector_id TEXT NOT NULL,
+  job_type TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_run_timestamp BIGINT NOT NULL DEFAULT 0,
+  claimed_timestamp BIGINT NOT NULL DEFAULT 0,
+  completed_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_vector_gc_jobs_unique ON vmm_vector_gc_jobs(vector_id, job_type, batch_id);
+CREATE INDEX IF NOT EXISTS idx_vmm_vector_gc_jobs_pending ON vmm_vector_gc_jobs(completed_timestamp, next_run_timestamp, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_vector_gc_jobs_batch ON vmm_vector_gc_jobs(batch_id, id);
 
 CREATE TABLE IF NOT EXISTS vmm_profile_nodes (
   id BIGINT PRIMARY KEY,

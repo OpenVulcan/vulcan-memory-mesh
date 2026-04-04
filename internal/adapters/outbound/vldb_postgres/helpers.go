@@ -130,6 +130,18 @@ func (s *Store) vectorGCJobsTable() string {
 	return s.qualifiedTable("vmm_vector_gc_jobs")
 }
 
+// memoryNodesTrashTable returns the fully-qualified memory-trash table name used by retention maintenance.
+// memoryNodesTrashTable 用于返回 retention 维护使用的记忆回收站表完整限定名称。
+func (s *Store) memoryNodesTrashTable() string {
+	return s.qualifiedTable("vmm_memory_nodes_trash")
+}
+
+// memoryContextEdgesTrashTable returns the fully-qualified memory-context-edge trash table name used by retention maintenance.
+// memoryContextEdgesTrashTable 用于返回 retention 维护使用的记忆情境边回收站表完整限定名称。
+func (s *Store) memoryContextEdgesTrashTable() string {
+	return s.qualifiedTable("vmm_memory_context_edges_trash")
+}
+
 // bootstrapContext derives a startup-oriented timeout so schema bootstrap and dialect index creation are less brittle than regular request-time queries.
 // bootstrapContext 用于派生面向启动阶段的超时，让 schema 启动和方言索引创建相比普通请求查询更稳健。
 func (s *Store) bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc) {

@@ -682,9 +682,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 当前阶段说明：
 
-- 这组参数已经接入配置系统、默认值和校验逻辑
-- 第一阶段优先补齐 PostgreSQL 基础 schema 与事务出口
-- 完整 recycle worker 与冷数据迁移链路仍会在后续阶段继续落地
+- 这组参数已经接入独立 retention 维护器
+- 当前维护器会周期性回收 `superseded / expired / deleted` 的终态记忆，并把对应 `memory_context_edges` 一并迁入回收站
+- SQLite 会同步清理 `vmm_memory_nodes_fts` 镜像；PostgreSQL 组合存储模式下不额外走向量 GC
+- 超过 `trash_retention` 的记忆回收站批次会被后台 purge 永久清理
+- `turn` 冷归档与 session 全量回收仍在后续阶段
 
 ### LanceDB 表名规则
 
