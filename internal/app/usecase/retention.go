@@ -26,6 +26,18 @@ const (
 	// defaultRetentionPurgeBatchSize bounds one trash purge pass so permanent cleanup stays incremental and predictable.
 	// defaultRetentionPurgeBatchSize 用于限制单次回收站清理批量，让永久删除流程保持渐进且可预测。
 	defaultRetentionPurgeBatchSize = 64
+
+	// defaultRetentionVectorGCBatchSize bounds one retry pass over pending vector-delete jobs so the maintenance worker can compensate sidecar cleanup failures without turning one loop into an unbounded sweep.
+	// defaultRetentionVectorGCBatchSize 用于限制一次待重试向量删除任务的处理批量，让维护工作器补偿旁路向量清理失败时仍保持有界。
+	defaultRetentionVectorGCBatchSize = 128
+
+	// defaultRetentionVectorGCRetryDelay keeps failed sidecar vector deletes on a calm fixed retry cadence so transient vector-store outages do not create a busy retry loop.
+	// defaultRetentionVectorGCRetryDelay 用于给失败的旁路向量删除设置平稳且固定的重试延迟，避免向量库瞬时故障引发忙等式重试。
+	defaultRetentionVectorGCRetryDelay = 5 * time.Minute
+
+	// defaultRetentionVectorGCClaimLease reserves one claimed retry batch for a short bounded window so concurrent maintenance workers do not delete the same vectors repeatedly.
+	// defaultRetentionVectorGCClaimLease 用于给一批已领取的重试任务保留一个短而有界的租约窗口，避免并发维护工作器重复删除同一批向量。
+	defaultRetentionVectorGCClaimLease = 2 * time.Minute
 )
 
 // RetentionConfig keeps the narrow runtime knobs needed by the cold-data maintenance worker after process-level config normalization is complete.
@@ -142,7 +154,7 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 	if recycleErr != nil {
 		u.logError("retention cold memory recycle failed", recycleErr)
 	} else {
-		u.cleanupVectors(ctx, recycleResult)
+		u.cleanupVectors(ctx, recycleResult, now)
 		u.logRecycleResult(recycleResult)
 	}
 
@@ -159,9 +171,13 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 	if sessionErr != nil {
 		u.logError("retention idle session recycle failed", sessionErr)
 	} else {
-		u.cleanupIdleSessionVectors(ctx, sessionResult)
+		u.cleanupIdleSessionVectors(ctx, sessionResult, now)
 		u.logIdleSessionRecycleResult(sessionResult)
 	}
+
+	// Retry any previously queued sidecar vector deletes after the immediate recycle passes have had one chance to clean their own vectors.
+	// 在当前轮即时回收路径先尝试自行清理向量后，再补偿之前已入队的旁路向量删除失败任务。
+	u.retryPendingVectorGCJobs(ctx, now)
 
 	// Purge expired trash in a second step so the soft-backup window is enforced independently from the hot-table recycle path.
 	// 第二步单独清理超期回收站，以便软备份窗口能独立于热表回收路径生效。
@@ -174,9 +190,9 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 	u.logPurgeResult(purgeResult)
 }
 
-// cleanupVectors removes obsolete vector rows after the relational recycle transaction has succeeded, while tolerating combined-store no-op implementations.
-// cleanupVectors 用于在关系回收事务成功后清理过时向量，同时兼容组合库存储下的 no-op 删除实现。
-func (u *RetentionUseCase) cleanupVectors(ctx context.Context, result logicdomain.MemoryRecycleResult) {
+// cleanupVectors removes obsolete vector rows after the relational recycle transaction has succeeded; if the sidecar delete fails, the vector ids are persisted into the retry queue instead of being lost after trash purge.
+// cleanupVectors 用于在关系回收事务成功后清理过时向量；若旁路删除失败，则把向量 id 持久化到重试队列，避免在回收站 purge 后永久丢失清理坐标。
+func (u *RetentionUseCase) cleanupVectors(ctx context.Context, result logicdomain.MemoryRecycleResult, now time.Time) {
 	if u == nil || u.vector == nil || len(result.RecycledVectorIDs) == 0 {
 		return
 	}
@@ -185,12 +201,13 @@ func (u *RetentionUseCase) cleanupVectors(ctx context.Context, result logicdomai
 	}
 	if _, err := u.vector.DeleteByIDs(ctx, result.RecycledVectorIDs); err != nil {
 		u.logError("retention vector cleanup failed", err)
+		u.enqueueVectorGCJobs(ctx, retentionVectorGCBatchID(result.BatchID), result.RecycledVectorIDs, now)
 	}
 }
 
-// cleanupIdleSessionVectors removes obsolete vector rows after one idle-session recycle pass succeeds, reusing the same best-effort vector deletion bridge as terminal-memory recycle.
-// cleanupIdleSessionVectors 用于在一次 idle-session 回收成功后删除过时向量，复用与终态记忆回收相同的 best-effort 向量清理桥接逻辑。
-func (u *RetentionUseCase) cleanupIdleSessionVectors(ctx context.Context, result logicdomain.SessionIdleRecycleResult) {
+// cleanupIdleSessionVectors removes obsolete vector rows after one idle-session recycle pass succeeds; failures are bridged into the same persistent retry queue so stale session compaction cannot strand orphan vectors.
+// cleanupIdleSessionVectors 用于在一次 idle-session 回收成功后删除过时向量；若失败则写入同一持久化重试队列，避免空闲 session 压缩留下孤儿向量。
+func (u *RetentionUseCase) cleanupIdleSessionVectors(ctx context.Context, result logicdomain.SessionIdleRecycleResult, now time.Time) {
 	if u == nil || u.vector == nil || len(result.RecycledVectorIDs) == 0 {
 		return
 	}
@@ -199,6 +216,72 @@ func (u *RetentionUseCase) cleanupIdleSessionVectors(ctx context.Context, result
 	}
 	if _, err := u.vector.DeleteByIDs(ctx, result.RecycledVectorIDs); err != nil {
 		u.logError("retention idle-session vector cleanup failed", err)
+		u.enqueueVectorGCJobs(ctx, retentionVectorGCBatchID(singleBatchIDOrZero(result.BatchIDs)), result.RecycledVectorIDs, now)
+	}
+}
+
+// enqueueVectorGCJobs persists one batch of failed sidecar vector deletes so later maintenance passes can retry them even after the source rows have already left the hot tables.
+// enqueueVectorGCJobs 用于持久化一批失败的旁路向量删除任务，让后续维护轮次即使在源行已离开热表后仍能继续重试。
+func (u *RetentionUseCase) enqueueVectorGCJobs(ctx context.Context, batchID uint64, vectorIDs []string, now time.Time) {
+	if u == nil || u.store == nil || len(vectorIDs) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	nextRunAt := chooseRetentionTimeOrNow(now).Add(defaultRetentionVectorGCRetryDelay)
+	if err := u.store.EnqueueVectorGCJobs(ctx, logicdomain.VectorGCJobEnqueueQuery{
+		BatchID:   batchID,
+		JobType:   logicdomain.VectorGCJobTypeRetentionRecycle,
+		VectorIDs: vectorIDs,
+		NextRunAt: nextRunAt,
+	}); err != nil {
+		u.logError("retention vector cleanup enqueue failed", err)
+		return
+	}
+}
+
+// retryPendingVectorGCJobs leases one bounded retry batch from the persistent queue and either completes or reschedules it based on the sidecar delete outcome.
+// retryPendingVectorGCJobs 用于从持久化队列里领取一批有界的重试任务，并根据旁路删除结果决定完成或再次调度。
+func (u *RetentionUseCase) retryPendingVectorGCJobs(ctx context.Context, now time.Time) {
+	if u == nil || u.store == nil || u.vector == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now = chooseRetentionTimeOrNow(now)
+	claimUntil := now.Add(defaultRetentionVectorGCClaimLease)
+	jobs, err := u.store.ClaimPendingVectorGCJobs(ctx, now, claimUntil, defaultRetentionVectorGCBatchSize)
+	if err != nil {
+		u.logError("retention vector gc claim failed", err)
+		return
+	}
+	if len(jobs) == 0 {
+		return
+	}
+	vectorIDs := make([]string, 0, len(jobs))
+	jobIDs := make([]uint64, 0, len(jobs))
+	for _, job := range jobs {
+		if strings.TrimSpace(job.VectorID) == "" || job.ID == 0 {
+			continue
+		}
+		vectorIDs = append(vectorIDs, job.VectorID)
+		jobIDs = append(jobIDs, job.ID)
+	}
+	if len(jobIDs) == 0 || len(vectorIDs) == 0 {
+		return
+	}
+	if _, err := u.vector.DeleteByIDs(ctx, vectorIDs); err != nil {
+		u.logError("retention vector gc retry failed", err)
+		retryAt := now.Add(defaultRetentionVectorGCRetryDelay)
+		if retryErr := u.store.RetryVectorGCJobs(ctx, jobIDs, retryAt, err.Error()); retryErr != nil {
+			u.logError("retention vector gc reschedule failed", retryErr)
+		}
+		return
+	}
+	if err := u.store.CompleteVectorGCJobs(ctx, jobIDs, now); err != nil {
+		u.logError("retention vector gc completion failed", err)
 	}
 }
 
@@ -300,6 +383,30 @@ func normalizeRetentionTurnHotWindowSize(size int) int {
 		return size
 	}
 	return 0
+}
+
+// chooseRetentionTimeOrNow keeps retention helpers on one non-zero UTC clock value even when callers intentionally pass zero time in tests or future refactors.
+// chooseRetentionTimeOrNow 用于让 retention 辅助逻辑总能拿到一个非零 UTC 时间值，避免测试或后续重构传入零时间时出现异常调度。
+func chooseRetentionTimeOrNow(value time.Time) time.Time {
+	if value.IsZero() {
+		return time.Now().UTC()
+	}
+	return value.UTC()
+}
+
+// retentionVectorGCBatchID keeps retry-queue batch references explicit while still allowing zero when one recycle result aggregated multiple batch sources.
+// retentionVectorGCBatchID 用于显式保留重试队列里的批次引用；若结果聚合了多个批次，则允许退回零值批次锚点。
+func retentionVectorGCBatchID(batchID uint64) uint64 {
+	return batchID
+}
+
+// singleBatchIDOrZero returns the concrete batch id only when one aggregate result really contains exactly one batch anchor; multi-batch aggregates intentionally fall back to zero so retry rows do not claim the wrong source batch.
+// singleBatchIDOrZero 用于仅在聚合结果确实只包含一个批次锚点时返回该批次 id；多批次聚合会有意退回零值，避免重试行错误归属到某个批次。
+func singleBatchIDOrZero(values []uint64) uint64 {
+	if len(values) != 1 {
+		return 0
+	}
+	return values[0]
 }
 
 // EnsureRetentionStore reports one explicit wiring error when the configured relational store does not expose the retention maintenance port.

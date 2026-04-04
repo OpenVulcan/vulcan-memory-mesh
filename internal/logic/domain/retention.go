@@ -20,6 +20,10 @@ const (
 	// RecycleReasonIdleSessionCompact keeps the stable batch reason text used when one idle session is compacted by retention maintenance.
 	// RecycleReasonIdleSessionCompact 用于保存 retention 维护器压缩长期空闲 session 时使用的稳定回收原因文本。
 	RecycleReasonIdleSessionCompact = "idle session compacted by retention maintenance"
+
+	// VectorGCJobTypeRetentionRecycle keeps the stable vector-GC job type used when retention must retry a failed sidecar vector delete after relational recycle already committed.
+	// VectorGCJobTypeRetentionRecycle 用于保存 retention 在关系回收已提交后重试失败向量删除时使用的稳定向量 GC 任务类型。
+	VectorGCJobTypeRetentionRecycle = "retention_recycle_vector_delete"
 )
 
 // MemoryRecycleQuery describes one cold-memory recycle pass, including batch size, timestamps, and protection knobs.
@@ -70,4 +74,29 @@ type RetentionTrashPurgeResult struct {
 	PurgedMemoryCount  int
 	PurgedContextCount int
 	PurgedTurnCount    int
+}
+
+// VectorGCJobEnqueueQuery describes one batch of vector ids that should be retried asynchronously after a best-effort delete failed.
+// VectorGCJobEnqueueQuery 用于描述一批在 best-effort 删除失败后需要异步重试的向量 id。
+type VectorGCJobEnqueueQuery struct {
+	BatchID   uint64
+	JobType   string
+	VectorIDs []string
+	NextRunAt time.Time
+}
+
+// VectorGCJobRecord stores one leased vector-GC retry task selected from the persistent retry queue.
+// VectorGCJobRecord 用于保存一条从持久化重试队列中领取出来的向量 GC 重试任务。
+type VectorGCJobRecord struct {
+	ID           uint64
+	BatchID      uint64
+	VectorID     string
+	JobType      string
+	AttemptCount int
+	NextRunAt    time.Time
+	ClaimedAt    time.Time
+	CompletedAt  time.Time
+	LastError    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }

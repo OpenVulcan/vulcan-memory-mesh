@@ -5,6 +5,7 @@ package usecase
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -19,10 +20,20 @@ type fakeRetentionStore struct {
 	idleSessionQuery logicdomain.SessionIdleRecycleQuery
 	purgeBefore      time.Time
 	purgeLimit       int
+	enqueueQuery     logicdomain.VectorGCJobEnqueueQuery
+	claimDueBefore   time.Time
+	claimUntil       time.Time
+	claimLimit       int
+	completedJobIDs  []uint64
+	completedAt      time.Time
+	retriedJobIDs    []uint64
+	retryAt          time.Time
+	retryLastError   string
 
 	recycleResult     logicdomain.MemoryRecycleResult
 	idleSessionResult logicdomain.SessionIdleRecycleResult
 	purgeResult       logicdomain.RetentionTrashPurgeResult
+	claimedJobs       []logicdomain.VectorGCJobRecord
 
 	recycleErr     error
 	idleSessionErr error
@@ -51,10 +62,44 @@ func (f *fakeRetentionStore) PurgeExpiredTrash(_ context.Context, before time.Ti
 	return f.purgeResult, f.purgeErr
 }
 
+// EnqueueVectorGCJobs records the latest vector-gc enqueue request so retention maintenance tests can verify failed sidecar deletes are persisted for retry.
+// EnqueueVectorGCJobs 用于记录最近一次向量 GC 入队请求，让 retention 维护测试验证失败的旁路删除会被持久化重试。
+func (f *fakeRetentionStore) EnqueueVectorGCJobs(_ context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
+	f.enqueueQuery = query
+	return nil
+}
+
+// ClaimPendingVectorGCJobs records the latest retry-claim inputs and returns the configured fake jobs.
+// ClaimPendingVectorGCJobs 用于记录最近一次重试领取输入，并返回预设的 fake 任务。
+func (f *fakeRetentionStore) ClaimPendingVectorGCJobs(_ context.Context, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.VectorGCJobRecord, error) {
+	f.claimDueBefore = dueBefore
+	f.claimUntil = claimUntil
+	f.claimLimit = limit
+	return append([]logicdomain.VectorGCJobRecord(nil), f.claimedJobs...), nil
+}
+
+// CompleteVectorGCJobs records the completed retry job ids so tests can assert successful retry deletion closes the queue items.
+// CompleteVectorGCJobs 用于记录已完成的重试任务 id，让测试断言成功重试删除后会关闭队列任务。
+func (f *fakeRetentionStore) CompleteVectorGCJobs(_ context.Context, jobIDs []uint64, completedAt time.Time) error {
+	f.completedJobIDs = append([]uint64(nil), jobIDs...)
+	f.completedAt = completedAt
+	return nil
+}
+
+// RetryVectorGCJobs records the rescheduled retry job ids so tests can assert failed retry deletion is re-enqueued with a later next-run timestamp.
+// RetryVectorGCJobs 用于记录被重新调度的重试任务 id，让测试断言失败的重试删除会带着更晚的 next-run 时间再次排队。
+func (f *fakeRetentionStore) RetryVectorGCJobs(_ context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
+	f.retriedJobIDs = append([]uint64(nil), jobIDs...)
+	f.retryAt = nextRunAt
+	f.retryLastError = lastError
+	return nil
+}
+
 // fakeVectorStore captures vector-id deletes so retention maintenance tests can verify relational recycle results are bridged into vector cleanup.
 // fakeVectorStore 用于捕获向量 ID 删除调用，让 retention 维护测试验证关系回收结果已桥接到向量清理。
 type fakeVectorStore struct {
 	deletedIDs []string
+	deleteErrs []error
 }
 
 // Upsert is unused in these maintenance tests and intentionally succeeds as a no-op.
@@ -77,6 +122,13 @@ func (*fakeVectorStore) DeleteByFilter(context.Context, logicdomain.SearchFilter
 // DeleteByIDs 用于记录 retention 工作器请求删除的向量 id。
 func (f *fakeVectorStore) DeleteByIDs(_ context.Context, ids []string) (uint64, error) {
 	f.deletedIDs = append(f.deletedIDs, ids...)
+	if len(f.deleteErrs) > 0 {
+		err := f.deleteErrs[0]
+		f.deleteErrs = f.deleteErrs[1:]
+		if err != nil {
+			return 0, err
+		}
+	}
 	return uint64(len(ids)), nil
 }
 
@@ -250,5 +302,128 @@ func TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError(t *t
 
 	if len(vector.deletedIDs) != 1 || vector.deletedIDs[0] != "vec-cold-1" {
 		t.Fatalf("deleted vector ids = %v, want only cold-memory cleanup", vector.deletedIDs)
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceEnqueuesVectorGCJobsOnImmediateDeleteFailure verifies retention persists failed sidecar vector deletes into the retry queue instead of only logging and forgetting them.
+// TestRetentionUseCaseRunMaintenanceEnqueuesVectorGCJobsOnImmediateDeleteFailure 用于验证 retention 会把失败的旁路向量删除持久化到重试队列，而不是只记日志后遗忘。
+func TestRetentionUseCaseRunMaintenanceEnqueuesVectorGCJobsOnImmediateDeleteFailure(t *testing.T) {
+	store := &fakeRetentionStore{
+		recycleResult: logicdomain.MemoryRecycleResult{
+			BatchID:           7,
+			RecycledVectorIDs: []string{"vec-cold-1", "vec-cold-2"},
+		},
+	}
+	vector := &fakeVectorStore{deleteErrs: []error{errors.New("vector store unavailable")}}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	beforeRun := time.Now().UTC()
+	useCase.runMaintenance(context.Background())
+	afterRun := time.Now().UTC()
+
+	if store.enqueueQuery.BatchID != 7 {
+		t.Fatalf("enqueue batch id = %d, want 7", store.enqueueQuery.BatchID)
+	}
+	if store.enqueueQuery.JobType != logicdomain.VectorGCJobTypeRetentionRecycle {
+		t.Fatalf("enqueue job type = %q, want %q", store.enqueueQuery.JobType, logicdomain.VectorGCJobTypeRetentionRecycle)
+	}
+	if len(store.enqueueQuery.VectorIDs) != 2 || store.enqueueQuery.VectorIDs[0] != "vec-cold-1" || store.enqueueQuery.VectorIDs[1] != "vec-cold-2" {
+		t.Fatalf("enqueue vector ids = %v", store.enqueueQuery.VectorIDs)
+	}
+	minNextRun := beforeRun.Add(defaultRetentionVectorGCRetryDelay)
+	maxNextRun := afterRun.Add(defaultRetentionVectorGCRetryDelay)
+	if store.enqueueQuery.NextRunAt.Before(minNextRun.Add(-time.Second)) || store.enqueueQuery.NextRunAt.After(maxNextRun.Add(time.Second)) {
+		t.Fatalf("enqueue next run at = %v, want between %v and %v", store.enqueueQuery.NextRunAt, minNextRun, maxNextRun)
+	}
+	if len(store.completedJobIDs) != 0 || len(store.retriedJobIDs) != 0 {
+		t.Fatalf("unexpected retry queue terminal updates: completed=%v retried=%v", store.completedJobIDs, store.retriedJobIDs)
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs verifies later maintenance passes claim one bounded retry batch and close it after the sidecar delete finally succeeds.
+// TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs 用于验证后续维护轮次会领取一批有界重试任务，并在旁路删除成功后把它们关闭。
+func TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs(t *testing.T) {
+	store := &fakeRetentionStore{
+		claimedJobs: []logicdomain.VectorGCJobRecord{
+			{ID: 51, BatchID: 7, VectorID: "vec-retry-1", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 1},
+			{ID: 52, BatchID: 7, VectorID: "vec-retry-2", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 2},
+		},
+	}
+	vector := &fakeVectorStore{}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	beforeRun := time.Now().UTC()
+	useCase.runMaintenance(context.Background())
+	afterRun := time.Now().UTC()
+
+	if store.claimLimit != defaultRetentionVectorGCBatchSize {
+		t.Fatalf("claim limit = %d, want %d", store.claimLimit, defaultRetentionVectorGCBatchSize)
+	}
+	if len(vector.deletedIDs) != 2 || vector.deletedIDs[0] != "vec-retry-1" || vector.deletedIDs[1] != "vec-retry-2" {
+		t.Fatalf("deleted vector ids = %v", vector.deletedIDs)
+	}
+	if len(store.completedJobIDs) != 2 || store.completedJobIDs[0] != 51 || store.completedJobIDs[1] != 52 {
+		t.Fatalf("completed job ids = %v", store.completedJobIDs)
+	}
+	if !store.completedAt.IsZero() && (store.completedAt.Before(beforeRun.Add(-time.Second)) || store.completedAt.After(afterRun.Add(time.Second))) {
+		t.Fatalf("completed at = %v, want between %v and %v", store.completedAt, beforeRun, afterRun)
+	}
+	if store.claimUntil.Before(beforeRun.Add(defaultRetentionVectorGCClaimLease-time.Second)) || store.claimUntil.After(afterRun.Add(defaultRetentionVectorGCClaimLease+time.Second)) {
+		t.Fatalf("claim until = %v, want around maintenance time + lease", store.claimUntil)
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure verifies failed retry batches are rescheduled with a later next-run time instead of being dropped after the second failure.
+// TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure 用于验证领取后的重试批次在再次删除失败时会被重新调度，而不是在第二次失败后丢失。
+func TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure(t *testing.T) {
+	store := &fakeRetentionStore{
+		claimedJobs: []logicdomain.VectorGCJobRecord{
+			{ID: 61, BatchID: 0, VectorID: "vec-retry-3", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 3},
+		},
+	}
+	vector := &fakeVectorStore{deleteErrs: []error{errors.New("vector retry still failing")}}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	beforeRun := time.Now().UTC()
+	useCase.runMaintenance(context.Background())
+	afterRun := time.Now().UTC()
+
+	if len(store.retriedJobIDs) != 1 || store.retriedJobIDs[0] != 61 {
+		t.Fatalf("retried job ids = %v, want [61]", store.retriedJobIDs)
+	}
+	if store.retryLastError == "" || !strings.Contains(store.retryLastError, "vector retry still failing") {
+		t.Fatalf("retry last error = %q", store.retryLastError)
+	}
+	minRetryAt := beforeRun.Add(defaultRetentionVectorGCRetryDelay)
+	maxRetryAt := afterRun.Add(defaultRetentionVectorGCRetryDelay)
+	if store.retryAt.Before(minRetryAt.Add(-time.Second)) || store.retryAt.After(maxRetryAt.Add(time.Second)) {
+		t.Fatalf("retry at = %v, want between %v and %v", store.retryAt, minRetryAt, maxRetryAt)
+	}
+	if len(store.completedJobIDs) != 0 {
+		t.Fatalf("completed job ids = %v, want none", store.completedJobIDs)
 	}
 }

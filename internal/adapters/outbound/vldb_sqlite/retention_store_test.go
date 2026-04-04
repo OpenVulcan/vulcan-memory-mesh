@@ -275,3 +275,94 @@ func TestPurgeExpiredTrashDeletesAllTrashTablesAndBatchMetadata(t *testing.T) {
 		}
 	}
 }
+
+// TestEnqueueVectorGCJobsPersistsRetryRows verifies SQLite uses the existing vector-gc queue table to persist failed sidecar deletes instead of keeping the failure only in logs.
+// TestEnqueueVectorGCJobsPersistsRetryRows 用于验证 SQLite 会使用现有 vector-gc 队列表持久化失败的旁路删除，而不是只把失败留在日志里。
+func TestEnqueueVectorGCJobsPersistsRetryRows(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var capturedSQL string
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		if strings.Contains(sql, "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_vector_gc_jobs") {
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"next_id":41}]`}, nil
+		}
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	}
+	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		capturedSQL = req.GetSql()
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	if err := store.EnqueueVectorGCJobs(context.Background(), logicdomain.VectorGCJobEnqueueQuery{
+		BatchID:   7,
+		JobType:   logicdomain.VectorGCJobTypeRetentionRecycle,
+		VectorIDs: []string{"vec-1", "vec-2"},
+		NextRunAt: time.Unix(500, 0).UTC(),
+	}); err != nil {
+		t.Fatalf("EnqueueVectorGCJobs returned error: %v", err)
+	}
+	for _, fragment := range []string{
+		"INSERT OR IGNORE INTO vmm_vector_gc_jobs",
+		"'vec-1'",
+		"'vec-2'",
+		"'retention_recycle_vector_delete'",
+		"BEGIN IMMEDIATE;",
+		"COMMIT;",
+	} {
+		if !strings.Contains(capturedSQL, fragment) {
+			t.Fatalf("expected enqueue sql to contain %q, got %q", fragment, capturedSQL)
+		}
+	}
+}
+
+// TestSQLiteVectorGCJobsClaimRetryAndComplete verifies SQLite can lease due retry rows and then reschedule or complete them through the same persistent queue table.
+// TestSQLiteVectorGCJobsClaimRetryAndComplete 用于验证 SQLite 可以领取到期重试行，并通过同一持久化队列表完成重新调度或完成。
+func TestSQLiteVectorGCJobsClaimRetryAndComplete(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	executedSQL := make([]string, 0, 3)
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_vector_gc_jobs"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":51,"batch_id":7,"vector_id":"vec-retry-1","job_type":"retention_recycle_vector_delete","attempt_count":2,"next_run_timestamp":1000,"claimed_timestamp":0,"completed_timestamp":0,"last_error":"old error","created_timestamp":10,"updated_timestamp":20}
+]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		executedSQL = append(executedSQL, req.GetSql())
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	jobs, err := store.ClaimPendingVectorGCJobs(context.Background(), time.Unix(2, 0).UTC(), time.Unix(5, 0).UTC(), 8)
+	if err != nil {
+		t.Fatalf("ClaimPendingVectorGCJobs returned error: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != 51 || jobs[0].VectorID != "vec-retry-1" {
+		t.Fatalf("claimed jobs = %+v", jobs)
+	}
+	if err := store.RetryVectorGCJobs(context.Background(), []uint64{51}, time.Unix(9, 0).UTC(), "retry failed"); err != nil {
+		t.Fatalf("RetryVectorGCJobs returned error: %v", err)
+	}
+	if err := store.CompleteVectorGCJobs(context.Background(), []uint64{51}, time.Unix(12, 0).UTC()); err != nil {
+		t.Fatalf("CompleteVectorGCJobs returned error: %v", err)
+	}
+	if len(executedSQL) != 3 {
+		t.Fatalf("executed sql count = %d, want 3", len(executedSQL))
+	}
+	for idx, fragment := range []string{
+		"UPDATE vmm_vector_gc_jobs\nSET claimed_timestamp",
+		"attempt_count = attempt_count + 1",
+		"completed_timestamp =",
+	} {
+		if !strings.Contains(executedSQL[idx], fragment) {
+			t.Fatalf("expected executed sql #%d to contain %q, got %q", idx, fragment, executedSQL[idx])
+		}
+	}
+}
