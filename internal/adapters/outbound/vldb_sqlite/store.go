@@ -2426,6 +2426,11 @@ func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.Ses
 		adoptedAt = adoptedAt.UTC()
 	}
 
+	// Serialize the full read-modify-write window so the lifecycle update never snapshots rows before another writer supersedes or reinforces them.
+	// 串行化整个读-改-写窗口，避免生命周期回写在其他写入完成 supersede 或强化之前先拍下旧快照。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
 	// Load the current durable rows first so the lifecycle update can respect each row's current scope, counters, and expiry horizon.
 	// 先加载当前长期行，确保生命周期更新能够尊重每条记录已有的作用域、计数器和过期时间。
 	rows, err := s.LoadMemoryNodesByIDs(ctx, memoryIDs)
@@ -2435,11 +2440,6 @@ func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.Ses
 	if len(rows) == 0 {
 		return nil
 	}
-
-	// Serialize the write-back so counter evolution and session-to-project promotion stay deterministic under concurrent pre-check traffic.
-	// 串行化这次回写，确保在并发 pre-check 流量下，计数递增和 session->project 提升保持确定性。
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
 
 	script := ""
 	for _, row := range rows {

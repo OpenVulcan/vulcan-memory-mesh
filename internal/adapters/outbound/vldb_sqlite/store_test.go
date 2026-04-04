@@ -721,6 +721,57 @@ func TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows(t *testing.T) {
 	}
 }
 
+// TestStoreApplyMemoryAdoptionLocksBeforeReading verifies SQLite adoption now acquires the adapter write lock before loading candidate rows, so the lifecycle write-back cannot snapshot stale memory state ahead of a concurrent writer.
+// TestStoreApplyMemoryAdoptionLocksBeforeReading 用于验证 SQLite 采纳回写现在会在加载候选行前先拿到适配器写锁，避免生命周期写回先拍下旧状态再被并发写入覆盖。
+func TestStoreApplyMemoryAdoptionLocksBeforeReading(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	queryStarted := make(chan struct{}, 1)
+	allowQueryReturn := make(chan struct{})
+	done := make(chan error, 1)
+
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		if strings.Contains(req.GetSql(), "FROM vmm_memory_nodes") {
+			select {
+			case queryStarted <- struct{}{}:
+			default:
+			}
+			<-allowQueryReturn
+			return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":201,"team_id":1,"space_id":2,"project_id":3,"user_id":4,"origin_session_id":5,"source_turn_id":6,"vector_id":"vec-201","vector_json":"[0.1,0.2]","source_kind":0,"scope_level":0,"category":3,"abstract":"仍有效记忆","details":"用于验证读阶段位于写锁内。","memory_status":0,"priority":2,"memory_level":0,"refresh_weight":1,"support_count":0,"rebuttal_count":0,"status_reason":"","expires_timestamp":9999999999999,"last_recalled_timestamp":0,"last_adopted_timestamp":0,"last_reinforced_timestamp":0,"recalled_count":0,"adopted_count":0,"reinforcement_count":0,"cross_session_adopted_count":0,"decay_disabled":0,"dedupe_hash":"","created_timestamp":10,"updated_timestamp":20}
+]`}, nil
+		}
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	}
+	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	store.writeMu.Lock()
+	go func() {
+		done <- store.ApplyMemoryAdoption(context.Background(), logicdomain.SessionRef{SessionID: 77}, []uint64{201}, time.Unix(100, 0).UTC())
+	}()
+
+	select {
+	case <-queryStarted:
+		t.Fatal("expected adoption query to wait until write lock is released")
+	case <-time.After(150 * time.Millisecond):
+	}
+
+	store.writeMu.Unlock()
+	close(allowQueryReturn)
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("ApplyMemoryAdoption returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("expected ApplyMemoryAdoption to finish after releasing write lock")
+	}
+}
+
 // TestCurrentSchemaSQLContainsContextualMemoryTables verifies the managed SQLite schema now includes context-evidence counters on memory rows plus the dedicated edge table.
 // TestCurrentSchemaSQLContainsContextualMemoryTables 用于验证受管 SQLite schema 现在包含主记忆行上的证据计数，以及独立的情境边表。
 func TestCurrentSchemaSQLContainsContextualMemoryTables(t *testing.T) {
