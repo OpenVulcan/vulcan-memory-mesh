@@ -1514,6 +1514,73 @@ func TestMemoryUseCaseWriteDeduplicatesSameRequestDuplicates(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseWriteDoesNotCollapseDifferentSemanticAttributes verifies in-request duplicate collapse only applies to truly identical writes and keeps separate persistence paths when the caller changes category or lifecycle semantics.
+// TestMemoryUseCaseWriteDoesNotCollapseDifferentSemanticAttributes 用于验证单请求内的重复折叠只作用于真正相同的写入；当调用方改变 category 或生命周期语义时，仍应保留独立持久化路径。
+func TestMemoryUseCaseWriteDoesNotCollapseDifferentSemanticAttributes(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}, {0.4, 0.5, 0.6}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  48,
+			SessionKey: "sess-direct-same-text-different-semantics",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{
+			{
+				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+				Abstract:    "记录新的实施约束。",
+				Details:     "记录新的实施约束。",
+				Category:    logicdomain.MemoryNodeCategoryTechSpecAPI,
+				Priority:    logicdomain.MemoryPriorityP2,
+				MemoryLevel: logicdomain.MemoryLevelStable,
+			},
+			{
+				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+				Abstract:    "记录新的实施约束。",
+				Details:     "记录新的实施约束。",
+				Category:    logicdomain.MemoryNodeCategoryProjectContext,
+				Priority:    logicdomain.MemoryPriorityP1,
+				MemoryLevel: logicdomain.MemoryLevelPersistent,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 2 || result.Items[0].Ref.ID == 0 || result.Items[1].Ref.ID == 0 {
+		t.Fatalf("unexpected write results: %+v", result.Items)
+	}
+	if result.Items[0].Ref.ID == result.Items[1].Ref.ID {
+		t.Fatalf("expected distinct refs for different semantic attributes, got %+v", result.Items)
+	}
+	if result.Items[0].Deduped || result.Items[1].Deduped {
+		t.Fatalf("expected both writes to persist independently, got %+v", result.Items)
+	}
+	if len(store.directWriteApplyCalls) != 2 {
+		t.Fatalf("expected two atomic persistence calls, got %+v", store.directWriteApplyCalls)
+	}
+	if len(vector.upserts) != 2 {
+		t.Fatalf("expected two vector upserts, got %+v", vector.upserts)
+	}
+	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 2 {
+		t.Fatalf("expected one embedding batch covering both writes, got %+v", embedding.requests)
+	}
+}
+
 // TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate verifies dropped candidates with similar memories no longer auto-reuse the first hit unless reviewer explicitly names the dedupe target.
 // TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate 用于验证当 reviewer 只丢弃候选但没有显式给出 dedupe 目标时，即使存在 similar memory，也不会再自动复用第一条旧记忆。
 func TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate(t *testing.T) {

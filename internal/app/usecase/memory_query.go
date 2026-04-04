@@ -669,7 +669,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 
 	results := make([]WriteMemoryResultItem, len(items))
 	pending := make([]directWritePendingItem, 0, len(items))
-	pendingByDedupeHash := make(map[string]int, len(items))
+	pendingByCollapseKey := make(map[string]int, len(items))
 	for idx, item := range items {
 		dedupeHash := buildDirectMemoryDedupeHash(cmd.Session, item)
 		existing, ok, err := u.memories.FindRecentActiveMemoryByDedupe(
@@ -695,11 +695,12 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 			}
 			continue
 		}
-		if pendingIdx, duplicated := pendingByDedupeHash[dedupeHash]; duplicated {
+		collapseKey := buildDirectMemoryRequestCollapseKey(item)
+		if pendingIdx, duplicated := pendingByCollapseKey[collapseKey]; duplicated {
 			pending[pendingIdx].OriginalIndexes = append(pending[pendingIdx].OriginalIndexes, idx)
 			continue
 		}
-		pendingByDedupeHash[dedupeHash] = len(pending)
+		pendingByCollapseKey[collapseKey] = len(pending)
 		pending = append(pending, directWritePendingItem{
 			OriginalIndexes: []int{idx},
 			Item:            item,
@@ -718,11 +719,14 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 	if err != nil {
 		return WriteMemoriesResult{}, err
 	}
+	createdVectorsByPendingIndex, err := u.prepareDirectWriteCreateVectors(ctx, cmd.Session, pending, decisions, dedupedExistingRows)
+	if err != nil {
+		return WriteMemoriesResult{}, err
+	}
 	for idx, pendingItem := range pending {
 		decision := decisions[idx]
 		if decision.DedupedExistingMemoryID > 0 {
-			existing, ok := dedupedExistingRows[decision.DedupedExistingMemoryID]
-			if ok {
+			if existing, ok := dedupedExistingRows[decision.DedupedExistingMemoryID]; ok {
 				assignDirectWriteResultItems(results, pendingItem.OriginalIndexes, WriteMemoryResultItem{
 					Ref: logicdomain.MemoryRef{
 						Type: logicdomain.MemoryRefTypeMemory,
@@ -734,17 +738,9 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 				})
 				continue
 			}
-			// Degrade stale dedupe targets into a fresh write so a concurrent retirement window cannot turn one explicit tool write into a hard failure or a stale memory ref.
-			// 当 dedupe 目标在并发窗口内失效时，退化成新建，避免显式工具写入因为竞争时序直接失败或返回陈旧记忆引用。
-			if u.logger != nil {
-				u.logger.Warn("direct memory semantic dedupe target became unavailable; falling back to create",
-					"session_id", cmd.Session.SessionID,
-					"dedupe_memory_id", decision.DedupedExistingMemoryID,
-				)
-			}
 		}
 
-		created, err := u.persistDirectWriteMemory(ctx, cmd.Session, pendingItem.Item, pendingItem.DedupeHash, decision.SupersedeMemoryIDs, now)
+		created, err := u.persistDirectWriteMemory(ctx, cmd.Session, pendingItem.Item, pendingItem.DedupeHash, decision.SupersedeMemoryIDs, now, createdVectorsByPendingIndex[idx])
 		if err != nil {
 			return WriteMemoriesResult{}, err
 		}
@@ -949,22 +945,59 @@ func assignDirectWriteResultItems(results []WriteMemoryResultItem, originalIndex
 	}
 }
 
-// persistDirectWriteMemory embeds one accepted direct-write item, writes the fresh vector row, and persists the unified memory row together with any same-scope replacements.
-// persistDirectWriteMemory 用于为一条已接纳的主动写入项生成向量、写入新向量行，并连同同作用域替代结果一起持久化统一记忆行。
-func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session logicdomain.SessionRef, item WriteMemoryItem, dedupeHash string, supersedeMemoryIDs []uint64, now time.Time) (WriteMemoryResultItem, error) {
+// prepareDirectWriteCreateVectors batches embeddings for all direct-write candidates that still need a fresh durable row after semantic dedupe resolution, so one request pays at most one embedding round-trip for its create set.
+// prepareDirectWriteCreateVectors 用于为语义去重判定后仍需新建的主动写入候选批量生成向量，让单次请求对“新建集合”最多只支付一次 embedding 往返。
+func (u *MemoryUseCase) prepareDirectWriteCreateVectors(ctx context.Context, session logicdomain.SessionRef, pending []directWritePendingItem, decisions []directWriteMemoryDecision, dedupedExistingRows map[uint64]logicdomain.MemoryNodeRecord) (map[int][]float32, error) {
+	out := make(map[int][]float32, len(pending))
+	if len(pending) == 0 {
+		return out, nil
+	}
+	createIndexes := make([]int, 0, len(pending))
+	createTexts := make([]string, 0, len(pending))
+	for idx, pendingItem := range pending {
+		decision := decisions[idx]
+		if decision.DedupedExistingMemoryID > 0 {
+			if _, ok := dedupedExistingRows[decision.DedupedExistingMemoryID]; ok {
+				continue
+			}
+			// Degrade stale dedupe targets into a fresh write so a concurrent retirement window cannot turn one explicit tool write into a hard failure or a stale memory ref.
+			// 当 dedupe 目标在并发窗口内失效时，退化成新建，避免显式工具写入因为竞争时序直接失败或返回陈旧记忆引用。
+			if u != nil && u.logger != nil {
+				u.logger.Warn("direct memory semantic dedupe target became unavailable; falling back to create",
+					"session_id", session.SessionID,
+					"dedupe_memory_id", decision.DedupedExistingMemoryID,
+				)
+			}
+		}
+		createIndexes = append(createIndexes, idx)
+		createTexts = append(createTexts, pendingItem.Item.Abstract)
+	}
+	if len(createTexts) == 0 {
+		return out, nil
+	}
+	vectors, err := embedPostActionTexts(ctx, u.embedding, createTexts)
+	if err != nil {
+		return nil, err
+	}
+	if len(vectors) != len(createIndexes) {
+		return nil, fmt.Errorf("embedding result count mismatch: got %d want %d", len(vectors), len(createIndexes))
+	}
+	for idx, pendingIndex := range createIndexes {
+		out[pendingIndex] = append([]float32(nil), vectors[idx]...)
+	}
+	return out, nil
+}
+
+// persistDirectWriteMemory writes one accepted direct-write item using a precomputed embedding vector, then persists the unified memory row together with any same-scope replacements.
+// persistDirectWriteMemory 用于使用预先生成好的 embedding 向量写入一条已接纳的主动记忆，并连同同作用域替代结果一起持久化统一记忆行。
+func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session logicdomain.SessionRef, item WriteMemoryItem, dedupeHash string, supersedeMemoryIDs []uint64, now time.Time, vectorPayload []float32) (WriteMemoryResultItem, error) {
 	applier, canApplyDirectWrite := u.memories.(directMemoryWriteApplier)
 	if len(supersedeMemoryIDs) > 0 && !canApplyDirectWrite {
 		return WriteMemoryResultItem{}, fmt.Errorf("memory store does not support atomic direct-memory replacement writes")
 	}
 
-	// Persist the new vector first so relational rows never point at a vector id that failed to materialize, then let the relational layer commit inserts and supersedes atomically.
-	// 先持久化新向量，避免关系层写入指向一个未成功落下的 vector id；随后再由关系层原子提交插入和 supersede 变更。
-	vectors, err := embedPostActionTexts(ctx, u.embedding, []string{item.Abstract})
-	if err != nil {
-		return WriteMemoryResultItem{}, err
-	}
-	if len(vectors) != 1 {
-		return WriteMemoryResultItem{}, fmt.Errorf("embedding result count mismatch: got %d want 1", len(vectors))
+	if len(vectorPayload) == 0 {
+		return WriteMemoryResultItem{}, fmt.Errorf("direct memory vector payload is required")
 	}
 	vectorID, err := generatePostActionUUID()
 	if err != nil {
@@ -974,7 +1007,7 @@ func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session lo
 	record := logicdomain.MemoryRecord{
 		ID:           vectorID,
 		Text:         item.Abstract,
-		Vector:       vectors[0],
+		Vector:       append([]float32(nil), vectorPayload...),
 		Filter:       buildDirectMemoryFilter(session, item.ScopeLevel),
 		SourceTurnID: 0,
 		Metadata: map[string]string{
@@ -998,7 +1031,7 @@ func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session lo
 		UserID:          session.UserID,
 		OriginSessionID: session.SessionID,
 		VectorID:        vectorID,
-		Vector:          append([]float32(nil), vectors[0]...),
+		Vector:          append([]float32(nil), vectorPayload...),
 		SourceKind:      logicdomain.MemorySourceKindGRPCAIWrite,
 		ScopeLevel:      item.ScopeLevel,
 		Category:        item.Category,
@@ -2537,6 +2570,26 @@ func buildDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemor
 		strconv.FormatUint(session.SessionID, 10),
 		normalizeHashText(item.Abstract),
 		normalizeHashText(item.Details),
+	}, "\n")
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// buildDirectMemoryRequestCollapseKey keeps in-request duplicate collapse stricter than the short-window storage dedupe hash so callers can still write the same text twice when category, priority, memory level, or expiry semantics differ.
+// buildDirectMemoryRequestCollapseKey 用于让单请求内的重复折叠比短窗口存储去重更严格，确保当 category、priority、memory level 或过期语义不同的时候，调用方仍能显式写入两条同文本记忆。
+func buildDirectMemoryRequestCollapseKey(item WriteMemoryItem) string {
+	expiresAt := ""
+	if !item.ExpiresAt.IsZero() {
+		expiresAt = item.ExpiresAt.UTC().Format(time.RFC3339Nano)
+	}
+	body := strings.Join([]string{
+		strconv.Itoa(item.ScopeLevel),
+		normalizeHashText(item.Abstract),
+		normalizeHashText(item.Details),
+		strconv.Itoa(item.Category),
+		strconv.Itoa(item.Priority),
+		strconv.Itoa(item.MemoryLevel),
+		expiresAt,
 	}, "\n")
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])

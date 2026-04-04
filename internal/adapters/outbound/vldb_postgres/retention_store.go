@@ -191,7 +191,8 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 		return result, nil
 	}
 	excludedSessionIDs := make([]uint64, 0, limit)
-	for len(result.BatchIDs) < limit {
+	inspectedSessionCount := 0
+	for len(result.BatchIDs) < limit && inspectedSessionCount < limit {
 		sessionResult, recycleErr := recycleOne(excludedSessionIDs)
 		if recycleErr != nil {
 			result.BatchIDs = normalizeUint64List(result.BatchIDs)
@@ -203,10 +204,12 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 			if sessionResult.SessionID == 0 {
 				break
 			}
+			inspectedSessionCount++
 			excludedSessionIDs = append(excludedSessionIDs, sessionResult.SessionID)
 			excludedSessionIDs = normalizeUint64List(excludedSessionIDs)
 			continue
 		}
+		inspectedSessionCount++
 		result.BatchIDs = append(result.BatchIDs, sessionResult.BatchID)
 		result.SessionIDs = append(result.SessionIDs, sessionResult.SessionID)
 		result.RecycledMemoryCount += sessionResult.RecycledMemoryCount

@@ -70,7 +70,7 @@ func TestBuildPostgresIdleSessionTurnReferenceClauseIgnoresRecycledMemoryIDs(t *
 // TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions 用于验证一次 idle-session 回收会跳过最老但 no-op 的 session，并继续处理后续真正可回收的批次，而不是在第一个空候选处直接停止。
 func TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions(t *testing.T) {
 	callCount := 0
-	excludedSnapshots := make([][]uint64, 0, 3)
+	excludedSnapshots := make([][]uint64, 0, 2)
 	result, err := collectPostgresIdleSessionRecyclePass(2, func(excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
 		excludedSnapshots = append(excludedSnapshots, append([]uint64(nil), excludedSessionIDs...))
 		callCount++
@@ -90,14 +90,15 @@ func TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions(t *testing.T) {
 				RecycledVectorIDs:    []string{"vec-1"},
 			}, nil
 		default:
+			t.Fatalf("unexpected extra recycle call #%d with excluded sessions %v", callCount, excludedSessionIDs)
 			return postgresIdleSessionRecycleResult{}, nil
 		}
 	})
 	if err != nil {
 		t.Fatalf("collectPostgresIdleSessionRecyclePass returned error: %v", err)
 	}
-	if callCount != 3 {
-		t.Fatalf("recycle call count = %d, want 3", callCount)
+	if callCount != 2 {
+		t.Fatalf("recycle call count = %d, want 2", callCount)
 	}
 	if len(result.BatchIDs) != 1 || result.BatchIDs[0] != 81 {
 		t.Fatalf("batch ids = %v, want [81]", result.BatchIDs)
