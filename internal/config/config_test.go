@@ -95,6 +95,48 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.LanceDB.Address != "127.0.0.1:19301" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
 	}
+	if cfg.Storage.Mode != "split" {
+		t.Fatalf("storage mode = %q", cfg.Storage.Mode)
+	}
+	if cfg.Storage.CombinedProvider != "postgres" {
+		t.Fatalf("storage combined provider = %q", cfg.Storage.CombinedProvider)
+	}
+	if cfg.Postgres.Schema != "public" {
+		t.Fatalf("postgres schema = %q", cfg.Postgres.Schema)
+	}
+	if cfg.Postgres.Flavor != "paradedb" {
+		t.Fatalf("postgres flavor = %q", cfg.Postgres.Flavor)
+	}
+	if cfg.Postgres.QueryTimeout.Duration != 5*time.Second {
+		t.Fatalf("postgres query timeout = %v", cfg.Postgres.QueryTimeout.Duration)
+	}
+	if cfg.Postgres.ConnectTimeout.Duration != 5*time.Second {
+		t.Fatalf("postgres connect timeout = %v", cfg.Postgres.ConnectTimeout.Duration)
+	}
+	if cfg.Postgres.MaxOpenConns != 10 {
+		t.Fatalf("postgres max open conns = %d", cfg.Postgres.MaxOpenConns)
+	}
+	if cfg.Postgres.MinIdleConns != 1 {
+		t.Fatalf("postgres min idle conns = %d", cfg.Postgres.MinIdleConns)
+	}
+	if !cfg.Postgres.BM25IndexConcurrently {
+		t.Fatal("expected postgres bm25 index creation to stay concurrent by default")
+	}
+	if cfg.Postgres.BM25IndexName != "vmm_memory_nodes_bm25_idx" {
+		t.Fatalf("postgres bm25 index name = %q", cfg.Postgres.BM25IndexName)
+	}
+	if cfg.Postgres.TRGMSimilarityThreshold != 0.2 {
+		t.Fatalf("postgres trgm similarity threshold = %v", cfg.Postgres.TRGMSimilarityThreshold)
+	}
+	if cfg.Postgres.VectorLists != 100 {
+		t.Fatalf("postgres vector lists = %d", cfg.Postgres.VectorLists)
+	}
+	if cfg.Postgres.VectorProbes != 10 {
+		t.Fatalf("postgres vector probes = %d", cfg.Postgres.VectorProbes)
+	}
+	if cfg.Postgres.MigrationBatchSize != 500 {
+		t.Fatalf("postgres migration batch size = %d", cfg.Postgres.MigrationBatchSize)
+	}
 	if cfg.MemoryPipeline.MaxSearchKeywords != 5 {
 		t.Fatalf("max search keywords = %d", cfg.MemoryPipeline.MaxSearchKeywords)
 	}
@@ -180,6 +222,12 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	cfg.LanceDB.Address = " 127.0.0.1:19301 "
 	cfg.LanceDB.TableName = " vmm_memory_vectors "
 	cfg.LanceDB.VectorColumn = " vector "
+	cfg.Storage.Mode = " combined "
+	cfg.Storage.CombinedProvider = " postgres "
+	cfg.Postgres.DSN = " postgres://user:pass@localhost:5432/vmm "
+	cfg.Postgres.Schema = " vmm "
+	cfg.Postgres.Flavor = " paradedb "
+	cfg.Postgres.BM25IndexName = " vmm_memory_nodes_bm25_idx "
 	cfg.Logging.PayloadEncryptionKey = " 0123456789abcdef0123456789abcdef "
 	cfg.LLM.Provider = " openai "
 	cfg.LLM.Endpoint = " https://api.openai.com/v1 "
@@ -207,6 +255,24 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	}
 	if cfg.LanceDB.VectorColumn != "vector" {
 		t.Fatalf("lancedb vector column = %q", cfg.LanceDB.VectorColumn)
+	}
+	if cfg.Storage.Mode != "combined" {
+		t.Fatalf("storage mode = %q", cfg.Storage.Mode)
+	}
+	if cfg.Storage.CombinedProvider != "postgres" {
+		t.Fatalf("storage combined provider = %q", cfg.Storage.CombinedProvider)
+	}
+	if cfg.Postgres.DSN != "postgres://user:pass@localhost:5432/vmm" {
+		t.Fatalf("postgres dsn = %q", cfg.Postgres.DSN)
+	}
+	if cfg.Postgres.Schema != "vmm" {
+		t.Fatalf("postgres schema = %q", cfg.Postgres.Schema)
+	}
+	if cfg.Postgres.Flavor != "paradedb" {
+		t.Fatalf("postgres flavor = %q", cfg.Postgres.Flavor)
+	}
+	if cfg.Postgres.BM25IndexName != "vmm_memory_nodes_bm25_idx" {
+		t.Fatalf("postgres bm25 index name = %q", cfg.Postgres.BM25IndexName)
 	}
 	if cfg.Logging.PayloadEncryptionKey != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("payload encryption key = %q", cfg.Logging.PayloadEncryptionKey)
@@ -376,6 +442,50 @@ func TestConfigValidateRejectsRemovedProviders(t *testing.T) {
 	cfg.Relational.Provider = "memory"
 	if err := cfg.Validate(); err == nil || err.Error() != "relational.provider must be sqlite" {
 		t.Fatalf("unexpected relational validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsUnsupportedStorageMode verifies the new storage-mode selector fails fast on unknown values before runtime composition starts.
+// TestConfigValidateRejectsUnsupportedStorageMode 用于验证新的存储模式选择器会在运行时装配前快速拒绝未知取值。
+func TestConfigValidateRejectsUnsupportedStorageMode(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "hybrid"
+	if err := cfg.Validate(); err == nil || err.Error() != "storage.mode must be either split or combined" {
+		t.Fatalf("unexpected storage mode validate error: %v", err)
+	}
+}
+
+// TestConfigValidateAllowsUnusedCombinedProviderInSplitMode verifies split mode ignores stale combined-provider overrides because the PostgreSQL combined path is not active there.
+// TestConfigValidateAllowsUnusedCombinedProviderInSplitMode 用于验证 split 模式会忽略陈旧的 combined-provider 覆盖值，因为此时 PostgreSQL 组合路径并未启用。
+func TestConfigValidateAllowsUnusedCombinedProviderInSplitMode(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "split"
+	cfg.Storage.CombinedProvider = "mysql"
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("split mode should ignore unused combined provider, got: %v", err)
+	}
+}
+
+// TestConfigValidateRequiresPostgresDSNInCombinedMode verifies the combined PostgreSQL mode cannot start without an explicit DSN.
+// TestConfigValidateRequiresPostgresDSNInCombinedMode 用于验证 PostgreSQL 组合模式缺少 DSN 时不能启动。
+func TestConfigValidateRequiresPostgresDSNInCombinedMode(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "combined"
+	cfg.Postgres.DSN = ""
+	if err := cfg.Validate(); err == nil || err.Error() != "postgres.dsn is required when storage.mode=combined" {
+		t.Fatalf("unexpected combined postgres dsn validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsUnsupportedPostgresFlavor verifies the PostgreSQL dialect selector only accepts the documented paradeDB and standard flavors.
+// TestConfigValidateRejectsUnsupportedPostgresFlavor 用于验证 PostgreSQL 方言选择器只接受文档声明的 paradedb 与 standard。
+func TestConfigValidateRejectsUnsupportedPostgresFlavor(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "combined"
+	cfg.Postgres.DSN = "postgres://user:pass@localhost:5432/vmm"
+	cfg.Postgres.Flavor = "bm25-plus"
+	if err := cfg.Validate(); err == nil || err.Error() != "postgres.flavor must be either paradedb or standard" {
+		t.Fatalf("unexpected combined postgres flavor validate error: %v", err)
 	}
 }
 
@@ -615,6 +725,93 @@ func TestApplyEnvOverridesSetsPreCheckSearchScope(t *testing.T) {
 
 	if cfg.PreCheck.SearchScope != "team" {
 		t.Fatalf("pre-check search scope = %q", cfg.PreCheck.SearchScope)
+	}
+}
+
+// TestApplyEnvOverridesSetsCombinedPostgresConfig verifies process-level overrides can switch the runtime into combined PostgreSQL mode without editing the base JSON config.
+// TestApplyEnvOverridesSetsCombinedPostgresConfig 用于验证进程级环境变量可以在不修改基础 JSON 配置的前提下切换到 PostgreSQL 组合模式。
+func TestApplyEnvOverridesSetsCombinedPostgresConfig(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_STORAGE_MODE", "combined")
+	t.Setenv("VMM_STORAGE_COMBINED_PROVIDER", "postgres")
+	t.Setenv("VMM_POSTGRES_DSN", "postgres://user:pass@localhost:5432/vmm")
+	t.Setenv("VMM_POSTGRES_SCHEMA", "vmm")
+	t.Setenv("VMM_POSTGRES_FLAVOR", "standard")
+	t.Setenv("VMM_POSTGRES_QUERY_TIMEOUT", "7s")
+	t.Setenv("VMM_POSTGRES_CONNECT_TIMEOUT", "6s")
+	t.Setenv("VMM_POSTGRES_MAX_OPEN_CONNS", "16")
+	t.Setenv("VMM_POSTGRES_MIN_IDLE_CONNS", "2")
+	t.Setenv("VMM_POSTGRES_AUTO_CREATE_EXTENSIONS", "true")
+	t.Setenv("VMM_POSTGRES_BM25_INDEX_CONCURRENTLY", "false")
+	t.Setenv("VMM_POSTGRES_BM25_INDEX_NAME", "memory_bm25_idx")
+	t.Setenv("VMM_POSTGRES_TRGM_SIMILARITY_THRESHOLD", "0.35")
+	t.Setenv("VMM_POSTGRES_VECTOR_LISTS", "64")
+	t.Setenv("VMM_POSTGRES_VECTOR_PROBES", "8")
+	t.Setenv("VMM_POSTGRES_MIGRATION_BATCH_SIZE", "128")
+
+	applyEnvOverrides(&cfg)
+	cfg.Normalize()
+
+	if cfg.Storage.Mode != "combined" {
+		t.Fatalf("storage mode = %q", cfg.Storage.Mode)
+	}
+	if cfg.Storage.CombinedProvider != "postgres" {
+		t.Fatalf("storage combined provider = %q", cfg.Storage.CombinedProvider)
+	}
+	if cfg.Postgres.DSN != "postgres://user:pass@localhost:5432/vmm" {
+		t.Fatalf("postgres dsn = %q", cfg.Postgres.DSN)
+	}
+	if cfg.Postgres.Schema != "vmm" {
+		t.Fatalf("postgres schema = %q", cfg.Postgres.Schema)
+	}
+	if cfg.Postgres.Flavor != "standard" {
+		t.Fatalf("postgres flavor = %q", cfg.Postgres.Flavor)
+	}
+	if cfg.Postgres.QueryTimeout.Duration != 7*time.Second {
+		t.Fatalf("postgres query timeout = %v", cfg.Postgres.QueryTimeout.Duration)
+	}
+	if cfg.Postgres.ConnectTimeout.Duration != 6*time.Second {
+		t.Fatalf("postgres connect timeout = %v", cfg.Postgres.ConnectTimeout.Duration)
+	}
+	if cfg.Postgres.MaxOpenConns != 16 {
+		t.Fatalf("postgres max open conns = %d", cfg.Postgres.MaxOpenConns)
+	}
+	if cfg.Postgres.MinIdleConns != 2 {
+		t.Fatalf("postgres min idle conns = %d", cfg.Postgres.MinIdleConns)
+	}
+	if !cfg.Postgres.AutoCreateExtensions {
+		t.Fatal("expected postgres auto-create extensions to be enabled")
+	}
+	if cfg.Postgres.BM25IndexConcurrently {
+		t.Fatal("expected postgres bm25 index concurrently flag to be disabled")
+	}
+	if cfg.Postgres.BM25IndexName != "memory_bm25_idx" {
+		t.Fatalf("postgres bm25 index name = %q", cfg.Postgres.BM25IndexName)
+	}
+	if cfg.Postgres.TRGMSimilarityThreshold != 0.35 {
+		t.Fatalf("postgres trgm similarity threshold = %v", cfg.Postgres.TRGMSimilarityThreshold)
+	}
+	if cfg.Postgres.VectorLists != 64 {
+		t.Fatalf("postgres vector lists = %d", cfg.Postgres.VectorLists)
+	}
+	if cfg.Postgres.VectorProbes != 8 {
+		t.Fatalf("postgres vector probes = %d", cfg.Postgres.VectorProbes)
+	}
+	if cfg.Postgres.MigrationBatchSize != 128 {
+		t.Fatalf("postgres migration batch size = %d", cfg.Postgres.MigrationBatchSize)
+	}
+}
+
+// TestNormalizePreservesExplicitZeroPostgresMinIdleConns verifies Normalize keeps an explicit zero min-idle setting so operators can disable prewarmed idle PostgreSQL connections.
+// TestNormalizePreservesExplicitZeroPostgresMinIdleConns 用于验证 Normalize 会保留显式配置的 PostgreSQL 最小空闲连接数 0，便于运维关闭预热空闲连接。
+func TestNormalizePreservesExplicitZeroPostgresMinIdleConns(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Postgres.MinIdleConns = 0
+
+	cfg.Normalize()
+
+	if cfg.Postgres.MinIdleConns != 0 {
+		t.Fatalf("postgres min idle conns = %d", cfg.Postgres.MinIdleConns)
 	}
 }
 

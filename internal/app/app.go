@@ -18,6 +18,7 @@ import (
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_postgres"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/app/usecase"
@@ -36,6 +37,14 @@ type Application struct {
 	Logger    *logx.Logger
 	Server    *grpc.Server
 	Shutdowns []appports.Shutdowner
+}
+
+// storageDependencies bundles the relational and vector ports selected for one runtime mode together with the startup schema workflow the composition root must apply.
+// storageDependencies 用于打包某个运行模式选中的关系端口、向量端口，以及组合根启动时需要执行的 schema 工作流。
+type storageDependencies struct {
+	Relational         appports.RelationalStore
+	Vector             appports.VectorStore
+	ManageVectorSchema bool
 }
 
 // NewLocal creates the local application instance.
@@ -89,14 +98,12 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
-	relational, err := buildRelational(cfg)
+	storageDeps, err := buildStorageDependencies(cfg)
 	if err != nil {
 		return nil, err
 	}
-	vector, err := buildVector(cfg)
-	if err != nil {
-		return nil, err
-	}
+	relational := storageDeps.Relational
+	vector := storageDeps.Vector
 	noiseCache, ok := relational.(appports.NoiseEmbeddingCache)
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support noise embedding cache")
@@ -125,8 +132,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support session compact updates")
 	}
-	if err := ensureVectorSchema(context.Background(), schemaVersions, workspaceStore, vector, logger); err != nil {
-		return nil, err
+	if storageDeps.ManageVectorSchema {
+		if err := ensureVectorSchema(context.Background(), schemaVersions, workspaceStore, vector, logger); err != nil {
+			return nil, err
+		}
 	}
 	noiseGate, err := buildNoiseGate(cfg, layout, embedding, noiseCache, logger)
 	if err != nil {
@@ -368,6 +377,60 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 	default:
 		return nil, fmt.Errorf("unsupported rerank provider: %s", cfg.Rerank.Provider)
 	}
+}
+
+// buildStorageDependencies selects either the historical split stores or the unified PostgreSQL combined store and returns the matching runtime ports.
+// buildStorageDependencies 用于选择历史分离存储或统一 PostgreSQL 组合库，并返回对应的运行时端口集合。
+func buildStorageDependencies(cfg config.Config) (storageDependencies, error) {
+	if cfg.UsesCombinedPostgres() {
+		combined, err := buildCombinedStore(cfg)
+		if err != nil {
+			return storageDependencies{}, err
+		}
+		return storageDependencies{
+			Relational:         combined,
+			Vector:             combined,
+			ManageVectorSchema: false,
+		}, nil
+	}
+	relational, err := buildRelational(cfg)
+	if err != nil {
+		return storageDependencies{}, err
+	}
+	vector, err := buildVector(cfg)
+	if err != nil {
+		return storageDependencies{}, err
+	}
+	return storageDependencies{
+		Relational:         relational,
+		Vector:             vector,
+		ManageVectorSchema: true,
+	}, nil
+}
+
+// buildCombinedStore selects the unified PostgreSQL-backed combined store used by the new dialect pattern runtime.
+// buildCombinedStore 用于选择 Dialect Pattern 运行时使用的统一 PostgreSQL 组合库。
+func buildCombinedStore(cfg config.Config) (*vldb_postgres.Store, error) {
+	if !cfg.UsesCombinedPostgres() {
+		return nil, fmt.Errorf("combined postgres store is disabled for storage.mode=%s", cfg.StorageMode())
+	}
+	return vldb_postgres.NewStore(vldb_postgres.Config{
+		DSN:                     cfg.Postgres.DSN,
+		Schema:                  cfg.Postgres.Schema,
+		Flavor:                  cfg.Postgres.Flavor,
+		QueryTimeout:            cfg.Postgres.QueryTimeout.Duration,
+		ConnectTimeout:          cfg.Postgres.ConnectTimeout.Duration,
+		MaxOpenConns:            cfg.Postgres.MaxOpenConns,
+		MinIdleConns:            cfg.Postgres.MinIdleConns,
+		AutoCreateExtensions:    cfg.Postgres.AutoCreateExtensions,
+		BM25IndexConcurrently:   cfg.Postgres.BM25IndexConcurrently,
+		BM25IndexName:           cfg.Postgres.BM25IndexName,
+		TRGMSimilarityThreshold: cfg.Postgres.TRGMSimilarityThreshold,
+		VectorLists:             cfg.Postgres.VectorLists,
+		VectorProbes:            cfg.Postgres.VectorProbes,
+		MigrationBatchSize:      cfg.Postgres.MigrationBatchSize,
+		EmbeddingDimension:      cfg.Embedding.Dimension,
+	})
 }
 
 // buildVector selects the configured vector backend used by retrieval and destructive cleanup flows.

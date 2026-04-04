@@ -1,0 +1,483 @@
+// workspace.go implements the minimal workspace, profile-target, and session-scope resolution flows required for combined PostgreSQL mode to boot and serve memory APIs.
+// workspace.go 用于实现组合 PostgreSQL 模式启动和服务记忆 API 所需的最小 workspace、画像目标与 session 范围解析流程。
+package vldb_postgres
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+)
+
+// ResolveRequestScope validates numeric user/project identifiers, resolves hierarchy names, and lazily creates the session row when needed.
+// ResolveRequestScope 用于校验数字 user/project 标识、解析层级名称，并在需要时惰性创建 session 行。
+func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, userID, projectID uint64) (logicdomain.SessionRef, error) {
+	if s == nil || s.pool == nil {
+		return logicdomain.SessionRef{}, fmt.Errorf("postgres store is not initialized")
+	}
+	sessionKey = strings.TrimSpace(sessionKey)
+	if sessionKey == "" {
+		return logicdomain.SessionRef{}, logicdomain.ValidationError{Field: "session_id", Message: "is required"}
+	}
+	if userID == 0 {
+		return logicdomain.SessionRef{}, logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if projectID == 0 {
+		return logicdomain.SessionRef{}, logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	user, err := s.loadUserByID(ctx, userID)
+	if err != nil {
+		return logicdomain.SessionRef{}, err
+	}
+	project, err := s.loadProjectByID(ctx, projectID)
+	if err != nil {
+		return logicdomain.SessionRef{}, err
+	}
+	session, err := s.ensureSession(ctx, sessionKey, user.ID, project)
+	if err != nil {
+		return logicdomain.SessionRef{}, err
+	}
+	return logicdomain.SessionRef{
+		SessionID:              session.ID,
+		SessionKey:             session.SessionKey,
+		UserID:                 user.ID,
+		TeamID:                 project.TeamID,
+		SpaceID:                project.SpaceID,
+		ProjectID:              project.ID,
+		TurnCount:              session.TurnCount,
+		LastSummarizedID:       session.LastSummarizedID,
+		LastCompactedTurnID:    session.LastCompactedTurnID,
+		SummarizeContent:       session.SummarizeContent,
+		SummarizeBudget:        session.SummarizeBudget,
+		LastExtractObservedAt:  session.LastExtractObservedAt,
+		LastExtractCompletedAt: session.LastExtractCompletedAt,
+		LastCompactedAt:        session.LastCompactedAt,
+		CreatedAt:              session.CreatedAt,
+		UpdatedAt:              session.UpdatedAt,
+		UserName:               user.Name,
+		TeamName:               project.TeamName,
+		SpaceName:              project.SpaceName,
+		ProjectName:            project.Name,
+	}, nil
+}
+
+// ResolveProfileTarget resolves the requested profile scope from the durable user/project hierarchy rows already present in PostgreSQL.
+// ResolveProfileTarget 用于从 PostgreSQL 中已有的 user/project 层级行解析请求的画像目标范围。
+func (s *Store) ResolveProfileTarget(ctx context.Context, profileType int, userID, projectID uint64) (logicdomain.ProfileTargetRef, error) {
+	if s == nil || s.pool == nil {
+		return logicdomain.ProfileTargetRef{}, fmt.Errorf("postgres store is not initialized")
+	}
+	return s.resolveProfileTargetWithQueryer(ctx, s.pool, profileType, userID, projectID)
+}
+
+// resolveProfileTargetWithQueryer resolves one profile target through the shared pool/transaction query abstraction so the scope contract can be tested without a live PostgreSQL connection.
+// resolveProfileTargetWithQueryer 用于通过连接池/事务共享查询抽象解析画像目标，让范围契约可以在无真实 PostgreSQL 连接时被测试覆盖。
+func (s *Store) resolveProfileTargetWithQueryer(ctx context.Context, q profileQueryer, profileType int, userID, projectID uint64) (logicdomain.ProfileTargetRef, error) {
+	if !logicdomain.ValidProfileType(profileType) {
+		return logicdomain.ProfileTargetRef{}, logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile type"}
+	}
+	// Branch by target type so PostgreSQL keeps the same single-scope contract as SQLite and the use case validators.
+	// 按目标类型分支，只解析该范围真正需要的层级，保证 PostgreSQL 与 SQLite 及用例层校验契约一致。
+	switch profileType {
+	case logicdomain.ProfileTypeUser:
+		if userID == 0 {
+			return logicdomain.ProfileTargetRef{}, logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+		}
+		user, err := s.loadUserByIDWithQueryer(ctx, q, userID, false)
+		if err != nil {
+			return logicdomain.ProfileTargetRef{}, err
+		}
+		return logicdomain.ProfileTargetRef{
+			ProfileType: profileType,
+			BindID:      user.ID,
+			UserID:      user.ID,
+			UserName:    user.Name,
+		}, nil
+	case logicdomain.ProfileTypeProject, logicdomain.ProfileTypeTeam, logicdomain.ProfileTypeSpace:
+		if projectID == 0 {
+			return logicdomain.ProfileTargetRef{}, logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+		}
+		project, err := s.loadProjectByIDWithQueryer(ctx, q, projectID)
+		if err != nil {
+			return logicdomain.ProfileTargetRef{}, err
+		}
+		target := logicdomain.ProfileTargetRef{
+			ProfileType: profileType,
+			UserID:      userID,
+			TeamID:      project.TeamID,
+			SpaceID:     project.SpaceID,
+			ProjectID:   project.ID,
+			TeamName:    project.TeamName,
+			SpaceName:   project.SpaceName,
+			ProjectName: project.Name,
+		}
+		switch profileType {
+		case logicdomain.ProfileTypeTeam:
+			target.BindID = project.TeamID
+		case logicdomain.ProfileTypeSpace:
+			target.BindID = project.SpaceID
+		default:
+			target.BindID = project.ID
+		}
+		return target, nil
+	default:
+		return logicdomain.ProfileTargetRef{}, logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile type"}
+	}
+}
+
+// ListProjects returns all durable projects together with their display path components in deterministic path order.
+// ListProjects 用于按确定性的路径顺序返回全部长期项目及其展示路径组成部分。
+func (s *Store) ListProjects(ctx context.Context) ([]logicdomain.ProjectRecord, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("postgres store is not initialized")
+	}
+	sqlText := fmt.Sprintf(`
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
+FROM %s AS p
+JOIN %s AS t ON t.id = p.team_id
+JOIN %s AS sp ON sp.id = p.space_id
+ORDER BY t.name ASC, sp.name ASC, p.name ASC
+`, s.projectsTable(), s.teamsTable(), s.spacesTable())
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	rows, err := s.pool.Query(callCtx, strings.TrimSpace(sqlText))
+	if err != nil {
+		return nil, fmt.Errorf("list postgres projects: %w", err)
+	}
+	defer rows.Close()
+
+	projects := make([]logicdomain.ProjectRecord, 0)
+	for rows.Next() {
+		var row projectScanRow
+		if err := rows.Scan(&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan postgres project row: %w", err)
+		}
+		projects = append(projects, row.toDomain())
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate postgres project rows: %w", err)
+	}
+	return projects, nil
+}
+
+// ResolveProjectRef resolves either a numeric project id or the canonical Team/Space/Project path used by workspace admin flows.
+// ResolveProjectRef 用于解析数字 project id，或 workspace 管理流使用的标准 Team/Space/Project 路径。
+func (s *Store) ResolveProjectRef(ctx context.Context, projectRef string) (logicdomain.ProjectRecord, error) {
+	if s == nil || s.pool == nil {
+		return logicdomain.ProjectRecord{}, fmt.Errorf("postgres store is not initialized")
+	}
+	projectRef = strings.TrimSpace(projectRef)
+	if projectRef == "" {
+		return logicdomain.ProjectRecord{}, logicdomain.ValidationError{Field: "project_ref", Message: "is required"}
+	}
+	if projectID, ok := parseUint64(projectRef); ok {
+		return s.loadProjectByID(ctx, projectID)
+	}
+	teamName, spaceName, projectName, err := parseProjectPath(projectRef)
+	if err != nil {
+		return logicdomain.ProjectRecord{}, err
+	}
+	sqlText := fmt.Sprintf(`
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
+FROM %s AS p
+JOIN %s AS t ON t.id = p.team_id
+JOIN %s AS sp ON sp.id = p.space_id
+WHERE t.name = $1 AND sp.name = $2 AND p.name = $3
+LIMIT 1
+`, s.projectsTable(), s.teamsTable(), s.spacesTable())
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	var row projectScanRow
+	err = s.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), teamName, spaceName, projectName).Scan(
+		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.ProjectRecord{}, fmt.Errorf("resolve postgres project path: %w", err)
+		}
+		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project path %q does not exist", projectRef)}
+	}
+	return row.toDomain(), nil
+}
+
+// ResolveUserRef resolves either a numeric user id or one unique user name.
+// ResolveUserRef 用于解析数字 user id 或唯一用户名。
+func (s *Store) ResolveUserRef(ctx context.Context, userRef string) (logicdomain.UserRecord, error) {
+	if s == nil || s.pool == nil {
+		return logicdomain.UserRecord{}, fmt.Errorf("postgres store is not initialized")
+	}
+	userRef = strings.TrimSpace(userRef)
+	if userRef == "" {
+		return logicdomain.UserRecord{}, logicdomain.ValidationError{Field: "user_ref", Message: "is required"}
+	}
+	if userID, ok := parseUint64(userRef); ok {
+		return s.loadUserByID(ctx, userID)
+	}
+	sqlText := fmt.Sprintf(`
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
+FROM %s
+WHERE name = $1
+LIMIT 1
+`, s.usersTable())
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	var row userScanRow
+	err := s.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), userRef).Scan(
+		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.UserRecord{}, fmt.Errorf("resolve postgres user by name: %w", err)
+		}
+		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user %q does not exist", userRef)}
+	}
+	return row.toDomain(), nil
+}
+
+// EnsureUserName resolves one user by name or creates it when confirmCreate is explicitly true.
+// EnsureUserName 用于按名称解析用户，或在 confirmCreate 明确为真时创建用户。
+func (s *Store) EnsureUserName(ctx context.Context, userName string, confirmCreate bool) (logicdomain.UserResolveResult, error) {
+	if s == nil || s.pool == nil {
+		return logicdomain.UserResolveResult{}, fmt.Errorf("postgres store is not initialized")
+	}
+	userName = strings.TrimSpace(userName)
+	if userName == "" {
+		return logicdomain.UserResolveResult{}, logicdomain.ValidationError{Field: "user_name", Message: "is required"}
+	}
+	if user, err := s.ResolveUserRef(ctx, userName); err == nil {
+		return logicdomain.UserResolveResult{
+			User:    user,
+			Message: fmt.Sprintf("user %s already exists", user.Name),
+			Exists:  true,
+		}, nil
+	} else if !logicdomain.IsNotFoundError(err) {
+		return logicdomain.UserResolveResult{}, err
+	}
+	if !confirmCreate {
+		return logicdomain.UserResolveResult{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user %q does not exist; use confirm_create=1 to create it", userName)}
+	}
+	now := time.Now().UTC()
+	sqlText := fmt.Sprintf(`
+INSERT INTO %s (name, delete_confirm_code, created_at, updated_at)
+VALUES ($1, '', $2, $2)
+ON CONFLICT (name) DO NOTHING
+RETURNING id, name, profile, delete_confirm_code, created_at, updated_at
+`, s.usersTable())
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	var row userScanRow
+	err := s.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), userName, now).Scan(
+		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err == nil {
+		user := row.toDomain()
+		return logicdomain.UserResolveResult{
+			User:    user,
+			Message: fmt.Sprintf("user %s created", user.Name),
+			Created: true,
+		}, nil
+	}
+	user, resolveErr := s.ResolveUserRef(ctx, userName)
+	if resolveErr != nil {
+		return logicdomain.UserResolveResult{}, fmt.Errorf("create postgres user: %w", err)
+	}
+	return logicdomain.UserResolveResult{
+		User:    user,
+		Message: fmt.Sprintf("user %s already exists", user.Name),
+		Exists:  true,
+	}, nil
+}
+
+// ListUsers returns all durable users ordered by id for deterministic admin output.
+// ListUsers 用于按 id 稳定返回全部长期用户，服务管理输出。
+func (s *Store) ListUsers(ctx context.Context) ([]logicdomain.UserRecord, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("postgres store is not initialized")
+	}
+	sqlText := fmt.Sprintf(`
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
+FROM %s
+ORDER BY id ASC
+`, s.usersTable())
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	rows, err := s.pool.Query(callCtx, strings.TrimSpace(sqlText))
+	if err != nil {
+		return nil, fmt.Errorf("list postgres users: %w", err)
+	}
+	defer rows.Close()
+
+	users := make([]logicdomain.UserRecord, 0)
+	for rows.Next() {
+		var row userScanRow
+		if err := rows.Scan(&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt); err != nil {
+			return nil, fmt.Errorf("scan postgres user row: %w", err)
+		}
+		users = append(users, row.toDomain())
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate postgres user rows: %w", err)
+	}
+	return users, nil
+}
+
+// loadUserByID loads one user row by numeric id and returns a stable not-found error when it does not exist.
+// loadUserByID 用于按数字 id 加载用户行，并在不存在时返回稳定的 not-found 错误。
+func (s *Store) loadUserByID(ctx context.Context, userID uint64) (logicdomain.UserRecord, error) {
+	return s.loadUserByIDWithQueryer(ctx, s.pool, userID, false)
+}
+
+// loadUserByIDWithQueryer loads one user row through either the pool or a transaction, with optional row locking for admin flows that must serialize confirmation state.
+// loadUserByIDWithQueryer 用于通过连接池或事务加载单条用户行，并可选择加行锁，供需要串行化确认状态的管理流程复用。
+func (s *Store) loadUserByIDWithQueryer(ctx context.Context, q profileQueryer, userID uint64, forUpdate bool) (logicdomain.UserRecord, error) {
+	lockClause := ""
+	if forUpdate {
+		lockClause = " FOR UPDATE"
+	}
+	sqlText := fmt.Sprintf(`
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
+FROM %s
+WHERE id = $1
+LIMIT 1%s
+`, s.usersTable(), lockClause)
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	var row userScanRow
+	err := q.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(userID)).Scan(
+		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.UserRecord{}, fmt.Errorf("load postgres user by id: %w", err)
+		}
+		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user id %d does not exist", userID)}
+	}
+	return row.toDomain(), nil
+}
+
+// loadProjectByID loads one project row by numeric id together with its Team/Space display names.
+// loadProjectByID 用于按数字 id 加载项目行及其 Team/Space 展示名称。
+func (s *Store) loadProjectByID(ctx context.Context, projectID uint64) (logicdomain.ProjectRecord, error) {
+	return s.loadProjectByIDWithQueryer(ctx, s.pool, projectID)
+}
+
+// loadProjectByIDWithQueryer loads one project row through either the pool or a transaction so profile and admin helpers can share the same hierarchy lookup contract.
+// loadProjectByIDWithQueryer 用于通过连接池或事务加载单条项目行，让画像与管理辅助逻辑共享同一套层级查询契约。
+func (s *Store) loadProjectByIDWithQueryer(ctx context.Context, q profileQueryer, projectID uint64) (logicdomain.ProjectRecord, error) {
+	sqlText := fmt.Sprintf(`
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
+FROM %s AS p
+JOIN %s AS t ON t.id = p.team_id
+JOIN %s AS sp ON sp.id = p.space_id
+WHERE p.id = $1
+LIMIT 1
+`, s.projectsTable(), s.teamsTable(), s.spacesTable())
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	var row projectScanRow
+	err := q.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(projectID)).Scan(
+		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.ProjectRecord{}, fmt.Errorf("load postgres project by id: %w", err)
+		}
+		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project id %d does not exist", projectID)}
+	}
+	return row.toDomain(), nil
+}
+
+// ensureSession loads or creates one session row under the resolved user/project scope.
+// ensureSession 用于在已解析 user/project 范围下加载或创建一条 session 行。
+func (s *Store) ensureSession(ctx context.Context, sessionKey string, userID uint64, project logicdomain.ProjectRecord) (logicdomain.SessionRecord, error) {
+	sqlText := fmt.Sprintf(`
+SELECT id, session_key, user_id, team_id, space_id, project_id,
+       turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+       last_extract_observed_at, last_extract_completed_at, last_compacted_at,
+       created_at, updated_at
+FROM %s
+WHERE project_id = $1 AND session_key = $2
+LIMIT 1
+`, s.sessionsTable())
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	var existing sessionScanRow
+	err := s.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(project.ID), sessionKey).Scan(
+		&existing.ID,
+		&existing.SessionKey,
+		&existing.UserID,
+		&existing.TeamID,
+		&existing.SpaceID,
+		&existing.ProjectID,
+		&existing.TurnCount,
+		&existing.LastSummarizedID,
+		&existing.LastCompactedTurnID,
+		&existing.SummarizeContent,
+		&existing.SummarizeBudget,
+		&existing.LastExtractObservedAt,
+		&existing.LastExtractCompletedAt,
+		&existing.LastCompactedAt,
+		&existing.CreatedAt,
+		&existing.UpdatedAt,
+	)
+	if err == nil {
+		return existing.toDomain(), nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return logicdomain.SessionRecord{}, fmt.Errorf("load postgres session: %w", err)
+	}
+
+	now := time.Now().UTC()
+	insertSQL := fmt.Sprintf(`
+INSERT INTO %s (
+	session_key, user_id, team_id, space_id, project_id,
+	turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+	last_extract_observed_at, last_extract_completed_at, last_compacted_at,
+	created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5,
+	0, 0, 0, '', 0,
+	NULL, NULL, NULL,
+	$6, $6
+)
+ON CONFLICT (project_id, session_key)
+DO UPDATE SET updated_at = %s.updated_at
+RETURNING id, session_key, user_id, team_id, space_id, project_id,
+          turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+          last_extract_observed_at, last_extract_completed_at, last_compacted_at,
+          created_at, updated_at
+`, s.sessionsTable(), s.sessionsTable())
+	var created sessionScanRow
+	if err := s.pool.QueryRow(callCtx, strings.TrimSpace(insertSQL),
+		sessionKey,
+		int64(userID),
+		int64(project.TeamID),
+		int64(project.SpaceID),
+		int64(project.ID),
+		now,
+	).Scan(
+		&created.ID,
+		&created.SessionKey,
+		&created.UserID,
+		&created.TeamID,
+		&created.SpaceID,
+		&created.ProjectID,
+		&created.TurnCount,
+		&created.LastSummarizedID,
+		&created.LastCompactedTurnID,
+		&created.SummarizeContent,
+		&created.SummarizeBudget,
+		&created.LastExtractObservedAt,
+		&created.LastExtractCompletedAt,
+		&created.LastCompactedAt,
+		&created.CreatedAt,
+		&created.UpdatedAt,
+	); err != nil {
+		return logicdomain.SessionRecord{}, fmt.Errorf("ensure postgres session: %w", err)
+	}
+	return created.toDomain(), nil
+}

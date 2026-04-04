@@ -58,8 +58,10 @@ type Config struct {
 	Logging        LoggingConfig        `json:"logging"`
 	PII            PIIConfig            `json:"pii"`
 	Noise          NoiseConfig          `json:"noise"`
+	Storage        StorageConfig        `json:"storage"`
 	SQLite         SQLiteConfig         `json:"sqlite"`
 	LanceDB        LanceDBConfig        `json:"lancedb"`
+	Postgres       PostgresConfig       `json:"postgres"`
 	LLM            LLMConfig            `json:"llm"`
 	Embedding      EmbeddingConfig      `json:"embedding"`
 	Rerank         RerankConfig         `json:"rerank"`
@@ -112,6 +114,13 @@ type NoiseConfig struct {
 	SemanticThreshold float64 `json:"semantic_threshold"`
 }
 
+// StorageConfig controls whether the runtime stays on the historical split stores or switches to one combined PostgreSQL-backed store.
+// StorageConfig 用于控制运行时继续使用历史分离存储，还是切换到统一的 PostgreSQL 组合库。
+type StorageConfig struct {
+	Mode             string `json:"mode"`
+	CombinedProvider string `json:"combined_provider"`
+}
+
 // SQLiteConfig holds the gRPC endpoint used by the local SQLite gateway for durable SQL-backed data.
 // SQLiteConfig 用于保存本地 SQLite 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
 type SQLiteConfig struct {
@@ -126,6 +135,25 @@ type LanceDBConfig struct {
 	Timeout      Duration `json:"timeout"`
 	TableName    string   `json:"table_name"`
 	VectorColumn string   `json:"vector_column"`
+}
+
+// PostgresConfig holds the combined-store connection settings shared by the PostgreSQL dialect runtime.
+// PostgresConfig 用于保存 PostgreSQL 方言组合库共享的连接与搜索方言配置。
+type PostgresConfig struct {
+	DSN                     string   `json:"dsn"`
+	Schema                  string   `json:"schema"`
+	Flavor                  string   `json:"flavor"`
+	QueryTimeout            Duration `json:"query_timeout"`
+	ConnectTimeout          Duration `json:"connect_timeout"`
+	MaxOpenConns            int      `json:"max_open_conns"`
+	MinIdleConns            int      `json:"min_idle_conns"`
+	AutoCreateExtensions    bool     `json:"auto_create_extensions"`
+	BM25IndexConcurrently   bool     `json:"bm25_index_concurrently"`
+	BM25IndexName           string   `json:"bm25_index_name"`
+	TRGMSimilarityThreshold float64  `json:"trgm_similarity_threshold"`
+	VectorLists             int      `json:"vector_lists"`
+	VectorProbes            int      `json:"vector_probes"`
+	MigrationBatchSize      int      `json:"migration_batch_size"`
 }
 
 // LLMConfig holds the provider and model settings used for intent extraction and other LLM tasks.
@@ -230,16 +258,34 @@ func DefaultLocal() Config {
 			RequestTimeout:         GRPCRequestTimeout{Workspace: Duration{15 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
 		},
-		Logging:    LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, ProtectPayloads: false},
-		PII:        PIIConfig{DefaultLanguage: "zh-CN"},
-		Noise:      NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
-		SQLite:     SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
-		LanceDB:    LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
-		LLM:        LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
-		Embedding:  EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
-		Rerank:     RerankConfig{Enabled: false, Provider: "dashscope", Endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank", Model: "qwen3-vl-rerank", TopN: 8, Timeout: Duration{8 * time.Second}},
-		Vector:     VectorConfig{Provider: "lancedb"},
-		Relational: RelationalConfig{Provider: "sqlite"},
+		Logging: LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, ProtectPayloads: false},
+		PII:     PIIConfig{DefaultLanguage: "zh-CN"},
+		Noise:   NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
+		Storage: StorageConfig{Mode: "split", CombinedProvider: "postgres"},
+		SQLite:  SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
+		LanceDB: LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
+		Postgres: PostgresConfig{
+			Schema:                  "public",
+			Flavor:                  "paradedb",
+			QueryTimeout:            Duration{5 * time.Second},
+			ConnectTimeout:          Duration{5 * time.Second},
+			MaxOpenConns:            10,
+			MinIdleConns:            1,
+			AutoCreateExtensions:    false,
+			BM25IndexConcurrently:   true,
+			BM25IndexName:           "vmm_memory_nodes_bm25_idx",
+			TRGMSimilarityThreshold: 0.2,
+			VectorLists:             100,
+			VectorProbes:            10,
+			MigrationBatchSize:      500,
+		},
+		LLM:       LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
+		Embedding: EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
+		Rerank:    RerankConfig{Enabled: false, Provider: "dashscope", Endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank", Model: "qwen3-vl-rerank", TopN: 8, Timeout: Duration{8 * time.Second}},
+		Vector:    VectorConfig{Provider: "lancedb"},
+		Relational: RelationalConfig{
+			Provider: "sqlite",
+		},
 		PostAction: PostActionConfig{
 			InputMode:                     "compat",
 			SessionAnalysisTurnThreshold:  2,
@@ -429,6 +475,43 @@ func isSupportedPreCheckSearchScopeValue(scope string) bool {
 	}
 }
 
+// normalizeStorageModeValue canonicalizes the storage-mode token so config defaults, env overrides, and runtime branching all compare one stable value.
+// normalizeStorageModeValue 用于规范化存储模式 token，让默认值、环境变量覆盖和运行时分支始终比较同一份稳定值。
+func normalizeStorageModeValue(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "combined":
+		return "combined"
+	case "split", "":
+		return "split"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
+// normalizeCombinedProviderValue canonicalizes the combined-store provider token so the repo can later expand beyond one PostgreSQL-backed implementation without changing validation style.
+// normalizeCombinedProviderValue 用于规范化组合库存储提供方 token，让仓库未来即使扩展到更多实现，也无需改动当前校验风格。
+func normalizeCombinedProviderValue(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "postgres", "":
+		return "postgres"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+// normalizePostgresFlavorValue canonicalizes the PostgreSQL search flavor token so all call sites route on one stable dialect name.
+// normalizePostgresFlavorValue 用于规范化 PostgreSQL 搜索 flavor token，确保各处都基于同一方言名称做分支。
+func normalizePostgresFlavorValue(flavor string) string {
+	switch strings.ToLower(strings.TrimSpace(flavor)) {
+	case "standard":
+		return "standard"
+	case "paradedb", "":
+		return "paradedb"
+	default:
+		return strings.ToLower(strings.TrimSpace(flavor))
+	}
+}
+
 // Normalize executes the Normalize logic.
 // Normalize 用于执行 Normalize 逻辑。
 func (c *Config) Normalize() {
@@ -548,6 +631,8 @@ func (c *Config) Normalize() {
 	if c.Noise.SemanticThreshold <= 0 {
 		c.Noise.SemanticThreshold = 0.88
 	}
+	c.Storage.Mode = normalizeStorageModeValue(c.Storage.Mode)
+	c.Storage.CombinedProvider = normalizeCombinedProviderValue(c.Storage.CombinedProvider)
 	if strings.TrimSpace(c.SQLite.Address) == "" {
 		c.SQLite.Address = "127.0.0.1:19501"
 	}
@@ -565,6 +650,37 @@ func (c *Config) Normalize() {
 	}
 	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
 		c.LanceDB.VectorColumn = "vector"
+	}
+	if strings.TrimSpace(c.Postgres.Schema) == "" {
+		c.Postgres.Schema = "public"
+	}
+	c.Postgres.Flavor = normalizePostgresFlavorValue(c.Postgres.Flavor)
+	if c.Postgres.QueryTimeout.Duration <= 0 {
+		c.Postgres.QueryTimeout = Duration{5 * time.Second}
+	}
+	if c.Postgres.ConnectTimeout.Duration <= 0 {
+		c.Postgres.ConnectTimeout = Duration{5 * time.Second}
+	}
+	if c.Postgres.MaxOpenConns <= 0 {
+		c.Postgres.MaxOpenConns = 10
+	}
+	if c.Postgres.MinIdleConns < 0 {
+		c.Postgres.MinIdleConns = 1
+	}
+	if strings.TrimSpace(c.Postgres.BM25IndexName) == "" {
+		c.Postgres.BM25IndexName = "vmm_memory_nodes_bm25_idx"
+	}
+	if c.Postgres.TRGMSimilarityThreshold <= 0 {
+		c.Postgres.TRGMSimilarityThreshold = 0.2
+	}
+	if c.Postgres.VectorLists <= 0 {
+		c.Postgres.VectorLists = 100
+	}
+	if c.Postgres.VectorProbes <= 0 {
+		c.Postgres.VectorProbes = 10
+	}
+	if c.Postgres.MigrationBatchSize <= 0 {
+		c.Postgres.MigrationBatchSize = 500
 	}
 	if strings.TrimSpace(c.Vector.Provider) == "" {
 		c.Vector.Provider = "lancedb"
@@ -590,10 +706,16 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Logging.PayloadEncryptionKey = strings.TrimSpace(c.Logging.PayloadEncryptionKey)
 	c.PII.DefaultLanguage = strings.TrimSpace(c.PII.DefaultLanguage)
 	c.Noise.DefaultLanguage = strings.TrimSpace(c.Noise.DefaultLanguage)
+	c.Storage.Mode = strings.TrimSpace(c.Storage.Mode)
+	c.Storage.CombinedProvider = strings.TrimSpace(c.Storage.CombinedProvider)
 	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
 	c.LanceDB.Address = strings.TrimSpace(c.LanceDB.Address)
 	c.LanceDB.TableName = strings.TrimSpace(c.LanceDB.TableName)
 	c.LanceDB.VectorColumn = strings.TrimSpace(c.LanceDB.VectorColumn)
+	c.Postgres.DSN = strings.TrimSpace(c.Postgres.DSN)
+	c.Postgres.Schema = strings.TrimSpace(c.Postgres.Schema)
+	c.Postgres.Flavor = strings.TrimSpace(c.Postgres.Flavor)
+	c.Postgres.BM25IndexName = strings.TrimSpace(c.Postgres.BM25IndexName)
 	c.PreCheck.SearchScope = strings.TrimSpace(c.PreCheck.SearchScope)
 	c.LLM.Provider = strings.TrimSpace(c.LLM.Provider)
 	c.LLM.Endpoint = strings.TrimSpace(c.LLM.Endpoint)
@@ -630,14 +752,10 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
 		return errors.New("noise.default_language is required")
 	}
-	if strings.TrimSpace(c.LanceDB.Address) == "" {
-		return errors.New("lancedb.address is required")
-	}
-	if strings.TrimSpace(c.LanceDB.TableName) == "" {
-		return errors.New("lancedb.table_name is required")
-	}
-	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
-		return errors.New("lancedb.vector_column is required")
+	switch normalizeStorageModeValue(c.Storage.Mode) {
+	case "split", "combined":
+	default:
+		return errors.New("storage.mode must be either split or combined")
 	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
@@ -702,7 +820,7 @@ func (c Config) Validate() error {
 	if c.Noise.SemanticThreshold < 0 || c.Noise.SemanticThreshold > 1 {
 		return errors.New("noise.semantic_threshold must be in [0,1]")
 	}
-	if strings.TrimSpace(c.LLM.Provider) == "" || strings.TrimSpace(c.Embedding.Provider) == "" || strings.TrimSpace(c.Vector.Provider) == "" || strings.TrimSpace(c.Relational.Provider) == "" {
+	if strings.TrimSpace(c.LLM.Provider) == "" || strings.TrimSpace(c.Embedding.Provider) == "" {
 		return errors.New("provider fields are required")
 	}
 	if !isOpenAIProvider(c.LLM.Provider) {
@@ -711,18 +829,73 @@ func (c Config) Validate() error {
 	if !isOpenAIProvider(c.Embedding.Provider) {
 		return errors.New("embedding.provider must use one openai-compatible provider")
 	}
-	switch strings.ToLower(strings.TrimSpace(c.Vector.Provider)) {
-	case "lancedb":
-	default:
-		return errors.New("vector.provider must be lancedb")
-	}
-	switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
-	case "sqlite":
-		if strings.TrimSpace(c.SQLite.Address) == "" {
-			return errors.New("sqlite.address is required")
+	if normalizeStorageModeValue(c.Storage.Mode) == "split" {
+		if strings.TrimSpace(c.LanceDB.Address) == "" {
+			return errors.New("lancedb.address is required")
 		}
-	default:
-		return errors.New("relational.provider must be sqlite")
+		if strings.TrimSpace(c.LanceDB.TableName) == "" {
+			return errors.New("lancedb.table_name is required")
+		}
+		if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
+			return errors.New("lancedb.vector_column is required")
+		}
+		switch strings.ToLower(strings.TrimSpace(c.Vector.Provider)) {
+		case "lancedb":
+		default:
+			return errors.New("vector.provider must be lancedb")
+		}
+		switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
+		case "sqlite":
+			if strings.TrimSpace(c.SQLite.Address) == "" {
+				return errors.New("sqlite.address is required")
+			}
+		default:
+			return errors.New("relational.provider must be sqlite")
+		}
+	} else {
+		switch normalizeCombinedProviderValue(c.Storage.CombinedProvider) {
+		case "postgres":
+		default:
+			return errors.New("storage.combined_provider must be postgres")
+		}
+		if strings.TrimSpace(c.Postgres.DSN) == "" {
+			return errors.New("postgres.dsn is required when storage.mode=combined")
+		}
+		if strings.TrimSpace(c.Postgres.Schema) == "" {
+			return errors.New("postgres.schema is required when storage.mode=combined")
+		}
+		switch normalizePostgresFlavorValue(c.Postgres.Flavor) {
+		case "paradedb", "standard":
+		default:
+			return errors.New("postgres.flavor must be either paradedb or standard")
+		}
+		if c.Postgres.QueryTimeout.Duration <= 0 {
+			return errors.New("postgres.query_timeout must be > 0 when storage.mode=combined")
+		}
+		if c.Postgres.ConnectTimeout.Duration <= 0 {
+			return errors.New("postgres.connect_timeout must be > 0 when storage.mode=combined")
+		}
+		if c.Postgres.MaxOpenConns <= 0 {
+			return errors.New("postgres.max_open_conns must be > 0 when storage.mode=combined")
+		}
+		if c.Postgres.MinIdleConns < 0 {
+			return errors.New("postgres.min_idle_conns must be >= 0 when storage.mode=combined")
+		}
+		if strings.TrimSpace(c.Postgres.BM25IndexName) == "" {
+			return errors.New("postgres.bm25_index_name is required when storage.mode=combined")
+		}
+		if c.Postgres.TRGMSimilarityThreshold <= 0 || c.Postgres.TRGMSimilarityThreshold > 1 {
+			return errors.New("postgres.trgm_similarity_threshold must be in (0,1] when storage.mode=combined")
+		}
+		if c.Postgres.VectorLists <= 0 {
+			return errors.New("postgres.vector_lists must be > 0 when storage.mode=combined")
+		}
+		if c.Postgres.VectorProbes <= 0 {
+			return errors.New("postgres.vector_probes must be > 0 when storage.mode=combined")
+		}
+		if c.Postgres.MigrationBatchSize <= 0 {
+			return errors.New("postgres.migration_batch_size must be > 0 when storage.mode=combined")
+		}
 	}
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
@@ -852,12 +1025,28 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
 	setBool("VMM_NOISE_SEMANTIC_ENABLED", &cfg.Noise.SemanticEnabled)
 	setFloat("VMM_NOISE_SEMANTIC_THRESHOLD", &cfg.Noise.SemanticThreshold)
+	setString("VMM_STORAGE_MODE", &cfg.Storage.Mode)
+	setString("VMM_STORAGE_COMBINED_PROVIDER", &cfg.Storage.CombinedProvider)
 	setString("VMM_SQLITE_ADDRESS", &cfg.SQLite.Address)
 	setDuration("VMM_SQLITE_TIMEOUT", &cfg.SQLite.Timeout)
 	setString("VMM_LANCEDB_ADDRESS", &cfg.LanceDB.Address)
 	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
 	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
 	setString("VMM_LANCEDB_VECTOR_COLUMN", &cfg.LanceDB.VectorColumn)
+	setString("VMM_POSTGRES_DSN", &cfg.Postgres.DSN)
+	setString("VMM_POSTGRES_SCHEMA", &cfg.Postgres.Schema)
+	setString("VMM_POSTGRES_FLAVOR", &cfg.Postgres.Flavor)
+	setDuration("VMM_POSTGRES_QUERY_TIMEOUT", &cfg.Postgres.QueryTimeout)
+	setDuration("VMM_POSTGRES_CONNECT_TIMEOUT", &cfg.Postgres.ConnectTimeout)
+	setInt("VMM_POSTGRES_MAX_OPEN_CONNS", &cfg.Postgres.MaxOpenConns)
+	setInt("VMM_POSTGRES_MIN_IDLE_CONNS", &cfg.Postgres.MinIdleConns)
+	setBool("VMM_POSTGRES_AUTO_CREATE_EXTENSIONS", &cfg.Postgres.AutoCreateExtensions)
+	setBool("VMM_POSTGRES_BM25_INDEX_CONCURRENTLY", &cfg.Postgres.BM25IndexConcurrently)
+	setString("VMM_POSTGRES_BM25_INDEX_NAME", &cfg.Postgres.BM25IndexName)
+	setFloat("VMM_POSTGRES_TRGM_SIMILARITY_THRESHOLD", &cfg.Postgres.TRGMSimilarityThreshold)
+	setInt("VMM_POSTGRES_VECTOR_LISTS", &cfg.Postgres.VectorLists)
+	setInt("VMM_POSTGRES_VECTOR_PROBES", &cfg.Postgres.VectorProbes)
+	setInt("VMM_POSTGRES_MIGRATION_BATCH_SIZE", &cfg.Postgres.MigrationBatchSize)
 	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)
 	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
 	setString("VMM_LLM_API_KEY", &cfg.LLM.APIKey)
@@ -904,6 +1093,18 @@ func applyEnvOverrides(cfg *Config) {
 	setFloat("VMM_MEMORY_WEIBULL_MIN_MULTIPLIER", &cfg.MemoryPipeline.WeibullMinMultiplier)
 	setFloat("VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT", &cfg.MemoryPipeline.WeibullReinforceWeight)
 	setFloat("VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST", &cfg.MemoryPipeline.WeibullCrossSessionBoost)
+}
+
+// StorageMode returns the normalized runtime storage mode used by composition and tests.
+// StorageMode 用于返回运行时装配与测试共用的规范化存储模式。
+func (c Config) StorageMode() string {
+	return normalizeStorageModeValue(c.Storage.Mode)
+}
+
+// UsesCombinedPostgres reports whether the runtime should build the unified PostgreSQL-backed combined store.
+// UsesCombinedPostgres 用于判断运行时是否应装配统一的 PostgreSQL 组合库。
+func (c Config) UsesCombinedPostgres() bool {
+	return c.StorageMode() == "combined" && normalizeCombinedProviderValue(c.Storage.CombinedProvider) == "postgres"
 }
 
 // isOpenAIProvider reports whether one provider alias resolves to the supported OpenAI-compatible adapter.
