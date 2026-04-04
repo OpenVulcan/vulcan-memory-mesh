@@ -684,9 +684,15 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 - 这组参数已经接入独立 retention 维护器
 - 当前维护器会周期性回收 `superseded / expired / deleted` 的终态记忆，并把对应 `memory_context_edges` 一并迁入回收站
+- 当前维护器也会按 `session_idle_recycle_after` 扫描长期空闲 session，并回收：
+  - 已过期且长期未被强化的 `session` 级记忆
+  - 超出热窗口 `session_analysis_history_turns + turn_keep_extra_turns` 且不再被主表记忆/画像引用的旧 `turn`
 - SQLite 会同步清理 `vmm_memory_nodes_fts` 镜像；PostgreSQL 组合存储模式下不额外走向量 GC
-- 超过 `trash_retention` 的记忆回收站批次会被后台 purge 永久清理
-- `turn` 冷归档与 session 全量回收仍在后续阶段
+- 超过 `trash_retention` 的回收站批次会被后台 purge 永久清理，覆盖：
+  - `memory_nodes_trash`
+  - `memory_context_edges_trash`
+  - `turn_records_trash`
+- 当前仍不提供产品级恢复接口；回收站仅作为数据库层防灾缓冲
 
 ### LanceDB 表名规则
 

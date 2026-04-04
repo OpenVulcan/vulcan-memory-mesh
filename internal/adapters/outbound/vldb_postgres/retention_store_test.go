@@ -51,3 +51,16 @@ func TestSharedRecycleProjectIDCollapsesMixedProjectBatches(t *testing.T) {
 		t.Fatalf("mixed project batch id = %d, want 0", mixedProject)
 	}
 }
+
+// TestBuildPostgresIdleSessionTurnReferenceClauseIgnoresRecycledMemoryIDs verifies idle-session turn recycle can treat the current batch's soon-to-be-deleted session memories as non-blocking references.
+// TestBuildPostgresIdleSessionTurnReferenceClauseIgnoresRecycledMemoryIDs 用于验证 idle-session turn 回收会把本批即将删除的 session 记忆视为非阻塞引用。
+func TestBuildPostgresIdleSessionTurnReferenceClauseIgnoresRecycledMemoryIDs(t *testing.T) {
+	args := &sqlArgsBuilder{}
+	clause := buildPostgresIdleSessionTurnReferenceClause(args, "public.vmm_memory_nodes", []uint64{11, 12})
+	if !strings.Contains(clause, "NOT (mn.id = ANY($1))") {
+		t.Fatalf("idle-session reference clause = %q", clause)
+	}
+	if got := args.Args(); len(got) != 1 {
+		t.Fatalf("idle-session predicate args = %v", got)
+	}
+}

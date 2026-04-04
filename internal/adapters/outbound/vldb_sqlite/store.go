@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 16
+	currentSchemaVersion = 17
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -66,6 +66,7 @@ const (
 const resetManagedSchemaSQL = `
 DROP TABLE IF EXISTS vmm_profile_nodes;
 DROP TABLE IF EXISTS vmm_profile_instructions;
+DROP TABLE IF EXISTS vmm_turn_records_trash;
 DROP TABLE IF EXISTS vmm_memory_context_edges_trash;
 DROP TABLE IF EXISTS vmm_memory_nodes_trash;
 DROP TABLE IF EXISTS vmm_recycle_batches;
@@ -317,6 +318,25 @@ CREATE TABLE IF NOT EXISTS vmm_memory_context_edges_trash (
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_trash_recycled ON vmm_memory_context_edges_trash(recycled_at, batch_id, memory_id);
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_context_edges_trash_batch ON vmm_memory_context_edges_trash(batch_id, memory_id);
+
+CREATE TABLE IF NOT EXISTS vmm_turn_records_trash (
+  batch_id BIGINT NOT NULL,
+  recycled_at BIGINT NOT NULL DEFAULT 0,
+  recycle_reason TEXT NOT NULL DEFAULT '',
+  id BIGINT NOT NULL,
+  session_id BIGINT NOT NULL,
+  project_id BIGINT NOT NULL,
+  dehydrated_content TEXT NOT NULL,
+  dehydrated_budget INTEGER NOT NULL DEFAULT 0,
+  extracted_status TINYINT NOT NULL DEFAULT 0,
+  details TEXT NOT NULL DEFAULT '',
+  details_budget INTEGER NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (batch_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_trash_recycled ON vmm_turn_records_trash(recycled_at, batch_id, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_trash_batch ON vmm_turn_records_trash(batch_id, session_id, id);
 
 CREATE TABLE IF NOT EXISTS vmm_vector_gc_jobs (
   id BIGINT PRIMARY KEY,

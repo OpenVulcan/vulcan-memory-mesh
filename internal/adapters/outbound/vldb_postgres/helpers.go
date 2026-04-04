@@ -142,6 +142,12 @@ func (s *Store) memoryContextEdgesTrashTable() string {
 	return s.qualifiedTable("vmm_memory_context_edges_trash")
 }
 
+// turnsTrashTable returns the fully-qualified turn-trash table name used by idle-session retention maintenance.
+// turnsTrashTable 用于返回 idle-session retention 维护使用的 turn 回收站表完整限定名称。
+func (s *Store) turnsTrashTable() string {
+	return s.qualifiedTable("vmm_turn_records_trash")
+}
+
 // bootstrapContext derives a startup-oriented timeout so schema bootstrap and dialect index creation are less brittle than regular request-time queries.
 // bootstrapContext 用于派生面向启动阶段的超时，让 schema 启动和方言索引创建相比普通请求查询更稳健。
 func (s *Store) bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc) {

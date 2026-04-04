@@ -201,9 +201,14 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		},
 		logger,
 	)
+	// Retention uses the same shared history-turn knob currently consumed by both PreCheck and PostAction, so the configured hot window is that shared base plus the extra keep turns.
+	// 当前运行时里 PreCheck 与 PostAction 共用同一组历史轮数配置，因此 retention 的热窗口等于这组共享基线再加额外保留轮数。
+	retentionTurnHotWindowSize := cfg.PostAction.SessionAnalysisHistoryTurns + cfg.Retention.TurnKeepExtraTurns
 	retention := usecase.NewRetentionUseCase(retentionStore, vector, usecase.RetentionConfig{
 		Enabled:                     cfg.Retention.Enabled,
 		RecycleScanInterval:         cfg.Retention.RecycleScanInterval.Duration,
+		SessionIdleRecycleAfter:     cfg.Retention.SessionIdleRecycleAfter.Duration,
+		TurnHotWindowSize:           retentionTurnHotWindowSize,
 		TrashRetention:              cfg.Retention.TrashRetention.Duration,
 		ProtectPriorityFloor:        cfg.Retention.ProtectPriorityFloor,
 		ProtectMemoryLevelFloor:     cfg.Retention.ProtectMemoryLevelFloor,

@@ -463,9 +463,15 @@ WHERE id = $3
 // queryTurnRecords executes one PostgreSQL turn query and maps the result rows into the shared durable session-turn model.
 // queryTurnRecords 用于执行一条 PostgreSQL turn 查询，并把结果行映射成共享的长期 session-turn 模型。
 func (s *Store) queryTurnRecords(ctx context.Context, sqlText string, args ...any) ([]logicdomain.SessionTurnRecord, error) {
+	return s.queryTurnRecordsWithQueryer(ctx, s.pool, sqlText, args...)
+}
+
+// queryTurnRecordsWithQueryer executes one PostgreSQL turn query against either the shared pool or one transaction and maps the result rows into the shared durable session-turn model.
+// queryTurnRecordsWithQueryer 用于通过连接池或事务执行 PostgreSQL turn 查询，并把结果行映射成共享的长期 session-turn 模型。
+func (s *Store) queryTurnRecordsWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]logicdomain.SessionTurnRecord, error) {
 	callCtx, cancel := s.queryContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Query(callCtx, sqlText, args...)
+	rows, err := q.Query(callCtx, sqlText, args...)
 	if err != nil {
 		return nil, err
 	}

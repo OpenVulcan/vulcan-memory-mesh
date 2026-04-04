@@ -106,11 +106,12 @@ type MemoryStore interface {
 	CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error)
 }
 
-// RetentionStore is the cold-data governance port used by background maintenance workers to move terminal durable memories into trash tables and purge expired trash batches.
-// RetentionStore 用于抽象冷数据治理端口，让后台维护工作器可以把终态长期记忆迁入回收站，并清理超过保留窗口的回收批次。
+// RetentionStore is the cold-data governance port used by background maintenance workers to move terminal durable memories into trash tables, compact long-idle sessions, and purge expired trash batches.
+// RetentionStore 用于抽象冷数据治理端口，让后台维护工作器可以把终态长期记忆迁入回收站、压缩长期空闲 session，并清理超过保留窗口的回收批次。
 type RetentionStore interface {
 	RecycleColdMemories(ctx context.Context, query logicdomain.MemoryRecycleQuery) (logicdomain.MemoryRecycleResult, error)
-	PurgeExpiredMemoryTrash(ctx context.Context, before time.Time, limit int) (logicdomain.MemoryTrashPurgeResult, error)
+	RecycleIdleSessions(ctx context.Context, query logicdomain.SessionIdleRecycleQuery) (logicdomain.SessionIdleRecycleResult, error)
+	PurgeExpiredTrash(ctx context.Context, before time.Time, limit int) (logicdomain.RetentionTrashPurgeResult, error)
 }
 
 // ProfileStore is the port used by profile-query and manual profile-instruction RPCs to resolve targets, inspect active nodes, and persist reviewed updates.

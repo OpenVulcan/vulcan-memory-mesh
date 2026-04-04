@@ -99,3 +99,85 @@
 1. PostgreSQL 当前不支持自动 schema 版本前滚，本阶段只能做向后兼容的增量补表。
 2. 若某个 idle session 因旧 turn 仍有主表引用而无可回收内容，应保持 no-op，而不是强行归档。
 3. 本阶段仍不提供任何恢复能力；回收站仅作为数据库层防灾缓冲。
+
+## 执行变更总结
+
+### 1. 核心修复与调整概述
+
+1. 补齐 `RetentionStore` 与 `RetentionUseCase` 的第二阶段治理能力，让 `session_idle_recycle_after` 和 `turn_keep_extra_turns` 真正参与运行时决策。
+2. 新增 `session_idle_recycle` 批次类型与 `turn_records_trash`，实现长期空闲 session 的机会式压缩：回收过期且长期未强化的 session 级记忆，并把无主表引用的旧 turn 迁入回收站。
+3. 把回收站 purge 从“只清 memory trash”扩展为统一 purge `memory_nodes_trash / memory_context_edges_trash / turn_records_trash`。
+4. 完成一轮全局代码审核，并把 PostgreSQL idle-session turn 查询中的非必要 `FOR UPDATE` 锁移除，降低复杂查询锁冲突与运行时干扰风险。
+
+### 2. 📂 文件变更清单
+
+修改：
+
+1. `internal/logic/domain/retention.go`
+2. `internal/app/ports/interfaces.go`
+3. `internal/app/usecase/retention.go`
+4. `internal/app/usecase/retention_test.go`
+5. `internal/app/app.go`
+6. `internal/adapters/outbound/vldb_postgres/helpers.go`
+7. `internal/adapters/outbound/vldb_postgres/schema.go`
+8. `internal/adapters/outbound/vldb_postgres/turn_store.go`
+9. `internal/adapters/outbound/vldb_postgres/retention_store.go`
+10. `internal/adapters/outbound/vldb_postgres/retention_store_test.go`
+11. `internal/adapters/outbound/vldb_sqlite/store.go`
+12. `internal/adapters/outbound/vldb_sqlite/schema_migrations.go`
+13. `internal/adapters/outbound/vldb_sqlite/retention_store.go`
+14. `internal/adapters/outbound/vldb_sqlite/retention_store_test.go`
+15. `README.md`
+16. `docs/plan/20260405-07-SESSION_IDLE_RECYCLE_AND_GLOBAL_REVIEW.md`
+
+新增：
+
+1. 无
+
+删除：
+
+1. 无
+
+### 3. 💻 关键代码调整详情
+
+1. 领域模型新增：
+   - `RecycleTypeSessionIdle`
+   - `RecycleReasonIdleSessionCompact`
+   - `SessionIdleRecycleQuery`
+   - `SessionIdleRecycleResult`
+   - `RetentionTrashPurgeResult`
+2. 应用层新增 idle-session 维护接线：
+   - `RetentionConfig` 增加 `SessionIdleRecycleAfter / TurnHotWindowSize`
+   - worker 在一次维护中按顺序执行：
+     - 终态记忆冷回收
+     - idle-session 回收
+     - 回收站统一 purge
+3. PostgreSQL 侧新增：
+   - `vmm_turn_records_trash`
+   - idle-session 单 session 单事务回收
+   - `FOR UPDATE SKIP LOCKED` 的 session 级候选锁定
+   - turn 回收时继续坚持“仍被主表记忆/画像引用则不归档”
+4. SQLite 侧新增：
+   - schema `16 -> 17` 迁移
+   - `vmm_turn_records_trash`
+   - idle-session 回收脚本
+   - 支持在 turn 引用判定里忽略“同批即将删除的 session 级记忆”，避免多等一个扫描周期
+5. 测试补齐：
+   - usecase 级 worker 参数透传与两段回收验证
+   - SQLite idle-session recycle / unified purge SQL 断言
+   - PostgreSQL idle-session turn 引用谓词辅助逻辑断言
+6. 文档同步：
+   - README 的 retention 章节已更新为与真实行为一致
+
+### 4. ⚠️ 遗留问题与注意事项
+
+1. 仍不提供任何产品级恢复能力；回收站只作为数据库层防灾缓冲。
+2. PostgreSQL 继续保持向后兼容补表策略，没有提升共享 schema 版本号。
+3. SQLite idle-session 回收依赖现有适配器写锁与脚本事务能力，语义正确，但不是细粒度并发模型。
+4. 全局审核完成后，当前未发现新的阻断级问题。
+5. 验证已完成：
+   - `go test ./internal/adapters/inbound/grpcapi ./internal/app/usecase ./internal/logic/processor ./internal/platform/textutil ./internal/platform/pii ./internal/config`
+   - `go test ./internal/adapters/outbound/vldb_sqlite ./internal/adapters/outbound/vldb_postgres`
+   - `go test ./internal/app/usecase ./internal/adapters/outbound/vldb_postgres ./internal/adapters/outbound/vldb_sqlite`
+   - `go test ./...`
+   - `go vet ./...`

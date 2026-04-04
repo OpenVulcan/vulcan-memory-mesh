@@ -105,6 +105,12 @@ func buildSQLiteSchemaMigrationPlan() schemaMigrationPlan {
 				Name:        "add retention recycle and trash tables",
 				Up:          migrateSQLiteSchema15To16,
 			},
+			{
+				FromVersion: 16,
+				ToVersion:   17,
+				Name:        "add turn trash table for idle session recycle",
+				Up:          migrateSQLiteSchema16To17,
+			},
 		},
 	}
 }
@@ -409,6 +415,38 @@ CREATE TABLE IF NOT EXISTS vmm_vector_gc_jobs (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_vector_gc_jobs_unique ON vmm_vector_gc_jobs(vector_id, job_type, batch_id)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmm_vector_gc_jobs_pending ON vmm_vector_gc_jobs(completed_timestamp, next_run_timestamp, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmm_vector_gc_jobs_batch ON vmm_vector_gc_jobs(batch_id, id)`,
+	}
+	for _, statement := range statements {
+		if err := s.exec(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateSQLiteSchema16To17 adds the turn-trash table needed by idle-session recycle so cold turns can leave the hot table without losing offline audit breadcrumbs.
+// migrateSQLiteSchema16To17 用于新增 idle-session 回收所需的 turn 回收站表，让冷 turn 退出热表时仍保留离线审计痕迹。
+func migrateSQLiteSchema16To17(ctx context.Context, s *Store) error {
+	statements := []string{
+		`
+CREATE TABLE IF NOT EXISTS vmm_turn_records_trash (
+  batch_id BIGINT NOT NULL,
+  recycled_at BIGINT NOT NULL DEFAULT 0,
+  recycle_reason TEXT NOT NULL DEFAULT '',
+  id BIGINT NOT NULL,
+  session_id BIGINT NOT NULL,
+  project_id BIGINT NOT NULL,
+  dehydrated_content TEXT NOT NULL,
+  dehydrated_budget INTEGER NOT NULL DEFAULT 0,
+  extracted_status TINYINT NOT NULL DEFAULT 0,
+  details TEXT NOT NULL DEFAULT '',
+  details_budget INTEGER NOT NULL DEFAULT 0,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (batch_id, id)
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_trash_recycled ON vmm_turn_records_trash(recycled_at, batch_id, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_trash_batch ON vmm_turn_records_trash(batch_id, session_id, id)`,
 	}
 	for _, statement := range statements {
 		if err := s.exec(ctx, statement); err != nil {

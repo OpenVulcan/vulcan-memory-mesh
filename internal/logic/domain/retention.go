@@ -9,9 +9,17 @@ const (
 	// RecycleTypeColdMemory 用于标记一类回收批次：把终态长期记忆迁入回收站表。
 	RecycleTypeColdMemory = "cold_memory_recycle"
 
+	// RecycleTypeSessionIdle marks one recycle batch that compacted one long-idle session by removing stale session memories and archiving orphaned cold turns.
+	// RecycleTypeSessionIdle 用于标记一类回收批次：对长期空闲 session 做压缩，移出陈旧 session 记忆并归档无引用旧 turn。
+	RecycleTypeSessionIdle = "session_idle_recycle"
+
 	// RecycleReasonColdTerminalMemory keeps the stable batch reason text used by the first retention worker phase.
 	// RecycleReasonColdTerminalMemory 用于保存第一阶段 retention 工作器使用的稳定回收原因文本。
 	RecycleReasonColdTerminalMemory = "terminal durable memory recycled by retention maintenance"
+
+	// RecycleReasonIdleSessionCompact keeps the stable batch reason text used when one idle session is compacted by retention maintenance.
+	// RecycleReasonIdleSessionCompact 用于保存 retention 维护器压缩长期空闲 session 时使用的稳定回收原因文本。
+	RecycleReasonIdleSessionCompact = "idle session compacted by retention maintenance"
 )
 
 // MemoryRecycleQuery describes one cold-memory recycle pass, including batch size, timestamps, and protection knobs.
@@ -34,10 +42,32 @@ type MemoryRecycleResult struct {
 	RecycledVectorIDs    []string
 }
 
-// MemoryTrashPurgeResult stores how many trash rows were permanently removed after the configured retention window elapsed.
-// MemoryTrashPurgeResult 用于保存超过保留窗口后被永久删除的回收站行数量。
-type MemoryTrashPurgeResult struct {
+// SessionIdleRecycleQuery describes one idle-session recycle scan, including the idle cutoff and the turn hot-window size that must stay in the hot table.
+// SessionIdleRecycleQuery 用于描述一次 idle-session 回收扫描，包括空闲截止时间，以及必须继续留在热表中的 turn 热窗口大小。
+type SessionIdleRecycleQuery struct {
+	Limit             int
+	RecycledAt        time.Time
+	IdleBefore        time.Time
+	TurnHotWindowSize int
+	RecycleReason     string
+}
+
+// SessionIdleRecycleResult stores the aggregate batch/session identifiers plus the recycled stale-memory, contextual-edge, turn, and vector counts produced by one idle-session recycle pass.
+// SessionIdleRecycleResult 用于保存一次 idle-session 回收扫描产出的批次/会话标识，以及被移出的陈旧记忆、情境边、turn 和向量统计。
+type SessionIdleRecycleResult struct {
+	BatchIDs             []uint64
+	SessionIDs           []uint64
+	RecycledMemoryCount  int
+	RecycledContextCount int
+	RecycledTurnCount    int
+	RecycledVectorIDs    []string
+}
+
+// RetentionTrashPurgeResult stores how many trash rows were permanently removed after the configured retention window elapsed.
+// RetentionTrashPurgeResult 用于保存超过保留窗口后被永久删除的回收站行数量。
+type RetentionTrashPurgeResult struct {
 	BatchIDs           []uint64
 	PurgedMemoryCount  int
 	PurgedContextCount int
+	PurgedTurnCount    int
 }

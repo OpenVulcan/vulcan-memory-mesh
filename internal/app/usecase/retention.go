@@ -1,5 +1,5 @@
-// retention.go implements the independent cold-data maintenance worker that recycles terminal durable memories and purges expired trash batches.
-// retention.go 用于实现独立的冷数据维护工作器，负责回收终态长期记忆并清理超过保留窗口的回收站批次。
+// retention.go implements the independent cold-data maintenance worker that recycles terminal durable memories, compacts long-idle sessions, and purges expired trash batches.
+// retention.go 用于实现独立的冷数据维护工作器，负责回收终态长期记忆、压缩长期空闲 session，并清理超过保留窗口的回收站批次。
 package usecase
 
 import (
@@ -19,6 +19,10 @@ const (
 	// defaultRetentionRecycleBatchSize 用于限制单次回收批量，避免维护流程长时间独占共享存储。
 	defaultRetentionRecycleBatchSize = 128
 
+	// defaultRetentionIdleSessionBatchSize bounds one idle-session recycle pass so the maintenance worker can compact several cold sessions without monopolizing the shared stores.
+	// defaultRetentionIdleSessionBatchSize 用于限制单次 idle-session 回收批量，让维护工作器能压缩多个冷 session，同时避免长时间独占共享存储。
+	defaultRetentionIdleSessionBatchSize = 32
+
 	// defaultRetentionPurgeBatchSize bounds one trash purge pass so permanent cleanup stays incremental and predictable.
 	// defaultRetentionPurgeBatchSize 用于限制单次回收站清理批量，让永久删除流程保持渐进且可预测。
 	defaultRetentionPurgeBatchSize = 64
@@ -29,14 +33,16 @@ const (
 type RetentionConfig struct {
 	Enabled                     bool
 	RecycleScanInterval         time.Duration
+	SessionIdleRecycleAfter     time.Duration
+	TurnHotWindowSize           int
 	TrashRetention              time.Duration
 	ProtectPriorityFloor        string
 	ProtectMemoryLevelFloor     string
 	SkipProtectedSharedMemories bool
 }
 
-// RetentionUseCase owns the background maintenance loop that keeps terminal durable memories out of the hot relational tables.
-// RetentionUseCase 用于承载后台维护循环，把终态长期记忆从热关系表中移出。
+// RetentionUseCase owns the background maintenance loop that keeps cold durable data out of the hot relational tables without disturbing active recall traffic.
+// RetentionUseCase 用于承载后台维护循环，在不干扰活跃召回流量的前提下，把冷状态长期数据从热关系表中移出。
 type RetentionUseCase struct {
 	store        appports.RetentionStore
 	vector       appports.VectorStore
@@ -112,8 +118,8 @@ func (u *RetentionUseCase) workerLoop() {
 	}
 }
 
-// runMaintenance executes one recycle pass followed by one trash purge pass so hot-table compaction and delayed hard-delete share the same maintenance cadence.
-// runMaintenance 用于执行一次回收扫描和一次回收站清理，让热表压缩与延迟硬删除共享同一维护节奏。
+// runMaintenance executes terminal-memory recycle, idle-session recycle, and one trash purge pass so hot-table compaction and delayed hard-delete share the same maintenance cadence.
+// runMaintenance 用于执行终态记忆回收、idle-session 回收和一次回收站清理，让热表压缩与延迟硬删除共享同一维护节奏。
 func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 	if u == nil || u.store == nil {
 		return
@@ -134,16 +140,35 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		SkipProtectedSharedMemories: u.cfg.SkipProtectedSharedMemories,
 	})
 	if recycleErr != nil {
+		u.cleanupVectors(ctx, recycleResult)
 		u.logError("retention cold memory recycle failed", recycleErr)
 	} else {
 		u.cleanupVectors(ctx, recycleResult)
 		u.logRecycleResult(recycleResult)
 	}
 
+	// Recycle long-idle sessions only after terminal-memory recycle has already shrunk the obvious cold rows, so the session pass can focus on active-but-expired session facts and orphaned turns.
+	// 先完成终态记忆回收，再处理长期空闲 session，让后者聚焦 active 但已失效的 session 事实和无引用旧 turn。
+	idleBefore := now.Add(-u.cfg.SessionIdleRecycleAfter)
+	sessionResult, sessionErr := u.store.RecycleIdleSessions(ctx, logicdomain.SessionIdleRecycleQuery{
+		Limit:             defaultRetentionIdleSessionBatchSize,
+		RecycledAt:        now,
+		IdleBefore:        idleBefore,
+		TurnHotWindowSize: normalizeRetentionTurnHotWindowSize(u.cfg.TurnHotWindowSize),
+		RecycleReason:     logicdomain.RecycleReasonIdleSessionCompact,
+	})
+	if sessionErr != nil {
+		u.cleanupIdleSessionVectors(ctx, sessionResult)
+		u.logError("retention idle session recycle failed", sessionErr)
+	} else {
+		u.cleanupIdleSessionVectors(ctx, sessionResult)
+		u.logIdleSessionRecycleResult(sessionResult)
+	}
+
 	// Purge expired trash in a second step so the soft-backup window is enforced independently from the hot-table recycle path.
 	// 第二步单独清理超期回收站，以便软备份窗口能独立于热表回收路径生效。
 	purgeBefore := now.Add(-u.cfg.TrashRetention)
-	purgeResult, purgeErr := u.store.PurgeExpiredMemoryTrash(ctx, purgeBefore, defaultRetentionPurgeBatchSize)
+	purgeResult, purgeErr := u.store.PurgeExpiredTrash(ctx, purgeBefore, defaultRetentionPurgeBatchSize)
 	if purgeErr != nil {
 		u.logError("retention trash purge failed", purgeErr)
 		return
@@ -165,6 +190,20 @@ func (u *RetentionUseCase) cleanupVectors(ctx context.Context, result logicdomai
 	}
 }
 
+// cleanupIdleSessionVectors removes obsolete vector rows after one idle-session recycle pass succeeds, reusing the same best-effort vector deletion bridge as terminal-memory recycle.
+// cleanupIdleSessionVectors 用于在一次 idle-session 回收成功后删除过时向量，复用与终态记忆回收相同的 best-effort 向量清理桥接逻辑。
+func (u *RetentionUseCase) cleanupIdleSessionVectors(ctx context.Context, result logicdomain.SessionIdleRecycleResult) {
+	if u == nil || u.vector == nil || len(result.RecycledVectorIDs) == 0 {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if _, err := u.vector.DeleteByIDs(ctx, result.RecycledVectorIDs); err != nil {
+		u.logError("retention idle-session vector cleanup failed", err)
+	}
+}
+
 // logRecycleResult emits one concise operational log only when the latest recycle pass actually moved rows out of the hot tables.
 // logRecycleResult 用于仅在最近一次回收确实搬走热表数据时，输出一条简洁运维日志。
 func (u *RetentionUseCase) logRecycleResult(result logicdomain.MemoryRecycleResult) {
@@ -180,17 +219,38 @@ func (u *RetentionUseCase) logRecycleResult(result logicdomain.MemoryRecycleResu
 	)
 }
 
-// logPurgeResult emits one concise operational log only when one purge pass permanently deleted trash rows.
-// logPurgeResult 用于仅在某次 purge 真正永久删除了回收站数据时，输出一条简洁运维日志。
-func (u *RetentionUseCase) logPurgeResult(result logicdomain.MemoryTrashPurgeResult) {
-	if u == nil || u.logger == nil || result.PurgedMemoryCount == 0 && result.PurgedContextCount == 0 {
+// logIdleSessionRecycleResult emits one concise operational log only when the latest idle-session recycle pass actually moved stale session data out of the hot tables.
+// logIdleSessionRecycleResult 用于仅在最近一次 idle-session 回收确实搬走陈旧 session 数据时，输出一条简洁运维日志。
+func (u *RetentionUseCase) logIdleSessionRecycleResult(result logicdomain.SessionIdleRecycleResult) {
+	if u == nil || u.logger == nil {
+		return
+	}
+	if result.RecycledMemoryCount == 0 && result.RecycledContextCount == 0 && result.RecycledTurnCount == 0 {
 		return
 	}
 	u.logger.Info(
-		"retention purged memory trash",
+		"retention recycled idle sessions",
+		"batch_count", len(result.BatchIDs),
+		"session_count", len(result.SessionIDs),
+		"memory_count", result.RecycledMemoryCount,
+		"context_count", result.RecycledContextCount,
+		"turn_count", result.RecycledTurnCount,
+		"vector_count", len(result.RecycledVectorIDs),
+	)
+}
+
+// logPurgeResult emits one concise operational log only when one purge pass permanently deleted trash rows.
+// logPurgeResult 用于仅在某次 purge 真正永久删除了回收站数据时，输出一条简洁运维日志。
+func (u *RetentionUseCase) logPurgeResult(result logicdomain.RetentionTrashPurgeResult) {
+	if u == nil || u.logger == nil || result.PurgedMemoryCount == 0 && result.PurgedContextCount == 0 && result.PurgedTurnCount == 0 {
+		return
+	}
+	u.logger.Info(
+		"retention purged recycle trash",
 		"batch_count", len(result.BatchIDs),
 		"memory_count", result.PurgedMemoryCount,
 		"context_count", result.PurgedContextCount,
+		"turn_count", result.PurgedTurnCount,
 	)
 }
 
@@ -233,6 +293,15 @@ func retentionMemoryLevelFloorValue(level string) int {
 	default:
 		return logicdomain.MemoryLevelStable
 	}
+}
+
+// normalizeRetentionTurnHotWindowSize keeps the runtime hot-window size non-negative even when composition code passes an invalid value.
+// normalizeRetentionTurnHotWindowSize 用于在组合根传入非法值时，仍把运行时 turn 热窗口保持为非负数。
+func normalizeRetentionTurnHotWindowSize(size int) int {
+	if size > 0 {
+		return size
+	}
+	return 0
 }
 
 // EnsureRetentionStore reports one explicit wiring error when the configured relational store does not expose the retention maintenance port.
