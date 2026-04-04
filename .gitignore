@@ -6,3 +6,4 @@ dist/
 output/
 /nul
 configs/.env
+.env
