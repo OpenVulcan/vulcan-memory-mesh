@@ -65,6 +65,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.PreCheck.SearchScope != "space" {
 		t.Fatalf("pre-check search scope = %q", cfg.PreCheck.SearchScope)
 	}
+	if cfg.MemoryReplaceScope != "project" {
+		t.Fatalf("memory replace scope = %q", cfg.MemoryReplaceScope)
+	}
 	if cfg.PostAction.InputMode != "compat" {
 		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
 	}
@@ -136,6 +139,30 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if cfg.Postgres.MigrationBatchSize != 500 {
 		t.Fatalf("postgres migration batch size = %d", cfg.Postgres.MigrationBatchSize)
+	}
+	if !cfg.Retention.Enabled {
+		t.Fatal("expected retention to stay enabled by default")
+	}
+	if cfg.Retention.RecycleScanInterval.Duration != 30*time.Minute {
+		t.Fatalf("retention recycle scan interval = %v", cfg.Retention.RecycleScanInterval.Duration)
+	}
+	if cfg.Retention.TurnKeepExtraTurns != 5 {
+		t.Fatalf("retention turn keep extra turns = %d", cfg.Retention.TurnKeepExtraTurns)
+	}
+	if cfg.Retention.SessionIdleRecycleAfter.Duration != 360*time.Hour {
+		t.Fatalf("retention session idle recycle after = %v", cfg.Retention.SessionIdleRecycleAfter.Duration)
+	}
+	if cfg.Retention.TrashRetention.Duration != 720*time.Hour {
+		t.Fatalf("retention trash retention = %v", cfg.Retention.TrashRetention.Duration)
+	}
+	if cfg.Retention.ProtectPriorityFloor != "P1" {
+		t.Fatalf("retention protect priority floor = %q", cfg.Retention.ProtectPriorityFloor)
+	}
+	if cfg.Retention.ProtectMemoryLevelFloor != "stable" {
+		t.Fatalf("retention protect memory level floor = %q", cfg.Retention.ProtectMemoryLevelFloor)
+	}
+	if !cfg.Retention.SkipProtectedSharedMemories {
+		t.Fatal("expected retention to skip protected shared memories by default")
 	}
 	if cfg.MemoryPipeline.MaxSearchKeywords != 5 {
 		t.Fatalf("max search keywords = %d", cfg.MemoryPipeline.MaxSearchKeywords)
@@ -228,6 +255,7 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	cfg.Postgres.Schema = " vmm "
 	cfg.Postgres.Flavor = " paradedb "
 	cfg.Postgres.BM25IndexName = " vmm_memory_nodes_bm25_idx "
+	cfg.MemoryReplaceScope = " team "
 	cfg.Logging.PayloadEncryptionKey = " 0123456789abcdef0123456789abcdef "
 	cfg.LLM.Provider = " openai "
 	cfg.LLM.Endpoint = " https://api.openai.com/v1 "
@@ -238,6 +266,8 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	cfg.Vector.Provider = " lancedb "
 	cfg.Relational.Provider = " sqlite "
 	cfg.PostAction.InputMode = " compat "
+	cfg.Retention.ProtectPriorityFloor = " p0 "
+	cfg.Retention.ProtectMemoryLevelFloor = " PERSISTENT "
 
 	cfg.Normalize()
 
@@ -274,6 +304,9 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	if cfg.Postgres.BM25IndexName != "vmm_memory_nodes_bm25_idx" {
 		t.Fatalf("postgres bm25 index name = %q", cfg.Postgres.BM25IndexName)
 	}
+	if cfg.MemoryReplaceScope != "team" {
+		t.Fatalf("memory replace scope = %q", cfg.MemoryReplaceScope)
+	}
 	if cfg.Logging.PayloadEncryptionKey != "0123456789abcdef0123456789abcdef" {
 		t.Fatalf("payload encryption key = %q", cfg.Logging.PayloadEncryptionKey)
 	}
@@ -303,6 +336,12 @@ func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
 	}
 	if cfg.PostAction.InputMode != "compat" {
 		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
+	}
+	if cfg.Retention.ProtectPriorityFloor != "P0" {
+		t.Fatalf("retention protect priority floor = %q", cfg.Retention.ProtectPriorityFloor)
+	}
+	if cfg.Retention.ProtectMemoryLevelFloor != "persistent" {
+		t.Fatalf("retention protect memory level floor = %q", cfg.Retention.ProtectMemoryLevelFloor)
 	}
 }
 
@@ -426,6 +465,19 @@ func TestConfigValidateRejectsUnsupportedPreCheckSearchScope(t *testing.T) {
 	err := cfg.Validate()
 	if err == nil || err.Error() != "pre_check.search_scope must be one of team, space, or project" {
 		t.Fatalf("unexpected pre-check search scope error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsUnsupportedMemoryReplaceScope verifies startup validation rejects unsupported memory-replacement scope tokens instead of silently broadening supersede reach.
+// TestConfigValidateRejectsUnsupportedMemoryReplaceScope 用于验证启动校验会拒绝不受支持的记忆更替作用域 token，而不是静默放宽 supersede 边界。
+func TestConfigValidateRejectsUnsupportedMemoryReplaceScope(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.MemoryReplaceScope = "workspace"
+	cfg.Normalize()
+
+	err := cfg.Validate()
+	if err == nil || err.Error() != "memory_replace_scope must be one of session, team, space, or project" {
+		t.Fatalf("unexpected memory replace scope error: %v", err)
 	}
 }
 
@@ -725,6 +777,52 @@ func TestApplyEnvOverridesSetsPreCheckSearchScope(t *testing.T) {
 
 	if cfg.PreCheck.SearchScope != "team" {
 		t.Fatalf("pre-check search scope = %q", cfg.PreCheck.SearchScope)
+	}
+}
+
+// TestApplyEnvOverridesSetsMemoryReplaceAndRetentionKnobs verifies process-level overrides can tune the dedicated replacement scope and retention defaults without editing the base JSON config.
+// TestApplyEnvOverridesSetsMemoryReplaceAndRetentionKnobs 用于验证进程级环境变量可以在不修改基础 JSON 配置的前提下调整专用更替作用域和 retention 参数。
+func TestApplyEnvOverridesSetsMemoryReplaceAndRetentionKnobs(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_MEMORY_REPLACE_SCOPE", "session")
+	t.Setenv("VMM_RETENTION_ENABLED", "false")
+	t.Setenv("VMM_RETENTION_RECYCLE_SCAN_INTERVAL", "45m")
+	t.Setenv("VMM_RETENTION_TURN_KEEP_EXTRA_TURNS", "8")
+	t.Setenv("VMM_RETENTION_SESSION_IDLE_RECYCLE_AFTER", "480h")
+	t.Setenv("VMM_RETENTION_TRASH_RETENTION", "960h")
+	t.Setenv("VMM_RETENTION_PROTECT_PRIORITY_FLOOR", "P0")
+	t.Setenv("VMM_RETENTION_PROTECT_MEMORY_LEVEL_FLOOR", "persistent")
+	t.Setenv("VMM_RETENTION_SKIP_PROTECTED_SHARED_MEMORIES", "false")
+
+	applyEnvOverrides(&cfg)
+	cfg.Normalize()
+
+	if cfg.MemoryReplaceScope != "session" {
+		t.Fatalf("memory replace scope = %q", cfg.MemoryReplaceScope)
+	}
+	if cfg.Retention.Enabled {
+		t.Fatal("expected retention enabled override to be false")
+	}
+	if cfg.Retention.RecycleScanInterval.Duration != 45*time.Minute {
+		t.Fatalf("retention recycle scan interval = %v", cfg.Retention.RecycleScanInterval.Duration)
+	}
+	if cfg.Retention.TurnKeepExtraTurns != 8 {
+		t.Fatalf("retention turn keep extra turns = %d", cfg.Retention.TurnKeepExtraTurns)
+	}
+	if cfg.Retention.SessionIdleRecycleAfter.Duration != 480*time.Hour {
+		t.Fatalf("retention session idle recycle after = %v", cfg.Retention.SessionIdleRecycleAfter.Duration)
+	}
+	if cfg.Retention.TrashRetention.Duration != 960*time.Hour {
+		t.Fatalf("retention trash retention = %v", cfg.Retention.TrashRetention.Duration)
+	}
+	if cfg.Retention.ProtectPriorityFloor != "P0" {
+		t.Fatalf("retention protect priority floor = %q", cfg.Retention.ProtectPriorityFloor)
+	}
+	if cfg.Retention.ProtectMemoryLevelFloor != "persistent" {
+		t.Fatalf("retention protect memory level floor = %q", cfg.Retention.ProtectMemoryLevelFloor)
+	}
+	if cfg.Retention.SkipProtectedSharedMemories {
+		t.Fatal("expected retention skip protected shared memories override to be false")
 	}
 }
 

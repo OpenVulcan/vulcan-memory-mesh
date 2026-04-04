@@ -74,6 +74,7 @@ var (
 type MemoryQueryCommand struct {
 	UserID              uint64
 	ProjectID           uint64
+	SessionID           uint64
 	Queries             []string
 	TopK                int
 	ScopeOverride       string
@@ -231,24 +232,34 @@ type hybridVectorSearchStore interface {
 // MemoryUseCase orchestrates grouped memory search, mixed detail lookup, and direct AI memory writes on top of profile-target resolution and unified relational memory rows.
 // MemoryUseCase 用于在画像目标解析和统一关系记忆行之上，编排分组记忆检索、混合详情查询以及 AI 主动写记忆流程。
 type MemoryUseCase struct {
-	profiles                 appports.ProfileStore
-	memories                 appports.MemoryStore
-	embedding                appports.EmbeddingClient
-	hybridEnabled            bool
-	lexicalTopK              int
-	rrfK                     int
-	mmrEnabled               bool
-	mmrLambda                float64
-	weibullEnabled           bool
-	weibullShape             float64
-	weibullScaleHours        float64
-	weibullMinMultiplier     float64
-	weibullReinforceWeight   float64
-	weibullCrossSessionBoost float64
-	reranker                 appports.RerankerClient
-	rerankTopN               int
-	vector                   appports.VectorStore
-	logger                   *logx.Logger
+	profiles                   appports.ProfileStore
+	memories                   appports.MemoryStore
+	embedding                  appports.EmbeddingClient
+	candidateReviewer          PostActionCandidateReviewer
+	memoryReplaceScope         string
+	memoryReplaceTopK          int
+	memoryReplaceMinSimilarity float64
+	hybridEnabled              bool
+	lexicalTopK                int
+	rrfK                       int
+	mmrEnabled                 bool
+	mmrLambda                  float64
+	weibullEnabled             bool
+	weibullShape               float64
+	weibullScaleHours          float64
+	weibullMinMultiplier       float64
+	weibullReinforceWeight     float64
+	weibullCrossSessionBoost   float64
+	reranker                   appports.RerankerClient
+	rerankTopN                 int
+	vector                     appports.VectorStore
+	logger                     *logx.Logger
+}
+
+// directMemoryWriteApplier is the optional store fast path that atomically inserts one direct-write memory row and retires any replaced old rows in the same SQL transaction.
+// directMemoryWriteApplier 用于描述一个可选的存储快路径，在同一 SQL 事务里原子写入主动记忆，并退役它替代的旧记忆行。
+type directMemoryWriteApplier interface {
+	ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error)
 }
 
 // NewMemoryUseCase creates a MemoryUseCase instance.
@@ -258,20 +269,23 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		logger = logx.Default()
 	}
 	return &MemoryUseCase{
-		profiles:                 profiles,
-		memories:                 memories,
-		embedding:                embedding,
-		lexicalTopK:              defaultMemorySearchTopK,
-		rrfK:                     60,
-		mmrLambda:                0.75,
-		weibullShape:             1.35,
-		weibullScaleHours:        2160,
-		weibullMinMultiplier:     0.4,
-		weibullReinforceWeight:   0.18,
-		weibullCrossSessionBoost: 0.12,
-		rerankTopN:               defaultMemorySearchTopK,
-		vector:                   vector,
-		logger:                   logger,
+		profiles:                   profiles,
+		memories:                   memories,
+		embedding:                  embedding,
+		memoryReplaceScope:         memoryReplaceScopeProject,
+		memoryReplaceTopK:          defaultMemorySearchTopK,
+		memoryReplaceMinSimilarity: 0.90,
+		lexicalTopK:                defaultMemorySearchTopK,
+		rrfK:                       60,
+		mmrLambda:                  0.75,
+		weibullShape:               1.35,
+		weibullScaleHours:          2160,
+		weibullMinMultiplier:       0.4,
+		weibullReinforceWeight:     0.18,
+		weibullCrossSessionBoost:   0.12,
+		rerankTopN:                 defaultMemorySearchTopK,
+		vector:                     vector,
+		logger:                     logger,
 	}
 }
 
@@ -353,6 +367,30 @@ func (u *MemoryUseCase) ConfigureRerank(reranker appports.RerankerClient, topN i
 	u.rerankTopN = topN
 }
 
+// ConfigureMemoryReplace attaches the optional semantic replacement reviewer and its recall knobs so direct writes can converge with post-action memory replacement decisions.
+// ConfigureMemoryReplace 用于挂载可选的语义替代 reviewer 及其召回参数，让主动写记忆与 post-action 共享同一套更替决策语义。
+func (u *MemoryUseCase) ConfigureMemoryReplace(reviewer PostActionCandidateReviewer, topK int, scope string, minSimilarity float64) {
+	if u == nil {
+		return
+	}
+	u.candidateReviewer = reviewer
+	if topK <= 0 {
+		topK = defaultMemorySearchTopK
+	}
+	if topK > maxMemorySearchTopK {
+		topK = maxMemorySearchTopK
+	}
+	u.memoryReplaceTopK = topK
+	u.memoryReplaceScope = normalizeMemoryReplaceScope(scope)
+	if minSimilarity <= 0 || minSimilarity > 1 {
+		minSimilarity = 0.90
+	}
+	if minSimilarity < 0.90 {
+		minSimilarity = 0.90
+	}
+	u.memoryReplaceMinSimilarity = minSimilarity
+}
+
 // Search resolves the concrete project/user scope, normalizes the simple query list, runs the configured retrieval stages, and returns enriched unified memory refs.
 // Search 用于解析具体的 project/user 范围、规范化简单查询列表、执行已配置的检索阶段，并返回补全后的统一记忆引用。
 func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error) {
@@ -418,6 +456,9 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	// Keep vector recall inside the resolved project hierarchy and enrich the returned vector rows with relational memory refs.
 	// 将向量召回限制在已解析项目层级内，并使用关系记忆行补全向量结果中的长期引用。
 	filter := buildScopedMemorySearchFilter(userTarget, projectTarget, cmd.ScopeOverride)
+	if cmd.SessionID > 0 {
+		filter.SessionID = cmd.SessionID
+	}
 	filter.BoundarySessionID = cmd.BoundarySessionID
 	filter.BoundaryMaxTurnID = cmd.BoundaryMaxTurnID
 	filter.ExcludeBoundaryTurn = cmd.ExcludeBoundaryTurn
@@ -626,8 +667,9 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 		items = append(items, normalizeWriteMemoryItem(item, now))
 	}
 
-	results := make([]WriteMemoryResultItem, 0, len(items))
-	for _, item := range items {
+	results := make([]WriteMemoryResultItem, len(items))
+	pending := make([]directWritePendingItem, 0, len(items))
+	for idx, item := range items {
 		dedupeHash := buildDirectMemoryDedupeHash(cmd.Session, item)
 		existing, ok, err := u.memories.FindRecentActiveMemoryByDedupe(
 			ctx,
@@ -641,7 +683,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 			return WriteMemoriesResult{}, err
 		}
 		if ok {
-			results = append(results, WriteMemoryResultItem{
+			results[idx] = WriteMemoryResultItem{
 				Ref: logicdomain.MemoryRef{
 					Type: logicdomain.MemoryRefTypeMemory,
 					ID:   existing.ID,
@@ -649,81 +691,347 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 				SourceKind: existing.SourceKind,
 				ScopeLevel: existing.ScopeLevel,
 				Deduped:    true,
-			})
+			}
 			continue
 		}
-
-		vectors, err := embedPostActionTexts(ctx, u.embedding, []string{item.Abstract})
-		if err != nil {
-			return WriteMemoriesResult{}, err
-		}
-		if len(vectors) != 1 {
-			return WriteMemoriesResult{}, fmt.Errorf("embedding result count mismatch: got %d want 1", len(vectors))
-		}
-		vectorID, err := generatePostActionUUID()
-		if err != nil {
-			return WriteMemoriesResult{}, err
-		}
-
-		record := logicdomain.MemoryRecord{
-			ID:           vectorID,
-			Text:         item.Abstract,
-			Vector:       vectors[0],
-			Filter:       buildDirectMemoryFilter(cmd.Session, item.ScopeLevel),
-			SourceTurnID: 0,
-			Metadata: map[string]string{
-				"category":     strconv.Itoa(item.Category),
-				"details":      item.Details,
-				"source_kind":  logicdomain.MemorySourceKindLabel(logicdomain.MemorySourceKindGRPCAIWrite),
-				"scope_level":  logicdomain.MemoryScopeLevelLabel(item.ScopeLevel),
-				"priority":     strconv.Itoa(item.Priority),
-				"memory_level": strconv.Itoa(item.MemoryLevel),
-			},
-			CreatedAt: now,
-		}
-		if err := u.vector.Upsert(ctx, record); err != nil {
-			return WriteMemoriesResult{}, err
-		}
-
-		created, err := u.memories.CreateDirectMemoryNode(ctx, cmd.Session, logicdomain.MemoryNodeRecord{
-			TeamID:          cmd.Session.TeamID,
-			SpaceID:         cmd.Session.SpaceID,
-			ProjectID:       cmd.Session.ProjectID,
-			UserID:          cmd.Session.UserID,
-			OriginSessionID: cmd.Session.SessionID,
-			VectorID:        vectorID,
-			Vector:          append([]float32(nil), vectors[0]...),
-			SourceKind:      logicdomain.MemorySourceKindGRPCAIWrite,
-			ScopeLevel:      item.ScopeLevel,
-			Category:        item.Category,
-			Abstract:        item.Abstract,
-			Details:         item.Details,
-			Status:          logicdomain.MemoryStatusActive,
-			Priority:        item.Priority,
-			MemoryLevel:     item.MemoryLevel,
-			RefreshWeight:   1,
-			ExpiresAt:       item.ExpiresAt,
-			DedupeHash:      dedupeHash,
-			CreatedAt:       now,
-			UpdatedAt:       now,
-		})
-		if err != nil {
-			if _, rollbackErr := u.vector.DeleteByIDs(ctx, []string{vectorID}); rollbackErr != nil && u.logger != nil {
-				u.logger.Error("direct memory vector rollback failed", "vector_id", vectorID, "session_id", cmd.Session.SessionID, "err", rollbackErr)
-			}
-			return WriteMemoriesResult{}, err
-		}
-		results = append(results, WriteMemoryResultItem{
-			Ref: logicdomain.MemoryRef{
-				Type: logicdomain.MemoryRefTypeMemory,
-				ID:   created.ID,
-			},
-			SourceKind: created.SourceKind,
-			ScopeLevel: created.ScopeLevel,
-			Deduped:    false,
+		pending = append(pending, directWritePendingItem{
+			OriginalIndex: idx,
+			Item:          item,
+			DedupeHash:    dedupeHash,
 		})
 	}
+	if len(pending) == 0 {
+		return WriteMemoriesResult{Items: results}, nil
+	}
+
+	decisions, err := u.reviewDirectWriteMemoryCandidates(ctx, cmd.Session, pending)
+	if err != nil {
+		return WriteMemoriesResult{}, err
+	}
+	dedupedExistingRows, err := u.loadDirectWriteDedupedExistingRows(ctx, decisions)
+	if err != nil {
+		return WriteMemoriesResult{}, err
+	}
+	for idx, pendingItem := range pending {
+		decision := decisions[idx]
+		if decision.DedupedExistingMemoryID > 0 {
+			existing, ok := dedupedExistingRows[decision.DedupedExistingMemoryID]
+			if ok {
+				results[pendingItem.OriginalIndex] = WriteMemoryResultItem{
+					Ref: logicdomain.MemoryRef{
+						Type: logicdomain.MemoryRefTypeMemory,
+						ID:   existing.ID,
+					},
+					SourceKind: existing.SourceKind,
+					ScopeLevel: existing.ScopeLevel,
+					Deduped:    true,
+				}
+				continue
+			}
+			// Degrade stale dedupe targets into a fresh write so a concurrent retirement window cannot turn one explicit tool write into a hard failure or a stale memory ref.
+			// 当 dedupe 目标在并发窗口内失效时，退化成新建，避免显式工具写入因为竞争时序直接失败或返回陈旧记忆引用。
+			if u.logger != nil {
+				u.logger.Warn("direct memory semantic dedupe target became unavailable; falling back to create",
+					"session_id", cmd.Session.SessionID,
+					"dedupe_memory_id", decision.DedupedExistingMemoryID,
+				)
+			}
+		}
+
+		created, err := u.persistDirectWriteMemory(ctx, cmd.Session, pendingItem.Item, pendingItem.DedupeHash, decision.SupersedeMemoryIDs, now)
+		if err != nil {
+			return WriteMemoriesResult{}, err
+		}
+		results[pendingItem.OriginalIndex] = created
+	}
 	return WriteMemoriesResult{Items: results}, nil
+}
+
+// directWritePendingItem stores one post-soft-dedupe direct-write item together with its original caller position and stable short-window dedupe hash.
+// directWritePendingItem 用于保存一条经过软幂等筛选后仍待处理的主动写入项，并记录其原始顺序和短窗口稳定去重哈希。
+type directWritePendingItem struct {
+	OriginalIndex int
+	Item          WriteMemoryItem
+	DedupeHash    string
+}
+
+// directWriteMemoryDecision stores the final semantic-replacement decision for one pending direct-write candidate after reviewer judgment plus safe fallback normalization.
+// directWriteMemoryDecision 用于保存一条待写主动记忆在 reviewer 判断和安全回退规范化之后的最终语义替代决策。
+type directWriteMemoryDecision struct {
+	DedupedExistingMemoryID uint64
+	SupersedeMemoryIDs      []uint64
+}
+
+// reviewDirectWriteMemoryCandidates optionally runs the unified reviewer over pending direct-write items so explicit tool writes can converge with post-action semantic replacement rules.
+// reviewDirectWriteMemoryCandidates 用于按需对待写主动记忆执行统一 reviewer，让工具显式写入也能与 post-action 共享同一套语义替代规则。
+func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, session logicdomain.SessionRef, pending []directWritePendingItem) ([]directWriteMemoryDecision, error) {
+	if len(pending) == 0 {
+		return nil, nil
+	}
+	if u == nil || u.candidateReviewer == nil {
+		return buildDirectWriteFallbackDecisions(len(pending)), nil
+	}
+
+	// Reuse the same review-candidate shape as post-action so explicit tool writes and asynchronous turn extraction do not drift onto competing dedupe semantics.
+	// 复用与 post-action 相同的评审候选结构，避免显式工具写入和异步 turn 提炼各自演化出两套不同的去重语义。
+	nodes := make([]logicdomain.MemoryNodeCandidate, 0, len(pending))
+	for _, item := range pending {
+		nodes = append(nodes, logicdomain.MemoryNodeCandidate{
+			Category:       item.Item.Category,
+			Abstract:       item.Item.Abstract,
+			Details:        item.Item.Details,
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceAssistantToolDiscovered,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		})
+	}
+	reviewCandidates, err := buildScopedMemoryReviewCandidates(
+		ctx,
+		u,
+		session,
+		nodes,
+		u.memoryReplaceTopK,
+		u.memoryReplaceScope,
+		u.memoryReplaceMinSimilarity,
+	)
+	if err != nil {
+		return nil, err
+	}
+	reviewed, err := u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
+		UserInputKind:    logicdomain.TurnAnalysisUserInputStatement,
+		MemoryCandidates: reviewCandidates,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return buildDirectWriteMemoryDecisions(reviewCandidates, reviewed.Memory)
+}
+
+// buildDirectWriteFallbackDecisions degrades pending direct writes into unconditional persistence when semantic replacement review is unavailable.
+// buildDirectWriteFallbackDecisions 用于在语义替代评审不可用时，把待写主动记忆退化为全部直接持久化。
+func buildDirectWriteFallbackDecisions(count int) []directWriteMemoryDecision {
+	if count <= 0 {
+		return nil
+	}
+	return make([]directWriteMemoryDecision, count)
+}
+
+// buildDirectWriteMemoryDecisions converts the shared reviewer result into direct-write actions, while only reusing old memories for dropped candidates that explicitly name one trustworthy dedupe target.
+// buildDirectWriteMemoryDecisions 用于把共享 reviewer 结果转换成主动写入动作；只有当被丢弃候选显式指定可信 dedupe 目标时才会复用旧记忆，其余情况退化成新建以避免静默丢失。
+func buildDirectWriteMemoryDecisions(candidates []logicdomain.PostActionMemoryReviewCandidate, section *logicdomain.PostActionMemoryReviewSection) ([]directWriteMemoryDecision, error) {
+	if len(candidates) == 0 {
+		return nil, nil
+	}
+	if section == nil {
+		return nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "missing memory review result"}
+	}
+	acceptedByIndex := make(map[int]logicdomain.PostActionAcceptedMemoryCandidate, len(section.AcceptedCandidates)+len(section.AcceptedCandidateIndexes))
+	for _, accepted := range section.AcceptedCandidates {
+		acceptedByIndex[accepted.CandidateIndex] = accepted
+	}
+	for _, idx := range section.AcceptedCandidateIndexes {
+		if _, ok := acceptedByIndex[idx]; ok {
+			continue
+		}
+		acceptedByIndex[idx] = logicdomain.PostActionAcceptedMemoryCandidate{CandidateIndex: idx}
+	}
+	droppedByIndex := make(map[int]logicdomain.PostActionDroppedMemoryCandidate, len(section.DroppedCandidates)+len(section.DroppedCandidateIndexes))
+	for _, dropped := range section.DroppedCandidates {
+		droppedByIndex[dropped.CandidateIndex] = dropped
+	}
+	for _, idx := range section.DroppedCandidateIndexes {
+		if _, ok := droppedByIndex[idx]; ok {
+			continue
+		}
+		droppedByIndex[idx] = logicdomain.PostActionDroppedMemoryCandidate{CandidateIndex: idx}
+	}
+	decisions := make([]directWriteMemoryDecision, len(candidates))
+	for idx, candidate := range candidates {
+		if accepted, ok := acceptedByIndex[idx]; ok {
+			supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
+				"review_postaction_candidates",
+				accepted.CandidateIndex,
+				candidate.SimilarMemories,
+				accepted.SupersedeMemoryIDs,
+			)
+			if err != nil {
+				return nil, err
+			}
+			decisions[idx] = directWriteMemoryDecision{SupersedeMemoryIDs: supersedeMemoryIDs}
+			continue
+		}
+		if dropped, ok := droppedByIndex[idx]; ok {
+			dedupeMemoryID, err := validatePostActionDroppedDedupeMemoryID(
+				"review_postaction_candidates",
+				dropped.CandidateIndex,
+				candidate.SimilarMemories,
+				dropped.DedupeMemoryID,
+			)
+			if err != nil {
+				return nil, err
+			}
+			decisions[idx] = directWriteMemoryDecision{DedupedExistingMemoryID: dedupeMemoryID}
+			continue
+		}
+		decisions[idx] = directWriteMemoryDecision{}
+	}
+	return decisions, nil
+}
+
+// loadDirectWriteDedupedExistingRows batches the semantic-dedupe targets chosen by reviewer drops and keeps only still-active hot-path rows so direct-write results never point at retired memories.
+// loadDirectWriteDedupedExistingRows 用于批量加载 reviewer 丢弃后选择复用的语义去重目标，并只保留仍处于热路径的 active 行，避免主动写入结果指向已退役记忆。
+func (u *MemoryUseCase) loadDirectWriteDedupedExistingRows(ctx context.Context, decisions []directWriteMemoryDecision) (map[uint64]logicdomain.MemoryNodeRecord, error) {
+	if len(decisions) == 0 {
+		return map[uint64]logicdomain.MemoryNodeRecord{}, nil
+	}
+	memoryIDs := make([]uint64, 0, len(decisions))
+	seen := make(map[uint64]struct{}, len(decisions))
+	for _, decision := range decisions {
+		if decision.DedupedExistingMemoryID == 0 {
+			continue
+		}
+		if _, ok := seen[decision.DedupedExistingMemoryID]; ok {
+			continue
+		}
+		seen[decision.DedupedExistingMemoryID] = struct{}{}
+		memoryIDs = append(memoryIDs, decision.DedupedExistingMemoryID)
+	}
+	if len(memoryIDs) == 0 {
+		return map[uint64]logicdomain.MemoryNodeRecord{}, nil
+	}
+	rows, err := u.memories.LoadMemoryNodesByIDs(ctx, memoryIDs)
+	if err != nil {
+		return nil, err
+	}
+	now := time.Now().UTC()
+	out := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		if !memoryNodeRecordIsActiveUnexpiredAt(row, now) {
+			continue
+		}
+		out[row.ID] = row
+	}
+	return out, nil
+}
+
+// memoryNodeRecordIsActiveUnexpiredAt keeps direct-write semantic dedupe aligned with the runtime hot-path contract so stale or retired rows are never returned as reusable targets.
+// memoryNodeRecordIsActiveUnexpiredAt 用于让主动写语义去重与运行时热路径契约保持一致，避免把陈旧或已退役的记忆行当成可复用目标返回。
+func memoryNodeRecordIsActiveUnexpiredAt(row logicdomain.MemoryNodeRecord, now time.Time) bool {
+	if row.ID == 0 || row.Status != logicdomain.MemoryStatusActive {
+		return false
+	}
+	if row.ExpiresAt.IsZero() {
+		return true
+	}
+	return row.ExpiresAt.After(now)
+}
+
+// persistDirectWriteMemory embeds one accepted direct-write item, writes the fresh vector row, and persists the unified memory row together with any same-scope replacements.
+// persistDirectWriteMemory 用于为一条已接纳的主动写入项生成向量、写入新向量行，并连同同作用域替代结果一起持久化统一记忆行。
+func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session logicdomain.SessionRef, item WriteMemoryItem, dedupeHash string, supersedeMemoryIDs []uint64, now time.Time) (WriteMemoryResultItem, error) {
+	applier, canApplyDirectWrite := u.memories.(directMemoryWriteApplier)
+	if len(supersedeMemoryIDs) > 0 && !canApplyDirectWrite {
+		return WriteMemoryResultItem{}, fmt.Errorf("memory store does not support atomic direct-memory replacement writes")
+	}
+
+	// Persist the new vector first so relational rows never point at a vector id that failed to materialize, then let the relational layer commit inserts and supersedes atomically.
+	// 先持久化新向量，避免关系层写入指向一个未成功落下的 vector id；随后再由关系层原子提交插入和 supersede 变更。
+	vectors, err := embedPostActionTexts(ctx, u.embedding, []string{item.Abstract})
+	if err != nil {
+		return WriteMemoryResultItem{}, err
+	}
+	if len(vectors) != 1 {
+		return WriteMemoryResultItem{}, fmt.Errorf("embedding result count mismatch: got %d want 1", len(vectors))
+	}
+	vectorID, err := generatePostActionUUID()
+	if err != nil {
+		return WriteMemoryResultItem{}, err
+	}
+
+	record := logicdomain.MemoryRecord{
+		ID:           vectorID,
+		Text:         item.Abstract,
+		Vector:       vectors[0],
+		Filter:       buildDirectMemoryFilter(session, item.ScopeLevel),
+		SourceTurnID: 0,
+		Metadata: map[string]string{
+			"category":     strconv.Itoa(item.Category),
+			"details":      item.Details,
+			"source_kind":  logicdomain.MemorySourceKindLabel(logicdomain.MemorySourceKindGRPCAIWrite),
+			"scope_level":  logicdomain.MemoryScopeLevelLabel(item.ScopeLevel),
+			"priority":     strconv.Itoa(item.Priority),
+			"memory_level": strconv.Itoa(item.MemoryLevel),
+		},
+		CreatedAt: now,
+	}
+	if err := u.vector.Upsert(ctx, record); err != nil {
+		return WriteMemoryResultItem{}, err
+	}
+
+	memoryRecord := logicdomain.MemoryNodeRecord{
+		TeamID:          session.TeamID,
+		SpaceID:         session.SpaceID,
+		ProjectID:       session.ProjectID,
+		UserID:          session.UserID,
+		OriginSessionID: session.SessionID,
+		VectorID:        vectorID,
+		Vector:          append([]float32(nil), vectors[0]...),
+		SourceKind:      logicdomain.MemorySourceKindGRPCAIWrite,
+		ScopeLevel:      item.ScopeLevel,
+		Category:        item.Category,
+		Abstract:        item.Abstract,
+		Details:         item.Details,
+		Status:          logicdomain.MemoryStatusActive,
+		Priority:        item.Priority,
+		MemoryLevel:     item.MemoryLevel,
+		RefreshWeight:   1,
+		ExpiresAt:       item.ExpiresAt,
+		DedupeHash:      dedupeHash,
+		CreatedAt:       now,
+		UpdatedAt:       now,
+	}
+
+	var created logicdomain.MemoryNodeRecord
+	var supersededVectorIDs []string
+	if canApplyDirectWrite {
+		applyResult, err := applier.ApplyDirectMemoryWrite(ctx, session, memoryRecord, supersedeMemoryIDs)
+		if err != nil {
+			u.rollbackDirectWriteVector(ctx, vectorID, session.SessionID)
+			return WriteMemoryResultItem{}, err
+		}
+		created = applyResult.InsertedMemoryNode
+		supersededVectorIDs = applyResult.SupersededVectorIDs
+	} else {
+		created, err = u.memories.CreateDirectMemoryNode(ctx, session, memoryRecord)
+		if err != nil {
+			u.rollbackDirectWriteVector(ctx, vectorID, session.SessionID)
+			return WriteMemoryResultItem{}, err
+		}
+	}
+	if len(supersededVectorIDs) > 0 {
+		if _, deleteErr := u.vector.DeleteByIDs(ctx, supersededVectorIDs); deleteErr != nil && u.logger != nil {
+			u.logger.Error("direct memory superseded vector cleanup failed", "session_id", session.SessionID, "err", deleteErr)
+		}
+	}
+	return WriteMemoryResultItem{
+		Ref: logicdomain.MemoryRef{
+			Type: logicdomain.MemoryRefTypeMemory,
+			ID:   created.ID,
+		},
+		SourceKind: created.SourceKind,
+		ScopeLevel: created.ScopeLevel,
+		Deduped:    false,
+	}, nil
+}
+
+// rollbackDirectWriteVector removes one freshly inserted vector row when the relational write failed after vector persistence succeeded.
+// rollbackDirectWriteVector 用于在向量已落库但关系写入失败时，回滚刚插入的新向量行。
+func (u *MemoryUseCase) rollbackDirectWriteVector(ctx context.Context, vectorID string, sessionID uint64) {
+	if u == nil || u.vector == nil || strings.TrimSpace(vectorID) == "" {
+		return
+	}
+	if _, rollbackErr := u.vector.DeleteByIDs(ctx, []string{vectorID}); rollbackErr != nil && u.logger != nil {
+		u.logger.Error("direct memory vector rollback failed", "vector_id", vectorID, "session_id", sessionID, "err", rollbackErr)
+	}
 }
 
 // validateMemoryQueryCommand checks the simple query-list request before any hierarchy, embedding, or vector work begins.
@@ -744,8 +1052,11 @@ func validateMemoryQueryCommand(cmd MemoryQueryCommand) error {
 	if cmd.TopK < 0 {
 		return logicdomain.ValidationError{Field: "top_k", Message: "must be >= 0"}
 	}
-	if scope := strings.TrimSpace(cmd.ScopeOverride); scope != "" && !isSupportedPreCheckSearchScope(scope) {
-		return logicdomain.ValidationError{Field: "scope_override", Message: "must be team, space, or project when set"}
+	if scope := strings.TrimSpace(cmd.ScopeOverride); scope != "" && !isSupportedMemoryQueryScope(scope) {
+		return logicdomain.ValidationError{Field: "scope_override", Message: "must be session, team, space, or project when set"}
+	}
+	if normalizeConfigToken(cmd.ScopeOverride) == memoryReplaceScopeSession && cmd.SessionID == 0 {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must be > 0 when scope_override=session"}
 	}
 	return nil
 }

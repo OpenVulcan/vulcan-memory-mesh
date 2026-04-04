@@ -80,13 +80,14 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		TurnID        uint64 `json:"turn_id"`
 		Details       string `json:"details"`
 		MemoryNodes   []struct {
-			Category        int    `json:"category"`
-			Abstract        string `json:"abstract"`
-			Details         string `json:"details"`
-			EvidenceSource  string `json:"evidence_source"`
-			Admission       string `json:"admission"`
-			AdmissionReason string `json:"admission_reason"`
-			ContextEdges    []struct {
+			Category           int      `json:"category"`
+			Abstract           string   `json:"abstract"`
+			Details            string   `json:"details"`
+			EvidenceSource     string   `json:"evidence_source"`
+			Admission          string   `json:"admission"`
+			AdmissionReason    string   `json:"admission_reason"`
+			SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
+			ContextEdges       []struct {
 				ContextKey   string `json:"context_key"`
 				ContextValue string `json:"context_value"`
 				Relation     string `json:"relation"`
@@ -150,21 +151,27 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if err != nil {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
 		}
+		supersedeMemoryIDs := normalizeUint64Set(node.SupersedeMemoryIDs)
 		key := fmt.Sprintf("%d|%s|%s", node.Category, node.Abstract, node.Details)
 		if existingIdx, ok := memorySeen[key]; ok {
 			analysis.MemoryNodes[existingIdx].ContextEdges = mergeMemoryContextEdgeCandidates(analysis.MemoryNodes[existingIdx].ContextEdges, contextEdges)
+			analysis.MemoryNodes[existingIdx].SupersedeMemoryIDs = normalizeUint64Set(append(analysis.MemoryNodes[existingIdx].SupersedeMemoryIDs, supersedeMemoryIDs...))
 			continue
 		}
 		memorySeen[key] = len(analysis.MemoryNodes)
 		analysis.MemoryNodes = append(analysis.MemoryNodes, logicdomain.MemoryNodeCandidate{
-			Category:        node.Category,
-			Abstract:        node.Abstract,
-			Details:         node.Details,
-			EvidenceSource:  evidenceSource,
-			Admission:       admission,
-			AdmissionReason: admissionReason,
-			ContextEdges:    contextEdges,
+			Category:           node.Category,
+			Abstract:           node.Abstract,
+			Details:            node.Details,
+			EvidenceSource:     evidenceSource,
+			Admission:          admission,
+			AdmissionReason:    admissionReason,
+			SupersedeMemoryIDs: supersedeMemoryIDs,
+			ContextEdges:       contextEdges,
 		})
+	}
+	for _, node := range analysis.MemoryNodes {
+		analysis.SupersededMemoryIDs = normalizeUint64Set(append(analysis.SupersededMemoryIDs, node.SupersedeMemoryIDs...))
 	}
 	profileSeen := map[string]struct{}{}
 	for _, node := range payload.ProfileNodes {

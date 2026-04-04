@@ -55,8 +55,8 @@
 # Memory Review Rules
 1. 如果输入里存在 `memory` 块，你必须输出 `memory` 结果块。
 2. `memory` 中每条候选必须恰好分类一次：
-   - 要么进入 `accepted_candidate_indexes`
-   - 要么进入 `dropped_candidate_indexes`
+   - 要么进入 `accepted_candidates`
+   - 要么进入 `dropped_candidates`
    - 不能遗漏
    - 不能重复
 3. 如果新候选与 `similar_memories` 中某条旧记忆语义相同、信息量相当，只是换一种说法，通常应丢弃新候选。
@@ -75,6 +75,11 @@
    - 当前系统负载
    - 其他瞬时运行状态
 9. `reason` 只需简要说明整体保留/丢弃原则。
+10. `accepted_candidates[].supersede_memory_ids` 只能引用该候选自己的 `similar_memories.memory_id`。
+11. 如果新候选只是并行补充，不构成覆盖，可以接纳，但 `supersede_memory_ids` 留空。
+12. 如果新候选应被丢弃，且原因是“某条旧记忆已经完整表达同一事实”，则在对应 `dropped_candidates[].dedupe_memory_id` 中写入那条旧记忆的 `memory_id`。
+13. `dropped_candidates[].dedupe_memory_id` 只能引用该候选自己的 `similar_memories.memory_id`。
+14. 如果新候选应被丢弃，但并不存在可信旧记忆可复用，则 `dedupe_memory_id` 留空或省略。
 
 # Profile Review Rules
 1. 不要把 `active_nodes` 当成最终画像文本，它们是独立事实节点。
@@ -115,8 +120,18 @@
 ```json
 {
   "memory": {
-    "accepted_candidate_indexes": [0],
-    "dropped_candidate_indexes": [1],
+    "accepted_candidates": [
+      {
+        "candidate_index": 0,
+        "supersede_memory_ids": [31]
+      }
+    ],
+    "dropped_candidates": [
+      {
+        "candidate_index": 1,
+        "dedupe_memory_id": 32
+      }
+    ],
     "reason": "只保留真正新增且具长期价值的记忆；语义重复或临时态结果会被丢弃。"
   },
   "user": {

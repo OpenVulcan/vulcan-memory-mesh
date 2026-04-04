@@ -170,6 +170,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
       - 每条 `memory_nodes[]` 可选携带 `context_edges[]`
+      - 每条 `memory_nodes[]` 现在还允许携带候选级 `supersede_memory_ids[]`
       - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
       - 每条 `memory_nodes[]` 还会携带：
         - `evidence_source`
@@ -180,7 +181,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
         - `evidence_source`
         - `admission`
         - `admission_reason`
-    - `superseded_memory_ids`
+    - 顶层兼容字段 `superseded_memory_ids`
 13. `analyze_turn` 的第一层准入会先压缩明显噪音：
     - 用户提问后，助手只是回显既有记忆、既有画像或通识答案时，会优先标记为 `drop`
     - 通过外部检索、访问网站、资料归纳、工具调用发现的新长期事实，仍然允许标记为 `keep`
@@ -580,7 +581,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 自动重建出来的 scope `profile` 文本现在只保存正文时间轴，不再带 `[Profile Legend]` 说明头
 - 正文仍然按日期输出，并在每条记录上显示 `[P?][L?][W?]`
 - 如果调用方需要 `P/L/W` 说明，应通过 `GetProfileBundle` 的 `full` 模式在输出层按需附加；省略 `include_explanation` 时默认开启
-- 如果 LLM 判定旧记忆 turn 已被覆盖，会把对应 `vmm_memory_nodes.node_status` 标成 `superseded`，并删除 LanceDB 旧向量
+- 如果同 session 分析器或统一 reviewer 判定旧记忆已被新事实覆盖：
+  - 会把对应 `vmm_memory_nodes.memory_status` 标成 `superseded`
+  - 并在关系库提交后删除 LanceDB 旧向量
+  - 记忆检索路径只读取 `active` 且未过期的记忆，所以被替代的旧事实不会再次进入热召回
 - LanceDB 行里的 `session_id` 会和来源 turn 的 session 保持一致
 - 如果 SQLite 回写失败，会尝试回滚这次新增的 LanceDB 向量
 - 后台 worker 还会按 `session_analysis_idle_timeout` 周期性补扫陈旧 pending session，帮助崩溃或临时失败后的恢复
@@ -617,6 +621,70 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 仅在当前 project 范围内召回长期记忆
 
 这个开关只影响 `PreCheck` 这条链路，不改变通用 `SearchMemoryEvents` 的默认项目级检索语义。
+
+### 记忆更替范围
+
+- `memory_replace_scope`
+  - 控制 `PostAction` 统一 reviewer 在“新记忆接管旧记忆”场景下的相似旧记忆召回范围
+  - 可选值：`session`、`team`、`space`、`project`
+  - 默认值：`project`
+
+当前语义：
+
+- `session`
+  - 只允许当前 session 内的新事实替代旧事实
+- `project`
+  - 允许当前 project 下跨 session 的旧事实被更新事实接管
+- `space`
+  - 允许当前 space 下相关 project 的共享事实被更新
+- `team`
+  - 允许当前 team 范围内的稳定规则替代较旧副本
+
+说明：
+
+- 这个开关独立于 `pre_check.search_scope`
+- `PreCheck` 的召回范围不会再隐式决定 `PostAction` 的记忆更替范围
+- `WriteMemories` 在 24 小时软幂等之后，也会复用同一个 `memory_replace_scope` 做语义去重与替代判断
+- 当前统一 reviewer 的记忆结果块已经支持：
+  - `accepted_candidates[]`
+  - `accepted_candidates[].supersede_memory_ids[]`
+  - `dropped_candidates[]`
+  - `dropped_candidates[].dedupe_memory_id`
+  - 只有当 reviewer 在 `dropped_candidates[].dedupe_memory_id` 中显式指向某条 `similar_memories.memory_id` 时，`WriteMemories` 才会复用已有记忆引用
+  - 如果 reviewer 只是丢弃候选，但没有显式给出 dedupe 目标，则 direct-write 会安全降级为新建，而不是误复用第一条旧记忆
+
+### Retention 回收参数
+
+- `retention.enabled`
+  - 是否启用冷数据回收治理入口
+  - 默认值：`true`
+- `retention.recycle_scan_interval`
+  - 定时扫描周期
+  - 默认值：`30m`
+- `retention.turn_keep_extra_turns`
+  - 在热窗口基础上额外保留的 turn 数量
+  - 默认值：`5`
+- `retention.session_idle_recycle_after`
+  - session 长期无新增有效信息后允许进入回收判定的阈值
+  - 默认值：`360h`
+- `retention.trash_retention`
+  - 回收站保留时长
+  - 默认值：`720h`
+- `retention.protect_priority_floor`
+  - 受保护共享记忆的优先级下限
+  - 默认值：`P1`
+- `retention.protect_memory_level_floor`
+  - 受保护共享记忆的层级下限
+  - 默认值：`stable`
+- `retention.skip_protected_shared_memories`
+  - 是否跳过受保护的共享记忆
+  - 默认值：`true`
+
+当前阶段说明：
+
+- 这组参数已经接入配置系统、默认值和校验逻辑
+- 第一阶段优先补齐 PostgreSQL 基础 schema 与事务出口
+- 完整 recycle worker 与冷数据迁移链路仍会在后续阶段继续落地
 
 ### LanceDB 表名规则
 

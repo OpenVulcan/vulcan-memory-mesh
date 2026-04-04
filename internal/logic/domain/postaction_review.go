@@ -38,9 +38,25 @@ type PostActionCandidateReviewInput struct {
 	ProfileCandidates []ProfileNodeCandidate
 }
 
+// PostActionAcceptedMemoryCandidate stores one accepted memory candidate together with the old durable memory ids it is allowed to supersede inside the reviewed scope.
+// PostActionAcceptedMemoryCandidate 用于保存一条被接纳的记忆候选，以及它在当前评审作用域内允许替代的旧长期记忆 id。
+type PostActionAcceptedMemoryCandidate struct {
+	CandidateIndex     int
+	SupersedeMemoryIDs []uint64
+}
+
+// PostActionDroppedMemoryCandidate stores one dropped memory candidate together with the optional durable memory id that the reviewer explicitly selected as the dedupe target.
+// PostActionDroppedMemoryCandidate 用于保存一条被丢弃的记忆候选，以及 reviewer 显式选中的可复用长期记忆 id（如果存在）。
+type PostActionDroppedMemoryCandidate struct {
+	CandidateIndex int
+	DedupeMemoryID uint64
+}
+
 // PostActionMemoryReviewSection stores the keep/drop decision for all memory candidates participating in one unified post-action review call.
 // PostActionMemoryReviewSection 用于保存一次统一 post-action 评审里全部记忆候选的保留/丢弃决策。
 type PostActionMemoryReviewSection struct {
+	AcceptedCandidates       []PostActionAcceptedMemoryCandidate
+	DroppedCandidates        []PostActionDroppedMemoryCandidate
 	AcceptedCandidateIndexes []int
 	DroppedCandidateIndexes  []int
 	Reason                   string

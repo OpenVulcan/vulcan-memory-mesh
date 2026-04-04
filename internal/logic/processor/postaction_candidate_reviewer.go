@@ -240,6 +240,14 @@ func parsePostActionCandidateReviewResponse(raw string, memoryCount, userCount, 
 	}
 	var payload struct {
 		Memory *struct {
+			AcceptedCandidates []struct {
+				CandidateIndex     int      `json:"candidate_index"`
+				SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
+			} `json:"accepted_candidates"`
+			DroppedCandidates []struct {
+				CandidateIndex int    `json:"candidate_index"`
+				DedupeMemoryID uint64 `json:"dedupe_memory_id"`
+			} `json:"dropped_candidates"`
 			AcceptedCandidateIndexes []int  `json:"accepted_candidate_indexes"`
 			DroppedCandidateIndexes  []int  `json:"dropped_candidate_indexes"`
 			Reason                   string `json:"reason"`
@@ -267,6 +275,14 @@ func parsePostActionCandidateReviewResponse(raw string, memoryCount, userCount, 
 // parsePostActionMemoryReviewSection validates one memory review block and requires every memory candidate to be classified exactly once.
 // parsePostActionMemoryReviewSection 用于校验单个记忆评审块，并要求每条记忆候选都且仅被分类一次。
 func parsePostActionMemoryReviewSection(payload *struct {
+	AcceptedCandidates []struct {
+		CandidateIndex     int      `json:"candidate_index"`
+		SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
+	} `json:"accepted_candidates"`
+	DroppedCandidates []struct {
+		CandidateIndex int    `json:"candidate_index"`
+		DedupeMemoryID uint64 `json:"dedupe_memory_id"`
+	} `json:"dropped_candidates"`
 	AcceptedCandidateIndexes []int  `json:"accepted_candidate_indexes"`
 	DroppedCandidateIndexes  []int  `json:"dropped_candidate_indexes"`
 	Reason                   string `json:"reason"`
@@ -277,11 +293,11 @@ func parsePostActionMemoryReviewSection(payload *struct {
 	if payload == nil {
 		return nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "missing memory block", Raw: raw}
 	}
-	accepted, err := normalizePostActionCandidateIndexes(payload.AcceptedCandidateIndexes, expectedCount, "memory.accepted_candidate_indexes", raw)
+	acceptedCandidates, accepted, err := normalizePostActionAcceptedMemoryCandidates(payload.AcceptedCandidates, payload.AcceptedCandidateIndexes, expectedCount, raw)
 	if err != nil {
 		return nil, err
 	}
-	dropped, err := normalizePostActionCandidateIndexes(payload.DroppedCandidateIndexes, expectedCount, "memory.dropped_candidate_indexes", raw)
+	droppedCandidates, dropped, err := normalizePostActionDroppedMemoryCandidates(payload.DroppedCandidates, payload.DroppedCandidateIndexes, expectedCount, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -289,10 +305,96 @@ func parsePostActionMemoryReviewSection(payload *struct {
 		return nil, err
 	}
 	return &logicdomain.PostActionMemoryReviewSection{
+		AcceptedCandidates:       acceptedCandidates,
+		DroppedCandidates:        droppedCandidates,
 		AcceptedCandidateIndexes: accepted,
 		DroppedCandidateIndexes:  dropped,
 		Reason:                   strings.TrimSpace(payload.Reason),
 	}, nil
+}
+
+// normalizePostActionAcceptedMemoryCandidates validates the accepted memory payload, supports both the new structured form and the historical index-only fallback, and returns one normalized section plus its derived index list.
+// normalizePostActionAcceptedMemoryCandidates 用于校验被接纳的记忆载荷，同时兼容新的结构化格式和历史索引格式，并返回归一化结果及其派生索引列表。
+func normalizePostActionAcceptedMemoryCandidates(items []struct {
+	CandidateIndex     int      `json:"candidate_index"`
+	SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
+}, legacyIndexes []int, expectedCount int, raw string) ([]logicdomain.PostActionAcceptedMemoryCandidate, []int, error) {
+	if len(items) == 0 {
+		indexes, err := normalizePostActionCandidateIndexes(legacyIndexes, expectedCount, "memory.accepted_candidate_indexes", raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		accepted := make([]logicdomain.PostActionAcceptedMemoryCandidate, 0, len(indexes))
+		for _, idx := range indexes {
+			accepted = append(accepted, logicdomain.PostActionAcceptedMemoryCandidate{CandidateIndex: idx})
+		}
+		return accepted, indexes, nil
+	}
+	seen := make(map[int]struct{}, len(items))
+	accepted := make([]logicdomain.PostActionAcceptedMemoryCandidate, 0, len(items))
+	for _, item := range items {
+		if item.CandidateIndex < 0 || item.CandidateIndex >= expectedCount {
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.accepted_candidates index %d is out of range", item.CandidateIndex), Raw: raw}
+		}
+		if _, ok := seen[item.CandidateIndex]; ok {
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.accepted_candidates repeats index %d", item.CandidateIndex), Raw: raw}
+		}
+		seen[item.CandidateIndex] = struct{}{}
+		accepted = append(accepted, logicdomain.PostActionAcceptedMemoryCandidate{
+			CandidateIndex:     item.CandidateIndex,
+			SupersedeMemoryIDs: normalizeUint64IDs(item.SupersedeMemoryIDs),
+		})
+	}
+	sort.Slice(accepted, func(i, j int) bool {
+		return accepted[i].CandidateIndex < accepted[j].CandidateIndex
+	})
+	indexes := make([]int, 0, len(accepted))
+	for _, item := range accepted {
+		indexes = append(indexes, item.CandidateIndex)
+	}
+	return accepted, indexes, nil
+}
+
+// normalizePostActionDroppedMemoryCandidates validates the dropped memory payload, supports both the new structured form and the historical index-only fallback, and returns one normalized section plus its derived index list.
+// normalizePostActionDroppedMemoryCandidates 用于校验被丢弃的记忆载荷，同时兼容新的结构化格式和历史索引格式，并返回归一化结果及其派生索引列表。
+func normalizePostActionDroppedMemoryCandidates(items []struct {
+	CandidateIndex int    `json:"candidate_index"`
+	DedupeMemoryID uint64 `json:"dedupe_memory_id"`
+}, legacyIndexes []int, expectedCount int, raw string) ([]logicdomain.PostActionDroppedMemoryCandidate, []int, error) {
+	if len(items) == 0 {
+		indexes, err := normalizePostActionCandidateIndexes(legacyIndexes, expectedCount, "memory.dropped_candidate_indexes", raw)
+		if err != nil {
+			return nil, nil, err
+		}
+		dropped := make([]logicdomain.PostActionDroppedMemoryCandidate, 0, len(indexes))
+		for _, idx := range indexes {
+			dropped = append(dropped, logicdomain.PostActionDroppedMemoryCandidate{CandidateIndex: idx})
+		}
+		return dropped, indexes, nil
+	}
+	seen := make(map[int]struct{}, len(items))
+	dropped := make([]logicdomain.PostActionDroppedMemoryCandidate, 0, len(items))
+	for _, item := range items {
+		if item.CandidateIndex < 0 || item.CandidateIndex >= expectedCount {
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.dropped_candidates index %d is out of range", item.CandidateIndex), Raw: raw}
+		}
+		if _, ok := seen[item.CandidateIndex]; ok {
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.dropped_candidates repeats index %d", item.CandidateIndex), Raw: raw}
+		}
+		seen[item.CandidateIndex] = struct{}{}
+		dropped = append(dropped, logicdomain.PostActionDroppedMemoryCandidate{
+			CandidateIndex: item.CandidateIndex,
+			DedupeMemoryID: item.DedupeMemoryID,
+		})
+	}
+	sort.Slice(dropped, func(i, j int) bool {
+		return dropped[i].CandidateIndex < dropped[j].CandidateIndex
+	})
+	indexes := make([]int, 0, len(dropped))
+	for _, item := range dropped {
+		indexes = append(indexes, item.CandidateIndex)
+	}
+	return dropped, indexes, nil
 }
 
 // normalizePostActionCandidateIndexes trims duplicates and validates that all candidate indexes belong to the current request range.

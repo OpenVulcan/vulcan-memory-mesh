@@ -81,6 +81,7 @@ type PostActionAnalysisConfig struct {
 	MaxInputTokens      int
 	QueueScanInterval   time.Duration
 	DedupeSearchTopK    int
+	MemoryReplaceScope  string
 	DedupeSearchScope   string
 	DedupeMinSimilarity float64
 }
@@ -142,7 +143,10 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	if analysisCfg.DedupeSearchTopK <= 0 {
 		analysisCfg.DedupeSearchTopK = defaultPreCheckTopK
 	}
-	analysisCfg.DedupeSearchScope = normalizePreCheckSearchScope(analysisCfg.DedupeSearchScope)
+	if normalizeConfigToken(analysisCfg.MemoryReplaceScope) == "" {
+		analysisCfg.MemoryReplaceScope = analysisCfg.DedupeSearchScope
+	}
+	analysisCfg.MemoryReplaceScope = normalizeMemoryReplaceScope(analysisCfg.MemoryReplaceScope)
 	if analysisCfg.DedupeMinSimilarity <= 0 || analysisCfg.DedupeMinSimilarity > 1 {
 		analysisCfg.DedupeMinSimilarity = 0.90
 	}
@@ -285,6 +289,7 @@ func clonePostActionTurnAnalysis(analysis logicdomain.TurnAnalysis) logicdomain.
 		cloned.MemoryNodes = append([]logicdomain.MemoryNodeCandidate(nil), analysis.MemoryNodes...)
 		for idx := range cloned.MemoryNodes {
 			cloned.MemoryNodes[idx].Vector = append([]float32(nil), analysis.MemoryNodes[idx].Vector...)
+			cloned.MemoryNodes[idx].SupersedeMemoryIDs = append([]uint64(nil), analysis.MemoryNodes[idx].SupersedeMemoryIDs...)
 			cloned.MemoryNodes[idx].ContextEdges = append([]logicdomain.MemoryContextEdgeCandidate(nil), analysis.MemoryNodes[idx].ContextEdges...)
 		}
 	}
@@ -659,6 +664,11 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 		reason := strings.TrimSpace(node.AdmissionReason)
 		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
 			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].admission_reason is invalid", idx)}
+		}
+		for _, memoryID := range node.SupersedeMemoryIDs {
+			if _, ok := activeMemoryIDs[memoryID]; !ok {
+				return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].supersede_memory_ids contains unknown memory_id %d", idx, memoryID)}
+			}
 		}
 	}
 	for idx, node := range analysis.ProfileNodes {

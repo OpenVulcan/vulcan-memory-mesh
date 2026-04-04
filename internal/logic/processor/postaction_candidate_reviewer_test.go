@@ -18,7 +18,12 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 		response: appports.LLMResponse{
 			Content: `{
   "memory": {
-    "accepted_candidate_indexes": [0],
+    "accepted_candidates": [
+      {
+        "candidate_index": 0,
+        "supersede_memory_ids": [501]
+      }
+    ],
     "dropped_candidate_indexes": [],
     "reason": "新规则不是旧记忆的原样重复。"
   },
@@ -97,6 +102,9 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	if result.Memory == nil || len(result.Memory.AcceptedCandidateIndexes) != 1 || result.Memory.AcceptedCandidateIndexes[0] != 0 {
 		t.Fatalf("unexpected memory review result: %+v", result)
 	}
+	if len(result.Memory.AcceptedCandidates) != 1 || len(result.Memory.AcceptedCandidates[0].SupersedeMemoryIDs) != 1 || result.Memory.AcceptedCandidates[0].SupersedeMemoryIDs[0] != 501 {
+		t.Fatalf("expected structured supersede ids, got %+v", result.Memory)
+	}
 	if result.User == nil || len(result.User.AcceptedCandidates) != 1 {
 		t.Fatalf("unexpected user review result: %+v", result)
 	}
@@ -114,6 +122,35 @@ func TestParsePostActionCandidateReviewResponseRejectsMissingMemoryCoverage(t *t
 }`, 1, 0, 0)
 	if err == nil || !strings.Contains(err.Error(), "must classify all 1 candidates exactly once") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestParsePostActionCandidateReviewResponseParsesDroppedMemoryDedupeTarget verifies the structured dropped memory payload preserves the explicit dedupe target needed by direct-write callers.
+// TestParsePostActionCandidateReviewResponseParsesDroppedMemoryDedupeTarget 用于验证结构化 dropped memory 结果会保留 direct-write 所需的显式 dedupe 目标。
+func TestParsePostActionCandidateReviewResponseParsesDroppedMemoryDedupeTarget(t *testing.T) {
+	result, err := parsePostActionCandidateReviewResponse(`{
+  "memory": {
+    "accepted_candidates": [],
+    "dropped_candidates": [
+      {
+        "candidate_index": 0,
+        "dedupe_memory_id": 601
+      }
+    ],
+    "reason": "旧记忆已经足够完整。"
+  }
+}`, 1, 0, 0)
+	if err != nil {
+		t.Fatalf("parse review response: %v", err)
+	}
+	if result.Memory == nil || len(result.Memory.DroppedCandidates) != 1 {
+		t.Fatalf("expected one structured dropped candidate, got %+v", result.Memory)
+	}
+	if result.Memory.DroppedCandidates[0].CandidateIndex != 0 || result.Memory.DroppedCandidates[0].DedupeMemoryID != 601 {
+		t.Fatalf("unexpected structured dropped candidate: %+v", result.Memory.DroppedCandidates[0])
+	}
+	if len(result.Memory.DroppedCandidateIndexes) != 1 || result.Memory.DroppedCandidateIndexes[0] != 0 {
+		t.Fatalf("expected dropped indexes to stay derived from structured payload, got %+v", result.Memory.DroppedCandidateIndexes)
 	}
 }
 

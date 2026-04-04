@@ -171,6 +171,13 @@ type TurnAnalysisApplyResult struct {
 	SupersededVectorIDs []string
 }
 
+// DirectMemoryWriteApplyResult stores the durable row plus the obsolete vector ids produced by one atomic direct-memory write transaction.
+// DirectMemoryWriteApplyResult 用于保存单次原子主动写记忆事务产生的持久化行，以及后续需要清理的旧向量 id。
+type DirectMemoryWriteApplyResult struct {
+	InsertedMemoryNode  MemoryNodeRecord
+	SupersededVectorIDs []string
+}
+
 // MemorySearchRecord stores one unified search hit after vector recall has been enriched with relational memory metadata.
 // MemorySearchRecord 用于保存一条经过关系层补全后的统一记忆搜索命中。
 type MemorySearchRecord struct {

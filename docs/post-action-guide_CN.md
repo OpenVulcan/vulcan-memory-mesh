@@ -193,6 +193,7 @@ message PostActionTimelineItem {
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
       - 每条 `memory_nodes[]` 现在允许可选 `context_edges[]`
+      - 每条 `memory_nodes[]` 现在还允许携带候选级 `supersede_memory_ids[]`
       - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
       - 每条 `memory_nodes[]` 还会明确给出：
         - `evidence_source`
@@ -203,7 +204,7 @@ message PostActionTimelineItem {
         - `evidence_source`
         - `admission`
         - `admission_reason`
-    - 供后续统一记忆模型接入的 `superseded_memory_ids`
+    - 顶层兼容字段 `superseded_memory_ids`
 18. `analyze_turn` 的第一层准入会先压缩明显噪音：
     - 如果当前轮主要是用户提问或下指令，而助手只是基于既有记忆、既有画像或通识能力完成回答：
       - 这类候选通常会被标记为 `admission="drop"`
@@ -222,10 +223,11 @@ message PostActionTimelineItem {
       - 也不应提炼成画像节点
       - 只有当用户自己明确确认、补充、纠正或直接陈述这些偏好时，才允许进入长期画像系统
 19. 如果当前 turn 有新的 `memory_nodes[]` 或 `profile_nodes[]`：
-    - 会按与 `PreCheck` 对等的有效检索作用域，先做一次高相似旧记忆召回：
-      - 默认是 `space`
-      - 也支持显式 `team / project`
-      - 这里的搜索空间不允许写死成 `project`
+    - 会按专用的 `memory_replace_scope`，先做一次高相似旧记忆召回：
+      - 默认是 `project`
+      - 支持显式 `session / team / space / project`
+      - 当作用域是 `session` 时，会额外带上 `session_id` 过滤，确保只替代当前 session 旧事实
+      - 这个搜索空间独立于 `pre_check.search_scope`
     - 如果当前 turn 有画像候选：
       - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
     - 然后把：
@@ -236,7 +238,14 @@ message PostActionTimelineItem {
       一起送入一次统一的 `review_postaction_candidates`
     - 这个统一 reviewer 会同时输出：
       - 哪些记忆候选应保留
+        - 通过 `memory.accepted_candidates[]`
+      - 每条保留的记忆候选是否应替代哪些旧记忆
+        - 通过 `memory.accepted_candidates[].supersede_memory_ids[]`
       - 哪些记忆候选应丢弃
+        - 通过 `memory.dropped_candidates[]`
+      - 某条被丢弃记忆候选是否应复用一条旧记忆
+        - 通过 `memory.dropped_candidates[].dedupe_memory_id`
+        - 这个 id 只能引用该候选自己看到过的 `similar_memories.memory_id`
       - 哪些画像候选应接纳为新画像节点
       - 哪些画像候选应判定为 `invalid`
       - 哪些旧画像节点需要 `superseded` 或 `retire_only`
@@ -276,7 +285,13 @@ message PostActionTimelineItem {
       - `expires_timestamp`
       - `superseded_by_id`
       - `profile_date`
-23. 后台日志现在会额外记录压缩诊断字段：
+23. 如果记忆评审中确认旧记忆已被新事实覆盖：
+    - 会优先沿用分析器候选级 `memory_nodes[].supersede_memory_ids[]` 处理同 session 替代
+    - 顶层 `superseded_memory_ids` 只作为兼容回退，不会在候选被过滤或被 reviewer 丢弃后继续盲目沿用
+    - 也会把统一 reviewer 返回的 `supersede_memory_ids[]` 合并进最终写回事务
+    - 这些 `supersede_memory_ids[]` 只能引用该候选实际看到过的 `similar_memories.memory_id`
+    - 事务提交后会删除对应 LanceDB 旧向量，避免旧事实继续占用热索引
+24. 后台日志现在会额外记录压缩诊断字段：
     - `raw_candidates`
     - `final_stored_nodes`
     - `compaction_rate`
@@ -284,12 +299,12 @@ message PostActionTimelineItem {
     - `review_drop_count`
     - `external_research_kept_count`
     - 其中 `compaction_rate = (Raw_Candidates - Final_Stored_Nodes) / Raw_Candidates`
-24. 后台定时维护还会额外做一次过期画像收敛：
+25. 后台定时维护还会额外做一次过期画像收敛：
     - 会查找已经超过 `expires_timestamp` 的 `active` 画像节点
     - 把这些节点批量标记成 `expired`
     - 读取受影响 user/project 当前剩余的 `active` 节点
     - 由后端重新渲染 `vmm_users.profile / vmm_projects.profile`
-25. 如果 LanceDB 已写入新向量，但 SQLite 异步回写失败：
+26. 如果 LanceDB 已写入新向量，但 SQLite 异步回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立新向量
 27. 当前限制：

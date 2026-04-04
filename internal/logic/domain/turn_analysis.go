@@ -327,22 +327,23 @@ type TurnAnalysisInput struct {
 // MemoryNodeCandidate stores one memory feature extracted from a turn before it is assigned ids and persisted.
 // MemoryNodeCandidate 用于保存一条从 turn 中提炼出的记忆特征，等待分配 ID 后持久化。
 type MemoryNodeCandidate struct {
-	Category        int
-	VectorID        string
-	Vector          []float32
-	Abstract        string
-	Details         string
-	EvidenceSource  string
-	Admission       string
-	AdmissionReason string
-	ContextEdges    []MemoryContextEdgeCandidate
-	SourceKind      int
-	ScopeLevel      int
-	Priority        int
-	MemoryLevel     int
-	RefreshWeight   int
-	ExpiresAt       time.Time
-	DedupeHash      string
+	Category           int
+	VectorID           string
+	Vector             []float32
+	Abstract           string
+	Details            string
+	EvidenceSource     string
+	Admission          string
+	AdmissionReason    string
+	SupersedeMemoryIDs []uint64
+	ContextEdges       []MemoryContextEdgeCandidate
+	SourceKind         int
+	ScopeLevel         int
+	Priority           int
+	MemoryLevel        int
+	RefreshWeight      int
+	ExpiresAt          time.Time
+	DedupeHash         string
 }
 
 // MemoryContextEdgeCandidate stores one extracted situational label attached to a new memory candidate before it is aggregated into durable edge counters.

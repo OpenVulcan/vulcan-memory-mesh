@@ -1359,23 +1359,510 @@ func TestMemoryUseCaseGetTurnsPreservesRequestedOrder(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory verifies reviewer-side semantic dedupe reuses the recalled durable memory instead of inserting a second equivalent direct-write row.
+// TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory 用于验证 reviewer 触发的语义去重会复用已召回的长期记忆，而不是再插入第二条等价主动写入行。
+func TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			VectorID:   "vec-901",
+		}},
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			VectorID:   "vec-901",
+		}},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{{
+			ID:    "vec-901",
+			Text:  "当前项目阶段已经切换到 B。",
+			Score: 0.96,
+		}},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates:       nil,
+				DroppedCandidates:        []logicdomain.PostActionDroppedMemoryCandidate{{CandidateIndex: 0, DedupeMemoryID: 901}},
+				AcceptedCandidateIndexes: nil,
+				DroppedCandidateIndexes:  []int{0},
+				Reason:                   "旧记忆已经完整表达这条阶段事实。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-direct-dedupe",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			Category:   logicdomain.MemoryNodeCategoryProjectContext,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || !result.Items[0].Deduped || result.Items[0].Ref.ID != 901 {
+		t.Fatalf("expected semantic dedupe to reuse memory 901, got %+v", result.Items)
+	}
+	if len(vector.upserts) != 0 {
+		t.Fatalf("expected semantic dedupe to skip new vector upsert, got %+v", vector.upserts)
+	}
+	if len(store.directWriteApplyCalls) != 0 || len(store.createdDirectMemoryNodes) != 0 {
+		t.Fatalf("expected semantic dedupe to avoid persistence writes, got apply=%+v create=%+v", store.directWriteApplyCalls, store.createdDirectMemoryNodes)
+	}
+}
+
+// TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate verifies dropped candidates with similar memories no longer auto-reuse the first hit unless reviewer explicitly names the dedupe target.
+// TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate 用于验证当 reviewer 只丢弃候选但没有显式给出 dedupe 目标时，即使存在 similar memory，也不会再自动复用第一条旧记忆。
+func TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			VectorID:   "vec-901",
+		}},
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1201,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "当前项目阶段已经切换到 B。",
+				Details:    "当前项目阶段已经切换到 B。",
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{{
+			ID:    "vec-901",
+			Text:  "当前项目阶段已经切换到 B。",
+			Score: 0.96,
+		}},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates:       nil,
+				DroppedCandidates:        []logicdomain.PostActionDroppedMemoryCandidate{{CandidateIndex: 0}},
+				AcceptedCandidateIndexes: nil,
+				DroppedCandidateIndexes:  []int{0},
+				Reason:                   "保守丢弃，但没有明确指定可复用旧记忆。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  44,
+			SessionKey: "sess-direct-drop-without-explicit-dedupe",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			Category:   logicdomain.MemoryNodeCategoryProjectContext,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1201 {
+		t.Fatalf("expected explicit-dedupe-missing path to create a new row, got %+v", result.Items)
+	}
+	if len(store.directWriteApplyCalls) != 1 || len(store.directWriteApplyCalls[0].SupersededMemoryIDs) != 0 {
+		t.Fatalf("expected fallback create without supersedes, got %+v", store.directWriteApplyCalls)
+	}
+}
+
+// TestMemoryUseCaseWriteAcceptedCandidateSupersedesOldMemory verifies direct-write semantic replacement passes reviewer-approved supersede ids into the atomic store path and cleans up obsolete vectors after commit.
+// TestMemoryUseCaseWriteAcceptedCandidateSupersedesOldMemory 用于验证主动写入的语义替代会把 reviewer 批准的 supersede id 传入原子存储路径，并在提交后清理旧向量。
+func TestMemoryUseCaseWriteAcceptedCandidateSupersedesOldMemory(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段仍然是 A。",
+			Details:    "当前项目阶段仍然是 A。",
+			VectorID:   "vec-901",
+		}},
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1001,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "当前项目阶段已经切换到 B。",
+				Details:    "当前项目阶段已经切换到 B。",
+				VectorID:   "vec-new",
+			},
+			SupersededVectorIDs: []string{"vec-901"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{{
+			ID:    "vec-901",
+			Text:  "当前项目阶段仍然是 A。",
+			Score: 0.96,
+		}},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates: []logicdomain.PostActionAcceptedMemoryCandidate{{
+					CandidateIndex:     0,
+					SupersedeMemoryIDs: []uint64{901},
+				}},
+				AcceptedCandidateIndexes: []int{0},
+				DroppedCandidateIndexes:  nil,
+				Reason:                   "新阶段事实覆盖旧阶段事实。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  42,
+			SessionKey: "sess-direct-replace",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+			Abstract:    "当前项目阶段已经切换到 B。",
+			Details:     "当前项目阶段已经切换到 B。",
+			Category:    logicdomain.MemoryNodeCategoryProjectContext,
+			Priority:    logicdomain.MemoryPriorityP1,
+			MemoryLevel: logicdomain.MemoryLevelStable,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1001 {
+		t.Fatalf("expected fresh memory write result, got %+v", result.Items)
+	}
+	if len(store.directWriteApplyCalls) != 1 || len(store.directWriteApplyCalls[0].SupersededMemoryIDs) != 1 || store.directWriteApplyCalls[0].SupersededMemoryIDs[0] != 901 {
+		t.Fatalf("expected atomic direct-write apply to receive supersede id 901, got %+v", store.directWriteApplyCalls)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one new vector upsert, got %+v", vector.upserts)
+	}
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 || vector.deleteIDsCalls[0][0] != "vec-901" {
+		t.Fatalf("expected obsolete vector cleanup for vec-901, got %+v", vector.deleteIDsCalls)
+	}
+}
+
+// TestMemoryUseCaseWriteLegacyAcceptedIndexesStillPersist verifies direct-write review still honors legacy index-only accepted payloads returned by older or non-LLM reviewer implementations.
+// TestMemoryUseCaseWriteLegacyAcceptedIndexesStillPersist 用于验证当 reviewer 仍返回旧版 index-only accepted 结果时，主动写入链路依然会正确保留候选而不是误判成 dropped。
+func TestMemoryUseCaseWriteLegacyAcceptedIndexesStillPersist(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1251,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "记录一条新的稳定工程约束。",
+				Details:    "记录一条新的稳定工程约束。",
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates:       nil,
+				AcceptedCandidateIndexes: []int{0},
+				DroppedCandidateIndexes:  nil,
+				Reason:                   "旧实现仍只返回 accepted_candidate_indexes。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  45,
+			SessionKey: "sess-direct-legacy-accepted",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "记录一条新的稳定工程约束。",
+			Details:    "记录一条新的稳定工程约束。",
+			Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1251 {
+		t.Fatalf("expected legacy accepted indexes to still create a new row, got %+v", result.Items)
+	}
+	if len(store.directWriteApplyCalls) != 1 {
+		t.Fatalf("expected one persistence call, got %+v", store.directWriteApplyCalls)
+	}
+}
+
+// TestMemoryUseCaseWriteDroppedCandidateWithoutSimilarFallsBackToCreate verifies reviewer drops without any trustworthy similar memories degrade to creating a fresh row instead of losing an explicit tool write.
+// TestMemoryUseCaseWriteDroppedCandidateWithoutSimilarFallsBackToCreate 用于验证当 reviewer 丢弃候选但没有可信相似旧记忆时，会退化成新建，而不是丢失显式工具写入。
+func TestMemoryUseCaseWriteDroppedCandidateWithoutSimilarFallsBackToCreate(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1101,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "记录一次新的稳定技术约束。",
+				Details:    "记录一次新的稳定技术约束。",
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates:       nil,
+				AcceptedCandidateIndexes: nil,
+				DroppedCandidateIndexes:  []int{0},
+				Reason:                   "这条候选没有高相似旧记忆，但 reviewer 仍然保守拒绝。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  43,
+			SessionKey: "sess-direct-fallback-create",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "记录一次新的稳定技术约束。",
+			Details:    "记录一次新的稳定技术约束。",
+			Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1101 {
+		t.Fatalf("expected fallback create result, got %+v", result.Items)
+	}
+	if len(store.directWriteApplyCalls) != 1 || len(store.directWriteApplyCalls[0].SupersededMemoryIDs) != 0 {
+		t.Fatalf("expected fallback create to persist without supersedes, got %+v", store.directWriteApplyCalls)
+	}
+}
+
+// TestMemoryUseCaseWriteStaleSemanticDedupeTargetFallsBackToCreate verifies a dedupe target that became superseded or expired after reviewer selection degrades into a fresh insert instead of returning stale memory refs.
+// TestMemoryUseCaseWriteStaleSemanticDedupeTargetFallsBackToCreate 用于验证当 dedupe 目标在 reviewer 选中后变成 superseded 或过期时，会退化成新建，而不是返回陈旧记忆引用。
+func TestMemoryUseCaseWriteStaleSemanticDedupeTargetFallsBackToCreate(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			Status:     logicdomain.MemoryStatusSuperseded,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			VectorID:   "vec-901",
+		}},
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			Status:     logicdomain.MemoryStatusActive,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			VectorID:   "vec-901",
+		}},
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1301,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "当前项目阶段已经切换到 B。",
+				Details:    "当前项目阶段已经切换到 B。",
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{{
+			ID:    "vec-901",
+			Text:  "当前项目阶段已经切换到 B。",
+			Score: 0.96,
+		}},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates:       nil,
+				DroppedCandidates:        []logicdomain.PostActionDroppedMemoryCandidate{{CandidateIndex: 0, DedupeMemoryID: 901}},
+				AcceptedCandidateIndexes: nil,
+				DroppedCandidateIndexes:  []int{0},
+				Reason:                   "理论上可复用旧记忆，但目标在并发窗口里已经退役。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  46,
+			SessionKey: "sess-direct-stale-dedupe",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			Category:   logicdomain.MemoryNodeCategoryProjectContext,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1301 {
+		t.Fatalf("expected stale dedupe target to fall back to create, got %+v", result.Items)
+	}
+	if len(store.directWriteApplyCalls) != 1 || len(store.directWriteApplyCalls[0].SupersededMemoryIDs) != 0 {
+		t.Fatalf("expected stale dedupe target to create without supersedes, got %+v", store.directWriteApplyCalls)
+	}
+}
+
 // stubTurnLookupStore supplies deterministic turn rows for memory-query tests.
 // stubTurnLookupStore 用于为记忆查询测试提供确定性的 turn 行。
 type stubTurnLookupStore struct {
-	turnIDs            []uint64
-	rows               []logicdomain.SessionTurnRecord
-	windows            map[uint64]logicdomain.TurnDetailWindow
-	memoryRowsByID     []logicdomain.MemoryNodeRecord
-	memoryRowsByIDErr  error
-	memoryContextEdges []logicdomain.MemoryContextEdge
-	memoryRowsByVector []logicdomain.MemoryNodeRecord
-	lexicalHits        []logicdomain.MemoryLexicalHit
-	lexicalErr         error
-	lexicalQueries     []string
-	lexicalTopKs       []int
-	lexicalFilters     []logicdomain.SearchFilter
-	contextLookupIDs   []uint64
-	err                error
+	turnIDs                  []uint64
+	rows                     []logicdomain.SessionTurnRecord
+	windows                  map[uint64]logicdomain.TurnDetailWindow
+	memoryRowsByID           []logicdomain.MemoryNodeRecord
+	memoryRowsByIDErr        error
+	memoryContextEdges       []logicdomain.MemoryContextEdge
+	memoryRowsByVector       []logicdomain.MemoryNodeRecord
+	lexicalHits              []logicdomain.MemoryLexicalHit
+	lexicalErr               error
+	lexicalQueries           []string
+	lexicalTopKs             []int
+	lexicalFilters           []logicdomain.SearchFilter
+	contextLookupIDs         []uint64
+	recentDedupeRow          logicdomain.MemoryNodeRecord
+	recentDedupeHit          bool
+	createdDirectMemoryNodes []logicdomain.MemoryNodeRecord
+	createDirectMemoryErr    error
+	directWriteApplyCalls    []stubDirectMemoryWriteApplyCall
+	directWriteApplyResult   logicdomain.DirectMemoryWriteApplyResult
+	directWriteApplyErr      error
+	err                      error
+}
+
+// stubDirectMemoryWriteApplyCall records one atomic direct-memory write attempt so tests can assert the store sees the new row plus the intended supersede targets together.
+// stubDirectMemoryWriteApplyCall 用于记录一次原子主动写记忆尝试，让测试可以断言存储层同时看到了新行和预期 supersede 目标。
+type stubDirectMemoryWriteApplyCall struct {
+	Session             logicdomain.SessionRef
+	Record              logicdomain.MemoryNodeRecord
+	SupersededMemoryIDs []uint64
 }
 
 // LoadTurnsByIDs records the requested ids and returns the canned rows.
@@ -1460,17 +1947,51 @@ func (s *stubTurnLookupStore) FindRecentActiveMemoryByDedupe(_ context.Context, 
 	if s.err != nil {
 		return logicdomain.MemoryNodeRecord{}, false, s.err
 	}
-	return logicdomain.MemoryNodeRecord{}, false, nil
+	if !s.recentDedupeHit {
+		return logicdomain.MemoryNodeRecord{}, false, nil
+	}
+	return s.recentDedupeRow, true, nil
 }
 
 // CreateDirectMemoryNode keeps the stub interface-complete for tests that do not exercise direct-write persistence.
 // CreateDirectMemoryNode 用于补齐测试桩接口，因为当前这些测试不覆盖主动写入持久化。
 func (s *stubTurnLookupStore) CreateDirectMemoryNode(_ context.Context, _ logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
+	if s.createDirectMemoryErr != nil {
+		return logicdomain.MemoryNodeRecord{}, s.createDirectMemoryErr
+	}
 	if s.err != nil {
 		return logicdomain.MemoryNodeRecord{}, s.err
 	}
-	record.ID = 1
+	if record.ID == 0 {
+		record.ID = uint64(len(s.createdDirectMemoryNodes) + 1)
+	}
+	s.createdDirectMemoryNodes = append(s.createdDirectMemoryNodes, record)
 	return record, nil
+}
+
+// ApplyDirectMemoryWrite records one atomic direct-write apply call and returns the canned result so write-flow tests can verify supersede ids and vector cleanup behavior.
+// ApplyDirectMemoryWrite 用于记录一次原子主动写入调用，并返回预设结果，方便主动写流程测试校验 supersede id 和向量清理行为。
+func (s *stubTurnLookupStore) ApplyDirectMemoryWrite(_ context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
+	call := stubDirectMemoryWriteApplyCall{
+		Session:             session,
+		Record:              record,
+		SupersededMemoryIDs: append([]uint64(nil), supersededMemoryIDs...),
+	}
+	s.directWriteApplyCalls = append(s.directWriteApplyCalls, call)
+	if s.directWriteApplyErr != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, s.directWriteApplyErr
+	}
+	if s.directWriteApplyResult.InsertedMemoryNode.ID == 0 {
+		record.ID = uint64(len(s.directWriteApplyCalls))
+		return logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode:  record,
+			SupersededVectorIDs: append([]string(nil), s.directWriteApplyResult.SupersededVectorIDs...),
+		}, nil
+	}
+	result := s.directWriteApplyResult
+	result.InsertedMemoryNode.Vector = append([]float32(nil), result.InsertedMemoryNode.Vector...)
+	result.SupersededVectorIDs = append([]string(nil), result.SupersededVectorIDs...)
+	return result, nil
 }
 
 // stubCombinedHybridVectorStore extends the shared vector stub with the optional SQL-level hybrid recall fast path used by the PostgreSQL combined-store optimization.

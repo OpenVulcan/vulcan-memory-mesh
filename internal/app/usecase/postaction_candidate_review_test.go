@@ -71,17 +71,19 @@ func TestApplyPostActionAdmissionFilterDropsQAEchoAndNonDurableCandidates(t *tes
 	}
 }
 
-// TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredDedupeScope verifies post-action duplicate recall reuses the same effective search-scope policy as pre-check.
-// TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredDedupeScope 用于验证 post-action 的重复召回会复用与 pre-check 相同的有效检索作用域策略。
-func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredDedupeScope(t *testing.T) {
+// TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredMemoryReplaceScope verifies post-action duplicate recall uses the dedicated memory-replace scope policy instead of reusing pre-check defaults.
+// TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredMemoryReplaceScope 用于验证 post-action 的重复召回会使用独立的记忆更替作用域策略，而不是继续复用 pre-check 默认值。
+func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredMemoryReplaceScope(t *testing.T) {
 	tests := []struct {
-		name      string
-		rawScope  string
-		wantScope string
+		name          string
+		rawScope      string
+		wantScope     string
+		wantSessionID uint64
 	}{
-		{name: "default-space", rawScope: "", wantScope: preCheckSearchScopeSpace},
-		{name: "project", rawScope: preCheckSearchScopeProject, wantScope: preCheckSearchScopeProject},
-		{name: "team", rawScope: preCheckSearchScopeTeam, wantScope: preCheckSearchScopeTeam},
+		{name: "default-project", rawScope: "", wantScope: memoryReplaceScopeProject},
+		{name: "project", rawScope: memoryReplaceScopeProject, wantScope: memoryReplaceScopeProject},
+		{name: "team", rawScope: memoryReplaceScopeTeam, wantScope: memoryReplaceScopeTeam},
+		{name: "session", rawScope: memoryReplaceScopeSession, wantScope: memoryReplaceScopeSession, wantSessionID: 41},
 	}
 
 	for _, tt := range tests {
@@ -107,6 +109,9 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredDedupeScope(t *testi
 			reviewer := &stubPostActionCandidateReviewer{
 				result: logicdomain.PostActionCandidateReviewResult{
 					Memory: &logicdomain.PostActionMemoryReviewSection{
+						AcceptedCandidates: []logicdomain.PostActionAcceptedMemoryCandidate{{
+							CandidateIndex: 0,
+						}},
 						AcceptedCandidateIndexes: []int{0},
 						DroppedCandidateIndexes:  nil,
 						Reason:                   "保留唯一候选。",
@@ -115,7 +120,7 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredDedupeScope(t *testi
 			}
 			uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
 				DedupeSearchTopK:    7,
-				DedupeSearchScope:   tt.rawScope,
+				MemoryReplaceScope:  tt.rawScope,
 				DedupeMinSimilarity: 0.90,
 			}, nil, false)
 			analysis := &logicdomain.TurnAnalysis{
@@ -153,6 +158,9 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredDedupeScope(t *testi
 			}
 			if searcher.commands[0].ScopeOverride != tt.wantScope {
 				t.Fatalf("expected dedupe scope %q, got %+v", tt.wantScope, searcher.commands[0])
+			}
+			if searcher.commands[0].SessionID != tt.wantSessionID {
+				t.Fatalf("expected replace session id %d, got %+v", tt.wantSessionID, searcher.commands[0])
 			}
 			if searcher.commands[0].TopK != 7 {
 				t.Fatalf("expected dedupe top-k 7, got %+v", searcher.commands[0])
@@ -218,6 +226,10 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	reviewer := &stubPostActionCandidateReviewer{
 		result: logicdomain.PostActionCandidateReviewResult{
 			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates: []logicdomain.PostActionAcceptedMemoryCandidate{{
+					CandidateIndex:     0,
+					SupersedeMemoryIDs: []uint64{501},
+				}},
 				AcceptedCandidateIndexes: []int{0},
 				DroppedCandidateIndexes:  nil,
 				Reason:                   "当前记忆是新规则，不是旧节点原样重复。",
@@ -239,7 +251,7 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	}
 	uc := newPostActionUseCase(nil, store, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
 		DedupeSearchTopK:    5,
-		DedupeSearchScope:   preCheckSearchScopeTeam,
+		MemoryReplaceScope:  memoryReplaceScopeTeam,
 		DedupeMinSimilarity: 0.90,
 	}, nil, false)
 	analysis := &logicdomain.TurnAnalysis{
@@ -300,6 +312,9 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	}
 	if len(analysis.MemoryNodes) != 1 {
 		t.Fatalf("expected memory node to survive unified review, got %+v", analysis.MemoryNodes)
+	}
+	if len(analysis.SupersededMemoryIDs) != 1 || analysis.SupersededMemoryIDs[0] != 501 {
+		t.Fatalf("expected unified reviewer supersede ids to merge into analysis, got %+v", analysis.SupersededMemoryIDs)
 	}
 	if len(analysis.ProfileNodes) != 1 {
 		t.Fatalf("expected one active profile node after unified review, got %+v", analysis.ProfileNodes)
@@ -375,6 +390,323 @@ func TestPostActionUseCaseReviewTurnCandidatesKeepsInvalidProfilesForPersistence
 	}
 	if stats.ReviewDroppedCount != 0 {
 		t.Fatalf("expected invalid profiles to stay persisted instead of counted as dropped, got %+v", stats)
+	}
+}
+
+// TestPostActionUseCaseReviewTurnCandidatesRejectsUnavailableSupersedeIDs verifies reviewer-produced supersede ids must belong to the candidate-local similar-memory set; otherwise the use case degrades instead of silently superseding unrelated rows.
+// TestPostActionUseCaseReviewTurnCandidatesRejectsUnavailableSupersedeIDs 用于验证 reviewer 产生的 supersede id 必须来自该候选自己的 similar memory 集合；否则用例会判定输出无效并走降级，而不会静默替换无关行。
+func TestPostActionUseCaseReviewTurnCandidatesRejectsUnavailableSupersedeIDs(t *testing.T) {
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{{
+				QueryIndex: 0,
+				Query:      "新的长期事实",
+				Hits: []MemoryQueryHit{{
+					MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 9001},
+					SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 701},
+					ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+					Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+					Score:          0.96,
+					Origin:         "vector",
+					Abstract:       "已有事实",
+					DetailsPreview: "已有事实详情",
+				}},
+			}},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates: []logicdomain.PostActionAcceptedMemoryCandidate{{
+					CandidateIndex:     0,
+					SupersedeMemoryIDs: []uint64{9999},
+				}},
+				AcceptedCandidateIndexes: []int{0},
+				Reason:                   "错误地指向了未出现在 similar_memories 里的旧记忆。",
+			},
+		},
+	}
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
+		DedupeSearchTopK:    5,
+		MemoryReplaceScope:  memoryReplaceScopeProject,
+		DedupeMinSimilarity: 0.90,
+	}, nil, false)
+	analysis := &logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+			Abstract:       "新的长期事实",
+			Details:        "新的长期事实详情",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}
+
+	err := uc.reviewTurnCandidates(context.Background(), logicdomain.SessionRef{
+		SessionID:  41,
+		SessionKey: "sess-invalid-supersede",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}, logicdomain.PersistedTurnRecord{
+		ID:        88,
+		SessionID: 41,
+		ProjectID: 9,
+		CreatedAt: time.Date(2026, 4, 4, 10, 0, 0, 0, time.UTC),
+	}, logicdomain.TurnRecord{
+		UserContent:      "新的长期事实",
+		AssistantContent: "我会更新长期记忆。",
+	}, analysis, &postActionCompactionStats{})
+	if err == nil || !strings.Contains(err.Error(), "references unavailable supersede_memory_id") {
+		t.Fatalf("expected invalid supersede id error, got %v", err)
+	}
+}
+
+// TestPostActionUseCaseReviewTurnCandidatesClearsAnalyzerSupersedeWhenAllMemoryCandidatesDrop verifies reviewer-side full rejection clears analyzer-origin supersede ids so old memories are not retired without any accepted replacement.
+// TestPostActionUseCaseReviewTurnCandidatesClearsAnalyzerSupersedeWhenAllMemoryCandidatesDrop 用于验证当 reviewer 把记忆候选全部拒绝时，会清空分析器给出的 supersede id，避免在没有任何接纳替代物的情况下退役旧记忆。
+func TestPostActionUseCaseReviewTurnCandidatesClearsAnalyzerSupersedeWhenAllMemoryCandidatesDrop(t *testing.T) {
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{{
+				QueryIndex: 0,
+				Query:      "这条候选最终会被 reviewer 丢弃。",
+			}},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates:       nil,
+				AcceptedCandidateIndexes: nil,
+				DroppedCandidateIndexes:  []int{0},
+				Reason:                   "这条候选不应进入长期记忆。",
+			},
+		},
+	}
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
+	analysis := &logicdomain.TurnAnalysis{
+		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
+		SupersededMemoryIDs: []uint64{701},
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+			Abstract:       "这条候选最终会被 reviewer 丢弃。",
+			Details:        "这条候选最终会被 reviewer 丢弃。",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}
+
+	err := uc.reviewTurnCandidates(context.Background(), logicdomain.SessionRef{
+		SessionID:  41,
+		SessionKey: "sess-drop-all-memory",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}, logicdomain.PersistedTurnRecord{
+		ID:        88,
+		SessionID: 41,
+		ProjectID: 9,
+		CreatedAt: time.Date(2026, 4, 4, 10, 0, 0, 0, time.UTC),
+	}, logicdomain.TurnRecord{
+		UserContent:      "这条候选不要进长期记忆。",
+		AssistantContent: "我不会持久化它。",
+	}, analysis, &postActionCompactionStats{})
+	if err != nil {
+		t.Fatalf("review turn candidates: %v", err)
+	}
+	if len(analysis.MemoryNodes) != 0 {
+		t.Fatalf("expected reviewer to drop all memory nodes, got %+v", analysis.MemoryNodes)
+	}
+	if len(analysis.SupersededMemoryIDs) != 0 {
+		t.Fatalf("expected superseded ids to be cleared when all memory candidates drop, got %+v", analysis.SupersededMemoryIDs)
+	}
+}
+
+// TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidatesDrop verifies first-pass memory drops clear legacy turn-level supersede ids when no surviving candidate carries explicit local supersede mapping.
+// TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidatesDrop 用于验证当首轮过滤丢弃部分记忆候选且存活候选没有显式候选级 supersede 映射时，会清空旧的整轮 supersede id。
+func TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidatesDrop(t *testing.T) {
+	analysis := logicdomain.TurnAnalysis{
+		SupersededMemoryIDs: []uint64{701},
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{
+				Category:        logicdomain.MemoryNodeCategoryRequirementTODO,
+				Abstract:        "只是回显旧问题",
+				Details:         "只是回显旧问题",
+				EvidenceSource:  logicdomain.TurnAnalysisEvidenceSourceAssistantRecalledMemory,
+				Admission:       logicdomain.TurnAnalysisAdmissionDrop,
+				AdmissionReason: logicdomain.TurnAnalysisAdmissionReasonQAAnswerOnly,
+			},
+			{
+				Category:       logicdomain.MemoryNodeCategoryTechSpecAPI,
+				Abstract:       "当前项目阶段已经进入 B。",
+				Details:        "当前项目阶段已经进入 B。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
+		},
+		ProfileNodes: []logicdomain.ProfileNodeCandidate{{
+			ProfileType:    logicdomain.ProfileTypeProject,
+			Content:        "当前项目进入阶段 B。",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}
+
+	applyPostActionAdmissionFilter(&analysis, &postActionCompactionStats{})
+
+	if len(analysis.MemoryNodes) != 1 {
+		t.Fatalf("expected one surviving memory node, got %+v", analysis.MemoryNodes)
+	}
+	if len(analysis.SupersededMemoryIDs) != 0 {
+		t.Fatalf("expected legacy supersedes to clear after partial memory drop, got %+v", analysis.SupersededMemoryIDs)
+	}
+}
+
+// TestPostActionUseCaseReviewTurnCandidatesKeepsAcceptedCandidateLocalSupersedes verifies per-candidate supersede ids survive reviewer partial acceptance while dropped candidates stop contributing stale analyzer supersede ids.
+// TestPostActionUseCaseReviewTurnCandidatesKeepsAcceptedCandidateLocalSupersedes 用于验证当 reviewer 只接纳部分候选时，会只保留被接纳候选自己的 supersede id，而被丢弃候选不再贡献陈旧分析器 supersede 结果。
+func TestPostActionUseCaseReviewTurnCandidatesKeepsAcceptedCandidateLocalSupersedes(t *testing.T) {
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{
+				{QueryIndex: 0, Query: "当前项目阶段已经切换到 B。"},
+				{QueryIndex: 1, Query: "当前项目阶段仍然处于 A。"},
+			},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates: []logicdomain.PostActionAcceptedMemoryCandidate{{
+					CandidateIndex: 0,
+				}},
+				AcceptedCandidateIndexes: []int{0},
+				DroppedCandidateIndexes:  []int{1},
+				Reason:                   "只保留真正更新后的阶段事实。",
+			},
+		},
+	}
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
+	analysis := &logicdomain.TurnAnalysis{
+		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
+		SupersededMemoryIDs: []uint64{701, 702},
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{
+				Category:           logicdomain.MemoryNodeCategoryProjectContext,
+				Abstract:           "当前项目阶段已经切换到 B。",
+				Details:            "当前项目阶段已经切换到 B。",
+				EvidenceSource:     logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:          logicdomain.TurnAnalysisAdmissionKeep,
+				SupersedeMemoryIDs: []uint64{701},
+			},
+			{
+				Category:           logicdomain.MemoryNodeCategoryProjectContext,
+				Abstract:           "当前项目阶段仍然处于 A。",
+				Details:            "当前项目阶段仍然处于 A。",
+				EvidenceSource:     logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:          logicdomain.TurnAnalysisAdmissionKeep,
+				SupersedeMemoryIDs: []uint64{702},
+			},
+		},
+	}
+
+	err := uc.reviewTurnCandidates(context.Background(), logicdomain.SessionRef{
+		SessionID:  51,
+		SessionKey: "sess-candidate-local-supersede",
+		UserID:     7,
+		ProjectID:  9,
+	}, logicdomain.PersistedTurnRecord{
+		ID:        91,
+		SessionID: 51,
+		ProjectID: 9,
+		CreatedAt: time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC),
+	}, logicdomain.TurnRecord{
+		UserContent:      "现在阶段已经变成 B。",
+		AssistantContent: "我会把旧阶段替换掉。",
+	}, analysis, &postActionCompactionStats{})
+	if err != nil {
+		t.Fatalf("review turn candidates: %v", err)
+	}
+	if len(analysis.MemoryNodes) != 1 {
+		t.Fatalf("expected only accepted memory node to survive, got %+v", analysis.MemoryNodes)
+	}
+	if len(analysis.SupersededMemoryIDs) != 1 || analysis.SupersededMemoryIDs[0] != 701 {
+		t.Fatalf("expected only accepted candidate-local supersede id to remain, got %+v", analysis.SupersededMemoryIDs)
+	}
+}
+
+// TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping verifies similar-memory hits are reattached by QueryIndex instead of raw slice position so out-of-order grouped results cannot bind to the wrong candidate.
+// TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping 用于验证 similar-memory 结果会按 QueryIndex 回贴，而不是按切片顺序绑定，避免乱序分组把旧记忆挂错到别的候选上。
+func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{
+				{
+					QueryIndex: 1,
+					Query:      "候选 B",
+					Hits: []MemoryQueryHit{{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 802},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 302},
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Category:       logicdomain.MemoryNodeCategoryProjectContext,
+						Score:          0.97,
+						Origin:         "vector",
+						Abstract:       "旧阶段 B",
+						DetailsPreview: "旧阶段 B 详情",
+					}},
+				},
+				{
+					QueryIndex: 0,
+					Query:      "候选 A",
+					Hits: []MemoryQueryHit{{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 801},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 301},
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Category:       logicdomain.MemoryNodeCategoryProjectContext,
+						Score:          0.96,
+						Origin:         "vector",
+						Abstract:       "旧阶段 A",
+						DetailsPreview: "旧阶段 A 详情",
+					}},
+				},
+			},
+		},
+	}
+
+	candidates, err := buildScopedMemoryReviewCandidates(context.Background(), searcher, logicdomain.SessionRef{
+		SessionID: 61,
+		UserID:    7,
+		TeamID:    3,
+		SpaceID:   5,
+		ProjectID: 9,
+	}, []logicdomain.MemoryNodeCandidate{
+		{
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			Abstract:       "候选 A",
+			Details:        "候选 A 详情",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		},
+		{
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			Abstract:       "候选 B",
+			Details:        "候选 B 详情",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		},
+	}, 5, memoryReplaceScopeProject, 0.90)
+	if err != nil {
+		t.Fatalf("build scoped memory review candidates: %v", err)
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("expected two candidates, got %+v", candidates)
+	}
+	if len(candidates[0].SimilarMemories) != 1 || candidates[0].SimilarMemories[0].MemoryID != 801 {
+		t.Fatalf("expected query-index 0 result to attach to candidate 0, got %+v", candidates[0].SimilarMemories)
+	}
+	if len(candidates[1].SimilarMemories) != 1 || candidates[1].SimilarMemories[0].MemoryID != 802 {
+		t.Fatalf("expected query-index 1 result to attach to candidate 1, got %+v", candidates[1].SimilarMemories)
 	}
 }
 

@@ -15,8 +15,9 @@
 4. 为 `target_turn` 生成 `details`
 5. 为 `target_turn` 提取 `memory_nodes`
 6. 为 `target_turn` 提取 `profile_nodes`
-7. 如果 `target_turn` 明确覆盖、推翻或使旧记忆失效，则通过 `superseded_memory_ids` 返回对应旧记忆 `memory_id`
-8. 对每条 `memory_nodes` / `profile_nodes` 明确标注：
+7. 如果 `target_turn` 明确覆盖、推翻或使旧记忆失效，优先在对应 `memory_nodes[].supersede_memory_ids` 中返回被替代的旧记忆 `memory_id`
+8. 兼容旧格式时，也允许继续输出顶层 `superseded_memory_ids`；但当你能明确判断“是哪条新记忆替代了哪条旧记忆”时，必须优先写到对应 `memory_nodes[].supersede_memory_ids`
+9. 对每条 `memory_nodes` / `profile_nodes` 明确标注：
    - `evidence_source`
    - `admission`
    - `admission_reason`
@@ -120,10 +121,11 @@
     - 临时库存/临时运行态
     则应 `admission="drop"`，并使用 `non_durable`。
 20. 如果同一轮里同时出现多个稳定画像事实，必须按领域输出多条 `profile_nodes`，不要合并成一句“综合画像”。
-21. `superseded_memory_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `memory_id`。
-22. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 `memory_id` 填进 `superseded_memory_ids`；不能因为当前 turn 没有再次提到就删除。
-23. 如果 `reference_turns`、`active_memory_nodes` 或 `recent_grpc_memory_writes` 为空，不要臆造不存在的上下文。
-24. `category` 只能使用以下整数：
+21. `memory_nodes[].supersede_memory_ids` 和顶层 `superseded_memory_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `memory_id`。
+22. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 `memory_id` 填进这些 supersede 字段；不能因为当前 turn 没有再次提到就删除。
+23. 如果某条旧记忆明确是被某个新 `memory_nodes[i]` 替代，优先把它写进该节点自己的 `supersede_memory_ids`，不要只放顶层。
+24. 如果 `reference_turns`、`active_memory_nodes` 或 `recent_grpc_memory_writes` 为空，不要臆造不存在的上下文。
+25. `category` 只能使用以下整数：
     - `0`: General
     - `1`: Arch & Decision
     - `2`: Tech Spec & API
@@ -132,7 +134,7 @@
     - `5`: Project Context
     - `6`: Logical Bug / Debt
     - `7`: Security & Policy
-25. `profile_type` 只能使用以下整数：
+26. `profile_type` 只能使用以下整数：
     - `0`: 用户画像
     - `1`: 项目画像
 
@@ -149,6 +151,7 @@
       "evidence_source": "user_asserted",
       "admission": "keep",
       "admission_reason": "",
+      "supersede_memory_ids": [88],
       "context_edges": [
         {
           "context_key": "task_stage",

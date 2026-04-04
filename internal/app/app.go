@@ -148,6 +148,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
 	chatCompact := usecase.NewChatCompactUseCase(chatCompactStore)
+	candidateReviewer := processor.NewPostActionCandidateReviewer(llm, prompts, cfg.LLM.Model)
 	memory.ConfigureHybrid(cfg.MemoryPipeline.HybridEnabled, cfg.MemoryPipeline.LexicalTopK, cfg.MemoryPipeline.RRFK)
 	memory.ConfigureMMR(cfg.MemoryPipeline.MMREnabled, cfg.MemoryPipeline.MMRLambda)
 	memory.ConfigureDecay(
@@ -159,6 +160,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		cfg.MemoryPipeline.WeibullCrossSessionBoost,
 	)
 	memory.ConfigureRerank(reranker, cfg.Rerank.TopN)
+	memory.ConfigureMemoryReplace(candidateReviewer, cfg.PreCheck.TopK, cfg.MemoryReplaceScope, minSimilarityOrDefault(cfg))
 	pre := usecase.NewPreCheckUseCase(
 		memory,
 		relational,
@@ -182,7 +184,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		vector,
 		processor.NewTurnAnalyzer(llm, prompts, cfg.LLM.Model),
 		memory,
-		processor.NewPostActionCandidateReviewer(llm, prompts, cfg.LLM.Model),
+		candidateReviewer,
 		usecase.PostActionAnalysisConfig{
 			TurnThreshold:       cfg.PostAction.SessionAnalysisTurnThreshold,
 			TokenThreshold:      cfg.PostAction.SessionAnalysisTokenThreshold,
@@ -190,7 +192,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 			HistoryTurns:        cfg.PostAction.SessionAnalysisHistoryTurns,
 			MaxInputTokens:      cfg.PostAction.SessionAnalysisMaxInputTokens,
 			DedupeSearchTopK:    cfg.PreCheck.TopK,
-			DedupeSearchScope:   cfg.PreCheck.SearchScope,
+			MemoryReplaceScope:  cfg.MemoryReplaceScope,
 			DedupeMinSimilarity: minSimilarityOrDefault(cfg),
 		},
 		logger,

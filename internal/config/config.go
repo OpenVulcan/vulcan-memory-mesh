@@ -54,22 +54,24 @@ func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()
 // Config is the root runtime configuration loaded before the local application starts.
 // Config 用于表示本地应用启动前加载的根配置对象。
 type Config struct {
-	GRPC           GRPCConfig           `json:"grpc"`
-	Logging        LoggingConfig        `json:"logging"`
-	PII            PIIConfig            `json:"pii"`
-	Noise          NoiseConfig          `json:"noise"`
-	Storage        StorageConfig        `json:"storage"`
-	SQLite         SQLiteConfig         `json:"sqlite"`
-	LanceDB        LanceDBConfig        `json:"lancedb"`
-	Postgres       PostgresConfig       `json:"postgres"`
-	LLM            LLMConfig            `json:"llm"`
-	Embedding      EmbeddingConfig      `json:"embedding"`
-	Rerank         RerankConfig         `json:"rerank"`
-	Vector         VectorConfig         `json:"vector"`
-	Relational     RelationalConfig     `json:"relational"`
-	PostAction     PostActionConfig     `json:"post_action"`
-	PreCheck       PreCheckConfig       `json:"pre_check"`
-	MemoryPipeline MemoryPipelineConfig `json:"memory_pipeline"`
+	GRPC               GRPCConfig           `json:"grpc"`
+	Logging            LoggingConfig        `json:"logging"`
+	PII                PIIConfig            `json:"pii"`
+	Noise              NoiseConfig          `json:"noise"`
+	Storage            StorageConfig        `json:"storage"`
+	SQLite             SQLiteConfig         `json:"sqlite"`
+	LanceDB            LanceDBConfig        `json:"lancedb"`
+	Postgres           PostgresConfig       `json:"postgres"`
+	LLM                LLMConfig            `json:"llm"`
+	Embedding          EmbeddingConfig      `json:"embedding"`
+	Rerank             RerankConfig         `json:"rerank"`
+	Vector             VectorConfig         `json:"vector"`
+	Relational         RelationalConfig     `json:"relational"`
+	PostAction         PostActionConfig     `json:"post_action"`
+	PreCheck           PreCheckConfig       `json:"pre_check"`
+	MemoryPipeline     MemoryPipelineConfig `json:"memory_pipeline"`
+	Retention          RetentionConfig      `json:"retention"`
+	MemoryReplaceScope string               `json:"memory_replace_scope,omitempty"`
 }
 
 // GRPCConfig holds listener and timeout settings for the inbound gRPC server.
@@ -220,6 +222,19 @@ type PostActionConfig struct {
 	SessionAnalysisMaxInputTokens int      `json:"session_analysis_max_input_tokens"`
 }
 
+// RetentionConfig keeps the cold-data governance knobs for recycle scanning, turn hot-window buffering, and trash retention.
+// RetentionConfig 用于保存冷数据治理相关参数，包括回收扫描周期、turn 热窗口缓冲和回收站保留时长。
+type RetentionConfig struct {
+	Enabled                     bool     `json:"enabled"`
+	RecycleScanInterval         Duration `json:"recycle_scan_interval"`
+	TurnKeepExtraTurns          int      `json:"turn_keep_extra_turns"`
+	SessionIdleRecycleAfter     Duration `json:"session_idle_recycle_after"`
+	TrashRetention              Duration `json:"trash_retention"`
+	ProtectPriorityFloor        string   `json:"protect_priority_floor,omitempty"`
+	ProtectMemoryLevelFloor     string   `json:"protect_memory_level_floor,omitempty"`
+	SkipProtectedSharedMemories bool     `json:"skip_protected_shared_memories"`
+}
+
 // PreCheckConfig controls timeout and recall window settings for the pre-check workflow.
 // PreCheckConfig 用于控制 pre-check 工作流的超时和召回窗口配置。
 type PreCheckConfig struct {
@@ -311,6 +326,17 @@ func DefaultLocal() Config {
 			WeibullReinforceWeight:   0.18,
 			WeibullCrossSessionBoost: 0.12,
 		},
+		Retention: RetentionConfig{
+			Enabled:                     true,
+			RecycleScanInterval:         Duration{30 * time.Minute},
+			TurnKeepExtraTurns:          5,
+			SessionIdleRecycleAfter:     Duration{360 * time.Hour},
+			TrashRetention:              Duration{720 * time.Hour},
+			ProtectPriorityFloor:        "P1",
+			ProtectMemoryLevelFloor:     "stable",
+			SkipProtectedSharedMemories: true,
+		},
+		MemoryReplaceScope: "project",
 	}
 }
 
@@ -475,6 +501,89 @@ func isSupportedPreCheckSearchScopeValue(scope string) bool {
 	}
 }
 
+// normalizeMemoryReplaceScopeValue canonicalizes the dedicated memory-replacement scope enum so config defaults, env overrides, and runtime wiring all compare the same token.
+// normalizeMemoryReplaceScopeValue 用于规范化专用记忆更替作用域枚举，让配置默认值、环境变量覆盖和运行时装配始终比较同一个 token。
+func normalizeMemoryReplaceScopeValue(scope string) string {
+	normalized := strings.ToLower(strings.TrimSpace(scope))
+	switch normalized {
+	case "session":
+		return "session"
+	case "team":
+		return "team"
+	case "space":
+		return "space"
+	case "project", "":
+		return "project"
+	default:
+		return normalized
+	}
+}
+
+// isSupportedMemoryReplaceScopeValue reports whether one caller-provided config token is an explicitly supported memory-replacement scope before defaults are applied.
+// isSupportedMemoryReplaceScopeValue 用于判断调用方提供的配置 token 在默认值介入前，是否属于受支持的记忆更替作用域。
+func isSupportedMemoryReplaceScopeValue(scope string) bool {
+	switch strings.ToLower(strings.TrimSpace(scope)) {
+	case "session", "team", "space", "project":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeRetentionPriorityFloorValue canonicalizes the retention protection priority floor so future recycle code can compare one stable label.
+// normalizeRetentionPriorityFloorValue 用于规范化 retention 保护优先级下限，让后续回收逻辑可以稳定比较同一标签。
+func normalizeRetentionPriorityFloorValue(level string) string {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
+	case "P0":
+		return "P0"
+	case "P2":
+		return "P2"
+	case "P1", "":
+		return "P1"
+	default:
+		return strings.ToUpper(strings.TrimSpace(level))
+	}
+}
+
+// isSupportedRetentionPriorityFloorValue reports whether one configured retention priority floor belongs to the explicit supported enum set.
+// isSupportedRetentionPriorityFloorValue 用于判断 retention 优先级下限是否属于当前支持的显式枚举集合。
+func isSupportedRetentionPriorityFloorValue(level string) bool {
+	switch strings.ToUpper(strings.TrimSpace(level)) {
+	case "P0", "P1", "P2":
+		return true
+	default:
+		return false
+	}
+}
+
+// normalizeRetentionMemoryLevelFloorValue canonicalizes the retention protection memory-level floor so later lifecycle code can compare one stable token.
+// normalizeRetentionMemoryLevelFloorValue 用于规范化 retention 保护记忆等级下限，让后续生命周期逻辑可以稳定比较同一 token。
+func normalizeRetentionMemoryLevelFloorValue(level string) string {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "session":
+		return "session"
+	case "phase":
+		return "phase"
+	case "persistent":
+		return "persistent"
+	case "stable", "":
+		return "stable"
+	default:
+		return strings.ToLower(strings.TrimSpace(level))
+	}
+}
+
+// isSupportedRetentionMemoryLevelFloorValue reports whether one configured retention memory-level floor belongs to the explicit supported enum set.
+// isSupportedRetentionMemoryLevelFloorValue 用于判断 retention 记忆等级下限是否属于当前支持的显式枚举集合。
+func isSupportedRetentionMemoryLevelFloorValue(level string) bool {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "session", "phase", "stable", "persistent":
+		return true
+	default:
+		return false
+	}
+}
+
 // normalizeStorageModeValue canonicalizes the storage-mode token so config defaults, env overrides, and runtime branching all compare one stable value.
 // normalizeStorageModeValue 用于规范化存储模式 token，让默认值、环境变量覆盖和运行时分支始终比较同一份稳定值。
 func normalizeStorageModeValue(mode string) string {
@@ -558,6 +667,21 @@ func (c *Config) Normalize() {
 	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
 		c.PostAction.SessionAnalysisMaxInputTokens = 6000
 	}
+	c.MemoryReplaceScope = normalizeMemoryReplaceScopeValue(c.MemoryReplaceScope)
+	if c.Retention.RecycleScanInterval.Duration <= 0 {
+		c.Retention.RecycleScanInterval = Duration{30 * time.Minute}
+	}
+	if c.Retention.TurnKeepExtraTurns < 0 {
+		c.Retention.TurnKeepExtraTurns = 5
+	}
+	if c.Retention.SessionIdleRecycleAfter.Duration <= 0 {
+		c.Retention.SessionIdleRecycleAfter = Duration{360 * time.Hour}
+	}
+	if c.Retention.TrashRetention.Duration <= 0 {
+		c.Retention.TrashRetention = Duration{720 * time.Hour}
+	}
+	c.Retention.ProtectPriorityFloor = normalizeRetentionPriorityFloorValue(c.Retention.ProtectPriorityFloor)
+	c.Retention.ProtectMemoryLevelFloor = normalizeRetentionMemoryLevelFloorValue(c.Retention.ProtectMemoryLevelFloor)
 
 	// Clamp memory pipeline knobs to keep recall fan-out predictable.
 	// 对记忆流水线参数做钳制，保持召回扇出可控。
@@ -717,6 +841,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Postgres.Flavor = strings.TrimSpace(c.Postgres.Flavor)
 	c.Postgres.BM25IndexName = strings.TrimSpace(c.Postgres.BM25IndexName)
 	c.PreCheck.SearchScope = strings.TrimSpace(c.PreCheck.SearchScope)
+	c.MemoryReplaceScope = strings.TrimSpace(c.MemoryReplaceScope)
 	c.LLM.Provider = strings.TrimSpace(c.LLM.Provider)
 	c.LLM.Endpoint = strings.TrimSpace(c.LLM.Endpoint)
 	c.LLM.APIKey = strings.TrimSpace(c.LLM.APIKey)
@@ -736,6 +861,8 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Vector.Provider = strings.TrimSpace(c.Vector.Provider)
 	c.Relational.Provider = strings.TrimSpace(c.Relational.Provider)
 	c.PostAction.InputMode = strings.TrimSpace(c.PostAction.InputMode)
+	c.Retention.ProtectPriorityFloor = strings.TrimSpace(c.Retention.ProtectPriorityFloor)
+	c.Retention.ProtectMemoryLevelFloor = strings.TrimSpace(c.Retention.ProtectMemoryLevelFloor)
 }
 
 // Validate validates the input value.
@@ -780,6 +907,9 @@ func (c Config) Validate() error {
 	}
 	if scope := strings.TrimSpace(c.PreCheck.SearchScope); scope != "" && !isSupportedPreCheckSearchScopeValue(scope) {
 		return errors.New("pre_check.search_scope must be one of team, space, or project")
+	}
+	if scope := strings.TrimSpace(c.MemoryReplaceScope); scope != "" && !isSupportedMemoryReplaceScopeValue(scope) {
+		return errors.New("memory_replace_scope must be one of session, team, space, or project")
 	}
 	if c.GRPC.RequestTimeout.PreCheck.Duration <= c.PreCheck.IntentTimeout.Duration {
 		return errors.New("grpc.request_timeout.pre_check must be greater than pre_check.intent_timeout")
@@ -960,6 +1090,27 @@ func (c Config) Validate() error {
 	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
 		return errors.New("post_action.session_analysis_max_input_tokens must be > 0")
 	}
+	if c.Retention.RecycleScanInterval.Duration <= 0 {
+		return errors.New("retention.recycle_scan_interval must be > 0")
+	}
+	if c.Retention.TurnKeepExtraTurns < 0 {
+		return errors.New("retention.turn_keep_extra_turns must be >= 0")
+	}
+	if c.Retention.SessionIdleRecycleAfter.Duration <= 0 {
+		return errors.New("retention.session_idle_recycle_after must be > 0")
+	}
+	if c.Retention.TrashRetention.Duration <= 0 {
+		return errors.New("retention.trash_retention must be > 0")
+	}
+	if c.Retention.SessionIdleRecycleAfter.Duration < 360*time.Hour {
+		return errors.New("retention.session_idle_recycle_after must be >= 360h")
+	}
+	if level := strings.TrimSpace(c.Retention.ProtectPriorityFloor); level != "" && !isSupportedRetentionPriorityFloorValue(level) {
+		return errors.New("retention.protect_priority_floor must be one of P0, P1, or P2")
+	}
+	if level := strings.TrimSpace(c.Retention.ProtectMemoryLevelFloor); level != "" && !isSupportedRetentionMemoryLevelFloorValue(level) {
+		return errors.New("retention.protect_memory_level_floor must be one of session, phase, stable, or persistent")
+	}
 	return nil
 }
 
@@ -1075,10 +1226,19 @@ func applyEnvOverrides(cfg *Config) {
 	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", &cfg.PostAction.SessionAnalysisIdleTimeout)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS", &cfg.PostAction.SessionAnalysisHistoryTurns)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", &cfg.PostAction.SessionAnalysisMaxInputTokens)
+	setString("VMM_MEMORY_REPLACE_SCOPE", &cfg.MemoryReplaceScope)
 	setDuration("VMM_PRE_CHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
 	setInt("VMM_PRE_CHECK_TOPK", &cfg.PreCheck.TopK)
 	setString("VMM_PRE_CHECK_SEARCH_SCOPE", &cfg.PreCheck.SearchScope)
 	setFloat("VMM_PRE_CHECK_SIMILARITY_THRESHOLD", &cfg.PreCheck.SimilarityThreshold)
+	setBool("VMM_RETENTION_ENABLED", &cfg.Retention.Enabled)
+	setDuration("VMM_RETENTION_RECYCLE_SCAN_INTERVAL", &cfg.Retention.RecycleScanInterval)
+	setInt("VMM_RETENTION_TURN_KEEP_EXTRA_TURNS", &cfg.Retention.TurnKeepExtraTurns)
+	setDuration("VMM_RETENTION_SESSION_IDLE_RECYCLE_AFTER", &cfg.Retention.SessionIdleRecycleAfter)
+	setDuration("VMM_RETENTION_TRASH_RETENTION", &cfg.Retention.TrashRetention)
+	setString("VMM_RETENTION_PROTECT_PRIORITY_FLOOR", &cfg.Retention.ProtectPriorityFloor)
+	setString("VMM_RETENTION_PROTECT_MEMORY_LEVEL_FLOOR", &cfg.Retention.ProtectMemoryLevelFloor)
+	setBool("VMM_RETENTION_SKIP_PROTECTED_SHARED_MEMORIES", &cfg.Retention.SkipProtectedSharedMemories)
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
 	setBool("VMM_MEMORY_HYBRID_ENABLED", &cfg.MemoryPipeline.HybridEnabled)

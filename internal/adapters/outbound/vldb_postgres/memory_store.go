@@ -222,8 +222,96 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 	}
 	now := time.Now().UTC()
 	record = normalizeDirectMemoryNodeRecord(session, record, now)
-	vectorLiteral := encodePGVectorLiteral(record.Vector)
-	sqlText := fmt.Sprintf(`
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	created, err := s.upsertDirectMemoryNodeRow(callCtx, s.pool.QueryRow(callCtx, directMemoryNodeUpsertSQL(s.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
+	if err != nil {
+		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("upsert postgres direct memory node: %w", err)
+	}
+	return created, nil
+}
+
+// ApplyDirectMemoryWrite atomically inserts one direct-write durable memory row and supersedes any replaced active rows so explicit writes share the same replacement semantics as post-action.
+// ApplyDirectMemoryWrite 用于原子写入一条主动长期记忆，并同时 supersede 被其替代的活跃旧行，让显式写入与 post-action 共享同一套替代语义。
+func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
+	if s == nil || s.pool == nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("postgres store is not initialized")
+	}
+	if session.SessionID == 0 {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if strings.TrimSpace(record.VectorID) == "" {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "vector_id", Message: "is required"}
+	}
+	if len(record.Vector) != s.cfg.EmbeddingDimension {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "vector", Message: fmt.Sprintf("must contain exactly %d dimensions", s.cfg.EmbeddingDimension)}
+	}
+	if !logicdomain.ValidMemoryNodeCategory(record.Category) {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "category", Message: "must be one supported memory category"}
+	}
+
+	now := time.Now().UTC()
+	record = normalizeDirectMemoryNodeRecord(session, record, now)
+	supersededMemoryIDs = normalizeUint64List(supersededMemoryIDs)
+
+	// Keep the insert and the old-row retirement inside one explicit transaction so combined mode never exposes the fresh direct-write memory and the stale rows as simultaneously active.
+	// 把新插入和旧行退役都放进一个显式事务，确保组合模式不会同时暴露刚写入的新主动记忆和仍处于 active 的旧行。
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	tx, err := s.pool.Begin(callCtx)
+	if err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("begin postgres direct memory write tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+
+	supersededVectorIDs, err := s.loadActiveMemoryVectorIDsTx(callCtx, tx, supersededMemoryIDs)
+	if err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("load postgres direct-write superseded vector ids: %w", err)
+	}
+	created, err := s.upsertDirectMemoryNodeRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeUpsertSQL(s.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
+	if err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("insert postgres direct memory write row: %w", err)
+	}
+	if len(supersededMemoryIDs) > 0 {
+		updateSupersededSQL := fmt.Sprintf(`
+UPDATE %s
+SET memory_status = $1,
+    updated_at = $2
+WHERE memory_status = $3
+  AND id = ANY($4)
+`, s.memoryNodesTable())
+		if _, err := tx.Exec(
+			callCtx,
+			strings.TrimSpace(updateSupersededSQL),
+			logicdomain.MemoryStatusSuperseded,
+			now,
+			logicdomain.MemoryStatusActive,
+			toInt64List(supersededMemoryIDs),
+		); err != nil {
+			return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("supersede postgres direct-write memory nodes: %w", err)
+		}
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("commit postgres direct memory write tx: %w", err)
+	}
+	return logicdomain.DirectMemoryWriteApplyResult{
+		InsertedMemoryNode:  created,
+		SupersededVectorIDs: supersededVectorIDs,
+	}, nil
+}
+
+// pgRowScanner captures the Scan method shared by pgx row implementations so direct-memory upsert helpers can work with both pool and transaction query paths.
+// pgRowScanner 用于抽象 pgx 行对象共享的 Scan 方法，让主动记忆 upsert 辅助函数同时适用于连接池和事务查询路径。
+type pgRowScanner interface {
+	Scan(dest ...any) error
+}
+
+// directMemoryNodeUpsertSQL returns the shared PostgreSQL UPSERT statement used by both the legacy direct-write path and the new atomic replacement write path.
+// directMemoryNodeUpsertSQL 用于返回 PostgreSQL 共享 UPSERT 语句，供旧主动写路径和新的原子替代写路径共同复用。
+func directMemoryNodeUpsertSQL(table string) string {
+	return strings.TrimSpace(fmt.Sprintf(`
 INSERT INTO %s (
 	team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
 	vector_id, embedding, source_kind, scope_level, category, abstract, details,
@@ -272,14 +360,13 @@ DO UPDATE SET
 	dedupe_hash = EXCLUDED.dedupe_hash,
 	updated_at = EXCLUDED.updated_at
 RETURNING %s
-`, s.memoryNodesTable(), memoryNodeSelectColumns(""))
-	callCtx, cancel := s.queryContext(ctx)
-	defer cancel()
+`, table, memoryNodeSelectColumns("")))
+}
 
-	var row memoryNodeScanRow
-	if err := s.pool.QueryRow(
-		callCtx,
-		strings.TrimSpace(sqlText),
+// directMemoryNodeUpsertArgs materializes the ordered UPSERT arguments once so pool and transaction code paths cannot drift on column order.
+// directMemoryNodeUpsertArgs 用于一次性生成 UPSERT 参数顺序，避免连接池和事务两条代码路径在列顺序上发生漂移。
+func directMemoryNodeUpsertArgs(record logicdomain.MemoryNodeRecord) []any {
+	return []any{
 		int64(record.TeamID),
 		int64(record.SpaceID),
 		int64(record.ProjectID),
@@ -287,7 +374,7 @@ RETURNING %s
 		int64(record.OriginSessionID),
 		nullableUint64(record.SourceTurnID),
 		record.VectorID,
-		vectorLiteral,
+		encodePGVectorLiteral(record.Vector),
 		record.SourceKind,
 		record.ScopeLevel,
 		record.Category,
@@ -312,44 +399,51 @@ RETURNING %s
 		record.DedupeHash,
 		record.CreatedAt.UTC(),
 		record.UpdatedAt.UTC(),
-	).Scan(
-		&row.ID,
-		&row.TeamID,
-		&row.SpaceID,
-		&row.ProjectID,
-		&row.UserID,
-		&row.OriginSessionID,
-		&row.SourceTurnID,
-		&row.VectorID,
-		&row.EmbeddingText,
-		&row.SourceKind,
-		&row.ScopeLevel,
-		&row.Category,
-		&row.Abstract,
-		&row.Details,
-		&row.MemoryStatus,
-		&row.Priority,
-		&row.MemoryLevel,
-		&row.RefreshWeight,
-		&row.SupportCount,
-		&row.RebuttalCount,
-		&row.StatusReason,
-		&row.ExpiresAt,
-		&row.LastRecalledAt,
-		&row.LastAdoptedAt,
-		&row.LastReinforcedAt,
-		&row.RecalledCount,
-		&row.AdoptedCount,
-		&row.ReinforcementCount,
-		&row.CrossSessionAdoptedCount,
-		&row.DecayDisabled,
-		&row.DedupeHash,
-		&row.CreatedAt,
-		&row.UpdatedAt,
-	); err != nil {
-		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("upsert postgres direct memory node: %w", err)
 	}
-	return row.toMemoryNodeRecord(), nil
+}
+
+// upsertDirectMemoryNodeRow scans one direct-memory UPSERT result row into the shared durable memory record model.
+// upsertDirectMemoryNodeRow 用于把一条主动记忆 UPSERT 返回行扫描成共享的长期记忆记录模型。
+func (s *Store) upsertDirectMemoryNodeRow(_ context.Context, row pgRowScanner) (logicdomain.MemoryNodeRecord, error) {
+	var scan memoryNodeScanRow
+	if err := row.Scan(
+		&scan.ID,
+		&scan.TeamID,
+		&scan.SpaceID,
+		&scan.ProjectID,
+		&scan.UserID,
+		&scan.OriginSessionID,
+		&scan.SourceTurnID,
+		&scan.VectorID,
+		&scan.EmbeddingText,
+		&scan.SourceKind,
+		&scan.ScopeLevel,
+		&scan.Category,
+		&scan.Abstract,
+		&scan.Details,
+		&scan.MemoryStatus,
+		&scan.Priority,
+		&scan.MemoryLevel,
+		&scan.RefreshWeight,
+		&scan.SupportCount,
+		&scan.RebuttalCount,
+		&scan.StatusReason,
+		&scan.ExpiresAt,
+		&scan.LastRecalledAt,
+		&scan.LastAdoptedAt,
+		&scan.LastReinforcedAt,
+		&scan.RecalledCount,
+		&scan.AdoptedCount,
+		&scan.ReinforcementCount,
+		&scan.CrossSessionAdoptedCount,
+		&scan.DecayDisabled,
+		&scan.DedupeHash,
+		&scan.CreatedAt,
+		&scan.UpdatedAt,
+	); err != nil {
+		return logicdomain.MemoryNodeRecord{}, err
+	}
+	return scan.toMemoryNodeRecord(), nil
 }
 
 // ListProjectMemories returns active unified durable memory rows for one project so shared admin flows can rebuild or migrate recall state deterministically.

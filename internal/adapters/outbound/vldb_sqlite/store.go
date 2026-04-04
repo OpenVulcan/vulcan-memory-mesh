@@ -2178,6 +2178,51 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 	return record, nil
 }
 
+// ApplyDirectMemoryWrite atomically inserts one direct-write memory row and supersedes any replaced active rows so the direct-write path keeps the same replacement semantics as post-action.
+// ApplyDirectMemoryWrite 用于原子写入一条主动记忆，并同时 supersede 被其替代的活跃旧行，让主动写路径与 post-action 保持同一套替代语义。
+func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
+	if session.SessionID == 0 {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if strings.TrimSpace(record.VectorID) == "" {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "vector_id", Message: "is required"}
+	}
+	if !logicdomain.ValidMemoryNodeCategory(record.Category) {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "category", Message: "must be one supported memory category"}
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	nextID, err := s.nextNumericID(ctx, "vmm_memory_nodes")
+	if err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("allocate direct memory node id: %w", err)
+	}
+	now := time.Now().UTC()
+	nowMs := now.UnixMilli()
+	record = normalizeDirectMemoryNodeRecord(session, record, nextID, now)
+	supersededMemoryIDs = normalizeUint64List(supersededMemoryIDs)
+	supersededVectorIDs, err := s.loadActiveMemoryVectorIDs(ctx, supersededMemoryIDs)
+	if err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("load superseded direct-write vector ids: %w", err)
+	}
+
+	// Keep the insert and the old-row status flip inside one serialized SQL script so direct writes cannot leave “new row inserted but old row still active” gaps behind.
+	// 把插入新行和旧行状态切换放进同一段串行 SQL 脚本，避免主动写记忆留下“新行已插入但旧行仍 active”的缝隙。
+	script := buildMemoryNodeInsertSQL(record) + s.buildMemoryNodeFTSUpsertSQL(record)
+	if len(supersededMemoryIDs) > 0 {
+		script += buildMemoryNodesSupersedeSQL(supersededMemoryIDs, nowMs)
+		script += buildMemoryNodesFTSDeleteSQL(supersededMemoryIDs)
+	}
+	if err := s.exec(ctx, script); err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("apply direct memory write: %w", err)
+	}
+	return logicdomain.DirectMemoryWriteApplyResult{
+		InsertedMemoryNode:  record,
+		SupersededVectorIDs: supersededVectorIDs,
+	}, nil
+}
+
 // LoadActiveSessionMemoryNodes returns the active unified memory rows anchored to one origin session so analyzers can reason about duplicates and supersedes.
 // LoadActiveSessionMemoryNodes 用于返回绑定到同一个 origin session 的活跃统一记忆行，让分析器可以判断重复和覆盖关系。
 func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {

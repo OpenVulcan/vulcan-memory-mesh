@@ -187,6 +187,41 @@ func TestParseTurnAnalysisResponseNormalizesEquivalentContextValues(t *testing.T
 	}
 }
 
+// TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes verifies candidate-local supersede ids are preserved on the node itself and also unioned into the top-level compatibility field.
+// TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes 用于验证候选级 supersede id 会同时保留在节点自身，并汇总到顶层兼容字段中。
+func TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes(t *testing.T) {
+	analysis, err := parseTurnAnalysisResponse(`{
+		"user_input_kind": "statement",
+		"turn_id": 9,
+		"details": "当前阶段已经从 A 更新为 B。",
+		"memory_nodes": [
+			{
+				"category": 5,
+				"abstract": "当前项目阶段已经切换到 B。",
+				"details": "当前项目阶段已经切换到 B，不再处于 A。",
+				"evidence_source": "user_confirmed",
+				"admission": "keep",
+				"admission_reason": "",
+				"supersede_memory_ids": [21, 22]
+			}
+		],
+		"profile_nodes": [],
+		"superseded_memory_ids": [22, 23]
+	}`)
+	if err != nil {
+		t.Fatalf("parse turn analysis response: %v", err)
+	}
+	if len(analysis.MemoryNodes) != 1 {
+		t.Fatalf("expected one memory node, got %+v", analysis.MemoryNodes)
+	}
+	if len(analysis.MemoryNodes[0].SupersedeMemoryIDs) != 2 || analysis.MemoryNodes[0].SupersedeMemoryIDs[0] != 21 || analysis.MemoryNodes[0].SupersedeMemoryIDs[1] != 22 {
+		t.Fatalf("expected candidate-local supersede ids to stay intact, got %+v", analysis.MemoryNodes[0].SupersedeMemoryIDs)
+	}
+	if len(analysis.SupersededMemoryIDs) != 3 || analysis.SupersededMemoryIDs[0] != 22 || analysis.SupersededMemoryIDs[1] != 23 || analysis.SupersededMemoryIDs[2] != 21 {
+		t.Fatalf("expected top-level supersede ids to merge candidate-local ids, got %+v", analysis.SupersededMemoryIDs)
+	}
+}
+
 // TestTurnAnalyzerRejectsMismatchedTurnID verifies the model output cannot silently drift onto another target turn when the analyzer already knows which turn it is extracting.
 // TestTurnAnalyzerRejectsMismatchedTurnID 用于验证分析器在已知目标 turn 的前提下，不会默默接受模型返回的错误 turn_id。
 func TestTurnAnalyzerRejectsMismatchedTurnID(t *testing.T) {

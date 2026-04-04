@@ -118,6 +118,18 @@ func (s *Store) turnsTable() string {
 	return s.qualifiedTable("vmm_turn_records")
 }
 
+// recycleBatchesTable returns the fully-qualified recycle-batch table name used by PostgreSQL retention maintenance.
+// recycleBatchesTable 用于返回 PostgreSQL retention 维护使用的回收批次表完整限定名称。
+func (s *Store) recycleBatchesTable() string {
+	return s.qualifiedTable("vmm_recycle_batches")
+}
+
+// vectorGCJobsTable returns the fully-qualified vector-gc job table name used to bridge SQL transactions and async vector deletion.
+// vectorGCJobsTable 用于返回向量 GC 任务表的完整限定名称，承接 SQL 事务与异步向量删除之间的衔接。
+func (s *Store) vectorGCJobsTable() string {
+	return s.qualifiedTable("vmm_vector_gc_jobs")
+}
+
 // bootstrapContext derives a startup-oriented timeout so schema bootstrap and dialect index creation are less brittle than regular request-time queries.
 // bootstrapContext 用于派生面向启动阶段的超时，让 schema 启动和方言索引创建相比普通请求查询更稳健。
 func (s *Store) bootstrapContext(ctx context.Context) (context.Context, context.CancelFunc) {

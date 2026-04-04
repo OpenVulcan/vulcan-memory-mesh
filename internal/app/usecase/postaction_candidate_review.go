@@ -63,9 +63,11 @@ func applyPostActionAdmissionFilter(analysis *logicdomain.TurnAnalysis, stats *p
 
 	// Filter memory candidates first so later duplicate review only sees nodes that already passed the analyzer's admission gate.
 	// 先过滤记忆候选，确保后续去重评审只看到已经通过分析器准入闸门的节点。
+	memoryDropped := false
 	filteredMemory := make([]logicdomain.MemoryNodeCandidate, 0, len(analysis.MemoryNodes))
 	for _, node := range analysis.MemoryNodes {
 		if strings.TrimSpace(node.Admission) == logicdomain.TurnAnalysisAdmissionDrop {
+			memoryDropped = true
 			if stats != nil {
 				stats.AdmissionDroppedCount++
 			}
@@ -74,6 +76,7 @@ func applyPostActionAdmissionFilter(analysis *logicdomain.TurnAnalysis, stats *p
 		filteredMemory = append(filteredMemory, node)
 	}
 	analysis.MemoryNodes = filteredMemory
+	reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter(analysis, memoryDropped)
 
 	// Filter profile candidates with the same admission rule so only durable, user-confirmed, or otherwise allowed evidence reaches later profile review.
 	// 按同样的准入规则过滤画像候选，确保只有持久、被用户确认或其他允许的证据会进入后续画像评审。
@@ -154,11 +157,17 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 		return err
 	}
 
-	keptMemoryNodes, reviewDroppedCount, err := applyPostActionMemoryReviewResult(analysis.MemoryNodes, reviewed.Memory)
+	originalMemoryNodes := append([]logicdomain.MemoryNodeCandidate(nil), analysis.MemoryNodes...)
+	keptMemoryNodes, reviewDroppedCount, err := applyPostActionMemoryReviewResult(originalMemoryNodes, reviewed.Memory)
+	if err != nil {
+		return err
+	}
+	mergedSupersededMemoryIDs, err := mergePostActionSupersededMemoryIDs(analysis.SupersededMemoryIDs, reviewed.Memory, memoryCandidates, originalMemoryNodes)
 	if err != nil {
 		return err
 	}
 	analysis.MemoryNodes = keptMemoryNodes
+	analysis.SupersededMemoryIDs = mergedSupersededMemoryIDs
 	if stats != nil {
 		stats.ReviewDroppedCount += reviewDroppedCount
 	}
@@ -191,6 +200,201 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 // buildPostActionMemoryReviewCandidates recalls similar durable memories for each candidate inside the configured shared scope so the unified reviewer can judge semantic duplication.
 // buildPostActionMemoryReviewCandidates 用于在配置好的共享作用域里为每条候选召回相似长期记忆，让统一 reviewer 判断语义重复。
 func (u *PostActionUseCase) buildPostActionMemoryReviewCandidates(ctx context.Context, session logicdomain.SessionRef, nodes []logicdomain.MemoryNodeCandidate) ([]logicdomain.PostActionMemoryReviewCandidate, error) {
+	return buildScopedMemoryReviewCandidates(
+		ctx,
+		u.memorySearcher,
+		session,
+		nodes,
+		u.analysisCfg.DedupeSearchTopK,
+		u.analysisCfg.MemoryReplaceScope,
+		u.analysisCfg.DedupeMinSimilarity,
+	)
+}
+
+// mergePostActionSupersededMemoryIDs merges analyzer-origin supersede ids with reviewer-approved cross-scope replacements while enforcing that the reviewer can only target the candidate-local similar-memory list it actually saw.
+// mergePostActionSupersededMemoryIDs 用于合并分析器给出的 supersede id 与 reviewer 批准的跨 scope 替代结果，同时强制 reviewer 只能指向该候选真正看到过的 similar memory 列表。
+func mergePostActionSupersededMemoryIDs(existing []uint64, section *logicdomain.PostActionMemoryReviewSection, candidates []logicdomain.PostActionMemoryReviewCandidate, nodes []logicdomain.MemoryNodeCandidate) ([]uint64, error) {
+	if section != nil && len(candidates) > 0 && len(section.AcceptedCandidateIndexes) == 0 && len(section.AcceptedCandidates) == 0 {
+		return nil, nil
+	}
+	if section == nil || len(section.AcceptedCandidateIndexes) == 0 {
+		return nil, nil
+	}
+	merged := make(map[uint64]struct{}, len(existing))
+	out := make([]uint64, 0, len(existing))
+	acceptedCandidateIndexes := make(map[int]struct{}, len(section.AcceptedCandidateIndexes))
+	for _, idx := range section.AcceptedCandidateIndexes {
+		acceptedCandidateIndexes[idx] = struct{}{}
+	}
+	candidateLocalSupersededMemoryIDs, hasCandidateLocalSupersedes := collectAcceptedPostActionCandidateSupersededMemoryIDs(nodes, acceptedCandidateIndexes)
+	if hasCandidateLocalSupersedes {
+		for _, memoryID := range candidateLocalSupersededMemoryIDs {
+			if _, ok := merged[memoryID]; ok {
+				continue
+			}
+			merged[memoryID] = struct{}{}
+			out = append(out, memoryID)
+		}
+	} else if len(section.DroppedCandidateIndexes) == 0 {
+		for _, memoryID := range existing {
+			if memoryID == 0 {
+				continue
+			}
+			if _, ok := merged[memoryID]; ok {
+				continue
+			}
+			merged[memoryID] = struct{}{}
+			out = append(out, memoryID)
+		}
+	}
+	for _, accepted := range section.AcceptedCandidates {
+		supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
+			"review_postaction_candidates",
+			accepted.CandidateIndex,
+			candidates[accepted.CandidateIndex].SimilarMemories,
+			accepted.SupersedeMemoryIDs,
+		)
+		if err != nil {
+			return nil, err
+		}
+		for _, memoryID := range supersedeMemoryIDs {
+			if _, seen := merged[memoryID]; seen {
+				continue
+			}
+			merged[memoryID] = struct{}{}
+			out = append(out, memoryID)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return out, nil
+}
+
+// validatePostActionAcceptedSupersedeMemoryIDs verifies that one accepted candidate only points at similar-memory ids the reviewer actually saw for that candidate.
+// validatePostActionAcceptedSupersedeMemoryIDs 用于校验一条已接纳候选只能指向 reviewer 在该候选下真正看到过的 similar memory id。
+func validatePostActionAcceptedSupersedeMemoryIDs(scene string, candidateIndex int, similarMemories []logicdomain.PostActionSimilarMemoryCandidate, supersedeMemoryIDs []uint64) ([]uint64, error) {
+	if len(supersedeMemoryIDs) == 0 {
+		return nil, nil
+	}
+	allowed := make(map[uint64]struct{}, len(similarMemories))
+	for _, similar := range similarMemories {
+		if similar.MemoryID == 0 {
+			continue
+		}
+		allowed[similar.MemoryID] = struct{}{}
+	}
+	out := make([]uint64, 0, len(supersedeMemoryIDs))
+	seen := make(map[uint64]struct{}, len(supersedeMemoryIDs))
+	for _, memoryID := range supersedeMemoryIDs {
+		if memoryID == 0 {
+			continue
+		}
+		if _, ok := allowed[memoryID]; !ok {
+			return nil, logicdomain.InvalidLLMOutputError{
+				Scene:   scene,
+				Message: fmt.Sprintf("memory accepted candidate %d references unavailable supersede_memory_id %d", candidateIndex, memoryID),
+			}
+		}
+		if _, ok := seen[memoryID]; ok {
+			continue
+		}
+		seen[memoryID] = struct{}{}
+		out = append(out, memoryID)
+	}
+	return out, nil
+}
+
+// validatePostActionDroppedDedupeMemoryID verifies that one dropped candidate only reuses a durable memory id the reviewer actually saw in that candidate's similar-memory list.
+// validatePostActionDroppedDedupeMemoryID 用于校验一条被丢弃候选若要复用旧记忆，只能引用 reviewer 在该候选下真正看到过的 similar memory id。
+func validatePostActionDroppedDedupeMemoryID(scene string, candidateIndex int, similarMemories []logicdomain.PostActionSimilarMemoryCandidate, dedupeMemoryID uint64) (uint64, error) {
+	if dedupeMemoryID == 0 {
+		return 0, nil
+	}
+	allowed := make(map[uint64]struct{}, len(similarMemories))
+	for _, similar := range similarMemories {
+		if similar.MemoryID == 0 {
+			continue
+		}
+		allowed[similar.MemoryID] = struct{}{}
+	}
+	if _, ok := allowed[dedupeMemoryID]; !ok {
+		return 0, logicdomain.InvalidLLMOutputError{
+			Scene:   scene,
+			Message: fmt.Sprintf("memory dropped candidate %d references unavailable dedupe_memory_id %d", candidateIndex, dedupeMemoryID),
+		}
+	}
+	return dedupeMemoryID, nil
+}
+
+// reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter keeps analyzer-origin supersede ids aligned with the surviving memory candidates so first-pass drops cannot retire unrelated old memories later.
+// reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter 用于让分析器产生的 supersede id 与首轮过滤后仍存活的记忆候选保持一致，避免首轮丢弃的候选在后续误退役无关旧记忆。
+func reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter(analysis *logicdomain.TurnAnalysis, memoryDropped bool) {
+	if analysis == nil {
+		return
+	}
+	if len(analysis.MemoryNodes) == 0 {
+		analysis.SupersededMemoryIDs = nil
+		return
+	}
+	candidateLocalSupersededMemoryIDs, hasCandidateLocalSupersedes := collectAcceptedPostActionCandidateSupersededMemoryIDs(
+		analysis.MemoryNodes,
+		buildFullPostActionCandidateIndexSet(len(analysis.MemoryNodes)),
+	)
+	switch {
+	case hasCandidateLocalSupersedes:
+		analysis.SupersededMemoryIDs = candidateLocalSupersededMemoryIDs
+	case memoryDropped:
+		analysis.SupersededMemoryIDs = nil
+	}
+}
+
+// collectAcceptedPostActionCandidateSupersededMemoryIDs unions candidate-local supersede ids for the accepted indexes and reports whether any accepted candidate carried explicit local mapping.
+// collectAcceptedPostActionCandidateSupersededMemoryIDs 用于汇总已接纳候选上的本地 supersede id，并返回这些候选里是否存在显式的候选级映射。
+func collectAcceptedPostActionCandidateSupersededMemoryIDs(nodes []logicdomain.MemoryNodeCandidate, acceptedCandidateIndexes map[int]struct{}) ([]uint64, bool) {
+	if len(nodes) == 0 || len(acceptedCandidateIndexes) == 0 {
+		return nil, false
+	}
+	out := make([]uint64, 0, len(nodes))
+	seen := make(map[uint64]struct{}, len(nodes))
+	hasCandidateLocalSupersedes := false
+	for idx, node := range nodes {
+		if _, ok := acceptedCandidateIndexes[idx]; !ok {
+			continue
+		}
+		if len(node.SupersedeMemoryIDs) > 0 {
+			hasCandidateLocalSupersedes = true
+		}
+		for _, memoryID := range node.SupersedeMemoryIDs {
+			if memoryID == 0 {
+				continue
+			}
+			if _, ok := seen[memoryID]; ok {
+				continue
+			}
+			seen[memoryID] = struct{}{}
+			out = append(out, memoryID)
+		}
+	}
+	return out, hasCandidateLocalSupersedes
+}
+
+// buildFullPostActionCandidateIndexSet constructs one dense accepted-index set for helper paths that need to treat every surviving candidate as accepted temporarily.
+// buildFullPostActionCandidateIndexSet 用于为辅助路径构造一个稠密索引集合，便于把当前所有存活候选临时视为已接纳。
+func buildFullPostActionCandidateIndexSet(count int) map[int]struct{} {
+	if count <= 0 {
+		return nil
+	}
+	out := make(map[int]struct{}, count)
+	for idx := 0; idx < count; idx++ {
+		out[idx] = struct{}{}
+	}
+	return out
+}
+
+// buildScopedMemoryReviewCandidates recalls similar durable memories for each new candidate inside the configured replacement scope and attaches them by QueryIndex so later reviewer decisions stay candidate-stable.
+// buildScopedMemoryReviewCandidates 用于在配置好的更替作用域内为每条新候选召回相似长期记忆，并按 QueryIndex 回贴，确保后续 reviewer 决策稳定绑定到正确候选。
+func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionMemorySearcher, session logicdomain.SessionRef, nodes []logicdomain.MemoryNodeCandidate, topK int, scope string, minSimilarity float64) ([]logicdomain.PostActionMemoryReviewCandidate, error) {
 	candidates := make([]logicdomain.PostActionMemoryReviewCandidate, 0, len(nodes))
 	if len(nodes) == 0 {
 		return candidates, nil
@@ -211,38 +415,41 @@ func (u *PostActionUseCase) buildPostActionMemoryReviewCandidates(ctx context.Co
 		}
 		candidates = append(candidates, candidate)
 		query := buildPostActionMemorySearchQuery(node)
-		if query == "" || u.memorySearcher == nil {
+		if query == "" || searcher == nil {
 			continue
 		}
 		queries = append(queries, query)
 		queryCandidateIndexes = append(queryCandidateIndexes, idx)
 	}
-	if len(queries) == 0 || u.memorySearcher == nil {
+	if len(queries) == 0 || searcher == nil {
 		return candidates, nil
 	}
-	result, err := u.memorySearcher.Search(ctx, MemoryQueryCommand{
+	queryCmd := MemoryQueryCommand{
 		UserID:        session.UserID,
 		ProjectID:     session.ProjectID,
 		Queries:       queries,
-		TopK:          u.analysisCfg.DedupeSearchTopK,
-		ScopeOverride: u.analysisCfg.DedupeSearchScope,
-	})
+		TopK:          topK,
+		ScopeOverride: scope,
+	}
+	if normalizeConfigToken(scope) == memoryReplaceScopeSession {
+		queryCmd.SessionID = session.SessionID
+	}
+	result, err := searcher.Search(ctx, queryCmd)
 	if err != nil {
-		return nil, fmt.Errorf("search post-action dedupe candidates: %w", err)
+		return nil, fmt.Errorf("search memory review candidates: %w", err)
 	}
 
-	// Map each grouped search result back onto its original candidate index so the reviewer sees all similar memories grouped with the exact new node it is judging.
-	// 把每组搜索结果映射回原始候选索引，确保 reviewer 看到的高相似旧记忆都挂在其对应的新节点下。
-	for groupIdx, group := range result.Results {
-		if groupIdx < 0 || groupIdx >= len(queryCandidateIndexes) {
+	// Bind each grouped result back to the candidate index carried through QueryIndex so future search optimizations cannot silently scramble similar-memory attachments.
+	// 通过 QueryIndex 把每组结果绑定回对应候选索引，避免未来检索优化在重排结果时悄悄打乱 similar-memory 的挂接关系。
+	for _, group := range result.Results {
+		if group.QueryIndex < 0 || group.QueryIndex >= len(queryCandidateIndexes) {
 			continue
 		}
-		candidateIndex := queryCandidateIndexes[groupIdx]
+		candidateIndex := queryCandidateIndexes[group.QueryIndex]
 		if candidateIndex < 0 || candidateIndex >= len(candidates) {
 			continue
 		}
-		similar := buildPostActionSimilarMemoryCandidates(group.Hits, u.analysisCfg.DedupeMinSimilarity)
-		candidates[candidateIndex].SimilarMemories = similar
+		candidates[candidateIndex].SimilarMemories = buildPostActionSimilarMemoryCandidates(group.Hits, minSimilarity)
 	}
 	return candidates, nil
 }
