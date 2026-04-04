@@ -189,7 +189,8 @@ func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.Sessi
 	defer s.writeMu.Unlock()
 
 	// Select only long-idle sessions without pending turns so this maintenance pass never races the active post-action extraction path.
-	// 只选择长期空闲且没有 pending turn 的 session，确保维护流程不会和活跃的 post-action 提炼路径竞争。
+	// 只选择长期空闲、没有 pending turn 且确实存在可回收内容的 session，确保维护流程不会和活跃提炼竞争，也避免最老但 no-op 的 session 持续饿死后续可回收批次。
+	candidateAvailabilityClause, candidateAvailabilityParams := buildSQLiteIdleSessionCandidateAvailabilityClause(idleBeforeMillis, turnHotWindowSize)
 	sessionRows, err := queryRows[sessionRow](s, ctx, `
 SELECT id, session_key, user_id, team_id, space_id, project_id,
        turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
@@ -204,9 +205,10 @@ WHERE updated_timestamp > 0
     WHERE tr.session_id = vmm_sessions.id
       AND tr.extracted_status = ?
   )
+  AND `+candidateAvailabilityClause+`
 ORDER BY updated_timestamp ASC, id ASC
 LIMIT ?
-`, idleBeforeMillis, logicdomain.TurnExtractedStatusPending, limit)
+`, append([]any{idleBeforeMillis, logicdomain.TurnExtractedStatusPending}, append(candidateAvailabilityParams, limit)...)...)
 	if err != nil {
 		return logicdomain.SessionIdleRecycleResult{}, fmt.Errorf("query sqlite idle sessions: %w", err)
 	}
@@ -499,6 +501,45 @@ func buildSQLiteProtectedSharedMemoryRecycleClause(query logicdomain.MemoryRecyc
 		query.ProtectPriorityFloor,
 		query.ProtectMemoryLevelFloor,
 	}
+}
+
+// buildSQLiteIdleSessionCandidateAvailabilityClause prefilters idle-session candidates to only sessions that already expose recyclable stale session memories or old turns, so no-op oldest sessions cannot block later useful work forever.
+// buildSQLiteIdleSessionCandidateAvailabilityClause 用于为 SQLite idle-session 候选追加“确实存在可回收数据”的预过滤，避免最老但 no-op 的 session 永远阻塞后续真正有收益的回收工作。
+func buildSQLiteIdleSessionCandidateAvailabilityClause(idleBeforeMillis int64, turnHotWindowSize int) (string, []any) {
+	return fmt.Sprintf(`(
+EXISTS (
+  SELECT 1
+  FROM vmm_memory_nodes m
+  WHERE m.origin_session_id = vmm_sessions.id
+    AND m.scope_level = ?
+    AND m.memory_status = ?
+    AND m.expires_timestamp > 0
+    AND m.expires_timestamp <= ?
+    AND MAX(m.last_recalled_timestamp, m.last_adopted_timestamp, m.last_reinforced_timestamp, m.created_timestamp) <= ?
+)
+OR EXISTS (
+  WITH recent_turns AS (
+    SELECT id
+    FROM vmm_turn_records
+    WHERE session_id = vmm_sessions.id
+    ORDER BY id DESC
+    LIMIT %d
+  )
+  SELECT 1
+  FROM vmm_turn_records tr
+  WHERE tr.session_id = vmm_sessions.id
+    AND tr.extracted_status <> ?
+    AND tr.id NOT IN (SELECT id FROM recent_turns)
+    AND NOT EXISTS (SELECT 1 FROM vmm_memory_nodes mn WHERE mn.source_turn_id = tr.id)
+    AND NOT EXISTS (SELECT 1 FROM vmm_profile_nodes pn WHERE pn.turn_id = tr.id)
+)
+)`, turnHotWindowSize), []any{
+			logicdomain.MemoryScopeLevelSession,
+			logicdomain.MemoryStatusActive,
+			idleBeforeMillis,
+			idleBeforeMillis,
+			logicdomain.TurnExtractedStatusPending,
+		}
 }
 
 // buildSQLiteIdleSessionTurnReferenceClause renders the turn-reference predicate used by idle-session recycle, optionally ignoring the memory rows scheduled for deletion in the same recycle batch.

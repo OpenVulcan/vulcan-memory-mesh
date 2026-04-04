@@ -143,6 +143,89 @@ func TestRecycleIdleSessionsMovesStaleSessionRowsIntoTrash(t *testing.T) {
 	}
 }
 
+// TestRecycleIdleSessionsSkipsNoOpOldestSessions verifies SQLite idle-session recycle now prefilters to sessions with recyclable rows, so one oldest no-op session cannot starve a later eligible session when the batch limit is tight.
+// TestRecycleIdleSessionsSkipsNoOpOldestSessions 用于验证 SQLite idle-session 回收现在会先过滤出确实存在可回收数据的 session，避免在批量限制较小时最老但 no-op 的 session 饿死后续可回收 session。
+func TestRecycleIdleSessionsSkipsNoOpOldestSessions(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	sessionQueryCount := 0
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_sessions"):
+			sessionQueryCount++
+			if !strings.Contains(sql, "FROM vmm_memory_nodes m") || !strings.Contains(sql, "FROM vmm_turn_records tr") {
+				return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":21,"session_key":"sess-noop","user_id":1,"team_id":2,"space_id":3,"project_id":4,"turn_count":10,"last_summarized_id":0,"last_compacted_turn_id":0,"summarize_content":"","summarize_budget":0,"last_extract_observed_timestamp":0,"last_extract_completed_timestamp":0,"last_compacted_timestamp":0,"created_timestamp":1,"updated_timestamp":2}
+]`}, nil
+			}
+			return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":22,"session_key":"sess-eligible","user_id":1,"team_id":2,"space_id":3,"project_id":4,"turn_count":10,"last_summarized_id":0,"last_compacted_turn_id":0,"summarize_content":"","summarize_budget":0,"last_extract_observed_timestamp":0,"last_extract_completed_timestamp":0,"last_compacted_timestamp":0,"created_timestamp":1,"updated_timestamp":3}
+]`}, nil
+		case strings.Contains(sql, "FROM vmm_memory_nodes") && strings.Contains(sql, "origin_session_id = ?"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":32,"team_id":2,"space_id":3,"project_id":4,"user_id":1,"origin_session_id":22,"source_turn_id":42,"vector_id":"vec-32","vector_json":"[0.1,0.2]","source_kind":0,"scope_level":0,"category":4,"abstract":"短期待办已过期","details":"后续 session 的临时 TODO 已失效","memory_status":0,"priority":2,"memory_level":0,"refresh_weight":1,"support_count":0,"rebuttal_count":0,"status_reason":"","expires_timestamp":1000,"last_recalled_timestamp":0,"last_adopted_timestamp":0,"last_reinforced_timestamp":0,"recalled_count":0,"adopted_count":0,"reinforcement_count":0,"cross_session_adopted_count":0,"decay_disabled":0,"dedupe_hash":"","created_timestamp":10,"updated_timestamp":20}
+]`}, nil
+		case strings.Contains(sql, "SELECT COUNT(*) AS count FROM vmm_memory_context_edges"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"count":1}]`}, nil
+		case strings.Contains(sql, "FROM vmm_turn_records tr"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		case strings.Contains(sql, "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_recycle_batches"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"next_id":10}]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	result, err := store.RecycleIdleSessions(context.Background(), logicdomain.SessionIdleRecycleQuery{
+		Limit:             1,
+		RecycledAt:        time.Unix(300, 0).UTC(),
+		IdleBefore:        time.Unix(200, 0).UTC(),
+		TurnHotWindowSize: 8,
+		RecycleReason:     "idle session recycle",
+	})
+	if err != nil {
+		t.Fatalf("RecycleIdleSessions returned error: %v", err)
+	}
+	if sessionQueryCount != 1 {
+		t.Fatalf("session query count = %d, want 1", sessionQueryCount)
+	}
+	if len(result.BatchIDs) != 1 || result.BatchIDs[0] != 10 {
+		t.Fatalf("batch ids = %v, want [10]", result.BatchIDs)
+	}
+	if len(result.SessionIDs) != 1 || result.SessionIDs[0] != 22 {
+		t.Fatalf("session ids = %v, want [22]", result.SessionIDs)
+	}
+	if result.RecycledMemoryCount != 1 || result.RecycledContextCount != 1 || result.RecycledTurnCount != 0 {
+		t.Fatalf("idle-session recycle counts = %+v", result)
+	}
+	if len(result.RecycledVectorIDs) != 1 || result.RecycledVectorIDs[0] != "vec-32" {
+		t.Fatalf("idle-session vector ids = %v", result.RecycledVectorIDs)
+	}
+}
+
+// TestBuildSQLiteIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows verifies the SQLite session prefilter keeps both stale-memory and old-turn existence checks in one clause so no-op oldest sessions do not block later useful work.
+// TestBuildSQLiteIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows 用于验证 SQLite session 预过滤会同时包含陈旧记忆和旧 turn 的存在性检查，避免最老但 no-op 的 session 阻塞后续真正有收益的回收工作。
+func TestBuildSQLiteIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows(t *testing.T) {
+	clause, args := buildSQLiteIdleSessionCandidateAvailabilityClause(12345, 8)
+	if !strings.Contains(clause, "FROM vmm_memory_nodes m") {
+		t.Fatalf("candidate availability clause missing stale-memory branch: %q", clause)
+	}
+	if !strings.Contains(clause, "FROM vmm_turn_records tr") {
+		t.Fatalf("candidate availability clause missing old-turn branch: %q", clause)
+	}
+	if !strings.Contains(clause, "NOT EXISTS (SELECT 1 FROM vmm_profile_nodes pn WHERE pn.turn_id = tr.id)") {
+		t.Fatalf("candidate availability clause missing profile reference guard: %q", clause)
+	}
+	if len(args) != 5 {
+		t.Fatalf("candidate availability args len = %d, want 5", len(args))
+	}
+}
+
 // TestPurgeExpiredTrashDeletesAllTrashTablesAndMarksBatchesPurged verifies SQLite purge now hard-deletes old trash rows from every trash table and records the batch purge timestamp.
 // TestPurgeExpiredTrashDeletesAllTrashTablesAndMarksBatchesPurged 用于验证 SQLite purge 现在会从每张回收站表硬删除过期行，并记录批次 purge 时间戳。
 func TestPurgeExpiredTrashDeletesAllTrashTablesAndMarksBatchesPurged(t *testing.T) {
