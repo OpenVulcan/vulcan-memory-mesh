@@ -15,6 +15,86 @@ const (
 )
 
 const (
+	// TurnAnalysisUserInputQuestion marks one turn whose dominant user act is asking a question instead of stating a durable fact directly.
+	// TurnAnalysisUserInputQuestion 用于标记一条以提问为主的用户输入，而不是直接陈述可长期保存事实的轮次。
+	TurnAnalysisUserInputQuestion = "question"
+
+	// TurnAnalysisUserInputStatement marks one turn whose dominant user act is making or confirming a factual statement that may deserve long-term storage.
+	// TurnAnalysisUserInputStatement 用于标记一条以事实陈述或确认事实为主的用户输入，它可能值得长期保存。
+	TurnAnalysisUserInputStatement = "statement"
+
+	// TurnAnalysisUserInputMixed marks one turn that mixes questions, instructions, confirmations, or factual statements together.
+	// TurnAnalysisUserInputMixed 用于标记一条同时混合提问、指令、确认或事实陈述的输入轮次。
+	TurnAnalysisUserInputMixed = "mixed"
+)
+
+const (
+	// TurnAnalysisEvidenceSourceUserAsserted marks a candidate that comes directly from a user-side factual statement in the current turn.
+	// TurnAnalysisEvidenceSourceUserAsserted 用于标记一个直接来自当前轮用户事实陈述的候选。
+	TurnAnalysisEvidenceSourceUserAsserted = "user_asserted"
+
+	// TurnAnalysisEvidenceSourceUserConfirmed marks a candidate that becomes durable because the user explicitly confirmed or corrected it in the current turn.
+	// TurnAnalysisEvidenceSourceUserConfirmed 用于标记一个因用户在当前轮明确确认或纠正而变得可长期保存的候选。
+	TurnAnalysisEvidenceSourceUserConfirmed = "user_confirmed"
+
+	// TurnAnalysisEvidenceSourceAssistantRecalledMemory marks a candidate that only rephrases memory already available to the assistant before this turn.
+	// TurnAnalysisEvidenceSourceAssistantRecalledMemory 用于标记一个仅仅复述助手在本轮前已掌握记忆的候选。
+	TurnAnalysisEvidenceSourceAssistantRecalledMemory = "assistant_recalled_memory"
+
+	// TurnAnalysisEvidenceSourceAssistantRecalledProfile marks a candidate that only echoes user or project profile information already available to the assistant.
+	// TurnAnalysisEvidenceSourceAssistantRecalledProfile 用于标记一个仅仅回显助手已掌握的用户或项目画像信息的候选。
+	TurnAnalysisEvidenceSourceAssistantRecalledProfile = "assistant_recalled_profile"
+
+	// TurnAnalysisEvidenceSourceAssistantGeneralKnowledge marks a candidate derived from the model's own general knowledge instead of durable user or project facts.
+	// TurnAnalysisEvidenceSourceAssistantGeneralKnowledge 用于标记一个来自模型通用知识，而不是长期用户/项目事实的候选。
+	TurnAnalysisEvidenceSourceAssistantGeneralKnowledge = "assistant_general_knowledge"
+
+	// TurnAnalysisEvidenceSourceAssistantExternalResearch marks a candidate produced after costly external research such as website lookup, document search, or multi-source synthesis.
+	// TurnAnalysisEvidenceSourceAssistantExternalResearch 用于标记一个通过网站查询、文档检索或多源归纳等高成本外部研究得到的候选。
+	TurnAnalysisEvidenceSourceAssistantExternalResearch = "assistant_external_research"
+
+	// TurnAnalysisEvidenceSourceAssistantToolDiscovered marks a candidate learned from a tool call or structured system lookup that surfaced new durable information.
+	// TurnAnalysisEvidenceSourceAssistantToolDiscovered 用于标记一个通过工具调用或结构化系统查询发现的新长期信息候选。
+	TurnAnalysisEvidenceSourceAssistantToolDiscovered = "assistant_tool_discovered"
+
+	// TurnAnalysisEvidenceSourceMixed marks a candidate whose evidence blends multiple sources and therefore cannot be reduced to one single origin bucket safely.
+	// TurnAnalysisEvidenceSourceMixed 用于标记一个混合了多种证据来源、无法安全归入单一来源桶的候选。
+	TurnAnalysisEvidenceSourceMixed = "mixed"
+)
+
+const (
+	// TurnAnalysisAdmissionKeep marks a candidate that the first-pass analyzer believes may proceed into later review and persistence checks.
+	// TurnAnalysisAdmissionKeep 用于标记一条在首轮分析后仍可进入后续评审与持久化检查的候选。
+	TurnAnalysisAdmissionKeep = "keep"
+
+	// TurnAnalysisAdmissionDrop marks a candidate that the first-pass analyzer believes should be rejected before later review or persistence happen.
+	// TurnAnalysisAdmissionDrop 用于标记一条在首轮分析后就应被拒绝、无需继续进入后续评审与持久化的候选。
+	TurnAnalysisAdmissionDrop = "drop"
+)
+
+const (
+	// TurnAnalysisAdmissionReasonQAAnswerOnly marks a candidate rejected because it is only one answer-shaped echo to a user question.
+	// TurnAnalysisAdmissionReasonQAAnswerOnly 用于标记一条因只是“对用户提问的回显式回答”而被拒绝的候选。
+	TurnAnalysisAdmissionReasonQAAnswerOnly = "qa_answer_only"
+
+	// TurnAnalysisAdmissionReasonDerivedFromExistingMemory marks a candidate rejected because it only reformulates memory that was already available before the current turn.
+	// TurnAnalysisAdmissionReasonDerivedFromExistingMemory 用于标记一条因只是重述既有记忆而被拒绝的候选。
+	TurnAnalysisAdmissionReasonDerivedFromExistingMemory = "derived_from_existing_memory"
+
+	// TurnAnalysisAdmissionReasonDerivedFromProfileEcho marks a candidate rejected because it only echoes user or project profile content.
+	// TurnAnalysisAdmissionReasonDerivedFromProfileEcho 用于标记一条因只是回显用户或项目画像内容而被拒绝的候选。
+	TurnAnalysisAdmissionReasonDerivedFromProfileEcho = "derived_from_profile_echo"
+
+	// TurnAnalysisAdmissionReasonGeneralKnowledgeAnswer marks a candidate rejected because it only comes from the assistant's own general knowledge answer.
+	// TurnAnalysisAdmissionReasonGeneralKnowledgeAnswer 用于标记一条因只是助手通用知识回答而被拒绝的候选。
+	TurnAnalysisAdmissionReasonGeneralKnowledgeAnswer = "general_knowledge_answer"
+
+	// TurnAnalysisAdmissionReasonNonDurable marks a candidate rejected because it is too ephemeral to deserve long-term storage even if it required external lookup.
+	// TurnAnalysisAdmissionReasonNonDurable 用于标记一条因缺乏长期价值、即使经过外部检索也不应长期保存的候选。
+	TurnAnalysisAdmissionReasonNonDurable = "non_durable"
+)
+
+const (
 	// TurnExtractedStatusPending marks one turn row that has not completed feature extraction yet.
 	// TurnExtractedStatusPending 用于标记一条尚未完成特征提取的 turn 记录。
 	TurnExtractedStatusPending = 0
@@ -184,6 +264,7 @@ type PersistedTurnRecord struct {
 // TurnAnalysis carries the structured LLM extraction output that should be written back onto one turn row and its derived node tables.
 // TurnAnalysis 用于承载结构化 LLM 提炼结果，并回写到 turn 行及其衍生节点表。
 type TurnAnalysis struct {
+	UserInputKind        string
 	TurnID               uint64
 	Details              string
 	DetailsBudget        int
@@ -246,19 +327,22 @@ type TurnAnalysisInput struct {
 // MemoryNodeCandidate stores one memory feature extracted from a turn before it is assigned ids and persisted.
 // MemoryNodeCandidate 用于保存一条从 turn 中提炼出的记忆特征，等待分配 ID 后持久化。
 type MemoryNodeCandidate struct {
-	Category      int
-	VectorID      string
-	Vector        []float32
-	Abstract      string
-	Details       string
-	ContextEdges  []MemoryContextEdgeCandidate
-	SourceKind    int
-	ScopeLevel    int
-	Priority      int
-	MemoryLevel   int
-	RefreshWeight int
-	ExpiresAt     time.Time
-	DedupeHash    string
+	Category        int
+	VectorID        string
+	Vector          []float32
+	Abstract        string
+	Details         string
+	EvidenceSource  string
+	Admission       string
+	AdmissionReason string
+	ContextEdges    []MemoryContextEdgeCandidate
+	SourceKind      int
+	ScopeLevel      int
+	Priority        int
+	MemoryLevel     int
+	RefreshWeight   int
+	ExpiresAt       time.Time
+	DedupeHash      string
 }
 
 // MemoryContextEdgeCandidate stores one extracted situational label attached to a new memory candidate before it is aggregated into durable edge counters.
@@ -274,6 +358,9 @@ type MemoryContextEdgeCandidate struct {
 type ProfileNodeCandidate struct {
 	ProfileType      int
 	Content          string
+	EvidenceSource   string
+	Admission        string
+	AdmissionReason  string
 	Status           int
 	Priority         int
 	ProfileLevel     int
@@ -292,6 +379,61 @@ type ProfileNodeCandidate struct {
 // ValidMemoryNodeCategory 用于判断某个分类 ID 是否属于当前支持的记忆节点枚举集合。
 func ValidMemoryNodeCategory(category int) bool {
 	return category >= MemoryNodeCategoryGeneral && category <= MemoryNodeCategorySecurityPolicy
+}
+
+// ValidTurnAnalysisUserInputKind reports whether one analyzer-classified user-input kind belongs to the supported enum-like set.
+// ValidTurnAnalysisUserInputKind 用于判断某个分析器给出的用户输入类型是否属于当前支持的枚举集合。
+func ValidTurnAnalysisUserInputKind(kind string) bool {
+	switch kind {
+	case TurnAnalysisUserInputQuestion, TurnAnalysisUserInputStatement, TurnAnalysisUserInputMixed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidTurnAnalysisEvidenceSource reports whether one analyzer evidence-source label belongs to the supported set.
+// ValidTurnAnalysisEvidenceSource 用于判断某个分析器证据来源标签是否属于当前支持的集合。
+func ValidTurnAnalysisEvidenceSource(source string) bool {
+	switch source {
+	case TurnAnalysisEvidenceSourceUserAsserted,
+		TurnAnalysisEvidenceSourceUserConfirmed,
+		TurnAnalysisEvidenceSourceAssistantRecalledMemory,
+		TurnAnalysisEvidenceSourceAssistantRecalledProfile,
+		TurnAnalysisEvidenceSourceAssistantGeneralKnowledge,
+		TurnAnalysisEvidenceSourceAssistantExternalResearch,
+		TurnAnalysisEvidenceSourceAssistantToolDiscovered,
+		TurnAnalysisEvidenceSourceMixed:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidTurnAnalysisAdmission reports whether one analyzer admission decision belongs to the supported keep/drop set.
+// ValidTurnAnalysisAdmission 用于判断某个分析器准入决策是否属于当前支持的 keep/drop 集合。
+func ValidTurnAnalysisAdmission(admission string) bool {
+	switch admission {
+	case TurnAnalysisAdmissionKeep, TurnAnalysisAdmissionDrop:
+		return true
+	default:
+		return false
+	}
+}
+
+// ValidTurnAnalysisAdmissionReason reports whether one analyzer rejection reason belongs to the supported first-pass rejection set.
+// ValidTurnAnalysisAdmissionReason 用于判断某个分析器拒绝原因是否属于当前支持的首轮拒绝原因集合。
+func ValidTurnAnalysisAdmissionReason(reason string) bool {
+	switch reason {
+	case TurnAnalysisAdmissionReasonQAAnswerOnly,
+		TurnAnalysisAdmissionReasonDerivedFromExistingMemory,
+		TurnAnalysisAdmissionReasonDerivedFromProfileEcho,
+		TurnAnalysisAdmissionReasonGeneralKnowledgeAnswer,
+		TurnAnalysisAdmissionReasonNonDurable:
+		return true
+	default:
+		return false
+	}
 }
 
 // ValidProfileType reports whether one profile type id belongs to the supported profile-node enum set.

@@ -371,7 +371,7 @@ scope `profile` 正文不再长期保存 `P / L / W` 的说明头。
 1. `analyze_turn` 为当前 turn 产出 `profile_nodes[]`
 2. 后端按 user/project 两侧收集本轮新画像候选
 3. 读取当前目标下仍然 `active` 且未过期的画像节点
-4. 把“活跃旧节点 + 新候选”送入 `review_profile_nodes`
+4. 把“活跃旧节点 + 新候选”连同同轮记忆候选一起送入统一的 `review_postaction_candidates`
 5. LLM 返回：
    - 哪些候选应接纳
    - 哪些候选应无效

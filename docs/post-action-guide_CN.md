@@ -188,38 +188,64 @@ message PostActionTimelineItem {
       - 当前 turn 是唯一允许输出新 `details / memory_nodes / profile_nodes` 的目标
       - 活跃记忆节点用于去重与覆盖判断
 17. `analyze_turn` 会返回：
+    - 当前 turn 的 `user_input_kind`
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
       - 每条 `memory_nodes[]` 现在允许可选 `context_edges[]`
       - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
+      - 每条 `memory_nodes[]` 还会明确给出：
+        - `evidence_source`
+        - `admission`
+        - `admission_reason`
     - 当前 turn 的 `profile_nodes[]`
+      - 每条 `profile_nodes[]` 也会明确给出：
+        - `evidence_source`
+        - `admission`
+        - `admission_reason`
     - 供后续统一记忆模型接入的 `superseded_memory_ids`
-18. 如果当前 turn 有 `profile_nodes[]`：
-    - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
-    - 把这些活跃节点与本轮新画像候选一起送入一次 `review_profile_nodes`
-    - 如果本轮只有 user 或只有 project 候选，则只发送存在的一侧
-    - `analyze_turn` 与 `review_profile_nodes` 都要求按领域拆分画像节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
+18. `analyze_turn` 的第一层准入会先压缩明显噪音：
+    - 如果当前轮主要是用户提问或下指令，而助手只是基于既有记忆、既有画像或通识能力完成回答：
+      - 这类候选通常会被标记为 `admission="drop"`
+      - 常见原因包括：
+        - `qa_answer_only`
+        - `derived_from_existing_memory`
+        - `derived_from_profile_echo`
+        - `general_knowledge_answer`
+    - 如果当前轮虽然是用户提问或下指令，但助手确实通过高成本外部检索、访问网站、资料归纳、工具调用或系统查询得到新的长期业务价值信息：
+      - 这类候选仍可标记为 `admission="keep"`
+    - 如果外部结果只是临时态、瞬时运行态或短期观测值，例如天气、当前 CPU 温度、当前系统负载：
+      - 仍应标记为 `admission="drop"`
+      - `admission_reason` 应为 `non_durable`
     - 如果当前 turn 只是“用户询问 AI 自己的喜好/习惯/画像是什么”，而回答只是助手基于上下文做的复述、猜测或迎合性总结：
       - 不应提炼成长期记忆
       - 也不应提炼成画像节点
       - 只有当用户自己明确确认、补充、纠正或直接陈述这些偏好时，才允许进入长期画像系统
-    - `review_profile_nodes` 会分别返回：
-      - `user`
-      - `project`
-    - 每个结果块都会给出：
-      - 哪些候选应接纳为新画像节点
-      - 哪些候选应判定为 `invalid`
-      - 哪些旧画像节点需要 `superseded`
-      - 每条新画像节点的：
-        - `priority`
-        - `profile_level`
-        - `level_reason`
-19. 如果当前 turn 有新的 `memory_nodes[]`：
+19. 如果当前 turn 有新的 `memory_nodes[]` 或 `profile_nodes[]`：
+    - 会按与 `PreCheck` 对等的有效检索作用域，先做一次高相似旧记忆召回：
+      - 默认是 `space`
+      - 也支持显式 `team / project`
+      - 这里的搜索空间不允许写死成 `project`
+    - 如果当前 turn 有画像候选：
+      - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
+    - 然后把：
+      - 本轮新记忆候选
+      - 每条记忆候选对应的高相似旧记忆
+      - 当前 user/project 活跃画像节点
+      - 本轮新画像候选
+      一起送入一次统一的 `review_postaction_candidates`
+    - 这个统一 reviewer 会同时输出：
+      - 哪些记忆候选应保留
+      - 哪些记忆候选应丢弃
+      - 哪些画像候选应接纳为新画像节点
+      - 哪些画像候选应判定为 `invalid`
+      - 哪些旧画像节点需要 `superseded` 或 `retire_only`
+    - 统一评审与自动提炼都要求按领域拆分画像节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
+20. 如果当前 turn 有统一评审后保留下来的 `memory_nodes[]`：
     - 会先对每条 `memory_nodes[].abstract` 做 embedding
     - 先把新向量写入 LanceDB
     - LanceDB 行 `id` 会回填成对应 `memory_nodes[].vector_id`
-20. 只有新向量写入成功后，才会回写 SQLite：
+21. 只有新向量写入成功后，才会回写 SQLite：
     - 更新当前 turn：
       - `details`
       - `details_budget`
@@ -239,7 +265,8 @@ message PostActionTimelineItem {
         - `L`
         - `W`
       - 但不会把 `P / L / W` 说明头长期存入 scope 字段
-21. 如果画像评审中有旧画像节点需要被替代：
+    - 当前轮最终保留下来的记忆与画像变更会在同一个 `ApplyTurnAnalysis` 写回事务中一起提交，避免只写入一侧导致长期记忆状态脑裂
+22. 如果画像评审中有旧画像节点需要被替代：
     - 会把旧画像节点标成 `superseded`
     - 新画像节点会写入：
       - `priority`
@@ -249,12 +276,20 @@ message PostActionTimelineItem {
       - `expires_timestamp`
       - `superseded_by_id`
       - `profile_date`
-22. 后台定时维护还会额外做一次过期画像收敛：
+23. 后台日志现在会额外记录压缩诊断字段：
+    - `raw_candidates`
+    - `final_stored_nodes`
+    - `compaction_rate`
+    - `admission_drop_count`
+    - `review_drop_count`
+    - `external_research_kept_count`
+    - 其中 `compaction_rate = (Raw_Candidates - Final_Stored_Nodes) / Raw_Candidates`
+24. 后台定时维护还会额外做一次过期画像收敛：
     - 会查找已经超过 `expires_timestamp` 的 `active` 画像节点
     - 把这些节点批量标记成 `expired`
     - 读取受影响 user/project 当前剩余的 `active` 节点
     - 由后端重新渲染 `vmm_users.profile / vmm_projects.profile`
-23. 如果 LanceDB 已写入新向量，但 SQLite 异步回写失败：
+25. 如果 LanceDB 已写入新向量，但 SQLite 异步回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立新向量
 27. 当前限制：
@@ -585,8 +620,10 @@ grpcurl -plaintext `
 
 - `PostAction` 成功写入 turn 并完成入队后，后台会尽快触发一次 `analyze_turn`
 - `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结果
-- 如果本轮有 `profile_nodes`，会统一走一次 `review_profile_nodes`
-- `review_profile_nodes` 会分开返回 user/project 两块 JSON 结果
+- 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `review_postaction_candidates`
+- `review_postaction_candidates` 会同时返回：
+  - 记忆候选的保留/丢弃结果
+  - user/project 两侧画像候选的接纳、无效、替代与 retire-only 结果
 - 后端会把新候选落成原子化画像节点，并自动重建 `vmm_users.profile / vmm_projects.profile`
 - `vmm_profile_nodes.profile_status` 会记录当前节点是 `active / invalid / superseded / pending / expired`
 - `vmm_profile_nodes` 会额外记录：

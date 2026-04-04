@@ -38,7 +38,7 @@ func TestPostActionExecuteRejectsNilReceiver(t *testing.T) {
 // TestPostActionExecuteRejectsNilStore verifies the exported post-action use case fails fast with one stable error when partial construction omits the relational store required for durable turn persistence.
 // TestPostActionExecuteRejectsNilStore 用于验证当部分装配遗漏 turn 持久化所需的关系存储时，导出的 post-action 用例会快速返回稳定错误。
 func TestPostActionExecuteRejectsNilStore(t *testing.T) {
-	uc := newPostActionUseCase(nil, nil, nil, nil, &stubPostActionTurnAnalyzer{}, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, nil, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
 	_, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -90,7 +90,7 @@ func TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext(t *testing.T) {
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -123,8 +123,12 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{TurnID: 1, Details: "timeline turn details"}}
-	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, PostActionAnalysisConfig{}, nil, false)
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputMixed,
+		TurnID:        1,
+		Details:       "timeline turn details",
+	}}
+	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -178,7 +182,7 @@ func TestPostActionUseCaseQueuesAcceptedTurnWithoutBlocking(t *testing.T) {
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{}
-	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, PostActionAnalysisConfig{
+	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
 	}, nil, false)
@@ -234,16 +238,32 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
 		TurnID:              88,
 		Details:             "当前轮确认保持异步提炼链路。",
 		SupersededMemoryIDs: []uint64{701},
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "当前项目确认改用 channel 管理并发。", Details: "这是新的并发决策。"},
+			{
+				Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+				Abstract:       "当前项目确认改用 channel 管理并发。",
+				Details:        "这是新的并发决策。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
 		},
 	}}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
 	vector := &stubVectorStore{}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{
+	searcher := &stubPostActionMemorySearcher{}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidateIndexes: []int{0},
+				Reason:                   "保留当前轮新增架构决策。",
+			},
+		},
+	}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
 	}, nil, false)
@@ -283,6 +303,98 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 	}
 }
 
+// TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzerOutput verifies transient reviewer failures no longer abort queued turn persistence and instead fall back to the analyzer output.
+// TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzerOutput 用于验证统一 reviewer 短暂失败时不会再中断排队 turn 的持久化，而是回退到分析器输出继续落库。
+func TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzerOutput(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                90,
+				SessionID:         90,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"帮我记住默认部署方式","timeline":[],"assistant":"我来整理成长期记忆"}`,
+				DehydratedBudget:  16,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
+				UpdatedAt:         time.Date(2026, 4, 2, 10, 0, 1, 0, time.UTC),
+			},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        90,
+		Details:       "用户确认默认部署方式需要长期保留。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{
+				Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+				Abstract:       "当前项目默认使用本地部署方式。",
+				Details:        "用户确认当前项目默认使用本地部署方式。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
+		},
+		ProfileNodes: []logicdomain.ProfileNodeCandidate{
+			{
+				ProfileType:    logicdomain.ProfileTypeProject,
+				Content:        "当前项目默认采用本地部署方式。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
+		},
+	}}
+	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.4, 0.5, 0.6}}}}
+	vector := &stubVectorStore{}
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{{
+				QueryIndex: 0,
+				Query:      "当前项目默认使用本地部署方式。",
+			}},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{err: errors.New("llm timeout")}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
+		HistoryTurns:   3,
+		MaxInputTokens: 200,
+	}, logger, false)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{
+		SessionID:  90,
+		SessionKey: "sess-degrade",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, "test")
+
+	if reviewer.calls != 1 {
+		t.Fatalf("expected unified reviewer to run once before degrading, got %d", reviewer.calls)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected degraded path to keep vector persistence, got %d", len(vector.upserts))
+	}
+	if store.analysisTurn.ID != 90 {
+		t.Fatalf("expected degraded path to still apply turn analysis, got %+v", store.analysisTurn)
+	}
+	if len(store.analysis.MemoryNodes) != 1 {
+		t.Fatalf("expected analyzer memory nodes to survive degraded persistence, got %+v", store.analysis.MemoryNodes)
+	}
+	if len(store.analysis.ProfileNodes) != 1 {
+		t.Fatalf("expected analyzer profile nodes to survive degraded persistence, got %+v", store.analysis.ProfileNodes)
+	}
+	if store.analysis.ProfileNodes[0].Status != logicdomain.ProfileStatusPending {
+		t.Fatalf("expected degraded profile node to stay pending before later review, got %+v", store.analysis.ProfileNodes[0])
+	}
+	if store.advancedSessionID != 90 {
+		t.Fatalf("expected degraded path to still advance extract window, got session_id=%d", store.advancedSessionID)
+	}
+	if !strings.Contains(logBuf.String(), "post-action candidate review degraded to analyzer output") {
+		t.Fatalf("expected degraded warning log, got %s", logBuf.String())
+	}
+}
+
 // TestPostActionUseCaseRedactsAnalysisResultLogs verifies the async analysis-result log keeps throughput diagnostics without writing derived analysis text into runtime logs.
 // TestPostActionUseCaseRedactsAnalysisResultLogs 用于验证异步分析结果日志会保留吞吐诊断字段，但不会把提炼出的分析文本写入运行时日志。
 func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
@@ -304,21 +416,52 @@ func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		TurnID:  88,
-		Details: "用户银行卡 1234 的部署方案需要切到本地模式。",
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        88,
+		Details:       "用户银行卡 1234 的部署方案需要切到本地模式。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "用户身份证 5678 的部署偏好", Details: "这是敏感派生文本。"},
+			{
+				Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+				Abstract:       "用户身份证 5678 的部署偏好",
+				Details:        "这是敏感派生文本。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
 		},
 		ProfileNodes: []logicdomain.ProfileNodeCandidate{
-			{ProfileType: logicdomain.ProfileTypeUser, Content: "用户更偏好本地模式。"},
+			{
+				ProfileType:    logicdomain.ProfileTypeUser,
+				Content:        "用户更偏好本地模式。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
 		},
 		SupersededMemoryIDs: []uint64{701},
 	}}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
 	vector := &stubVectorStore{}
+	searcher := &stubPostActionMemorySearcher{}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidateIndexes: []int{0},
+				Reason:                   "保留当前轮新增部署决策。",
+			},
+			User: &logicdomain.ProfileReviewSection{
+				AcceptedCandidates: []logicdomain.ProfileReviewAcceptedCandidate{{
+					CandidateIndex:    0,
+					NormalizedContent: "用户更偏好本地部署模式",
+					Priority:          logicdomain.ProfilePriorityP1,
+					ProfileLevel:      logicdomain.ProfileLevelStable,
+					LevelReason:       "这是稳定部署偏好。",
+				}},
+				Reason: "保留用户长期部署偏好。",
+			},
+		},
+	}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
 	}, logger, false)
@@ -362,15 +505,31 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 		analysisErr: errors.New("sqlite write failed"),
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		TurnID:  91,
-		Details: "当前轮需要落一条记忆。",
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        91,
+		Details:       "当前轮需要落一条记忆。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "需要记录当前异步回写失败回滚场景。", Details: "用于验证向量回滚。"},
+			{
+				Category:       logicdomain.MemoryNodeCategoryRequirementTODO,
+				Abstract:       "需要记录当前异步回写失败回滚场景。",
+				Details:        "用于验证向量回滚。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
 		},
 	}}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.9, 0.8, 0.7}}}}
 	vector := &stubVectorStore{}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{}, nil, false)
+	searcher := &stubPostActionMemorySearcher{}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidateIndexes: []int{0},
+				Reason:                   "保留用于验证回滚的长期记忆。",
+			},
+		},
+	}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  91,
@@ -409,17 +568,33 @@ func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) 
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		TurnID:  89,
-		Details: "用户银行卡 1234 的部署方案需要切到本地模式。",
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        89,
+		Details:       "用户银行卡 1234 的部署方案需要切到本地模式。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
-			{Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "用户身份证 5678 的部署偏好", Details: "这是敏感派生文本。"},
+			{
+				Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+				Abstract:       "用户身份证 5678 的部署偏好",
+				Details:        "这是敏感派生文本。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
 		},
 	}}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
 	vector := &stubVectorStore{}
+	searcher := &stubPostActionMemorySearcher{}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidateIndexes: []int{0},
+				Reason:                   "保留当前轮新增部署记忆。",
+			},
+		},
+	}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text", DebugPayloads: true})
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, PostActionAnalysisConfig{
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
 	}, logger, false)
@@ -448,108 +623,6 @@ func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) 
 	}
 	if strings.Contains(logs, "analysis_sha256") || strings.Contains(logs, "analysis_len") {
 		t.Fatalf("expected payload-debug analysis log to bypass redacted digest fields, got %s", logs)
-	}
-}
-
-// TestPostActionUseCaseBatchesProfileReviewAcrossTurns verifies user/project profile evidence from multiple pending turns is reviewed in one batched call and then rendered back into durable profile text.
-// TestPostActionUseCaseBatchesProfileReviewAcrossTurns 用于验证来自多条待处理 turn 的 user/project 画像证据会通过一次批量评审调用统一处理，并回写成长期画像文本。
-func TestPostActionUseCaseBatchesProfileMergeAcrossTurns(t *testing.T) {
-	store := &testRelationalStore{
-		profileReviewTargets: logicdomain.ProfileReviewTargetsSnapshot{
-			UserNodes: []logicdomain.ProfileActiveNodeRecord{
-				{ID: 41, ProfileType: logicdomain.ProfileTypeUser, ProfileDate: "2026-03-20", Priority: logicdomain.ProfilePriorityP1, ProfileLevel: logicdomain.ProfileLevelStable, RefreshWeight: 1, Content: "用户偏好 Rust。"},
-			},
-			ProjectNodes: []logicdomain.ProfileActiveNodeRecord{
-				{ID: 52, ProfileType: logicdomain.ProfileTypeProject, ProfileDate: "2026-03-18", Priority: logicdomain.ProfilePriorityP2, ProfileLevel: logicdomain.ProfileLevelSituational, RefreshWeight: 0, Content: "项目当前没有代码。"},
-			},
-		},
-	}
-	analysis := logicdomain.SessionBatchAnalysis{
-		Turns: []logicdomain.SessionBatchTurnAnalysis{
-			{
-				TurnID:       601,
-				Details:      "第一条。",
-				ProfileNodes: []logicdomain.ProfileNodeCandidate{{ProfileType: logicdomain.ProfileTypeUser, Content: "用户偏好 Rust。"}},
-			},
-			{
-				TurnID:  602,
-				Details: "第二条。",
-				ProfileNodes: []logicdomain.ProfileNodeCandidate{
-					{ProfileType: logicdomain.ProfileTypeProject, Content: "项目目前没有代码。"},
-					{ProfileType: logicdomain.ProfileTypeUser, Content: "用户希望面向多个 AI 编程工具做记忆扩展。"},
-				},
-			},
-		},
-	}
-	reviewer := &stubPostActionProfileReviewer{
-		result: logicdomain.TurnProfileReviewResult{
-			User: &logicdomain.ProfileReviewSection{
-				AcceptedCandidates: []logicdomain.ProfileReviewAcceptedCandidate{
-					{
-						CandidateIndex:    0,
-						NormalizedContent: "用户偏好 Rust，并希望面向多个 AI 编程工具做记忆扩展。",
-						Priority:          logicdomain.ProfilePriorityP1,
-						ProfileLevel:      logicdomain.ProfileLevelStable,
-						LevelReason:       "这是稳定开发偏好与目标方向。",
-						SupersedeNodeIDs:  []uint64{41},
-					},
-					{
-						CandidateIndex:    1,
-						NormalizedContent: "用户希望产品支持多个 AI 编程工具。",
-						Priority:          logicdomain.ProfilePriorityP2,
-						ProfileLevel:      logicdomain.ProfileLevelSituational,
-						LevelReason:       "这是当前阶段的重要范围偏好。",
-					},
-				},
-				InvalidCandidateIndexes: []int{},
-			},
-			Project: &logicdomain.ProfileReviewSection{
-				AcceptedCandidates: []logicdomain.ProfileReviewAcceptedCandidate{
-					{
-						CandidateIndex:    0,
-						NormalizedContent: "项目目前没有代码，仍处于早期设计阶段。",
-						Priority:          logicdomain.ProfilePriorityP1,
-						ProfileLevel:      logicdomain.ProfileLevelSituational,
-						LevelReason:       "这是当前阶段的重要项目背景。",
-						SupersedeNodeIDs:  []uint64{52},
-					},
-				},
-				InvalidCandidateIndexes: []int{},
-			},
-		},
-	}
-	uc := newPostActionUseCase(nil, store, nil, &stubVectorStore{}, nil, reviewer, PostActionAnalysisConfig{}, nil, false)
-	turns := []logicdomain.SessionTurnRecord{
-		{ID: 601, SessionID: 91, ProjectID: 12, CreatedAt: time.Date(2026, 3, 29, 9, 0, 0, 0, time.UTC)},
-		{ID: 602, SessionID: 91, ProjectID: 12, CreatedAt: time.Date(2026, 3, 30, 10, 0, 0, 0, time.UTC)},
-	}
-	session := logicdomain.SessionRef{
-		SessionID:  91,
-		SessionKey: "sess-profile-batch",
-		UserID:     9,
-		TeamID:     4,
-		SpaceID:    6,
-		ProjectID:  12,
-	}
-
-	if err := uc.reviewSessionBatchProfiles(context.Background(), session, turns, &analysis); err != nil {
-		t.Fatalf("review session batch profiles: %v", err)
-	}
-
-	if reviewer.calls != 1 {
-		t.Fatalf("expected one batched review call, got %d", reviewer.calls)
-	}
-	if len(reviewer.nodes) != 3 {
-		t.Fatalf("expected all profile nodes to flow into one review call, got %+v", reviewer.nodes)
-	}
-	if strings.Contains(analysis.MergedUserProfile, "[Profile Legend]") || !strings.Contains(analysis.MergedUserProfile, "用户偏好 Rust，并希望面向多个 AI 编程工具做记忆扩展。") {
-		t.Fatalf("unexpected merged user profile state: %+v", analysis)
-	}
-	if strings.Contains(analysis.MergedProjectProfile, "[Profile Legend]") || !strings.Contains(analysis.MergedProjectProfile, "项目目前没有代码，仍处于早期设计阶段。") {
-		t.Fatalf("unexpected merged project profile state: %+v", analysis)
-	}
-	if len(analysis.RetiredProfileNodeIDs) != 2 || analysis.RetiredProfileNodeIDs[0] != 41 || analysis.RetiredProfileNodeIDs[1] != 52 {
-		t.Fatalf("unexpected retired profile node ids: %+v", analysis.RetiredProfileNodeIDs)
 	}
 }
 
@@ -596,7 +669,7 @@ func TestPostActionUseCaseConvergesExpiredProfiles(t *testing.T) {
 	}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, PostActionAnalysisConfig{}, logger, false)
+	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, nil, PostActionAnalysisConfig{}, logger, false)
 
 	uc.convergeExpiredProfiles()
 
@@ -622,7 +695,7 @@ func TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock(t *testing.T) {
 	}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, PostActionAnalysisConfig{
+	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, nil, PostActionAnalysisConfig{
 		QueueScanInterval: 30 * time.Second,
 	}, logger, false)
 
@@ -872,28 +945,6 @@ func (s *stubPostActionTurnAnalyzer) Analyze(_ context.Context, input logicdomai
 	}
 	if s.err != nil {
 		return logicdomain.TurnAnalysis{}, s.err
-	}
-	return s.result, nil
-}
-
-// stubPostActionProfileReviewer records batched profile review calls and returns one canned result or error.
-// stubPostActionProfileReviewer 用于记录批量画像评审调用，并返回预设结果或错误。
-type stubPostActionProfileReviewer struct {
-	calls    int
-	snapshot logicdomain.ProfileReviewTargetsSnapshot
-	nodes    []logicdomain.ProfileNodeCandidate
-	result   logicdomain.TurnProfileReviewResult
-	err      error
-}
-
-// Review captures the full batch input so tests can assert the use case sends user/project nodes together.
-// Review 用于捕获完整批量输入，方便测试断言用例会把 user/project 节点一起送进评审器。
-func (s *stubPostActionProfileReviewer) Review(_ context.Context, snapshot logicdomain.ProfileReviewTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileReviewResult, error) {
-	s.calls++
-	s.snapshot = snapshot
-	s.nodes = append([]logicdomain.ProfileNodeCandidate(nil), nodes...)
-	if s.err != nil {
-		return logicdomain.TurnProfileReviewResult{}, s.err
 	}
 	return s.result, nil
 }

@@ -161,26 +161,49 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
       - 会携带 `support_count / rebuttal_count` 作为既有证据强度提示
     - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
 12. `analyze_turn` 会返回：
+    - 当前 turn 的 `user_input_kind`
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
       - 每条 `memory_nodes[]` 可选携带 `context_edges[]`
       - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
+      - 每条 `memory_nodes[]` 还会携带：
+        - `evidence_source`
+        - `admission`
+        - `admission_reason`
     - 当前 turn 的 `profile_nodes[]`
+      - 每条 `profile_nodes[]` 也会携带：
+        - `evidence_source`
+        - `admission`
+        - `admission_reason`
     - `superseded_memory_ids`
-13. 如果当前 turn 有 `profile_nodes[]`：
-    - 会把当前 user/project 下仍然 `active` 且未过期的画像节点，与本轮新画像候选一起送入 `review_profile_nodes`
-    - 如果本轮只有 user 或只有 project 画像候选，则只把对应一侧送进 LLM，不会把缺失侧作为空块一起传入
-    - 自动提炼与画像评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
-14. 对新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
-15. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite）：
+13. `analyze_turn` 的第一层准入会先压缩明显噪音：
+    - 用户提问后，助手只是回显既有记忆、既有画像或通识答案时，会优先标记为 `drop`
+    - 通过外部检索、访问网站、资料归纳、工具调用发现的新长期事实，仍然允许标记为 `keep`
+    - 但实时天气、当前 CPU 温度、当前系统负载等临时态结果，仍会按 `non_durable` 拒绝
+14. 如果当前 turn 有新的 `memory_nodes[]` 或 `profile_nodes[]`：
+    - 服务端会按与 `PreCheck` 对等的检索作用域召回高相似旧记忆
+      - 默认 `space`
+      - 支持显式 `team / project`
+    - 同时加载当前 user/project 下仍然 `active` 且未过期的画像节点
+    - 然后把记忆候选、相似旧记忆、画像活跃节点和新画像候选，一起送入一次 `review_postaction_candidates`
+    - 自动提炼与统一评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
+15. 对统一评审后保留下来的新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
+16. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite）：
     - `vmm_turn_records.details / details_budget / extracted_status`
     - 统一后的 `vmm_memory_nodes`
       - 包含聚合后的 `support_count / rebuttal_count`
     - `vmm_memory_context_edges`
     - `vmm_profile_nodes`
-16. 画像评审完成后，会在关系库存储中写入新的画像节点、标记被替代旧节点，并由后端基于有效节点重新渲染 `vmm_users.profile / vmm_projects.profile`
-17. 后台定时维护仍会做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本
+    - 当前轮筛选后的记忆与画像变更会在同一个 `ApplyTurnAnalysis` 写回事务里一起提交，避免只写入一侧造成长期状态脑裂
+17. 分析结果日志会输出：
+    - `raw_candidates`
+    - `final_stored_nodes`
+    - `compaction_rate`
+    - `admission_drop_count`
+    - `review_drop_count`
+    - `external_research_kept_count`
+18. 后台定时维护仍会做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本
   - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
   - LanceDB 行里的 `session_id` 会保存真实来源 session
   - LanceDB 顶层列现在额外包含 `source_turn_id`，用于 compact 边界过滤直接下推到向量检索层
@@ -532,7 +555,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 - `PostAction` 成功写入 turn 并完成入队后，后台会尽快发起一次 `analyze_turn`
 - `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结构化结果
-- 如果本轮有 `profile_nodes`，会统一走一次 `review_profile_nodes`，按 user/project 两侧分别评审新旧画像节点
+- 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `review_postaction_candidates`
+- 这次统一评审会同时处理：
+  - 记忆候选的高重复去重
+  - user/project 两侧画像候选的接纳、无效、替代与 retire-only 决策
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
 - SQLite 成功回写后，会更新：
   - `vmm_turn_records.details / details_budget / extracted_status`

@@ -57,10 +57,16 @@ type PostActionTurnAnalyzer interface {
 	Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error)
 }
 
-// PostActionProfileReviewer is the tiny port used by post-action to review fresh profile candidates against the current active user/project profile nodes.
-// PostActionProfileReviewer 用于让 post-action 把新的画像候选与当前活跃的 user/project 画像节点进行评审。
-type PostActionProfileReviewer interface {
-	Review(ctx context.Context, snapshot logicdomain.ProfileReviewTargetsSnapshot, nodes []logicdomain.ProfileNodeCandidate) (logicdomain.TurnProfileReviewResult, error)
+// PostActionMemorySearcher is the narrow search port used by post-action duplicate review to recall existing durable memories inside the configured shared scope.
+// PostActionMemorySearcher 用于给 post-action 重复评审提供一个狭窄检索端口，在配置好的共享范围内召回既有长期记忆。
+type PostActionMemorySearcher interface {
+	Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error)
+}
+
+// PostActionCandidateReviewer is the unified reviewer port that jointly decides memory dedupe admission and profile acceptance in one LLM call.
+// PostActionCandidateReviewer 用于表示统一 reviewer 端口，在一次 LLM 调用里同时决定记忆去重准入和画像接纳结果。
+type PostActionCandidateReviewer interface {
+	Review(ctx context.Context, input logicdomain.PostActionCandidateReviewInput) (logicdomain.PostActionCandidateReviewResult, error)
 }
 
 // PostActionAnalysisConfig carries the queue and history knobs used by the async single-turn extraction pipeline,
@@ -68,12 +74,15 @@ type PostActionProfileReviewer interface {
 // PostActionAnalysisConfig 用于承载异步单轮提炼流水线的队列与历史窗口参数，
 // 并保留少量旧阈值字段以兼容既有配置解析。
 type PostActionAnalysisConfig struct {
-	TurnThreshold     int
-	TokenThreshold    int
-	IdleTimeout       time.Duration
-	HistoryTurns      int
-	MaxInputTokens    int
-	QueueScanInterval time.Duration
+	TurnThreshold       int
+	TokenThreshold      int
+	IdleTimeout         time.Duration
+	HistoryTurns        int
+	MaxInputTokens      int
+	QueueScanInterval   time.Duration
+	DedupeSearchTopK    int
+	DedupeSearchScope   string
+	DedupeMinSimilarity float64
 }
 
 // PostActionUseCase stores one cleaned turn, queues asynchronous single-turn extraction work,
@@ -86,7 +95,8 @@ type PostActionUseCase struct {
 	embedding               appports.EmbeddingClient
 	vector                  appports.VectorStore
 	turnAnalyzer            PostActionTurnAnalyzer
-	profiles                PostActionProfileReviewer
+	memorySearcher          PostActionMemorySearcher
+	candidateReviewer       PostActionCandidateReviewer
 	analysisCfg             PostActionAnalysisConfig
 	logger                  *logx.Logger
 	queueCtx                context.Context
@@ -101,13 +111,13 @@ type PostActionUseCase struct {
 
 // NewPostActionUseCase creates a PostActionUseCase instance for the runtime asynchronous single-turn path.
 // NewPostActionUseCase 用于为运行时异步单轮提炼路径创建 PostActionUseCase 实例。
-func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
-	return newPostActionUseCase(noiseGate, store, embedding, vector, turnAnalyzer, profiles, analysisCfg, logger, true)
+func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, memorySearcher PostActionMemorySearcher, candidateReviewer PostActionCandidateReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
+	return newPostActionUseCase(noiseGate, store, embedding, vector, turnAnalyzer, memorySearcher, candidateReviewer, analysisCfg, logger, true)
 }
 
 // newPostActionUseCase builds the post-action use case and optionally starts the async queue worker for runtime paths.
 // newPostActionUseCase 用于构建 post-action 用例，并按需启动运行时异步队列工作器。
-func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, profiles PostActionProfileReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
+func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, memorySearcher PostActionMemorySearcher, candidateReviewer PostActionCandidateReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -129,15 +139,26 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	if analysisCfg.QueueScanInterval <= 0 {
 		analysisCfg.QueueScanInterval = 30 * time.Second
 	}
+	if analysisCfg.DedupeSearchTopK <= 0 {
+		analysisCfg.DedupeSearchTopK = defaultPreCheckTopK
+	}
+	analysisCfg.DedupeSearchScope = normalizePreCheckSearchScope(analysisCfg.DedupeSearchScope)
+	if analysisCfg.DedupeMinSimilarity <= 0 || analysisCfg.DedupeMinSimilarity > 1 {
+		analysisCfg.DedupeMinSimilarity = 0.90
+	}
+	if analysisCfg.DedupeMinSimilarity < 0.90 {
+		analysisCfg.DedupeMinSimilarity = 0.90
+	}
 	uc := &PostActionUseCase{
-		noiseGate:    noiseGate,
-		store:        store,
-		embedding:    embedding,
-		vector:       vector,
-		turnAnalyzer: turnAnalyzer,
-		profiles:     profiles,
-		analysisCfg:  analysisCfg,
-		logger:       logger,
+		noiseGate:         noiseGate,
+		store:             store,
+		embedding:         embedding,
+		vector:            vector,
+		turnAnalyzer:      turnAnalyzer,
+		memorySearcher:    memorySearcher,
+		candidateReviewer: candidateReviewer,
+		analysisCfg:       analysisCfg,
+		logger:            logger,
 	}
 	if startWorker && store != nil {
 		uc.startQueueWorker()
@@ -256,6 +277,22 @@ func normalizeTurnProfileNodes(analysis *logicdomain.TurnAnalysis) {
 	}
 }
 
+// clonePostActionTurnAnalysis deep-copies one analyzer result before the unified reviewer runs so degraded paths can safely fall back to the pre-review persistence payload.
+// clonePostActionTurnAnalysis 用于在统一 reviewer 执行前深拷贝一份分析器结果，确保降级路径可以安全回退到评审前的持久化载荷。
+func clonePostActionTurnAnalysis(analysis logicdomain.TurnAnalysis) logicdomain.TurnAnalysis {
+	cloned := analysis
+	if len(analysis.MemoryNodes) > 0 {
+		cloned.MemoryNodes = append([]logicdomain.MemoryNodeCandidate(nil), analysis.MemoryNodes...)
+		for idx := range cloned.MemoryNodes {
+			cloned.MemoryNodes[idx].Vector = append([]float32(nil), analysis.MemoryNodes[idx].Vector...)
+			cloned.MemoryNodes[idx].ContextEdges = append([]logicdomain.MemoryContextEdgeCandidate(nil), analysis.MemoryNodes[idx].ContextEdges...)
+		}
+	}
+	cloned.ProfileNodes = clonePostActionProfileNodes(analysis.ProfileNodes)
+	cloned.SupersededMemoryIDs = append([]uint64(nil), analysis.SupersededMemoryIDs...)
+	return cloned
+}
+
 // applyImmediateTurnAnalysis assembles the reference-aware single-turn request, runs the LLM, reviews fresh profile candidates, persists vectors, and writes the final result back onto the new turn.
 // applyImmediateTurnAnalysis 用于组装参考感知的单轮请求、执行 LLM、评审新的画像候选、持久化向量，并把最终结果回写到新 turn 上。
 func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord) error {
@@ -273,20 +310,36 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	if err := validateTurnAnalysis(input, analysis); err != nil {
 		return err
 	}
+	compaction := newPostActionCompactionStats(analysis)
 
-	// Normalize fresh profile nodes before the review stage so a temporary reviewer failure can safely drop them instead of persisting invalid lifecycle fields.
-	// 在画像评审前先规范化新节点状态，保证评审器临时失败时可以安全丢弃这些节点，而不会把非法生命周期字段写进库里。
+	// Reset fresh profile nodes to pending before any later review so both the normal path and the degraded path persist a deterministic pre-review lifecycle state.
+	// 在后续评审开始前先把新画像节点重置为 pending，确保正常路径与降级路径都能持久化一致的评审前生命周期状态。
 	normalizeTurnProfileNodes(&analysis)
-	if err := u.reviewTurnProfiles(ctx, session, turn, &analysis); err != nil {
+
+	// Run the first-pass admission filter before any later review so obvious QA echoes and non-durable external states never enter dedupe or profile-merge flows.
+	// 在进入后续评审前先执行首轮准入过滤，确保明显的问答回显和不具持久性的外部状态不会进入去重或画像合并流程。
+	applyPostActionAdmissionFilter(&analysis, &compaction)
+	reviewFallback := clonePostActionTurnAnalysis(analysis)
+	fallbackCompaction := compaction
+
+	// Apply one unified post-action review so memory dedupe and profile acceptance can share the same turn-level reasoning context.
+	// 执行一次统一的 post-action 评审，让记忆去重与画像接纳共享同一轮语义上下文。
+	if err := u.reviewTurnCandidates(ctx, session, turn, rawTurn, &analysis, &compaction); err != nil {
 		if u.logger != nil {
-			u.logger.Error("post-action turn profile review failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", err)
+			u.logger.Warn(
+				"post-action candidate review degraded to analyzer output",
+				"session_key", session.SessionKey,
+				"session_id", session.SessionID,
+				"turn_id", turn.ID,
+				"err", err,
+			)
 		}
-		analysis.ProfileNodes = nil
-		analysis.UserProfileMerged = false
-		analysis.MergedUserProfile = ""
-		analysis.ProjectProfileMerged = false
-		analysis.MergedProjectProfile = ""
+		analysis = reviewFallback
+		compaction = fallbackCompaction
+		compaction.ExternalResearchKeptCount = countPostActionExternalResearchCandidates(analysis)
 	}
+	compaction.FinalMemoryNodes = len(analysis.MemoryNodes)
+	compaction.FinalProfileNodes = len(analysis.ProfileNodes)
 
 	vectorIDs, err := u.persistMemoryNodeVectors(ctx, session, turn, &analysis)
 	if err != nil {
@@ -309,13 +362,13 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 			u.logger.Error("post-action superseded vector cleanup failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", deleteErr)
 		}
 	}
-	u.logPostActionAnalysisResult(session, turn, input, analysis, vectorIDs)
+	u.logPostActionAnalysisResult(session, turn, input, analysis, vectorIDs, compaction)
 	return nil
 }
 
 // logPostActionAnalysisResult records one redacted summary of the persisted analysis so operators can diagnose extraction throughput without writing derived user text into runtime logs, while also stripping high-dimensional vectors from debug JSON output.
 // logPostActionAnalysisResult 用于记录一份脱敏后的分析结果摘要，让排障仍能观察提炼吞吐，同时会从调试 JSON 输出中剥离高维向量。
-func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, input logicdomain.TurnAnalysisInput, analysis logicdomain.TurnAnalysis, vectorIDs []string) {
+func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, input logicdomain.TurnAnalysisInput, analysis logicdomain.TurnAnalysis, vectorIDs []string, compaction postActionCompactionStats) {
 	if u == nil || u.logger == nil {
 		return
 	}
@@ -331,6 +384,12 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		"details_len", len(strings.TrimSpace(analysis.Details)),
 		"memory_node_count", len(analysis.MemoryNodes),
 		"profile_node_count", len(analysis.ProfileNodes),
+		"raw_candidates", compaction.RawCandidates(),
+		"final_stored_nodes", compaction.FinalStoredNodes(),
+		"compaction_rate", compaction.CompactionRate(),
+		"admission_drop_count", compaction.AdmissionDroppedCount,
+		"review_drop_count", compaction.ReviewDroppedCount,
+		"external_research_kept_count", compaction.ExternalResearchKeptCount,
 		"superseded_memory_count", len(analysis.SupersededMemoryIDs),
 		"user_profile_merged", analysis.UserProfileMerged,
 		"project_profile_merged", analysis.ProjectProfileMerged,
@@ -384,22 +443,28 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 		Relation     string `json:"Relation"`
 	}
 	type memoryNodeLogPayload struct {
-		Category      int                           `json:"Category"`
-		VectorID      string                        `json:"VectorID"`
-		Abstract      string                        `json:"Abstract"`
-		Details       string                        `json:"Details"`
-		ContextEdges  []memoryContextEdgeLogPayload `json:"ContextEdges"`
-		SourceKind    int                           `json:"SourceKind"`
-		ScopeLevel    int                           `json:"ScopeLevel"`
-		Priority      int                           `json:"Priority"`
-		MemoryLevel   int                           `json:"MemoryLevel"`
-		RefreshWeight int                           `json:"RefreshWeight"`
-		ExpiresAt     time.Time                     `json:"ExpiresAt"`
-		DedupeHash    string                        `json:"DedupeHash"`
+		Category        int                           `json:"Category"`
+		VectorID        string                        `json:"VectorID"`
+		Abstract        string                        `json:"Abstract"`
+		Details         string                        `json:"Details"`
+		EvidenceSource  string                        `json:"EvidenceSource"`
+		Admission       string                        `json:"Admission"`
+		AdmissionReason string                        `json:"AdmissionReason"`
+		ContextEdges    []memoryContextEdgeLogPayload `json:"ContextEdges"`
+		SourceKind      int                           `json:"SourceKind"`
+		ScopeLevel      int                           `json:"ScopeLevel"`
+		Priority        int                           `json:"Priority"`
+		MemoryLevel     int                           `json:"MemoryLevel"`
+		RefreshWeight   int                           `json:"RefreshWeight"`
+		ExpiresAt       time.Time                     `json:"ExpiresAt"`
+		DedupeHash      string                        `json:"DedupeHash"`
 	}
 	type profileNodeLogPayload struct {
 		ProfileType      int       `json:"ProfileType"`
 		Content          string    `json:"Content"`
+		EvidenceSource   string    `json:"EvidenceSource"`
+		Admission        string    `json:"Admission"`
+		AdmissionReason  string    `json:"AdmissionReason"`
 		Status           int       `json:"Status"`
 		Priority         int       `json:"Priority"`
 		ProfileLevel     int       `json:"ProfileLevel"`
@@ -414,6 +479,7 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 		SupersedeNodeIDs []uint64  `json:"SupersedeNodeIDs"`
 	}
 	type turnAnalysisLogPayload struct {
+		UserInputKind        string                  `json:"UserInputKind"`
 		TurnID               uint64                  `json:"TurnID"`
 		Details              string                  `json:"Details"`
 		DetailsBudget        int                     `json:"DetailsBudget"`
@@ -437,18 +503,21 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 			})
 		}
 		memoryNodes = append(memoryNodes, memoryNodeLogPayload{
-			Category:      node.Category,
-			VectorID:      node.VectorID,
-			Abstract:      node.Abstract,
-			Details:       node.Details,
-			ContextEdges:  edges,
-			SourceKind:    node.SourceKind,
-			ScopeLevel:    node.ScopeLevel,
-			Priority:      node.Priority,
-			MemoryLevel:   node.MemoryLevel,
-			RefreshWeight: node.RefreshWeight,
-			ExpiresAt:     node.ExpiresAt,
-			DedupeHash:    node.DedupeHash,
+			Category:        node.Category,
+			VectorID:        node.VectorID,
+			Abstract:        node.Abstract,
+			Details:         node.Details,
+			EvidenceSource:  node.EvidenceSource,
+			Admission:       node.Admission,
+			AdmissionReason: node.AdmissionReason,
+			ContextEdges:    edges,
+			SourceKind:      node.SourceKind,
+			ScopeLevel:      node.ScopeLevel,
+			Priority:        node.Priority,
+			MemoryLevel:     node.MemoryLevel,
+			RefreshWeight:   node.RefreshWeight,
+			ExpiresAt:       node.ExpiresAt,
+			DedupeHash:      node.DedupeHash,
 		})
 	}
 
@@ -457,6 +526,9 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 		profileNodes = append(profileNodes, profileNodeLogPayload{
 			ProfileType:      node.ProfileType,
 			Content:          node.Content,
+			EvidenceSource:   node.EvidenceSource,
+			Admission:        node.Admission,
+			AdmissionReason:  node.AdmissionReason,
 			Status:           node.Status,
 			Priority:         node.Priority,
 			ProfileLevel:     node.ProfileLevel,
@@ -473,6 +545,7 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 	}
 
 	return json.Marshal(turnAnalysisLogPayload{
+		UserInputKind:        analysis.UserInputKind,
 		TurnID:               analysis.TurnID,
 		Details:              analysis.Details,
 		DetailsBudget:        analysis.DetailsBudget,
@@ -569,9 +642,36 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 	if analysis.TurnID != input.TargetTurn.TurnID {
 		return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("unexpected turn_id %d", analysis.TurnID)}
 	}
+	if !logicdomain.ValidTurnAnalysisUserInputKind(strings.TrimSpace(analysis.UserInputKind)) {
+		return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("unexpected user_input_kind %q", analysis.UserInputKind)}
+	}
 	activeMemoryIDs := make(map[uint64]struct{}, len(input.ActiveMemoryNodes))
 	for _, node := range input.ActiveMemoryNodes {
 		activeMemoryIDs[node.MemoryID] = struct{}{}
+	}
+	for idx, node := range analysis.MemoryNodes {
+		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
+			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].evidence_source is invalid", idx)}
+		}
+		if !logicdomain.ValidTurnAnalysisAdmission(strings.TrimSpace(node.Admission)) {
+			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].admission is invalid", idx)}
+		}
+		reason := strings.TrimSpace(node.AdmissionReason)
+		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
+			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].admission_reason is invalid", idx)}
+		}
+	}
+	for idx, node := range analysis.ProfileNodes {
+		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
+			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("profile_nodes[%d].evidence_source is invalid", idx)}
+		}
+		if !logicdomain.ValidTurnAnalysisAdmission(strings.TrimSpace(node.Admission)) {
+			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("profile_nodes[%d].admission is invalid", idx)}
+		}
+		reason := strings.TrimSpace(node.AdmissionReason)
+		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
+			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("profile_nodes[%d].admission_reason is invalid", idx)}
+		}
 	}
 	for _, memoryID := range analysis.SupersededMemoryIDs {
 		if _, ok := activeMemoryIDs[memoryID]; !ok {

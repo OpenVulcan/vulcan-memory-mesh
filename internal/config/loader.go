@@ -20,7 +20,7 @@ var RequiredScenes = []string{
 	"analyze_turn.md",
 	"summarize_entry.md",
 	"merge_profile.md",
-	"review_profile_nodes.md",
+	"review_postaction_candidates.md",
 	"review_profile_instruction.md",
 }
 

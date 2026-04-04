@@ -76,21 +76,28 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
-		TurnID      uint64 `json:"turn_id"`
-		Details     string `json:"details"`
-		MemoryNodes []struct {
-			Category     int    `json:"category"`
-			Abstract     string `json:"abstract"`
-			Details      string `json:"details"`
-			ContextEdges []struct {
+		UserInputKind string `json:"user_input_kind"`
+		TurnID        uint64 `json:"turn_id"`
+		Details       string `json:"details"`
+		MemoryNodes   []struct {
+			Category        int    `json:"category"`
+			Abstract        string `json:"abstract"`
+			Details         string `json:"details"`
+			EvidenceSource  string `json:"evidence_source"`
+			Admission       string `json:"admission"`
+			AdmissionReason string `json:"admission_reason"`
+			ContextEdges    []struct {
 				ContextKey   string `json:"context_key"`
 				ContextValue string `json:"context_value"`
 				Relation     string `json:"relation"`
 			} `json:"context_edges"`
 		} `json:"memory_nodes"`
 		ProfileNodes []struct {
-			ProfileType int    `json:"profile_type"`
-			Content     string `json:"content"`
+			ProfileType     int    `json:"profile_type"`
+			Content         string `json:"content"`
+			EvidenceSource  string `json:"evidence_source"`
+			Admission       string `json:"admission"`
+			AdmissionReason string `json:"admission_reason"`
 		} `json:"profile_nodes"`
 		SupersededMemoryIDs []uint64 `json:"superseded_memory_ids"`
 	}
@@ -104,11 +111,15 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 	// Validate and de-duplicate extracted items so the persistence layer only receives canonical node candidates.
 	// 校验并去重提炼项，让持久化层只接收规范化后的节点候选。
 	analysis := logicdomain.TurnAnalysis{
+		UserInputKind:       normalizeTurnAnalysisUserInputKind(payload.UserInputKind),
 		TurnID:              payload.TurnID,
 		Details:             strings.TrimSpace(payload.Details),
 		MemoryNodes:         make([]logicdomain.MemoryNodeCandidate, 0, len(payload.MemoryNodes)),
 		ProfileNodes:        make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
 		SupersededMemoryIDs: normalizeUint64Set(payload.SupersededMemoryIDs),
+	}
+	if !logicdomain.ValidTurnAnalysisUserInputKind(analysis.UserInputKind) {
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid user_input_kind %q", payload.UserInputKind), Raw: raw}
 	}
 	memorySeen := map[string]int{}
 	for _, node := range payload.MemoryNodes {
@@ -123,6 +134,18 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if node.Details == "" {
 			node.Details = node.Abstract
 		}
+		evidenceSource := normalizeTurnAnalysisEvidenceSource(node.EvidenceSource)
+		if !logicdomain.ValidTurnAnalysisEvidenceSource(evidenceSource) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory evidence_source %q", node.EvidenceSource), Raw: raw}
+		}
+		admission := normalizeTurnAnalysisAdmission(node.Admission)
+		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory admission %q", node.Admission), Raw: raw}
+		}
+		admissionReason := normalizeTurnAnalysisAdmissionReason(node.AdmissionReason)
+		if admissionReason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(admissionReason) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory admission_reason %q", node.AdmissionReason), Raw: raw}
+		}
 		contextEdges, err := normalizeMemoryContextEdgeCandidates(node.ContextEdges)
 		if err != nil {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
@@ -134,10 +157,13 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		}
 		memorySeen[key] = len(analysis.MemoryNodes)
 		analysis.MemoryNodes = append(analysis.MemoryNodes, logicdomain.MemoryNodeCandidate{
-			Category:     node.Category,
-			Abstract:     node.Abstract,
-			Details:      node.Details,
-			ContextEdges: contextEdges,
+			Category:        node.Category,
+			Abstract:        node.Abstract,
+			Details:         node.Details,
+			EvidenceSource:  evidenceSource,
+			Admission:       admission,
+			AdmissionReason: admissionReason,
+			ContextEdges:    contextEdges,
 		})
 	}
 	profileSeen := map[string]struct{}{}
@@ -149,18 +175,57 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if node.Content == "" {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "profile node content is required", Raw: raw}
 		}
+		evidenceSource := normalizeTurnAnalysisEvidenceSource(node.EvidenceSource)
+		if !logicdomain.ValidTurnAnalysisEvidenceSource(evidenceSource) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile evidence_source %q", node.EvidenceSource), Raw: raw}
+		}
+		admission := normalizeTurnAnalysisAdmission(node.Admission)
+		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile admission %q", node.Admission), Raw: raw}
+		}
+		admissionReason := normalizeTurnAnalysisAdmissionReason(node.AdmissionReason)
+		if admissionReason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(admissionReason) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile admission_reason %q", node.AdmissionReason), Raw: raw}
+		}
 		key := fmt.Sprintf("%d|%s", node.ProfileType, node.Content)
 		if _, ok := profileSeen[key]; ok {
 			continue
 		}
 		profileSeen[key] = struct{}{}
 		analysis.ProfileNodes = append(analysis.ProfileNodes, logicdomain.ProfileNodeCandidate{
-			ProfileType: node.ProfileType,
-			Content:     node.Content,
-			Status:      logicdomain.ProfileStatusPending,
+			ProfileType:     node.ProfileType,
+			Content:         node.Content,
+			EvidenceSource:  evidenceSource,
+			Admission:       admission,
+			AdmissionReason: admissionReason,
+			Status:          logicdomain.ProfileStatusPending,
 		})
 	}
 	return analysis, nil
+}
+
+// normalizeTurnAnalysisUserInputKind trims and lowercases the declared user-input kind so prompt outputs can be validated against one strict canonical set.
+// normalizeTurnAnalysisUserInputKind 用于裁剪并小写化声明的用户输入类型，让提示词输出可按严格的规范集合校验。
+func normalizeTurnAnalysisUserInputKind(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// normalizeTurnAnalysisEvidenceSource trims and lowercases the declared evidence source so missing values surface as validation errors instead of being silently defaulted.
+// normalizeTurnAnalysisEvidenceSource 用于裁剪并小写化声明的证据来源，让缺失值以校验错误暴露，而不是被静默补默认值。
+func normalizeTurnAnalysisEvidenceSource(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// normalizeTurnAnalysisAdmission trims and lowercases the declared admission so prompt drift cannot silently turn unknown outputs into keep decisions.
+// normalizeTurnAnalysisAdmission 用于裁剪并小写化声明的准入结论，避免提示词漂移被静默解释成 keep。
+func normalizeTurnAnalysisAdmission(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
+}
+
+// normalizeTurnAnalysisAdmissionReason trims the optional first-pass rejection reason without inventing one when the model did not provide it.
+// normalizeTurnAnalysisAdmissionReason 用于裁剪可选的首轮拒绝原因；如果模型未提供，则不凭空补造一个原因。
+func normalizeTurnAnalysisAdmissionReason(raw string) string {
+	return strings.ToLower(strings.TrimSpace(raw))
 }
 
 // normalizeMemoryContextEdgeCandidates validates and de-duplicates one raw context-edge slice so persistence only sees canonical support/rebuttal evidence labels.

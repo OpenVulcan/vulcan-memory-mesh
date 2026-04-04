@@ -75,53 +75,18 @@ func (u *PostActionUseCase) convergeExpiredProfiles() {
 	}
 }
 
-// reviewTurnProfiles reuses the batch profile-review pipeline for one immediate turn so the synchronous post-action path can keep profile decisions aligned with the existing reviewer contract.
-// reviewTurnProfiles 用于把批量画像评审流水线复用到单条即时 turn 上，让同步 post-action 路径继续遵守现有 reviewer 契约。
-func (u *PostActionUseCase) reviewTurnProfiles(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis *logicdomain.TurnAnalysis) error {
-	if u == nil || analysis == nil || len(analysis.ProfileNodes) == 0 {
-		return nil
-	}
-	batch := logicdomain.SessionBatchAnalysis{
-		Turns: []logicdomain.SessionBatchTurnAnalysis{{
-			TurnID:        turn.ID,
-			Details:       analysis.Details,
-			DetailsBudget: analysis.DetailsBudget,
-			ProfileNodes:  append([]logicdomain.ProfileNodeCandidate(nil), analysis.ProfileNodes...),
-		}},
-	}
-	err := u.reviewSessionBatchProfiles(ctx, session, []logicdomain.SessionTurnRecord{{
-		ID:        turn.ID,
-		SessionID: turn.SessionID,
-		ProjectID: turn.ProjectID,
-		CreatedAt: choosePostActionCreatedAt(turn),
-		UpdatedAt: turn.UpdatedAt,
-	}}, &batch)
-	if err != nil {
-		return err
-	}
-	analysis.ProfileNodes = append([]logicdomain.ProfileNodeCandidate(nil), batch.Turns[0].ProfileNodes...)
-	analysis.UserProfileMerged = batch.UserProfileMerged
-	analysis.MergedUserProfile = batch.MergedUserProfile
-	analysis.ProjectProfileMerged = batch.ProjectProfileMerged
-	analysis.MergedProjectProfile = batch.MergedProjectProfile
-	return nil
-}
-
-// reviewSessionBatchProfiles reviews all fresh profile nodes across the selected batch, applies active/invalid/supersede decisions, and rebuilds the rendered user/project profiles.
-// reviewSessionBatchProfiles 用于评审所选批次中的全部新画像节点，应用 active/invalid/supersede 决策，并重建 user/project 的渲染画像文本。
-func (u *PostActionUseCase) reviewSessionBatchProfiles(ctx context.Context, session logicdomain.SessionRef, turns []logicdomain.SessionTurnRecord, analysis *logicdomain.SessionBatchAnalysis) error {
-	if u == nil || u.store == nil || u.profiles == nil || analysis == nil {
-		return nil
-	}
-
-	// Stamp every fresh node with its source turn and profile date before sending the atomic review request.
-	// 在发送原子化评审请求前，先为每条新节点补齐来源 turn 和画像日期。
+// prepareSessionBatchProfileNodes stamps source-turn metadata onto fresh profile candidates and returns the flattened user/project candidate slices used by reviewer requests.
+// prepareSessionBatchProfileNodes 用于给新画像候选补齐来源 turn 元数据，并返回 reviewer 请求要用到的扁平化 user/project 候选切片。
+func prepareSessionBatchProfileNodes(turns []logicdomain.SessionTurnRecord, analysis *logicdomain.SessionBatchAnalysis) (map[uint64]logicdomain.SessionTurnRecord, []logicdomain.ProfileNodeCandidate, []postActionProfileNodeRef, []postActionProfileNodeRef) {
 	turnByID := make(map[uint64]logicdomain.SessionTurnRecord, len(turns))
 	nodes := make([]logicdomain.ProfileNodeCandidate, 0)
 	userRefs := make([]postActionProfileNodeRef, 0)
 	projectRefs := make([]postActionProfileNodeRef, 0)
 	for _, turn := range turns {
 		turnByID[turn.ID] = turn
+	}
+	if analysis == nil {
+		return turnByID, nodes, userRefs, projectRefs
 	}
 	for turnIdx := range analysis.Turns {
 		turn := turnByID[analysis.Turns[turnIdx].TurnID]
@@ -142,19 +107,15 @@ func (u *PostActionUseCase) reviewSessionBatchProfiles(ctx context.Context, sess
 			}
 		}
 	}
-	if len(nodes) == 0 {
+	return turnByID, nodes, userRefs, projectRefs
+}
+
+// applyReviewedSessionBatchProfiles maps one already-reviewed batch result back onto the original turn-local profile nodes and rebuilds merged user/project profile text.
+// applyReviewedSessionBatchProfiles 用于把一次已完成评审的批量结果映射回原始 turn 局部画像节点，并重建合并后的 user/project 画像文本。
+func applyReviewedSessionBatchProfiles(analysis *logicdomain.SessionBatchAnalysis, turnByID map[uint64]logicdomain.SessionTurnRecord, snapshot logicdomain.ProfileReviewTargetsSnapshot, userRefs, projectRefs []postActionProfileNodeRef, reviewed logicdomain.TurnProfileReviewResult) error {
+	if analysis == nil {
 		return nil
 	}
-
-	snapshot, err := u.store.LoadProfileReviewTargets(ctx, session)
-	if err != nil {
-		return fmt.Errorf("load profile review targets: %w", err)
-	}
-	reviewed, err := u.profiles.Review(ctx, snapshot, nodes)
-	if err != nil {
-		return err
-	}
-
 	userRetired, userUpdated, err := applySessionBatchProfileReviewSection(analysis, turnByID, userRefs, snapshot.UserNodes, reviewed.User, "user")
 	if err != nil {
 		return err
@@ -183,7 +144,7 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 		return nil, false, nil
 	}
 	if section == nil {
-		return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("missing %s block", label)}
+		return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("missing %s block", label)}
 	}
 
 	activeByID := make(map[uint64]logicdomain.ProfileActiveNodeRecord, len(activeNodes))
@@ -197,23 +158,23 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 	// 先把 accepted 候选映射回新节点，让它们变成 active，并携带规范化内容和生命周期元数据。
 	for _, accepted := range section.AcceptedCandidates {
 		if accepted.CandidateIndex < 0 || accepted.CandidateIndex >= len(refs) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s accepted candidate_index %d is out of range", label, accepted.CandidateIndex)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s accepted candidate_index %d is out of range", label, accepted.CandidateIndex)}
 		}
 		ref := refs[accepted.CandidateIndex]
 		node := &analysis.Turns[ref.TurnIndex].ProfileNodes[ref.NodeIndex]
 		if !logicdomain.ValidProfilePriority(accepted.Priority) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s accepted candidate priority is invalid", label)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s accepted candidate priority is invalid", label)}
 		}
 		if !logicdomain.ValidProfileLevel(accepted.ProfileLevel) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s accepted candidate level is invalid", label)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s accepted candidate level is invalid", label)}
 		}
 		supersedeIDs := normalizeProfileNodeIDs(accepted.SupersedeNodeIDs)
 		for _, nodeID := range supersedeIDs {
 			if _, ok := activeByID[nodeID]; !ok {
-				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s supersede_node_id %d was not present in active nodes", label, nodeID)}
+				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s supersede_node_id %d was not present in active nodes", label, nodeID)}
 			}
 			if _, exists := retiredSet[nodeID]; exists {
-				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s node id %d is retired by multiple actions", label, nodeID)}
+				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s node id %d is retired by multiple actions", label, nodeID)}
 			}
 			retiredSet[nodeID] = struct{}{}
 		}
@@ -232,7 +193,7 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 	// 然后把被拒绝的候选标成 invalid，便于异步流水线继续落库存档，但不会污染活跃画像集合。
 	for _, idx := range section.InvalidCandidateIndexes {
 		if idx < 0 || idx >= len(refs) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s invalid candidate_index %d is out of range", label, idx)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s invalid candidate_index %d is out of range", label, idx)}
 		}
 		ref := refs[idx]
 		analysis.Turns[ref.TurnIndex].ProfileNodes[ref.NodeIndex].Status = logicdomain.ProfileStatusInvalid
@@ -242,10 +203,10 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 	// 最后应用 retire-only 指令，让某些旧节点在没有新替代节点的情况下也能退出渲染画像。
 	for _, nodeID := range normalizeProfileNodeIDs(section.RetireOnlyNodeIDs) {
 		if _, ok := activeByID[nodeID]; !ok {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s retire_only_node_id %d was not present in active nodes", label, nodeID)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s retire_only_node_id %d was not present in active nodes", label, nodeID)}
 		}
 		if _, exists := retiredSet[nodeID]; exists {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_profile_nodes", Message: fmt.Sprintf("%s node id %d is retired multiple times", label, nodeID)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s node id %d is retired multiple times", label, nodeID)}
 		}
 		retiredSet[nodeID] = struct{}{}
 		updated = true
