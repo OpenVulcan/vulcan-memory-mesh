@@ -395,6 +395,99 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 	}
 }
 
+// TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID verifies that when the reviewer selects multiple memories from the same source turn, pre-check only keeps one final injected item and one lifecycle write-back target.
+// TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID 用于验证当评审器同时选中多个来自同一来源 turn 的记忆时，pre-check 最终只保留一条注入项，并且生命周期回写也只写一条。
+func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.T) {
+	store := &stubPreCheckStore{}
+	memories := &stubPreCheckMemories{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{
+				{
+					QueryIndex: 0,
+					Query:      "记忆工具的能力与问题",
+					Hits: []MemoryQueryHit{
+						{
+							MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+							SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 93},
+							SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+							ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+							Abstract:       "记忆工具支持结构化信息存储。",
+							DetailsPreview: "这条是同一 turn 中分数更高的能力摘要。",
+							Category:       logicdomain.MemoryNodeCategoryProjectContext,
+							Score:          0.96,
+							Origin:         "hybrid_rrf",
+						},
+						{
+							MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 21},
+							SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 93},
+							SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+							ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+							Abstract:       "记忆工具存在索引延迟问题。",
+							DetailsPreview: "这条来自同一 turn，但不应在最终注入里与上一条同时保留。",
+							Category:       logicdomain.MemoryNodeCategoryProjectContext,
+							Score:          0.91,
+							Origin:         "hybrid_rrf",
+						},
+					},
+				},
+			},
+		},
+	}
+	uc := NewPreCheckUseCase(
+		memories,
+		store,
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"记忆工具的能力与问题"},
+				NeedMemory: true,
+				Reason:     "needs prior tool memory",
+			},
+		},
+		&stubPreCheckReviewer{
+			result: logicdomain.PreCheckMemoryReviewResult{
+				SelectedCandidateNumbers: []int{1, 2},
+				Reason:                   "两条都相关，但最终只应保留一个 turn 代表项。",
+			},
+		},
+		nil,
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, ReviewCandidateLimit: 4},
+		nil,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-turn-dedup"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "之前总结过记忆工具的能力和问题吗？",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if !result.ShouldInject {
+		t.Fatalf("expected should_inject=true, got %#v", result)
+	}
+	if len(result.ContextItems) != 1 {
+		t.Fatalf("expected same-turn candidates to deduplicate into one final item, got %#v", result.ContextItems)
+	}
+	if result.ContextItems[0].TurnID != 93 {
+		t.Fatalf("expected final retained item to keep source turn id, got %#v", result.ContextItems)
+	}
+	if !strings.Contains(result.ContextItems[0].Text, "结构化信息存储") {
+		t.Fatalf("expected higher-scored same-turn summary to survive, got %#v", result.ContextItems)
+	}
+	if strings.Contains(result.ContextText, "索引延迟问题") {
+		t.Fatalf("expected fallback context text to drop the duplicate same-turn summary, got %q", result.ContextText)
+	}
+	if len(store.adoptedIDs) != 1 || store.adoptedIDs[0] != 20 {
+		t.Fatalf("expected lifecycle write-back to deduplicate same-turn selections, got %#v", store.adoptedIDs)
+	}
+}
+
 // TestPreCheckExecuteDegradesToEmptyResult verifies that second-stage reviewer failures do not fail the whole request, but pre-check also no longer falls back to profile-only injection.
 // TestPreCheckExecuteDegradesToEmptyResult 用于验证当第二层评审器失败时，请求不会整体失败，但 pre-check 也不再回退成仅画像注入。
 func TestPreCheckExecuteDegradesToEmptyResult(t *testing.T) {

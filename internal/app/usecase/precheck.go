@@ -252,6 +252,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, cmd.UserContent, err)
 		selectedCandidates = nil
 	} else {
+		selectedCandidates = deduplicateSelectedCandidatesByTurnID(selectedCandidates)
 		selectedIDs := make([]uint64, 0, len(selectedCandidates))
 		for _, candidate := range selectedCandidates {
 			selectedIDs = append(selectedIDs, candidate.MemoryID)
@@ -661,6 +662,31 @@ func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreChe
 		}
 	}
 	return selected, strings.TrimSpace(review.Reason), nil
+}
+
+// deduplicateSelectedCandidatesByTurnID removes repeated adopted candidates that point to the same source turn so final injection does not surface multiple summaries for one underlying dialogue.
+// deduplicateSelectedCandidatesByTurnID 用于去掉指向同一来源 turn 的重复已采纳候选，避免最终注入把同一段底层对话拆成多条摘要重复返回。
+func deduplicateSelectedCandidatesByTurnID(candidates []logicdomain.PreCheckMemoryCandidate) []logicdomain.PreCheckMemoryCandidate {
+	if len(candidates) <= 1 {
+		return append([]logicdomain.PreCheckMemoryCandidate(nil), candidates...)
+	}
+	out := make([]logicdomain.PreCheckMemoryCandidate, 0, len(candidates))
+	turnIndex := make(map[uint64]int, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.SourceTurnID == 0 {
+			out = append(out, candidate)
+			continue
+		}
+		if idx, ok := turnIndex[candidate.SourceTurnID]; ok {
+			if shouldPreferIncomingPreCheckCandidate(out[idx], candidate) {
+				out[idx] = candidate
+			}
+			continue
+		}
+		turnIndex[candidate.SourceTurnID] = len(out)
+		out = append(out, candidate)
+	}
+	return out
 }
 
 // writeMemoryAdoption persists lifecycle updates only for the final adopted memory ids selected by the second-stage reviewer.
