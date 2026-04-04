@@ -1581,6 +1581,238 @@ func TestMemoryUseCaseWriteDoesNotCollapseDifferentSemanticAttributes(t *testing
 	}
 }
 
+// TestMemoryUseCaseWriteSoftIdempotencyReusesCurrentSemanticHash verifies cross-request soft idempotency still reuses the durable row when the new semantic hash matches exactly.
+// TestMemoryUseCaseWriteSoftIdempotencyReusesCurrentSemanticHash 用于验证当新的语义哈希完全一致时，跨请求软幂等仍会正确复用长期记忆行。
+func TestMemoryUseCaseWriteSoftIdempotencyReusesCurrentSemanticHash(t *testing.T) {
+	session := logicdomain.SessionRef{
+		SessionID:  49,
+		SessionKey: "sess-direct-current-soft-dedupe",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}
+	item := WriteMemoryItem{
+		ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+		Abstract:    "记录当前稳定的部署约束。",
+		Details:     "记录当前稳定的部署约束。",
+		Category:    logicdomain.MemoryNodeCategoryProjectContext,
+		Priority:    logicdomain.MemoryPriorityP1,
+		MemoryLevel: logicdomain.MemoryLevelStable,
+		ExpiresAt:   time.Date(2026, 7, 1, 9, 0, 0, 0, time.UTC),
+	}
+	currentHash := buildDirectMemoryDedupeHash(session, item, time.Date(2026, 4, 5, 9, 0, 0, 0, time.UTC))
+
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		recentDedupeRowsByHash: map[string]logicdomain.MemoryNodeRecord{
+			currentHash: {
+				ID:          1501,
+				Status:      logicdomain.MemoryStatusActive,
+				SourceKind:  logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+				Category:    logicdomain.MemoryNodeCategoryProjectContext,
+				Priority:    logicdomain.MemoryPriorityP1,
+				MemoryLevel: logicdomain.MemoryLevelStable,
+				Abstract:    "记录当前稳定的部署约束。",
+				Details:     "记录当前稳定的部署约束。",
+				ExpiresAt:   item.ExpiresAt,
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: session,
+		Items:   []WriteMemoryItem{item},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || !result.Items[0].Deduped || result.Items[0].Ref.ID != 1501 {
+		t.Fatalf("expected current semantic hash to reuse memory 1501, got %+v", result.Items)
+	}
+	if len(store.recentDedupeQueries) != 1 || store.recentDedupeQueries[0] != currentHash {
+		t.Fatalf("expected one current-hash lookup, got %+v", store.recentDedupeQueries)
+	}
+	if len(vector.upserts) != 0 || len(store.directWriteApplyCalls) != 0 || len(embedding.requests) != 0 {
+		t.Fatalf("expected soft idempotency to skip new writes, got upserts=%+v apply=%+v embeds=%+v", vector.upserts, store.directWriteApplyCalls, embedding.requests)
+	}
+}
+
+// TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration verifies rows written before the semantic-hash hardening still participate in the short migration window when their lifecycle semantics truly match.
+// TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration 用于验证在语义哈希加固前写入的历史行，只要生命周期语义确实一致，仍能在短迁移窗口内继续参与软幂等。
+func TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC)
+	session := logicdomain.SessionRef{
+		SessionID:  50,
+		SessionKey: "sess-direct-legacy-soft-dedupe",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}
+	item := normalizeWriteMemoryItem(WriteMemoryItem{
+		ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+		Abstract:    "记录默认生命周期下的部署约束。",
+		Details:     "记录默认生命周期下的部署约束。",
+		Category:    logicdomain.MemoryNodeCategoryProjectContext,
+		Priority:    logicdomain.MemoryPriorityP2,
+		MemoryLevel: logicdomain.MemoryLevelStable,
+	}, fixedNow)
+	currentHash := buildDirectMemoryDedupeHash(session, item, fixedNow)
+	legacyHash := buildLegacyDirectMemoryDedupeHash(session, item)
+
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		recentDedupeRowsByHash: map[string]logicdomain.MemoryNodeRecord{
+			legacyHash: {
+				ID:          1601,
+				Status:      logicdomain.MemoryStatusActive,
+				SourceKind:  logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+				Category:    logicdomain.MemoryNodeCategoryProjectContext,
+				Priority:    logicdomain.MemoryPriorityP2,
+				MemoryLevel: logicdomain.MemoryLevelStable,
+				Abstract:    item.Abstract,
+				Details:     item.Details,
+				CreatedAt:   fixedNow,
+				ExpiresAt:   fixedNow.Add(defaultMemoryTTL(logicdomain.MemoryScopeLevelProject)),
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: session,
+		Items: []WriteMemoryItem{{
+			ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+			Abstract:    item.Abstract,
+			Details:     item.Details,
+			Category:    logicdomain.MemoryNodeCategoryProjectContext,
+			Priority:    logicdomain.MemoryPriorityP2,
+			MemoryLevel: logicdomain.MemoryLevelStable,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || !result.Items[0].Deduped || result.Items[0].Ref.ID != 1601 {
+		t.Fatalf("expected legacy hash migration path to reuse memory 1601, got %+v", result.Items)
+	}
+	if len(store.recentDedupeQueries) != 2 || store.recentDedupeQueries[0] != currentHash || store.recentDedupeQueries[1] != legacyHash {
+		t.Fatalf("expected current-hash lookup followed by legacy fallback, got %+v", store.recentDedupeQueries)
+	}
+	if len(vector.upserts) != 0 || len(store.directWriteApplyCalls) != 0 || len(embedding.requests) != 0 {
+		t.Fatalf("expected legacy soft idempotency to skip new writes, got upserts=%+v apply=%+v embeds=%+v", vector.upserts, store.directWriteApplyCalls, embedding.requests)
+	}
+}
+
+// TestMemoryUseCaseWriteSoftIdempotencyRejectsLegacyHashSemanticMismatch verifies the compatibility fallback never reuses one old coarse-hash row when the incoming direct write changes category or lifecycle semantics.
+// TestMemoryUseCaseWriteSoftIdempotencyRejectsLegacyHashSemanticMismatch 用于验证兼容回退不会因为旧版粗粒度哈希相同，就误复用已经改变 category 或生命周期语义的主动写入。
+func TestMemoryUseCaseWriteSoftIdempotencyRejectsLegacyHashSemanticMismatch(t *testing.T) {
+	fixedNow := time.Date(2026, 4, 5, 11, 0, 0, 0, time.UTC)
+	session := logicdomain.SessionRef{
+		SessionID:  51,
+		SessionKey: "sess-direct-legacy-soft-dedupe-mismatch",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}
+	item := normalizeWriteMemoryItem(WriteMemoryItem{
+		ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+		Abstract:    "记录默认生命周期下的部署约束。",
+		Details:     "记录默认生命周期下的部署约束。",
+		Category:    logicdomain.MemoryNodeCategoryProjectContext,
+		Priority:    logicdomain.MemoryPriorityP2,
+		MemoryLevel: logicdomain.MemoryLevelStable,
+	}, fixedNow)
+	currentHash := buildDirectMemoryDedupeHash(session, item, fixedNow)
+	legacyHash := buildLegacyDirectMemoryDedupeHash(session, item)
+
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		recentDedupeRowsByHash: map[string]logicdomain.MemoryNodeRecord{
+			legacyHash: {
+				ID:          1701,
+				Status:      logicdomain.MemoryStatusActive,
+				SourceKind:  logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+				Category:    logicdomain.MemoryNodeCategoryTechSpecAPI,
+				Priority:    logicdomain.MemoryPriorityP2,
+				MemoryLevel: logicdomain.MemoryLevelStable,
+				Abstract:    item.Abstract,
+				Details:     item.Details,
+				CreatedAt:   fixedNow,
+				ExpiresAt:   fixedNow.Add(defaultMemoryTTL(logicdomain.MemoryScopeLevelProject)),
+			},
+		},
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1702,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   item.Abstract,
+				Details:    item.Details,
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: session,
+		Items: []WriteMemoryItem{{
+			ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+			Abstract:    item.Abstract,
+			Details:     item.Details,
+			Category:    logicdomain.MemoryNodeCategoryProjectContext,
+			Priority:    logicdomain.MemoryPriorityP2,
+			MemoryLevel: logicdomain.MemoryLevelStable,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1702 {
+		t.Fatalf("expected semantic mismatch to create a fresh row, got %+v", result.Items)
+	}
+	if len(store.recentDedupeQueries) != 2 || store.recentDedupeQueries[0] != currentHash || store.recentDedupeQueries[1] != legacyHash {
+		t.Fatalf("expected current-hash lookup followed by legacy mismatch check, got %+v", store.recentDedupeQueries)
+	}
+	if len(store.directWriteApplyCalls) != 1 || len(vector.upserts) != 1 || len(embedding.requests) != 1 {
+		t.Fatalf("expected semantic mismatch to persist a fresh row, got apply=%+v upserts=%+v embeds=%+v", store.directWriteApplyCalls, vector.upserts, embedding.requests)
+	}
+}
+
 // TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate verifies dropped candidates with similar memories no longer auto-reuse the first hit unless reviewer explicitly names the dedupe target.
 // TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate 用于验证当 reviewer 只丢弃候选但没有显式给出 dedupe 目标时，即使存在 similar memory，也不会再自动复用第一条旧记忆。
 func TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate(t *testing.T) {
@@ -1988,6 +2220,8 @@ type stubTurnLookupStore struct {
 	lexicalTopKs             []int
 	lexicalFilters           []logicdomain.SearchFilter
 	contextLookupIDs         []uint64
+	recentDedupeQueries      []string
+	recentDedupeRowsByHash   map[string]logicdomain.MemoryNodeRecord
 	recentDedupeRow          logicdomain.MemoryNodeRecord
 	recentDedupeHit          bool
 	createdDirectMemoryNodes []logicdomain.MemoryNodeRecord
@@ -2082,11 +2316,19 @@ func (s *stubTurnLookupStore) SearchLexicalMemory(_ context.Context, query strin
 	return append([]logicdomain.MemoryLexicalHit(nil), s.lexicalHits...), nil
 }
 
-// FindRecentActiveMemoryByDedupe keeps the stub interface-complete for tests that only exercise search and turn-detail flows.
-// FindRecentActiveMemoryByDedupe 用于补齐测试桩接口，因为当前这些测试只覆盖搜索和 turn 详情流程。
-func (s *stubTurnLookupStore) FindRecentActiveMemoryByDedupe(_ context.Context, _ logicdomain.SessionRef, _, _ int, _ string, _ time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
+// FindRecentActiveMemoryByDedupe records short-window dedupe lookups and can return either hash-specific rows or the legacy canned row for older tests.
+// FindRecentActiveMemoryByDedupe 用于记录短窗口幂等查询，并支持按哈希返回特定行；旧测试若未配置哈希映射，则继续走兼容的单行预设返回。
+func (s *stubTurnLookupStore) FindRecentActiveMemoryByDedupe(_ context.Context, _ logicdomain.SessionRef, _, _ int, dedupeHash string, _ time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
+	s.recentDedupeQueries = append(s.recentDedupeQueries, dedupeHash)
 	if s.err != nil {
 		return logicdomain.MemoryNodeRecord{}, false, s.err
+	}
+	if len(s.recentDedupeRowsByHash) > 0 {
+		row, ok := s.recentDedupeRowsByHash[dedupeHash]
+		if !ok {
+			return logicdomain.MemoryNodeRecord{}, false, nil
+		}
+		return row, true, nil
 	}
 	if !s.recentDedupeHit {
 		return logicdomain.MemoryNodeRecord{}, false, nil

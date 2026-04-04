@@ -671,15 +671,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 	pending := make([]directWritePendingItem, 0, len(items))
 	pendingByCollapseKey := make(map[string]int, len(items))
 	for idx, item := range items {
-		dedupeHash := buildDirectMemoryDedupeHash(cmd.Session, item)
-		existing, ok, err := u.memories.FindRecentActiveMemoryByDedupe(
-			ctx,
-			cmd.Session,
-			logicdomain.MemorySourceKindGRPCAIWrite,
-			item.ScopeLevel,
-			dedupeHash,
-			now.Add(-directMemoryDedupeWindow),
-		)
+		existing, ok, dedupeHash, err := u.resolveRecentDirectWriteSoftDedupe(ctx, cmd.Session, item, now)
 		if err != nil {
 			return WriteMemoriesResult{}, err
 		}
@@ -747,6 +739,43 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 		assignDirectWriteResultItems(results, pendingItem.OriginalIndexes, created)
 	}
 	return WriteMemoriesResult{Items: results}, nil
+}
+
+// resolveRecentDirectWriteSoftDedupe evaluates the short-window soft-idempotency path for one direct-write item, preferring the current semantic hash while keeping a tightly validated legacy-hash fallback during the upgrade window.
+// resolveRecentDirectWriteSoftDedupe 用于为单条主动写记忆解析短窗口软幂等路径：优先命中当前语义哈希，同时在升级窗口内保留经过严格校验的旧哈希兼容回退。
+func (u *MemoryUseCase) resolveRecentDirectWriteSoftDedupe(ctx context.Context, session logicdomain.SessionRef, item WriteMemoryItem, now time.Time) (logicdomain.MemoryNodeRecord, bool, string, error) {
+	currentHash := buildDirectMemoryDedupeHash(session, item, now)
+	existing, ok, err := u.memories.FindRecentActiveMemoryByDedupe(
+		ctx,
+		session,
+		logicdomain.MemorySourceKindGRPCAIWrite,
+		item.ScopeLevel,
+		currentHash,
+		now.Add(-directMemoryDedupeWindow),
+	)
+	if err != nil || ok {
+		return existing, ok, currentHash, err
+	}
+
+	legacyHash := buildLegacyDirectMemoryDedupeHash(session, item)
+	if legacyHash == currentHash {
+		return logicdomain.MemoryNodeRecord{}, false, currentHash, nil
+	}
+	existing, ok, err = u.memories.FindRecentActiveMemoryByDedupe(
+		ctx,
+		session,
+		logicdomain.MemorySourceKindGRPCAIWrite,
+		item.ScopeLevel,
+		legacyHash,
+		now.Add(-directMemoryDedupeWindow),
+	)
+	if err != nil {
+		return logicdomain.MemoryNodeRecord{}, false, currentHash, err
+	}
+	if !ok || !directWriteSoftDedupeMatchesMemoryRow(existing, item, now) {
+		return logicdomain.MemoryNodeRecord{}, false, currentHash, nil
+	}
+	return existing, true, currentHash, nil
 }
 
 // directWritePendingItem stores one post-soft-dedupe direct-write item together with every caller position that collapsed into the same in-request write and its stable short-window dedupe hash.
@@ -2561,9 +2590,27 @@ func defaultMemoryTTL(scopeLevel int) time.Duration {
 	}
 }
 
-// buildDirectMemoryDedupeHash builds one stable hash from the fields that define “same direct write in the same short window”.
-// buildDirectMemoryDedupeHash 用于从定义“同一短时间窗口内相同主动写入”的字段构造稳定哈希。
-func buildDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemoryItem) string {
+// buildDirectMemoryDedupeHash builds the current short-window soft-idempotency hash from the fields that define one semantically identical direct write.
+// buildDirectMemoryDedupeHash 用于基于定义“同一短窗口内语义等价主动写入”的字段，构造当前版本的软幂等哈希。
+func buildDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemoryItem, now time.Time) string {
+	body := strings.Join([]string{
+		strconv.Itoa(logicdomain.MemorySourceKindGRPCAIWrite),
+		strconv.Itoa(item.ScopeLevel),
+		strconv.FormatUint(session.SessionID, 10),
+		normalizeHashText(item.Abstract),
+		normalizeHashText(item.Details),
+		strconv.Itoa(item.Category),
+		strconv.Itoa(item.Priority),
+		strconv.Itoa(item.MemoryLevel),
+		buildDirectMemoryExpiryDedupeSignature(item.ScopeLevel, item.ExpiresAt, now),
+	}, "\n")
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// buildLegacyDirectMemoryDedupeHash preserves the pre-hardening hash layout so one short migration window can still dedupe rows written by older binaries when the semantic fields also match.
+// buildLegacyDirectMemoryDedupeHash 用于保留加固前的旧哈希布局，确保升级后的短迁移窗口内，历史版本写出的行在语义字段一致时仍能继续命中幂等。
+func buildLegacyDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemoryItem) string {
 	body := strings.Join([]string{
 		strconv.Itoa(logicdomain.MemorySourceKindGRPCAIWrite),
 		strconv.Itoa(item.ScopeLevel),
@@ -2575,8 +2622,8 @@ func buildDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemor
 	return hex.EncodeToString(sum[:])
 }
 
-// buildDirectMemoryRequestCollapseKey keeps in-request duplicate collapse stricter than the short-window storage dedupe hash so callers can still write the same text twice when category, priority, memory level, or expiry semantics differ.
-// buildDirectMemoryRequestCollapseKey 用于让单请求内的重复折叠比短窗口存储去重更严格，确保当 category、priority、memory level 或过期语义不同的时候，调用方仍能显式写入两条同文本记忆。
+// buildDirectMemoryRequestCollapseKey keeps one-RPC duplicate collapse slightly stricter than the storage dedupe hash by preserving the exact expiry timestamp inside the current batch.
+// buildDirectMemoryRequestCollapseKey 用于让单个 RPC 内的重复折叠比存储层软幂等再严格一点：它会保留当前批次中的精确过期时间戳，避免同批显式不同过期点被误并。
 func buildDirectMemoryRequestCollapseKey(item WriteMemoryItem) string {
 	expiresAt := ""
 	if !item.ExpiresAt.IsZero() {
@@ -2593,6 +2640,54 @@ func buildDirectMemoryRequestCollapseKey(item WriteMemoryItem) string {
 	}, "\n")
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])
+}
+
+// directWriteSoftDedupeMatchesMemoryRow validates whether one hot-path memory row is semantically equivalent to the incoming direct-write item before the legacy hash fallback is allowed to reuse it.
+// directWriteSoftDedupeMatchesMemoryRow 用于在启用旧哈希兼容回退前，校验热路径记忆行是否与当前主动写入条目语义等价，避免继续复用旧版过粗的幂等键。
+func directWriteSoftDedupeMatchesMemoryRow(row logicdomain.MemoryNodeRecord, item WriteMemoryItem, now time.Time) bool {
+	if row.ID == 0 || row.SourceKind != logicdomain.MemorySourceKindGRPCAIWrite {
+		return false
+	}
+	if row.ScopeLevel != item.ScopeLevel ||
+		row.Category != item.Category ||
+		row.Priority != item.Priority ||
+		row.MemoryLevel != item.MemoryLevel {
+		return false
+	}
+	if normalizeHashText(row.Abstract) != normalizeHashText(item.Abstract) ||
+		normalizeHashText(row.Details) != normalizeHashText(item.Details) {
+		return false
+	}
+	return buildStoredDirectMemoryExpiryDedupeSignature(row) == buildDirectMemoryExpiryDedupeSignature(item.ScopeLevel, item.ExpiresAt, now)
+}
+
+// buildStoredDirectMemoryExpiryDedupeSignature normalizes one persisted direct-write expiry into the same semantic signature used by the request-side soft-idempotency hash.
+// buildStoredDirectMemoryExpiryDedupeSignature 用于把已持久化主动记忆的过期信息归一成与请求侧软幂等哈希相同的语义签名。
+func buildStoredDirectMemoryExpiryDedupeSignature(row logicdomain.MemoryNodeRecord) string {
+	return buildDirectMemoryExpiryDedupeSignature(row.ScopeLevel, row.ExpiresAt, row.CreatedAt)
+}
+
+// buildDirectMemoryExpiryDedupeSignature keeps default TTL-based writes stable across separate RPCs while still distinguishing explicit absolute-expiry writes from each other.
+// buildDirectMemoryExpiryDedupeSignature 用于让基于默认 TTL 的主动写入在不同 RPC 之间仍保持稳定幂等，同时继续区分显式指定的绝对过期时间。
+func buildDirectMemoryExpiryDedupeSignature(scopeLevel int, expiresAt, baseTime time.Time) string {
+	if expiresAt.IsZero() {
+		return "none"
+	}
+	defaultTTL := defaultMemoryTTL(scopeLevel)
+	if !baseTime.IsZero() && durationWithin(expiresAt.Sub(baseTime), defaultTTL, time.Second) {
+		return "ttl:" + strconv.FormatInt(int64(defaultTTL/time.Second), 10)
+	}
+	return "at:" + expiresAt.UTC().Format(time.RFC3339Nano)
+}
+
+// durationWithin provides a tiny tolerance so timestamp serialization or database precision cannot break equality for TTL-derived expiries.
+// durationWithin 用于提供一个很小的容差，避免时间序列化或数据库精度差异打破基于 TTL 的过期时间等价判断。
+func durationWithin(left, right, tolerance time.Duration) bool {
+	delta := left - right
+	if delta < 0 {
+		delta = -delta
+	}
+	return delta <= tolerance
 }
 
 // normalizeHashText keeps soft-idempotency stable across harmless whitespace drift while still distinguishing materially different content.
