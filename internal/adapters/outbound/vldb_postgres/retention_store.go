@@ -191,8 +191,9 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 		return result, nil
 	}
 	excludedSessionIDs := make([]uint64, 0, limit)
+	inspectionBudget := postgresIdleSessionInspectionBudget(limit)
 	inspectedSessionCount := 0
-	for len(result.BatchIDs) < limit && inspectedSessionCount < limit {
+	for len(result.BatchIDs) < limit && inspectedSessionCount < inspectionBudget {
 		sessionResult, recycleErr := recycleOne(excludedSessionIDs)
 		if recycleErr != nil {
 			result.BatchIDs = normalizeUint64List(result.BatchIDs)
@@ -221,6 +222,15 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 	result.SessionIDs = normalizeUint64List(result.SessionIDs)
 	result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
 	return result, nil
+}
+
+// postgresIdleSessionInspectionBudget gives each recycle pass a small bounded amount of extra inspection headroom so a few race-window no-op sessions do not starve later real work, without turning one maintenance pass into an unbounded scan.
+// postgresIdleSessionInspectionBudget 用于为每次回收提供少量有界的额外检查预算，让少数并发窗口里的 no-op session 不会饿死后续真实可回收工作，同时避免把单轮维护放大成无界扫描。
+func postgresIdleSessionInspectionBudget(limit int) int {
+	if limit <= 0 {
+		return 0
+	}
+	return limit + 4
 }
 
 // PurgeExpiredTrash permanently deletes old PostgreSQL trash batches once their soft-backup retention window has elapsed.

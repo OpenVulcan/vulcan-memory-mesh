@@ -70,7 +70,7 @@ func TestBuildPostgresIdleSessionTurnReferenceClauseIgnoresRecycledMemoryIDs(t *
 // TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions 用于验证一次 idle-session 回收会跳过最老但 no-op 的 session，并继续处理后续真正可回收的批次，而不是在第一个空候选处直接停止。
 func TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions(t *testing.T) {
 	callCount := 0
-	excludedSnapshots := make([][]uint64, 0, 2)
+	excludedSnapshots := make([][]uint64, 0, 3)
 	result, err := collectPostgresIdleSessionRecyclePass(2, func(excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
 		excludedSnapshots = append(excludedSnapshots, append([]uint64(nil), excludedSessionIDs...))
 		callCount++
@@ -89,6 +89,11 @@ func TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions(t *testing.T) {
 				RecycledTurnCount:    3,
 				RecycledVectorIDs:    []string{"vec-1"},
 			}, nil
+		case 3:
+			if len(excludedSessionIDs) != 1 || excludedSessionIDs[0] != 41 {
+				t.Fatalf("third recycle call excluded sessions = %v, want [41]", excludedSessionIDs)
+			}
+			return postgresIdleSessionRecycleResult{}, nil
 		default:
 			t.Fatalf("unexpected extra recycle call #%d with excluded sessions %v", callCount, excludedSessionIDs)
 			return postgresIdleSessionRecycleResult{}, nil
@@ -97,8 +102,8 @@ func TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions(t *testing.T) {
 	if err != nil {
 		t.Fatalf("collectPostgresIdleSessionRecyclePass returned error: %v", err)
 	}
-	if callCount != 2 {
-		t.Fatalf("recycle call count = %d, want 2", callCount)
+	if callCount != 3 {
+		t.Fatalf("recycle call count = %d, want 3", callCount)
 	}
 	if len(result.BatchIDs) != 1 || result.BatchIDs[0] != 81 {
 		t.Fatalf("batch ids = %v, want [81]", result.BatchIDs)
@@ -112,8 +117,73 @@ func TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions(t *testing.T) {
 	if len(result.RecycledVectorIDs) != 1 || result.RecycledVectorIDs[0] != "vec-1" {
 		t.Fatalf("vector ids = %v, want [vec-1]", result.RecycledVectorIDs)
 	}
-	if len(excludedSnapshots) < 2 || len(excludedSnapshots[1]) != 1 || excludedSnapshots[1][0] != 41 {
+	if len(excludedSnapshots) < 3 ||
+		len(excludedSnapshots[1]) != 1 || excludedSnapshots[1][0] != 41 ||
+		len(excludedSnapshots[2]) != 1 || excludedSnapshots[2][0] != 41 {
 		t.Fatalf("excluded snapshots = %v", excludedSnapshots)
+	}
+}
+
+// TestCollectPostgresIdleSessionRecyclePassAllowsBoundedExtraInspection verifies one recycle pass still reaches a later recyclable session when limit=1 and the first candidate becomes no-op inside the concurrent race window.
+// TestCollectPostgresIdleSessionRecyclePassAllowsBoundedExtraInspection 用于验证当 limit=1 且第一个候选在并发窗口内变成 no-op 时，回收过程仍能利用有界额外检查预算继续命中后续可回收 session。
+func TestCollectPostgresIdleSessionRecyclePassAllowsBoundedExtraInspection(t *testing.T) {
+	callCount := 0
+	result, err := collectPostgresIdleSessionRecyclePass(1, func(excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
+		callCount++
+		switch callCount {
+		case 1:
+			if len(excludedSessionIDs) != 0 {
+				t.Fatalf("first recycle call excluded sessions = %v, want []", excludedSessionIDs)
+			}
+			return postgresIdleSessionRecycleResult{SessionID: 41}, nil
+		case 2:
+			if len(excludedSessionIDs) != 1 || excludedSessionIDs[0] != 41 {
+				t.Fatalf("second recycle call excluded sessions = %v, want [41]", excludedSessionIDs)
+			}
+			return postgresIdleSessionRecycleResult{
+				BatchID:              82,
+				SessionID:            42,
+				RecycledMemoryCount:  1,
+				RecycledContextCount: 2,
+				RecycledTurnCount:    3,
+				RecycledVectorIDs:    []string{"vec-2"},
+			}, nil
+		default:
+			t.Fatalf("unexpected extra recycle call #%d with excluded sessions %v", callCount, excludedSessionIDs)
+			return postgresIdleSessionRecycleResult{}, nil
+		}
+	})
+	if err != nil {
+		t.Fatalf("collectPostgresIdleSessionRecyclePass returned error: %v", err)
+	}
+	if callCount != 2 {
+		t.Fatalf("recycle call count = %d, want 2", callCount)
+	}
+	if len(result.BatchIDs) != 1 || result.BatchIDs[0] != 82 {
+		t.Fatalf("batch ids = %v, want [82]", result.BatchIDs)
+	}
+	if len(result.SessionIDs) != 1 || result.SessionIDs[0] != 42 {
+		t.Fatalf("session ids = %v, want [42]", result.SessionIDs)
+	}
+	if result.RecycledMemoryCount != 1 || result.RecycledContextCount != 2 || result.RecycledTurnCount != 3 {
+		t.Fatalf("unexpected recycle stats: %+v", result)
+	}
+	if len(result.RecycledVectorIDs) != 1 || result.RecycledVectorIDs[0] != "vec-2" {
+		t.Fatalf("vector ids = %v, want [vec-2]", result.RecycledVectorIDs)
+	}
+}
+
+// TestPostgresIdleSessionInspectionBudgetAddsBoundedHeadroom verifies the inspection budget always keeps a small fixed amount of extra room beyond the requested batch limit so race-window no-op sessions do not immediately halt the pass.
+// TestPostgresIdleSessionInspectionBudgetAddsBoundedHeadroom 用于验证检查预算总会在批量限制之外保留少量固定余量，避免并发窗口里的 no-op session 立刻终止整轮回收。
+func TestPostgresIdleSessionInspectionBudgetAddsBoundedHeadroom(t *testing.T) {
+	if got := postgresIdleSessionInspectionBudget(0); got != 0 {
+		t.Fatalf("inspection budget for 0 = %d, want 0", got)
+	}
+	if got := postgresIdleSessionInspectionBudget(1); got != 5 {
+		t.Fatalf("inspection budget for 1 = %d, want 5", got)
+	}
+	if got := postgresIdleSessionInspectionBudget(32); got != 36 {
+		t.Fatalf("inspection budget for 32 = %d, want 36", got)
 	}
 }
 
