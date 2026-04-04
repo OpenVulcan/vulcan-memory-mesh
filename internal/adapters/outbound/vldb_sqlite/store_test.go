@@ -689,6 +689,38 @@ func TestEvolveAdoptedMemoryRecordStrengthensLifecycle(t *testing.T) {
 	}
 }
 
+// TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows verifies lifecycle write-back refuses to re-activate an active row whose expiry elapsed after recall but before the adoption transaction begins.
+// TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows 用于验证当某条 active 记忆在召回后、采纳事务开始前刚好过期时，生命周期回写不会把它重新写活。
+func TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	executeCalled := false
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_memory_nodes"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":201,"team_id":1,"space_id":2,"project_id":3,"user_id":4,"origin_session_id":5,"source_turn_id":6,"vector_id":"vec-201","vector_json":"[0.1,0.2]","source_kind":0,"scope_level":0,"category":3,"abstract":"过期记忆","details":"这条记忆在采纳回写前已经过期。","memory_status":0,"priority":2,"memory_level":0,"refresh_weight":1,"support_count":0,"rebuttal_count":0,"status_reason":"","expires_timestamp":1000,"last_recalled_timestamp":0,"last_adopted_timestamp":0,"last_reinforced_timestamp":0,"recalled_count":0,"adopted_count":0,"reinforcement_count":0,"cross_session_adopted_count":0,"decay_disabled":0,"dedupe_hash":"","created_timestamp":10,"updated_timestamp":20}
+]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		executeCalled = true
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	err := store.ApplyMemoryAdoption(context.Background(), logicdomain.SessionRef{SessionID: 77}, []uint64{201}, time.Unix(2, 0).UTC())
+	if err != nil {
+		t.Fatalf("ApplyMemoryAdoption returned error: %v", err)
+	}
+	if executeCalled {
+		t.Fatal("expected expired active adoption target to skip write-back script execution")
+	}
+}
+
 // TestCurrentSchemaSQLContainsContextualMemoryTables verifies the managed SQLite schema now includes context-evidence counters on memory rows plus the dedicated edge table.
 // TestCurrentSchemaSQLContainsContextualMemoryTables 用于验证受管 SQLite schema 现在包含主记忆行上的证据计数，以及独立的情境边表。
 func TestCurrentSchemaSQLContainsContextualMemoryTables(t *testing.T) {

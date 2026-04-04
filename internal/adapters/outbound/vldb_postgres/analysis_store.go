@@ -146,7 +146,7 @@ WHERE id = $15
 `, s.memoryNodesTable())
 	for _, row := range rows {
 		record := row.toMemoryNodeRecord()
-		if record.ID == 0 || record.Status != logicdomain.MemoryStatusActive {
+		if !logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(record, adoptedAt) {
 			continue
 		}
 		evolved := evolveAdoptedMemoryRecord(session, record, adoptedAt)

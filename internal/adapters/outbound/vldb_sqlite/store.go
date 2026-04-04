@@ -2443,7 +2443,7 @@ func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.Ses
 
 	script := ""
 	for _, row := range rows {
-		if row.ID == 0 || row.Status != logicdomain.MemoryStatusActive {
+		if !logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(row, adoptedAt) {
 			continue
 		}
 		evolved := evolveAdoptedMemoryRecord(session, row, adoptedAt)

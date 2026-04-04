@@ -150,6 +150,18 @@ type MemoryNodeRecord struct {
 	UpdatedAt                time.Time
 }
 
+// MemoryNodeRecordIsActiveUnexpiredAt reports whether one durable memory row still belongs to the active hot path at the provided observation time, so retrieval, dedupe, and lifecycle write-backs can all share one consistent "still alive" contract.
+// MemoryNodeRecordIsActiveUnexpiredAt 用于判断某条长期记忆在给定观察时间点是否仍属于 active 热路径，让检索、去重和生命周期回写共享同一套“仍然存活”的判定契约。
+func MemoryNodeRecordIsActiveUnexpiredAt(row MemoryNodeRecord, now time.Time) bool {
+	if row.ID == 0 || row.Status != MemoryStatusActive {
+		return false
+	}
+	if row.ExpiresAt.IsZero() {
+		return true
+	}
+	return row.ExpiresAt.After(now.UTC())
+}
+
 // MemoryContextEdge stores one durable memory-to-context relationship so later retrieval can filter or re-rank by explicit situational evidence.
 // MemoryContextEdge 用于保存一条长期记忆到情境标签的关系，让后续检索可以按明确情境证据过滤或重排。
 type MemoryContextEdge struct {

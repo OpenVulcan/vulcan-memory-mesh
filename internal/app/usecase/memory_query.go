@@ -945,13 +945,7 @@ func (u *MemoryUseCase) loadDirectWriteDedupedExistingRows(ctx context.Context, 
 // memoryNodeRecordIsActiveUnexpiredAt keeps direct-write semantic dedupe aligned with the runtime hot-path contract so stale or retired rows are never returned as reusable targets.
 // memoryNodeRecordIsActiveUnexpiredAt 用于让主动写语义去重与运行时热路径契约保持一致，避免把陈旧或已退役的记忆行当成可复用目标返回。
 func memoryNodeRecordIsActiveUnexpiredAt(row logicdomain.MemoryNodeRecord, now time.Time) bool {
-	if row.ID == 0 || row.Status != logicdomain.MemoryStatusActive {
-		return false
-	}
-	if row.ExpiresAt.IsZero() {
-		return true
-	}
-	return row.ExpiresAt.After(now)
+	return logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(row, now)
 }
 
 // indexActiveUnexpiredMemoryRowsByID builds one id-indexed lookup for hot-path memory rows while dropping any record that has already left the active+unexpired window before materialization finishes.
