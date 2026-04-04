@@ -933,15 +933,7 @@ func (u *MemoryUseCase) loadDirectWriteDedupedExistingRows(ctx context.Context, 
 	if err != nil {
 		return nil, err
 	}
-	now := time.Now().UTC()
-	out := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
-	for _, row := range rows {
-		if !memoryNodeRecordIsActiveUnexpiredAt(row, now) {
-			continue
-		}
-		out[row.ID] = row
-	}
-	return out, nil
+	return indexActiveUnexpiredMemoryRowsByID(rows, time.Now().UTC()), nil
 }
 
 // memoryNodeRecordIsActiveUnexpiredAt keeps direct-write semantic dedupe aligned with the runtime hot-path contract so stale or retired rows are never returned as reusable targets.
@@ -954,6 +946,22 @@ func memoryNodeRecordIsActiveUnexpiredAt(row logicdomain.MemoryNodeRecord, now t
 		return true
 	}
 	return row.ExpiresAt.After(now)
+}
+
+// indexActiveUnexpiredMemoryRowsByID builds one id-indexed lookup for hot-path memory rows while dropping any record that has already left the active+unexpired window before materialization finishes.
+// indexActiveUnexpiredMemoryRowsByID 用于为热路径记忆行构建按 id 索引的查找表，并在回表完成前丢弃已经退出 active+unexpired 窗口的记录。
+func indexActiveUnexpiredMemoryRowsByID(rows []logicdomain.MemoryNodeRecord, now time.Time) map[uint64]logicdomain.MemoryNodeRecord {
+	if len(rows) == 0 {
+		return map[uint64]logicdomain.MemoryNodeRecord{}
+	}
+	indexed := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		if !memoryNodeRecordIsActiveUnexpiredAt(row, now) {
+			continue
+		}
+		indexed[row.ID] = row
+	}
+	return indexed
 }
 
 // assignDirectWriteResultItems fans one canonical direct-write outcome back to every original caller position that collapsed into the same in-request dedupe bucket.
@@ -1380,10 +1388,7 @@ func (u *MemoryUseCase) materializeLexicalHits(ctx context.Context, hits []logic
 	if err != nil {
 		return nil, err
 	}
-	byID := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
-	for _, row := range rows {
-		byID[row.ID] = row
-	}
+	byID := indexActiveUnexpiredMemoryRowsByID(rows, time.Now().UTC())
 	mapped := make([]MemoryQueryHit, 0, len(hits))
 	total := len(hits)
 	for idx, hit := range hits {
@@ -2003,8 +2008,12 @@ func (u *MemoryUseCase) ensureMMRVectors(ctx context.Context, hits []MemoryQuery
 		}
 		return hits
 	}
+	now := time.Now().UTC()
 	byID := make(map[uint64][]float32, len(rows))
 	for _, row := range rows {
+		if !memoryNodeRecordIsActiveUnexpiredAt(row, now) {
+			continue
+		}
 		if len(row.Vector) == 0 {
 			continue
 		}

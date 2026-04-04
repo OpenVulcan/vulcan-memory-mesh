@@ -1316,6 +1316,91 @@ func TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches(t *testing.T) 
 	}
 }
 
+// TestMaterializeLexicalHitsSkipsRetiredRows verifies lexical materialization keeps the active+unexpired hot-path contract even if one matched memory row becomes superseded before the relational backfill finishes.
+// TestMaterializeLexicalHitsSkipsRetiredRows 用于验证 lexical 回表补全会继续遵守 active+unexpired 热路径契约；即使某条命中记忆在关系回表完成前变成 superseded，也不会重新进入搜索结果。
+func TestMaterializeLexicalHitsSkipsRetiredRows(t *testing.T) {
+	uc := NewMemoryUseCase(nil, &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{
+			{
+				ID:         201,
+				Status:     logicdomain.MemoryStatusSuperseded,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "旧阶段 A",
+				Details:    "这条记忆已经被新阶段覆盖。",
+				Vector:     []float32{0.1, 0.2, 0.3},
+			},
+			{
+				ID:         202,
+				Status:     logicdomain.MemoryStatusActive,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "当前阶段 B",
+				Details:    "这条记忆仍处于热路径。",
+				Vector:     []float32{0.4, 0.5, 0.6},
+			},
+		},
+	}, nil, nil, nil)
+
+	hits, err := uc.materializeLexicalHits(context.Background(), []logicdomain.MemoryLexicalHit{
+		{MemoryID: 201, Score: 0.99},
+		{MemoryID: 202, Score: 0.98},
+	})
+	if err != nil {
+		t.Fatalf("materialize lexical hits: %v", err)
+	}
+	if len(hits) != 1 || hits[0].MemoryRef.ID != 202 {
+		t.Fatalf("expected retired lexical row to be skipped, got %+v", hits)
+	}
+}
+
+// TestEnsureMMRVectorsSkipsRetiredRows verifies the MMR vector backfill path never loads vectors from durable memory rows that have already left the active+unexpired window.
+// TestEnsureMMRVectorsSkipsRetiredRows 用于验证 MMR 向量回填路径不会从已经退出 active+unexpired 窗口的长期记忆行加载向量。
+func TestEnsureMMRVectorsSkipsRetiredRows(t *testing.T) {
+	uc := NewMemoryUseCase(nil, &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{
+			{
+				ID:         301,
+				Status:     logicdomain.MemoryStatusDeleted,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "已删除的旧约束",
+				Details:    "不应再参与 MMR 向量回填。",
+				Vector:     []float32{0.1, 0.2, 0.3},
+			},
+			{
+				ID:         302,
+				Status:     logicdomain.MemoryStatusActive,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "仍有效的新约束",
+				Details:    "允许回填向量。",
+				Vector:     []float32{0.4, 0.5, 0.6},
+			},
+		},
+	}, nil, nil, nil)
+
+	enriched := uc.ensureMMRVectors(context.Background(), []MemoryQueryHit{
+		{
+			MemoryRef: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 301},
+			Abstract:  "已删除的旧约束",
+		},
+		{
+			MemoryRef: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 302},
+			Abstract:  "仍有效的新约束",
+		},
+	})
+	if len(enriched) != 2 {
+		t.Fatalf("unexpected hit count after mmr vector backfill: %+v", enriched)
+	}
+	if len(enriched[0].Vector) != 0 {
+		t.Fatalf("expected retired row to stay without vector, got %+v", enriched[0])
+	}
+	if len(enriched[1].Vector) != 3 || enriched[1].Vector[0] != 0.4 {
+		t.Fatalf("expected active row to receive vector backfill, got %+v", enriched[1])
+	}
+}
+
 // TestAppendUniqueMemoryContextEvidenceValueDeduplicatesEquivalentLabels verifies query-time explanations collapse legacy context-value formatting variants so one semantic context does not appear twice in the returned evidence list.
 // TestAppendUniqueMemoryContextEvidenceValueDeduplicatesEquivalentLabels 用于验证查询期解释会折叠历史 context value 的格式变体，避免同一个语义情境在返回证据里出现两次。
 func TestAppendUniqueMemoryContextEvidenceValueDeduplicatesEquivalentLabels(t *testing.T) {
