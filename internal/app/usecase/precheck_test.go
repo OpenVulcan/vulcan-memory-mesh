@@ -1191,6 +1191,103 @@ func TestPreCheckExecuteMergesEvidenceAcrossRepeatedMemoryHits(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecuteNormalizesEquivalentMatchedEvidenceLabels verifies repeated-hit merging reuses the shared context-evidence canonical surface so reviewer candidates do not show duplicated labels that only differ by formatting drift.
+// TestPreCheckExecuteNormalizesEquivalentMatchedEvidenceLabels 用于验证重复命中合并会复用共享的 context evidence 规范表面，避免 reviewer 候选因格式漂移展示重复标签。
+func TestPreCheckExecuteNormalizesEquivalentMatchedEvidenceLabels(t *testing.T) {
+	reviewer := &stubPreCheckReviewer{}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Query:      "local oss 当前方案",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 21},
+								SourceRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 9},
+								SourceKind:                 logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:                 logicdomain.MemoryScopeLevelProject,
+								Abstract:                   "phase4 新方案",
+								DetailsPreview:             "第一组命中使用旧格式的 deployment context 标签。",
+								Category:                   logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:                      0.93,
+								Origin:                     "vector_search",
+								MatchedContextValues:       []string{"deployment_mode=LOCAL_OSS"},
+								MatchedContextSupportCount: 1,
+								MatchedContextScoreDelta:   0.03,
+							},
+						},
+					},
+					{
+						QueryIndex: 1,
+						Query:      "deployment mode local oss 当前方案",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 21},
+								SourceRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 9},
+								SourceKind:                 logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:                 logicdomain.MemoryScopeLevelProject,
+								Abstract:                   "phase4 新方案",
+								DetailsPreview:             "第二组命中使用新格式的 deployment context 标签。",
+								Category:                   logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:                      0.93,
+								Origin:                     "hybrid_rrf",
+								MatchedContextValues:       []string{"deployment mode= local-oss "},
+								MatchedContextSupportCount: 2,
+								MatchedContextScoreDelta:   0.05,
+							},
+						},
+					},
+				},
+			},
+		},
+		&stubPreCheckStore{
+			recentTurns: []logicdomain.SessionTurnRecord{
+				{ID: 8, SessionID: 41, Details: "上一轮确认当前环境仍为 local oss。", DetailsBudget: 15, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
+			},
+		},
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"local oss 当前方案", "deployment mode local oss 当前方案"},
+				NeedMemory: true,
+				Reason:     "needs deployment-specific architecture memory",
+			},
+		},
+		reviewer,
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	if _, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-normalized-evidence"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "在 local oss 下应该继续用哪个方案？",
+	}); err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if len(reviewer.input.Candidates) != 1 {
+		t.Fatalf("expected one merged candidate, got %#v", reviewer.input.Candidates)
+	}
+	candidate := reviewer.input.Candidates[0]
+	if len(candidate.MatchedContextValues) != 1 {
+		t.Fatalf("expected equivalent matched context labels to collapse into one canonical value, got %#v", candidate.MatchedContextValues)
+	}
+	if candidate.MatchedContextValues[0] != "deployment_mode=local oss" {
+		t.Fatalf("expected canonical matched context value, got %#v", candidate.MatchedContextValues)
+	}
+	if candidate.MatchedContextSupportCount != 2 || candidate.MatchedContextScoreDelta != 0.05 {
+		t.Fatalf("expected stronger matched evidence stats to survive merge, got %#v", candidate)
+	}
+}
+
 // TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary verifies that when a higher-score hit becomes the representative candidate, stronger matched-context stats from the other repeated hit are still preserved.
 // TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary 用于验证当更高分命中成为代表候选时，另一条重复命中里更强的 matched-context 统计仍会被保留下来。
 func TestPreCheckExecuteKeepsStrongerMatchedEvidenceFromSecondary(t *testing.T) {

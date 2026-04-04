@@ -123,8 +123,8 @@ func chooseRicherPreCheckText(primary, secondary string) string {
 	}
 }
 
-// appendSortedUniquePreCheckValues deduplicates and sorts reviewer-facing string lists so merged candidate explanations stay stable across map iteration and query-group order.
-// appendSortedUniquePreCheckValues 用于对 reviewer 字符串列表去重并排序，让合并后的候选说明不受 map 遍历或 query group 顺序影响。
+// appendSortedUniquePreCheckValues deduplicates and sorts reviewer-facing string lists on top of the shared context-evidence canonical surface so pre-check explanations do not reintroduce formatting drift that query-time retrieval already collapsed.
+// appendSortedUniquePreCheckValues 用于基于共享的 context evidence 规范表面对 reviewer 字符串列表做去重与排序，避免 pre-check 说明重新引入查询期已折叠的格式漂移。
 func appendSortedUniquePreCheckValues(base []string, extra ...string) []string {
 	if len(base) == 0 && len(extra) == 0 {
 		return nil
@@ -132,15 +132,15 @@ func appendSortedUniquePreCheckValues(base []string, extra ...string) []string {
 	seen := make(map[string]struct{}, len(base)+len(extra))
 	out := make([]string, 0, len(base)+len(extra))
 	appendValue := func(value string) {
-		value = strings.TrimSpace(value)
-		if value == "" {
+		canonical := normalizeMemoryContextEvidenceLabel(value)
+		if canonical == "" {
 			return
 		}
-		if _, ok := seen[value]; ok {
+		if _, ok := seen[canonical]; ok {
 			return
 		}
-		seen[value] = struct{}{}
-		out = append(out, value)
+		seen[canonical] = struct{}{}
+		out = append(out, canonical)
 	}
 	for _, value := range base {
 		appendValue(value)
