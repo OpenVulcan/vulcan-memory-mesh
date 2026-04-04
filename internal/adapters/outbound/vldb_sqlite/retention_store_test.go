@@ -226,9 +226,9 @@ func TestBuildSQLiteIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows
 	}
 }
 
-// TestPurgeExpiredTrashDeletesAllTrashTablesAndMarksBatchesPurged verifies SQLite purge now hard-deletes old trash rows from every trash table and records the batch purge timestamp.
-// TestPurgeExpiredTrashDeletesAllTrashTablesAndMarksBatchesPurged 用于验证 SQLite purge 现在会从每张回收站表硬删除过期行，并记录批次 purge 时间戳。
-func TestPurgeExpiredTrashDeletesAllTrashTablesAndMarksBatchesPurged(t *testing.T) {
+// TestPurgeExpiredTrashDeletesAllTrashTablesAndBatchMetadata verifies SQLite purge now hard-deletes old trash rows from every trash table and then removes the recycle-batch metadata row itself, so batch bookkeeping cannot accumulate forever after the backup window ends.
+// TestPurgeExpiredTrashDeletesAllTrashTablesAndBatchMetadata 用于验证 SQLite purge 现在会从每张回收站表硬删除过期行，并继续删除回收批次元数据本身，避免软备份窗口结束后批次台账持续累积。
+func TestPurgeExpiredTrashDeletesAllTrashTablesAndBatchMetadata(t *testing.T) {
 	fake := &fakeSqliteClient{}
 	store := &Store{client: fake, timeout: time.Second}
 
@@ -267,8 +267,7 @@ func TestPurgeExpiredTrashDeletesAllTrashTablesAndMarksBatchesPurged(t *testing.
 		"DELETE FROM vmm_memory_context_edges_trash",
 		"DELETE FROM vmm_memory_nodes_trash",
 		"DELETE FROM vmm_turn_records_trash",
-		"UPDATE vmm_recycle_batches",
-		"SET purged_at =",
+		"DELETE FROM vmm_recycle_batches",
 		"COMMIT;",
 	} {
 		if !strings.Contains(capturedSQL, fragment) {

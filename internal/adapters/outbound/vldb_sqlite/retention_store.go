@@ -238,8 +238,8 @@ LIMIT ?
 	return result, nil
 }
 
-// PurgeExpiredTrash permanently removes SQLite trash batches whose soft-backup retention window has elapsed.
-// PurgeExpiredTrash 用于永久删除已超过软备份保留窗口的 SQLite 回收站批次。
+// PurgeExpiredTrash permanently removes SQLite trash batches whose soft-backup retention window has elapsed, including the recycle-batch metadata row so batch bookkeeping cannot grow without bound after trash data is gone.
+// PurgeExpiredTrash 用于永久删除已超过软备份保留窗口的 SQLite 回收站批次，并一并删除回收批次元数据，避免在 trash 数据清空后批次台账继续无界增长。
 func (s *Store) PurgeExpiredTrash(ctx context.Context, before time.Time, limit int) (logicdomain.RetentionTrashPurgeResult, error) {
 	if s == nil || s.client == nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("sqlite store is not initialized")
@@ -288,7 +288,6 @@ LIMIT ?
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("count sqlite turn trash rows: %w", err)
 	}
 
-	nowMillis := time.Now().UTC().UnixMilli()
 	script := fmt.Sprintf(`
 BEGIN IMMEDIATE;
 DELETE FROM vmm_memory_context_edges_trash
@@ -300,12 +299,10 @@ WHERE batch_id IN (%s);
 DELETE FROM vmm_turn_records_trash
 WHERE batch_id IN (%s);
 
-UPDATE vmm_recycle_batches
-SET purged_at = %d,
-    updated_timestamp = %d
+DELETE FROM vmm_recycle_batches
 WHERE id IN (%s);
 COMMIT;
-`, batchIDList, batchIDList, batchIDList, nowMillis, nowMillis, batchIDList)
+`, batchIDList, batchIDList, batchIDList, batchIDList)
 	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("purge sqlite recycle trash: %w", err)
 	}

@@ -233,8 +233,8 @@ func postgresIdleSessionInspectionBudget(limit int) int {
 	return limit + 4
 }
 
-// PurgeExpiredTrash permanently deletes old PostgreSQL trash batches once their soft-backup retention window has elapsed.
-// PurgeExpiredTrash 用于在 PostgreSQL 回收站保留窗口到期后，永久删除旧的垃圾批次。
+// PurgeExpiredTrash permanently deletes old PostgreSQL trash batches once their soft-backup retention window has elapsed, including the batch metadata row itself so recycle bookkeeping does not grow forever after the backup window ends.
+// PurgeExpiredTrash 用于在 PostgreSQL 回收站保留窗口到期后，永久删除旧的垃圾批次，并一并删除批次元数据行，避免软备份窗口结束后回收台账无限增长。
 func (s *Store) PurgeExpiredTrash(ctx context.Context, before time.Time, limit int) (logicdomain.RetentionTrashPurgeResult, error) {
 	if s == nil || s.pool == nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("postgres store is not initialized")
@@ -298,14 +298,9 @@ FOR UPDATE SKIP LOCKED
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres turn trash rows: %w", err)
 	}
-	markPurgedSQL := fmt.Sprintf(`
-UPDATE %s
-SET purged_at = $2,
-    updated_at = $2
-WHERE id = ANY($1)
-`, s.recycleBatchesTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(markPurgedSQL), batchArgs, time.Now().UTC()); err != nil {
-		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("mark postgres recycle batches purged: %w", err)
+	deleteBatchSQL := buildPostgresRecycleBatchDeleteSQL(s.recycleBatchesTable())
+	if _, err := tx.Exec(callCtx, deleteBatchSQL, batchArgs); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres recycle batch metadata: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("commit postgres trash purge tx: %w", err)
@@ -317,6 +312,12 @@ WHERE id = ANY($1)
 		PurgedContextCount: int(contextTag.RowsAffected()),
 		PurgedTurnCount:    int(turnTag.RowsAffected()),
 	}, nil
+}
+
+// buildPostgresRecycleBatchDeleteSQL builds the final metadata-delete statement used after one purge pass has already detached every trash row in the selected batch set.
+// buildPostgresRecycleBatchDeleteSQL 用于构建 purge 末尾删除批次元数据的 SQL；调用点会先确保该批次对应的所有 trash 行已被移除。
+func buildPostgresRecycleBatchDeleteSQL(table string) string {
+	return fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, table)
 }
 
 // recycleOnePostgresIdleSession locks and compacts one concrete long-idle session so concurrent workers and foreground writers cannot split one recycle batch across overlapping hot-table states.

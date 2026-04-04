@@ -206,3 +206,15 @@ func TestBuildPostgresIdleSessionCandidateAvailabilityClauseRequiresRecyclableRo
 		t.Fatalf("candidate availability args len = %d, want 5", got)
 	}
 }
+
+// TestBuildPostgresRecycleBatchDeleteSQLDeletesMetadata verifies the purge tail step now removes recycle-batch metadata rows entirely instead of leaving one ever-growing bookkeeping table behind after trash rows are gone.
+// TestBuildPostgresRecycleBatchDeleteSQLDeletesMetadata 用于验证 purge 末尾现在会直接删除回收批次元数据，而不是在 trash 行清空后继续保留一个持续增长的台账表。
+func TestBuildPostgresRecycleBatchDeleteSQLDeletesMetadata(t *testing.T) {
+	sql := buildPostgresRecycleBatchDeleteSQL("public.vmm_recycle_batches")
+	if !strings.Contains(sql, "DELETE FROM public.vmm_recycle_batches") {
+		t.Fatalf("delete recycle batch sql = %q", sql)
+	}
+	if strings.Contains(strings.ToUpper(sql), "UPDATE ") {
+		t.Fatalf("delete recycle batch sql should not update metadata rows: %q", sql)
+	}
+}

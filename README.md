@@ -692,6 +692,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `memory_nodes_trash`
   - `memory_context_edges_trash`
   - `turn_records_trash`
+  - 对应的 `recycle_batches` 批次元数据
 - 当前仍不提供产品级恢复接口；回收站仅作为数据库层防灾缓冲
 
 ### LanceDB 表名规则
