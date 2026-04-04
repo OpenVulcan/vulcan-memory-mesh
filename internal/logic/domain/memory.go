@@ -233,6 +233,28 @@ func NormalizeMemoryContextValue(raw string) string {
 	return strings.Join(strings.Fields(replacer.Replace(raw)), " ")
 }
 
+// NormalizeMemoryContextEvidenceLabel canonicalizes one rendered context-evidence label back into the shared `key=value` surface so retrieval, pre-check merging, and reviewer payloads cannot drift apart on harmless formatting differences.
+// NormalizeMemoryContextEvidenceLabel 用于把已渲染的 context evidence 标签重新归一到共享的 `key=value` 规范表面，避免检索解释、pre-check 合并和 reviewer 载荷因为无害格式差异而发生漂移。
+func NormalizeMemoryContextEvidenceLabel(raw string) string {
+	raw = strings.Join(strings.Fields(strings.TrimSpace(raw)), " ")
+	if raw == "" {
+		return ""
+	}
+	parts := strings.SplitN(raw, "=", 2)
+	if len(parts) == 1 {
+		return NormalizeMemoryContextValue(parts[0])
+	}
+	key := NormalizeMemoryContextKey(parts[0])
+	value := NormalizeMemoryContextValue(parts[1])
+	if value == "" {
+		return ""
+	}
+	if key == "" {
+		return value
+	}
+	return key + "=" + value
+}
+
 // ValidMemoryRefType reports whether one memory reference type belongs to the supported enum set.
 // ValidMemoryRefType 用于判断某个记忆引用类型是否属于当前支持的枚举集合。
 func ValidMemoryRefType(refType int) bool {

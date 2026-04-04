@@ -132,7 +132,7 @@ func appendSortedUniquePreCheckValues(base []string, extra ...string) []string {
 	seen := make(map[string]struct{}, len(base)+len(extra))
 	out := make([]string, 0, len(base)+len(extra))
 	appendValue := func(value string) {
-		canonical := normalizeMemoryContextEvidenceLabel(value)
+		canonical := logicdomain.NormalizeMemoryContextEvidenceLabel(value)
 		if canonical == "" {
 			return
 		}

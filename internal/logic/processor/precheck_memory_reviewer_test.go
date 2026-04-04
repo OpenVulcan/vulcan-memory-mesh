@@ -80,7 +80,7 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 				Origin:                     "hybrid_rrf_rerank_mmr",
 				OriginLabel:                "Hybrid RRF + Rerank + MMR",
 				OriginExplanation:          "候选先经过 hybrid RRF 融合，再被 rerank 模型重排，并额外经过 MMR 多样性控制。",
-				MatchedContextValues:       []string{"deployment_mode=local oss", "deployment_mode=local oss", "task_stage=phase4"},
+				MatchedContextValues:       []string{"deployment_mode=local oss", "deployment mode = LOCAL_OSS", "task-stage= phase4"},
 				MatchedContextSupportCount: 3,
 				MatchedContextScoreDelta:   0.075,
 			},

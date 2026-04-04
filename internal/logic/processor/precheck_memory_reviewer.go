@@ -200,11 +200,33 @@ func normalizePreCheckReviewCandidates(values []logicdomain.PreCheckMemoryCandid
 		value.Origin = strings.TrimSpace(value.Origin)
 		value.OriginLabel = strings.TrimSpace(value.OriginLabel)
 		value.OriginExplanation = strings.TrimSpace(value.OriginExplanation)
-		value.MatchedContextValues = normalizeStringValues(value.MatchedContextValues)
+		value.MatchedContextValues = normalizePreCheckMatchedContextValues(value.MatchedContextValues)
 		if value.Abstract == "" && value.Details == "" {
 			continue
 		}
 		out = append(out, value)
+	}
+	return out
+}
+
+// normalizePreCheckMatchedContextValues canonicalizes reviewer-facing context evidence onto the shared key=value surface so formatting variants from repeated hits do not get re-expanded when the second-stage reviewer prompt is rendered.
+// normalizePreCheckMatchedContextValues 用于把 reviewer 面向的 context evidence 归一到共享的 key=value 规范表面，避免重复命中的格式变体在第二层 reviewer 提示词渲染时再次膨胀。
+func normalizePreCheckMatchedContextValues(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		canonical := logicdomain.NormalizeMemoryContextEvidenceLabel(value)
+		if canonical == "" {
+			continue
+		}
+		if _, ok := seen[canonical]; ok {
+			continue
+		}
+		seen[canonical] = struct{}{}
+		out = append(out, canonical)
 	}
 	return out
 }

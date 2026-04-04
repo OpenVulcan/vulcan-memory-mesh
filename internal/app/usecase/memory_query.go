@@ -1819,33 +1819,11 @@ func appendUniqueMemoryContextEvidenceValue(values []string, key, value string) 
 		label = key + "=" + value
 	}
 	for _, existing := range values {
-		if normalizeMemoryContextEvidenceLabel(existing) == label {
+		if logicdomain.NormalizeMemoryContextEvidenceLabel(existing) == label {
 			return values
 		}
 	}
 	return append(values, label)
-}
-
-// normalizeMemoryContextEvidenceLabel converts one already-rendered evidence label back into the shared canonical key=value surface so legacy rows with formatting drift do not appear twice in explanations.
-// normalizeMemoryContextEvidenceLabel 用于把已渲染的证据标签重新归一到共享的 key=value 规范表面，避免历史格式漂移的旧行在解释里重复出现。
-func normalizeMemoryContextEvidenceLabel(raw string) string {
-	raw = textutil.NormalizeWhitespace(strings.TrimSpace(raw))
-	if raw == "" {
-		return ""
-	}
-	parts := strings.SplitN(raw, "=", 2)
-	if len(parts) == 1 {
-		return logicdomain.NormalizeMemoryContextValue(parts[0])
-	}
-	key := logicdomain.NormalizeMemoryContextKey(parts[0])
-	value := logicdomain.NormalizeMemoryContextValue(parts[1])
-	if value == "" {
-		return ""
-	}
-	if key == "" {
-		return value
-	}
-	return key + "=" + value
 }
 
 // collectMemoryQueryHitIDs returns the distinct durable memory ids present in one candidate slice so query-time enrichment can batch-load relational evidence once.

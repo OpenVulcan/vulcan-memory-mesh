@@ -56,3 +56,37 @@ func TestMemoryNodeRecordIsActiveUnexpiredAt(t *testing.T) {
 		})
 	}
 }
+
+// TestNormalizeMemoryContextEvidenceLabel verifies rendered context-evidence labels collapse harmless formatting drift onto one canonical key=value surface before they are reused by retrieval or reviewer prompts.
+// TestNormalizeMemoryContextEvidenceLabel 用于验证已渲染的 context evidence 标签会在被检索链路或 reviewer 提示词复用前，折叠到统一的 canonical key=value 表面。
+func TestNormalizeMemoryContextEvidenceLabel(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+		want string
+	}{
+		{
+			name: "key value pair keeps canonical surface",
+			raw:  " deployment mode = LOCAL_OSS ",
+			want: "deployment_mode=local oss",
+		},
+		{
+			name: "value-only evidence keeps normalized value",
+			raw:  " Local-OSS  Runtime ",
+			want: "local oss runtime",
+		},
+		{
+			name: "empty normalized value drops evidence",
+			raw:  "deployment_mode=   ",
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := NormalizeMemoryContextEvidenceLabel(tt.raw); got != tt.want {
+				t.Fatalf("NormalizeMemoryContextEvidenceLabel(%q) = %q, want %q", tt.raw, got, tt.want)
+			}
+		})
+	}
+}
