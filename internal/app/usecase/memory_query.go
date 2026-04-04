@@ -1921,9 +1921,18 @@ func zeroOrUTC(value time.Time) time.Time {
 	return value.UTC()
 }
 
-// clampUnitScore keeps ranking multipliers and final scores inside the stable 0..1 range expected by pre-check filtering.
-// clampUnitScore 用于把排序乘子和最终分数都钳制在 pre-check 过滤所期望的稳定 0..1 区间。
+// clampUnitScore keeps ranking multipliers and final scores inside the stable 0..1 range expected by pre-check filtering, while also collapsing NaN and infinity so one unstable upstream provider value cannot poison later sorting or RPC responses.
+// clampUnitScore 用于把排序乘子和最终分数都钳制在 pre-check 过滤所期望的稳定 0..1 区间，并额外吸收 NaN 与无穷值，避免上游不稳定分数污染后续排序或 RPC 响应。
 func clampUnitScore(value float64) float64 {
+	if math.IsNaN(value) {
+		return 0
+	}
+	if math.IsInf(value, 1) {
+		return 1
+	}
+	if math.IsInf(value, -1) {
+		return 0
+	}
 	if value < 0 {
 		return 0
 	}

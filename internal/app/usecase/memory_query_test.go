@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 	"time"
@@ -964,6 +965,63 @@ func TestMemoryUseCaseSearchClampsRerankScores(t *testing.T) {
 	}
 	if result.Results[0].Hits[1].MemoryRef.ID != 201 || result.Results[0].Hits[1].Score != 0 {
 		t.Fatalf("expected second reranked hit score to clamp to 0, got %+v", result.Results[0].Hits[1])
+	}
+}
+
+// TestMemoryUseCaseSearchClampsNonFiniteRerankScores verifies non-finite rerank provider scores are collapsed into safe finite 0..1 values before they reach final search results.
+// TestMemoryUseCaseSearchClampsNonFiniteRerankScores 用于验证 rerank provider 返回的非有限分数会在进入最终检索结果前被压平成安全的有限 0..1 值。
+func TestMemoryUseCaseSearchClampsNonFiniteRerankScores(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第一条", Details: "第一条详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第二条", Details: "第二条详情", VectorID: "vec-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "第一条", Score: 0.91},
+			{ID: "vec-2", Text: "第二条", Score: 0.89},
+		},
+	}
+	reranker := &stubRerankerClient{
+		results: []appports.RerankerResult{
+			{ID: "202", Score: math.Inf(1)},
+			{ID: "201", Score: math.NaN()},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureRerank(reranker, 5)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"文本排序模型"},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with non-finite rerank scores: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[0].Score != 1 {
+		t.Fatalf("expected positive infinity rerank score to clamp to 1, got %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].MemoryRef.ID != 201 || result.Results[0].Hits[1].Score != 0 {
+		t.Fatalf("expected NaN rerank score to clamp to 0, got %+v", result.Results[0].Hits[1])
+	}
+	if math.IsNaN(result.Results[0].Hits[0].Score) || math.IsNaN(result.Results[0].Hits[1].Score) {
+		t.Fatalf("expected final scores to stay finite, got %+v", result.Results[0].Hits)
 	}
 }
 
