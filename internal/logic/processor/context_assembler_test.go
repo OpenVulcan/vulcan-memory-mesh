@@ -15,7 +15,7 @@ func TestContextAssemblerKeepsMemoryTitlesAligned(t *testing.T) {
 	assembler := NewContextAssembler(stubPromptSource{prompt: "ok"}, "test-model")
 
 	contextText, items, err := assembler.Assemble(context.Background(), logicdomain.PersonaContext{}, []logicdomain.MemoryHit{
-		{ID: "20", Text: "phase4 新方案\n这是共享 assembler summary 里的记忆内容。", Score: 0.96},
+		{ID: "20", Text: "phase4 新方案\n这是共享 assembler summary 里的记忆内容。", Score: 0.96, Metadata: map[string]string{"turn_id": "88"}},
 	})
 	if err != nil {
 		t.Fatalf("assemble context: %v", err)
@@ -25,6 +25,9 @@ func TestContextAssemblerKeepsMemoryTitlesAligned(t *testing.T) {
 	}
 	if items[0].Title != "混合召回记忆" || items[0].Source != "memory" {
 		t.Fatalf("expected shared assembler memory item to expose mixed-memory title/source, got %#v", items[0])
+	}
+	if items[0].TurnID != 88 {
+		t.Fatalf("expected shared assembler memory item to expose source turn id, got %#v", items[0])
 	}
 	if contextText == "" {
 		t.Fatal("expected non-empty context summary")

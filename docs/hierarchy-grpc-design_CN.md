@@ -549,8 +549,12 @@ message PostActionTimelineItem {
 6. 只对被采纳的记忆写回生命周期
 7. 只把被采纳的记忆组装为：
    - `should_inject`
-   - `context_text`
    - `context_items`
+   - `context_text`
+     - 字段已废弃，gRPC 返回固定留空
+   - `context_items`
+     - 仅保留记忆正文、分数、`has_dialogue` 与 `turn_id`
+     - 当 `turn_id > 0` 时，上游可继续调用 `GetTurnDetails`
 
 这样做的目的：
 

@@ -251,6 +251,9 @@ func TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems(t *testing.T)
 	if len(result.ContextItems) == 0 || result.ContextItems[0].Title != "混合召回记忆" {
 		t.Fatalf("expected fallback items to expose mixed memory title, got %#v", result.ContextItems)
 	}
+	if result.ContextItems[0].TurnID != 8 {
+		t.Fatalf("expected fallback items to preserve source turn id for downstream transport, got %#v", result.ContextItems)
+	}
 }
 
 // TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates verifies stage one sees mixed refined/raw recent turns, then stage two adopts numbered candidates.
@@ -329,8 +332,8 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 	assembler := &stubPreCheckAssembler{
 		text: "assembled adopted context",
 		items: []logicdomain.ContextItem{
-			{Kind: "memory", Title: "向量召回记忆", Text: "上轮已经确认 channel 方案。", Source: "vector", Score: 0.88},
-			{Kind: "memory", Title: "向量召回记忆", Text: "项目已经决定用 channel 替代 mutex。", Source: "vector", Score: 0.93},
+			{Kind: "memory", Title: "向量召回记忆", Text: "上轮已经确认 channel 方案。", Source: "vector", Score: 0.88, TurnID: 7},
+			{Kind: "memory", Title: "向量召回记忆", Text: "项目已经决定用 channel 替代 mutex。", Source: "vector", Score: 0.93, TurnID: 8},
 		},
 	}
 	uc := NewPreCheckUseCase(
@@ -546,7 +549,7 @@ func TestPreCheckExecuteLogsFullStagePayloadsWhenPayloadDebugEnabled(t *testing.
 		&stubPreCheckAssembler{
 			text: "assembled adopted context",
 			items: []logicdomain.ContextItem{
-				{Kind: "memory", Title: "混合召回记忆", Text: "项目已经决定用 channel 替代 mutex。", Source: "memory", Score: 0.93},
+				{Kind: "memory", Title: "混合召回记忆", Text: "项目已经决定用 channel 替代 mutex。", Source: "memory", Score: 0.93, TurnID: 8},
 			},
 		},
 		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},

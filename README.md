@@ -114,6 +114,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 第二层 `review_precheck_memory` 会结合候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
 - 只把被采纳的记忆组装为 `context_text / context_items`
+  - `PreCheckResponse.context_text` 已废弃，gRPC 返回中固定留空
+  - 调用方应直接消费 `context_items[]`
+  - 每条 `context_items[]` 仅保留记忆正文、分数、`has_dialogue` 与 `turn_id`
+  - 当 `turn_id > 0` 时，可继续调用 `GetTurnDetails`
 - 画像读取仍走独立接口：`GetProfileNodes / GetProfileBundle`
 - 当某一步降级且没有任何记忆最终被采纳时，会返回空上下文，并把 `degraded=true`
 

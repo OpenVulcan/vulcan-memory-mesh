@@ -3082,12 +3082,17 @@ func (x *ChatCompactResponse) GetTraceId() string {
 // ContextItem transports one assembled context item back to the caller.
 // ContextItem 用于把一条组装后的上下文项返回给调用方。
 type ContextItem struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Kind          string                 `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
-	Title         string                 `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
-	Text          string                 `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
-	Source        string                 `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	Score         float64                `protobuf:"fixed64,5,opt,name=score,proto3" json:"score,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+	Kind string `protobuf:"bytes,1,opt,name=kind,proto3" json:"kind,omitempty"`
+	// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+	Title string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
+	Text  string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
+	// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+	Source        string  `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	Score         float64 `protobuf:"fixed64,5,opt,name=score,proto3" json:"score,omitempty"`
+	TurnId        uint64  `protobuf:"varint,6,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	HasDialogue   bool    `protobuf:"varint,7,opt,name=has_dialogue,json=hasDialogue,proto3" json:"has_dialogue,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3122,6 +3127,7 @@ func (*ContextItem) Descriptor() ([]byte, []int) {
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{39}
 }
 
+// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
 func (x *ContextItem) GetKind() string {
 	if x != nil {
 		return x.Kind
@@ -3129,6 +3135,7 @@ func (x *ContextItem) GetKind() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
 func (x *ContextItem) GetTitle() string {
 	if x != nil {
 		return x.Title
@@ -3143,6 +3150,7 @@ func (x *ContextItem) GetText() string {
 	return ""
 }
 
+// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
 func (x *ContextItem) GetSource() string {
 	if x != nil {
 		return x.Source
@@ -3157,15 +3165,30 @@ func (x *ContextItem) GetScore() float64 {
 	return 0
 }
 
+func (x *ContextItem) GetTurnId() uint64 {
+	if x != nil {
+		return x.TurnId
+	}
+	return 0
+}
+
+func (x *ContextItem) GetHasDialogue() bool {
+	if x != nil {
+		return x.HasDialogue
+	}
+	return false
+}
+
 // PreCheckResponse returns the injection decision and assembled context payload.
 // PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
 type PreCheckResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	ShouldInject  bool                   `protobuf:"varint,1,opt,name=should_inject,json=shouldInject,proto3" json:"should_inject,omitempty"`
-	ContextText   string                 `protobuf:"bytes,2,opt,name=context_text,json=contextText,proto3" json:"context_text,omitempty"`
-	ContextItems  []*ContextItem         `protobuf:"bytes,3,rep,name=context_items,json=contextItems,proto3" json:"context_items,omitempty"`
-	Degraded      bool                   `protobuf:"varint,4,opt,name=degraded,proto3" json:"degraded,omitempty"`
-	TraceId       string                 `protobuf:"bytes,5,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	ShouldInject bool                   `protobuf:"varint,1,opt,name=should_inject,json=shouldInject,proto3" json:"should_inject,omitempty"`
+	// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+	ContextText   string         `protobuf:"bytes,2,opt,name=context_text,json=contextText,proto3" json:"context_text,omitempty"`
+	ContextItems  []*ContextItem `protobuf:"bytes,3,rep,name=context_items,json=contextItems,proto3" json:"context_items,omitempty"`
+	Degraded      bool           `protobuf:"varint,4,opt,name=degraded,proto3" json:"degraded,omitempty"`
+	TraceId       string         `protobuf:"bytes,5,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3207,6 +3230,7 @@ func (x *PreCheckResponse) GetShouldInject() bool {
 	return false
 }
 
+// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
 func (x *PreCheckResponse) GetContextText() string {
 	if x != nil {
 		return x.ContextText
@@ -3665,16 +3689,18 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
 	"\aupdated\x18\x02 \x01(\bR\aupdated\x12*\n" +
 	"\x11compacted_turn_id\x18\x03 \x01(\x04R\x0fcompactedTurnId\x12\x19\n" +
-	"\btrace_id\x18\x04 \x01(\tR\atraceId\"y\n" +
-	"\vContextItem\x12\x12\n" +
-	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x14\n" +
-	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
-	"\x04text\x18\x03 \x01(\tR\x04text\x12\x16\n" +
-	"\x06source\x18\x04 \x01(\tR\x06source\x12\x14\n" +
-	"\x05score\x18\x05 \x01(\x01R\x05score\"\xcb\x01\n" +
+	"\btrace_id\x18\x04 \x01(\tR\atraceId\"\xc1\x01\n" +
+	"\vContextItem\x12\x16\n" +
+	"\x04kind\x18\x01 \x01(\tB\x02\x18\x01R\x04kind\x12\x18\n" +
+	"\x05title\x18\x02 \x01(\tB\x02\x18\x01R\x05title\x12\x12\n" +
+	"\x04text\x18\x03 \x01(\tR\x04text\x12\x1a\n" +
+	"\x06source\x18\x04 \x01(\tB\x02\x18\x01R\x06source\x12\x14\n" +
+	"\x05score\x18\x05 \x01(\x01R\x05score\x12\x17\n" +
+	"\aturn_id\x18\x06 \x01(\x04R\x06turnId\x12!\n" +
+	"\fhas_dialogue\x18\a \x01(\bR\vhasDialogue\"\xcf\x01\n" +
 	"\x10PreCheckResponse\x12#\n" +
-	"\rshould_inject\x18\x01 \x01(\bR\fshouldInject\x12!\n" +
-	"\fcontext_text\x18\x02 \x01(\tR\vcontextText\x128\n" +
+	"\rshould_inject\x18\x01 \x01(\bR\fshouldInject\x12%\n" +
+	"\fcontext_text\x18\x02 \x01(\tB\x02\x18\x01R\vcontextText\x128\n" +
 	"\rcontext_items\x18\x03 \x03(\v2\x13.vmm.v1.ContextItemR\fcontextItems\x12\x1a\n" +
 	"\bdegraded\x18\x04 \x01(\bR\bdegraded\x12\x19\n" +
 	"\btrace_id\x18\x05 \x01(\tR\atraceId\"F\n" +

@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -686,10 +687,17 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 		if strings.TrimSpace(text) == "" {
 			continue
 		}
+		var metadata map[string]string
+		if candidate.SourceTurnID > 0 {
+			metadata = map[string]string{
+				"turn_id": strconv.FormatUint(candidate.SourceTurnID, 10),
+			}
+		}
 		memoryHits = append(memoryHits, logicdomain.MemoryHit{
-			ID:    fmt.Sprintf("%d", candidate.MemoryID),
-			Text:  text,
-			Score: candidate.Score,
+			ID:       fmt.Sprintf("%d", candidate.MemoryID),
+			Text:     text,
+			Score:    candidate.Score,
+			Metadata: metadata,
 		})
 	}
 	if len(memoryHits) == 0 {
@@ -801,7 +809,14 @@ func buildFallbackContextItems(hits []logicdomain.MemoryHit) []logicdomain.Conte
 	items := make([]logicdomain.ContextItem, 0, len(hits))
 	for _, hit := range hits {
 		if text := strings.TrimSpace(hit.Text); text != "" {
-			items = append(items, logicdomain.ContextItem{Kind: "memory", Title: "混合召回记忆", Text: text, Source: "memory", Score: hit.Score})
+			items = append(items, logicdomain.ContextItem{
+				Kind:   "memory",
+				Title:  "混合召回记忆",
+				Text:   text,
+				Source: "memory",
+				Score:  hit.Score,
+				TurnID: logicdomain.MemoryHitTurnID(hit),
+			})
 		}
 	}
 	return items

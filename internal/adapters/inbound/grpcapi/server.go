@@ -709,16 +709,15 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	items := make([]*vmmv1.ContextItem, 0, len(result.ContextItems))
 	for _, item := range result.ContextItems {
 		items = append(items, &vmmv1.ContextItem{
-			Kind:   item.Kind,
-			Title:  item.Title,
-			Text:   item.Text,
-			Source: item.Source,
-			Score:  item.Score,
+			Text:        item.Text,
+			Score:       item.Score,
+			TurnId:      item.TurnID,
+			HasDialogue: item.TurnID > 0,
 		})
 	}
 	return &vmmv1.PreCheckResponse{
 		ShouldInject: result.ShouldInject,
-		ContextText:  result.ContextText,
+		ContextText:  "",
 		ContextItems: items,
 		Degraded:     result.Degraded,
 		TraceId:      trace.IDFromContext(ctx),
@@ -754,7 +753,7 @@ func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckR
 	}
 	nonEmptyContextItems := 0
 	for _, item := range result.ContextItems {
-		if item.Kind != "" || item.Title != "" || item.Text != "" || item.Source != "" || item.Score != 0 {
+		if item.Text != "" || item.Score != 0 || item.TurnID != 0 {
 			nonEmptyContextItems++
 		}
 	}
@@ -763,17 +762,40 @@ func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckR
 		"session_id", req.GetSessionId(),
 		"should_inject", result.ShouldInject,
 		"degraded", result.Degraded,
-		"context_text_present", result.ContextText != "",
+		"context_text_present", false,
 		"context_items", len(result.ContextItems),
 		"context_nonempty_items", nonEmptyContextItems,
 	}
 	fields = s.logger.AppendPayloadFields(fields, "response_payload", map[string]any{
 		"should_inject": result.ShouldInject,
 		"degraded":      result.Degraded,
-		"context_text":  result.ContextText,
-		"context_items": result.ContextItems,
+		"context_items": summarizePreCheckContextItemsForTransportLog(result.ContextItems),
 	})
 	s.logger.Info(message, fields...)
+}
+
+// preCheckContextItemTransportLogPayload keeps pre-check response payload logs aligned with the trimmed gRPC response contract so operators see the same fields as callers.
+// preCheckContextItemTransportLogPayload 用于让 pre-check 响应载荷日志与裁剪后的 gRPC 返回契约保持一致，确保运维看到的字段和调用方一致。
+type preCheckContextItemTransportLogPayload struct {
+	Text        string  `json:"text"`
+	Score       float64 `json:"score"`
+	HasDialogue bool    `json:"has_dialogue"`
+	TurnID      uint64  `json:"turn_id"`
+}
+
+// summarizePreCheckContextItemsForTransportLog projects internal context items into the minimal transport shape expected by the updated pre-check response contract.
+// summarizePreCheckContextItemsForTransportLog 用于把内部 context item 投影成更新后 pre-check 传输契约所需的最小结构。
+func summarizePreCheckContextItemsForTransportLog(items []logicdomain.ContextItem) []preCheckContextItemTransportLogPayload {
+	out := make([]preCheckContextItemTransportLogPayload, 0, len(items))
+	for _, item := range items {
+		out = append(out, preCheckContextItemTransportLogPayload{
+			Text:        item.Text,
+			Score:       item.Score,
+			HasDialogue: item.TurnID > 0,
+			TurnID:      item.TurnID,
+		})
+	}
+	return out
 }
 
 // PostAction validates the request, logs raw and cleaned payloads, then completes synchronous persistence before returning.

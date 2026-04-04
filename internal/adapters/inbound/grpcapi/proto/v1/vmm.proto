@@ -488,18 +488,20 @@ message ChatCompactResponse {
 // ContextItem transports one assembled context item back to the caller.
 // ContextItem 用于把一条组装后的上下文项返回给调用方。
 message ContextItem {
-  string kind = 1;
-  string title = 2;
+  string kind = 1 [deprecated = true];
+  string title = 2 [deprecated = true];
   string text = 3;
-  string source = 4;
+  string source = 4 [deprecated = true];
   double score = 5;
+  uint64 turn_id = 6;
+  bool has_dialogue = 7;
 }
 
 // PreCheckResponse returns the injection decision and assembled context payload.
 // PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
 message PreCheckResponse {
   bool should_inject = 1;
-  string context_text = 2;
+  string context_text = 2 [deprecated = true];
   repeated ContextItem context_items = 3;
   bool degraded = 4;
   string trace_id = 5;

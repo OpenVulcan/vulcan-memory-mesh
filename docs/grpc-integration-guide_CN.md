@@ -218,6 +218,13 @@
 
 - 用于显式告诉服务端“当前 session 已执行一次上下文压缩”
 - 服务端会把该 session 当前最新已持久化的 turn 记录为 `last_compacted_turn_id`
+- `PreCheckResponse.context_text` 已废弃，当前 gRPC 返回固定为空字符串
+- `PreCheckResponse.context_items[]` 仅保留：
+  - 记忆正文
+  - `score`
+  - `has_dialogue`
+  - `turn_id`
+- 当 `context_items[].turn_id > 0` 时，客户端可继续调用 `GetTurnDetails`
 - 同时更新 `last_compacted_timestamp`
 - 如果当前 session 没有 turn，允许返回成功但不更新 compact 边界
 - 如果重复 compact 到同一最新 turn，会保持幂等

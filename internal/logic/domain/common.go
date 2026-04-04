@@ -219,4 +219,5 @@ type ContextItem struct {
 	Text   string
 	Source string
 	Score  float64
+	TurnID uint64
 }
