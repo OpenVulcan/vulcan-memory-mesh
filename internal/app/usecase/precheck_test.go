@@ -395,8 +395,8 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 	}
 }
 
-// TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID verifies that when the reviewer selects multiple memories from the same source turn, pre-check only keeps one final injected item and one lifecycle write-back target.
-// TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID 用于验证当评审器同时选中多个来自同一来源 turn 的记忆时，pre-check 最终只保留一条注入项，并且生命周期回写也只写一条。
+// TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID verifies that when the reviewer selects multiple memories from the same source turn, pre-check still compacts the final injected context to one representative item while preserving lifecycle write-back for every reviewer-selected memory id.
+// TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID 用于验证当评审器同时选中多个来自同一来源 turn 的记忆时，pre-check 仍会把最终注入上下文压缩成一个代表项，同时保留对全部选中 memory id 的生命周期写回。
 func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.T) {
 	store := &stubPreCheckStore{}
 	memories := &stubPreCheckMemories{
@@ -483,8 +483,8 @@ func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.
 	if strings.Contains(result.ContextText, "索引延迟问题") {
 		t.Fatalf("expected fallback context text to drop the duplicate same-turn summary, got %q", result.ContextText)
 	}
-	if len(store.adoptedIDs) != 1 || store.adoptedIDs[0] != 20 {
-		t.Fatalf("expected lifecycle write-back to deduplicate same-turn selections, got %#v", store.adoptedIDs)
+	if len(store.adoptedIDs) != 2 || store.adoptedIDs[0] != 20 || store.adoptedIDs[1] != 21 {
+		t.Fatalf("expected lifecycle write-back to preserve all reviewer-selected same-turn memories, got %#v", store.adoptedIDs)
 	}
 }
 

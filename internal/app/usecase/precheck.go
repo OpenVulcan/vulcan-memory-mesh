@@ -252,7 +252,6 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, cmd.UserContent, err)
 		selectedCandidates = nil
 	} else {
-		selectedCandidates = deduplicateSelectedCandidatesByTurnID(selectedCandidates)
 		selectedIDs := make([]uint64, 0, len(selectedCandidates))
 		for _, candidate := range selectedCandidates {
 			selectedIDs = append(selectedIDs, candidate.MemoryID)
@@ -707,6 +706,9 @@ func (u *PreCheckUseCase) writeMemoryAdoption(ctx context.Context, session logic
 // finalizePreCheck assembles the final context text and item list from adopted memories only, and short-circuits to an empty result when no memory survives the pipeline.
 // finalizePreCheck 用于仅基于被采纳记忆组装最终上下文；如果没有任何记忆穿过整条链路，则直接返回空结果。
 func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, memories []logicdomain.PreCheckMemoryCandidate, degraded bool) (PreCheckResult, error) {
+	// Keep lifecycle write-back aligned with the full reviewer selection, then apply same-turn display compaction only when building the final injected context.
+	// 先让生命周期写回忠实覆盖 reviewer 的完整选择，再仅在构建最终注入上下文时应用同 turn 展示压缩。
+	memories = deduplicateSelectedCandidatesByTurnID(memories)
 	memoryHits := make([]logicdomain.MemoryHit, 0, len(memories))
 	for _, candidate := range memories {
 		text := buildPreCheckMemoryText(candidate)
