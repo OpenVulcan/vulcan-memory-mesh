@@ -626,10 +626,11 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		analysis.MemoryNodes[idx].VectorID = vectorID
 		analysis.MemoryNodes[idx].Vector = append([]float32(nil), vectors[idx]...)
 		record := logicdomain.MemoryRecord{
-			ID:     vectorID,
-			Text:   strings.TrimSpace(analysis.MemoryNodes[idx].Abstract),
-			Vector: vectors[idx],
-			Filter: buildPostActionMemoryFilter(session),
+			ID:           vectorID,
+			Text:         strings.TrimSpace(analysis.MemoryNodes[idx].Abstract),
+			Vector:       vectors[idx],
+			Filter:       buildPostActionMemoryFilter(session),
+			SourceTurnID: turn.ID,
 			Metadata: map[string]string{
 				"turn_id":  strconv.FormatUint(turn.ID, 10),
 				"category": strconv.Itoa(analysis.MemoryNodes[idx].Category),

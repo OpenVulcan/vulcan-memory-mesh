@@ -417,6 +417,7 @@ message PostActionTimelineItem {
 - 关联键：与 `vmm_memory_nodes.vector_id` 一一对应
 - 向量来源：`memory_nodes[].abstract`
 - `session_id`：保存真实来源 session，而不是占位值
+- `source_turn_id`：保存真实来源 turn，供 compact 边界过滤直接下推到向量层
 - 元数据中会附带：
   - `turn_id`
   - `category`
@@ -424,7 +425,7 @@ message PostActionTimelineItem {
 
 其中：
 
-- `session_id / user_id / project_id` 已经作为 LanceDB 顶层列存在
+- `session_id / user_id / project_id / source_turn_id` 已经作为 LanceDB 顶层列存在
 - `metadata_json` 只保留真正需要补充的富化字段，避免重复存储
 
 不会直接把原始请求 JSON 原样写入数据库。

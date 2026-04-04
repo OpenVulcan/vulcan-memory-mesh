@@ -373,6 +373,7 @@ func TestGetTurnDetailsReturnsRows(t *testing.T) {
 		t.Fatalf("expected neighboring turn ids and timeline, got %+v", resp.GetTurns()[0])
 	}
 }
+
 // TestWriteMemoriesPersistsResolvedSession verifies the direct-write RPC accepts compact numeric concepts, computes lifecycle server-side, and returns only the created memory ids.
 // TestWriteMemoriesPersistsResolvedSession 用于验证主动写记忆 RPC 接收紧凑数字概念值、由服务端计算生命周期，并且只返回新建 memory id。
 func TestWriteMemoriesPersistsResolvedSession(t *testing.T) {
@@ -574,8 +575,78 @@ func TestPreCheckUsesResolvedSession(t *testing.T) {
 		if cmd.UserContent != "当前项目怎么样" {
 			t.Fatalf("unexpected user content: %q", cmd.UserContent)
 		}
+		if cmd.RecallMode != usecase.PreCheckRecallModeLegacy {
+			t.Fatalf("expected default recall mode legacy, got %d", cmd.RecallMode)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("pre-check use case was not invoked")
+	}
+}
+
+// TestPreCheckPassesRecallMode verifies the transport forwards one explicit recall mode into the use case without rewriting the caller's selected strategy.
+// TestPreCheckPassesRecallMode 用于验证传输层会把显式 recall mode 原样透传到用例，而不会重写调用方选择的策略。
+func TestPreCheckPassesRecallMode(t *testing.T) {
+	calls := make(chan usecase.PreCheckCommand, 1)
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		PreCheck: preCheckFunc(func(_ context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+			calls <- cmd
+			return usecase.PreCheckResult{ShouldInject: false}, nil
+		}),
+		ScopeResolver: stubScopeResolver{},
+	}, testBufSize)
+
+	_, err := fixture.client.PreCheck(context.Background(), &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "当前项目怎么样",
+		RecallMode:  vmmv1.PreCheckRecallMode_PRE_CHECK_RECALL_MODE_SESSION_COMPACT,
+	})
+	if err != nil {
+		t.Fatalf("pre-check: %v", err)
+	}
+	select {
+	case cmd := <-calls:
+		if cmd.RecallMode != usecase.PreCheckRecallModeSessionCompact {
+			t.Fatalf("expected session compact recall mode, got %d", cmd.RecallMode)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pre-check use case was not invoked")
+	}
+}
+
+// TestChatCompactUsesResolvedSession verifies the scope interceptor injects one resolved session into the compact acknowledgement use case.
+// TestChatCompactUsesResolvedSession 用于验证范围拦截器会把解析后的 session 注入 compact 确认用例。
+func TestChatCompactUsesResolvedSession(t *testing.T) {
+	calls := make(chan usecase.ChatCompactCommand, 1)
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		ChatCompact: chatCompactFunc(func(_ context.Context, cmd usecase.ChatCompactCommand) (usecase.ChatCompactResult, error) {
+			calls <- cmd
+			return usecase.ChatCompactResult{Accepted: true, Updated: true, CompactedTurnID: 88}, nil
+		}),
+		ScopeResolver: stubScopeResolver{},
+	}, testBufSize)
+
+	resp, err := fixture.client.ChatCompact(context.Background(), &vmmv1.ChatCompactRequest{
+		SessionId: "sess-1",
+		UserId:    7,
+		ProjectId: 9,
+	})
+	if err != nil {
+		t.Fatalf("chat compact: %v", err)
+	}
+	if !resp.GetAccepted() || !resp.GetUpdated() || resp.GetCompactedTurnId() != 88 {
+		t.Fatalf("unexpected chat compact response: %+v", resp)
+	}
+	select {
+	case cmd := <-calls:
+		if cmd.Session.SessionID != 41 || cmd.Session.UserID != 7 || cmd.Session.ProjectID != 9 {
+			t.Fatalf("unexpected resolved session: %+v", cmd.Session)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("chat compact use case was not invoked")
 	}
 }
 
@@ -1209,6 +1280,16 @@ type preCheckFunc func(ctx context.Context, cmd usecase.PreCheckCommand) (usecas
 // Execute delegates pre-check execution to the wrapped function.
 // Execute 用于把 pre-check 执行委托给包装函数。
 func (f preCheckFunc) Execute(ctx context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+	return f(ctx, cmd)
+}
+
+// chatCompactFunc adapts a plain function to the current ChatCompactExecutor interface.
+// chatCompactFunc 用于把普通函数适配到当前 ChatCompactExecutor 接口。
+type chatCompactFunc func(ctx context.Context, cmd usecase.ChatCompactCommand) (usecase.ChatCompactResult, error)
+
+// Execute delegates chat-compact execution to the wrapped function.
+// Execute 用于把 chat-compact 执行委托给包装函数。
+func (f chatCompactFunc) Execute(ctx context.Context, cmd usecase.ChatCompactCommand) (usecase.ChatCompactResult, error) {
 	return f(ctx, cmd)
 }
 

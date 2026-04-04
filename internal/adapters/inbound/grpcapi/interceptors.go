@@ -205,7 +205,7 @@ func resolvedSessionRefFromContext(ctx context.Context) (logicdomain.SessionRef,
 // requiresResolvedScope 用于判断某个 gRPC 方法是否属于需要确定性 project/user 范围解析的业务链路。
 func requiresResolvedScope(fullMethod string) bool {
 	switch fullMethod {
-	case "/vmm.v1.VMMService/PreCheck", "/vmm.v1.VMMService/PostAction", "/vmm.v1.VMMService/WriteMemories":
+	case "/vmm.v1.VMMService/PreCheck", "/vmm.v1.VMMService/PostAction", "/vmm.v1.VMMService/WriteMemories", "/vmm.v1.VMMService/ChatCompact":
 		return true
 	default:
 		return false
@@ -227,7 +227,7 @@ func requiresResolvedScopeInvocation(info *grpc.UnaryServerInfo, req any) bool {
 	// Keep exported direct-call behavior aligned with the runtime business chain by inferring the scope-dependent RPCs from their concrete request types when method metadata is absent.
 	// 在缺少方法元数据时，根据具体请求类型推断依赖范围解析的业务 RPC，保证导出的直接调用行为与运行时业务链保持一致。
 	switch req.(type) {
-	case *vmmv1.PreCheckRequest, *vmmv1.PostActionRequest, *vmmv1.WriteMemoriesRequest:
+	case *vmmv1.PreCheckRequest, *vmmv1.PostActionRequest, *vmmv1.WriteMemoriesRequest, *vmmv1.ChatCompactRequest:
 		return true
 	default:
 		return false

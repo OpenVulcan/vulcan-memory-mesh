@@ -187,6 +187,58 @@ func (ProfileBundleMode) EnumDescriptor() ([]byte, []int) {
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{2}
 }
 
+// PreCheckRecallMode defines which memory-recall strategy one pre-check request wants the server to apply.
+// PreCheckRecallMode 用于定义单次 pre-check 请求希望服务端采用哪一种记忆召回策略。
+type PreCheckRecallMode int32
+
+const (
+	// PRE_CHECK_RECALL_MODE_LEGACY keeps the historical pre-check behavior and does not read any compact boundary.
+	// PRE_CHECK_RECALL_MODE_LEGACY 表示保持历史 pre-check 行为，不读取任何 compact 边界。
+	PreCheckRecallMode_PRE_CHECK_RECALL_MODE_LEGACY PreCheckRecallMode = 0
+	// PRE_CHECK_RECALL_MODE_SESSION_COMPACT enables the current-session compact-aware recall rule and reopens only turns at or before the compact anchor.
+	// PRE_CHECK_RECALL_MODE_SESSION_COMPACT 表示启用当前 session 的 compact-aware 召回规则，只重新开放 compact 锚点及之前的 turn。
+	PreCheckRecallMode_PRE_CHECK_RECALL_MODE_SESSION_COMPACT PreCheckRecallMode = 1
+)
+
+// Enum value maps for PreCheckRecallMode.
+var (
+	PreCheckRecallMode_name = map[int32]string{
+		0: "PRE_CHECK_RECALL_MODE_LEGACY",
+		1: "PRE_CHECK_RECALL_MODE_SESSION_COMPACT",
+	}
+	PreCheckRecallMode_value = map[string]int32{
+		"PRE_CHECK_RECALL_MODE_LEGACY":          0,
+		"PRE_CHECK_RECALL_MODE_SESSION_COMPACT": 1,
+	}
+)
+
+func (x PreCheckRecallMode) Enum() *PreCheckRecallMode {
+	p := new(PreCheckRecallMode)
+	*p = x
+	return p
+}
+
+func (x PreCheckRecallMode) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (PreCheckRecallMode) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3].Descriptor()
+}
+
+func (PreCheckRecallMode) Type() protoreflect.EnumType {
+	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3]
+}
+
+func (x PreCheckRecallMode) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use PreCheckRecallMode.Descriptor instead.
+func (PreCheckRecallMode) EnumDescriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{3}
+}
+
 // HealthzResponse returns the runtime status plus trace metadata.
 // HealthzResponse 用于返回运行状态和 trace 元数据。
 type HealthzResponse struct {
@@ -2307,8 +2359,8 @@ func (x *MemorySearchGroupResult) GetHits() []*MemorySearchHit {
 	return nil
 }
 
-// SearchMemoryEventsResponse returns all grouped vector-search results plus trace metadata.
-// SearchMemoryEventsResponse 用于返回全部分组向量检索结果和 trace 元数据。
+// SearchMemoryEventsResponse returns all grouped memory-search results plus trace metadata.
+// SearchMemoryEventsResponse 用于返回全部分组记忆检索结果和 trace 元数据。
 type SearchMemoryEventsResponse struct {
 	state         protoimpl.MessageState     `protogen:"open.v1"`
 	Results       []*MemorySearchGroupResult `protobuf:"bytes,1,rep,name=results,proto3" json:"results,omitempty"`
@@ -2361,8 +2413,8 @@ func (x *SearchMemoryEventsResponse) GetTraceId() string {
 	return ""
 }
 
-// GetTurnDetailsRequest carries one or more turn ids whose dehydrated payloads should be read back exactly as stored.
-// GetTurnDetailsRequest 用于承载一条或多条 turn id，让服务端按原样回读脱水持久化内容。
+// GetTurnDetailsRequest carries one or more turn ids whose structured dialogue fields should be loaded for AI-side inspection.
+// GetTurnDetailsRequest 用于承载一条或多条 turn id，让服务端读取适合 AI 查看的结构化对话字段。
 type GetTurnDetailsRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	TurnIds       []uint64               `protobuf:"varint,1,rep,packed,name=turn_ids,json=turnIds,proto3" json:"turn_ids,omitempty"`
@@ -2501,8 +2553,8 @@ func (x *TurnDetailEntry) GetNextTurnIds() []uint64 {
 	return nil
 }
 
-// GetTurnDetailsResponse returns the requested dehydrated turn rows plus trace metadata.
-// GetTurnDetailsResponse 用于返回请求的脱水 turn 行和 trace 元数据。
+// GetTurnDetailsResponse returns the requested structured turn details plus trace metadata.
+// GetTurnDetailsResponse 用于返回请求的结构化 turn 详情和 trace 元数据。
 type GetTurnDetailsResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Turns         []*TurnDetailEntry     `protobuf:"bytes,1,rep,name=turns,proto3" json:"turns,omitempty"`
@@ -2819,14 +2871,13 @@ func (x *WriteMemoriesResponse) GetTraceId() string {
 	return ""
 }
 
-// PreCheckRequest carries only the numeric project/user ids plus the current user text.
-// PreCheckRequest 用于只承载数字 project/user id，以及当前用户文本。
 type PreCheckRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
 	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
 	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
 	UserContent   string                 `protobuf:"bytes,4,opt,name=user_content,json=userContent,proto3" json:"user_content,omitempty"`
+	RecallMode    PreCheckRecallMode     `protobuf:"varint,5,opt,name=recall_mode,json=recallMode,proto3,enum=vmm.v1.PreCheckRecallMode" json:"recall_mode,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2889,6 +2940,145 @@ func (x *PreCheckRequest) GetUserContent() string {
 	return ""
 }
 
+func (x *PreCheckRequest) GetRecallMode() PreCheckRecallMode {
+	if x != nil {
+		return x.RecallMode
+	}
+	return PreCheckRecallMode_PRE_CHECK_RECALL_MODE_LEGACY
+}
+
+// ChatCompactRequest carries the resolved scope selectors used to mark the latest persisted turn as the active compact boundary for one session.
+// ChatCompactRequest 用于承载解析范围所需的选择参数，把某个 session 的最新持久化 turn 标记为当前 compact 边界。
+type ChatCompactRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ChatCompactRequest) Reset() {
+	*x = ChatCompactRequest{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChatCompactRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChatCompactRequest) ProtoMessage() {}
+
+func (x *ChatCompactRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChatCompactRequest.ProtoReflect.Descriptor instead.
+func (*ChatCompactRequest) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ChatCompactRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ChatCompactRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ChatCompactRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+// ChatCompactResponse returns whether the compact acknowledgement changed session state and which turn now acts as the boundary anchor.
+// ChatCompactResponse 用于返回 compact 确认是否真正改变了 session 状态，以及当前作为边界锚点的 turn。
+type ChatCompactResponse struct {
+	state           protoimpl.MessageState `protogen:"open.v1"`
+	Accepted        bool                   `protobuf:"varint,1,opt,name=accepted,proto3" json:"accepted,omitempty"`
+	Updated         bool                   `protobuf:"varint,2,opt,name=updated,proto3" json:"updated,omitempty"`
+	CompactedTurnId uint64                 `protobuf:"varint,3,opt,name=compacted_turn_id,json=compactedTurnId,proto3" json:"compacted_turn_id,omitempty"`
+	TraceId         string                 `protobuf:"bytes,4,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
+}
+
+func (x *ChatCompactResponse) Reset() {
+	*x = ChatCompactResponse{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ChatCompactResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ChatCompactResponse) ProtoMessage() {}
+
+func (x *ChatCompactResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ChatCompactResponse.ProtoReflect.Descriptor instead.
+func (*ChatCompactResponse) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ChatCompactResponse) GetAccepted() bool {
+	if x != nil {
+		return x.Accepted
+	}
+	return false
+}
+
+func (x *ChatCompactResponse) GetUpdated() bool {
+	if x != nil {
+		return x.Updated
+	}
+	return false
+}
+
+func (x *ChatCompactResponse) GetCompactedTurnId() uint64 {
+	if x != nil {
+		return x.CompactedTurnId
+	}
+	return 0
+}
+
+func (x *ChatCompactResponse) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
+}
+
 // ContextItem transports one assembled context item back to the caller.
 // ContextItem 用于把一条组装后的上下文项返回给调用方。
 type ContextItem struct {
@@ -2904,7 +3094,7 @@ type ContextItem struct {
 
 func (x *ContextItem) Reset() {
 	*x = ContextItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2916,7 +3106,7 @@ func (x *ContextItem) String() string {
 func (*ContextItem) ProtoMessage() {}
 
 func (x *ContextItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2929,7 +3119,7 @@ func (x *ContextItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextItem.ProtoReflect.Descriptor instead.
 func (*ContextItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{37}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ContextItem) GetKind() string {
@@ -2982,7 +3172,7 @@ type PreCheckResponse struct {
 
 func (x *PreCheckResponse) Reset() {
 	*x = PreCheckResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2994,7 +3184,7 @@ func (x *PreCheckResponse) String() string {
 func (*PreCheckResponse) ProtoMessage() {}
 
 func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3007,7 +3197,7 @@ func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckResponse.ProtoReflect.Descriptor instead.
 func (*PreCheckResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{38}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *PreCheckResponse) GetShouldInject() bool {
@@ -3057,7 +3247,7 @@ type PostActionTimelineItem struct {
 
 func (x *PostActionTimelineItem) Reset() {
 	*x = PostActionTimelineItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3069,7 +3259,7 @@ func (x *PostActionTimelineItem) String() string {
 func (*PostActionTimelineItem) ProtoMessage() {}
 
 func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3082,7 +3272,7 @@ func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionTimelineItem.ProtoReflect.Descriptor instead.
 func (*PostActionTimelineItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{39}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *PostActionTimelineItem) GetType() string {
@@ -3115,7 +3305,7 @@ type PostActionRequest struct {
 
 func (x *PostActionRequest) Reset() {
 	*x = PostActionRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3127,7 +3317,7 @@ func (x *PostActionRequest) String() string {
 func (*PostActionRequest) ProtoMessage() {}
 
 func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3140,7 +3330,7 @@ func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionRequest.ProtoReflect.Descriptor instead.
 func (*PostActionRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{40}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *PostActionRequest) GetSessionId() string {
@@ -3197,7 +3387,7 @@ type PostActionResponse struct {
 
 func (x *PostActionResponse) Reset() {
 	*x = PostActionResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3209,7 +3399,7 @@ func (x *PostActionResponse) String() string {
 func (*PostActionResponse) ProtoMessage() {}
 
 func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3222,7 +3412,7 @@ func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionResponse.ProtoReflect.Descriptor instead.
 func (*PostActionResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{41}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *PostActionResponse) GetAccepted() bool {
@@ -3455,14 +3645,27 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\"g\n" +
 	"\x15WriteMemoriesResponse\x123\n" +
 	"\x05items\x18\x01 \x03(\v2\x1d.vmm.v1.WriteMemoryResultItemR\x05items\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\x8b\x01\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xc8\x01\n" +
 	"\x0fPreCheckRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
 	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
 	"\n" +
 	"project_id\x18\x03 \x01(\x04R\tprojectId\x12!\n" +
-	"\fuser_content\x18\x04 \x01(\tR\vuserContent\"y\n" +
+	"\fuser_content\x18\x04 \x01(\tR\vuserContent\x12;\n" +
+	"\vrecall_mode\x18\x05 \x01(\x0e2\x1a.vmm.v1.PreCheckRecallModeR\n" +
+	"recallMode\"k\n" +
+	"\x12ChatCompactRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x03 \x01(\x04R\tprojectId\"\x92\x01\n" +
+	"\x13ChatCompactResponse\x12\x1a\n" +
+	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
+	"\aupdated\x18\x02 \x01(\bR\aupdated\x12*\n" +
+	"\x11compacted_turn_id\x18\x03 \x01(\x04R\x0fcompactedTurnId\x12\x19\n" +
+	"\btrace_id\x18\x04 \x01(\tR\atraceId\"y\n" +
 	"\vContextItem\x12\x12\n" +
 	"\x04kind\x18\x01 \x01(\tR\x04kind\x12\x14\n" +
 	"\x05title\x18\x02 \x01(\tR\x05title\x12\x12\n" +
@@ -3505,7 +3708,10 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x11ProfileBundleMode\x12#\n" +
 	"\x1fPROFILE_BUNDLE_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18PROFILE_BUNDLE_MODE_FULL\x10\x01\x12\x1d\n" +
-	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x022\xb0\n" +
+	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x02*a\n" +
+	"\x12PreCheckRecallMode\x12 \n" +
+	"\x1cPRE_CHECK_RECALL_MODE_LEGACY\x10\x00\x12)\n" +
+	"%PRE_CHECK_RECALL_MODE_SESSION_COMPACT\x10\x012\xf8\n" +
 	"\n" +
 	"\n" +
 	"VMMService\x12:\n" +
@@ -3524,7 +3730,8 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x17ApplyProfileInstruction\x12&.vmm.v1.ApplyProfileInstructionRequest\x1a'.vmm.v1.ApplyProfileInstructionResponse\x12[\n" +
 	"\x12SearchMemoryEvents\x12!.vmm.v1.SearchMemoryEventsRequest\x1a\".vmm.v1.SearchMemoryEventsResponse\x12O\n" +
 	"\x0eGetTurnDetails\x12\x1d.vmm.v1.GetTurnDetailsRequest\x1a\x1e.vmm.v1.GetTurnDetailsResponse\x12L\n" +
-	"\rWriteMemories\x12\x1c.vmm.v1.WriteMemoriesRequest\x1a\x1d.vmm.v1.WriteMemoriesResponse\x12=\n" +
+	"\rWriteMemories\x12\x1c.vmm.v1.WriteMemoriesRequest\x1a\x1d.vmm.v1.WriteMemoriesResponse\x12F\n" +
+	"\vChatCompact\x12\x1a.vmm.v1.ChatCompactRequest\x1a\x1b.vmm.v1.ChatCompactResponse\x12=\n" +
 	"\bPreCheck\x12\x17.vmm.v1.PreCheckRequest\x1a\x18.vmm.v1.PreCheckResponse\x12C\n" +
 	"\n" +
 	"PostAction\x12\x19.vmm.v1.PostActionRequest\x1a\x1a.vmm.v1.PostActionResponseBLZJgithub.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1;vmmv1b\x06proto3"
@@ -3541,122 +3748,128 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP() []b
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescData
 }
 
-var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 3)
-var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 42)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_goTypes = []any{
 	(ProfileTarget)(0),                      // 0: vmm.v1.ProfileTarget
 	(ProfileNodeSourceKind)(0),              // 1: vmm.v1.ProfileNodeSourceKind
 	(ProfileBundleMode)(0),                  // 2: vmm.v1.ProfileBundleMode
-	(*HealthzResponse)(nil),                 // 3: vmm.v1.HealthzResponse
-	(*ProjectEntry)(nil),                    // 4: vmm.v1.ProjectEntry
-	(*UserEntry)(nil),                       // 5: vmm.v1.UserEntry
-	(*ListProjectsResponse)(nil),            // 6: vmm.v1.ListProjectsResponse
-	(*ResolveProjectRequest)(nil),           // 7: vmm.v1.ResolveProjectRequest
-	(*ResolveProjectResponse)(nil),          // 8: vmm.v1.ResolveProjectResponse
-	(*EnsureProjectRequest)(nil),            // 9: vmm.v1.EnsureProjectRequest
-	(*EnsureProjectResponse)(nil),           // 10: vmm.v1.EnsureProjectResponse
-	(*DeleteProjectRequest)(nil),            // 11: vmm.v1.DeleteProjectRequest
-	(*DeleteProjectResponse)(nil),           // 12: vmm.v1.DeleteProjectResponse
-	(*MigrateProjectRequest)(nil),           // 13: vmm.v1.MigrateProjectRequest
-	(*MigrateProjectResponse)(nil),          // 14: vmm.v1.MigrateProjectResponse
-	(*ResolveUserRequest)(nil),              // 15: vmm.v1.ResolveUserRequest
-	(*ResolveUserResponse)(nil),             // 16: vmm.v1.ResolveUserResponse
-	(*ListUsersResponse)(nil),               // 17: vmm.v1.ListUsersResponse
-	(*DeleteUserRequest)(nil),               // 18: vmm.v1.DeleteUserRequest
-	(*DeleteUserResponse)(nil),              // 19: vmm.v1.DeleteUserResponse
-	(*ProfileNodeEntry)(nil),                // 20: vmm.v1.ProfileNodeEntry
-	(*RetiredProfileNodeEntry)(nil),         // 21: vmm.v1.RetiredProfileNodeEntry
-	(*GetProfileNodesRequest)(nil),          // 22: vmm.v1.GetProfileNodesRequest
-	(*GetProfileNodesResponse)(nil),         // 23: vmm.v1.GetProfileNodesResponse
-	(*GetProfileBundleRequest)(nil),         // 24: vmm.v1.GetProfileBundleRequest
-	(*GetProfileBundleResponse)(nil),        // 25: vmm.v1.GetProfileBundleResponse
-	(*ApplyProfileInstructionRequest)(nil),  // 26: vmm.v1.ApplyProfileInstructionRequest
-	(*ApplyProfileInstructionResponse)(nil), // 27: vmm.v1.ApplyProfileInstructionResponse
-	(*SearchMemoryEventsRequest)(nil),       // 28: vmm.v1.SearchMemoryEventsRequest
-	(*MemorySearchHit)(nil),                 // 29: vmm.v1.MemorySearchHit
-	(*MemorySearchGroupResult)(nil),         // 30: vmm.v1.MemorySearchGroupResult
-	(*SearchMemoryEventsResponse)(nil),      // 31: vmm.v1.SearchMemoryEventsResponse
-	(*GetTurnDetailsRequest)(nil),           // 32: vmm.v1.GetTurnDetailsRequest
-	(*TurnDetailEntry)(nil),                 // 33: vmm.v1.TurnDetailEntry
-	(*GetTurnDetailsResponse)(nil),          // 34: vmm.v1.GetTurnDetailsResponse
-	(*WriteMemoryItem)(nil),                 // 35: vmm.v1.WriteMemoryItem
-	(*WriteMemoriesRequest)(nil),            // 36: vmm.v1.WriteMemoriesRequest
-	(*WriteMemoryResultItem)(nil),           // 37: vmm.v1.WriteMemoryResultItem
-	(*WriteMemoriesResponse)(nil),           // 38: vmm.v1.WriteMemoriesResponse
-	(*PreCheckRequest)(nil),                 // 39: vmm.v1.PreCheckRequest
-	(*ContextItem)(nil),                     // 40: vmm.v1.ContextItem
-	(*PreCheckResponse)(nil),                // 41: vmm.v1.PreCheckResponse
-	(*PostActionTimelineItem)(nil),          // 42: vmm.v1.PostActionTimelineItem
-	(*PostActionRequest)(nil),               // 43: vmm.v1.PostActionRequest
-	(*PostActionResponse)(nil),              // 44: vmm.v1.PostActionResponse
-	(*emptypb.Empty)(nil),                   // 45: google.protobuf.Empty
+	(PreCheckRecallMode)(0),                 // 3: vmm.v1.PreCheckRecallMode
+	(*HealthzResponse)(nil),                 // 4: vmm.v1.HealthzResponse
+	(*ProjectEntry)(nil),                    // 5: vmm.v1.ProjectEntry
+	(*UserEntry)(nil),                       // 6: vmm.v1.UserEntry
+	(*ListProjectsResponse)(nil),            // 7: vmm.v1.ListProjectsResponse
+	(*ResolveProjectRequest)(nil),           // 8: vmm.v1.ResolveProjectRequest
+	(*ResolveProjectResponse)(nil),          // 9: vmm.v1.ResolveProjectResponse
+	(*EnsureProjectRequest)(nil),            // 10: vmm.v1.EnsureProjectRequest
+	(*EnsureProjectResponse)(nil),           // 11: vmm.v1.EnsureProjectResponse
+	(*DeleteProjectRequest)(nil),            // 12: vmm.v1.DeleteProjectRequest
+	(*DeleteProjectResponse)(nil),           // 13: vmm.v1.DeleteProjectResponse
+	(*MigrateProjectRequest)(nil),           // 14: vmm.v1.MigrateProjectRequest
+	(*MigrateProjectResponse)(nil),          // 15: vmm.v1.MigrateProjectResponse
+	(*ResolveUserRequest)(nil),              // 16: vmm.v1.ResolveUserRequest
+	(*ResolveUserResponse)(nil),             // 17: vmm.v1.ResolveUserResponse
+	(*ListUsersResponse)(nil),               // 18: vmm.v1.ListUsersResponse
+	(*DeleteUserRequest)(nil),               // 19: vmm.v1.DeleteUserRequest
+	(*DeleteUserResponse)(nil),              // 20: vmm.v1.DeleteUserResponse
+	(*ProfileNodeEntry)(nil),                // 21: vmm.v1.ProfileNodeEntry
+	(*RetiredProfileNodeEntry)(nil),         // 22: vmm.v1.RetiredProfileNodeEntry
+	(*GetProfileNodesRequest)(nil),          // 23: vmm.v1.GetProfileNodesRequest
+	(*GetProfileNodesResponse)(nil),         // 24: vmm.v1.GetProfileNodesResponse
+	(*GetProfileBundleRequest)(nil),         // 25: vmm.v1.GetProfileBundleRequest
+	(*GetProfileBundleResponse)(nil),        // 26: vmm.v1.GetProfileBundleResponse
+	(*ApplyProfileInstructionRequest)(nil),  // 27: vmm.v1.ApplyProfileInstructionRequest
+	(*ApplyProfileInstructionResponse)(nil), // 28: vmm.v1.ApplyProfileInstructionResponse
+	(*SearchMemoryEventsRequest)(nil),       // 29: vmm.v1.SearchMemoryEventsRequest
+	(*MemorySearchHit)(nil),                 // 30: vmm.v1.MemorySearchHit
+	(*MemorySearchGroupResult)(nil),         // 31: vmm.v1.MemorySearchGroupResult
+	(*SearchMemoryEventsResponse)(nil),      // 32: vmm.v1.SearchMemoryEventsResponse
+	(*GetTurnDetailsRequest)(nil),           // 33: vmm.v1.GetTurnDetailsRequest
+	(*TurnDetailEntry)(nil),                 // 34: vmm.v1.TurnDetailEntry
+	(*GetTurnDetailsResponse)(nil),          // 35: vmm.v1.GetTurnDetailsResponse
+	(*WriteMemoryItem)(nil),                 // 36: vmm.v1.WriteMemoryItem
+	(*WriteMemoriesRequest)(nil),            // 37: vmm.v1.WriteMemoriesRequest
+	(*WriteMemoryResultItem)(nil),           // 38: vmm.v1.WriteMemoryResultItem
+	(*WriteMemoriesResponse)(nil),           // 39: vmm.v1.WriteMemoriesResponse
+	(*PreCheckRequest)(nil),                 // 40: vmm.v1.PreCheckRequest
+	(*ChatCompactRequest)(nil),              // 41: vmm.v1.ChatCompactRequest
+	(*ChatCompactResponse)(nil),             // 42: vmm.v1.ChatCompactResponse
+	(*ContextItem)(nil),                     // 43: vmm.v1.ContextItem
+	(*PreCheckResponse)(nil),                // 44: vmm.v1.PreCheckResponse
+	(*PostActionTimelineItem)(nil),          // 45: vmm.v1.PostActionTimelineItem
+	(*PostActionRequest)(nil),               // 46: vmm.v1.PostActionRequest
+	(*PostActionResponse)(nil),              // 47: vmm.v1.PostActionResponse
+	(*emptypb.Empty)(nil),                   // 48: google.protobuf.Empty
 }
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_depIdxs = []int32{
-	4,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
-	4,  // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	4,  // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	4,  // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	4,  // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
-	4,  // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
-	5,  // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
-	5,  // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
-	5,  // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
+	5,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
+	5,  // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	5,  // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	5,  // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	5,  // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
+	5,  // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
+	6,  // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
+	6,  // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
+	6,  // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
 	0,  // 9: vmm.v1.ProfileNodeEntry.target:type_name -> vmm.v1.ProfileTarget
 	1,  // 10: vmm.v1.ProfileNodeEntry.source_kind:type_name -> vmm.v1.ProfileNodeSourceKind
 	0,  // 11: vmm.v1.GetProfileNodesRequest.target:type_name -> vmm.v1.ProfileTarget
-	20, // 12: vmm.v1.GetProfileNodesResponse.nodes:type_name -> vmm.v1.ProfileNodeEntry
+	21, // 12: vmm.v1.GetProfileNodesResponse.nodes:type_name -> vmm.v1.ProfileNodeEntry
 	2,  // 13: vmm.v1.GetProfileBundleRequest.mode:type_name -> vmm.v1.ProfileBundleMode
 	2,  // 14: vmm.v1.GetProfileBundleResponse.mode:type_name -> vmm.v1.ProfileBundleMode
 	0,  // 15: vmm.v1.ApplyProfileInstructionRequest.target:type_name -> vmm.v1.ProfileTarget
-	20, // 16: vmm.v1.ApplyProfileInstructionResponse.accepted_nodes:type_name -> vmm.v1.ProfileNodeEntry
-	21, // 17: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
-	29, // 18: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
-	30, // 19: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
-	42, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	33, // 21: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
-	35, // 22: vmm.v1.WriteMemoriesRequest.items:type_name -> vmm.v1.WriteMemoryItem
-	37, // 23: vmm.v1.WriteMemoriesResponse.items:type_name -> vmm.v1.WriteMemoryResultItem
-	40, // 24: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
-	42, // 25: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	45, // 26: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
-	45, // 27: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
-	7,  // 28: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
-	9,  // 29: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
-	11, // 30: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
-	13, // 31: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
-	15, // 32: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
-	45, // 33: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
-	18, // 34: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
-	22, // 35: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
-	24, // 36: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
-	26, // 37: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
-	28, // 38: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
-	32, // 39: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
-	36, // 40: vmm.v1.VMMService.WriteMemories:input_type -> vmm.v1.WriteMemoriesRequest
-	39, // 41: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
-	43, // 42: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
-	3,  // 43: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
-	6,  // 44: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
-	8,  // 45: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
-	10, // 46: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
-	12, // 47: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
-	14, // 48: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
-	16, // 49: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
-	17, // 50: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
-	19, // 51: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
-	23, // 52: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
-	25, // 53: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
-	27, // 54: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
-	31, // 55: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
-	34, // 56: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
-	38, // 57: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
-	41, // 58: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
-	44, // 59: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
-	43, // [43:60] is the sub-list for method output_type
-	26, // [26:43] is the sub-list for method input_type
-	26, // [26:26] is the sub-list for extension type_name
-	26, // [26:26] is the sub-list for extension extendee
-	0,  // [0:26] is the sub-list for field type_name
+	21, // 16: vmm.v1.ApplyProfileInstructionResponse.accepted_nodes:type_name -> vmm.v1.ProfileNodeEntry
+	22, // 17: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
+	30, // 18: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
+	31, // 19: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
+	45, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	34, // 21: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
+	36, // 22: vmm.v1.WriteMemoriesRequest.items:type_name -> vmm.v1.WriteMemoryItem
+	38, // 23: vmm.v1.WriteMemoriesResponse.items:type_name -> vmm.v1.WriteMemoryResultItem
+	3,  // 24: vmm.v1.PreCheckRequest.recall_mode:type_name -> vmm.v1.PreCheckRecallMode
+	43, // 25: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
+	45, // 26: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	48, // 27: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
+	48, // 28: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
+	8,  // 29: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
+	10, // 30: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
+	12, // 31: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
+	14, // 32: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
+	16, // 33: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
+	48, // 34: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
+	19, // 35: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
+	23, // 36: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
+	25, // 37: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
+	27, // 38: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
+	29, // 39: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
+	33, // 40: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
+	37, // 41: vmm.v1.VMMService.WriteMemories:input_type -> vmm.v1.WriteMemoriesRequest
+	41, // 42: vmm.v1.VMMService.ChatCompact:input_type -> vmm.v1.ChatCompactRequest
+	40, // 43: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
+	46, // 44: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
+	4,  // 45: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
+	7,  // 46: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
+	9,  // 47: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
+	11, // 48: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
+	13, // 49: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
+	15, // 50: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
+	17, // 51: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
+	18, // 52: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
+	20, // 53: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
+	24, // 54: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
+	26, // 55: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
+	28, // 56: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
+	32, // 57: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
+	35, // 58: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
+	39, // 59: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
+	42, // 60: vmm.v1.VMMService.ChatCompact:output_type -> vmm.v1.ChatCompactResponse
+	44, // 61: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
+	47, // 62: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
+	45, // [45:63] is the sub-list for method output_type
+	27, // [27:45] is the sub-list for method input_type
+	27, // [27:27] is the sub-list for extension type_name
+	27, // [27:27] is the sub-list for extension extendee
+	0,  // [0:27] is the sub-list for field type_name
 }
 
 func init() { file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() }
@@ -3670,8 +3883,8 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc), len(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc)),
-			NumEnums:      3,
-			NumMessages:   42,
+			NumEnums:      4,
+			NumMessages:   44,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

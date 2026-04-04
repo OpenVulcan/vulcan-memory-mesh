@@ -15,10 +15,12 @@ type SessionRef struct {
 	ProjectID              uint64
 	TurnCount              int
 	LastSummarizedID       uint64
+	LastCompactedTurnID    uint64
 	SummarizeContent       string
 	SummarizeBudget        int
 	LastExtractObservedAt  time.Time
 	LastExtractCompletedAt time.Time
+	LastCompactedAt        time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 	UserName               string
@@ -42,11 +44,14 @@ func (s SessionRef) SearchFilter() SearchFilter {
 // SearchFilter carries the flattened hierarchy coordinates applied when vector reads or deletes must stay inside one scope.
 // SearchFilter 用于承载向量读写或删除时限制在单个层级范围内的扁平坐标字段。
 type SearchFilter struct {
-	UserID    uint64
-	TeamID    uint64
-	SpaceID   uint64
-	ProjectID uint64
-	SessionID uint64
+	UserID              uint64
+	TeamID              uint64
+	SpaceID             uint64
+	ProjectID           uint64
+	SessionID           uint64
+	BoundarySessionID   uint64
+	BoundaryMaxTurnID   uint64
+	ExcludeBoundaryTurn bool
 }
 
 // TurnTimelineItem stores one cleaned middle node that still needs to survive dehydration before a turn is persisted.
@@ -114,12 +119,13 @@ func (p PersonaContext) Empty() bool {
 // MemoryRecord is the vector-store write model used by seed-memory and future memory persistence flows.
 // MemoryRecord 用于表示 seed-memory 等流程写入向量库时使用的记忆记录模型。
 type MemoryRecord struct {
-	ID        string
-	Text      string
-	Vector    []float32
-	Filter    SearchFilter
-	Metadata  map[string]string
-	CreatedAt time.Time
+	ID           string
+	Text         string
+	Vector       []float32
+	Filter       SearchFilter
+	SourceTurnID uint64
+	Metadata     map[string]string
+	CreatedAt    time.Time
 }
 
 // MemoryHit represents one recalled memory candidate returned by the vector backend.
@@ -195,10 +201,12 @@ type SessionRecord struct {
 	ProjectID              uint64
 	TurnCount              int
 	LastSummarizedID       uint64
+	LastCompactedTurnID    uint64
 	SummarizeContent       string
 	SummarizeBudget        int
 	LastExtractObservedAt  time.Time
 	LastExtractCompletedAt time.Time
+	LastCompactedAt        time.Time
 	CreatedAt              time.Time
 	UpdatedAt              time.Time
 }

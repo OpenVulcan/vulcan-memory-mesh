@@ -221,6 +221,7 @@ grpcurl -plaintext `
 - `userId`
 - `projectId`
 - `userContent`
+- `recallMode`
 
 示例：
 
@@ -230,11 +231,17 @@ grpcurl -plaintext `
     "sessionId": "sess_001",
     "userId": 7,
     "projectId": 9,
-    "userContent": "请根据当前项目给我建议"
+    "userContent": "请根据当前项目给我建议",
+    "recallMode": "PRE_CHECK_RECALL_MODE_SESSION_COMPACT"
   }' `
   127.0.0.1:17625 `
   vmm.v1.VMMService/PreCheck
 ```
+
+说明：
+
+- 省略 `recallMode` 或传 `PRE_CHECK_RECALL_MODE_LEGACY` 时，服务端保持旧版召回行为
+- 传 `PRE_CHECK_RECALL_MODE_SESSION_COMPACT` 时，服务端按当前 session 的 compact 边界过滤同 session 的 turn-extract 记忆
 
 当前预期：
 
@@ -248,7 +255,49 @@ grpcurl -plaintext `
 }
 ```
 
-## 十一、PostAction
+说明：
+
+- `ignoreCompactBoundary=false` 时，服务端会按当前 session 的 compact 边界过滤同 session turn-extract 记忆
+- `ignoreCompactBoundary=true` 时，回退到旧版 pre-check 召回行为
+
+## 十一、ChatCompact
+
+当前 `ChatCompact` 只接受：
+
+- `sessionId`
+- `userId`
+- `projectId`
+
+示例：
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "sessionId": "sess_001",
+    "userId": 7,
+    "projectId": 9
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/ChatCompact
+```
+
+预期返回：
+
+```json
+{
+  "accepted": true,
+  "updated": true,
+  "compactedTurnId": 12,
+  "traceId": "trc_xxx"
+}
+```
+
+说明：
+
+- 服务端会把该 session 当前最新已持久化 turn 记为 compact 边界
+- 如果当前 session 没有 turn，会返回成功但 `compactedTurnId=0`
+
+## 十二、PostAction
 
 当前 `PostAction` 只接受：
 
@@ -294,7 +343,7 @@ grpcurl -plaintext `
 - 然后异步写入 SQLite
 - 当 `timeline` 为空时，才会走 `NoiseGate`
 
-## 十二、常见错误
+## 十三、常见错误
 
 ### 参数错误
 
@@ -315,7 +364,7 @@ grpcurl -plaintext `
 
 - gRPC code：`ResourceExhausted`
 
-## 十三、推荐测试顺序
+## 十四、推荐测试顺序
 
 建议按这个顺序：
 
@@ -324,5 +373,6 @@ grpcurl -plaintext `
 3. `ResolveProject`
 4. `ResolveUser`
 5. `PostAction`
-6. `PreCheck`
-7. `DeleteProject/DeleteUser/MigrateProject`
+6. `ChatCompact`
+7. `PreCheck`
+8. `DeleteProject/DeleteUser/MigrateProject`

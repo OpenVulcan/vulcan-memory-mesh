@@ -69,6 +69,10 @@ service VMMService {
   // WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
   rpc WriteMemories(WriteMemoriesRequest) returns (WriteMemoriesResponse);
 
+  // ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
+  // ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
+  rpc ChatCompact(ChatCompactRequest) returns (ChatCompactResponse);
+
   // PreCheck validates project_id/user_id through the interceptor, runs live intent extraction plus unified memory adoption, and returns the assembled context payload.
   // PreCheck 用于通过拦截器校验 project_id/user_id，执行实时意图提取与统一记忆采纳，并返回组装后的上下文载荷。
   rpc PreCheck(PreCheckRequest) returns (PreCheckResponse);
@@ -444,13 +448,41 @@ message WriteMemoriesResponse {
   string trace_id = 2;
 }
 
-// PreCheckRequest carries only the numeric project/user ids plus the current user text.
-// PreCheckRequest 用于只承载数字 project/user id，以及当前用户文本。
+// PreCheckRecallMode defines which memory-recall strategy one pre-check request wants the server to apply.
+// PreCheckRecallMode 用于定义单次 pre-check 请求希望服务端采用哪一种记忆召回策略。
+enum PreCheckRecallMode {
+  // PRE_CHECK_RECALL_MODE_LEGACY keeps the historical pre-check behavior and does not read any compact boundary.
+  // PRE_CHECK_RECALL_MODE_LEGACY 表示保持历史 pre-check 行为，不读取任何 compact 边界。
+  PRE_CHECK_RECALL_MODE_LEGACY = 0;
+
+  // PRE_CHECK_RECALL_MODE_SESSION_COMPACT enables the current-session compact-aware recall rule and reopens only turns at or before the compact anchor.
+  // PRE_CHECK_RECALL_MODE_SESSION_COMPACT 表示启用当前 session 的 compact-aware 召回规则，只重新开放 compact 锚点及之前的 turn。
+  PRE_CHECK_RECALL_MODE_SESSION_COMPACT = 1;
+}
+
 message PreCheckRequest {
   string session_id = 1;
   uint64 user_id = 2;
   uint64 project_id = 3;
   string user_content = 4;
+  PreCheckRecallMode recall_mode = 5;
+}
+
+// ChatCompactRequest carries the resolved scope selectors used to mark the latest persisted turn as the active compact boundary for one session.
+// ChatCompactRequest 用于承载解析范围所需的选择参数，把某个 session 的最新持久化 turn 标记为当前 compact 边界。
+message ChatCompactRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+}
+
+// ChatCompactResponse returns whether the compact acknowledgement changed session state and which turn now acts as the boundary anchor.
+// ChatCompactResponse 用于返回 compact 确认是否真正改变了 session 状态，以及当前作为边界锚点的 turn。
+message ChatCompactResponse {
+  bool accepted = 1;
+  bool updated = 2;
+  uint64 compacted_turn_id = 3;
+  string trace_id = 4;
 }
 
 // ContextItem transports one assembled context item back to the caller.

@@ -72,11 +72,14 @@ var (
 // MemoryQueryCommand carries one simple query list together with the resolved user/project selectors and one optional scope override for specialized callers such as pre-check.
 // MemoryQueryCommand 用于承载一个简单查询字符串列表、解析范围所需的 user/project 选择参数，以及供 pre-check 等特殊调用方使用的可选作用域覆盖。
 type MemoryQueryCommand struct {
-	UserID        uint64
-	ProjectID     uint64
-	Queries       []string
-	TopK          int
-	ScopeOverride string
+	UserID              uint64
+	ProjectID           uint64
+	Queries             []string
+	TopK                int
+	ScopeOverride       string
+	BoundarySessionID   uint64
+	BoundaryMaxTurnID   uint64
+	ExcludeBoundaryTurn bool
 }
 
 // MemoryQueryItem stores one normalized query string before embedding and vector search begin.
@@ -409,6 +412,9 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	// Keep vector recall inside the resolved project hierarchy and enrich the returned vector rows with relational memory refs.
 	// 将向量召回限制在已解析项目层级内，并使用关系记忆行补全向量结果中的长期引用。
 	filter := buildScopedMemorySearchFilter(userTarget, projectTarget, cmd.ScopeOverride)
+	filter.BoundarySessionID = cmd.BoundarySessionID
+	filter.BoundaryMaxTurnID = cmd.BoundaryMaxTurnID
+	filter.ExcludeBoundaryTurn = cmd.ExcludeBoundaryTurn
 	topK := normalizeMemorySearchTopK(cmd.TopK)
 	candidatePoolK := topK
 	if u.hybridEnabled || u.reranker != nil || u.mmrEnabled {
@@ -620,10 +626,11 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 		}
 
 		record := logicdomain.MemoryRecord{
-			ID:     vectorID,
-			Text:   item.Abstract,
-			Vector: vectors[0],
-			Filter: buildDirectMemoryFilter(cmd.Session, item.ScopeLevel),
+			ID:           vectorID,
+			Text:         item.Abstract,
+			Vector:       vectors[0],
+			Filter:       buildDirectMemoryFilter(cmd.Session, item.ScopeLevel),
+			SourceTurnID: 0,
 			Metadata: map[string]string{
 				"category":     strconv.Itoa(item.Category),
 				"details":      item.Details,

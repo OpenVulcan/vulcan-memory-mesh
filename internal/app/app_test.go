@@ -513,8 +513,10 @@ func (fakeSQLiteGateway) ExecuteScript(context.Context, *sqlitev1.ExecuteRequest
 func (fakeSQLiteGateway) QueryJson(_ context.Context, req *sqlitev1.QueryRequest) (*sqlitev1.QueryJsonResponse, error) {
 	sql := strings.TrimSpace(req.GetSql())
 	switch {
+	case strings.Contains(sql, "FROM vmm_schema_versions"):
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
 	case strings.Contains(sql, "FROM vmm_version"):
-		return &sqlitev1.QueryJsonResponse{JsonData: `[{"schema_version":3}]`}, nil
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
 	case strings.Contains(sql, "FROM vmm_noise_embeddings"):
 		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
 	default:
@@ -556,4 +558,10 @@ func (fakeLanceDBGateway) VectorSearch(context.Context, *lancedbv1.SearchRequest
 // Delete 在这个聚焦的运行时装配测试里保持未使用状态。
 func (fakeLanceDBGateway) Delete(context.Context, *lancedbv1.DeleteRequest) (*lancedbv1.DeleteResponse, error) {
 	return &lancedbv1.DeleteResponse{Success: true, DeletedRows: 0, Message: "ok"}, nil
+}
+
+// DropTable always succeeds because startup schema coordination may recreate the vector table when the tracked version is missing or outdated.
+// DropTable 总是返回成功，因为启动期 schema 协调在版本缺失或过期时可能会重建向量表。
+func (fakeLanceDBGateway) DropTable(context.Context, *lancedbv1.DropTableRequest) (*lancedbv1.DropTableResponse, error) {
+	return &lancedbv1.DropTableResponse{Success: true, Message: "ok"}, nil
 }

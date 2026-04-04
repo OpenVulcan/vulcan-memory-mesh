@@ -39,11 +39,26 @@ var (
 	defaultPreCheckSimilarity = 0.75
 )
 
+// PreCheckRecallMode describes which recall strategy pre-check should apply before it opens memory recall for the current request.
+// PreCheckRecallMode 用于描述 pre-check 在为当前请求开放记忆召回前，应采用哪一种召回策略。
+type PreCheckRecallMode int32
+
+const (
+	// PreCheckRecallModeLegacy keeps the pre-check flow in its historical mode and never applies compact-boundary filtering.
+	// PreCheckRecallModeLegacy 用于让 pre-check 保持历史模式，不应用 compact 边界过滤。
+	PreCheckRecallModeLegacy PreCheckRecallMode = 0
+
+	// PreCheckRecallModeSessionCompact enables the session-level compact boundary so recall reopens only the turn history that may have fallen out of the compressed context.
+	// PreCheckRecallModeSessionCompact 用于启用 session 级 compact 边界，让召回只重新开放可能已从压缩上下文中丢失的 turn 历史。
+	PreCheckRecallModeSessionCompact PreCheckRecallMode = 1
+)
+
 // PreCheckCommand carries the resolved session scope plus the current user text into the pre-check workflow.
 // PreCheckCommand 用于承载已解析的 session 范围和当前用户文本，进入 pre-check 工作流。
 type PreCheckCommand struct {
 	Session     logicdomain.SessionRef
 	UserContent string
+	RecallMode  PreCheckRecallMode
 }
 
 // PreCheckResult returns the assembled injection context and execution state back to the gRPC adapter.
@@ -384,18 +399,24 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		"top_k", u.config.TopK,
 		"search_scope", u.config.SearchScope,
 		"normalized_query_count", len(queries),
+		"recall_mode", int32(cmd.RecallMode),
+		"last_compacted_turn_id", cmd.Session.LastCompactedTurnID,
 	}, map[string]any{
 		"current_user_input": cmd.UserContent,
 		"intent_queries":     queries,
 		"search_scope":       u.config.SearchScope,
 		"queries":            queries,
 	})
+	boundaryFilter := buildPreCheckSessionBoundaryFilter(cmd.Session, cmd.RecallMode)
 	result, err := u.memories.Search(ctx, MemoryQueryCommand{
-		UserID:        cmd.Session.UserID,
-		ProjectID:     cmd.Session.ProjectID,
-		Queries:       queries,
-		TopK:          u.config.TopK,
-		ScopeOverride: u.config.SearchScope,
+		UserID:              cmd.Session.UserID,
+		ProjectID:           cmd.Session.ProjectID,
+		Queries:             queries,
+		TopK:                u.config.TopK,
+		ScopeOverride:       u.config.SearchScope,
+		BoundarySessionID:   boundaryFilter.BoundarySessionID,
+		BoundaryMaxTurnID:   boundaryFilter.BoundaryMaxTurnID,
+		ExcludeBoundaryTurn: boundaryFilter.ExcludeBoundaryTurn,
 	})
 	if err != nil {
 		return nil, err

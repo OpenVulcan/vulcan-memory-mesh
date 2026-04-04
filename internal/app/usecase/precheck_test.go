@@ -1247,6 +1247,169 @@ func TestPreCheckSearchCandidatesPassesConfiguredSearchScope(t *testing.T) {
 	}
 }
 
+// TestPreCheckSearchCandidatesExcludesCurrentSessionTurnsBeforeFirstCompact verifies pre-check blocks same-session turn-extract recall before any compact boundary exists.
+// TestPreCheckSearchCandidatesExcludesCurrentSessionTurnsBeforeFirstCompact 用于验证在首次 compact 之前，pre-check 会屏蔽同 session 的 turn-extract 召回。
+func TestPreCheckSearchCandidatesExcludesCurrentSessionTurnsBeforeFirstCompact(t *testing.T) {
+	memories := &stubPreCheckMemories{}
+	uc := NewPreCheckUseCase(
+		memories,
+		&stubPreCheckStore{},
+		&stubPreCheckIntentExtractor{},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, SearchScope: "project"},
+		nil,
+	)
+
+	_, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:           41,
+			SessionKey:          "sess-1",
+			UserID:              7,
+			TeamID:              3,
+			SpaceID:             5,
+			ProjectID:           9,
+			LastCompactedTurnID: 0,
+		},
+		UserContent: "我之前比较过哪些车？",
+		RecallMode:  PreCheckRecallModeSessionCompact,
+	}, logicdomain.IntentResult{
+		NeedMemory: true,
+		Queries:    []string{"用户之前比较过哪些车"},
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if memories.cmd.BoundarySessionID != 41 {
+		t.Fatalf("boundary session id = %d, want 41", memories.cmd.BoundarySessionID)
+	}
+	if !memories.cmd.ExcludeBoundaryTurn {
+		t.Fatalf("expected pre-check to exclude current session turns before compact, got %#v", memories.cmd)
+	}
+	if memories.cmd.BoundaryMaxTurnID != 0 {
+		t.Fatalf("boundary max turn id = %d, want 0", memories.cmd.BoundaryMaxTurnID)
+	}
+}
+
+// TestPreCheckSearchCandidatesReopensOnlyCompactedTurns verifies pre-check reopens only the turn history at or before the latest compact boundary.
+// TestPreCheckSearchCandidatesReopensOnlyCompactedTurns 用于验证 pre-check 只重新开放最近 compact 边界及之前的 turn 历史。
+func TestPreCheckSearchCandidatesReopensOnlyCompactedTurns(t *testing.T) {
+	memories := &stubPreCheckMemories{}
+	uc := NewPreCheckUseCase(
+		memories,
+		&stubPreCheckStore{},
+		&stubPreCheckIntentExtractor{},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, SearchScope: "project"},
+		nil,
+	)
+
+	_, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:           41,
+			SessionKey:          "sess-1",
+			UserID:              7,
+			TeamID:              3,
+			SpaceID:             5,
+			ProjectID:           9,
+			LastCompactedTurnID: 88,
+		},
+		UserContent: "帮我回忆一下压缩前的决策",
+		RecallMode:  PreCheckRecallModeSessionCompact,
+	}, logicdomain.IntentResult{
+		NeedMemory: true,
+		Queries:    []string{"压缩前的决策"},
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if memories.cmd.BoundarySessionID != 41 {
+		t.Fatalf("boundary session id = %d, want 41", memories.cmd.BoundarySessionID)
+	}
+	if memories.cmd.ExcludeBoundaryTurn {
+		t.Fatalf("did not expect full exclusion after compact, got %#v", memories.cmd)
+	}
+	if memories.cmd.BoundaryMaxTurnID != 88 {
+		t.Fatalf("boundary max turn id = %d, want 88", memories.cmd.BoundaryMaxTurnID)
+	}
+}
+
+// TestPreCheckSearchCandidatesDefaultsToLegacyRecallMode verifies omitted mode values keep the historical pre-check behavior and bypass compact-boundary filtering.
+// TestPreCheckSearchCandidatesDefaultsToLegacyRecallMode 用于验证省略 mode 时会保持历史 pre-check 行为，并绕过 compact 边界过滤。
+func TestPreCheckSearchCandidatesDefaultsToLegacyRecallMode(t *testing.T) {
+	memories := &stubPreCheckMemories{}
+	uc := NewPreCheckUseCase(
+		memories,
+		&stubPreCheckStore{},
+		&stubPreCheckIntentExtractor{},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, SearchScope: "project"},
+		nil,
+	)
+
+	_, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:           41,
+			SessionKey:          "sess-1",
+			UserID:              7,
+			TeamID:              3,
+			SpaceID:             5,
+			ProjectID:           9,
+			LastCompactedTurnID: 88,
+		},
+		UserContent: "旧插件不支持 compact 判定",
+	}, logicdomain.IntentResult{
+		NeedMemory: true,
+		Queries:    []string{"旧插件不支持 compact 判定"},
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if memories.cmd.BoundarySessionID != 0 || memories.cmd.BoundaryMaxTurnID != 0 || memories.cmd.ExcludeBoundaryTurn {
+		t.Fatalf("expected compact boundary to be bypassed, got %#v", memories.cmd)
+	}
+}
+
+// TestPreCheckSearchCandidatesFallsBackUnknownRecallModeToCompact verifies unsupported future mode values fall back to the strict compact branch instead of silently reopening the whole current session.
+// TestPreCheckSearchCandidatesFallsBackUnknownRecallModeToCompact 用于验证未受支持的未来 mode 值会回退到严格的 compact 分支，而不是静默重新开放整个当前 session。
+func TestPreCheckSearchCandidatesFallsBackUnknownRecallModeToCompact(t *testing.T) {
+	memories := &stubPreCheckMemories{}
+	uc := NewPreCheckUseCase(
+		memories,
+		&stubPreCheckStore{},
+		&stubPreCheckIntentExtractor{},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, SearchScope: "project"},
+		nil,
+	)
+
+	_, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:           41,
+			SessionKey:          "sess-1",
+			UserID:              7,
+			TeamID:              3,
+			SpaceID:             5,
+			ProjectID:           9,
+			LastCompactedTurnID: 88,
+		},
+		UserContent: "未来插件发送了更新的 compact 模式",
+		RecallMode:  PreCheckRecallMode(9),
+	}, logicdomain.IntentResult{
+		NeedMemory: true,
+		Queries:    []string{"未来插件发送了更新的 compact 模式"},
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if memories.cmd.BoundarySessionID != 41 || memories.cmd.BoundaryMaxTurnID != 88 || memories.cmd.ExcludeBoundaryTurn {
+		t.Fatalf("expected unknown mode to fall back to compact boundary filtering, got %#v", memories.cmd)
+	}
+}
+
 // TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores verifies that when the unified search layer already decided an equal-score order, pre-check preserves that order instead of reordering ties by memory id.
 // TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores 用于验证当 unified search 层已经决定了同分顺序时，pre-check 会保留该顺序，而不是再按 memory id 改写 tie-break。
 func TestPreCheckSearchCandidatesKeepsUnifiedSearchOrderForEqualScores(t *testing.T) {

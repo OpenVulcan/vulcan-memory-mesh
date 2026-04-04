@@ -89,11 +89,11 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
-	vector, err := buildVector(cfg)
+	relational, err := buildRelational(cfg)
 	if err != nil {
 		return nil, err
 	}
-	relational, err := buildRelational(cfg)
+	vector, err := buildVector(cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -109,6 +109,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support workspace management")
 	}
+	schemaVersions, ok := relational.(appports.SchemaVersionStore)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support schema version tracking")
+	}
 	profileStore, ok := relational.(appports.ProfileStore)
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support profile management")
@@ -116,6 +120,13 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	memoryStore, ok := relational.(appports.MemoryStore)
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support unified memory lookup")
+	}
+	chatCompactStore, ok := relational.(usecase.ChatCompactStore)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support session compact updates")
+	}
+	if err := ensureVectorSchema(context.Background(), schemaVersions, workspaceStore, vector, logger); err != nil {
+		return nil, err
 	}
 	noiseGate, err := buildNoiseGate(cfg, layout, embedding, noiseCache, logger)
 	if err != nil {
@@ -127,6 +138,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
+	chatCompact := usecase.NewChatCompactUseCase(chatCompactStore)
 	memory.ConfigureHybrid(cfg.MemoryPipeline.HybridEnabled, cfg.MemoryPipeline.LexicalTopK, cfg.MemoryPipeline.RRFK)
 	memory.ConfigureMMR(cfg.MemoryPipeline.MMREnabled, cfg.MemoryPipeline.MMRLambda)
 	memory.ConfigureDecay(
@@ -178,6 +190,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		Workspace:         workspace,
 		Profiles:          profiles,
 		Memory:            memory,
+		ChatCompact:       chatCompact,
 		PreCheck:          pre,
 		PostAction:        post,
 		ScopeResolver:     scopeResolver,

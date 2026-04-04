@@ -236,6 +236,101 @@ func TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch(t *testing.T) {
 	}
 }
 
+// TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton verifies the reusable version framework can read old sqlite-only version rows before the new component table has been populated.
+// TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton 用于验证在新版组件表尚未填充前，可复用版本框架仍能回退读取旧版 sqlite 单例版本行。
+func TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_schema_versions"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		case strings.Contains(sql, "FROM vmm_version"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"schema_version":14}]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+
+	version, err := store.GetSchemaComponentVersion(context.Background(), "sqlite")
+	if err != nil {
+		t.Fatalf("GetSchemaComponentVersion returned error: %v", err)
+	}
+	if version != 14 {
+		t.Fatalf("schema version = %d, want 14", version)
+	}
+}
+
+// TestStoreSetSchemaComponentVersionPersistsComponentAndLegacyRows verifies version writes keep the new component table and the legacy sqlite singleton row synchronized.
+// TestStoreSetSchemaComponentVersionPersistsComponentAndLegacyRows 用于验证版本写入会同时保持新版组件表和旧版 sqlite 单例版本行同步。
+func TestStoreSetSchemaComponentVersionPersistsComponentAndLegacyRows(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	executedSQL := make([]string, 0)
+	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	if err := store.SetSchemaComponentVersion(context.Background(), "sqlite", 15); err != nil {
+		t.Fatalf("SetSchemaComponentVersion returned error: %v", err)
+	}
+	joined := strings.Join(executedSQL, "\n")
+	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_schema_versions") {
+		t.Fatalf("expected schema version bootstrap SQL, got %q", joined)
+	}
+	if !strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
+		t.Fatalf("expected component version upsert SQL, got %q", joined)
+	}
+	if !strings.Contains(joined, "INSERT INTO vmm_version") {
+		t.Fatalf("expected legacy sqlite version sync SQL, got %q", joined)
+	}
+}
+
+// TestStoreEnsureSQLiteSchemaResetsLegacyPre14Version verifies very old local sqlite stores still recover by rebuilding to the current schema instead of failing with a missing migration path error.
+// TestStoreEnsureSQLiteSchemaResetsLegacyPre14Version 用于验证非常老的本地 sqlite 库仍会通过重建当前 schema 恢复，而不会因为缺少迁移路径直接失败。
+func TestStoreEnsureSQLiteSchemaResetsLegacyPre14Version(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	executedSQL := make([]string, 0)
+	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_schema_versions"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		case strings.Contains(sql, "FROM vmm_version"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"schema_version":13}]`}, nil
+		case strings.Contains(sql, "SELECT COUNT(*) AS count FROM vmm_projects"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"count":0}]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+
+	if err := store.ensureSQLiteSchema(context.Background()); err != nil {
+		t.Fatalf("ensureSQLiteSchema returned error: %v", err)
+	}
+
+	joined := strings.Join(executedSQL, "\n")
+	if !strings.Contains(joined, "DROP TABLE IF EXISTS vmm_sessions;") {
+		t.Fatalf("expected legacy schema reset SQL, got %q", joined)
+	}
+	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_sessions") {
+		t.Fatalf("expected current schema bootstrap SQL, got %q", joined)
+	}
+	if !strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
+		t.Fatalf("expected schema version persistence after legacy reset, got %q", joined)
+	}
+}
+
 // TestStoreSearchLexicalMemoryUsesTypedSQLiteParams verifies hybrid lexical recall keeps using MATCH with typed params instead of falling back to params_json.
 // TestStoreSearchLexicalMemoryUsesTypedSQLiteParams 用于验证混合 lexical 召回仍通过 MATCH 和强类型参数执行，而不是退回 params_json。
 func TestStoreSearchLexicalMemoryUsesTypedSQLiteParams(t *testing.T) {
@@ -317,6 +412,125 @@ func TestStoreSearchLexicalMemoryPretokenizesChineseQuery(t *testing.T) {
 	want := `"文本 排序 模型" OR "文本" OR "排序" OR "模型"`
 	if queryValue.StringValue != want {
 		t.Fatalf("tokenized lexical query = %q, want %q", queryValue.StringValue, want)
+	}
+}
+
+// TestStoreSearchLexicalMemoryAppliesCompactBoundaryFilter verifies BM25/FTS recall applies the current-session compact boundary directly inside SQL instead of filtering after retrieval.
+// TestStoreSearchLexicalMemoryAppliesCompactBoundaryFilter 用于验证 BM25/FTS 召回会直接在 SQL 中应用当前 session compact 边界，而不是检索后再过滤。
+func TestStoreSearchLexicalMemoryAppliesCompactBoundaryFilter(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var captured *sqlitev1.QueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		captured = req
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	}
+
+	_, err := store.SearchLexicalMemory(context.Background(), "压缩前决策", 5, logicdomain.SearchFilter{
+		UserID:            7,
+		TeamID:            3,
+		SpaceID:           5,
+		ProjectID:         9,
+		BoundarySessionID: 41,
+		BoundaryMaxTurnID: 88,
+	})
+	if err != nil {
+		t.Fatalf("SearchLexicalMemory returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJson request to be captured")
+	}
+	if !strings.Contains(captured.GetSql(), "n.origin_session_id != ? OR n.source_turn_id IS NULL OR n.source_turn_id = 0 OR n.source_turn_id <= ?") {
+		t.Fatalf("expected compact boundary clause in lexical sql, got %q", captured.GetSql())
+	}
+	if len(captured.GetParams()) != 8 {
+		t.Fatalf("expected eight typed params, got %d", len(captured.GetParams()))
+	}
+}
+
+// TestStoreListProjectMemoriesFiltersExpiredRows verifies vector rebuild source queries stay aligned with the runtime active/unexpired memory contract.
+// TestStoreListProjectMemoriesFiltersExpiredRows 用于验证向量重建数据源查询会与运行时 active/未过期记忆口径保持一致。
+func TestStoreListProjectMemoriesFiltersExpiredRows(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var captured *sqlitev1.QueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		captured = req
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	}
+
+	rows, err := store.ListProjectMemories(context.Background(), 9)
+	if err != nil {
+		t.Fatalf("ListProjectMemories returned error: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("expected no rows from canned response, got %#v", rows)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJson request to be captured")
+	}
+	if !strings.Contains(captured.GetSql(), "memory_status =") || !strings.Contains(captured.GetSql(), "expires_timestamp <= 0 OR expires_timestamp >") {
+		t.Fatalf("expected active/unexpired filter in rebuild SQL, got %q", captured.GetSql())
+	}
+}
+
+// TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn verifies the compact flow now acquires the shared write lock before reading MAX(id), closing the stale-boundary race with turn appends.
+// TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn 用于验证 compact 流程现在会先获取共享写锁再读取 MAX(id)，从而关闭与 turn 追加并发时的过期边界竞态。
+func TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	latestTurnQueryObserved := make(chan struct{}, 1)
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		if strings.Contains(req.GetSql(), "MAX(id)") {
+			latestTurnQueryObserved <- struct{}{}
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"latest_turn_id":88}]`}, nil
+		}
+		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	}
+	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	locked := false
+	store.writeMu.Lock()
+	locked = true
+	defer func() {
+		if locked {
+			store.writeMu.Unlock()
+		}
+	}()
+
+	done := make(chan error, 1)
+	go func() {
+		_, _, err := store.MarkSessionCompacted(context.Background(), logicdomain.SessionRef{SessionID: 41}, time.Unix(0, 0).UTC())
+		done <- err
+	}()
+
+	select {
+	case <-latestTurnQueryObserved:
+		t.Fatal("expected latest-turn query to wait until write lock is released")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	store.writeMu.Unlock()
+	locked = false
+
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("MarkSessionCompacted returned error: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("MarkSessionCompacted did not finish after write lock release")
+	}
+
+	select {
+	case <-latestTurnQueryObserved:
+	default:
+		t.Fatal("expected latest-turn query after write lock release")
 	}
 }
 

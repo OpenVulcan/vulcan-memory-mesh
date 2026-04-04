@@ -55,6 +55,7 @@
 
 ### 业务面
 
+- `ChatCompact`
 - `PreCheck`
 - `PostAction`
 
@@ -188,6 +189,7 @@
 - `user_id`
 - `project_id`
 - `user_content`
+- `recall_mode`
 
 不再接受：
 
@@ -198,8 +200,29 @@
 
 - `project_id` 在数据库层级上已经唯一绑定 `space_id` 和 `team_id`
 - 这两个字段由服务端统一反查，不再由客户端传入
+- `recall_mode=0` 或省略时，服务端会回退到旧版 pre-check 检索行为
+- `recall_mode=1` 时，服务端会应用当前 session 的 compact 边界：
+  - 未 compact：排除当前 session 的 turn-extract 记忆
+  - 已 compact：只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
+- `recall_mode` 为未来新增的非零值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
 
-### 2. PostAction
+### 2. ChatCompact
+
+当前 `ChatCompact` 只接受：
+
+- `session_id`
+- `user_id`
+- `project_id`
+
+语义如下：
+
+- 用于显式告诉服务端“当前 session 已执行一次上下文压缩”
+- 服务端会把该 session 当前最新已持久化的 turn 记录为 `last_compacted_turn_id`
+- 同时更新 `last_compacted_timestamp`
+- 如果当前 session 没有 turn，允许返回成功但不更新 compact 边界
+- 如果重复 compact 到同一最新 turn，会保持幂等
+
+### 3. PostAction
 
 当前业务请求只接受：
 
@@ -222,7 +245,7 @@
 
 ## 八、统一前置拦截
 
-`PreCheck` 和 `PostAction` 在真正进入业务逻辑之前，都会经过统一的范围解析拦截器。
+`PreCheck`、`ChatCompact` 和 `PostAction` 在真正进入业务逻辑之前，都会经过统一的范围解析拦截器。
 
 拦截器会做这些事：
 
@@ -240,7 +263,7 @@
 
 这意味着：
 
-- `PreCheck` / `PostAction` 用例层看到的已经是完整 `SessionRef`
+- `PreCheck` / `ChatCompact` / `PostAction` 用例层看到的已经是完整 `SessionRef`
 - 业务层无需再处理 `team_id` / `space_id` 解析
 
 另外需要特别注意：
@@ -250,7 +273,7 @@
 - 如果 `user_id` 或 `project_id` 不是 0，但数据库里不存在对应记录
   - 会直接返回 `NotFound`
 - 这类失败发生在拦截器阶段
-  - 不会进入 `PreCheck` / `PostAction` 用例层
+  - 不会进入 `PreCheck` / `ChatCompact` / `PostAction` 用例层
   - 不会自动创建 `session`
 
 ## 九、当前方法语义

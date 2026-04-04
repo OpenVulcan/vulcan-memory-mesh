@@ -217,6 +217,7 @@ space_id
 project_id
 session_id
 user_id
+source_turn_id
 ```
 
 这样可以直接按数值过滤：
@@ -227,6 +228,7 @@ space_id = Y
 project_id = Z
 session_id = N
 user_id = U
+source_turn_id <= T
 ```
 
 当前基础表名来自：
@@ -260,6 +262,7 @@ user_id = U
 
 ### 2. 业务面方法
 
+- `ChatCompact`
 - `PreCheck`
 - `PostAction`
 
@@ -282,11 +285,17 @@ user_id = U
 ### PreCheck
 
 ```proto
+enum PreCheckRecallMode {
+  PRE_CHECK_RECALL_MODE_LEGACY = 0;
+  PRE_CHECK_RECALL_MODE_SESSION_COMPACT = 1;
+}
+
 message PreCheckRequest {
   string session_id = 1;
   uint64 user_id = 2;
   uint64 project_id = 3;
   string user_content = 4;
+  PreCheckRecallMode recall_mode = 5;
 }
 ```
 
@@ -295,6 +304,25 @@ message PreCheckRequest {
 - 客户端不再传 `team_id` / `space_id`
 - `user_id` / `project_id` 必须是数字 ID
 - `session_id` 是外部业务会话键
+- `recall_mode=0` 或省略时回退到旧版 pre-check 行为
+- `recall_mode=1` 时按 compact 边界过滤当前 session 的 turn-extract 记忆
+- 未来新增的非零 `recall_mode` 在当前版本会回退到 compact-aware 基线
+
+### ChatCompact
+
+```proto
+message ChatCompactRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+}
+```
+
+关键点：
+
+- 复用和 `PreCheck / PostAction` 相同的范围解析链路
+- 服务端会把当前 session 最新已持久化 `turn_id` 写入 `vmm_sessions.last_compacted_turn_id`
+- 通过 `vmm_sessions.last_compacted_turn_id` 推导“压缩前 / 压缩后”范围，而不是批量回写 turn 标记
 
 ### PostAction
 
@@ -333,6 +361,7 @@ message PostActionTimelineItem {
 逻辑如下：
 
 1. 只对：
+   - `ChatCompact`
    - `PreCheck`
    - `PostAction`
    生效
@@ -513,7 +542,9 @@ message PostActionTimelineItem {
 4. 通过统一记忆检索接口批量向量化这些检索语句并召回长期候选
    - 检索范围按服务端解析出的 `team / space / project` 限定
    - 并额外带 `user_id = 0 OR current_user_id` 过滤
-   - 默认不再用 `session_id` 把长期记忆进一步收窄
+   - `recall_mode=0` 或省略时保持旧版行为
+   - 未 compact 时，排除当前 session 的 turn-extract 记忆
+   - 已 compact 时，只允许当前 session 中 `source_turn_id <= last_compacted_turn_id` 的历史记忆参与召回
 5. 第二层 `review_precheck_memory` 从带编号候选里选择真正有帮助的编号
 6. 只对被采纳的记忆写回生命周期
 7. 只把被采纳的记忆组装为：
@@ -563,3 +594,6 @@ message PostActionTimelineItem {
     - `vmm_turn_records`
     - `vmm_memory_entries`
 5. LanceDB 必须继续使用扁平化数值元数据过滤
+6. SQLite schema 版本与 LanceDB schema 版本必须分开管理
+   - SQL migration 不得触发向量表重建
+   - 仅当 LanceDB 列结构变化时，才允许重建并从 SQLite 回灌

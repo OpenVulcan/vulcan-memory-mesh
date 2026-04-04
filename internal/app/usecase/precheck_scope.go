@@ -70,6 +70,39 @@ func buildScopedMemorySearchFilter(userTarget, projectTarget logicdomain.Profile
 	return filter
 }
 
+// normalizePreCheckRecallMode folds omitted and future mode values into the currently supported runtime branches so older servers can stay compatible with newer plugin payloads.
+// normalizePreCheckRecallMode 用于把省略值和未来模式值折叠到当前受支持的运行时分支中，让旧服务端也能兼容较新的插件载荷。
+func normalizePreCheckRecallMode(mode PreCheckRecallMode) PreCheckRecallMode {
+	switch mode {
+	case PreCheckRecallModeLegacy:
+		return PreCheckRecallModeLegacy
+	case PreCheckRecallModeSessionCompact:
+		return PreCheckRecallModeSessionCompact
+	default:
+		return PreCheckRecallModeSessionCompact
+	}
+}
+
+// buildPreCheckSessionBoundaryFilter derives the current-session compact boundary rule that should be applied to both vector and lexical recall during pre-check.
+// buildPreCheckSessionBoundaryFilter 用于推导 pre-check 期间同时作用于向量和 lexical 召回的当前 session compact 边界规则。
+func buildPreCheckSessionBoundaryFilter(session logicdomain.SessionRef, mode PreCheckRecallMode) logicdomain.SearchFilter {
+	if session.SessionID == 0 {
+		return logicdomain.SearchFilter{}
+	}
+	if normalizePreCheckRecallMode(mode) == PreCheckRecallModeLegacy {
+		return logicdomain.SearchFilter{}
+	}
+	filter := logicdomain.SearchFilter{
+		BoundarySessionID: session.SessionID,
+	}
+	if session.LastCompactedTurnID == 0 {
+		filter.ExcludeBoundaryTurn = true
+		return filter
+	}
+	filter.BoundaryMaxTurnID = session.LastCompactedTurnID
+	return filter
+}
+
 // normalizeConfigToken trims and lowercases lightweight enum-like config strings so they can be compared consistently across runtime layers.
 // normalizeConfigToken 用于对轻量枚举型配置字符串执行裁剪和小写化，让各运行时层都能稳定比较。
 func normalizeConfigToken(raw string) string {

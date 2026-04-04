@@ -15,6 +15,7 @@ import (
 
 const debugCleanManagedSchemaSQL = resetManagedSchemaSQL + `
 DROP TABLE IF EXISTS vmm_version;
+DROP TABLE IF EXISTS vmm_schema_versions;
 `
 
 // DebugCleanManagedSchema connects to the SQLite gateway, drops all VMM-managed tables, and then returns immediately.

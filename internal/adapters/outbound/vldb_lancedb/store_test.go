@@ -31,9 +31,10 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 	}
 
 	err := store.Upsert(context.Background(), logicdomain.MemoryRecord{
-		ID:     "mem-1",
-		Text:   "gateway-backed memory",
-		Vector: []float32{0.1, 0.2, 0.3},
+		ID:           "mem-1",
+		Text:         "gateway-backed memory",
+		Vector:       []float32{0.1, 0.2, 0.3},
+		SourceTurnID: 41,
 		Filter: logicdomain.SearchFilter{
 			UserID:    7,
 			TeamID:    3,
@@ -72,6 +73,9 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 	}
 	if row["team_id"] != float64(3) || row["space_id"] != float64(5) || row["project_id"] != float64(9) || row["session_id"] != float64(11) || row["user_id"] != float64(7) {
 		t.Fatalf("unexpected flattened ids = %#v", row)
+	}
+	if row["source_turn_id"] != float64(41) {
+		t.Fatalf("unexpected source_turn_id payload = %#v", row)
 	}
 }
 
@@ -153,6 +157,35 @@ func TestSearchRejectsMalformedNumericFields(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "decode lancedb search rows") || !strings.Contains(err.Error(), "team_id") {
 		t.Fatalf("expected wrapped numeric decode error, got %v", err)
+	}
+}
+
+// TestSearchBuildsCompactBoundaryFilter verifies vector recall can exclude current-session post-compact turns directly in the first-stage LanceDB predicate.
+// TestSearchBuildsCompactBoundaryFilter 用于验证向量召回可以直接在第一阶段 LanceDB 谓词里排除当前 session 的 post-compact turn。
+func TestSearchBuildsCompactBoundaryFilter(t *testing.T) {
+	server := &fakeLanceDBServer{
+		searchData: []byte(`[]`),
+	}
+	store := newLanceDBTestStore(t, server)
+
+	_, err := store.Search(context.Background(), []float32{0.2, 0.3, 0.4}, 3, logicdomain.SearchFilter{
+		UserID:            7,
+		TeamID:            3,
+		SpaceID:           5,
+		ProjectID:         9,
+		BoundarySessionID: 11,
+		BoundaryMaxTurnID: 42,
+	})
+	if err != nil {
+		t.Fatalf("search memory vectors: %v", err)
+	}
+
+	requests := server.searchRequests()
+	if len(requests) != 1 {
+		t.Fatalf("expected 1 search request, got %d", len(requests))
+	}
+	if !strings.Contains(requests[0].Filter, "session_id != 11") || !strings.Contains(requests[0].Filter, "source_turn_id <= 42") {
+		t.Fatalf("unexpected compact boundary filter expression: %s", requests[0].Filter)
 	}
 }
 

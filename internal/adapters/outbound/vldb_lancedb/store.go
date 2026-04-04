@@ -19,6 +19,12 @@ import (
 	"google.golang.org/grpc/status"
 )
 
+const (
+	// CurrentSchemaVersion tracks the latest LanceDB table layout expected by this runtime.
+	// CurrentSchemaVersion 用于标记当前运行时期望的最新 LanceDB 表结构版本。
+	CurrentSchemaVersion = 2
+)
+
 // Store is the LanceDB-gateway adapter used by the vector store port.
 // Store 用于作为向量存储端口的 LanceDB 网关适配器。
 type Store struct {
@@ -94,16 +100,17 @@ func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) err
 	}
 	rows := []map[string]any{
 		{
-			"id":            record.ID,
-			"content":       record.Text,
-			"team_id":       record.Filter.TeamID,
-			"space_id":      record.Filter.SpaceID,
-			"project_id":    record.Filter.ProjectID,
-			"session_id":    record.Filter.SessionID,
-			"user_id":       record.Filter.UserID,
-			"metadata_json": string(metadataJSON),
-			"created_at":    record.CreatedAt.UTC().Format(time.RFC3339Nano),
-			s.vectorColumn:  record.Vector,
+			"id":             record.ID,
+			"content":        record.Text,
+			"team_id":        record.Filter.TeamID,
+			"space_id":       record.Filter.SpaceID,
+			"project_id":     record.Filter.ProjectID,
+			"session_id":     record.Filter.SessionID,
+			"user_id":        record.Filter.UserID,
+			"source_turn_id": record.SourceTurnID,
+			"metadata_json":  string(metadataJSON),
+			"created_at":     record.CreatedAt.UTC().Format(time.RFC3339Nano),
+			s.vectorColumn:   record.Vector,
 		},
 	}
 	payload, err := json.Marshal(rows)
@@ -255,6 +262,21 @@ func (s *Store) Shutdown(ctx context.Context) error {
 	return s.conn.Close()
 }
 
+// RecreateTable drops the configured runtime table and rebuilds it with the current schema so controlled migrations can repopulate vectors from SQLite.
+// RecreateTable 用于删除当前运行时表并按最新结构重建，供受控迁移从 SQLite 回灌向量数据。
+func (s *Store) RecreateTable(ctx context.Context) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("lancedb store is not initialized")
+	}
+	if err := debugDropTableWithClient(ctx, s.client, s.tableName, s.timeout); err != nil {
+		return fmt.Errorf("drop lancedb table for recreate: %w", err)
+	}
+	if err := s.init(ctx); err != nil {
+		return fmt.Errorf("recreate lancedb table: %w", err)
+	}
+	return nil
+}
+
 // init creates the configured vector table lazily so seed-memory can upsert without extra setup steps.
 // init 用于惰性创建配置指定的向量表，让 seed-memory 无需额外建表步骤即可写入。
 func (s *Store) init(ctx context.Context) error {
@@ -271,6 +293,7 @@ func (s *Store) init(ctx context.Context) error {
 			{Name: "project_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
 			{Name: "session_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
 			{Name: "user_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
+			{Name: "source_turn_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
 			{Name: "metadata_json", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
 			{Name: "created_at", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
 			{Name: s.vectorColumn, ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_VECTOR_FLOAT32, VectorDim: uint32(s.dimension), Nullable: false},
@@ -320,7 +343,7 @@ func isTableAlreadyExistsMessage(message string) bool {
 // buildFilterExpr converts one search filter into the simple SQL-like predicate syntax accepted by the gateway.
 // buildFilterExpr 用于把检索过滤条件转换成网关接受的简易 SQL 风格谓词表达式。
 func buildFilterExpr(filter logicdomain.SearchFilter) string {
-	parts := make([]string, 0, 5)
+	parts := make([]string, 0, 8)
 	if filter.TeamID > 0 {
 		parts = append(parts, fmt.Sprintf("team_id = %d", filter.TeamID))
 	}
@@ -335,6 +358,13 @@ func buildFilterExpr(filter logicdomain.SearchFilter) string {
 	}
 	if filter.UserID > 0 {
 		parts = append(parts, fmt.Sprintf("(user_id = 0 OR user_id = %d)", filter.UserID))
+	}
+	if filter.BoundarySessionID > 0 {
+		if filter.ExcludeBoundaryTurn {
+			parts = append(parts, fmt.Sprintf("(session_id != %d OR source_turn_id = 0)", filter.BoundarySessionID))
+		} else {
+			parts = append(parts, fmt.Sprintf("(session_id != %d OR source_turn_id = 0 OR source_turn_id <= %d)", filter.BoundarySessionID, filter.BoundaryMaxTurnID))
+		}
 	}
 	return strings.Join(parts, " AND ")
 }
@@ -412,6 +442,7 @@ type searchRow struct {
 	ProjectID    uint64  `json:"project_id"`
 	SessionID    uint64  `json:"session_id"`
 	UserID       uint64  `json:"user_id"`
+	SourceTurnID uint64  `json:"source_turn_id"`
 	MetadataJSON string  `json:"metadata_json"`
 	Distance     float64 `json:"_distance"`
 	Score        float64 `json:"distance"`
@@ -452,6 +483,9 @@ func (r *searchRow) UnmarshalJSON(data []byte) error {
 	}
 	if r.UserID, err = asUint64(raw["user_id"]); err != nil {
 		return fmt.Errorf("decode search row user_id: %w", err)
+	}
+	if r.SourceTurnID, err = asUint64(raw["source_turn_id"]); err != nil {
+		return fmt.Errorf("decode search row source_turn_id: %w", err)
 	}
 	r.MetadataJSON = asString(raw["metadata_json"])
 	if r.Distance, err = asFloat64(raw["_distance"]); err != nil {

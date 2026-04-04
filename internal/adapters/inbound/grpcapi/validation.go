@@ -173,6 +173,15 @@ func NormalizeWriteMemoriesRequest(req *vmmv1.WriteMemoriesRequest) {
 	}
 }
 
+// NormalizeChatCompactRequest trims the compact acknowledgement payload before the scope resolver runs.
+// NormalizeChatCompactRequest 用于在范围解析执行前裁剪 compact 确认载荷。
+func NormalizeChatCompactRequest(req *vmmv1.ChatCompactRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionId = strings.TrimSpace(req.GetSessionId())
+}
+
 // ValidatePreCheck validates the pre-check RPC request before the scope resolver interceptor runs.
 // ValidatePreCheck 用于在范围解析拦截器执行前校验 pre-check RPC 请求。
 func (v *RequestValidator) ValidatePreCheck(req *vmmv1.PreCheckRequest) error {
@@ -190,6 +199,24 @@ func (v *RequestValidator) ValidatePreCheck(req *vmmv1.PreCheckRequest) error {
 	}
 	if err := requireString("user_content", req.GetUserContent(), 16000); err != nil {
 		return err
+	}
+	return nil
+}
+
+// ValidateChatCompact validates the compact acknowledgement RPC request before the scope resolver interceptor runs.
+// ValidateChatCompact 用于在范围解析拦截器执行前校验 compact 确认 RPC 请求。
+func (v *RequestValidator) ValidateChatCompact(req *vmmv1.ChatCompactRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "chat_compact", Message: "is required"}
+	}
+	if err := requireString("session_id", req.GetSessionId(), 128); err != nil {
+		return err
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 	}
 	return nil
 }

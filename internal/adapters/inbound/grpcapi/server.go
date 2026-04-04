@@ -29,6 +29,7 @@ type Dependencies struct {
 	Workspace         usecase.WorkspaceExecutor
 	Profiles          usecase.ProfileExecutor
 	Memory            usecase.MemoryExecutor
+	ChatCompact       usecase.ChatCompactExecutor
 	PreCheck          usecase.PreCheckExecutor
 	PostAction        usecase.PostActionExecutor
 	ScopeResolver     appports.RequestScopeResolver
@@ -49,6 +50,7 @@ type Server struct {
 	workspace        usecase.WorkspaceExecutor
 	profiles         usecase.ProfileExecutor
 	memory           usecase.MemoryExecutor
+	chatCompact      usecase.ChatCompactExecutor
 	preCheck         usecase.PreCheckExecutor
 	postAction       usecase.PostActionExecutor
 	workspaceTimeout time.Duration
@@ -77,6 +79,7 @@ func NewServer(deps Dependencies) *Server {
 		workspace:        deps.Workspace,
 		profiles:         deps.Profiles,
 		memory:           deps.Memory,
+		chatCompact:      deps.ChatCompact,
 		preCheck:         deps.PreCheck,
 		postAction:       deps.PostAction,
 		workspaceTimeout: deps.WorkspaceTimeout,
@@ -643,6 +646,37 @@ func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequ
 	}, nil
 }
 
+// ChatCompact validates the request, consumes the resolved session scope, and records the latest persisted turn as the active compact boundary.
+// ChatCompact 用于校验请求、消费已解析 session 范围，并把最新持久化 turn 记录为当前 compact 边界。
+func (s *Server) ChatCompact(ctx context.Context, req *vmmv1.ChatCompactRequest) (*vmmv1.ChatCompactResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
+	if s.chatCompact == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeChatCompactRequest(req)
+	if err := s.validator().ValidateChatCompact(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	session, ok := resolvedSessionRefFromContext(ctx)
+	if !ok {
+		return nil, toStatus(withMessage(errInternal, "resolved request scope is missing"))
+	}
+	ctx, cancel := withTimeout(ctx, s.postTimeout)
+	defer cancel()
+	result, err := s.chatCompact.Execute(ctx, usecase.ChatCompactCommand{Session: session})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.ChatCompactResponse{
+		Accepted:        result.Accepted,
+		Updated:         result.Updated,
+		CompactedTurnId: result.CompactedTurnID,
+		TraceId:         trace.IDFromContext(ctx),
+	}, nil
+}
+
 // PreCheck validates the request, consumes the scope resolved by the interceptor, and returns the live assembled pre-check context.
 // PreCheck 用于校验请求、消费拦截器解析出的范围，并返回实时组装完成的 pre-check 上下文。
 func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmmv1.PreCheckResponse, error) {
@@ -666,6 +700,7 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	result, err := s.preCheck.Execute(ctx, usecase.PreCheckCommand{
 		Session:     session,
 		UserContent: req.GetUserContent(),
+		RecallMode:  usecase.PreCheckRecallMode(req.GetRecallMode()),
 	})
 	if err != nil {
 		return nil, toStatus(describeError(err))
@@ -700,10 +735,13 @@ func (s *Server) logPreCheckReceipt(traceID, message string, req *vmmv1.PreCheck
 		"trace_id", traceID,
 		"session_id", req.GetSessionId(),
 		"user_content_present", req.GetUserContent() != "",
+		"recall_mode", int32(req.GetRecallMode()),
 	}
 	fields = s.logger.AppendPayloadFields(fields, "request_payload", map[string]any{
 		"session_id":   req.GetSessionId(),
 		"user_content": req.GetUserContent(),
+		"recall_mode":  int32(req.GetRecallMode()),
+		"recall_label": req.GetRecallMode().String(),
 	})
 	s.logger.Info(message, fields...)
 }

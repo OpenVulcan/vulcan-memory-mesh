@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 14
+	currentSchemaVersion = 15
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -144,10 +144,12 @@ CREATE TABLE IF NOT EXISTS vmm_sessions (
   project_id BIGINT NOT NULL,
   turn_count INTEGER NOT NULL DEFAULT 0,
   last_summarized_id BIGINT NOT NULL DEFAULT 0,
+  last_compacted_turn_id BIGINT NOT NULL DEFAULT 0,
   summarize_content TEXT NOT NULL DEFAULT '',
   summarize_budget INTEGER NOT NULL DEFAULT 0,
   last_extract_observed_timestamp BIGINT NOT NULL DEFAULT 0,
   last_extract_completed_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_compacted_timestamp BIGINT NOT NULL DEFAULT 0,
   created_timestamp BIGINT NOT NULL,
   updated_timestamp BIGINT NOT NULL,
   UNIQUE(project_id, session_key),
@@ -156,6 +158,7 @@ CREATE TABLE IF NOT EXISTS vmm_sessions (
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_sessions_scope ON vmm_sessions(user_id, team_id, space_id, project_id, updated_timestamp);
 CREATE INDEX IF NOT EXISTS idx_vmm_sessions_project_session ON vmm_sessions(project_id, session_key);
+CREATE INDEX IF NOT EXISTS idx_vmm_sessions_compact_boundary ON vmm_sessions(project_id, last_compacted_turn_id, id);
 
 CREATE TABLE IF NOT EXISTS vmm_turn_records (
   id BIGINT PRIMARY KEY,
@@ -358,48 +361,10 @@ func (s *Store) Shutdown(ctx context.Context) error {
 	return s.conn.Close()
 }
 
-// init ensures the debugging-stage SQLite schema always matches the current post-action baseline, resetting managed tables when needed.
-// init 用于确保调试阶段 SQLite schema 始终匹配当前 post-action 基线，并在需要时重置受管表。
+// init ensures the SQLite schema is bootstrapped or incrementally migrated before the store starts serving traffic.
+// init 用于在存储开始提供服务前，确保 SQLite schema 已完成初始化或增量迁移。
 func (s *Store) init(ctx context.Context) error {
-	// Bootstrap the version table first so startup can decide whether the managed schema needs a full reset.
-	// 先引导版本表，让启动流程可以判断当前受管 schema 是否需要整库重置。
-	if err := s.exec(ctx, `CREATE TABLE IF NOT EXISTS vmm_version (singleton_id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`); err != nil {
-		return fmt.Errorf("bootstrap schema version table: %w", err)
-	}
-	rows, err := queryRows[versionRow](s, ctx, `SELECT schema_version FROM vmm_version WHERE singleton_id = 1 LIMIT 1`)
-	if err != nil {
-		return fmt.Errorf("query schema version: %w", err)
-	}
-	if len(rows) == 0 || rows[0].SchemaVersion != currentSchemaVersion {
-		return s.resetCurrentSchema(ctx)
-	}
-	return nil
-}
-
-// resetCurrentSchema clears the managed SQLite tables and recreates the current baseline because old debug data is disposable.
-// resetCurrentSchema 用于清空受管 SQLite 表并重建当前基线，因为调试阶段的旧数据可以直接丢弃。
-func (s *Store) resetCurrentSchema(ctx context.Context) error {
-	// Serialize destructive schema rewrites so concurrent startups never interleave drop/create scripts.
-	// 串行化破坏性 schema 重写，避免并发启动时交错执行删表和建表脚本。
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
-
-	if err := s.exec(ctx, resetManagedSchemaSQL); err != nil {
-		return fmt.Errorf("reset managed sqlite schema: %w", err)
-	}
-	if err := s.exec(ctx, currentSchemaSQL); err != nil {
-		return fmt.Errorf("apply current sqlite schema: %w", err)
-	}
-	if err := s.exec(ctx, buildDebugSeedWorkspaceSQL(time.Now().UTC())); err != nil {
-		return fmt.Errorf("seed debug sqlite workspace: %w", err)
-	}
-	if err := s.exec(ctx, `DELETE FROM vmm_version`); err != nil {
-		return fmt.Errorf("clear sqlite schema version row: %w", err)
-	}
-	if err := s.exec(ctx, `INSERT INTO vmm_version (singleton_id, schema_version, updated_at) VALUES (?, ?, ?)`, versionSingletonID, currentSchemaVersion, time.Now().UTC().Format(time.RFC3339Nano)); err != nil {
-		return fmt.Errorf("persist sqlite schema version row: %w", err)
-	}
-	return nil
+	return s.ensureSQLiteSchema(ctx)
 }
 
 // buildDebugSeedWorkspaceSQL renders the deterministic testing-stage seed rows so grpc debugging always starts with user_id=1 and project_id=1 available.
@@ -882,10 +847,12 @@ func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, user
 		ProjectID:              project.ID,
 		TurnCount:              session.TurnCount,
 		LastSummarizedID:       session.LastSummarizedID,
+		LastCompactedTurnID:    session.LastCompactedTurnID,
 		SummarizeContent:       session.SummarizeContent,
 		SummarizeBudget:        session.SummarizeBudget,
 		LastExtractObservedAt:  session.LastExtractObservedAt,
 		LastExtractCompletedAt: session.LastExtractCompletedAt,
+		LastCompactedAt:        session.LastCompactedAt,
 		CreatedAt:              session.CreatedAt,
 		UpdatedAt:              session.UpdatedAt,
 		UserName:               user.Name,
@@ -2118,6 +2085,15 @@ WHERE vmm_memory_nodes_fts MATCH ?
 		sqlText += `  AND n.origin_session_id = ?` + "\n"
 		params = append(params, filter.SessionID)
 	}
+	if filter.BoundarySessionID > 0 {
+		if filter.ExcludeBoundaryTurn {
+			sqlText += `  AND (n.origin_session_id != ? OR n.source_turn_id IS NULL OR n.source_turn_id = 0)` + "\n"
+			params = append(params, filter.BoundarySessionID)
+		} else {
+			sqlText += `  AND (n.origin_session_id != ? OR n.source_turn_id IS NULL OR n.source_turn_id = 0 OR n.source_turn_id <= ?)` + "\n"
+			params = append(params, filter.BoundarySessionID, filter.BoundaryMaxTurnID)
+		}
+	}
 	sqlText += fmt.Sprintf("  AND %s\nORDER BY rank ASC, n.id ASC\nLIMIT ?\n", buildActiveUnexpiredMemoryCondition("n", time.Now().UTC().UnixMilli()))
 	params = append(params, topK)
 
@@ -2334,8 +2310,8 @@ func (s *Store) ListIdlePendingSessions(ctx context.Context, idleTimeout time.Du
 	cutoffMs := time.Now().UTC().Add(-idleTimeout).UnixMilli()
 	rows, err := queryRows[sessionRow](s, ctx, `
 SELECT id, session_key, user_id, team_id, space_id, project_id,
-       turn_count, last_summarized_id, summarize_content, summarize_budget,
-       last_extract_observed_timestamp, last_extract_completed_timestamp,
+       turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+       last_extract_observed_timestamp, last_extract_completed_timestamp, last_compacted_timestamp,
        created_timestamp, updated_timestamp
 FROM vmm_sessions
 WHERE updated_timestamp <= ?
@@ -2362,10 +2338,12 @@ LIMIT ?
 			ProjectID:              record.ProjectID,
 			TurnCount:              record.TurnCount,
 			LastSummarizedID:       record.LastSummarizedID,
+			LastCompactedTurnID:    record.LastCompactedTurnID,
 			SummarizeContent:       record.SummarizeContent,
 			SummarizeBudget:        record.SummarizeBudget,
 			LastExtractObservedAt:  record.LastExtractObservedAt,
 			LastExtractCompletedAt: record.LastExtractCompletedAt,
+			LastCompactedAt:        record.LastCompactedAt,
 			CreatedAt:              record.CreatedAt,
 			UpdatedAt:              record.UpdatedAt,
 		})
@@ -2479,8 +2457,8 @@ LIMIT 1
 func (s *Store) ensureSession(ctx context.Context, sessionKey string, userID uint64, project logicdomain.ProjectRecord) (logicdomain.SessionRecord, error) {
 	rows, err := queryRows[sessionRow](s, ctx, `
 SELECT id, session_key, user_id, team_id, space_id, project_id, turn_count,
-       last_summarized_id, summarize_content, summarize_budget,
-       last_extract_observed_timestamp, last_extract_completed_timestamp,
+       last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+       last_extract_observed_timestamp, last_extract_completed_timestamp, last_compacted_timestamp,
        created_timestamp, updated_timestamp
 FROM vmm_sessions
 WHERE project_id = ? AND session_key = ?
@@ -2508,10 +2486,10 @@ LIMIT 1
 	if err := s.exec(ctx, `
 INSERT INTO vmm_sessions (
   id, session_key, user_id, team_id, space_id, project_id,
-  turn_count, last_summarized_id, summarize_content, summarize_budget,
-  last_extract_observed_timestamp, last_extract_completed_timestamp,
+  turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+  last_extract_observed_timestamp, last_extract_completed_timestamp, last_compacted_timestamp,
   created_timestamp, updated_timestamp
-) VALUES (?, ?, ?, ?, ?, ?, 0, 0, '', 0, 0, 0, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, '', 0, 0, 0, 0, ?, ?)
 `, nextID, sessionKey, userID, project.TeamID, project.SpaceID, project.ID, nowMs, nowMs); err != nil {
 		return logicdomain.SessionRecord{}, fmt.Errorf("insert session: %w", err)
 	}
@@ -2524,10 +2502,12 @@ INSERT INTO vmm_sessions (
 		ProjectID:              project.ID,
 		TurnCount:              0,
 		LastSummarizedID:       0,
+		LastCompactedTurnID:    0,
 		SummarizeContent:       "",
 		SummarizeBudget:        0,
 		LastExtractObservedAt:  time.Time{},
 		LastExtractCompletedAt: time.Time{},
+		LastCompactedAt:        time.Time{},
 		CreatedAt:              now,
 		UpdatedAt:              now,
 	}, nil
@@ -2591,6 +2571,7 @@ LIMIT 1
 // ListProjectMemories returns unified durable memory rows under one project so migrations can rebuild vector rows directly from the main memory table.
 // ListProjectMemories 用于返回某个项目下的统一长期记忆行，让迁移流程可以直接从主记忆表重建向量行。
 func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	nowMs := time.Now().UTC().UnixMilli()
 	rows, err := queryRows[memoryNodeRow](s, ctx, `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -2599,9 +2580,9 @@ SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_tur
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
-WHERE project_id = ? AND memory_status = ?
+WHERE project_id = ? AND `+buildActiveUnexpiredMemoryCondition("", nowMs)+`
 ORDER BY created_timestamp ASC, id ASC
-`, projectID, logicdomain.MemoryStatusActive)
+`, projectID)
 	if err != nil {
 		return nil, fmt.Errorf("list project memories: %w", err)
 	}
@@ -2614,23 +2595,28 @@ ORDER BY created_timestamp ASC, id ASC
 			SpaceID:   record.SpaceID,
 			ProjectID: record.ProjectID,
 		}
-		if record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
+		if record.SourceKind == logicdomain.MemorySourceKindTurnExtract || record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
 			filter.SessionID = record.OriginSessionID
 		}
+		metadata := map[string]string{
+			"category":     strconv.Itoa(record.Category),
+			"details":      record.Details,
+			"source_kind":  logicdomain.MemorySourceKindLabel(record.SourceKind),
+			"scope_level":  logicdomain.MemoryScopeLevelLabel(record.ScopeLevel),
+			"priority":     strconv.Itoa(record.Priority),
+			"memory_level": strconv.Itoa(record.MemoryLevel),
+		}
+		if record.SourceTurnID > 0 {
+			metadata["turn_id"] = strconv.FormatUint(record.SourceTurnID, 10)
+		}
 		out = append(out, logicdomain.MemoryRecord{
-			ID:     record.VectorID,
-			Text:   record.Abstract,
-			Vector: append([]float32(nil), record.Vector...),
-			Filter: filter,
-			Metadata: map[string]string{
-				"category":     strconv.Itoa(record.Category),
-				"details":      record.Details,
-				"source_kind":  logicdomain.MemorySourceKindLabel(record.SourceKind),
-				"scope_level":  logicdomain.MemoryScopeLevelLabel(record.ScopeLevel),
-				"priority":     strconv.Itoa(record.Priority),
-				"memory_level": strconv.Itoa(record.MemoryLevel),
-			},
-			CreatedAt: record.CreatedAt,
+			ID:           record.VectorID,
+			Text:         record.Abstract,
+			Vector:       append([]float32(nil), record.Vector...),
+			Filter:       filter,
+			SourceTurnID: record.SourceTurnID,
+			Metadata:     metadata,
+			CreatedAt:    record.CreatedAt,
 		})
 	}
 	return out, nil
@@ -4277,10 +4263,12 @@ type sessionRow struct {
 	ProjectID                     uint64 `json:"project_id"`
 	TurnCount                     int    `json:"turn_count"`
 	LastSummarizedID              uint64 `json:"last_summarized_id"`
+	LastCompactedTurnID           uint64 `json:"last_compacted_turn_id"`
 	SummarizeContent              string `json:"summarize_content"`
 	SummarizeBudget               int    `json:"summarize_budget"`
 	LastExtractObservedTimestamp  int64  `json:"last_extract_observed_timestamp"`
 	LastExtractCompletedTimestamp int64  `json:"last_extract_completed_timestamp"`
+	LastCompactedTimestamp        int64  `json:"last_compacted_timestamp"`
 	CreatedTimestamp              int64  `json:"created_timestamp"`
 	UpdatedTimestamp              int64  `json:"updated_timestamp"`
 }
@@ -4295,10 +4283,12 @@ func (r sessionRow) toDomain() logicdomain.SessionRecord {
 		ProjectID:              r.ProjectID,
 		TurnCount:              r.TurnCount,
 		LastSummarizedID:       r.LastSummarizedID,
+		LastCompactedTurnID:    r.LastCompactedTurnID,
 		SummarizeContent:       r.SummarizeContent,
 		SummarizeBudget:        r.SummarizeBudget,
 		LastExtractObservedAt:  unixMilliToTime(r.LastExtractObservedTimestamp),
 		LastExtractCompletedAt: unixMilliToTime(r.LastExtractCompletedTimestamp),
+		LastCompactedAt:        unixMilliToTime(r.LastCompactedTimestamp),
 		CreatedAt:              unixMilliToTime(r.CreatedTimestamp),
 		UpdatedAt:              unixMilliToTime(r.UpdatedTimestamp),
 	}

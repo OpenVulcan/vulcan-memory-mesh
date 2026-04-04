@@ -35,6 +35,7 @@ const (
 	VMMService_SearchMemoryEvents_FullMethodName      = "/vmm.v1.VMMService/SearchMemoryEvents"
 	VMMService_GetTurnDetails_FullMethodName          = "/vmm.v1.VMMService/GetTurnDetails"
 	VMMService_WriteMemories_FullMethodName           = "/vmm.v1.VMMService/WriteMemories"
+	VMMService_ChatCompact_FullMethodName             = "/vmm.v1.VMMService/ChatCompact"
 	VMMService_PreCheck_FullMethodName                = "/vmm.v1.VMMService/PreCheck"
 	VMMService_PostAction_FullMethodName              = "/vmm.v1.VMMService/PostAction"
 )
@@ -91,6 +92,9 @@ type VMMServiceClient interface {
 	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
 	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
 	WriteMemories(ctx context.Context, in *WriteMemoriesRequest, opts ...grpc.CallOption) (*WriteMemoriesResponse, error)
+	// ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
+	// ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
+	ChatCompact(ctx context.Context, in *ChatCompactRequest, opts ...grpc.CallOption) (*ChatCompactResponse, error)
 	// PreCheck validates project_id/user_id through the interceptor, runs live intent extraction plus unified memory adoption, and returns the assembled context payload.
 	// PreCheck 用于通过拦截器校验 project_id/user_id，执行实时意图提取与统一记忆采纳，并返回组装后的上下文载荷。
 	PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error)
@@ -257,6 +261,16 @@ func (c *vMMServiceClient) WriteMemories(ctx context.Context, in *WriteMemoriesR
 	return out, nil
 }
 
+func (c *vMMServiceClient) ChatCompact(ctx context.Context, in *ChatCompactRequest, opts ...grpc.CallOption) (*ChatCompactResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ChatCompactResponse)
+	err := c.cc.Invoke(ctx, VMMService_ChatCompact_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *vMMServiceClient) PreCheck(ctx context.Context, in *PreCheckRequest, opts ...grpc.CallOption) (*PreCheckResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(PreCheckResponse)
@@ -329,6 +343,9 @@ type VMMServiceServer interface {
 	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
 	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
 	WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error)
+	// ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
+	// ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
+	ChatCompact(context.Context, *ChatCompactRequest) (*ChatCompactResponse, error)
 	// PreCheck validates project_id/user_id through the interceptor, runs live intent extraction plus unified memory adoption, and returns the assembled context payload.
 	// PreCheck 用于通过拦截器校验 project_id/user_id，执行实时意图提取与统一记忆采纳，并返回组装后的上下文载荷。
 	PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error)
@@ -389,6 +406,9 @@ func (UnimplementedVMMServiceServer) GetTurnDetails(context.Context, *GetTurnDet
 }
 func (UnimplementedVMMServiceServer) WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method WriteMemories not implemented")
+}
+func (UnimplementedVMMServiceServer) ChatCompact(context.Context, *ChatCompactRequest) (*ChatCompactResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ChatCompact not implemented")
 }
 func (UnimplementedVMMServiceServer) PreCheck(context.Context, *PreCheckRequest) (*PreCheckResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method PreCheck not implemented")
@@ -687,6 +707,24 @@ func _VMMService_WriteMemories_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VMMService_ChatCompact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ChatCompactRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).ChatCompact(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_ChatCompact_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).ChatCompact(ctx, req.(*ChatCompactRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _VMMService_PreCheck_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(PreCheckRequest)
 	if err := dec(in); err != nil {
@@ -789,6 +827,10 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WriteMemories",
 			Handler:    _VMMService_WriteMemories_Handler,
+		},
+		{
+			MethodName: "ChatCompact",
+			Handler:    _VMMService_ChatCompact_Handler,
 		},
 		{
 			MethodName: "PreCheck",

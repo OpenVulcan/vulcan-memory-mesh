@@ -1,8 +1,9 @@
 # VMM OSS Local (Go)
 
-VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务链：
+VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务链：
 
 - `PreCheck`
+- `ChatCompact`
 - `PostAction`
 
 当前运行时的定位是：
@@ -48,6 +49,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 - `ApplyProfileInstruction`
 - `SearchMemoryEvents`
 - `GetTurnDetails`
+- `WriteMemories`
+- `ChatCompact`
 - `PreCheck`
 - `PostAction`
 
@@ -57,7 +60,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 - SQLite：默认关系库存储，负责层级、用户、session、turn 记录和长期 SQL 记录
   - 适配层优先使用 typed params、`ExecuteBatch` 和 sqlite 网关声明的可重试 trailer 语义
+  - schema 升级改为非破坏性 migration，不再因版本变化直接清空历史调试数据
+  - 当前版本信息会写入 `vmm_schema_versions`，并保留对旧 `vmm_version` 的兼容同步
 - LanceDB：向量写入、检索和删除
+  - 向量 schema 版本与 SQLite 独立跟踪
+  - 只有 LanceDB 列结构变化时，启动期才会触发表重建与 SQLite 回灌
 
 运行时已经移除：
 
@@ -70,7 +77,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 
 ### 业务入参
 
-`PreCheck` 和 `PostAction` 现在只接受：
+`PreCheck`、`ChatCompact` 和 `PostAction` 现在都接受：
 
 - `session_id`
 - `user_id`
@@ -99,12 +106,33 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
   - 当前服务端检索链是：`vector + lexical + RRF + rerank(optional) + Weibull + context-aware scoring + MMR`
   - 当前检索过滤范围是已解析出来的 `team_id + space_id + project_id`
   - 同时带 `user_id = 0 OR current_user_id` 过滤，允许共享记忆和当前用户私有记忆一起参与召回
-  - 默认不会再额外按 `session_id` 收窄长期记忆检索
+  - 当 `recall_mode=0` 或省略时，会回退到旧版行为，不读取 compact 边界
+  - 当 `recall_mode=1` 时：
+    - 若当前 session 尚未 compact，会排除当前 session 的 turn-extract 记忆
+    - 若当前 session 已 compact，只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
+  - 当 `recall_mode` 为未来新增的非零值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
 - 第二层 `review_precheck_memory` 会结合候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
 - 只把被采纳的记忆组装为 `context_text / context_items`
 - 画像读取仍走独立接口：`GetProfileNodes / GetProfileBundle`
 - 当某一步降级且没有任何记忆最终被采纳时，会返回空上下文，并把 `degraded=true`
+
+### ChatCompact
+
+当前 `ChatCompact` 用于显式告诉服务端“这个 session 已完成一次上下文压缩”：
+
+- 请求字段仍然只有：
+  - `session_id`
+  - `user_id`
+  - `project_id`
+- 服务端会把该 session 当前最新已持久化的 `turn_id` 写入 `vmm_sessions.last_compacted_turn_id`
+- 同时写入 `vmm_sessions.last_compacted_timestamp`
+- 如果当前 session 还没有任何 turn：
+  - 会返回成功
+  - 但不会更新 compact 边界
+- 如果重复 compact 到同一最新 turn：
+  - 会保持幂等
+  - 不会重复改写边界
 
 ### PostAction
 
@@ -155,6 +183,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和两条核心业务�
 17. 后台定时维护仍会做一次过期画像收敛：把到期的 `active` 画像节点标成 `expired`，并重建受影响的 user/project 画像文本
   - `vmm_memory_nodes.vector_id` 与 LanceDB 行 `id` 一一对应
   - LanceDB 行里的 `session_id` 会保存真实来源 session
+  - LanceDB 顶层列现在额外包含 `source_turn_id`，用于 compact 边界过滤直接下推到向量检索层
   - `metadata_json` 只保留 `category / details / source_kind / scope_level / priority / memory_level` 这类补充信息
   - 如果 SQLite 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
   - `vmm_teams.profile / vmm_spaces.profile` 不参与 post-action 自动合并，但现在支持通过显式手工画像指令重建
