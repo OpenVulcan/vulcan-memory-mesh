@@ -719,7 +719,7 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 				"turn_id": strconv.FormatUint(candidate.SourceTurnID, 10),
 			}
 		}
-		memoryHits = append(memoryHits, logicdomain.MemoryHit{
+		memoryHits = appendUniquePreCheckMemoryHit(memoryHits, logicdomain.MemoryHit{
 			ID:       fmt.Sprintf("%d", candidate.MemoryID),
 			Text:     text,
 			Score:    candidate.Score,
@@ -746,6 +746,21 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 		Degraded:     degraded || assembleDegraded,
 		TraceID:      traceID,
 	}, nil
+}
+
+// appendUniquePreCheckMemoryHit keeps the final injected memory list free of equivalent duplicate text so repeated durable rows cannot waste prompt budget or amplify the same hint twice after reviewer selection has already completed.
+// appendUniquePreCheckMemoryHit 用于让最终注入的记忆列表剔除文本等价的重复项，避免 reviewer 选择完成后，多条长期记忆行再次浪费 prompt 预算或把同一提示放大两次。
+func appendUniquePreCheckMemoryHit(hits []logicdomain.MemoryHit, incoming logicdomain.MemoryHit) []logicdomain.MemoryHit {
+	incoming.Text = strings.TrimSpace(incoming.Text)
+	if incoming.Text == "" {
+		return hits
+	}
+	for _, existing := range hits {
+		if equivalentPreCheckMemoryText(existing.Text, incoming.Text) {
+			return hits
+		}
+	}
+	return append(hits, incoming)
 }
 
 // assemblePreCheckContext prefers the shared assembler but falls back to a local deterministic renderer if prompt loading degrades.
