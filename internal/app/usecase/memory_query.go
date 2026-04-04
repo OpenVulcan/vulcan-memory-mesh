@@ -489,6 +489,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
+		mapped = clampMemoryQueryHitScores(mapped)
 		stageMessage := "memory search vector stage completed"
 		if usedCombinedHybridSQL {
 			stageMessage = "memory search first-stage combined sql completed"
@@ -513,10 +514,15 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		} else {
 			mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
 		}
+		mapped = clampMemoryQueryHitScores(mapped)
 		mapped = u.rerankSearchHits(ctx, queryText, mapped)
+		mapped = clampMemoryQueryHitScores(mapped)
 		mapped = u.applyWeibullDecaySearchHits(mapped)
+		mapped = clampMemoryQueryHitScores(mapped)
 		mapped = u.applyContextEvidenceScoring(ctx, item, mapped)
+		mapped = clampMemoryQueryHitScores(mapped)
 		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
+		mapped = clampMemoryQueryHitScores(mapped)
 		u.logMemorySearchStage(ctx, "memory search final stage completed", queryText, []any{
 			"query_index", idx,
 			"final_hit_count", len(mapped),
@@ -1567,6 +1573,15 @@ func trimSearchHits(hits []MemoryQueryHit, topK int) []MemoryQueryHit {
 		return hits
 	}
 	return append([]MemoryQueryHit(nil), hits[:topK]...)
+}
+
+// clampMemoryQueryHitScores enforces the shared 0..1 caller-facing score contract after each optional retrieval post-processing stage, so arbitrary provider scores or contextual boosts cannot leak unstable score ranges to downstream ranking and RPC responses.
+// clampMemoryQueryHitScores 用于在每个可选检索后处理阶段之后强制执行统一的 0..1 对外分数契约，避免 provider 自定义分数或情境加减分把不稳定范围泄露到后续排序和 RPC 响应中。
+func clampMemoryQueryHitScores(hits []MemoryQueryHit) []MemoryQueryHit {
+	for idx := range hits {
+		hits[idx].Score = clampUnitScore(hits[idx].Score)
+	}
+	return hits
 }
 
 // applyWeibullDecaySearchHits reapplies one read-time memory-lifecycle prior after fusion and rerank so stale but still unexpired rows stop dominating recall.

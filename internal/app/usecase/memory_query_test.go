@@ -913,6 +913,60 @@ func TestMemoryUseCaseSearchAppliesRerank(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchClampsRerankScores verifies the final retrieval response keeps the shared 0..1 score contract even when a rerank provider returns out-of-range custom scores.
+// TestMemoryUseCaseSearchClampsRerankScores 用于验证即使 rerank provider 返回越界自定义分数，最终检索响应仍会保持统一的 0..1 分数契约。
+func TestMemoryUseCaseSearchClampsRerankScores(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第一条", Details: "第一条详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第二条", Details: "第二条详情", VectorID: "vec-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "第一条", Score: 0.91},
+			{ID: "vec-2", Text: "第二条", Score: 0.89},
+		},
+	}
+	reranker := &stubRerankerClient{
+		results: []appports.RerankerResult{
+			{ID: "202", Score: 1.70},
+			{ID: "201", Score: -0.20},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureRerank(reranker, 5)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"文本排序模型"},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with rerank clamp: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[0].Score != 1 {
+		t.Fatalf("expected first reranked hit score to clamp to 1, got %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].MemoryRef.ID != 201 || result.Results[0].Hits[1].Score != 0 {
+		t.Fatalf("expected second reranked hit score to clamp to 0, got %+v", result.Results[0].Hits[1])
+	}
+}
+
 // TestMemoryUseCaseSearchDegradesWhenRerankFails verifies the main search flow still succeeds when the optional rerank backend errors.
 // TestMemoryUseCaseSearchDegradesWhenRerankFails 用于验证可选 rerank 后端报错时，主搜索流程仍会降级成功返回。
 func TestMemoryUseCaseSearchDegradesWhenRerankFails(t *testing.T) {
@@ -1111,6 +1165,57 @@ func TestMemoryUseCaseSearchAppliesContextAwareScoring(t *testing.T) {
 	}
 	if len(turns.contextLookupIDs) != 2 || turns.contextLookupIDs[0] != 201 || turns.contextLookupIDs[1] != 202 {
 		t.Fatalf("expected context edge lookup over both candidate ids, got %+v", turns.contextLookupIDs)
+	}
+}
+
+// TestMemoryUseCaseSearchClampsContextAdjustedScores verifies supportive or rebutting context evidence cannot push the final caller-facing hit score outside the shared 0..1 range.
+// TestMemoryUseCaseSearchClampsContextAdjustedScores 用于验证支持或反驳型 context evidence 都不会把最终对外命中分数推到统一 0..1 区间之外。
+func TestMemoryUseCaseSearchClampsContextAdjustedScores(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "phase4 旧方案", Details: "这条记忆被当前场景强烈反驳", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "phase4 新方案", Details: "这条记忆被当前场景强烈支持", VectorID: "vec-2"},
+		},
+		memoryContextEdges: []logicdomain.MemoryContextEdge{
+			{MemoryID: 201, ContextKey: "deployment_mode", ContextValue: "local oss", RebuttalCount: 99},
+			{MemoryID: 202, ContextKey: "deployment_mode", ContextValue: "local oss", SupportCount: 99},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "phase4 旧方案", Score: 0.05},
+			{ID: "vec-2", Text: "phase4 新方案", Score: 0.97},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"当前部署模式仍然是 local_oss。 phase4 当前方案"},
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with context score clamp: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[0].Score != 1 {
+		t.Fatalf("expected supportive context score to clamp at 1, got %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].MemoryRef.ID != 201 || result.Results[0].Hits[1].Score != 0 {
+		t.Fatalf("expected rebutted context score to clamp at 0, got %+v", result.Results[0].Hits[1])
 	}
 }
 
