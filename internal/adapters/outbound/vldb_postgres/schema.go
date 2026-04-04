@@ -18,16 +18,18 @@ func (s *Store) ensureSchema(ctx context.Context) error {
 	callCtx, cancel := s.bootstrapContext(ctx)
 	defer cancel()
 
-	// Create the schema and the shared core tables first so every runtime path talks to one stable physical layout.
-	// 先创建 schema 和共享核心表，确保所有运行路径都落到同一套稳定物理结构上。
+	// Bootstrap the version table before the rest of the schema so incompatible tracked versions fail fast before later DDL mutates more objects.
+	// 先初始化版本表，再继续其余 schema，这样版本不兼容时可以在后续 DDL 改动更多对象前快速失败。
+	if err := s.ensureSchemaVersionTable(callCtx); err != nil {
+		return err
+	}
+	if err := s.validateTrackedSchemaVersions(callCtx); err != nil {
+		return err
+	}
+
+	// Create the shared core tables only after the tracked version contract is acceptable for this runtime.
+	// 仅在当前运行时可接受版本契约后，继续创建共享核心表。
 	statements := []string{
-		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdentifier(s.cfg.Schema)),
-		fmt.Sprintf(`
-CREATE TABLE IF NOT EXISTS %s (
-	component TEXT PRIMARY KEY,
-	schema_version INTEGER NOT NULL,
-	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`, s.schemaTable()),
 		fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	scope TEXT NOT NULL,
@@ -215,7 +217,7 @@ CREATE TABLE IF NOT EXISTS %s (
 	if err := s.dialect.EnsureSearchIndexes(callCtx, s); err != nil {
 		return err
 	}
-	return nil
+	return s.backfillTrackedSchemaVersions(callCtx)
 }
 
 // ensureCommonIndexes creates the shared non-lexical indexes reused by both PostgreSQL dialect flavors.

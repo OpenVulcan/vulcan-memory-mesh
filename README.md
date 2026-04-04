@@ -376,14 +376,30 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 ```powershell
 .\make.bat run --debug-clean sqlite
 .\make.bat run --debug-clean lancedb
+.\make.bat run --debug-clean postgres
 .\make.bat run --debug-clean all
 ```
 
 说明：
 
 - `make` 只负责透传参数，不在脚本里直接做数据库清理
-- `vmm-local --debug-clean ...` 会只连接对应的 SQLite / LanceDB gRPC 网关
+- `vmm-local --debug-clean ...` 会只连接对应的 SQLite / LanceDB / PostgreSQL 存储后端
 - 清理完成后立即退出，不会启动 VMM gRPC 服务
+
+### 调试迁移
+
+当需要把历史 split 模式的 SQLite 事实库迁移到 PostgreSQL 组合库时，可以通过调试迁移命令执行一次性回放：
+
+```powershell
+.\make.bat run --debug-migrate split-to-combined
+```
+
+说明：
+
+- 迁移源固定为 SQLite，不依赖 LanceDB
+- 迁移过程中会在 Go 内存中解析 `vector_json`，然后直接写入 PostgreSQL 的原生 `embedding` 向量列
+- 迁移目标使用 `postgres.*` 配置，不要求当前 `storage.mode` 已经切到 `combined`
+- 迁移完成后立即退出，不会启动 VMM gRPC 服务
 
 ## 配置说明
 
@@ -398,8 +414,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `logging.debug_rpc_payloads`
 - `logging.protect_payloads`
 - `logging.payload_encryption_key`
+- `storage.mode`
+- `storage.combined_provider`
 - `relational.provider`
 - `sqlite.address`
+- `postgres.*`
 - `lancedb.address`
 - `lancedb.table_name`
 - `lancedb.vector_column`

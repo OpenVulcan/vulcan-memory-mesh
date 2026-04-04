@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_postgres"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
 	"github.com/openvulcan/vmm/internal/config"
 )
@@ -15,9 +16,10 @@ import (
 // debugCleanSelection records which gateway-backed stores should be wiped during one debug-clean run.
 // debugCleanSelection 用于记录一次调试清理过程中应当清空哪些网关后端。
 type debugCleanSelection struct {
-	All     bool
-	SQLite  bool
-	LanceDB bool
+	All      bool
+	SQLite   bool
+	LanceDB  bool
+	Postgres bool
 }
 
 // parseDebugCleanSelection normalizes the flag value and translates it into the concrete cleanup targets requested by the caller.
@@ -28,25 +30,29 @@ func parseDebugCleanSelection(raw string) (debugCleanSelection, error) {
 		return r == ',' || r == '+' || r == ';'
 	})
 	if len(parts) == 0 {
-		return selection, fmt.Errorf("debug-clean target is required: use sqlite, lancedb, or all")
+		return selection, fmt.Errorf("debug-clean target is required: use sqlite, lancedb, postgres, or all")
 	}
 	for _, part := range parts {
 		switch strings.TrimSpace(part) {
 		case "all":
 			selection.All = true
+			selection.SQLite = true
 			selection.LanceDB = true
+			selection.Postgres = true
 		case "sqlite":
 			selection.SQLite = true
 		case "lancedb":
 			selection.LanceDB = true
+		case "postgres":
+			selection.Postgres = true
 		case "":
 			continue
 		default:
-			return debugCleanSelection{}, fmt.Errorf("unsupported debug-clean target %q: use sqlite, lancedb, or all", part)
+			return debugCleanSelection{}, fmt.Errorf("unsupported debug-clean target %q: use sqlite, lancedb, postgres, or all", part)
 		}
 	}
-	if !selection.SQLite && !selection.LanceDB {
-		return debugCleanSelection{}, fmt.Errorf("debug-clean target is required: use sqlite, lancedb, or all")
+	if !selection.SQLite && !selection.LanceDB && !selection.Postgres {
+		return debugCleanSelection{}, fmt.Errorf("debug-clean target is required: use sqlite, lancedb, postgres, or all")
 	}
 	return selection, nil
 }
@@ -61,9 +67,6 @@ func runDebugClean(ctx context.Context, cfg config.Config, target string) error 
 
 	// Execute the requested cleanup targets sequentially so failures report the exact backend that blocked the wipe.
 	// 按顺序执行被请求的清理目标，确保失败时能明确指出是哪个后端阻塞了清空操作。
-	if selection.All {
-		selection.SQLite = true
-	}
 	if selection.SQLite {
 		if err := vldb_sqlite.DebugCleanManagedSchema(ctx, cfg.SQLite.Address, cfg.SQLite.Timeout.Duration); err != nil {
 			return err
@@ -76,6 +79,16 @@ func runDebugClean(ctx context.Context, cfg config.Config, target string) error 
 			return err
 		}
 		fmt.Printf("[vmm-debug-clean] LanceDB table dropped: %s via %s\n", tableName, strings.TrimSpace(cfg.LanceDB.Address))
+	}
+	if selection.Postgres {
+		postgresCfg, err := buildDebugPostgresConfig(cfg)
+		if err != nil {
+			return err
+		}
+		if err := vldb_postgres.DebugCleanManagedSchema(ctx, postgresCfg); err != nil {
+			return err
+		}
+		fmt.Printf("[vmm-debug-clean] PostgreSQL managed schema cleaned via %s (schema=%s, flavor=%s)\n", strings.TrimSpace(postgresCfg.DSN), strings.TrimSpace(postgresCfg.Schema), strings.TrimSpace(postgresCfg.Flavor))
 	}
 	return nil
 }

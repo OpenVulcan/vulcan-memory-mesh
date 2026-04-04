@@ -17,8 +17,10 @@
 - `logging`
 - `pii`
 - `noise`
+- `storage`
 - `sqlite`
 - `lancedb`
+- `postgres`
 - `llm`
 - `embedding`
 - `rerank`
@@ -151,7 +153,29 @@
   - 阈值越高越保守
   - 调低会增加“拦截为噪声”的概率
 
-## 6. sqlite
+## 6. storage
+
+### `storage.mode`
+
+- 作用：选择当前运行时使用分离存储还是组合存储
+- 默认值：`split`
+- 当前有效值：
+  - `split`
+  - `combined`
+- 语义：
+  - `split`：沿用历史分离架构，关系存储走 `sqlite`，向量存储走 `lancedb`
+  - `combined`：切换到统一 PostgreSQL 组合库，关系与向量检索共享一套底座
+
+### `storage.combined_provider`
+
+- 作用：声明组合存储模式下启用的底座提供方
+- 默认值：`postgres`
+- 当前有效值：
+  - `postgres`
+- 注意：
+  - 只有 `storage.mode=combined` 时该字段才生效
+
+## 7. sqlite
 
 ### `sqlite.address`
 
@@ -165,7 +189,7 @@
 - 作用：SQLite 网关调用超时
 - 默认值：`5s`
 
-## 7. lancedb
+## 8. lancedb
 
 ### `lancedb.address`
 
@@ -189,7 +213,108 @@
 - 作用：向量列名
 - 默认值：`vector`
 
-## 8. llm
+## 9. postgres
+
+### `postgres.dsn`
+
+- 作用：PostgreSQL 组合库存储的连接串
+- 默认值：空
+- 常见示例：
+  - `${VMM_POSTGRES_DSN}`
+- 注意：
+  - 当 `storage.mode=combined` 时启动必填
+  - 建议通过环境变量注入，避免把凭据明文写入仓库内配置
+
+### `postgres.schema`
+
+- 作用：VMM 在 PostgreSQL 中使用的业务 schema
+- 默认值：`public`
+- 建议：
+  - 本地调试可先使用 `public`
+  - 多套环境共享同一实例时，建议为 VMM 单独划分 schema
+
+### `postgres.flavor`
+
+- 作用：选择 PostgreSQL 组合库内部使用的搜索方言
+- 默认值：`paradedb`
+- 当前有效值：
+  - `paradedb`
+  - `standard`
+- 语义：
+  - `paradedb`：使用 ParadeDB 的 BM25 与 `@@@` 检索能力，适合私有化高性能部署
+  - `standard`：使用标准 PostgreSQL + `pg_trgm` 兜底，适合大多数公有云受限环境
+
+### `postgres.query_timeout`
+
+- 作用：PostgreSQL 组合库查询与写入操作的超时预算
+- 默认值：`5s`
+
+### `postgres.connect_timeout`
+
+- 作用：建立 PostgreSQL 连接时的超时预算
+- 默认值：`5s`
+
+### `postgres.max_open_conns`
+
+- 作用：连接池允许打开的最大连接数
+- 默认值：`10`
+
+### `postgres.min_idle_conns`
+
+- 作用：连接池期望保留的最小空闲连接数
+- 默认值：`1`
+
+### `postgres.auto_create_extensions`
+
+- 作用：是否允许运行时自动创建组合库所需扩展
+- 默认值：`false`
+- 说明：
+  - `paradedb` flavor 可能依赖 ParadeDB/pgvector 相关扩展
+  - `standard` flavor 需要 `pg_trgm`
+- 建议：
+  - 生产环境通常由 DBA 预先创建扩展，再保持该值为 `false`
+
+### `postgres.bm25_index_concurrently`
+
+- 作用：在 `paradedb` flavor 下是否以并发方式创建 BM25 索引
+- 默认值：`true`
+- 注意：
+  - 仅在 `postgres.flavor=paradedb` 时生效
+
+### `postgres.bm25_index_name`
+
+- 作用：`paradedb` flavor 下 memory node BM25 索引名称
+- 默认值：`vmm_memory_nodes_bm25_idx`
+
+### `postgres.trgm_similarity_threshold`
+
+- 作用：`standard` flavor 下 trigram 相似度检索阈值
+- 默认值：`0.2`
+- 注意：
+  - 仅在 `postgres.flavor=standard` 时生效
+
+### `postgres.vector_lists`
+
+- 作用：向量索引构建时使用的 list 数
+- 默认值：`100`
+- 说明：
+  - 该参数影响 PostgreSQL 组合库的向量检索索引规模与召回/性能平衡
+
+### `postgres.vector_probes`
+
+- 作用：查询阶段向量索引的 probe 数
+- 默认值：`10`
+- 说明：
+  - probe 越大，通常召回更充分，但查询延迟也会更高
+
+### `postgres.migration_batch_size`
+
+- 作用：调试迁移链路把分离库存量数据导入组合库时的批次大小
+- 默认值：`500`
+- 适用场景：
+  - `debug-migrate split-to-combined`
+
+## 10. llm
 
 ### `llm.provider`
 
@@ -242,7 +367,7 @@
   - 按模型关闭 `thinking`
   - 对不同模型单独调节参数
 
-## 9. embedding
+## 11. embedding
 
 ### `embedding.provider`
 
@@ -269,7 +394,8 @@
 - 作用：Embedding 维度
 - 默认值：`1024`
 - 注意：
-  - 必须和 LanceDB 实际表维度一致
+  - `split` 模式下必须和 LanceDB 实际表维度一致
+  - `combined` 模式下必须和 PostgreSQL 组合库中的向量列维度一致
 
 ### `embedding.organization`
 
@@ -291,7 +417,7 @@
 - 作用：按模型名细分的 Embedding 附加参数
 - 默认值：空对象
 
-## 10. rerank
+## 12. rerank
 
 ### `rerank.enabled`
 
@@ -330,7 +456,7 @@
 - 作用：rerank 调用超时
 - 默认值：`8s`
 
-## 11. vector
+## 13. vector
 
 ### `vector.provider`
 
@@ -338,8 +464,11 @@
 - 默认值：`lancedb`
 - 当前有效值：
   - `lancedb`
+- 注意：
+  - 该字段只在 `storage.mode=split` 时生效
+  - `storage.mode=combined` 时，向量能力由 `postgres` 组合库统一承载
 
-## 12. relational
+## 14. relational
 
 ### `relational.provider`
 
@@ -347,8 +476,11 @@
 - 默认值：`sqlite`
 - 当前有效值：
   - `sqlite`
+- 注意：
+  - 该字段只在 `storage.mode=split` 时生效
+  - `storage.mode=combined` 时，关系存储由 `postgres` 组合库统一承载
 
-## 13. post_action
+## 15. post_action
 
 ### `post_action.input_mode`
 
@@ -383,7 +515,7 @@
 - 作用：session 分析的最大输入 token 预算
 - 默认值：`6000`
 
-## 14. pre_check
+## 16. pre_check
 
 ### `pre_check.intent_timeout`
 
@@ -417,7 +549,7 @@
 - 建议：
   - 新配置优先直接使用 `memory_pipeline.min_similarity_score`
 
-## 15. memory_pipeline
+## 17. memory_pipeline
 
 ### `memory_pipeline.max_search_keywords`
 
@@ -444,6 +576,7 @@
   - 开启时，运行时会在应用层使用纯 Go 的 `github.com/go-ego/gse` 预分词，并把结果以空格形式写入 `unicode61` FTS5 表
   - 查询阶段会对原始 query 做同样的预分词，再组装成 `MATCH` 表达式，以修复中文 BM25 对整句汉字难以切词的问题
   - 关闭时，会回退到仓库原有的正则分词与原始文本写入方式，适合纯英文或希望完全保持旧行为的部署
+  - 该字段主要影响 `split` 模式下的 SQLite lexical 检索链路；`combined` 模式会改走 PostgreSQL 方言对应的词法检索实现
 
 ### `memory_pipeline.lexical_top_k`
 
@@ -495,7 +628,7 @@
 - 作用：跨 session 采纳对衰减速度的提升权重
 - 默认值：`0.12`
 
-## 16. 配置优先级
+## 18. 配置优先级
 
 当前配置来源优先级可以简单理解为：
 
@@ -505,7 +638,7 @@
 
 如果同一个字段同时出现在 JSON 和环境变量里，环境变量优先。
 
-## 17. 推荐做法
+## 19. 推荐做法
 
 ### 本地开发
 
@@ -513,6 +646,17 @@
 - 敏感信息通过 `.env` 或本地环境变量注入
 - 调试时再临时开启：
   - `logging.debug_rpc_payloads=true`
+
+### 组合库存储调试
+
+- 如果要测试统一 PostgreSQL 组合库：
+  - `storage.mode=combined`
+  - `storage.combined_provider=postgres`
+  - 配置 `postgres.dsn`
+- 私有化高性能全文检索场景：
+  - `postgres.flavor=paradedb`
+- 公有云受限标准 PostgreSQL 场景：
+  - `postgres.flavor=standard`
 
 ### 线上 / 半生产环境
 
@@ -531,7 +675,7 @@
 - 想扩大到 team 共享：
   - `pre_check.search_scope=team`
 
-## 18. 参考文件
+## 20. 参考文件
 
 - [local.json](D:/projects/VulcanMemoryMesh/configs/local.json)
 - [openai.local.example.json](D:/projects/VulcanMemoryMesh/configs/openai.local.example.json)

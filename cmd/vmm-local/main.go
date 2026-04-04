@@ -28,7 +28,8 @@ func main() {
 		os.Exit(1)
 	}
 	cfgPath := flag.String("config", "", "user config dir (~/.vmm by default); legacy json config file path is still supported")
-	debugClean := flag.String("debug-clean", "", "debug-only gateway cleanup target: sqlite, lancedb, or all")
+	debugClean := flag.String("debug-clean", "", "debug-only gateway cleanup target: sqlite, lancedb, postgres, or all")
+	debugMigrate := flag.String("debug-migrate", "", "debug-only storage migration target: split-to-combined")
 	flag.Parse()
 
 	// Build the prompt/config layout before any application dependency is created.
@@ -51,6 +52,10 @@ func main() {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
+	if *debugClean != "" && *debugMigrate != "" {
+		fmt.Fprintln(os.Stderr, "debug clean and debug migrate cannot run together")
+		os.Exit(1)
+	}
 	if *debugClean != "" {
 		if err := runDebugClean(context.Background(), cfg, *debugClean); err != nil {
 			fmt.Fprintf(os.Stderr, "debug clean: %v\n", err)
@@ -58,9 +63,16 @@ func main() {
 		}
 		return
 	}
+	if *debugMigrate != "" {
+		if err := runDebugMigrate(context.Background(), cfg, *debugMigrate); err != nil {
+			fmt.Fprintf(os.Stderr, "debug migrate: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 
 	// Load prompt assets only for the normal runtime path because debug-clean exits after talking to storage gateways.
-	// 仅在正常运行路径加载提示词资产，因为 debug-clean 会在访问存储网关后直接退出。
+	// 仅在正常运行路径加载提示词资产，因为 debug-clean / debug-migrate 会在访问存储网关后直接退出。
 	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
