@@ -222,6 +222,12 @@ type MemoryExecutor interface {
 	Write(ctx context.Context, cmd WriteMemoriesCommand) (WriteMemoriesResult, error)
 }
 
+// hybridVectorSearchStore defines the optional combined-store fast path that can fuse vector and lexical candidates inside one SQL query before the rest of the ranking pipeline runs.
+// hybridVectorSearchStore 用于定义组合库可选的快速路径，让向量与 lexical 候选在单条 SQL 内先完成融合，再进入后续排序流水线。
+type hybridVectorSearchStore interface {
+	SearchHybridMemory(ctx context.Context, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) ([]logicdomain.MemoryHit, error)
+}
+
 // MemoryUseCase orchestrates grouped memory search, mixed detail lookup, and direct AI memory writes on top of profile-target resolution and unified relational memory rows.
 // MemoryUseCase 用于在画像目标解析和统一关系记忆行之上，编排分组记忆检索、混合详情查询以及 AI 主动写记忆流程。
 type MemoryUseCase struct {
@@ -431,7 +437,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	cachedHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
 	for idx, item := range uniqueItems {
 		queryText := buildMemorySearchText(item)
-		hits, err := u.vector.Search(ctx, embedResp.Vectors[idx], candidatePoolK, filter)
+		hits, usedCombinedHybridSQL, err := u.searchMemoryFirstStage(ctx, item, embedResp.Vectors[idx], candidatePoolK, filter)
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
@@ -439,11 +445,16 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
-		u.logMemorySearchStage(ctx, "memory search vector stage completed", queryText, []any{
+		stageMessage := "memory search vector stage completed"
+		if usedCombinedHybridSQL {
+			stageMessage = "memory search first-stage combined sql completed"
+		}
+		u.logMemorySearchStage(ctx, stageMessage, queryText, []any{
 			"query_index", idx,
 			"candidate_pool_k", candidatePoolK,
 			"vector_hit_count", len(hits),
 			"mapped_hit_count", len(mapped),
+			"combined_hybrid_sql_used", usedCombinedHybridSQL,
 			"hybrid_enabled", u.hybridEnabled,
 			"rerank_enabled", u.reranker != nil,
 			"mmr_enabled", u.mmrEnabled,
@@ -453,7 +464,11 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 			"top_vector_hit": summarizeRawMemoryHitForLog(firstRawMemoryHit(hits)),
 			"top_mapped_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
 		})
-		mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
+		if usedCombinedHybridSQL {
+			mapped = trimSearchHits(mapped, candidatePoolK)
+		} else {
+			mapped = u.hybridizeSearchHits(ctx, item, filter, candidatePoolK, mapped)
+		}
 		mapped = u.rerankSearchHits(ctx, queryText, mapped)
 		mapped = u.applyWeibullDecaySearchHits(mapped)
 		mapped = u.applyContextEvidenceScoring(ctx, item, mapped)
@@ -482,6 +497,28 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		ProjectTarget: projectTarget,
 		Results:       results,
 	}, nil
+}
+
+// searchMemoryFirstStage selects the fastest safe first-stage retrieval path, preferring one SQL-level hybrid fusion query when the backing vector store explicitly supports combined PostgreSQL search.
+// searchMemoryFirstStage 用于选择最快且安全的一阶段召回路径；当向量存储显式支持 PostgreSQL 组合检索时，优先走单条 SQL 的混合融合查询。
+func (u *MemoryUseCase) searchMemoryFirstStage(ctx context.Context, item MemoryQueryItem, vector []float32, poolK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, bool, error) {
+	if u == nil || u.vector == nil {
+		return nil, false, fmt.Errorf("vector store is nil")
+	}
+	query := buildMemoryLexicalQuery(item)
+	if u.hybridEnabled && strings.TrimSpace(query) != "" {
+		if hybridStore, ok := u.vector.(hybridVectorSearchStore); ok {
+			hits, err := hybridStore.SearchHybridMemory(ctx, query, vector, poolK, filter, u.rrfK)
+			if err == nil {
+				return hits, true, nil
+			}
+			if u.logger != nil {
+				u.logger.Warn("memory combined hybrid search degraded", append(memoryQueryLogFields(u.logger, query), "err", err)...)
+			}
+		}
+	}
+	hits, err := u.vector.Search(ctx, vector, poolK, filter)
+	return hits, false, err
 }
 
 // GetTurns loads the requested dehydrated turn rows and reorders them to match the caller-supplied turn id sequence.
@@ -1903,7 +1940,7 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 			DetailsPreview:           strings.TrimSpace(row.Details),
 			Category:                 row.Category,
 			Score:                    hit.Score,
-			Origin:                   "vector_search",
+			Origin:                   rawMemoryHitOrigin(hit),
 			Vector:                   append([]float32(nil), row.Vector...),
 			CreatedAt:                row.CreatedAt,
 			LastRecalledAt:           row.LastRecalledAt,
@@ -1930,6 +1967,15 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 		return mapped[i].Score > mapped[j].Score
 	})
 	return mapped, nil
+}
+
+// rawMemoryHitOrigin extracts the preferred ranking-origin label carried by one raw hit and falls back to the legacy vector label when older backends do not populate metadata.
+// rawMemoryHitOrigin 用于提取原始命中携带的排序来源标签；当旧后端未填充 metadata 时，则回退到传统的 vector 标签。
+func rawMemoryHitOrigin(hit logicdomain.MemoryHit) string {
+	if origin := strings.TrimSpace(hit.Metadata["origin"]); origin != "" {
+		return origin
+	}
+	return "vector_search"
 }
 
 // loadTurnDetails batches one turn-id list into ordered turn-detail records plus neighboring turn ids.

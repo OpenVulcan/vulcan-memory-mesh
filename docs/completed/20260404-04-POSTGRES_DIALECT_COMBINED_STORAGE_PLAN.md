@@ -791,24 +791,66 @@ SQL 层完成：
 
 ## 16. 当前状态
 
-- 本文件已替代旧的 ParadeDB 计划，成为新的 PostgreSQL Dialect Pattern 组合库实施计划。
-- 已进入代码实现阶段，当前已完成第一批基础改造：
+- 本文件对应的 PostgreSQL Dialect Pattern 组合库主计划已完成实施。
+- 当前代码已完成以下主链路落地：
   - `config` 已支持 `storage.mode=combined`、`storage.combined_provider=postgres`、`postgres.flavor=paradedb|standard`
   - `app` 组合根已支持在 combined 模式下装配统一的 `vldb_postgres` 适配器
-  - `internal/adapters/outbound/vldb_postgres` 已建立基础骨架，并实现：
-    - 共享连接池与 schema 版本表
-    - 方言扩展校验
-    - 共享表结构初始化
-    - `paradedb` BM25 索引初始化
-    - `standard` trigram 索引初始化
-    - 向量检索
-    - 统一记忆基础读写
-    - 请求范围解析
-    - 基础 user/project 查询
-    - noise embedding cache 持久化
-- 当前仍未完成的关键链路包括：
-  - 完整 turn 持久化与 `post-action` 写回
-  - 完整 profile 节点查询与手工画像指令写回
-  - 完整 workspace 管理命令
-  - SQLite -> PostgreSQL 迁移命令与调试清理命令
-- 当前阶段目标已从“架构定稿”转为“分阶段落地实现”，计划文件保持进行中状态，暂不迁移到 `docs/completed/`。
+  - `internal/adapters/outbound/vldb_postgres` 已完成共享连接池、共享 schema、版本初始化与版本校验
+  - `paradedb` 方言已支持 BM25 + `jieba` 建索引与 `@@@` 词法召回
+  - `standard` 方言已支持 `pg_trgm` + `GIN` 建索引与 `ILIKE/similarity` 词法召回
+  - 统一向量检索、统一记忆读写、turn/post-action 写回、profile 工作流、workspace 管理、noise cache、调试迁移与调试清理均已落地
+  - `SQLite -> PostgreSQL` 的 `split-to-combined` 迁移命令已可用，并继续坚持 `SQLite` 为事实主源、目标库彻底废弃 `vector_json`
+  - PostgreSQL 组合库现已补齐 SQL 层首轮混合召回：优先在数据库内融合向量候选与 lexical 候选，再进入应用层 rerank / Weibull / MMR
+- 这意味着本计划中的“配置接入、统一适配器、方言路由、迁移运维、组合检索优化”五大主目标均已完成。
+- 下一阶段如继续演进，应另起新计划承载：
+  - PostgreSQL migration runner
+  - 旧 flavor 索引收敛与清理策略
+  - 调试迁移/清理链路的运维健壮性增强
+
+---
+
+## 执行变更总结
+
+### 1. 核心修复与调整概述
+
+- 已按 Dialect Pattern 完成 PostgreSQL 组合库主方案落地，不再暴露独立 `paradedb provider`，统一通过 `postgres + flavor` 管理。
+- 已完成 `paradedb` 与 `standard` 两套词法实现，并把共享能力稳定收敛到一个统一的 `vldb_postgres` 适配器中。
+- 已完成此前阶段遗留的 turn/post-action、profile、workspace、迁移、清理与 schema 版本初始化修复。
+- 本轮补齐了最后一个真正阻碍计划闭环的核心缺口：PostgreSQL 组合库现在可以在 SQL 层完成首轮混合召回融合，不再只是在应用层把向量检索和 lexical 检索重新拼接。
+
+### 2. 📂文件变更清单
+
+- 新增：`internal/adapters/outbound/vldb_postgres/hybrid_search.go`
+- 修改：`internal/adapters/outbound/vldb_postgres/dialect.go`
+- 修改：`internal/adapters/outbound/vldb_postgres/dialect_paradedb.go`
+- 修改：`internal/adapters/outbound/vldb_postgres/dialect_standard.go`
+- 修改：`internal/adapters/outbound/vldb_postgres/dialect_test.go`
+- 修改：`internal/app/usecase/memory_query.go`
+- 修改：`internal/app/usecase/memory_query_test.go`
+- 修改：`configs/local.json`
+- 修改：`configs/openai.local.example.json`
+- 修改：`configs/vmm_config_readme.md`
+- 修改：`configs/.env.example`
+- 修改：`README.md`
+- 修改：`internal/adapters/outbound/vldb_postgres/schema.go`
+- 修改：`internal/adapters/outbound/vldb_postgres/debug_migrate.go`
+- 新增：`internal/adapters/outbound/vldb_postgres/schema_version.go`
+- 新增：`internal/adapters/outbound/vldb_postgres/schema_version_test.go`
+- 新增：`cmd/vmm-local/debug_migrate.go`
+- 新增：`internal/adapters/outbound/vldb_sqlite/debug_export.go`
+- 新增：`internal/adapters/outbound/vldb_postgres/debug_clean.go`
+- 新增：`internal/platform/storagemigrate/snapshot.go`
+
+### 3. 💻关键代码调整详情
+
+- 在 PostgreSQL 方言接口中新增 SQL 级混合召回构建能力，使 `paradedb` 与 `standard` 都能在数据库内直接输出一阶段融合候选。
+- `paradedb` 方言新增基于 `@@@ + pdb.score + FULL OUTER JOIN + RRF` 的融合 SQL；`standard` 方言新增基于 `pg_trgm/similarity + pgvector + RRF` 的融合 SQL。
+- `MemoryUseCase` 新增组合库快速路径识别：当底层向量存储显式支持 `SearchHybridMemory` 时，优先走单条 SQL 融合查询；失败时自动降级回历史的“向量 + lexical + 应用层 RRF”链路。
+- 命中映射阶段现在会保留底层返回的 `origin` 标签，使 SQL 层混合召回与旧链路在上层排序、日志与解释文本中保持统一语义。
+- 同期已完成并并入本计划闭环的实现包括：PostgreSQL schema 版本初始化与校验、`split-to-combined` 迁移、`debug-clean postgres`、配置示例与环境变量文档同步。
+
+### 4. ⚠️遗留问题与注意事项
+
+- 当前已实现版本初始化与版本漂移 fail-fast，但尚未实现真正的 PostgreSQL migration runner。
+- flavor 切换后旧索引的主动收敛/清理策略尚未实现，当前更偏向“新 flavor 补建所需索引并继续工作”。
+- 调试迁移和调试清理链路仍存在可继续加强的运维边界，例如 DSN 输出脱敏、导出只读化和 post-commit 后处理上下文隔离；这些属于后续专项优化，不再阻塞本计划闭环。

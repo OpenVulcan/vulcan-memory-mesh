@@ -90,6 +90,79 @@ func TestStandardDialectBuildLexicalSearchSQL(t *testing.T) {
 	}
 }
 
+// TestParadeDBDialectBuildHybridSearchSQL verifies the ParadeDB flavor can emit one SQL-level fusion query instead of requiring application-side vector/lexical fan-out.
+// TestParadeDBDialectBuildHybridSearchSQL 用于验证 ParadeDB flavor 可以直接生成 SQL 层融合查询，而不是继续依赖应用层拆成向量与 lexical 两段查询。
+func TestParadeDBDialectBuildHybridSearchSQL(t *testing.T) {
+	store := &Store{
+		cfg: Config{
+			Schema:             "memory",
+			Flavor:             "paradedb",
+			BM25IndexName:      "vmm_memory_nodes_bm25_idx",
+			EmbeddingDimension: 3,
+		},
+	}
+	sqlText, args := paradeDBDialect{}.BuildHybridSearchSQL(store, "混合 检索", []float32{0.1, 0.2, 0.3}, 8, logicdomain.SearchFilter{
+		ProjectID:         30,
+		UserID:            40,
+		BoundarySessionID: 50,
+		BoundaryMaxTurnID: 60,
+	}, 60)
+	requiredFragments := []string{
+		"WITH vector_candidates AS",
+		"FULL OUTER JOIN lexical_candidates",
+		"m.embedding <=> $1::vector",
+		"@@@ pdb.parse($2, lenient => true)",
+		"pdb.score(m.id)",
+		"'hybrid_rrf'",
+		"1.0 / ($4::double precision + v.vector_rank::double precision)",
+	}
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(sqlText, fragment) {
+			t.Fatalf("BuildHybridSearchSQL missing fragment %q in SQL:\n%s", fragment, sqlText)
+		}
+	}
+	if len(args) == 0 {
+		t.Fatalf("BuildHybridSearchSQL args should not be empty")
+	}
+}
+
+// TestStandardDialectBuildHybridSearchSQL verifies the standard flavor fuses pgvector and trigram candidates in SQL without falling back to tsvector syntax.
+// TestStandardDialectBuildHybridSearchSQL 用于验证 standard flavor 会在 SQL 层融合 pgvector 与 trigram 候选，而不会回退到 tsvector 语法。
+func TestStandardDialectBuildHybridSearchSQL(t *testing.T) {
+	store := &Store{
+		cfg: Config{
+			Schema:                  "public",
+			Flavor:                  "standard",
+			TRGMSimilarityThreshold: 0.23,
+			EmbeddingDimension:      3,
+		},
+	}
+	sqlText, args := standardDialect{}.BuildHybridSearchSQL(store, "中文检索", []float32{0.1, 0.2, 0.3}, 6, logicdomain.SearchFilter{
+		ProjectID: 1,
+		UserID:    2,
+	}, 60)
+	requiredFragments := []string{
+		"WITH vector_candidates AS",
+		"FULL OUTER JOIN lexical_candidates",
+		"m.embedding <=> $1::vector",
+		"similarity(m.abstract, $2)",
+		"similarity(m.details, $2)",
+		"'hybrid_rrf'",
+		"1.0 / ($5::double precision + l.lexical_rank::double precision)",
+	}
+	for _, fragment := range requiredFragments {
+		if !strings.Contains(sqlText, fragment) {
+			t.Fatalf("BuildHybridSearchSQL missing fragment %q in SQL:\n%s", fragment, sqlText)
+		}
+	}
+	if strings.Contains(sqlText, "to_tsvector") || strings.Contains(sqlText, "@@ to_tsquery") {
+		t.Fatalf("BuildHybridSearchSQL unexpectedly fell back to tsvector syntax:\n%s", sqlText)
+	}
+	if len(args) == 0 {
+		t.Fatalf("BuildHybridSearchSQL args should not be empty")
+	}
+}
+
 // TestNormalizeDirectMemoryNodeRecordAppliesDefaults verifies direct-write defaults still match the unified-memory contract when PostgreSQL combined mode is active.
 // TestNormalizeDirectMemoryNodeRecordAppliesDefaults 用于验证 PostgreSQL 组合模式下的主动写默认值仍与统一记忆契约保持一致。
 func TestNormalizeDirectMemoryNodeRecordAppliesDefaults(t *testing.T) {

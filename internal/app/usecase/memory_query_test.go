@@ -496,6 +496,79 @@ func TestMemoryUseCaseSearchFusesHybridRecall(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchPrefersCombinedHybridSQL verifies combined PostgreSQL mode can skip the old lexical fan-out and consume one SQL-fused first-stage candidate list directly.
+// TestMemoryUseCaseSearchPrefersCombinedHybridSQL 用于验证 PostgreSQL 组合模式可以跳过旧的 lexical 分叉路径，直接消费单条 SQL 融合后的一阶段候选列表。
+func TestMemoryUseCaseSearchPrefersCombinedHybridSQL(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "向量命中", Details: "向量详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "混合命中", Details: "混合详情", VectorID: "vec-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubCombinedHybridVectorStore{
+		stubVectorStore: stubVectorStore{
+			searchHits: []logicdomain.MemoryHit{
+				{ID: "vec-1", Text: "向量命中", Score: 0.91},
+			},
+		},
+		hybridSearchHits: []logicdomain.MemoryHit{
+			{ID: "vec-2", Text: "混合命中", Score: 0.98, Metadata: map[string]string{"origin": "hybrid_rrf"}},
+			{ID: "vec-1", Text: "向量命中", Score: 0.71, Metadata: map[string]string{"origin": "vector_search"}},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureHybrid(true, 5, 60)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"混合检索"},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with combined hybrid sql: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected combined hybrid results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 {
+		t.Fatalf("expected SQL-fused hybrid candidate to rank first, got %+v", result.Results[0].Hits)
+	}
+	if result.Results[0].Hits[0].Origin != "hybrid_rrf" {
+		t.Fatalf("expected SQL-fused origin, got %+v", result.Results[0].Hits[0])
+	}
+	if len(vector.hybridQueries) != 1 || vector.hybridQueries[0] != "混合检索" {
+		t.Fatalf("unexpected hybrid queries: %+v", vector.hybridQueries)
+	}
+	if len(vector.searchTopKs) != 0 {
+		t.Fatalf("expected combined hybrid SQL to skip plain vector.Search, got %+v", vector.searchTopKs)
+	}
+	if len(turns.lexicalQueries) != 0 {
+		t.Fatalf("expected combined hybrid SQL to skip lexical fan-out, got %+v", turns.lexicalQueries)
+	}
+}
+
 // TestMemoryUseCaseSearchLogsRetrievalStageCounts verifies unified retrieval now logs vector, hybrid, and final-stage hit counts plus the top candidate snapshots so upstream recall misses are directly observable.
 // TestMemoryUseCaseSearchLogsRetrievalStageCounts 用于验证统一检索现在会记录向量、混合和最终阶段的命中数量以及 top 候选快照，让上游召回缺口可以直接观测。
 func TestMemoryUseCaseSearchLogsRetrievalStageCounts(t *testing.T) {
@@ -1330,6 +1403,31 @@ func (s *stubTurnLookupStore) CreateDirectMemoryNode(_ context.Context, _ logicd
 	}
 	record.ID = 1
 	return record, nil
+}
+
+// stubCombinedHybridVectorStore extends the shared vector stub with the optional SQL-level hybrid recall fast path used by the PostgreSQL combined-store optimization.
+// stubCombinedHybridVectorStore 用于在共享向量桩之上扩展可选的 SQL 级混合召回快速路径，服务 PostgreSQL 组合库优化断言。
+type stubCombinedHybridVectorStore struct {
+	stubVectorStore
+	hybridQueries    []string
+	hybridTopKs      []int
+	hybridFilters    []logicdomain.SearchFilter
+	hybridRRFKs      []int
+	hybridSearchHits []logicdomain.MemoryHit
+	hybridSearchErr  error
+}
+
+// SearchHybridMemory records the combined first-stage request and returns the canned SQL-fused hits.
+// SearchHybridMemory 用于记录组合库一阶段请求，并返回预设的 SQL 融合命中结果。
+func (s *stubCombinedHybridVectorStore) SearchHybridMemory(_ context.Context, query string, _ []float32, topK int, filter logicdomain.SearchFilter, rrfK int) ([]logicdomain.MemoryHit, error) {
+	s.hybridQueries = append(s.hybridQueries, query)
+	s.hybridTopKs = append(s.hybridTopKs, topK)
+	s.hybridFilters = append(s.hybridFilters, filter)
+	s.hybridRRFKs = append(s.hybridRRFKs, rrfK)
+	if s.hybridSearchErr != nil {
+		return nil, s.hybridSearchErr
+	}
+	return append([]logicdomain.MemoryHit(nil), s.hybridSearchHits...), nil
 }
 
 // stubRerankerClient records rerank calls and returns one canned response so search tests can verify ordering changes without a live provider.
