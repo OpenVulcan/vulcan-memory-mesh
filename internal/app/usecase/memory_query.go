@@ -441,6 +441,9 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		if err != nil {
 			return MemoryQueryResult{}, err
 		}
+		if usedCombinedHybridSQL {
+			hits = normalizeCombinedHybridSQLHits(hits)
+		}
 		mapped, err := u.mapSearchHits(ctx, hits)
 		if err != nil {
 			return MemoryQueryResult{}, err
@@ -1822,14 +1825,15 @@ func memoryQueryLogFields(logger *logx.Logger, query string) []any {
 // memoryQueryHitLogPayload stores one compact search-hit snapshot for diagnostics so operators can see the best candidate without dumping the full hit list every time.
 // memoryQueryHitLogPayload 用于保存一条紧凑的检索命中快照，便于运维看到最佳候选，而不用每次都把整份命中列表全部打进日志。
 type memoryQueryHitLogPayload struct {
-	VectorID       string  `json:"vector_id,omitempty"`
-	MemoryID       uint64  `json:"memory_id,omitempty"`
-	SourceTurnID   uint64  `json:"source_turn_id,omitempty"`
-	Score          float64 `json:"score"`
-	Origin         string  `json:"origin,omitempty"`
-	Abstract       string  `json:"abstract,omitempty"`
-	DetailsPreview string  `json:"details_preview,omitempty"`
-	TextPreview    string  `json:"text_preview,omitempty"`
+	VectorID       string   `json:"vector_id,omitempty"`
+	MemoryID       uint64   `json:"memory_id,omitempty"`
+	SourceTurnID   uint64   `json:"source_turn_id,omitempty"`
+	Score          float64  `json:"score"`
+	RawScore       *float64 `json:"raw_score,omitempty"`
+	Origin         string   `json:"origin,omitempty"`
+	Abstract       string   `json:"abstract,omitempty"`
+	DetailsPreview string   `json:"details_preview,omitempty"`
+	TextPreview    string   `json:"text_preview,omitempty"`
 }
 
 // logMemorySearchStage records one searchable retrieval checkpoint so operators can tell whether a miss happened in vector recall, hybrid fusion, rerank, or later pruning.
@@ -1874,6 +1878,7 @@ func summarizeRawMemoryHitForLog(hit *logicdomain.MemoryHit) *memoryQueryHitLogP
 	return &memoryQueryHitLogPayload{
 		VectorID:    strings.TrimSpace(hit.ID),
 		Score:       hit.Score,
+		RawScore:    memoryHitRawScoreForLog(hit.Metadata),
 		TextPreview: strings.TrimSpace(hit.Text),
 	}
 }
@@ -1892,6 +1897,20 @@ func summarizeMemoryQueryHitForLog(hit *MemoryQueryHit) *memoryQueryHitLogPayloa
 		Abstract:       strings.TrimSpace(hit.Abstract),
 		DetailsPreview: strings.TrimSpace(hit.DetailsPreview),
 	}
+}
+
+// memoryHitRawScoreForLog restores the original SQL-side fused score from metadata so operators can distinguish the stable caller-facing score from the raw internal RRF value.
+// memoryHitRawScoreForLog 用于从 metadata 里恢复 SQL 侧原始融合分，让运维可以区分稳定的调用方分数与内部 RRF 原始值。
+func memoryHitRawScoreForLog(metadata map[string]string) *float64 {
+	raw := strings.TrimSpace(metadata["raw_score"])
+	if raw == "" {
+		return nil
+	}
+	value, err := strconv.ParseFloat(raw, 64)
+	if err != nil {
+		return nil
+	}
+	return &value
 }
 
 // shortLogDigest produces one short stable digest for sensitive runtime strings so logs can correlate repeated failures without leaking the underlying text.
@@ -1967,6 +1986,30 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 		return mapped[i].Score > mapped[j].Score
 	})
 	return mapped, nil
+}
+
+// normalizeCombinedHybridSQLHits rewrites SQL-level raw RRF scores into the stable 0..1 score contract expected by downstream thresholding, while preserving the original fused score for diagnostics.
+// normalizeCombinedHybridSQLHits 用于把 SQL 层原始 RRF 分数改写成下游阈值链路期望的稳定 0..1 分数契约，同时保留原始融合分供诊断使用。
+func normalizeCombinedHybridSQLHits(hits []logicdomain.MemoryHit) []logicdomain.MemoryHit {
+	if len(hits) == 0 {
+		return []logicdomain.MemoryHit{}
+	}
+	normalized := append([]logicdomain.MemoryHit(nil), hits...)
+	total := len(normalized)
+	for idx := range normalized {
+		rawScore := normalized[idx].Score
+		if normalized[idx].Metadata == nil {
+			normalized[idx].Metadata = make(map[string]string, 1)
+		}
+		normalized[idx].Metadata["raw_score"] = strconv.FormatFloat(rawScore, 'f', -1, 64)
+
+		// Convert the SQL-fused rank order into the same stable reviewer-facing score semantics used by the app-side fusion path,
+		// so combined PostgreSQL search does not leak tiny reciprocal-rank values into logs, thresholds, or final responses.
+		// 把 SQL 融合后的排序顺序转换成与应用层融合路径一致的稳定 reviewer 分数语义，
+		// 避免 PostgreSQL 组合检索把极小的 reciprocal-rank 原始值泄露到日志、阈值判断或最终响应中。
+		normalized[idx].Score = normalizedRankScore(idx+1, total)
+	}
+	return normalized
 }
 
 // rawMemoryHitOrigin extracts the preferred ranking-origin label carried by one raw hit and falls back to the legacy vector label when older backends do not populate metadata.

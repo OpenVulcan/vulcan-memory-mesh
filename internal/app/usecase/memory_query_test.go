@@ -532,8 +532,8 @@ func TestMemoryUseCaseSearchPrefersCombinedHybridSQL(t *testing.T) {
 			},
 		},
 		hybridSearchHits: []logicdomain.MemoryHit{
-			{ID: "vec-2", Text: "混合命中", Score: 0.98, Metadata: map[string]string{"origin": "hybrid_rrf"}},
-			{ID: "vec-1", Text: "向量命中", Score: 0.71, Metadata: map[string]string{"origin": "vector_search"}},
+			{ID: "vec-2", Text: "混合命中", Score: 0.03278688524590164, Metadata: map[string]string{"origin": "hybrid_rrf"}},
+			{ID: "vec-1", Text: "向量命中", Score: 0.01639344262295082, Metadata: map[string]string{"origin": "vector_search"}},
 		},
 	}
 
@@ -558,6 +558,12 @@ func TestMemoryUseCaseSearchPrefersCombinedHybridSQL(t *testing.T) {
 	if result.Results[0].Hits[0].Origin != "hybrid_rrf" {
 		t.Fatalf("expected SQL-fused origin, got %+v", result.Results[0].Hits[0])
 	}
+	if result.Results[0].Hits[0].Score < 0.99 {
+		t.Fatalf("expected SQL-fused first hit score to be normalized into stable caller-facing semantics, got %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].Score < 0.74 || result.Results[0].Hits[1].Score > 0.76 {
+		t.Fatalf("expected second SQL-fused hit to keep rank-normalized score semantics, got %+v", result.Results[0].Hits[1])
+	}
 	if len(vector.hybridQueries) != 1 || vector.hybridQueries[0] != "混合检索" {
 		t.Fatalf("unexpected hybrid queries: %+v", vector.hybridQueries)
 	}
@@ -566,6 +572,68 @@ func TestMemoryUseCaseSearchPrefersCombinedHybridSQL(t *testing.T) {
 	}
 	if len(turns.lexicalQueries) != 0 {
 		t.Fatalf("expected combined hybrid SQL to skip lexical fan-out, got %+v", turns.lexicalQueries)
+	}
+}
+
+// TestMemoryUseCaseSearchLogsCombinedHybridRawScoreSeparately verifies combined SQL retrieval logs expose stable caller-facing scores while still preserving the tiny raw RRF score for diagnostics.
+// TestMemoryUseCaseSearchLogsCombinedHybridRawScoreSeparately 用于验证组合 SQL 检索日志会输出稳定的对外分数，同时把极小的原始 RRF 分单独保留下来供诊断。
+func TestMemoryUseCaseSearchLogsCombinedHybridRawScoreSeparately(t *testing.T) {
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text", DebugPayloads: true})
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "混合命中", Details: "混合详情", VectorID: "vec-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubCombinedHybridVectorStore{
+		hybridSearchHits: []logicdomain.MemoryHit{
+			{ID: "vec-2", Text: "混合命中", Score: 0.03278688524590164, Metadata: map[string]string{"origin": "hybrid_rrf"}},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, logger)
+	uc.ConfigureHybrid(true, 5, 60)
+
+	if _, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"混合检索"},
+		TopK:      5,
+	}); err != nil {
+		t.Fatalf("search memory events with combined hybrid sql logging: %v", err)
+	}
+
+	logs := logBuf.String()
+	expectedFragments := []string{
+		`MSG："memory search first-stage combined sql completed"`,
+		`"score": 1`,
+		`"raw_score": 0.03278688524590164`,
+		`"origin": "hybrid_rrf"`,
+	}
+	for _, fragment := range expectedFragments {
+		if !strings.Contains(logs, fragment) {
+			t.Fatalf("expected combined hybrid log to contain %s, got %s", fragment, logs)
+		}
 	}
 }
 
