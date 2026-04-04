@@ -4,6 +4,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -22,20 +23,24 @@ type fakeRetentionStore struct {
 	recycleResult     logicdomain.MemoryRecycleResult
 	idleSessionResult logicdomain.SessionIdleRecycleResult
 	purgeResult       logicdomain.RetentionTrashPurgeResult
+
+	recycleErr     error
+	idleSessionErr error
+	purgeErr       error
 }
 
 // RecycleColdMemories records the latest recycle query and returns the configured fake result.
 // RecycleColdMemories 用于记录最近一次 recycle 查询，并返回预设的 fake 结果。
 func (f *fakeRetentionStore) RecycleColdMemories(_ context.Context, query logicdomain.MemoryRecycleQuery) (logicdomain.MemoryRecycleResult, error) {
 	f.recycleQuery = query
-	return f.recycleResult, nil
+	return f.recycleResult, f.recycleErr
 }
 
 // RecycleIdleSessions records the latest idle-session recycle inputs and returns the configured fake result.
 // RecycleIdleSessions 用于记录最近一次 idle-session 回收输入，并返回预设的 fake 结果。
 func (f *fakeRetentionStore) RecycleIdleSessions(_ context.Context, query logicdomain.SessionIdleRecycleQuery) (logicdomain.SessionIdleRecycleResult, error) {
 	f.idleSessionQuery = query
-	return f.idleSessionResult, nil
+	return f.idleSessionResult, f.idleSessionErr
 }
 
 // PurgeExpiredTrash records the latest purge inputs and returns the configured fake result.
@@ -43,7 +48,7 @@ func (f *fakeRetentionStore) RecycleIdleSessions(_ context.Context, query logicd
 func (f *fakeRetentionStore) PurgeExpiredTrash(_ context.Context, before time.Time, limit int) (logicdomain.RetentionTrashPurgeResult, error) {
 	f.purgeBefore = before
 	f.purgeLimit = limit
-	return f.purgeResult, nil
+	return f.purgeResult, f.purgeErr
 }
 
 // fakeVectorStore captures vector-id deletes so retention maintenance tests can verify relational recycle results are bridged into vector cleanup.
@@ -179,5 +184,71 @@ func TestNewRetentionUseCaseSkipsDisabledWorker(t *testing.T) {
 	}, nil)
 	if useCase.workerCancel != nil {
 		t.Fatal("expected disabled retention worker to stay stopped")
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceSkipsColdRecycleVectorCleanupOnError verifies failed cold-memory recycle never triggers vector deletion even when the store returns partial diagnostic vector ids alongside the error.
+// TestRetentionUseCaseRunMaintenanceSkipsColdRecycleVectorCleanupOnError 用于验证终态记忆回收失败时不会触发向量删除；即使存储层错误返回里带有部分诊断向量 id，也不能误删。
+func TestRetentionUseCaseRunMaintenanceSkipsColdRecycleVectorCleanupOnError(t *testing.T) {
+	store := &fakeRetentionStore{
+		recycleResult: logicdomain.MemoryRecycleResult{
+			BatchID:           7,
+			RecycledVectorIDs: []string{"vec-cold-1", "vec-cold-2"},
+		},
+		recycleErr: errors.New("cold recycle failed"),
+		idleSessionResult: logicdomain.SessionIdleRecycleResult{
+			BatchIDs:          []uint64{9},
+			SessionIDs:        []uint64{11},
+			RecycledVectorIDs: []string{"vec-idle-1"},
+		},
+	}
+	vector := &fakeVectorStore{}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	useCase.runMaintenance(context.Background())
+
+	if len(vector.deletedIDs) != 1 || vector.deletedIDs[0] != "vec-idle-1" {
+		t.Fatalf("deleted vector ids = %v, want only idle-session cleanup", vector.deletedIDs)
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError verifies failed idle-session recycle never deletes vectors from a partially populated error result after the cold-memory pass already succeeded.
+// TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError 用于验证 idle-session 回收失败时不会删除错误结果中携带的部分向量，同时保留已成功完成的终态记忆向量清理。
+func TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError(t *testing.T) {
+	store := &fakeRetentionStore{
+		recycleResult: logicdomain.MemoryRecycleResult{
+			BatchID:           7,
+			RecycledVectorIDs: []string{"vec-cold-1"},
+		},
+		idleSessionResult: logicdomain.SessionIdleRecycleResult{
+			BatchIDs:          []uint64{9},
+			SessionIDs:        []uint64{11},
+			RecycledVectorIDs: []string{"vec-idle-1", "vec-idle-2"},
+		},
+		idleSessionErr: errors.New("idle session recycle failed"),
+	}
+	vector := &fakeVectorStore{}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	useCase.runMaintenance(context.Background())
+
+	if len(vector.deletedIDs) != 1 || vector.deletedIDs[0] != "vec-cold-1" {
+		t.Fatalf("deleted vector ids = %v, want only cold-memory cleanup", vector.deletedIDs)
 	}
 }

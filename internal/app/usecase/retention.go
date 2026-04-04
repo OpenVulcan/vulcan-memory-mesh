@@ -140,7 +140,6 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		SkipProtectedSharedMemories: u.cfg.SkipProtectedSharedMemories,
 	})
 	if recycleErr != nil {
-		u.cleanupVectors(ctx, recycleResult)
 		u.logError("retention cold memory recycle failed", recycleErr)
 	} else {
 		u.cleanupVectors(ctx, recycleResult)
@@ -158,7 +157,6 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		RecycleReason:     logicdomain.RecycleReasonIdleSessionCompact,
 	})
 	if sessionErr != nil {
-		u.cleanupIdleSessionVectors(ctx, sessionResult)
 		u.logError("retention idle session recycle failed", sessionErr)
 	} else {
 		u.cleanupIdleSessionVectors(ctx, sessionResult)
