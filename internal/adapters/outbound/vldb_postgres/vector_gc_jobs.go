@@ -173,9 +173,9 @@ RETURNING jobs.id, jobs.batch_id, jobs.vector_id, jobs.job_type, jobs.attempt_co
 	return claimed, nil
 }
 
-// CompleteVectorGCJobs marks one PostgreSQL retry batch as finished after the sidecar delete succeeds.
-// CompleteVectorGCJobs 用于在旁路删除成功后把一批 PostgreSQL 重试任务标记为完成。
-func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, completedAt time.Time) error {
+// CompleteVectorGCJobs removes one PostgreSQL retry batch immediately after the sidecar delete succeeds, keeping the queue strictly transient instead of retaining completed bookkeeping rows forever.
+// CompleteVectorGCJobs 用于在旁路删除成功后立即删除一批 PostgreSQL 重试任务，让该队列严格保持瞬时补偿语义，而不是永久保留已完成台账。
+func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
 	if s == nil || s.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
@@ -183,22 +183,23 @@ func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, compl
 	if len(jobIDs) == 0 {
 		return nil
 	}
-	completedAt = chooseNonZeroTime(completedAt, time.Now().UTC())
-	sqlText := fmt.Sprintf(`
-UPDATE %s
-SET completed_at = $2,
-    claimed_at = NULL,
-    last_error = '',
-    updated_at = $2
-WHERE id = ANY($1)
-`, s.vectorGCJobsTable())
+	sqlText := buildPostgresDeleteCompletedVectorGCJobsSQL(s.vectorGCJobsTable())
 
 	callCtx, cancel := s.queryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), completedAt); err != nil {
+	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs)); err != nil {
 		return fmt.Errorf("complete postgres vector gc jobs: %w", err)
 	}
 	return nil
+}
+
+// buildPostgresDeleteCompletedVectorGCJobsSQL returns the single-table delete used once one claimed retry batch has successfully removed its vectors, so completed queue rows cannot accumulate indefinitely.
+// buildPostgresDeleteCompletedVectorGCJobsSQL 用于返回成功删除向量后清理队列行的单表删除 SQL，避免已完成的队列行无限累积。
+func buildPostgresDeleteCompletedVectorGCJobsSQL(table string) string {
+	return fmt.Sprintf(`
+DELETE FROM %s
+WHERE id = ANY($1)
+`, table)
 }
 
 // RetryVectorGCJobs reschedules one PostgreSQL retry batch after the sidecar delete still fails, incrementing attempts while releasing the current lease.

@@ -359,7 +359,7 @@ func TestSQLiteVectorGCJobsClaimRetryAndComplete(t *testing.T) {
 	for idx, fragment := range []string{
 		"UPDATE vmm_vector_gc_jobs\nSET claimed_timestamp",
 		"attempt_count = attempt_count + 1",
-		"completed_timestamp =",
+		"DELETE FROM vmm_vector_gc_jobs",
 	} {
 		if !strings.Contains(executedSQL[idx], fragment) {
 			t.Fatalf("expected executed sql #%d to contain %q, got %q", idx, fragment, executedSQL[idx])

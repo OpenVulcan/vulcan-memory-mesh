@@ -218,3 +218,15 @@ func TestBuildPostgresRecycleBatchDeleteSQLDeletesMetadata(t *testing.T) {
 		t.Fatalf("delete recycle batch sql should not update metadata rows: %q", sql)
 	}
 }
+
+// TestBuildPostgresDeleteCompletedVectorGCJobsSQLDeletesRows verifies successful vector-gc completion now hard-deletes retry rows instead of keeping an ever-growing completed ledger.
+// TestBuildPostgresDeleteCompletedVectorGCJobsSQLDeletesRows 用于验证向量 GC 成功完成后现在会直接删除重试队列行，而不是保留一张持续增长的已完成台账。
+func TestBuildPostgresDeleteCompletedVectorGCJobsSQLDeletesRows(t *testing.T) {
+	sql := buildPostgresDeleteCompletedVectorGCJobsSQL("public.vmm_vector_gc_jobs")
+	if !strings.Contains(sql, "DELETE FROM public.vmm_vector_gc_jobs") {
+		t.Fatalf("delete completed vector gc jobs sql = %q", sql)
+	}
+	if strings.Contains(strings.ToUpper(sql), "UPDATE ") {
+		t.Fatalf("delete completed vector gc jobs sql should not update metadata rows: %q", sql)
+	}
+}

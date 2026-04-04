@@ -147,9 +147,9 @@ COMMIT;
 	return claimed, nil
 }
 
-// CompleteVectorGCJobs marks one SQLite retry batch as finished after the sidecar delete succeeds, keeping the completed rows for auditability and unique-idempotency.
-// CompleteVectorGCJobs 用于在旁路删除成功后把一批 SQLite 重试任务标记为已完成，同时保留完成行以便审计和唯一幂等。
-func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, completedAt time.Time) error {
+// CompleteVectorGCJobs removes one SQLite retry batch immediately after the sidecar delete succeeds, so the queue remains a transient compensation table instead of growing into a second long-lived ledger.
+// CompleteVectorGCJobs 用于在旁路删除成功后立即删除一批 SQLite 重试任务，让该队列表保持“瞬时补偿表”而不是继续演化成第二套长期台账。
+func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
 	if s == nil || s.client == nil {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
@@ -157,21 +157,16 @@ func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, compl
 	if len(jobIDs) == 0 {
 		return nil
 	}
-	completedMs := normalizeSQLiteRecycleTime(completedAt).UnixMilli()
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
 	script := fmt.Sprintf(`
 BEGIN IMMEDIATE;
-UPDATE vmm_vector_gc_jobs
-SET completed_timestamp = %d,
-    claimed_timestamp = 0,
-    last_error = '',
-    updated_timestamp = %d
+DELETE FROM vmm_vector_gc_jobs
 WHERE id IN (%s);
 COMMIT;
-`, completedMs, completedMs, sqlUint64List(jobIDs))
+`, sqlUint64List(jobIDs))
 	if err := s.exec(ctx, script); err != nil {
 		return fmt.Errorf("complete sqlite vector gc jobs: %w", err)
 	}
