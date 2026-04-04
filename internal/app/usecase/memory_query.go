@@ -669,6 +669,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 
 	results := make([]WriteMemoryResultItem, len(items))
 	pending := make([]directWritePendingItem, 0, len(items))
+	pendingByDedupeHash := make(map[string]int, len(items))
 	for idx, item := range items {
 		dedupeHash := buildDirectMemoryDedupeHash(cmd.Session, item)
 		existing, ok, err := u.memories.FindRecentActiveMemoryByDedupe(
@@ -694,10 +695,15 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 			}
 			continue
 		}
+		if pendingIdx, duplicated := pendingByDedupeHash[dedupeHash]; duplicated {
+			pending[pendingIdx].OriginalIndexes = append(pending[pendingIdx].OriginalIndexes, idx)
+			continue
+		}
+		pendingByDedupeHash[dedupeHash] = len(pending)
 		pending = append(pending, directWritePendingItem{
-			OriginalIndex: idx,
-			Item:          item,
-			DedupeHash:    dedupeHash,
+			OriginalIndexes: []int{idx},
+			Item:            item,
+			DedupeHash:      dedupeHash,
 		})
 	}
 	if len(pending) == 0 {
@@ -717,7 +723,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 		if decision.DedupedExistingMemoryID > 0 {
 			existing, ok := dedupedExistingRows[decision.DedupedExistingMemoryID]
 			if ok {
-				results[pendingItem.OriginalIndex] = WriteMemoryResultItem{
+				assignDirectWriteResultItems(results, pendingItem.OriginalIndexes, WriteMemoryResultItem{
 					Ref: logicdomain.MemoryRef{
 						Type: logicdomain.MemoryRefTypeMemory,
 						ID:   existing.ID,
@@ -725,7 +731,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 					SourceKind: existing.SourceKind,
 					ScopeLevel: existing.ScopeLevel,
 					Deduped:    true,
-				}
+				})
 				continue
 			}
 			// Degrade stale dedupe targets into a fresh write so a concurrent retirement window cannot turn one explicit tool write into a hard failure or a stale memory ref.
@@ -742,17 +748,17 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 		if err != nil {
 			return WriteMemoriesResult{}, err
 		}
-		results[pendingItem.OriginalIndex] = created
+		assignDirectWriteResultItems(results, pendingItem.OriginalIndexes, created)
 	}
 	return WriteMemoriesResult{Items: results}, nil
 }
 
-// directWritePendingItem stores one post-soft-dedupe direct-write item together with its original caller position and stable short-window dedupe hash.
-// directWritePendingItem 用于保存一条经过软幂等筛选后仍待处理的主动写入项，并记录其原始顺序和短窗口稳定去重哈希。
+// directWritePendingItem stores one post-soft-dedupe direct-write item together with every caller position that collapsed into the same in-request write and its stable short-window dedupe hash.
+// directWritePendingItem 用于保存一条经过软幂等筛选后仍待处理的主动写入项，并记录同一请求内被折叠到这次写入上的全部原始位置，以及稳定的短窗口去重哈希。
 type directWritePendingItem struct {
-	OriginalIndex int
-	Item          WriteMemoryItem
-	DedupeHash    string
+	OriginalIndexes []int
+	Item            WriteMemoryItem
+	DedupeHash      string
 }
 
 // directWriteMemoryDecision stores the final semantic-replacement decision for one pending direct-write candidate after reviewer judgment plus safe fallback normalization.
@@ -923,6 +929,24 @@ func memoryNodeRecordIsActiveUnexpiredAt(row logicdomain.MemoryNodeRecord, now t
 		return true
 	}
 	return row.ExpiresAt.After(now)
+}
+
+// assignDirectWriteResultItems fans one canonical direct-write outcome back to every original caller position that collapsed into the same in-request dedupe bucket.
+// assignDirectWriteResultItems 用于把一条规范化后的主动写入结果回填到同一请求内折叠到同一去重桶的所有原始位置。
+func assignDirectWriteResultItems(results []WriteMemoryResultItem, originalIndexes []int, canonical WriteMemoryResultItem) {
+	if len(results) == 0 || len(originalIndexes) == 0 {
+		return
+	}
+	for copyIdx, originalIndex := range originalIndexes {
+		if originalIndex < 0 || originalIndex >= len(results) {
+			continue
+		}
+		item := canonical
+		if copyIdx > 0 && !item.Deduped {
+			item.Deduped = true
+		}
+		results[originalIndex] = item
+	}
 }
 
 // persistDirectWriteMemory embeds one accepted direct-write item, writes the fresh vector row, and persists the unified memory row together with any same-scope replacements.

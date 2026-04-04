@@ -1440,6 +1440,80 @@ func TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseWriteDeduplicatesSameRequestDuplicates verifies one direct-write RPC collapses repeated identical items before embedding and persistence so the caller does not create duplicate durable memories inside the same batch.
+// TestMemoryUseCaseWriteDeduplicatesSameRequestDuplicates 用于验证单次主动写入 RPC 会先折叠请求内重复的相同条目，避免同一批请求里生成重复长期记忆。
+func TestMemoryUseCaseWriteDeduplicatesSameRequestDuplicates(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1401,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "记录新的稳定工程约束。",
+				Details:    "记录新的稳定工程约束。",
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  47,
+			SessionKey: "sess-direct-in-request-dedupe",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{
+			{
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "记录新的稳定工程约束。",
+				Details:    "记录新的稳定工程约束。",
+				Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+			},
+			{
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "记录新的稳定工程约束。",
+				Details:    "记录新的稳定工程约束。",
+				Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("result items len = %d, want 2", len(result.Items))
+	}
+	if result.Items[0].Ref.ID != 1401 || result.Items[0].Deduped {
+		t.Fatalf("expected first item to be the canonical create result, got %+v", result.Items[0])
+	}
+	if result.Items[1].Ref.ID != 1401 || !result.Items[1].Deduped {
+		t.Fatalf("expected second item to reuse the same created ref as in-request dedupe, got %+v", result.Items[1])
+	}
+	if len(store.directWriteApplyCalls) != 1 {
+		t.Fatalf("expected one atomic persistence call, got %+v", store.directWriteApplyCalls)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one vector upsert, got %+v", vector.upserts)
+	}
+	if len(embedding.requests) != 1 {
+		t.Fatalf("expected one embedding request, got %+v", embedding.requests)
+	}
+}
+
 // TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate verifies dropped candidates with similar memories no longer auto-reuse the first hit unless reviewer explicitly names the dedupe target.
 // TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate 用于验证当 reviewer 只丢弃候选但没有显式给出 dedupe 目标时，即使存在 similar memory，也不会再自动复用第一条旧记忆。
 func TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackToCreate(t *testing.T) {

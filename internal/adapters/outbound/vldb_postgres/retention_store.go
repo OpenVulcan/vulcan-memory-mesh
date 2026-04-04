@@ -178,10 +178,21 @@ func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.Sessi
 	if reason == "" {
 		reason = logicdomain.RecycleReasonIdleSessionCompact
 	}
+	return collectPostgresIdleSessionRecyclePass(limit, func(excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
+		return s.recycleOnePostgresIdleSession(ctx, idleBefore, turnHotWindowSize, recycledAt, reason, excludedSessionIDs)
+	})
+}
 
+// collectPostgresIdleSessionRecyclePass aggregates one PostgreSQL idle-session recycle pass while skipping no-op sessions inside the same scan so one inert oldest session cannot starve later recyclable work.
+// collectPostgresIdleSessionRecyclePass 用于聚合一次 PostgreSQL idle-session 回收过程，并在同一轮扫描内跳过 no-op session，避免一个最老但无可回收内容的 session 饿死后续真正可回收的批次。
+func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error)) (logicdomain.SessionIdleRecycleResult, error) {
 	result := logicdomain.SessionIdleRecycleResult{}
-	for processed := 0; processed < limit; processed++ {
-		sessionResult, recycleErr := s.recycleOnePostgresIdleSession(ctx, idleBefore, turnHotWindowSize, recycledAt, reason)
+	if limit <= 0 {
+		return result, nil
+	}
+	excludedSessionIDs := make([]uint64, 0, limit)
+	for len(result.BatchIDs) < limit {
+		sessionResult, recycleErr := recycleOne(excludedSessionIDs)
 		if recycleErr != nil {
 			result.BatchIDs = normalizeUint64List(result.BatchIDs)
 			result.SessionIDs = normalizeUint64List(result.SessionIDs)
@@ -189,7 +200,12 @@ func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.Sessi
 			return result, recycleErr
 		}
 		if sessionResult.BatchID == 0 {
-			break
+			if sessionResult.SessionID == 0 {
+				break
+			}
+			excludedSessionIDs = append(excludedSessionIDs, sessionResult.SessionID)
+			excludedSessionIDs = normalizeUint64List(excludedSessionIDs)
+			continue
 		}
 		result.BatchIDs = append(result.BatchIDs, sessionResult.BatchID)
 		result.SessionIDs = append(result.SessionIDs, sessionResult.SessionID)
@@ -292,7 +308,7 @@ WHERE id = ANY($1)
 
 // recycleOnePostgresIdleSession locks and compacts one concrete long-idle session so concurrent workers and foreground writers cannot split one recycle batch across overlapping hot-table states.
 // recycleOnePostgresIdleSession 用于锁定并压缩单个长期空闲 session，避免并发工作器和前台写入把一次回收批次切割到重叠的热表状态。
-func (s *Store) recycleOnePostgresIdleSession(ctx context.Context, idleBefore time.Time, turnHotWindowSize int, recycledAt time.Time, reason string) (postgresIdleSessionRecycleResult, error) {
+func (s *Store) recycleOnePostgresIdleSession(ctx context.Context, idleBefore time.Time, turnHotWindowSize int, recycledAt time.Time, reason string, excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
 	callCtx, cancel := s.queryContext(ctx)
 	defer cancel()
 	tx, err := s.pool.Begin(callCtx)
@@ -303,25 +319,33 @@ func (s *Store) recycleOnePostgresIdleSession(ctx context.Context, idleBefore ti
 		_ = tx.Rollback(context.Background())
 	}()
 
+	sessionArgs := &sqlArgsBuilder{}
+	sessionWhereClauses := []string{
+		"s.updated_at <= " + sessionArgs.Add(idleBefore),
+		fmt.Sprintf(`NOT EXISTS (
+    SELECT 1
+    FROM %s tr
+    WHERE tr.session_id = s.id
+      AND tr.extracted_status = %s
+  )`, s.turnsTable(), sessionArgs.Add(logicdomain.TurnExtractedStatusPending)),
+		buildPostgresIdleSessionCandidateAvailabilityClause(sessionArgs, s, idleBefore, turnHotWindowSize),
+	}
+	if len(excludedSessionIDs) > 0 {
+		sessionWhereClauses = append(sessionWhereClauses, "s.id <> ALL("+sessionArgs.Add(toInt64List(excludedSessionIDs))+")")
+	}
 	sessionSQL := fmt.Sprintf(`
 SELECT id, session_key, user_id, team_id, space_id, project_id,
        turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
        last_extract_observed_at, last_extract_completed_at, last_compacted_at,
        created_at, updated_at
 FROM %s AS s
-WHERE s.updated_at <= $1
-  AND NOT EXISTS (
-    SELECT 1
-    FROM %s tr
-    WHERE tr.session_id = s.id
-      AND tr.extracted_status = $2
-  )
+WHERE %s
 ORDER BY s.updated_at ASC, s.id ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED
-`, s.sessionsTable(), s.turnsTable())
+`, s.sessionsTable(), strings.Join(sessionWhereClauses, "\n  AND "))
 	var session sessionScanRow
-	if err := tx.QueryRow(callCtx, strings.TrimSpace(sessionSQL), idleBefore, logicdomain.TurnExtractedStatusPending).Scan(
+	if err := tx.QueryRow(callCtx, strings.TrimSpace(sessionSQL), sessionArgs.Args()...).Scan(
 		&session.ID,
 		&session.SessionKey,
 		&session.UserID,
@@ -414,7 +438,7 @@ ORDER BY tr.id ASC
 		return postgresIdleSessionRecycleResult{}, fmt.Errorf("query postgres idle-session turns for session %d: %w", session.ID, err)
 	}
 	if len(normalizedMemoryIDs) == 0 && len(turnRows) == 0 {
-		return postgresIdleSessionRecycleResult{}, nil
+		return postgresIdleSessionRecycleResult{SessionID: session.ID}, nil
 	}
 
 	insertBatchSQL := fmt.Sprintf(`
@@ -521,6 +545,52 @@ WHERE id = ANY($4)
 		RecycledTurnCount:    recycledTurnCount,
 		RecycledVectorIDs:    normalizeStringList(vectorIDs),
 	}, nil
+}
+
+// buildPostgresIdleSessionCandidateAvailabilityClause prefilters idle-session candidates to only sessions that already expose recyclable stale session memories or old turns, so no-op oldest sessions do not block later useful work.
+// buildPostgresIdleSessionCandidateAvailabilityClause 用于为 idle-session 候选追加“确实存在可回收数据”的预过滤，避免最老但无可回收内容的 session 阻塞后续真正有收益的回收工作。
+func buildPostgresIdleSessionCandidateAvailabilityClause(args *sqlArgsBuilder, s *Store, idleBefore time.Time, turnHotWindowSize int) string {
+	if args == nil || s == nil {
+		return "TRUE"
+	}
+	staleMemoryIdleBeforePlaceholder := args.Add(idleBefore)
+	staleMemoryScopePlaceholder := args.Add(logicdomain.MemoryScopeLevelSession)
+	staleMemoryStatusPlaceholder := args.Add(logicdomain.MemoryStatusActive)
+	staleMemoryFreshnessPlaceholder := args.Add(idleBefore)
+	oldTurnPendingStatusPlaceholder := args.Add(logicdomain.TurnExtractedStatusPending)
+	return fmt.Sprintf(`(
+EXISTS (
+  SELECT 1
+  FROM %s AS m
+  WHERE m.origin_session_id = s.id
+    AND m.scope_level = %s
+    AND m.memory_status = %s
+    AND m.expires_at IS NOT NULL
+    AND m.expires_at <= %s
+    AND GREATEST(
+      COALESCE(m.last_recalled_at, TIMESTAMPTZ 'epoch'),
+      COALESCE(m.last_adopted_at, TIMESTAMPTZ 'epoch'),
+      COALESCE(m.last_reinforced_at, TIMESTAMPTZ 'epoch'),
+      m.created_at
+    ) <= %s
+)
+OR EXISTS (
+  WITH recent_turns AS (
+    SELECT id
+    FROM %s
+    WHERE session_id = s.id
+    ORDER BY id DESC
+    LIMIT %d
+  )
+  SELECT 1
+  FROM %s AS tr
+  WHERE tr.session_id = s.id
+    AND tr.extracted_status <> %s
+    AND tr.id NOT IN (SELECT id FROM recent_turns)
+    AND NOT EXISTS (SELECT 1 FROM %s mn WHERE mn.source_turn_id = tr.id)
+    AND NOT EXISTS (SELECT 1 FROM %s pn WHERE pn.turn_id = tr.id)
+)
+ )`, s.memoryNodesTable(), staleMemoryScopePlaceholder, staleMemoryStatusPlaceholder, staleMemoryIdleBeforePlaceholder, staleMemoryFreshnessPlaceholder, s.turnsTable(), turnHotWindowSize, s.turnsTable(), oldTurnPendingStatusPlaceholder, s.memoryNodesTable(), s.profileNodesTable())
 }
 
 // appendProtectedSharedMemoryRecycleFilter appends the shared-memory protection predicate so retention does not recycle important shared facts by default.

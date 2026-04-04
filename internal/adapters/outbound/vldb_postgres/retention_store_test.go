@@ -5,6 +5,7 @@ package vldb_postgres
 import (
 	"strings"
 	"testing"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
@@ -62,5 +63,75 @@ func TestBuildPostgresIdleSessionTurnReferenceClauseIgnoresRecycledMemoryIDs(t *
 	}
 	if got := args.Args(); len(got) != 1 {
 		t.Fatalf("idle-session predicate args = %v", got)
+	}
+}
+
+// TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions verifies one idle-session pass can skip a no-op oldest session and still continue to later recyclable batches instead of stopping at the first empty candidate.
+// TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions 用于验证一次 idle-session 回收会跳过最老但 no-op 的 session，并继续处理后续真正可回收的批次，而不是在第一个空候选处直接停止。
+func TestCollectPostgresIdleSessionRecyclePassSkipsNoOpSessions(t *testing.T) {
+	callCount := 0
+	excludedSnapshots := make([][]uint64, 0, 3)
+	result, err := collectPostgresIdleSessionRecyclePass(2, func(excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
+		excludedSnapshots = append(excludedSnapshots, append([]uint64(nil), excludedSessionIDs...))
+		callCount++
+		switch callCount {
+		case 1:
+			return postgresIdleSessionRecycleResult{SessionID: 41}, nil
+		case 2:
+			if len(excludedSessionIDs) != 1 || excludedSessionIDs[0] != 41 {
+				t.Fatalf("second recycle call excluded sessions = %v, want [41]", excludedSessionIDs)
+			}
+			return postgresIdleSessionRecycleResult{
+				BatchID:              81,
+				SessionID:            42,
+				RecycledMemoryCount:  2,
+				RecycledContextCount: 1,
+				RecycledTurnCount:    3,
+				RecycledVectorIDs:    []string{"vec-1"},
+			}, nil
+		default:
+			return postgresIdleSessionRecycleResult{}, nil
+		}
+	})
+	if err != nil {
+		t.Fatalf("collectPostgresIdleSessionRecyclePass returned error: %v", err)
+	}
+	if callCount != 3 {
+		t.Fatalf("recycle call count = %d, want 3", callCount)
+	}
+	if len(result.BatchIDs) != 1 || result.BatchIDs[0] != 81 {
+		t.Fatalf("batch ids = %v, want [81]", result.BatchIDs)
+	}
+	if len(result.SessionIDs) != 1 || result.SessionIDs[0] != 42 {
+		t.Fatalf("session ids = %v, want [42]", result.SessionIDs)
+	}
+	if result.RecycledMemoryCount != 2 || result.RecycledContextCount != 1 || result.RecycledTurnCount != 3 {
+		t.Fatalf("unexpected recycle stats: %+v", result)
+	}
+	if len(result.RecycledVectorIDs) != 1 || result.RecycledVectorIDs[0] != "vec-1" {
+		t.Fatalf("vector ids = %v, want [vec-1]", result.RecycledVectorIDs)
+	}
+	if len(excludedSnapshots) < 2 || len(excludedSnapshots[1]) != 1 || excludedSnapshots[1][0] != 41 {
+		t.Fatalf("excluded snapshots = %v", excludedSnapshots)
+	}
+}
+
+// TestBuildPostgresIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows verifies the session prefilter keeps the stale-memory and old-turn existence checks in one clause so no-op idle sessions stop blocking later useful work.
+// TestBuildPostgresIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows 用于验证 session 预过滤会同时包含陈旧记忆和旧 turn 的存在性检查，避免 no-op idle session 阻塞后续有收益的回收工作。
+func TestBuildPostgresIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows(t *testing.T) {
+	args := &sqlArgsBuilder{}
+	store := &Store{cfg: Config{Schema: "public"}}
+	clause := buildPostgresIdleSessionCandidateAvailabilityClause(args, store, time.Unix(120, 0).UTC(), 8)
+	if !strings.Contains(clause, "FROM "+store.memoryNodesTable()+" AS m") {
+		t.Fatalf("candidate availability clause missing stale-memory branch: %q", clause)
+	}
+	if !strings.Contains(clause, "FROM "+store.turnsTable()+" AS tr") {
+		t.Fatalf("candidate availability clause missing old-turn branch: %q", clause)
+	}
+	if !strings.Contains(clause, "NOT EXISTS (SELECT 1 FROM "+store.profileNodesTable()+" pn WHERE pn.turn_id = tr.id)") {
+		t.Fatalf("candidate availability clause missing profile reference guard: %q", clause)
+	}
+	if got := len(args.Args()); got != 5 {
+		t.Fatalf("candidate availability args len = %d, want 5", got)
 	}
 }
