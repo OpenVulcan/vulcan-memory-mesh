@@ -133,6 +133,13 @@ source_turn_id -> GetTurnDetails
 
 它解决的是“trash 行属于哪一批实际回收结果”。
 
+补充说明：
+
+- 历史计划里曾使用过“recycle batch claim”这类表述。
+- 当前正式实现并不会对 `recycle_batches` 本身做 claim。
+- 多 worker / 多轮维护下的扫描、领取、执行去重语义，当前全部由 `recycle_jobs` 队列承担。
+- `recycle_batches` 只保留“实际已经完成的回收批次锚点”职责，不再承担任务队列职责。
+
 ## 7. idle-session recycle
 
 idle-session recycle 负责处理“整个 session 已长期空闲”的压缩场景。

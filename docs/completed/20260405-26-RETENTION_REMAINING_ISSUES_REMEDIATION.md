@@ -212,3 +212,14 @@
 1. `vector_gc_jobs` 中的 `completed_timestamp / completed_at` 兼容字段仍保留；这是显式确认后的非阻断 schema 债务，不影响当前运行时正确性。
 2. 当前冷 `turn` 回收的多 worker 去重语义依赖 `recycle_jobs` 队列，而不是把 `recycle_batches` 本身做成第二套 claim 状态机；这是本轮选择的正式实现，不再把“必须对 batch 自身 claim”视为未完成项。
 3. 当前仍不提供产品级恢复接口；回收站仍只承担数据库层有限期防灾缓冲，不应被误读为面向调用方可恢复的产品能力。
+
+## 5. 后验复核补记
+
+本计划在归档后又做了一轮后验复核，结论如下：
+
+1. 当前没有再发现新的运行时代码缺口；plan26 的主要工程目标已经真实落地。
+2. 本计划正文中“recycle batch 的显式批次 claim 与 scan / execute 分离”这句，如果按字面理解，容易让人误以为必须对 `recycle_batches` 自身建立第二套 claim 状态机。当前正式实现不是这样：
+   - scan / claim / execute 分离已经通过 `recycle_jobs` 队列落地；
+   - `recycle_batches` 只承担“已完成回收批次锚点”职责；
+   - 因此这属于“实现方式演进后的文档措辞滞后”，不是未完成项。
+3. 本计划执行总结里已经明确这一点，所以当前无需为了迁就旧措辞而反向改动代码。

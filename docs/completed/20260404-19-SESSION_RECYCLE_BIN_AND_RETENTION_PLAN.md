@@ -431,3 +431,16 @@
 1. 本计划的原始内容已经不再适合作为当前唯一 backlog 真源，后续如继续引用，必须以后续完成计划与现行计划为准。
 2. 本计划归档后，真实未完成项统一由 `20260405-26-RETENTION_REMAINING_ISSUES_REMEDIATION.md` 承接。
 3. 若未来继续补 retention 工程尾项，应避免重新开启第二份总控计划，防止再次出现“多个计划同时描述同一 backlog”的问题。
+
+## 5. 后验复核补记
+
+本总控计划归档后，结合 `20260405-26` 与后续复核结果，补记两点容易误读的历史差异：
+
+1. 文中早期使用过“`max(pre_check.history_turns, post_action.session_analysis_history_turns) + turn_keep_extra_turns`”描述热窗口。
+   - 当前正式实现已经收敛为共享 `post_action.session_analysis_history_turns + retention.turn_keep_extra_turns`。
+   - 原因是当前运行时里 `PreCheck` 与 retention 已共用这组历史轮数基线，不再存在独立 `pre_check.history_turns` 参与热窗口计算。
+   - 因此这里属于历史设计口径，不再视为当前未完成项。
+2. 文中早期还要求 PostgreSQL 主实现“对 recycle batch 自身做显式 claim”。
+   - 当前正式实现已经把 scan / claim / execute 分离收敛到 `recycle_jobs` 队列；
+   - `recycle_batches` 保留为已完成 trash 批次锚点，不再兼做任务队列。
+   - 因此这同样属于实现方案演进后的历史口径，不再视为当前缺陷。
