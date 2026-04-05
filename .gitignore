@@ -7,3 +7,4 @@ output/
 /nul
 configs/.env
 .env
+.opencode
