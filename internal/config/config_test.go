@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -683,6 +684,70 @@ func TestLoadPathsTrimsConfigPathWhitespace(t *testing.T) {
 	}
 }
 
+// TestLoadPathsLatestLegacyAPIKeyOverridesEarlierAPIKeyPool verifies a later config layer can still use the legacy single-key field to replace an earlier api_keys pool.
+// TestLoadPathsLatestLegacyAPIKeyOverridesEarlierAPIKeyPool 用于验证后加载配置层仍可使用旧的单值 key 字段替换前序层中的 api_keys 池。
+func TestLoadPathsLatestLegacyAPIKeyOverridesEarlierAPIKeyPool(t *testing.T) {
+	rootDir := t.TempDir()
+	systemConfig := filepath.Join(rootDir, "system.json")
+	overrideConfig := filepath.Join(rootDir, "override.json")
+
+	systemBody := strings.Replace(
+		currentTestConfigBody("system-key"),
+		`"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"system-key","model":"test-model"}`,
+		`"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_keys":["system-key-a","system-key-b"],"model":"test-model"}`,
+		1,
+	)
+	if err := os.WriteFile(systemConfig, []byte(systemBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overrideConfig, []byte(`{"llm":{"api_key":"override-key"}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadPaths([]string{systemConfig, overrideConfig}, DefaultLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.APIKey != "override-key" {
+		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	}
+	if got, want := len(cfg.LLM.APIKeys), 1; got != want {
+		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
+	}
+	if cfg.LLM.APIKeys[0] != "override-key" {
+		t.Fatalf("llm api key pool = %#v", cfg.LLM.APIKeys)
+	}
+}
+
+// TestLoadPathsLatestAPIKeyPoolOverridesEarlierLegacyAPIKey verifies a later config layer that declares api_keys does not silently inherit an earlier legacy api_key into the new pool.
+// TestLoadPathsLatestAPIKeyPoolOverridesEarlierLegacyAPIKey 用于验证当后加载配置层声明 api_keys 时，不会把更早层的旧 api_key 悄悄继承进新的 key 池。
+func TestLoadPathsLatestAPIKeyPoolOverridesEarlierLegacyAPIKey(t *testing.T) {
+	rootDir := t.TempDir()
+	systemConfig := filepath.Join(rootDir, "system.json")
+	overrideConfig := filepath.Join(rootDir, "override.json")
+
+	if err := os.WriteFile(systemConfig, []byte(currentTestConfigBody("system-key")), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overrideConfig, []byte(`{"llm":{"api_keys":["override-a","override-b"]}}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadPaths([]string{systemConfig, overrideConfig}, DefaultLocal())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.LLM.APIKey != "override-a" {
+		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	}
+	if got, want := len(cfg.LLM.APIKeys), 2; got != want {
+		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
+	}
+	if cfg.LLM.APIKeys[0] != "override-a" || cfg.LLM.APIKeys[1] != "override-b" {
+		t.Fatalf("llm api key pool = %#v", cfg.LLM.APIKeys)
+	}
+}
+
 // TestLoadExpandsModelSpecificProviderParams verifies provider parameter maps still support environment-expanded model keys.
 // TestLoadExpandsModelSpecificProviderParams 用于验证 provider 参数映射仍支持带环境变量展开的模型键名。
 func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
@@ -1031,6 +1096,122 @@ func TestApplyEnvOverridesSetsHybridRetrievalSettings(t *testing.T) {
 	}
 	if cfg.MemoryPipeline.WeibullCrossSessionBoost != 0.15 {
 		t.Fatalf("memory pipeline weibull_cross_session_boost = %v", cfg.MemoryPipeline.WeibullCrossSessionBoost)
+	}
+}
+
+// TestConfigNormalizeExpandsAPIKeyPools verifies Normalize merges api_key and api_keys into one deduplicated pool while preserving the first key as the legacy single-key field.
+// TestConfigNormalizeExpandsAPIKeyPools 用于验证 Normalize 会把 api_key 与 api_keys 合并为一组去重后的 Key 池，并保留首个 Key 作为旧单值字段。
+func TestConfigNormalizeExpandsAPIKeyPools(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.APIKey = " llm-a ; llm-b \n llm-c "
+	cfg.LLM.APIKeys = []string{"llm-b", " llm-d "}
+	cfg.Embedding.APIKey = " embed-a "
+	cfg.Embedding.APIKeys = []string{" embed-b,embed-c ", "embed-b"}
+	cfg.Rerank.APIKey = " rerank-a "
+	cfg.Rerank.APIKeys = []string{"rerank-b;rerank-c", "rerank-a"}
+
+	cfg.Normalize()
+
+	if got, want := len(cfg.LLM.APIKeys), 4; got != want {
+		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
+	}
+	if cfg.LLM.APIKey != "llm-b" {
+		t.Fatalf("llm primary api key = %q", cfg.LLM.APIKey)
+	}
+	if got, want := len(cfg.Embedding.APIKeys), 3; got != want {
+		t.Fatalf("embedding api key pool size = %d, want %d (%#v)", got, want, cfg.Embedding.APIKeys)
+	}
+	if cfg.Embedding.APIKey != "embed-b" {
+		t.Fatalf("embedding primary api key = %q", cfg.Embedding.APIKey)
+	}
+	if got, want := len(cfg.Rerank.APIKeys), 3; got != want {
+		t.Fatalf("rerank api key pool size = %d, want %d (%#v)", got, want, cfg.Rerank.APIKeys)
+	}
+	if cfg.Rerank.APIKey != "rerank-b" {
+		t.Fatalf("rerank primary api key = %q", cfg.Rerank.APIKey)
+	}
+}
+
+// TestConfigValidateRejectsMissingNormalizedKeyPools verifies validation rejects AI configs that end up without any usable key after normalization.
+// TestConfigValidateRejectsMissingNormalizedKeyPools 用于验证当归一化后没有任何可用 Key 时，配置校验会拒绝对应的 AI 配置。
+func TestConfigValidateRejectsMissingNormalizedKeyPools(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.APIKey = ""
+	cfg.LLM.APIKeys = nil
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "llm.api_key or llm.api_keys is required" {
+		t.Fatalf("unexpected llm key-pool validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.Embedding.APIKey = ""
+	cfg.Embedding.APIKeys = nil
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "embedding.api_key or embedding.api_keys is required" {
+		t.Fatalf("unexpected embedding key-pool validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.APIKey = ""
+	cfg.Rerank.APIKeys = nil
+	cfg.LLM.APIKey = "shared-llm-key"
+	cfg.LLM.APIKeys = nil
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "rerank.api_key or rerank.api_keys is required when rerank is enabled" {
+		t.Fatalf("unexpected rerank key-pool validate error: %v", err)
+	}
+}
+
+// TestApplyEnvOverridesSetsAIKeyPools verifies environment overrides can inject multi-key pools and key-failover policy knobs without editing the base config file.
+// TestApplyEnvOverridesSetsAIKeyPools 用于验证环境变量覆盖可以在不修改基础配置文件的前提下注入多 Key 池及 Key 容灾策略参数。
+func TestApplyEnvOverridesSetsAIKeyPools(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_LLM_API_KEYS", "llm-a,llm-b")
+	t.Setenv("VMM_LLM_KEY_FAILOVER_POLICY", "round_robin")
+	t.Setenv("VMM_EMBED_API_KEYS", "embed-a;embed-b")
+	t.Setenv("VMM_RERANK_API_KEYS", "rerank-a\nrerank-b")
+
+	applyEnvOverrides(&cfg)
+	cfg.Normalize()
+
+	if got, want := len(cfg.LLM.APIKeys), 2; got != want {
+		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
+	}
+	if cfg.LLM.KeyFailover.Policy != "round_robin" {
+		t.Fatalf("llm key failover policy = %q", cfg.LLM.KeyFailover.Policy)
+	}
+	if got, want := len(cfg.Embedding.APIKeys), 2; got != want {
+		t.Fatalf("embedding api key pool size = %d, want %d (%#v)", got, want, cfg.Embedding.APIKeys)
+	}
+	if got, want := len(cfg.Rerank.APIKeys), 2; got != want {
+		t.Fatalf("rerank api key pool size = %d, want %d (%#v)", got, want, cfg.Rerank.APIKeys)
+	}
+}
+
+// TestApplyEnvOverridesSingleAPIKeysReplacePools verifies single-key environment overrides replace any existing file-based key pool instead of silently merging with it.
+// TestApplyEnvOverridesSingleAPIKeysReplacePools 用于验证单值环境变量覆盖会替换已有的文件 Key 池，而不是悄悄与其合并。
+func TestApplyEnvOverridesSingleAPIKeysReplacePools(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.APIKeys = []string{"llm-old-a", "llm-old-b"}
+	cfg.Embedding.APIKeys = []string{"embed-old-a", "embed-old-b"}
+	cfg.Rerank.APIKeys = []string{"rerank-old-a", "rerank-old-b"}
+
+	t.Setenv("VMM_LLM_API_KEY", "llm-single")
+	t.Setenv("VMM_EMBED_API_KEY", "embed-single")
+	t.Setenv("VMM_RERANK_API_KEY", "rerank-single")
+
+	applyEnvOverrides(&cfg)
+	cfg.Normalize()
+
+	if got, want := len(cfg.LLM.APIKeys), 1; got != want || cfg.LLM.APIKeys[0] != "llm-single" {
+		t.Fatalf("llm api key pool = %#v", cfg.LLM.APIKeys)
+	}
+	if got, want := len(cfg.Embedding.APIKeys), 1; got != want || cfg.Embedding.APIKeys[0] != "embed-single" {
+		t.Fatalf("embedding api key pool = %#v", cfg.Embedding.APIKeys)
+	}
+	if got, want := len(cfg.Rerank.APIKeys), 1; got != want || cfg.Rerank.APIKeys[0] != "rerank-single" {
+		t.Fatalf("rerank api key pool = %#v", cfg.Rerank.APIKeys)
 	}
 }
 

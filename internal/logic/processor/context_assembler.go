@@ -7,20 +7,20 @@ import (
 	"fmt"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // ContextAssembler merges persona data and recalled memories into the final context payload returned by pre-check.
 // ContextAssembler 用于把画像数据和召回记忆合并成 pre-check 返回的最终上下文载荷。
 type ContextAssembler struct {
-	prompts appports.PromptSource
+	prompts logicports.PromptSource
 	model   string
 }
 
 // NewContextAssembler creates a ContextAssembler instance.
 // NewContextAssembler 用于创建 ContextAssembler 实例。
-func NewContextAssembler(prompts appports.PromptSource, model string) *ContextAssembler {
+func NewContextAssembler(prompts logicports.PromptSource, model string) *ContextAssembler {
 	return &ContextAssembler{prompts: prompts, model: strings.TrimSpace(model)}
 }
 

@@ -10,13 +10,13 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"reflect"
 	"strings"
 	"syscall"
 
 	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_postgres"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
@@ -66,14 +66,21 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, fmt.Errorf("init runtime log file writer: %w", err)
 	}
-	// Close eager startup resources again when later dependency wiring fails, so a half-built runtime does not leave file handles behind.
-	// 当后续依赖装配失败时，及时关闭这些提前创建的启动资源，避免半装配运行时留下文件句柄。
+	// Close eager startup resources again when later dependency wiring fails, so a half-built runtime does not leave file handles, pools, or workers behind.
+	// 当后续依赖装配失败时，及时关闭这些提前创建的启动资源，避免半装配运行时留下文件句柄、连接池或后台工作器。
 	initSucceeded := false
+	startupShutdowns := []appports.Shutdowner{}
+	trackStartupShutdown := func(shutdowner appports.Shutdowner) {
+		startupShutdowns = appendUniqueShutdowner(startupShutdowns, shutdowner)
+	}
+	trackStartupShutdown(fileWriter)
 	defer func() {
 		if initSucceeded {
 			return
 		}
-		_ = fileWriter.Close()
+		for i := len(startupShutdowns) - 1; i >= 0; i-- {
+			_ = startupShutdowns[i].Shutdown(context.Background())
+		}
 	}()
 	logger := logx.New(io.MultiWriter(os.Stdout, fileWriter), logx.Config{
 		Level:                cfg.Logging.Level,
@@ -104,6 +111,8 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	}
 	relational := storageDeps.Relational
 	vector := storageDeps.Vector
+	trackStartupShutdown(relational)
+	trackStartupShutdown(vector)
 	noiseCache, ok := relational.(appports.NoiseEmbeddingCache)
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support noise embedding cache")
@@ -224,6 +233,8 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		SkipProtectedSharedMemories: cfg.Retention.SkipProtectedSharedMemories,
 	}, logger)
 	retention.ConfigureScratchpadMaintenanceStore(scratchpadMaintenanceStore)
+	trackStartupShutdown(post)
+	trackStartupShutdown(retention)
 
 	// Wire gRPC handlers and shutdown dependencies into the application container.
 	// 将 gRPC 处理器和关闭依赖接入应用容器。
@@ -252,7 +263,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
 	reflection.Register(server)
 
-	shutdowns := []appports.Shutdowner{fileWriter, relational, vector, post, retention}
+	shutdowns := buildUniqueShutdownSequence(fileWriter, relational, vector, post, retention)
 	initSucceeded = true
 	return &Application{Config: cfg, Logger: logger, Server: server, Shutdowns: shutdowns}, nil
 }
@@ -344,11 +355,18 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	// Continue draining every dependency even if one shutdown step fails, so later resources do not leak simply because an earlier adapter returned an error.
 	// 即便某个关闭步骤失败，也继续释放后续依赖，避免前一个适配器报错后导致后面的资源直接泄漏。
 	var shutdownErrors []error
+	seenShutdowners := map[string]struct{}{}
 	for i := len(a.Shutdowns) - 1; i >= 0; i-- {
-		if a.Shutdowns[i] == nil {
+		shutdowner := a.Shutdowns[i]
+		if shutdowner == nil {
 			continue
 		}
-		if err := a.Shutdowns[i].Shutdown(shutdownCtx); err != nil {
+		id := shutdownerIdentity(shutdowner)
+		if _, seen := seenShutdowners[id]; seen {
+			continue
+		}
+		seenShutdowners[id] = struct{}{}
+		if err := shutdowner.Shutdown(shutdownCtx); err != nil {
 			shutdownErrors = append(shutdownErrors, fmt.Errorf("shutdown dependency[%d]: %w", i, err))
 		}
 	}
@@ -356,6 +374,50 @@ func (a *Application) Shutdown(ctx context.Context) error {
 		return fmt.Errorf("shutdown completed with dependency errors: %w", errors.Join(shutdownErrors...))
 	}
 	return nil
+}
+
+// buildUniqueShutdownSequence preserves construction order while collapsing duplicate shutdown hooks that point at the same runtime dependency.
+// buildUniqueShutdownSequence 用于在保留构建顺序的同时折叠指向同一运行时依赖的重复 shutdown 钩子。
+func buildUniqueShutdownSequence(shutdowners ...appports.Shutdowner) []appports.Shutdowner {
+	unique := make([]appports.Shutdowner, 0, len(shutdowners))
+	for _, shutdowner := range shutdowners {
+		unique = appendUniqueShutdowner(unique, shutdowner)
+	}
+	return unique
+}
+
+// appendUniqueShutdowner appends one shutdown hook only when it does not already exist in the current construction list.
+// appendUniqueShutdowner 用于仅在当前构建列表里尚不存在时追加一条 shutdown 钩子。
+func appendUniqueShutdowner(shutdowners []appports.Shutdowner, shutdowner appports.Shutdowner) []appports.Shutdowner {
+	if shutdowner == nil {
+		return shutdowners
+	}
+	id := shutdownerIdentity(shutdowner)
+	for _, existing := range shutdowners {
+		if shutdownerIdentity(existing) == id {
+			return shutdowners
+		}
+	}
+	return append(shutdowners, shutdowner)
+}
+
+// shutdownerIdentity derives one stable in-process identity for duplicate-suppression across startup cleanup and graceful shutdown.
+// shutdownerIdentity 用于为启动清理与优雅停机的重复抑制推导一条稳定的进程内标识。
+func shutdownerIdentity(shutdowner appports.Shutdowner) string {
+	if shutdowner == nil {
+		return ""
+	}
+	value := reflect.ValueOf(shutdowner)
+	typeName := reflect.TypeOf(shutdowner).String()
+	switch value.Kind() {
+	case reflect.Pointer, reflect.Map, reflect.Chan, reflect.Func, reflect.UnsafePointer:
+		if value.IsNil() {
+			return typeName + ":nil"
+		}
+		return fmt.Sprintf("%s:%x", typeName, value.Pointer())
+	default:
+		return fmt.Sprintf("%s:%#v", typeName, shutdowner)
+	}
 }
 
 // minSimilarityOrDefault keeps the pre-check runtime aligned with the validated memory-pipeline similarity floor.
@@ -376,9 +438,19 @@ func normalizeProviderAlias(provider string) string {
 // buildLLM selects the configured generation backend used by the debug-stage post-action summary probe and future LLM-driven workflows.
 // buildLLM 用于选择当前配置的生成后端，服务调试阶段的 post-action 摘要探测以及未来的 LLM 工作流。
 func buildLLM(cfg config.Config) (appports.LLMClient, error) {
+	cfg.Normalize()
 	switch normalizeProviderAlias(cfg.LLM.Provider) {
 	case "openai", "openai_native", "openai_go":
-		return openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project, cfg.LLM.Params, cfg.LLM.ModelParams), nil
+		return ai_key_failover.NewLLMClient(
+			cfg.LLM.Endpoint,
+			cfg.LLM.Model,
+			cfg.LLM.Organization,
+			cfg.LLM.Project,
+			cfg.LLM.APIKeys,
+			cfg.LLM.Params,
+			cfg.LLM.ModelParams,
+			buildKeyFailoverOptions("llm", cfg.LLM.APIKeys, cfg.LLM.KeyFailover),
+		)
 	default:
 		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
 	}
@@ -387,9 +459,20 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 // buildEmbedding selects the configured real embedding adapter for recall and semantic filtering.
 // buildEmbedding 用于为召回和语义过滤选择当前配置的真实 embedding 适配器。
 func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
+	cfg.Normalize()
 	switch normalizeProviderAlias(cfg.Embedding.Provider) {
 	case "openai", "openai_native", "openai_go":
-		return openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams), nil
+		return ai_key_failover.NewEmbeddingClient(
+			cfg.Embedding.Endpoint,
+			cfg.Embedding.Model,
+			cfg.Embedding.Dimension,
+			cfg.Embedding.Organization,
+			cfg.Embedding.Project,
+			cfg.Embedding.APIKeys,
+			cfg.Embedding.Params,
+			cfg.Embedding.ModelParams,
+			buildKeyFailoverOptions("embedding", cfg.Embedding.APIKeys, cfg.Embedding.KeyFailover),
+		)
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
 	}
@@ -398,18 +481,37 @@ func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 // buildReranker selects the optional second-stage rerank backend used to reorder first-stage vector recall hits.
 // buildReranker 用于选择可选的第二阶段重排序后端，对首轮向量召回结果重新排序。
 func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
+	cfg.Normalize()
 	if !cfg.Rerank.Enabled {
 		return nil, nil
 	}
-	apiKey := strings.TrimSpace(cfg.Rerank.APIKey)
-	if apiKey == "" {
-		apiKey = strings.TrimSpace(cfg.LLM.APIKey)
-	}
 	switch normalizeProviderAlias(cfg.Rerank.Provider) {
 	case "dashscope":
-		return dashscope_rerank.NewClient(cfg.Rerank.Endpoint, apiKey, cfg.Rerank.Model, cfg.Rerank.Timeout.Duration, nil), nil
+		return ai_key_failover.NewRerankerClient(
+			cfg.Rerank.Endpoint,
+			cfg.Rerank.Model,
+			cfg.Rerank.Timeout.Duration,
+			cfg.Rerank.APIKeys,
+			buildKeyFailoverOptions("rerank", cfg.Rerank.APIKeys, cfg.Rerank.KeyFailover),
+		)
 	default:
 		return nil, fmt.Errorf("unsupported rerank provider: %s", cfg.Rerank.Provider)
+	}
+}
+
+// buildKeyFailoverOptions converts one normalized runtime config into the fixed-model API-key failover options consumed by outbound wrappers.
+// buildKeyFailoverOptions 用于把一份已归一化的运行时配置转换为出站包装器消费的固定模型 API Key 容灾参数。
+func buildKeyFailoverOptions(serviceName string, apiKeys []string, cfg config.KeyFailoverConfig) ai_key_failover.Options {
+	return ai_key_failover.Options{
+		ServiceName:        serviceName,
+		Enabled:            cfg.Enabled && len(apiKeys) > 1,
+		Policy:             strings.TrimSpace(cfg.Policy),
+		APIKeys:            append([]string(nil), apiKeys...),
+		RespectRetryAfter:  cfg.RespectRetryAfter,
+		RateLimitCooldown:  cfg.RateLimitCooldown.Duration,
+		QuotaCooldown:      cfg.QuotaCooldown.Duration,
+		AuthCooldown:       cfg.AuthCooldown.Duration,
+		ProbeAfterCooldown: cfg.ProbeAfterCooldown,
 	}
 }
 

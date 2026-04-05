@@ -164,11 +164,13 @@ type LLMConfig struct {
 	Provider     string                    `json:"provider"`
 	Endpoint     string                    `json:"endpoint,omitempty"`
 	APIKey       string                    `json:"api_key,omitempty"`
+	APIKeys      []string                  `json:"api_keys,omitempty"`
 	Model        string                    `json:"model,omitempty"`
 	Organization string                    `json:"organization,omitempty"`
 	Project      string                    `json:"project,omitempty"`
 	Params       map[string]any            `json:"params,omitempty"`
 	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
+	KeyFailover  KeyFailoverConfig         `json:"key_failover,omitempty"`
 }
 
 // EmbeddingConfig holds the provider and model settings used when generating recall vectors.
@@ -177,24 +179,40 @@ type EmbeddingConfig struct {
 	Provider     string                    `json:"provider"`
 	Endpoint     string                    `json:"endpoint,omitempty"`
 	APIKey       string                    `json:"api_key,omitempty"`
+	APIKeys      []string                  `json:"api_keys,omitempty"`
 	Model        string                    `json:"model,omitempty"`
 	Dimension    int                       `json:"dimension,omitempty"`
 	Organization string                    `json:"organization,omitempty"`
 	Project      string                    `json:"project,omitempty"`
 	Params       map[string]any            `json:"params,omitempty"`
 	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
+	KeyFailover  KeyFailoverConfig         `json:"key_failover,omitempty"`
 }
 
 // RerankConfig holds the optional second-stage rerank settings used to reorder vector recall hits.
 // RerankConfig 用于保存可选的第二阶段重排序配置，让系统在向量召回后重新排序候选。
 type RerankConfig struct {
-	Enabled  bool     `json:"enabled"`
-	Provider string   `json:"provider,omitempty"`
-	Endpoint string   `json:"endpoint,omitempty"`
-	APIKey   string   `json:"api_key,omitempty"`
-	Model    string   `json:"model,omitempty"`
-	TopN     int      `json:"top_n,omitempty"`
-	Timeout  Duration `json:"timeout,omitempty"`
+	Enabled     bool              `json:"enabled"`
+	Provider    string            `json:"provider,omitempty"`
+	Endpoint    string            `json:"endpoint,omitempty"`
+	APIKey      string            `json:"api_key,omitempty"`
+	APIKeys     []string          `json:"api_keys,omitempty"`
+	Model       string            `json:"model,omitempty"`
+	TopN        int               `json:"top_n,omitempty"`
+	Timeout     Duration          `json:"timeout,omitempty"`
+	KeyFailover KeyFailoverConfig `json:"key_failover,omitempty"`
+}
+
+// KeyFailoverConfig keeps the in-memory API-key rotation policy for one fixed provider/endpoint/model tuple.
+// KeyFailoverConfig 用于保存某个固定 provider/endpoint/model 组合在运行时的内存态 API Key 轮换策略。
+type KeyFailoverConfig struct {
+	Enabled            bool     `json:"enabled"`
+	Policy             string   `json:"policy,omitempty"`
+	RespectRetryAfter  bool     `json:"respect_retry_after"`
+	RateLimitCooldown  Duration `json:"rate_limit_cooldown,omitempty"`
+	QuotaCooldown      Duration `json:"quota_cooldown,omitempty"`
+	AuthCooldown       Duration `json:"auth_cooldown,omitempty"`
+	ProbeAfterCooldown bool     `json:"probe_after_cooldown"`
 }
 
 // VectorConfig selects the vector backend used by recall and long-term memory indexing.
@@ -294,10 +312,27 @@ func DefaultLocal() Config {
 			VectorProbes:            10,
 			MigrationBatchSize:      500,
 		},
-		LLM:       LLMConfig{Provider: "openai", Model: "gpt-4.1-mini"},
-		Embedding: EmbeddingConfig{Provider: "openai", Model: "text-embedding-3-large", Dimension: 1024},
-		Rerank:    RerankConfig{Enabled: false, Provider: "dashscope", Endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank", Model: "qwen3-vl-rerank", TopN: 8, Timeout: Duration{8 * time.Second}},
-		Vector:    VectorConfig{Provider: "lancedb"},
+		LLM: LLMConfig{
+			Provider:    "openai",
+			Model:       "gpt-4.1-mini",
+			KeyFailover: defaultKeyFailoverConfig(),
+		},
+		Embedding: EmbeddingConfig{
+			Provider:    "openai",
+			Model:       "text-embedding-3-large",
+			Dimension:   1024,
+			KeyFailover: defaultKeyFailoverConfig(),
+		},
+		Rerank: RerankConfig{
+			Enabled:     false,
+			Provider:    "dashscope",
+			Endpoint:    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+			Model:       "qwen3-vl-rerank",
+			TopN:        8,
+			Timeout:     Duration{8 * time.Second},
+			KeyFailover: defaultKeyFailoverConfig(),
+		},
+		Vector: VectorConfig{Provider: "lancedb"},
 		Relational: RelationalConfig{
 			Provider: "sqlite",
 		},
@@ -365,7 +400,11 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 			return Config{}, fmt.Errorf("read config: %w", err)
 		}
 		expandedBody := os.ExpandEnv(string(body))
-		if err := json.Unmarshal([]byte(expandedBody), &cfg); err != nil {
+		expandedBytes := []byte(expandedBody)
+		if err := applyLayeredAIKeyOverrideReset(&cfg, expandedBytes); err != nil {
+			return Config{}, fmt.Errorf("parse config: %w", err)
+		}
+		if err := json.Unmarshal(expandedBytes, &cfg); err != nil {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
 	}
@@ -378,6 +417,73 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// aiKeyFieldPresence tracks whether one config layer explicitly mentions the legacy single-key field or the newer key-pool field.
+// aiKeyFieldPresence 用于记录某一层配置是否显式声明了旧的单值 key 字段或新的 key 池字段。
+type aiKeyFieldPresence struct {
+	HasAPIKey  bool
+	HasAPIKeys bool
+}
+
+// applyLayeredAIKeyOverrideReset clears stale lower-priority key fields before one higher-priority config layer is unmarshaled.
+// applyLayeredAIKeyOverrideReset 用于在反序列化更高优先级配置层前，清理来自低优先级层的残留 key 字段。
+func applyLayeredAIKeyOverrideReset(cfg *Config, body []byte) error {
+	if cfg == nil || len(body) == 0 {
+		return nil
+	}
+	root := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(body, &root); err != nil {
+		return err
+	}
+	if err := resetAIKeyFieldPair(root["llm"], &cfg.LLM.APIKey, &cfg.LLM.APIKeys); err != nil {
+		return fmt.Errorf("parse llm key fields: %w", err)
+	}
+	if err := resetAIKeyFieldPair(root["embedding"], &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys); err != nil {
+		return fmt.Errorf("parse embedding key fields: %w", err)
+	}
+	if err := resetAIKeyFieldPair(root["rerank"], &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys); err != nil {
+		return fmt.Errorf("parse rerank key fields: %w", err)
+	}
+	return nil
+}
+
+// resetAIKeyFieldPair keeps layered config precedence stable by clearing the opposite field only when the current layer chooses exactly one key shape.
+// resetAIKeyFieldPair 用于在当前配置层只选择一种 key 写法时清空另一种写法，从而保持分层配置覆盖优先级稳定。
+func resetAIKeyFieldPair(sectionBody []byte, single *string, many *[]string) error {
+	presence, err := detectAIKeyFieldPresence(sectionBody)
+	if err != nil {
+		return err
+	}
+	switch {
+	case presence.HasAPIKey && !presence.HasAPIKeys:
+		if many != nil {
+			*many = nil
+		}
+	case presence.HasAPIKeys && !presence.HasAPIKey:
+		if single != nil {
+			*single = ""
+		}
+	}
+	return nil
+}
+
+// detectAIKeyFieldPresence inspects one nested config section and reports whether api_key or api_keys was explicitly present in that layer.
+// detectAIKeyFieldPresence 用于检查单个嵌套配置段，并报告该层是否显式写入了 api_key 或 api_keys。
+func detectAIKeyFieldPresence(sectionBody []byte) (aiKeyFieldPresence, error) {
+	if len(sectionBody) == 0 {
+		return aiKeyFieldPresence{}, nil
+	}
+	fields := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(sectionBody, &fields); err != nil {
+		return aiKeyFieldPresence{}, err
+	}
+	_, hasAPIKey := fields["api_key"]
+	_, hasAPIKeys := fields["api_keys"]
+	return aiKeyFieldPresence{
+		HasAPIKey:  hasAPIKey,
+		HasAPIKeys: hasAPIKeys,
+	}, nil
 }
 
 // normalizeConfigPaths executes the normalizeConfigPaths logic.
@@ -471,6 +577,96 @@ func dotEnvCandidates(configPath string) []string {
 // float64Ptr executes the float64Ptr logic.
 // float64Ptr 用于执行 float64Ptr 逻辑。
 func float64Ptr(v float64) *float64 { return &v }
+
+// defaultKeyFailoverConfig returns the stable API-key failover defaults shared by fixed-model AI clients.
+// defaultKeyFailoverConfig 用于返回固定模型 AI 客户端共享的稳定 API Key 容灾默认值。
+func defaultKeyFailoverConfig() KeyFailoverConfig {
+	return KeyFailoverConfig{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RespectRetryAfter:  true,
+		RateLimitCooldown:  Duration{5 * time.Minute},
+		QuotaCooldown:      Duration{10 * time.Minute},
+		AuthCooldown:       Duration{12 * time.Hour},
+		ProbeAfterCooldown: true,
+	}
+}
+
+// normalizeKeyFailoverPolicyValue canonicalizes the in-memory API-key rotation policy so config defaults, env overrides, and runtime wiring all compare one stable token.
+// normalizeKeyFailoverPolicyValue 用于规范化内存态 API Key 轮换策略，让默认值、环境变量覆盖和运行时装配始终比较同一份稳定 token。
+func normalizeKeyFailoverPolicyValue(policy string) string {
+	switch strings.ToLower(strings.TrimSpace(policy)) {
+	case "round_robin":
+		return "round_robin"
+	default:
+		return "ordered_failover"
+	}
+}
+
+// splitConfigAPIKeys expands one raw config string into individual API keys using comma, semicolon, or newline separators.
+// splitConfigAPIKeys 用于把单个原始配置字符串按逗号、分号或换行分隔为多个独立 API Key。
+func splitConfigAPIKeys(raw string) []string {
+	replacer := strings.NewReplacer("\r\n", "\n", "\r", "\n", ";", "\n", ",", "\n")
+	return strings.Split(replacer.Replace(raw), "\n")
+}
+
+// trimStringSlice removes surrounding whitespace and drops empty items from one string slice while preserving order.
+// trimStringSlice 用于裁剪字符串切片中的首尾空白并去掉空项，同时保持原始顺序不变。
+func trimStringSlice(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	trimmed := make([]string, 0, len(values))
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			trimmed = append(trimmed, value)
+		}
+	}
+	return trimmed
+}
+
+// normalizeAPIKeys merges the legacy single api_key field with the newer api_keys list, trims separators, and removes duplicates while preserving caller order.
+// normalizeAPIKeys 用于合并旧的单值 api_key 与新的 api_keys 列表，裁剪分隔符并在保持顺序的前提下去重。
+func normalizeAPIKeys(single string, many []string) []string {
+	merged := make([]string, 0, len(many)+1)
+	for _, value := range many {
+		merged = append(merged, splitConfigAPIKeys(value)...)
+	}
+	merged = append(merged, splitConfigAPIKeys(single)...)
+	merged = trimStringSlice(merged)
+	if len(merged) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(merged))
+	normalized := make([]string, 0, len(merged))
+	for _, value := range merged {
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		normalized = append(normalized, value)
+	}
+	return normalized
+}
+
+// normalizeKeyFailoverConfig fills safe in-memory cooldown defaults for one fixed-model API-key pool.
+// normalizeKeyFailoverConfig 用于为单个固定模型的 API Key 池补齐安全的内存态冷却默认值。
+func normalizeKeyFailoverConfig(cfg *KeyFailoverConfig) {
+	if cfg == nil {
+		return
+	}
+	defaults := defaultKeyFailoverConfig()
+	cfg.Policy = normalizeKeyFailoverPolicyValue(cfg.Policy)
+	if cfg.RateLimitCooldown.Duration <= 0 {
+		cfg.RateLimitCooldown = defaults.RateLimitCooldown
+	}
+	if cfg.QuotaCooldown.Duration <= 0 {
+		cfg.QuotaCooldown = defaults.QuotaCooldown
+	}
+	if cfg.AuthCooldown.Duration <= 0 {
+		cfg.AuthCooldown = defaults.AuthCooldown
+	}
+}
 
 // normalizePreCheckSearchScopeValue canonicalizes the pre-check search-scope enum so config defaults, env overrides, and validation all compare the same token.
 // normalizePreCheckSearchScopeValue 用于规范化 pre-check 检索作用域枚举，让配置默认值、环境变量覆盖和校验始终比较同一个 token。
@@ -722,9 +918,19 @@ func (c *Config) Normalize() {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(0.75)
 		}
 	}
+	c.LLM.APIKeys = normalizeAPIKeys(c.LLM.APIKey, c.LLM.APIKeys)
+	if len(c.LLM.APIKeys) > 0 {
+		c.LLM.APIKey = c.LLM.APIKeys[0]
+	}
+	normalizeKeyFailoverConfig(&c.LLM.KeyFailover)
 	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
 		c.Embedding.Dimension = 1024
 	}
+	c.Embedding.APIKeys = normalizeAPIKeys(c.Embedding.APIKey, c.Embedding.APIKeys)
+	if len(c.Embedding.APIKeys) > 0 {
+		c.Embedding.APIKey = c.Embedding.APIKeys[0]
+	}
+	normalizeKeyFailoverConfig(&c.Embedding.KeyFailover)
 	if strings.TrimSpace(c.Rerank.Provider) == "" {
 		c.Rerank.Provider = "dashscope"
 	}
@@ -740,6 +946,11 @@ func (c *Config) Normalize() {
 	if c.Rerank.Timeout.Duration <= 0 {
 		c.Rerank.Timeout = Duration{8 * time.Second}
 	}
+	c.Rerank.APIKeys = normalizeAPIKeys(c.Rerank.APIKey, c.Rerank.APIKeys)
+	if len(c.Rerank.APIKeys) > 0 {
+		c.Rerank.APIKey = c.Rerank.APIKeys[0]
+	}
+	normalizeKeyFailoverConfig(&c.Rerank.KeyFailover)
 	if strings.TrimSpace(c.Logging.Level) == "" {
 		c.Logging.Level = "info"
 	}
@@ -845,19 +1056,25 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.LLM.Provider = strings.TrimSpace(c.LLM.Provider)
 	c.LLM.Endpoint = strings.TrimSpace(c.LLM.Endpoint)
 	c.LLM.APIKey = strings.TrimSpace(c.LLM.APIKey)
+	c.LLM.APIKeys = trimStringSlice(c.LLM.APIKeys)
 	c.LLM.Model = strings.TrimSpace(c.LLM.Model)
 	c.LLM.Organization = strings.TrimSpace(c.LLM.Organization)
 	c.LLM.Project = strings.TrimSpace(c.LLM.Project)
+	c.LLM.KeyFailover.Policy = strings.TrimSpace(c.LLM.KeyFailover.Policy)
 	c.Embedding.Provider = strings.TrimSpace(c.Embedding.Provider)
 	c.Embedding.Endpoint = strings.TrimSpace(c.Embedding.Endpoint)
 	c.Embedding.APIKey = strings.TrimSpace(c.Embedding.APIKey)
+	c.Embedding.APIKeys = trimStringSlice(c.Embedding.APIKeys)
 	c.Embedding.Model = strings.TrimSpace(c.Embedding.Model)
 	c.Embedding.Organization = strings.TrimSpace(c.Embedding.Organization)
 	c.Embedding.Project = strings.TrimSpace(c.Embedding.Project)
+	c.Embedding.KeyFailover.Policy = strings.TrimSpace(c.Embedding.KeyFailover.Policy)
 	c.Rerank.Provider = strings.TrimSpace(c.Rerank.Provider)
 	c.Rerank.Endpoint = strings.TrimSpace(c.Rerank.Endpoint)
 	c.Rerank.APIKey = strings.TrimSpace(c.Rerank.APIKey)
+	c.Rerank.APIKeys = trimStringSlice(c.Rerank.APIKeys)
 	c.Rerank.Model = strings.TrimSpace(c.Rerank.Model)
+	c.Rerank.KeyFailover.Policy = strings.TrimSpace(c.Rerank.KeyFailover.Policy)
 	c.Vector.Provider = strings.TrimSpace(c.Vector.Provider)
 	c.Relational.Provider = strings.TrimSpace(c.Relational.Provider)
 	c.PostAction.InputMode = strings.TrimSpace(c.PostAction.InputMode)
@@ -1030,8 +1247,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
 	}
-	if strings.TrimSpace(c.LLM.APIKey) == "" {
-		return errors.New("llm.api_key is required")
+	if len(normalizeAPIKeys(c.LLM.APIKey, c.LLM.APIKeys)) == 0 {
+		return errors.New("llm.api_key or llm.api_keys is required")
 	}
 	if strings.TrimSpace(c.LLM.Model) == "" {
 		return errors.New("llm.model is required")
@@ -1039,8 +1256,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Embedding.Endpoint) == "" {
 		return errors.New("embedding.endpoint is required")
 	}
-	if strings.TrimSpace(c.Embedding.APIKey) == "" {
-		return errors.New("embedding.api_key is required")
+	if len(normalizeAPIKeys(c.Embedding.APIKey, c.Embedding.APIKeys)) == 0 {
+		return errors.New("embedding.api_key or embedding.api_keys is required")
 	}
 	if strings.TrimSpace(c.Embedding.Model) == "" {
 		return errors.New("embedding.model is required")
@@ -1060,8 +1277,8 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.Rerank.Model) == "" {
 			return errors.New("rerank.model is required when rerank is enabled")
 		}
-		if strings.TrimSpace(c.Rerank.APIKey) == "" && strings.TrimSpace(c.LLM.APIKey) == "" {
-			return errors.New("rerank.api_key is required when rerank is enabled and llm.api_key is empty")
+		if len(normalizeAPIKeys(c.Rerank.APIKey, c.Rerank.APIKeys)) == 0 {
+			return errors.New("rerank.api_key or rerank.api_keys is required when rerank is enabled")
 		}
 		if c.Rerank.TopN <= 0 {
 			return errors.New("rerank.top_n must be > 0 when rerank is enabled")
@@ -1122,6 +1339,22 @@ func applyEnvOverrides(cfg *Config) {
 	setString := func(k string, target *string) {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			*target = v
+		}
+	}
+	setSingleKey := func(k string, target *string, pool *[]string) {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			*target = v
+			if pool != nil {
+				*pool = nil
+			}
+		}
+	}
+	setStringSlice := func(k string, target *[]string, legacy *string) {
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			*target = splitConfigAPIKeys(v)
+			if legacy != nil {
+				*legacy = ""
+			}
 		}
 	}
 	setInt := func(k string, target *int) {
@@ -1200,24 +1433,48 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_POSTGRES_MIGRATION_BATCH_SIZE", &cfg.Postgres.MigrationBatchSize)
 	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)
 	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
-	setString("VMM_LLM_API_KEY", &cfg.LLM.APIKey)
+	setSingleKey("VMM_LLM_API_KEY", &cfg.LLM.APIKey, &cfg.LLM.APIKeys)
+	setStringSlice("VMM_LLM_API_KEYS", &cfg.LLM.APIKeys, &cfg.LLM.APIKey)
 	setString("VMM_LLM_MODEL", &cfg.LLM.Model)
 	setString("VMM_LLM_ORGANIZATION", &cfg.LLM.Organization)
 	setString("VMM_LLM_PROJECT", &cfg.LLM.Project)
+	setBool("VMM_LLM_KEY_FAILOVER_ENABLED", &cfg.LLM.KeyFailover.Enabled)
+	setString("VMM_LLM_KEY_FAILOVER_POLICY", &cfg.LLM.KeyFailover.Policy)
+	setBool("VMM_LLM_KEY_FAILOVER_RESPECT_RETRY_AFTER", &cfg.LLM.KeyFailover.RespectRetryAfter)
+	setDuration("VMM_LLM_KEY_FAILOVER_RATE_LIMIT_COOLDOWN", &cfg.LLM.KeyFailover.RateLimitCooldown)
+	setDuration("VMM_LLM_KEY_FAILOVER_QUOTA_COOLDOWN", &cfg.LLM.KeyFailover.QuotaCooldown)
+	setDuration("VMM_LLM_KEY_FAILOVER_AUTH_COOLDOWN", &cfg.LLM.KeyFailover.AuthCooldown)
+	setBool("VMM_LLM_KEY_FAILOVER_PROBE_AFTER_COOLDOWN", &cfg.LLM.KeyFailover.ProbeAfterCooldown)
 	setString("VMM_EMBED_PROVIDER", &cfg.Embedding.Provider)
 	setString("VMM_EMBED_ENDPOINT", &cfg.Embedding.Endpoint)
-	setString("VMM_EMBED_API_KEY", &cfg.Embedding.APIKey)
+	setSingleKey("VMM_EMBED_API_KEY", &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys)
+	setStringSlice("VMM_EMBED_API_KEYS", &cfg.Embedding.APIKeys, &cfg.Embedding.APIKey)
 	setString("VMM_EMBED_MODEL", &cfg.Embedding.Model)
 	setInt("VMM_EMBED_DIMENSION", &cfg.Embedding.Dimension)
 	setString("VMM_EMBED_ORGANIZATION", &cfg.Embedding.Organization)
 	setString("VMM_EMBED_PROJECT", &cfg.Embedding.Project)
+	setBool("VMM_EMBED_KEY_FAILOVER_ENABLED", &cfg.Embedding.KeyFailover.Enabled)
+	setString("VMM_EMBED_KEY_FAILOVER_POLICY", &cfg.Embedding.KeyFailover.Policy)
+	setBool("VMM_EMBED_KEY_FAILOVER_RESPECT_RETRY_AFTER", &cfg.Embedding.KeyFailover.RespectRetryAfter)
+	setDuration("VMM_EMBED_KEY_FAILOVER_RATE_LIMIT_COOLDOWN", &cfg.Embedding.KeyFailover.RateLimitCooldown)
+	setDuration("VMM_EMBED_KEY_FAILOVER_QUOTA_COOLDOWN", &cfg.Embedding.KeyFailover.QuotaCooldown)
+	setDuration("VMM_EMBED_KEY_FAILOVER_AUTH_COOLDOWN", &cfg.Embedding.KeyFailover.AuthCooldown)
+	setBool("VMM_EMBED_KEY_FAILOVER_PROBE_AFTER_COOLDOWN", &cfg.Embedding.KeyFailover.ProbeAfterCooldown)
 	setBool("VMM_RERANK_ENABLED", &cfg.Rerank.Enabled)
 	setString("VMM_RERANK_PROVIDER", &cfg.Rerank.Provider)
 	setString("VMM_RERANK_ENDPOINT", &cfg.Rerank.Endpoint)
-	setString("VMM_RERANK_API_KEY", &cfg.Rerank.APIKey)
+	setSingleKey("VMM_RERANK_API_KEY", &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys)
+	setStringSlice("VMM_RERANK_API_KEYS", &cfg.Rerank.APIKeys, &cfg.Rerank.APIKey)
 	setString("VMM_RERANK_MODEL", &cfg.Rerank.Model)
 	setInt("VMM_RERANK_TOP_N", &cfg.Rerank.TopN)
 	setDuration("VMM_RERANK_TIMEOUT", &cfg.Rerank.Timeout)
+	setBool("VMM_RERANK_KEY_FAILOVER_ENABLED", &cfg.Rerank.KeyFailover.Enabled)
+	setString("VMM_RERANK_KEY_FAILOVER_POLICY", &cfg.Rerank.KeyFailover.Policy)
+	setBool("VMM_RERANK_KEY_FAILOVER_RESPECT_RETRY_AFTER", &cfg.Rerank.KeyFailover.RespectRetryAfter)
+	setDuration("VMM_RERANK_KEY_FAILOVER_RATE_LIMIT_COOLDOWN", &cfg.Rerank.KeyFailover.RateLimitCooldown)
+	setDuration("VMM_RERANK_KEY_FAILOVER_QUOTA_COOLDOWN", &cfg.Rerank.KeyFailover.QuotaCooldown)
+	setDuration("VMM_RERANK_KEY_FAILOVER_AUTH_COOLDOWN", &cfg.Rerank.KeyFailover.AuthCooldown)
+	setBool("VMM_RERANK_KEY_FAILOVER_PROBE_AFTER_COOLDOWN", &cfg.Rerank.KeyFailover.ProbeAfterCooldown)
 	setString("VMM_VECTOR_PROVIDER", &cfg.Vector.Provider)
 	setString("VMM_RELATIONAL_PROVIDER", &cfg.Relational.Provider)
 	setString("VMM_POST_ACTION_INPUT_MODE", &cfg.PostAction.InputMode)

@@ -34,6 +34,26 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// APIError preserves the DashScope HTTP status, response headers, and trimmed body so upper layers can decide whether to retry, rotate keys, or degrade rerank safely.
+// APIError 用于保留 DashScope 的 HTTP 状态码、响应头和裁剪后的响应体，便于上层决定是否重试、轮换 Key 或安全降级 rerank。
+type APIError struct {
+	StatusCode int
+	Headers    http.Header
+	Body       string
+}
+
+// Error renders the structured DashScope API failure back into one stable diagnostic string for logs and fallback handling.
+// Error 用于把结构化的 DashScope API 失败渲染回稳定的诊断字符串，方便日志和降级处理复用。
+func (e *APIError) Error() string {
+	if e == nil {
+		return "dashscope rerank api error <nil>"
+	}
+	if body := strings.TrimSpace(e.Body); body != "" {
+		return fmt.Sprintf("dashscope rerank status %d: %s", e.StatusCode, body)
+	}
+	return fmt.Sprintf("dashscope rerank status %d", e.StatusCode)
+}
+
 // NewClient creates a DashScope rerank client with one shared HTTP client and normalized endpoint settings.
 // NewClient 用于创建 DashScope rerank 客户端，并补齐共享 HTTP 客户端和规范化后的 endpoint 设置。
 func NewClient(endpoint, apiKey, model string, timeout time.Duration, httpClient *http.Client) *Client {
@@ -103,7 +123,11 @@ func (c *Client) Rerank(ctx context.Context, query string, docs []appports.Reran
 		return nil, fmt.Errorf("read dashscope rerank response: %w", err)
 	}
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, fmt.Errorf("dashscope rerank status %d: %s", resp.StatusCode, strings.TrimSpace(string(respBody)))
+		return nil, &APIError{
+			StatusCode: resp.StatusCode,
+			Headers:    resp.Header.Clone(),
+			Body:       strings.TrimSpace(string(respBody)),
+		}
 	}
 	results, err := parseResponsePayload(respBody, normalizedDocs)
 	if err != nil {

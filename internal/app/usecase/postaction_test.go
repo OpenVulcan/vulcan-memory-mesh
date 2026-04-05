@@ -85,6 +85,96 @@ func TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext(t *testing.T) {
 	}
 }
 
+// TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns verifies queue overflow is captured in the in-memory deferred backlog and later flushed back into the worker channel without spawning one blocked goroutine per missed send.
+// TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns 用于验证队列溢出会先进入内存延迟 backlog，并在容量恢复后重新刷回工作通道，而不是为每次失败发送都启动一个阻塞 goroutine。
+func TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns(t *testing.T) {
+	uc := &PostActionUseCase{
+		queueCtx:         context.Background(),
+		queueCh:          make(chan uint64, 1),
+		deferredQueueSet: map[uint64]struct{}{},
+	}
+	uc.queueCh <- 1
+
+	uc.pushQueueID(2)
+
+	if got := len(uc.queueCh); got != 1 {
+		t.Fatalf("expected queue length to remain full while overflow is deferred, got %d", got)
+	}
+	if len(uc.deferredQueueIDs) != 1 || uc.deferredQueueIDs[0] != 2 {
+		t.Fatalf("deferred queue ids = %v, want [2]", uc.deferredQueueIDs)
+	}
+	if _, ok := uc.deferredQueueSet[2]; !ok {
+		t.Fatalf("expected deferred queue set to track session 2")
+	}
+
+	<-uc.queueCh
+	uc.flushDeferredQueueIDs()
+
+	if got := len(uc.queueCh); got != 1 {
+		t.Fatalf("expected flushed queue length to become 1, got %d", got)
+	}
+	if flushed := <-uc.queueCh; flushed != 2 {
+		t.Fatalf("flushed queue id = %d, want 2", flushed)
+	}
+	if len(uc.deferredQueueIDs) != 0 {
+		t.Fatalf("expected deferred queue to be empty after flush, got %v", uc.deferredQueueIDs)
+	}
+	if _, ok := uc.deferredQueueSet[2]; ok {
+		t.Fatalf("expected deferred queue set to drop session 2 after flush")
+	}
+}
+
+// TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation verifies a relational failure after vector upsert persists a retry job when the immediate rollback delete also fails, so vector rows cannot become untracked orphans.
+// TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation 用于验证当关系写入在向量 upsert 之后失败，且即时回滚删除也失败时，会持久化一个重试任务，避免向量行变成无主孤儿。
+func TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation(t *testing.T) {
+	store := &testRelationalStore{analysisErr: errors.New("apply turn analysis failed")}
+	vector := &stubVectorStore{deleteErr: errors.New("vector delete unavailable")}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        91,
+		Details:       "记住用户刚确认的新项目事实。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Abstract:       "当前项目已经切换到灰度发布。",
+			Details:        "当前项目已经切换到灰度发布。",
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	session := logicdomain.SessionRef{SessionID: 41, SessionKey: "sess-rollback", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
+	turn := logicdomain.PersistedTurnRecord{ID: 91, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), session, turn, logicdomain.TurnRecord{
+		UserContent:      "我们现在已经切到灰度发布了。",
+		AssistantContent: "收到，我会记住。",
+	})
+	if err == nil || !strings.Contains(err.Error(), "apply turn analysis failed") {
+		t.Fatalf("expected relational apply error, got %v", err)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one vector upsert before relational failure, got %+v", vector.upserts)
+	}
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 {
+		t.Fatalf("expected one failed rollback delete attempt, got %+v", vector.deleteIDsCalls)
+	}
+	if store.vectorGCEnqueueQuery.JobType != logicdomain.VectorGCJobTypeTurnAnalysisRollback {
+		t.Fatalf("vector gc job type = %q, want %q", store.vectorGCEnqueueQuery.JobType, logicdomain.VectorGCJobTypeTurnAnalysisRollback)
+	}
+	if len(store.vectorGCEnqueueQuery.VectorIDs) != 1 || store.vectorGCEnqueueQuery.VectorIDs[0] == "" {
+		t.Fatalf("vector gc compensation ids = %+v, want one inserted vector id", store.vectorGCEnqueueQuery.VectorIDs)
+	}
+	if store.vectorGCEnqueueQuery.VectorIDs[0] != vector.deleteIDsCalls[0][0] {
+		t.Fatalf("vector gc compensation id = %q, want rollback delete id %q", store.vectorGCEnqueueQuery.VectorIDs[0], vector.deleteIDsCalls[0][0])
+	}
+	if store.vectorGCEnqueueQuery.NextRunAt.IsZero() {
+		t.Fatal("expected vector gc compensation to schedule a retry time")
+	}
+}
+
 // TestPostActionUseCaseDropsSingleRoundNoise verifies simple user-assistant pairs can still be rejected by the noise gate before relational persistence.
 // TestPostActionUseCaseDropsSingleRoundNoise 用于验证简单的单轮 user-assistant 问答仍然会在关系持久化前被噪声门拒绝。
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
@@ -771,6 +861,7 @@ type testRelationalStore struct {
 	analysis                logicdomain.TurnAnalysis
 	analysisApplyResult     logicdomain.TurnAnalysisApplyResult
 	analysisErr             error
+	vectorGCEnqueueQuery    logicdomain.VectorGCJobEnqueueQuery
 	advancedSessionID       uint64
 	advancedObservedAt      time.Time
 	advancedCompletedAt     time.Time
@@ -918,6 +1009,13 @@ func (s *testRelationalStore) ApplyTurnAnalysis(_ context.Context, _ logicdomain
 		return logicdomain.TurnAnalysisApplyResult{}, s.analysisErr
 	}
 	return s.analysisApplyResult, nil
+}
+
+// EnqueueVectorGCJobs records the latest compensation enqueue request so post-action tests can assert failed vector cleanup is bridged into the persistent retry queue.
+// EnqueueVectorGCJobs 用于记录最近一次补偿入队请求，让 post-action 测试验证失败的向量清理会桥接到持久化重试队列。
+func (s *testRelationalStore) EnqueueVectorGCJobs(_ context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
+	s.vectorGCEnqueueQuery = query
+	return nil
 }
 
 // Shutdown returns immediately because the stub does not own external resources.

@@ -5,6 +5,7 @@ package dashscope_rerank
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -69,5 +70,34 @@ func TestClientRerankRejectsOutOfRangeIndex(t *testing.T) {
 	}, 1)
 	if err == nil {
 		t.Fatal("expected out-of-range index error")
+	}
+}
+
+// TestClientRerankReturnsStructuredAPIError verifies non-2xx provider responses preserve status and headers so upper failover layers can classify cooldown behavior precisely.
+// TestClientRerankReturnsStructuredAPIError 用于验证非 2xx provider 响应会保留状态码和响应头，便于上层容灾精确分类冷却行为。
+func TestClientRerankReturnsStructuredAPIError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Retry-After-Ms", "1500")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"message":"rate limit exceeded"}`))
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "test-key", "qwen3-vl-rerank", 0, server.Client())
+	_, err := client.Rerank(context.Background(), "query", []appports.RerankerDocument{
+		{ID: "doc-1", Text: "第一条文档"},
+	}, 1)
+	if err == nil {
+		t.Fatal("expected structured api error")
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
+		t.Fatalf("expected APIError, got %T", err)
+	}
+	if apiErr.StatusCode != http.StatusTooManyRequests {
+		t.Fatalf("status code = %d", apiErr.StatusCode)
+	}
+	if got := apiErr.Headers.Get("Retry-After-Ms"); got != "1500" {
+		t.Fatalf("retry-after-ms header = %q", got)
 	}
 }

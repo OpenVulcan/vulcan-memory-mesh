@@ -15,8 +15,8 @@ import (
 	"strings"
 	"time"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
 )
@@ -68,7 +68,7 @@ type NoiseGateConfig struct {
 	SemanticThreshold float64
 	Model             string
 	Dimension         int
-	Cache             appports.NoiseEmbeddingCache
+	Cache             logicports.NoiseEmbeddingCache
 }
 
 // NoiseGate holds compiled regex and semantic prototypes used to reject noisy turns before persistence.
@@ -81,8 +81,8 @@ type NoiseGate struct {
 	model             string
 	dimension         int
 	rulesHash         string
-	embedding         appports.EmbeddingClient
-	cache             appports.NoiseEmbeddingCache
+	embedding         logicports.EmbeddingClient
+	cache             logicports.NoiseEmbeddingCache
 	logger            *logx.Logger
 	categories        []*compiledNoiseCategory
 	byTarget          map[string][]*compiledNoiseCategory
@@ -90,7 +90,7 @@ type NoiseGate struct {
 
 // NewNoiseGate loads, compiles, and optionally pre-embeds one language bundle before the application starts serving.
 // NewNoiseGate 用于在应用开始对外服务前加载、编译并按需预先生成某个语言包的语义向量。
-func NewNoiseGate(ctx context.Context, embedding appports.EmbeddingClient, logger *logx.Logger, cfg NoiseGateConfig) (*NoiseGate, error) {
+func NewNoiseGate(ctx context.Context, embedding logicports.EmbeddingClient, logger *logx.Logger, cfg NoiseGateConfig) (*NoiseGate, error) {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -220,7 +220,7 @@ func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
 		if len(category.Phrases) == 0 {
 			continue
 		}
-		resp, err := g.embedding.Embed(ctx, appports.EmbeddingRequest{
+		resp, err := g.embedding.Embed(ctx, logicports.EmbeddingRequest{
 			Model:     g.model,
 			Texts:     category.Phrases,
 			Dimension: g.dimension,
@@ -355,7 +355,7 @@ func (g *NoiseGate) evaluateSemantic(ctx context.Context, turn logicdomain.Norma
 	for _, query := range queries {
 		texts = append(texts, query.text)
 	}
-	resp, err := g.embedding.Embed(ctx, appports.EmbeddingRequest{
+	resp, err := g.embedding.Embed(ctx, logicports.EmbeddingRequest{
 		Model:     g.model,
 		Texts:     texts,
 		Dimension: g.dimension,

@@ -8,21 +8,21 @@ import (
 	"fmt"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // ManualProfileReviewer drives prompt lookup, one explicit instruction review call, and strict JSON parsing for profile-node mutations.
 // ManualProfileReviewer 用于驱动提示词读取、单次显式画像指令评审调用，以及面向画像节点变更的严格 JSON 解析。
 type ManualProfileReviewer struct {
-	llm     appports.LLMClient
-	prompts appports.PromptSource
+	llm     logicports.LLMClient
+	prompts logicports.PromptSource
 	model   string
 }
 
 // NewManualProfileReviewer creates a ManualProfileReviewer instance.
 // NewManualProfileReviewer 用于创建 ManualProfileReviewer 实例。
-func NewManualProfileReviewer(llm appports.LLMClient, prompts appports.PromptSource, model string) *ManualProfileReviewer {
+func NewManualProfileReviewer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *ManualProfileReviewer {
 	return &ManualProfileReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
@@ -43,11 +43,11 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err
 	}
-	resp, err := r.llm.Generate(ctx, appports.LLMRequest{
+	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:          r.model,
 		SystemPrompt:   prompt,
 		UserPrompt:     requestBody,
-		ResponseFormat: appports.LLMResponseFormatJSON,
+		ResponseFormat: logicports.LLMResponseFormatJSON,
 	})
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err

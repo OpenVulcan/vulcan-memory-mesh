@@ -8,22 +8,22 @@ import (
 	"fmt"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // IntentExtractor drives prompt lookup, LLM invocation, and JSON parsing for the first-stage pre-check scene that expands recent turns into search queries.
 // IntentExtractor 用于驱动 pre-check 第一层场景的提示词读取、LLM 调用和 JSON 解析，把最近 turn 窗口展开成检索语句。
 type IntentExtractor struct {
-	llm     appports.LLMClient
-	prompts appports.PromptSource
+	llm     logicports.LLMClient
+	prompts logicports.PromptSource
 	model   string
 	maxKws  int
 }
 
 // NewIntentExtractor creates a IntentExtractor instance.
 // NewIntentExtractor 用于创建 IntentExtractor 实例。
-func NewIntentExtractor(llm appports.LLMClient, prompts appports.PromptSource, model string, maxKeywords int) *IntentExtractor {
+func NewIntentExtractor(llm logicports.LLMClient, prompts logicports.PromptSource, model string, maxKeywords int) *IntentExtractor {
 	if maxKeywords <= 0 {
 		maxKeywords = 5
 	}
@@ -45,7 +45,7 @@ func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCh
 	if err != nil {
 		return logicdomain.IntentResult{}, fmt.Errorf("load extract_intent prompt: %w", err)
 	}
-	resp, err := e.llm.Generate(ctx, appports.LLMRequest{Model: e.model, SystemPrompt: prompt, UserPrompt: renderIntentUserPrompt(turns, current, e.maxKws), ResponseFormat: appports.LLMResponseFormatJSON})
+	resp, err := e.llm.Generate(ctx, logicports.LLMRequest{Model: e.model, SystemPrompt: prompt, UserPrompt: renderIntentUserPrompt(turns, current, e.maxKws), ResponseFormat: logicports.LLMResponseFormatJSON})
 	if err != nil {
 		return logicdomain.IntentResult{}, err
 	}

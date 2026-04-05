@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // TestPostActionCandidateReviewerBuildsUnifiedRequest verifies one review call carries memory dedupe evidence and profile candidates together.
 // TestPostActionCandidateReviewerBuildsUnifiedRequest 用于验证一次评审调用会同时携带记忆去重证据与画像候选。
 func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	llm := &stubProfileMergerLLM{
-		response: appports.LLMResponse{
+		response: logicports.LLMResponse{
 			Content: `{
   "memory": {
     "accepted_candidates": [
@@ -158,7 +158,7 @@ func TestParsePostActionCandidateReviewResponseParsesDroppedMemoryDedupeTarget(t
 // TestPostActionCandidateReviewerAllowsProfileOnlyReview 用于验证统一 reviewer 在只有画像候选时，不会强制要求返回 memory 结果块。
 func TestPostActionCandidateReviewerAllowsProfileOnlyReview(t *testing.T) {
 	llm := &stubProfileMergerLLM{
-		response: appports.LLMResponse{
+		response: logicports.LLMResponse{
 			Content: `{
   "project": {
     "accepted_candidates": [

@@ -1360,6 +1360,9 @@ func TestMemoryUseCaseSearchRedactsDegradedQueryLogs(t *testing.T) {
 	if !strings.Contains(logs, "memory lexical search degraded") || !strings.Contains(logs, "memory lexical materialization degraded") || !strings.Contains(logs, "memory search rerank degraded") {
 		t.Fatalf("expected all degradation events to be logged, got %s", logs)
 	}
+	if !strings.Contains(logs, "rerank_disabled") {
+		t.Fatalf("expected rerank degradation logs to mention rerank-disabled fallback, got %s", logs)
+	}
 	if !strings.Contains(logs, "query_len") || !strings.Contains(logs, "query_sha256") {
 		t.Fatalf("expected redacted query diagnostics in logs, got %s", logs)
 	}
@@ -1759,6 +1762,75 @@ func TestMemoryUseCaseWriteDeduplicatesSameRequestDuplicates(t *testing.T) {
 	}
 	if len(embedding.requests) != 1 {
 		t.Fatalf("expected one embedding request, got %+v", embedding.requests)
+	}
+}
+
+// TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFails verifies direct-write success still persists a retry job when deleting superseded vectors fails after the relational transaction commits.
+// TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFails 用于验证当关系事务已提交、但删除 superseded 向量失败时，direct-write 成功路径仍会持久化一个重试任务。
+func TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFails(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:          1402,
+				SourceKind:  logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+				Abstract:    "新的灰度发布策略已经生效。",
+				Details:     "新的灰度发布策略已经生效。",
+				VectorID:    "vec-new-direct",
+				Category:    logicdomain.MemoryNodeCategoryProjectContext,
+				Priority:    logicdomain.MemoryPriorityP1,
+				MemoryLevel: logicdomain.MemoryLevelStable,
+			},
+			SupersededVectorIDs: []string{"vec-old-direct-1", "vec-old-direct-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{deleteErr: errors.New("vector delete unavailable")}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  48,
+			SessionKey: "sess-direct-vector-gc",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+			Abstract:    "新的灰度发布策略已经生效。",
+			Details:     "新的灰度发布策略已经生效。",
+			Category:    logicdomain.MemoryNodeCategoryProjectContext,
+			Priority:    logicdomain.MemoryPriorityP1,
+			MemoryLevel: logicdomain.MemoryLevelStable,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Ref.ID != 1402 || result.Items[0].Deduped {
+		t.Fatalf("unexpected direct-write result: %+v", result.Items)
+	}
+	if len(vector.deleteIDsCalls) != 1 {
+		t.Fatalf("expected one superseded-vector delete attempt, got %+v", vector.deleteIDsCalls)
+	}
+	if store.vectorGCEnqueueQuery.JobType != logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup {
+		t.Fatalf("vector gc job type = %q, want %q", store.vectorGCEnqueueQuery.JobType, logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup)
+	}
+	if got, want := store.vectorGCEnqueueQuery.VectorIDs, []string{"vec-old-direct-1", "vec-old-direct-2"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("vector gc compensation ids = %+v, want %+v", got, want)
+	}
+	if store.vectorGCEnqueueQuery.NextRunAt.IsZero() {
+		t.Fatal("expected direct-write vector gc compensation to schedule a retry time")
 	}
 }
 
@@ -2477,6 +2549,7 @@ type stubTurnLookupStore struct {
 	directWriteApplyCalls    []stubDirectMemoryWriteApplyCall
 	directWriteApplyResult   logicdomain.DirectMemoryWriteApplyResult
 	directWriteApplyErr      error
+	vectorGCEnqueueQuery     logicdomain.VectorGCJobEnqueueQuery
 	err                      error
 }
 
@@ -2623,6 +2696,13 @@ func (s *stubTurnLookupStore) ApplyDirectMemoryWrite(_ context.Context, session 
 	result.InsertedMemoryNode.Vector = append([]float32(nil), result.InsertedMemoryNode.Vector...)
 	result.SupersededVectorIDs = append([]string(nil), result.SupersededVectorIDs...)
 	return result, nil
+}
+
+// EnqueueVectorGCJobs records the latest compensation enqueue request so direct-write tests can assert failed vector cleanup is persisted for later retry.
+// EnqueueVectorGCJobs 用于记录最近一次补偿入队请求，让 direct-write 测试验证失败的向量清理会被持久化等待后续重试。
+func (s *stubTurnLookupStore) EnqueueVectorGCJobs(_ context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
+	s.vectorGCEnqueueQuery = query
+	return nil
 }
 
 // stubCombinedHybridVectorStore extends the shared vector stub with the optional SQL-level hybrid recall fast path used by the PostgreSQL combined-store optimization.

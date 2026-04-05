@@ -346,9 +346,9 @@ func TestRetentionUseCaseRunScheduledMaintenanceStillCleansExpiredScratchpads(t 
 	}
 }
 
-// TestNewRetentionUseCaseSkipsDisabledWorker verifies disabled retention config does not start a background goroutine.
-// TestNewRetentionUseCaseSkipsDisabledWorker 用于验证在 retention 被禁用时不会启动后台 goroutine。
-func TestNewRetentionUseCaseSkipsDisabledWorker(t *testing.T) {
+// TestNewRetentionUseCaseStartsWorkerForVectorGCRetriesEvenWhenRetentionDisabled verifies the shared maintenance loop still starts when vector-gc retry work exists, even if classical retention recycle is disabled.
+// TestNewRetentionUseCaseStartsWorkerForVectorGCRetriesEvenWhenRetentionDisabled 用于验证即使经典 retention recycle 被禁用，只要仍存在 vector-gc 重试工作，共享维护循环也会启动。
+func TestNewRetentionUseCaseStartsWorkerForVectorGCRetriesEvenWhenRetentionDisabled(t *testing.T) {
 	useCase := NewRetentionUseCase(&fakeRetentionStore{}, &fakeVectorStore{}, RetentionConfig{
 		Enabled:                 false,
 		RecycleScanInterval:     time.Minute,
@@ -356,8 +356,23 @@ func TestNewRetentionUseCaseSkipsDisabledWorker(t *testing.T) {
 		TurnHotWindowSize:       8,
 		TrashRetention:          24 * time.Hour,
 	}, nil)
+	defer func() {
+		_ = useCase.Shutdown(context.Background())
+	}()
+	if useCase.workerCancel == nil {
+		t.Fatal("expected shared maintenance worker to start for vector-gc retries")
+	}
+}
+
+// TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets verifies the shared worker still stays stopped when neither recycle, vector-gc retry, nor scratchpad maintenance has any usable backing store.
+// TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets 用于验证当 recycle、vector-gc 重试和 scratchpad 维护都没有可用存储支撑时，共享工作器仍会保持停止。
+func TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets(t *testing.T) {
+	useCase := NewRetentionUseCase(nil, nil, RetentionConfig{
+		Enabled:             false,
+		RecycleScanInterval: time.Minute,
+	}, nil)
 	if useCase.workerCancel != nil {
-		t.Fatal("expected disabled retention worker to stay stopped")
+		t.Fatal("expected maintenance worker to stay stopped without any maintenance targets")
 	}
 }
 
@@ -470,9 +485,9 @@ func TestRetentionUseCaseRunMaintenanceEnqueuesVectorGCJobsOnImmediateDeleteFail
 	}
 }
 
-// TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs verifies later maintenance passes claim one bounded retry batch and close it after the sidecar delete finally succeeds.
-// TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs 用于验证后续维护轮次会领取一批有界重试任务，并在旁路删除成功后把它们关闭。
-func TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs(t *testing.T) {
+// TestRetentionUseCaseRunVectorGCMaintenanceCompletesClaimedVectorGCJobs verifies the dedicated vector-gc maintenance path claims one bounded retry batch and closes it after the sidecar delete finally succeeds, even when classic retention recycle is disabled.
+// TestRetentionUseCaseRunVectorGCMaintenanceCompletesClaimedVectorGCJobs 用于验证独立的 vector-gc 维护路径会领取一批有界重试任务，并在旁路删除成功后把它们关闭；即使经典 retention recycle 已禁用也成立。
+func TestRetentionUseCaseRunVectorGCMaintenanceCompletesClaimedVectorGCJobs(t *testing.T) {
 	store := &fakeRetentionStore{
 		claimedJobs: []logicdomain.VectorGCJobRecord{
 			{ID: 51, BatchID: 7, VectorID: "vec-retry-1", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 1},
@@ -484,6 +499,7 @@ func TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs(t *testing.T
 		store:  store,
 		vector: vector,
 		cfg: RetentionConfig{
+			Enabled:                 false,
 			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
 			TurnHotWindowSize:       8,
 			TrashRetention:          30 * 24 * time.Hour,
@@ -491,7 +507,7 @@ func TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs(t *testing.T
 	}
 
 	beforeRun := time.Now().UTC()
-	useCase.runMaintenance(context.Background())
+	useCase.runVectorGCMaintenance(context.Background())
 	afterRun := time.Now().UTC()
 
 	if store.claimLimit != defaultRetentionVectorGCBatchSize {
@@ -608,9 +624,9 @@ func TestRetentionUseCaseRunMaintenanceRetriesFailedColdTurnRecycleJobs(t *testi
 	}
 }
 
-// TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure verifies failed retry batches are rescheduled with a later next-run time instead of being dropped after the second failure.
-// TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure 用于验证领取后的重试批次在再次删除失败时会被重新调度，而不是在第二次失败后丢失。
-func TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure(t *testing.T) {
+// TestRetentionUseCaseRunVectorGCMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure verifies the dedicated vector-gc maintenance path reschedules failed retry batches with a later next-run time instead of dropping them after the second failure, even when classic retention recycle is disabled.
+// TestRetentionUseCaseRunVectorGCMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure 用于验证独立的 vector-gc 维护路径会把再次删除失败的重试批次重新调度到更晚的 next-run 时间，而不是在第二次失败后丢失；即使经典 retention recycle 已禁用也成立。
+func TestRetentionUseCaseRunVectorGCMaintenanceReschedulesClaimedVectorGCJobsOnRetryFailure(t *testing.T) {
 	store := &fakeRetentionStore{
 		claimedJobs: []logicdomain.VectorGCJobRecord{
 			{ID: 61, BatchID: 0, VectorID: "vec-retry-3", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 3},
@@ -621,6 +637,7 @@ func TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFail
 		store:  store,
 		vector: vector,
 		cfg: RetentionConfig{
+			Enabled:                 false,
 			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
 			TurnHotWindowSize:       8,
 			TrashRetention:          30 * 24 * time.Hour,
@@ -628,7 +645,7 @@ func TestRetentionUseCaseRunMaintenanceReschedulesClaimedVectorGCJobsOnRetryFail
 	}
 
 	beforeRun := time.Now().UTC()
-	useCase.runMaintenance(context.Background())
+	useCase.runVectorGCMaintenance(context.Background())
 	afterRun := time.Now().UTC()
 
 	if len(store.retriedJobIDs) != 1 || store.retriedJobIDs[0] != 61 {

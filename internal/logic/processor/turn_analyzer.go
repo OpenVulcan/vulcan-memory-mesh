@@ -8,21 +8,21 @@ import (
 	"fmt"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // TurnAnalyzer drives prompt lookup, LLM invocation, and JSON parsing for the turn-analysis scene.
 // TurnAnalyzer 用于驱动逐轮分析场景的提示词读取、LLM 调用和 JSON 解析。
 type TurnAnalyzer struct {
-	llm     appports.LLMClient
-	prompts appports.PromptSource
+	llm     logicports.LLMClient
+	prompts logicports.PromptSource
 	model   string
 }
 
 // NewTurnAnalyzer creates a TurnAnalyzer instance.
 // NewTurnAnalyzer 用于创建 TurnAnalyzer 实例。
-func NewTurnAnalyzer(llm appports.LLMClient, prompts appports.PromptSource, model string) *TurnAnalyzer {
+func NewTurnAnalyzer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *TurnAnalyzer {
 	return &TurnAnalyzer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
@@ -43,11 +43,11 @@ func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalys
 		return logicdomain.TurnAnalysis{}, fmt.Errorf("load analyze_turn prompt: %w", err)
 	}
 	prompt = renderTurnAnalysisSystemPrompt(prompt, input)
-	resp, err := a.llm.Generate(ctx, appports.LLMRequest{
+	resp, err := a.llm.Generate(ctx, logicports.LLMRequest{
 		Model:          a.model,
 		SystemPrompt:   prompt,
 		UserPrompt:     requestBody,
-		ResponseFormat: appports.LLMResponseFormatJSON,
+		ResponseFormat: logicports.LLMResponseFormatJSON,
 	})
 	if err != nil {
 		return logicdomain.TurnAnalysis{}, err

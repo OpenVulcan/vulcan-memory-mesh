@@ -58,7 +58,9 @@
   "llm": {
     "provider": "openai",
     "endpoint": "${OPENAI_BASE_URL}",
-    "api_key": "${OPENAI_API_KEY}",
+    "api_keys": [
+      "${OPENAI_API_KEY}"
+    ],
     "model": "${OPENAI_MODEL}",
     "organization": "${OPENAI_ORGANIZATION}",
     "project": "${OPENAI_PROJECT}",
@@ -67,27 +69,58 @@
       "${OPENAI_MODEL}": {
         "enable_thinking": false
       }
+    },
+    "key_failover": {
+      "enabled": true,
+      "policy": "ordered_failover",
+      "respect_retry_after": true,
+      "rate_limit_cooldown": "5m",
+      "quota_cooldown": "10m",
+      "auth_cooldown": "12h",
+      "probe_after_cooldown": true
     }
   },
   "embedding": {
     "provider": "openai",
     "endpoint": "${OPENAI_EMBEDDING_URL}",
-    "api_key": "${OPENAI_API_KEY}",
+    "api_keys": [
+      "${OPENAI_API_KEY}"
+    ],
     "model": "${OPENAI_EMBEDDING_MODEL}",
     "dimension": 1024,
     "organization": "${OPENAI_ORGANIZATION}",
     "project": "${OPENAI_PROJECT}",
     "params": {},
-    "model_params": {}
+    "model_params": {},
+    "key_failover": {
+      "enabled": true,
+      "policy": "ordered_failover",
+      "respect_retry_after": true,
+      "rate_limit_cooldown": "5m",
+      "quota_cooldown": "10m",
+      "auth_cooldown": "12h",
+      "probe_after_cooldown": true
+    }
   },
   "rerank": {
     "enabled": false,
     "provider": "dashscope",
     "endpoint": "${OPENAI_RERANK_URL}",
-    "api_key": "${OPENAI_API_KEY}",
+    "api_keys": [
+      "${OPENAI_API_KEY}"
+    ],
     "model": "${OPENAI_RERANK_MODEL}",
     "top_n": 8,
-    "timeout": "8s"
+    "timeout": "8s",
+    "key_failover": {
+      "enabled": true,
+      "policy": "ordered_failover",
+      "respect_retry_after": true,
+      "rate_limit_cooldown": "5m",
+      "quota_cooldown": "10m",
+      "auth_cooldown": "12h",
+      "probe_after_cooldown": true
+    }
   },
   "vector": {
     "provider": "${VMM_VECTOR_PROVIDER}"

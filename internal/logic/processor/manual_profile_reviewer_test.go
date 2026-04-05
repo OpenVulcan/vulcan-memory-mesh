@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // TestManualProfileReviewerBuildsSingleTargetRequest verifies one manual instruction review request carries active nodes, one explicit instruction, and the authority floor.
 // TestManualProfileReviewerBuildsSingleTargetRequest 用于验证手工画像评审请求会携带 active 节点、单条显式指令以及权限地板。
 func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	llm := &stubProfileMergerLLM{
-		response: appports.LLMResponse{
+		response: logicports.LLMResponse{
 			Content: `{
   "accepted_nodes": [
     {

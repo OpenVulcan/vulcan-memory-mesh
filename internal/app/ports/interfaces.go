@@ -7,6 +7,7 @@ import (
 	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // Shutdowner abstracts dependencies that must participate in application shutdown sequencing.
@@ -17,18 +18,11 @@ type Shutdowner interface {
 
 // EmbeddingRequest carries the normalized embedding call parameters passed from use cases to adapters.
 // EmbeddingRequest 用于承载从用例层传给适配器的标准化 embedding 调用参数。
-type EmbeddingRequest struct {
-	Model         string
-	Texts         []string
-	Dimension     int
-	ProviderHints map[string]any
-}
+type EmbeddingRequest = logicports.EmbeddingRequest
 
 // EmbeddingResponse returns vectors produced by the configured embedding backend.
 // EmbeddingResponse 用于返回当前 embedding 后端生成的向量结果。
-type EmbeddingResponse struct {
-	Vectors [][]float32
-}
+type EmbeddingResponse = logicports.EmbeddingResponse
 
 // RerankerDocument carries one candidate document sent into an external rerank backend after the first-stage recall finishes.
 // RerankerDocument 用于承载首轮召回完成后送入外部重排序后端的一条候选文档。
@@ -46,9 +40,7 @@ type RerankerResult struct {
 
 // EmbeddingClient is the port used by use cases to obtain embeddings without depending on a concrete SDK.
 // EmbeddingClient 用于让用例层在不依赖具体 SDK 的前提下获取向量表示。
-type EmbeddingClient interface {
-	Embed(ctx context.Context, req EmbeddingRequest) (EmbeddingResponse, error)
-}
+type EmbeddingClient = logicports.EmbeddingClient
 
 // RerankerClient is the port used by use cases to reorder first-stage recall hits with one dedicated rerank model.
 // RerankerClient 用于让用例层使用专门的重排序模型对首轮召回结果重新排序。
@@ -160,10 +152,7 @@ type NoiseTurnFilter interface {
 
 // NoiseEmbeddingCache is the port used by startup processors to reuse previously computed semantic prototype vectors.
 // NoiseEmbeddingCache 用于让启动期处理器复用已计算好的语义原型向量缓存。
-type NoiseEmbeddingCache interface {
-	LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error)
-	ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error
-}
+type NoiseEmbeddingCache = logicports.NoiseEmbeddingCache
 
 // ContextPersonaProvider is the port used by pre-check flows to load stable persona and project context.
 // ContextPersonaProvider 用于给 pre-check 流程加载稳定的画像和项目上下文。

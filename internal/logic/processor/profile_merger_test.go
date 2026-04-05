@@ -7,15 +7,15 @@ import (
 	"strings"
 	"testing"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // TestProfileMergerBatchesUserAndProjectTargets verifies one merge call carries both target groups together and parses both result blocks back into the internal contract.
 // TestProfileMergerBatchesUserAndProjectTargets 用于验证一次合并调用会把两类目标一起送入，并把两块结果都解析回内部契约。
 func TestProfileMergerBatchesUserAndProjectTargets(t *testing.T) {
 	llm := &stubProfileMergerLLM{
-		response: appports.LLMResponse{
+		response: logicports.LLMResponse{
 			Content: `{
   "user": {
     "updated_profile": "合并后的用户画像",
@@ -50,7 +50,7 @@ func TestProfileMergerBatchesUserAndProjectTargets(t *testing.T) {
 	if prompts.scene != "merge_profile" || prompts.modelName != "qwen-test" {
 		t.Fatalf("unexpected prompt lookup: %+v", prompts)
 	}
-	if llm.request.ResponseFormat != appports.LLMResponseFormatJSON {
+	if llm.request.ResponseFormat != logicports.LLMResponseFormatJSON {
 		t.Fatalf("expected json response format, got %+v", llm.request)
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"user": {`) {
@@ -80,7 +80,7 @@ func TestProfileMergerBatchesUserAndProjectTargets(t *testing.T) {
 // TestProfileMergerAllowsMissingTargetBlockWhenNoCandidates 用于验证当某一侧输入没有候选时，解析器会接受缺省的目标结果块。
 func TestProfileMergerAllowsMissingTargetBlockWhenNoCandidates(t *testing.T) {
 	llm := &stubProfileMergerLLM{
-		response: appports.LLMResponse{
+		response: logicports.LLMResponse{
 			Content: `{
   "user": {
     "updated_profile": "合并后的用户画像",
@@ -135,17 +135,17 @@ func (s *stubProfilePromptSource) GetPrompt(scene, modelName string) (string, er
 // stubProfileMergerLLM returns one canned JSON response and records the outgoing request.
 // stubProfileMergerLLM 用于返回预设 JSON 响应，并记录发出的请求。
 type stubProfileMergerLLM struct {
-	request  appports.LLMRequest
-	response appports.LLMResponse
+	request  logicports.LLMRequest
+	response logicports.LLMResponse
 	err      error
 }
 
 // Generate captures the request and replays the configured response or error.
 // Generate 用于记录请求，并回放预设响应或错误。
-func (s *stubProfileMergerLLM) Generate(_ context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
+func (s *stubProfileMergerLLM) Generate(_ context.Context, req logicports.LLMRequest) (logicports.LLMResponse, error) {
 	s.request = req
 	if s.err != nil {
-		return appports.LLMResponse{}, s.err
+		return logicports.LLMResponse{}, s.err
 	}
 	return s.response, nil
 }

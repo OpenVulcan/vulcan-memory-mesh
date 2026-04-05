@@ -9,21 +9,21 @@ import (
 	"sort"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // PostActionCandidateReviewer drives prompt lookup, one joint LLM review call, and strict JSON parsing for post-action memory/profile candidate decisions.
 // PostActionCandidateReviewer 用于驱动 post-action 记忆/画像联合评审的提示词读取、单次 LLM 调用和严格 JSON 解析。
 type PostActionCandidateReviewer struct {
-	llm     appports.LLMClient
-	prompts appports.PromptSource
+	llm     logicports.LLMClient
+	prompts logicports.PromptSource
 	model   string
 }
 
 // NewPostActionCandidateReviewer creates a PostActionCandidateReviewer instance.
 // NewPostActionCandidateReviewer 用于创建 PostActionCandidateReviewer 实例。
-func NewPostActionCandidateReviewer(llm appports.LLMClient, prompts appports.PromptSource, model string) *PostActionCandidateReviewer {
+func NewPostActionCandidateReviewer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *PostActionCandidateReviewer {
 	return &PostActionCandidateReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
@@ -44,11 +44,11 @@ func (r *PostActionCandidateReviewer) Review(ctx context.Context, input logicdom
 	if err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("load review_postaction_candidates prompt: %w", err)
 	}
-	resp, err := r.llm.Generate(ctx, appports.LLMRequest{
+	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:          r.model,
 		SystemPrompt:   prompt,
 		UserPrompt:     requestBody,
-		ResponseFormat: appports.LLMResponseFormatJSON,
+		ResponseFormat: logicports.LLMResponseFormatJSON,
 	})
 	if err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, err

@@ -335,6 +335,18 @@
 
 - 作用：LLM 鉴权密钥
 - 默认值：空，但启动时必填
+- 兼容性说明：
+  - 旧单值写法仍然支持
+  - 可以写成逗号、分号或换行分隔的多 key 字符串
+
+### `llm.api_keys`
+
+- 作用：LLM API Key 池
+- 默认值：空数组
+- 说明：
+  - 推荐优先使用该字段声明多个 key
+  - 运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
+  - 不会以容灾名义切 provider 或切 model
 
 ### `llm.model`
 
@@ -367,6 +379,21 @@
   - 按模型关闭 `thinking`
   - 对不同模型单独调节参数
 
+### `llm.key_failover`
+
+- 作用：固定模型 LLM 的 API Key 容灾策略
+- 默认值：
+  - `enabled=true`
+  - `policy=ordered_failover`
+  - `respect_retry_after=true`
+  - `rate_limit_cooldown=5m`
+  - `quota_cooldown=10m`
+  - `auth_cooldown=12h`
+  - `probe_after_cooldown=true`
+- 说明：
+  - 只对 key 轮换生效
+  - 不会切换到其他模型
+
 ## 11. embedding
 
 ### `embedding.provider`
@@ -383,6 +410,18 @@
 
 - 作用：Embedding 鉴权密钥
 - 默认值：空，但启动时必填
+- 兼容性说明：
+  - 旧单值写法仍然支持
+  - 可以写成逗号、分号或换行分隔的多 key 字符串
+
+### `embedding.api_keys`
+
+- 作用：Embedding API Key 池
+- 默认值：空数组
+- 说明：
+  - 推荐优先使用该字段声明多个 key
+  - 运行时只会在固定 `provider + endpoint + model + dimension` 下做 key 级轮换
+  - 不允许以容灾名义混用不同 embedding 模型
 
 ### `embedding.model`
 
@@ -417,6 +456,22 @@
 - 作用：按模型名细分的 Embedding 附加参数
 - 默认值：空对象
 
+### `embedding.key_failover`
+
+- 作用：固定模型 Embedding 的 API Key 容灾策略
+- 默认值：
+  - `enabled=true`
+  - `policy=ordered_failover`
+  - `respect_retry_after=true`
+  - `rate_limit_cooldown=5m`
+  - `quota_cooldown=10m`
+  - `auth_cooldown=12h`
+  - `probe_after_cooldown=true`
+- 重要说明：
+  - 只允许切 key
+  - 不允许切模型
+  - 向量维度相同不代表语义空间相同，因此禁止混用不同 embedding 模型
+
 ## 12. rerank
 
 ### `rerank.enabled`
@@ -439,7 +494,17 @@
 - 作用：重排序接口密钥
 - 默认值：空
 - 说明：
-  - 如果未单独设置，运行时可能回退复用现有 LLM key
+  - `rerank.enabled=true` 时必须显式配置
+  - 不会回退复用 `llm` key 池
+
+### `rerank.api_keys`
+
+- 作用：重排序接口 Key 池
+- 默认值：空数组
+- 说明：
+  - 推荐优先使用该字段声明多个 key
+  - 运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
+  - 所有 key 都失败时，会按 `rerank=false` 的效果退回首轮排序，并记录 warning
 
 ### `rerank.model`
 
@@ -455,6 +520,18 @@
 
 - 作用：rerank 调用超时
 - 默认值：`8s`
+
+### `rerank.key_failover`
+
+- 作用：固定模型 rerank 的 API Key 容灾策略
+- 默认值：
+  - `enabled=true`
+  - `policy=ordered_failover`
+  - `respect_retry_after=true`
+  - `rate_limit_cooldown=5m`
+  - `quota_cooldown=10m`
+  - `auth_cooldown=12h`
+  - `probe_after_cooldown=true`
 
 ## 13. vector
 
@@ -566,6 +643,10 @@
 - 作用：是否启用混合检索
 - 默认值：`true`
 - 说明：
+  - 只允许在 rerank 自己的 key 池内轮换
+  - 不会复用 `llm` key
+  - 如果 provider 返回 `Retry-After` / `Retry-After-Ms`，会优先采用其冷却建议
+  - 所有 key 不可用时，运行时会记录 warning 并按禁用 rerank 继续执行
   - 开启后会尝试 `vector + lexical + RRF`
 
 ### `memory_pipeline.lexical_pre_tokenize`

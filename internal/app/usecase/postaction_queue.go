@@ -35,6 +35,7 @@ func (u *PostActionUseCase) startQueueWorker() {
 	u.queueCtx, u.queueCancel = context.WithCancel(context.Background())
 	u.queueCh = make(chan uint64, 256)
 	u.queueState = map[uint64]*postActionQueueState{}
+	u.deferredQueueSet = map[uint64]struct{}{}
 	u.queueWG.Add(1)
 	go u.queueWorkerLoop()
 }
@@ -101,8 +102,8 @@ func (u *PostActionUseCase) enqueueSessionAnalysis(session logicdomain.SessionRe
 	}
 }
 
-// pushQueueID sends one deduplicated session id into the worker channel and falls back to a goroutine when the buffer is temporarily full.
-// pushQueueID 用于把去重后的 session id 推入工作器通道；若缓冲区暂时已满，则回退到 goroutine 发送。
+// pushQueueID sends one deduplicated session id into the worker channel and records overflow in a bounded deferred queue instead of spawning blocked goroutines.
+// pushQueueID 用于把去重后的 session id 推入工作器通道；若缓冲区暂时已满，则把溢出项记录到有界延迟队列，而不是启动阻塞 goroutine。
 func (u *PostActionUseCase) pushQueueID(sessionID uint64) {
 	if u == nil || u.queueCh == nil || sessionID == 0 {
 		return
@@ -110,23 +111,70 @@ func (u *PostActionUseCase) pushQueueID(sessionID uint64) {
 	select {
 	case u.queueCh <- sessionID:
 	default:
-		queueCtx := u.queueCtx
-
-		// Only spawn the fallback sender when the queue worker lifetime context exists.
+		// Only remember deferred ids when the queue worker lifetime context exists.
 		// Partially constructed test instances may provide queueCh without queueCtx, and
-		// in that case the safer behavior is to skip the async fallback instead of panicking.
-		// 只有在队列工作器生命周期 context 已存在时才启动兜底发送 goroutine。
-		// 部分装配的测试实例可能只提供 queueCh 而没有 queueCtx，这时跳过异步兜底比 panic 更安全。
-		if queueCtx == nil {
+		// in that case the safer behavior is to skip the overflow path instead of silently retaining dead deferred work.
+		// 只有在队列工作器生命周期 context 已存在时才记录延迟项。
+		// 部分装配的测试实例可能只提供 queueCh 而没有 queueCtx，这时跳过溢出路径比悄悄保留永远无法刷新的延迟任务更安全。
+		if u.queueCtx == nil {
 			return
 		}
-		go func(ctx context.Context) {
-			select {
-			case u.queueCh <- sessionID:
-			case <-ctx.Done():
-			}
-		}(queueCtx)
+		u.queueDeferredSessionID(sessionID)
 	}
+}
+
+// queueDeferredSessionID keeps one overflowed queue id in a deduplicated in-memory backlog so sustained bursts do not create one blocked goroutine per missed send.
+// queueDeferredSessionID 用于把溢出的 queue id 保存在去重的内存 backlog 中，避免持续突发流量为每次失败发送都创建一个阻塞 goroutine。
+func (u *PostActionUseCase) queueDeferredSessionID(sessionID uint64) {
+	if u == nil || sessionID == 0 {
+		return
+	}
+	u.queueMu.Lock()
+	defer u.queueMu.Unlock()
+	if u.deferredQueueSet == nil {
+		u.deferredQueueSet = map[uint64]struct{}{}
+	}
+	if _, exists := u.deferredQueueSet[sessionID]; exists {
+		return
+	}
+	u.deferredQueueSet[sessionID] = struct{}{}
+	u.deferredQueueIDs = append(u.deferredQueueIDs, sessionID)
+}
+
+// flushDeferredQueueIDs opportunistically moves overflowed session ids back into the worker channel in FIFO order without ever blocking the queue loop.
+// flushDeferredQueueIDs 用于机会性地按 FIFO 顺序把溢出的 session id 重新推回工作通道，同时绝不阻塞队列循环。
+func (u *PostActionUseCase) flushDeferredQueueIDs() {
+	if u == nil || u.queueCh == nil {
+		return
+	}
+	u.queueMu.Lock()
+	defer u.queueMu.Unlock()
+	if len(u.deferredQueueIDs) == 0 {
+		return
+	}
+	remaining := u.deferredQueueIDs[:0]
+	blocked := false
+	for _, sessionID := range u.deferredQueueIDs {
+		if sessionID == 0 {
+			continue
+		}
+		if blocked {
+			remaining = append(remaining, sessionID)
+			continue
+		}
+		select {
+		case u.queueCh <- sessionID:
+			delete(u.deferredQueueSet, sessionID)
+		default:
+			blocked = true
+			remaining = append(remaining, sessionID)
+		}
+	}
+	if len(remaining) == 0 {
+		u.deferredQueueIDs = nil
+		return
+	}
+	u.deferredQueueIDs = remaining
 }
 
 // queueWorkerLoop prioritizes explicit queue items while also scanning every 30 seconds for stale pending sessions that crossed the idle threshold.
@@ -142,12 +190,14 @@ func (u *PostActionUseCase) queueWorkerLoop() {
 			return
 		case sessionID := <-u.queueCh:
 			u.handleQueuedSession(sessionID)
+			u.flushDeferredQueueIDs()
 		case <-ticker.C:
 			if u.queueMaintenanceBackoffActive(time.Now()) {
 				continue
 			}
 			u.convergeExpiredProfiles()
 			u.scanIdlePendingSessions()
+			u.flushDeferredQueueIDs()
 		}
 	}
 }

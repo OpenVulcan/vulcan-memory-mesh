@@ -108,6 +108,8 @@ type PostActionUseCase struct {
 	maintenanceBackoffUntil time.Time
 	queueCh                 chan uint64
 	queueState              map[uint64]*postActionQueueState
+	deferredQueueIDs        []uint64
+	deferredQueueSet        map[uint64]struct{}
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance for the runtime asynchronous single-turn path.
@@ -353,8 +355,15 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	applyResult, err := u.store.ApplyTurnAnalysis(ctx, session, turn, analysis)
 	if err != nil {
 		if len(vectorIDs) > 0 && u.vector != nil {
-			if _, rollbackErr := u.vector.DeleteByIDs(ctx, vectorIDs); rollbackErr != nil && u.logger != nil {
-				u.logger.Error("post-action turn vector rollback failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", rollbackErr)
+			if _, rollbackErr := u.vector.DeleteByIDs(ctx, vectorIDs); rollbackErr != nil {
+				if u.logger != nil {
+					u.logger.Error("post-action turn vector rollback failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", rollbackErr)
+				}
+				enqueueVectorGCCompensation(ctx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisRollback, vectorIDs, time.Now().UTC(),
+					"session_key", session.SessionKey,
+					"session_id", session.SessionID,
+					"turn_id", turn.ID,
+				)
 			}
 		}
 		return err
@@ -363,8 +372,15 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 		return err
 	}
 	if len(applyResult.SupersededVectorIDs) > 0 && u.vector != nil {
-		if _, deleteErr := u.vector.DeleteByIDs(ctx, applyResult.SupersededVectorIDs); deleteErr != nil && u.logger != nil {
-			u.logger.Error("post-action superseded vector cleanup failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", deleteErr)
+		if _, deleteErr := u.vector.DeleteByIDs(ctx, applyResult.SupersededVectorIDs); deleteErr != nil {
+			if u.logger != nil {
+				u.logger.Error("post-action superseded vector cleanup failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", deleteErr)
+			}
+			enqueueVectorGCCompensation(ctx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisSupersedeCleanup, applyResult.SupersededVectorIDs, time.Now().UTC(),
+				"session_key", session.SessionKey,
+				"session_id", session.SessionID,
+				"turn_id", turn.ID,
+			)
 		}
 	}
 	u.logPostActionAnalysisResult(session, turn, input, analysis, vectorIDs, compaction)
@@ -725,12 +741,25 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 	// Upsert LanceDB rows first so SQLite only flips extracted_status after the corresponding vectors already exist.
 	// 先 upsert LanceDB 行，确保 SQLite 只有在对应向量已存在时才会把 extracted_status 置为完成。
 	insertedIDs := make([]string, 0, len(analysis.MemoryNodes))
+	rollbackInsertedVectors := func() {
+		if len(insertedIDs) == 0 || u.vector == nil {
+			return
+		}
+		if _, rollbackErr := u.vector.DeleteByIDs(ctx, insertedIDs); rollbackErr != nil {
+			if u.logger != nil {
+				u.logger.Error("post-action partial vector rollback failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", rollbackErr)
+			}
+			enqueueVectorGCCompensation(ctx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisRollback, insertedIDs, time.Now().UTC(),
+				"session_key", session.SessionKey,
+				"session_id", session.SessionID,
+				"turn_id", turn.ID,
+			)
+		}
+	}
 	for idx := range analysis.MemoryNodes {
 		vectorID, err := generatePostActionUUID()
 		if err != nil {
-			if len(insertedIDs) > 0 {
-				_, _ = u.vector.DeleteByIDs(ctx, insertedIDs)
-			}
+			rollbackInsertedVectors()
 			return nil, err
 		}
 		analysis.MemoryNodes[idx].VectorID = vectorID
@@ -749,9 +778,7 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 			CreatedAt: choosePostActionCreatedAt(turn),
 		}
 		if err := u.vector.Upsert(ctx, record); err != nil {
-			if len(insertedIDs) > 0 {
-				_, _ = u.vector.DeleteByIDs(ctx, insertedIDs)
-			}
+			rollbackInsertedVectors()
 			return nil, err
 		}
 		insertedIDs = append(insertedIDs, vectorID)

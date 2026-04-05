@@ -8,21 +8,21 @@ import (
 	"fmt"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // PreCheckMemoryReviewer drives prompt lookup, LLM invocation, and JSON parsing for the second-stage pre-check memory adoption scene.
 // PreCheckMemoryReviewer 用于驱动 pre-check 第二层记忆采纳场景的提示词读取、LLM 调用和 JSON 解析。
 type PreCheckMemoryReviewer struct {
-	llm     appports.LLMClient
-	prompts appports.PromptSource
+	llm     logicports.LLMClient
+	prompts logicports.PromptSource
 	model   string
 }
 
 // NewPreCheckMemoryReviewer creates a PreCheckMemoryReviewer instance.
 // NewPreCheckMemoryReviewer 用于创建 PreCheckMemoryReviewer 实例。
-func NewPreCheckMemoryReviewer(llm appports.LLMClient, prompts appports.PromptSource, model string) *PreCheckMemoryReviewer {
+func NewPreCheckMemoryReviewer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *PreCheckMemoryReviewer {
 	return &PreCheckMemoryReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
@@ -42,11 +42,11 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 	if err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("load review_precheck_memory prompt: %w", err)
 	}
-	resp, err := r.llm.Generate(ctx, appports.LLMRequest{
+	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:          r.model,
 		SystemPrompt:   prompt,
 		UserPrompt:     requestBody,
-		ResponseFormat: appports.LLMResponseFormatJSON,
+		ResponseFormat: logicports.LLMResponseFormatJSON,
 	})
 	if err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, err

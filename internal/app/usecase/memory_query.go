@@ -1102,8 +1102,13 @@ func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session lo
 		}
 	}
 	if len(supersededVectorIDs) > 0 {
-		if _, deleteErr := u.vector.DeleteByIDs(ctx, supersededVectorIDs); deleteErr != nil && u.logger != nil {
-			u.logger.Error("direct memory superseded vector cleanup failed", "session_id", session.SessionID, "err", deleteErr)
+		if _, deleteErr := u.vector.DeleteByIDs(ctx, supersededVectorIDs); deleteErr != nil {
+			if u.logger != nil {
+				u.logger.Error("direct memory superseded vector cleanup failed", "session_id", session.SessionID, "err", deleteErr)
+			}
+			enqueueVectorGCCompensation(ctx, u.memories, u.logger, logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup, supersededVectorIDs, now,
+				"session_id", session.SessionID,
+			)
 		}
 	}
 	return WriteMemoryResultItem{
@@ -1123,8 +1128,14 @@ func (u *MemoryUseCase) rollbackDirectWriteVector(ctx context.Context, vectorID 
 	if u == nil || u.vector == nil || strings.TrimSpace(vectorID) == "" {
 		return
 	}
-	if _, rollbackErr := u.vector.DeleteByIDs(ctx, []string{vectorID}); rollbackErr != nil && u.logger != nil {
-		u.logger.Error("direct memory vector rollback failed", "vector_id", vectorID, "session_id", sessionID, "err", rollbackErr)
+	if _, rollbackErr := u.vector.DeleteByIDs(ctx, []string{vectorID}); rollbackErr != nil {
+		if u.logger != nil {
+			u.logger.Error("direct memory vector rollback failed", "vector_id", vectorID, "session_id", sessionID, "err", rollbackErr)
+		}
+		enqueueVectorGCCompensation(ctx, u.memories, u.logger, logicdomain.VectorGCJobTypeDirectWriteRollback, []string{vectorID}, time.Now().UTC(),
+			"vector_id", vectorID,
+			"session_id", sessionID,
+		)
 	}
 }
 
@@ -2078,7 +2089,7 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 	results, err := u.reranker.Rerank(ctx, strings.TrimSpace(query), buildRerankDocuments(primary), len(primary))
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory search rerank degraded", append(memoryQueryLogFields(u.logger, query), "candidate_count", len(primary), "err", err)...)
+			u.logger.Warn("memory search rerank degraded to rerank-disabled fallback", append(memoryQueryLogFields(u.logger, query), "candidate_count", len(primary), "fallback_mode", "rerank_disabled", "err", err)...)
 		}
 		return hits
 	}

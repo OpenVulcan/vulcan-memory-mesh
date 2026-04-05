@@ -7,20 +7,20 @@ import (
 	"fmt"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // EntrySummarizer is the processor reserved for turning raw transcripts into structured memory summaries.
 // EntrySummarizer 用于作为处理器，把原始对话转成结构化记忆摘要。
 type EntrySummarizer struct {
-	llm     appports.LLMClient
-	prompts appports.PromptSource
+	llm     logicports.LLMClient
+	prompts logicports.PromptSource
 	model   string
 }
 
 // NewEntrySummarizer creates a EntrySummarizer instance.
 // NewEntrySummarizer 用于创建 EntrySummarizer 实例。
-func NewEntrySummarizer(llm appports.LLMClient, prompts appports.PromptSource, model string) *EntrySummarizer {
+func NewEntrySummarizer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *EntrySummarizer {
 	return &EntrySummarizer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
@@ -31,7 +31,7 @@ func (s *EntrySummarizer) Summarize(ctx context.Context, transcript string) (str
 	if err != nil {
 		return "", fmt.Errorf("load summarize_entry prompt: %w", err)
 	}
-	resp, err := s.llm.Generate(ctx, appports.LLMRequest{Model: s.model, SystemPrompt: prompt, UserPrompt: strings.TrimSpace(transcript), ResponseFormat: appports.LLMResponseFormatJSON})
+	resp, err := s.llm.Generate(ctx, logicports.LLMRequest{Model: s.model, SystemPrompt: prompt, UserPrompt: strings.TrimSpace(transcript), ResponseFormat: logicports.LLMResponseFormatJSON})
 	if err != nil {
 		return "", err
 	}

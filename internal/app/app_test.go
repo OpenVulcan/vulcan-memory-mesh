@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
 	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
 	sqlitev1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite/proto/v1"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -182,9 +183,9 @@ func TestNewLocalClosesRuntimeLogFileOnInitFailure(t *testing.T) {
 	}
 }
 
-// TestBuildRerankerFallsBackToLLMAPIKey verifies DashScope rerank can reuse the existing LLM api key when rerank.api_key is omitted.
-// TestBuildRerankerFallsBackToLLMAPIKey 用于验证在省略 rerank.api_key 时，DashScope rerank 可以回退复用现有 llm.api_key。
-func TestBuildRerankerFallsBackToLLMAPIKey(t *testing.T) {
+// TestBuildRerankerRejectsMissingDedicatedRerankKey verifies runtime composition no longer reuses LLM keys for DashScope rerank and instead requires one dedicated rerank key pool.
+// TestBuildRerankerRejectsMissingDedicatedRerankKey 用于验证运行时装配不再复用 LLM Key 给 DashScope rerank，而是要求显式配置独立 rerank Key 池。
+func TestBuildRerankerRejectsMissingDedicatedRerankKey(t *testing.T) {
 	cfg := config.DefaultLocal()
 	cfg.LLM.APIKey = "shared-llm-key"
 	cfg.Rerank.Enabled = true
@@ -194,11 +195,26 @@ func TestBuildRerankerFallsBackToLLMAPIKey(t *testing.T) {
 	cfg.Rerank.Model = "qwen3-vl-rerank"
 
 	reranker, err := buildReranker(cfg)
-	if err != nil {
-		t.Fatalf("build reranker: %v", err)
+	if err == nil {
+		t.Fatalf("expected reranker build to fail when dedicated rerank keys are missing, got reranker=%T", reranker)
 	}
-	if reranker == nil {
-		t.Fatal("expected reranker to be constructed")
+}
+
+// TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys verifies runtime composition upgrades one fixed-model config with multiple keys into the dedicated key-failover wrapper instead of silently discarding extra keys.
+// TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys 用于验证当固定模型配置包含多个 Key 时，运行时装配会升级为专用 Key 容灾包装器，而不是静默丢弃额外 Key。
+func TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Endpoint = "https://example.com/v1"
+	cfg.LLM.APIKeys = []string{"key-a", "key-b"}
+	cfg.LLM.APIKey = ""
+	cfg.LLM.Model = "test-llm"
+
+	client, err := buildLLM(cfg)
+	if err != nil {
+		t.Fatalf("build llm with key pool: %v", err)
+	}
+	if _, ok := client.(*ai_key_failover.LLMClient); !ok {
+		t.Fatalf("expected key failover llm wrapper, got %T", client)
 	}
 }
 
@@ -339,6 +355,22 @@ func TestApplicationShutdownSkipsNilShutdowners(t *testing.T) {
 	}
 	if shutdowner.calls != 1 {
 		t.Fatalf("expected shutdowner to be called once, got %d", shutdowner.calls)
+	}
+}
+
+// TestApplicationShutdownDeduplicatesRepeatedDependencies verifies graceful shutdown collapses repeated hooks that point at the same runtime dependency, so combined-store modes do not double-close shared resources.
+// TestApplicationShutdownDeduplicatesRepeatedDependencies 用于验证优雅停机会折叠指向同一运行时依赖的重复 hook，避免组合库模式对共享资源重复关闭。
+func TestApplicationShutdownDeduplicatesRepeatedDependencies(t *testing.T) {
+	shutdowner := &stubShutdowner{}
+	app := &Application{
+		Shutdowns: []appports.Shutdowner{shutdowner, shutdowner},
+	}
+
+	if err := app.Shutdown(nil); err != nil {
+		t.Fatalf("shutdown with duplicate shutdowners: %v", err)
+	}
+	if shutdowner.calls != 1 {
+		t.Fatalf("expected duplicate shutdowner to be called once, got %d", shutdowner.calls)
 	}
 }
 

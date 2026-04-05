@@ -36,6 +36,22 @@ const (
 	// VectorGCJobTypeRetentionRecycle keeps the stable vector-GC job type used when retention must retry a failed sidecar vector delete after relational recycle already committed.
 	// VectorGCJobTypeRetentionRecycle 用于保存 retention 在关系回收已提交后重试失败向量删除时使用的稳定向量 GC 任务类型。
 	VectorGCJobTypeRetentionRecycle = "retention_recycle_vector_delete"
+
+	// VectorGCJobTypeTurnAnalysisRollback keeps the stable vector-GC job type used when post-action must compensate a failed rollback after vector persistence succeeded but relational analysis apply failed.
+	// VectorGCJobTypeTurnAnalysisRollback 用于保存 post-action 在向量已落库但关系分析写入失败后，补偿失败回滚时使用的稳定向量 GC 任务类型。
+	VectorGCJobTypeTurnAnalysisRollback = "turn_analysis_vector_rollback"
+
+	// VectorGCJobTypeTurnAnalysisSupersedeCleanup keeps the stable vector-GC job type used when post-action committed relational supersede changes but the obsolete sidecar vectors could not be deleted immediately.
+	// VectorGCJobTypeTurnAnalysisSupersedeCleanup 用于保存 post-action 已提交关系 supersede 变更、但旧旁路向量无法立即删除时使用的稳定向量 GC 任务类型。
+	VectorGCJobTypeTurnAnalysisSupersedeCleanup = "turn_analysis_superseded_vector_delete"
+
+	// VectorGCJobTypeDirectWriteRollback keeps the stable vector-GC job type used when one direct memory write must compensate a failed rollback after vector persistence succeeded but relational persistence failed.
+	// VectorGCJobTypeDirectWriteRollback 用于保存主动写记忆在向量已落库但关系持久化失败后，补偿失败回滚时使用的稳定向量 GC 任务类型。
+	VectorGCJobTypeDirectWriteRollback = "direct_write_vector_rollback"
+
+	// VectorGCJobTypeDirectWriteSupersedeCleanup keeps the stable vector-GC job type used when one direct memory write committed supersede changes but could not delete the obsolete vectors immediately.
+	// VectorGCJobTypeDirectWriteSupersedeCleanup 用于保存主动写记忆已提交 supersede 变更、但无法立即删除旧向量时使用的稳定向量 GC 任务类型。
+	VectorGCJobTypeDirectWriteSupersedeCleanup = "direct_write_superseded_vector_delete"
 )
 
 // MemoryRecycleQuery describes one cold-memory recycle pass, including batch size, timestamps, and protection knobs.

@@ -8,15 +8,15 @@ import (
 	"strings"
 	"testing"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // TestTurnAnalyzerAnalyze verifies the processor loads the dedicated prompt, calls the model, and parses the structured payload into canonical node candidates.
 // TestTurnAnalyzerAnalyze 用于验证处理器会加载专用提示词、调用模型，并把结构化载荷解析成规范节点候选。
 func TestTurnAnalyzerAnalyze(t *testing.T) {
 	llm := &stubTurnAnalyzerLLM{
-		response: appports.LLMResponse{
+		response: logicports.LLMResponse{
 			Content: `{
   "user_input_kind": "question",
   "turn_id": 92,
@@ -86,7 +86,7 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if prompts.scene != "analyze_turn" {
 		t.Fatalf("expected analyze_turn scene, got %q", prompts.scene)
 	}
-	if llm.request.ResponseFormat != appports.LLMResponseFormatJSON {
+	if llm.request.ResponseFormat != logicports.LLMResponseFormatJSON {
 		t.Fatalf("expected json response format, got %q", llm.request.ResponseFormat)
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"reference_turns"`) || !strings.Contains(llm.request.UserPrompt, `"recent_grpc_memory_writes"`) {
@@ -226,7 +226,7 @@ func TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes(t *testing.T) {
 // TestTurnAnalyzerRejectsMismatchedTurnID 用于验证分析器在已知目标 turn 的前提下，不会默默接受模型返回的错误 turn_id。
 func TestTurnAnalyzerRejectsMismatchedTurnID(t *testing.T) {
 	analyzer := NewTurnAnalyzer(&stubTurnAnalyzerLLM{
-		response: appports.LLMResponse{
+		response: logicports.LLMResponse{
 			Content: `{"user_input_kind":"mixed","turn_id":999,"details":"","memory_nodes":[],"profile_nodes":[],"superseded_memory_ids":[]}`,
 		},
 	}, &stubTurnAnalyzerPromptSource{prompt: "prompt-body"}, "qwen3.5-flash")
@@ -283,15 +283,15 @@ func TestRenderTurnAnalysisSystemPromptDropsUnusedTags(t *testing.T) {
 }
 
 type stubTurnAnalyzerLLM struct {
-	request  appports.LLMRequest
-	response appports.LLMResponse
+	request  logicports.LLMRequest
+	response logicports.LLMResponse
 	err      error
 }
 
-func (s *stubTurnAnalyzerLLM) Generate(_ context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
+func (s *stubTurnAnalyzerLLM) Generate(_ context.Context, req logicports.LLMRequest) (logicports.LLMResponse, error) {
 	s.request = req
 	if s.err != nil {
-		return appports.LLMResponse{}, s.err
+		return logicports.LLMResponse{}, s.err
 	}
 	return s.response, nil
 }
@@ -313,8 +313,8 @@ func (s *stubTurnAnalyzerPromptSource) GetPrompt(scene, modelName string) (strin
 }
 
 var (
-	_ appports.LLMClient    = (*stubTurnAnalyzerLLM)(nil)
-	_ appports.PromptSource = (*stubTurnAnalyzerPromptSource)(nil)
+	_ logicports.LLMClient    = (*stubTurnAnalyzerLLM)(nil)
+	_ logicports.PromptSource = (*stubTurnAnalyzerPromptSource)(nil)
 )
 
 // TestTurnAnalyzerPropagatesModelFailure verifies provider-side failures bubble up unchanged so the caller can decide whether to retry or only log.

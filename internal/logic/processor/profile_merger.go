@@ -9,21 +9,21 @@ import (
 	"sort"
 	"strings"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
 // ProfileMerger drives prompt lookup, one batched LLM merge call, and strict JSON parsing for user/project profile blobs.
 // ProfileMerger 用于驱动 user/project 画像 Blob 的提示词读取、单次批量 LLM 合并调用和严格 JSON 解析。
 type ProfileMerger struct {
-	llm     appports.LLMClient
-	prompts appports.PromptSource
+	llm     logicports.LLMClient
+	prompts logicports.PromptSource
 	model   string
 }
 
 // NewProfileMerger creates a ProfileMerger instance.
 // NewProfileMerger 用于创建 ProfileMerger 实例。
-func NewProfileMerger(llm appports.LLMClient, prompts appports.PromptSource, model string) *ProfileMerger {
+func NewProfileMerger(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *ProfileMerger {
 	return &ProfileMerger{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
@@ -52,11 +52,11 @@ func (m *ProfileMerger) Merge(ctx context.Context, snapshot logicdomain.ProfileT
 	if userCount == 0 && projectCount == 0 {
 		return logicdomain.TurnProfileMergeResult{}, nil
 	}
-	resp, err := m.llm.Generate(ctx, appports.LLMRequest{
+	resp, err := m.llm.Generate(ctx, logicports.LLMRequest{
 		Model:          m.model,
 		SystemPrompt:   prompt,
 		UserPrompt:     requestBody,
-		ResponseFormat: appports.LLMResponseFormatJSON,
+		ResponseFormat: logicports.LLMResponseFormatJSON,
 	})
 	if err != nil {
 		return logicdomain.TurnProfileMergeResult{}, err

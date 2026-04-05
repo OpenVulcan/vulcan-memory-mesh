@@ -642,19 +642,23 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 `rerank` 下当前新增的是“向量召回后的第二阶段重排序”参数：
 
 - `enabled`
-  - 是否启用 DashScope rerank；关闭时检索链保持当前的纯向量顺序
+  - 是否启用 DashScope rerank；关闭时检索链保持当前首轮召回 / 融合排序结果
 - `provider`
   - 当前仅支持 `dashscope`
 - `endpoint`
   - 默认使用阿里云 DashScope `text-rerank` 地址
 - `api_key`
-  - 可单独配置；若为空，运行时会回退复用 `llm.api_key`
+  - `rerank.enabled=true` 时必须显式配置；不会回退复用 `llm.api_key`
+- `api_keys`
+  - 推荐使用独立的 rerank key 池；运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
 - `model`
   - 当前默认 `qwen3-vl-rerank`
 - `top_n`
   - 每个 query group 最多送多少条首轮向量命中进入 rerank
 - `timeout`
-  - 单次 rerank HTTP 调用预算；超时或失败时检索链会降级回原始向量排序
+  - 单次 rerank HTTP 调用预算；超时或失败时检索链会按 `rerank=false` 语义降级回首轮排序
+- `key_failover`
+  - 固定模型下的 API Key 容灾策略；所有 key 不可用时会记录 warning 并继续主检索链路
 
 `post_action` 下当前保留 5 个与异步单轮提炼窗口和恢复扫描相关的参数：
 

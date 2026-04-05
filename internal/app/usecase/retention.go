@@ -91,8 +91,8 @@ type RetentionUseCase struct {
 	workerInitialized bool
 }
 
-// NewRetentionUseCase constructs the cold-data maintenance worker and starts the background loop only when the runtime configuration explicitly enables it.
-// NewRetentionUseCase 用于构建冷数据维护工作器，并仅在运行时配置显式启用时启动后台循环。
+// NewRetentionUseCase constructs the cold-data maintenance worker and starts the shared background loop whenever any retention-adjacent workload is enabled.
+// NewRetentionUseCase 用于构建冷数据维护工作器，并在任一 retention 邻接工作负载启用时启动共享后台循环。
 func NewRetentionUseCase(store appports.RetentionStore, vector appports.VectorStore, cfg RetentionConfig, logger *logx.Logger) *RetentionUseCase {
 	u := &RetentionUseCase{
 		store:  store,
@@ -137,8 +137,8 @@ func (u *RetentionUseCase) Shutdown(ctx context.Context) error {
 	}
 }
 
-// startWorker boots the background ticker only when retention governance is enabled and the required stores are available.
-// startWorker 用于仅在 retention 治理已启用且所需存储可用时启动后台 ticker。
+// startWorker boots the shared background ticker once at least one maintenance workload is enabled and the required stores are available.
+// startWorker 用于在至少存在一项维护工作且所需存储可用时启动共享后台 ticker。
 func (u *RetentionUseCase) startWorker() {
 	if u == nil || u.workerInitialized || u.cfg.RecycleScanInterval <= 0 || !u.maintenanceEnabled() {
 		return
@@ -176,6 +176,7 @@ func (u *RetentionUseCase) runScheduledMaintenance(ctx context.Context) {
 	if u.retentionMaintenanceEnabled() {
 		u.runMaintenance(ctx)
 	}
+	u.runVectorGCMaintenance(ctx)
 	u.runScratchpadMaintenance(ctx)
 }
 
@@ -239,10 +240,6 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		u.logIdleSessionRecycleResult(sessionResult)
 	}
 
-	// Retry any previously queued sidecar vector deletes after the immediate recycle passes have had one chance to clean their own vectors.
-	// 在当前轮即时回收路径先尝试自行清理向量后，再补偿之前已入队的旁路向量删除失败任务。
-	u.retryPendingVectorGCJobs(ctx, now)
-
 	// Purge expired trash in a second step so the soft-backup window is enforced independently from the hot-table recycle path.
 	// 第二步单独清理超期回收站，以便软备份窗口能独立于热表回收路径生效。
 	purgeBefore := now.Add(-u.cfg.TrashRetention)
@@ -252,6 +249,18 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		return
 	}
 	u.logPurgeResult(purgeResult)
+}
+
+// runVectorGCMaintenance retries queued sidecar vector deletes on the shared ticker even when classical cold-data recycle is disabled.
+// runVectorGCMaintenance 用于在共享维护 ticker 上重试旁路向量删除，即使传统冷数据回收被关闭也照常执行。
+func (u *RetentionUseCase) runVectorGCMaintenance(ctx context.Context) {
+	if u == nil || !u.vectorGCMaintenanceEnabled() {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	u.retryPendingVectorGCJobs(ctx, time.Now().UTC())
 }
 
 // runScratchpadMaintenance hard-deletes abandoned DWM scopes on the shared cadence without reusing any recycle-trash semantics.
@@ -521,13 +530,19 @@ func (u *RetentionUseCase) logError(message string, err error) {
 // maintenanceEnabled reports whether the shared maintenance ticker currently has at least one real workload to execute.
 // maintenanceEnabled 用于判断共享维护 ticker 当前是否至少承载了一项真实工作负载。
 func (u *RetentionUseCase) maintenanceEnabled() bool {
-	return u.retentionMaintenanceEnabled() || u.scratchpadMaintenanceEnabled()
+	return u.retentionMaintenanceEnabled() || u.vectorGCMaintenanceEnabled() || u.scratchpadMaintenanceEnabled()
 }
 
 // retentionMaintenanceEnabled reports whether the classic cold-data governance chain should run on the shared ticker.
 // retentionMaintenanceEnabled 用于判断传统冷数据治理链是否应在共享 ticker 上运行。
 func (u *RetentionUseCase) retentionMaintenanceEnabled() bool {
 	return u != nil && u.store != nil && u.cfg.Enabled
+}
+
+// vectorGCMaintenanceEnabled reports whether the persistent vector-delete retry queue should run on the shared ticker regardless of classic recycle-policy switches.
+// vectorGCMaintenanceEnabled 用于判断持久化向量删除重试队列是否应独立于经典 recycle 开关，在共享 ticker 上继续运行。
+func (u *RetentionUseCase) vectorGCMaintenanceEnabled() bool {
+	return u != nil && u.store != nil && u.vector != nil
 }
 
 // scratchpadMaintenanceEnabled reports whether isolated DWM scratchpad hard-delete should piggyback on the shared ticker.

@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 	"github.com/openvulcan/vmm/internal/testutil"
 )
 
@@ -377,16 +377,16 @@ type countingNoiseEmbeddingClient struct {
 
 // Embed returns deterministic vectors so semantic cache behavior can be asserted without network dependence.
 // Embed 用于返回确定性向量，让语义缓存行为可以在无网络依赖下被断言。
-func (c *countingNoiseEmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+func (c *countingNoiseEmbeddingClient) Embed(ctx context.Context, req logicports.EmbeddingRequest) (logicports.EmbeddingResponse, error) {
 	c.called++
 	if c.err != nil {
-		return appports.EmbeddingResponse{}, c.err
+		return logicports.EmbeddingResponse{}, c.err
 	}
 	vectors := make([][]float32, 0, len(req.Texts))
 	for range req.Texts {
 		vectors = append(vectors, append([]float32(nil), c.vector...))
 	}
-	return appports.EmbeddingResponse{Vectors: vectors}, nil
+	return logicports.EmbeddingResponse{Vectors: vectors}, nil
 }
 
 // errorEmbeddingClient forces one semantic bootstrap failure without depending on the removed in-memory embedding mock.
@@ -395,8 +395,8 @@ type errorEmbeddingClient struct{ err error }
 
 // Embed returns the configured error so fallback behavior can be verified deterministically.
 // Embed 用于返回预设错误，以便确定性验证回退行为。
-func (c errorEmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
-	return appports.EmbeddingResponse{}, c.err
+func (c errorEmbeddingClient) Embed(ctx context.Context, req logicports.EmbeddingRequest) (logicports.EmbeddingResponse, error) {
+	return logicports.EmbeddingResponse{}, c.err
 }
 
 // mustBuildNoiseGate creates one gate with temp rule bundles for processor tests.
