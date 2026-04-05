@@ -2,7 +2,7 @@
 
 ## 文档目标
 
-这份文档面向联调和测试同学，给出当前主线版本的 `grpcurl` 调用示例。
+这份文档面向联调和测试同学，给出当前主线版本可直接执行的 `grpcurl` 示例。
 
 当前服务：
 
@@ -112,13 +112,6 @@ grpcurl -plaintext `
   vmm.v1.VMMService/DeleteProject
 ```
 
-返回里的删除统计会额外包含：
-
-- `deletedProjects`
-- `deletedSpaces`
-- `deletedTeams`
-- `deletedProfiles`
-
 ## 六、MigrateProject
 
 ### 先校验
@@ -208,11 +201,6 @@ grpcurl -plaintext `
   vmm.v1.VMMService/DeleteUser
 ```
 
-返回里的删除统计会额外包含：
-
-- `deletedUsers`
-- `deletedProfiles`
-
 ## 十、PreCheck
 
 当前 `PreCheck` 只接受：
@@ -222,8 +210,6 @@ grpcurl -plaintext `
 - `projectId`
 - `userContent`
 - `recallMode`
-
-示例：
 
 ```powershell
 grpcurl -plaintext `
@@ -242,33 +228,9 @@ grpcurl -plaintext `
 
 - 省略 `recallMode` 或传 `PRE_CHECK_RECALL_MODE_LEGACY` 时，服务端保持旧版召回行为
 - 传 `PRE_CHECK_RECALL_MODE_SESSION_COMPACT` 时，服务端按当前 session 的 compact 边界过滤同 session 的 turn-extract 记忆
-
-当前预期：
-
-```json
-{
-  "shouldInject": false,
-  "contextText": "",
-  "contextItems": [],
-  "degraded": false,
-  "traceId": "trc_xxx"
-}
-```
-
-说明：
-
-- `ignoreCompactBoundary=false` 时，服务端会按当前 session 的 compact 边界过滤同 session turn-extract 记忆
-- `ignoreCompactBoundary=true` 时，回退到旧版 pre-check 召回行为
+- 当前版本如果收到未来新增的非零枚举值，也会回退到 compact-aware 基线，而不是重新开放整个当前 session
 
 ## 十一、ChatCompact
-
-当前 `ChatCompact` 只接受：
-
-- `sessionId`
-- `userId`
-- `projectId`
-
-示例：
 
 ```powershell
 grpcurl -plaintext `
@@ -281,34 +243,12 @@ grpcurl -plaintext `
   vmm.v1.VMMService/ChatCompact
 ```
 
-预期返回：
-
-```json
-{
-  "accepted": true,
-  "updated": true,
-  "compactedTurnId": 12,
-  "traceId": "trc_xxx"
-}
-```
-
 说明：
 
 - 服务端会把该 session 当前最新已持久化 turn 记为 compact 边界
 - 如果当前 session 没有 turn，会返回成功但 `compactedTurnId=0`
 
 ## 十二、PostAction
-
-当前 `PostAction` 只接受：
-
-- `sessionId`
-- `userId`
-- `projectId`
-- `userContent`
-- `assistantContent`
-- `timeline`
-
-示例：
 
 ```powershell
 grpcurl -plaintext `
@@ -327,23 +267,140 @@ grpcurl -plaintext `
   vmm.v1.VMMService/PostAction
 ```
 
-预期返回：
+说明：
 
-```json
-{
-  "accepted": true,
-  "traceId": "trc_xxx"
-}
+- 服务端会先记录原始日志，再记录清洗后日志
+- 当前同步阶段会先把 turn 落到关系库存储，并把 session 入异步分析队列
+- 返回 `accepted=true` 只表示 turn 已稳定入库且异步提炼已入队，不表示 `analyze_turn` 已完成
+- 当 `timeline` 为空时，才会走 `NoiseGate`
+
+## 十三、GetProfileNodes
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "target": "PROFILE_TARGET_USER",
+    "userId": 7,
+    "projectId": 9,
+    "limit": 50
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/GetProfileNodes
 ```
 
 说明：
 
-- 服务端会先记录原始日志
-- 再记录清洗后日志
-- 然后异步写入 SQLite
-- 当 `timeline` 为空时，才会走 `NoiseGate`
+- `USER` 目标必须传 `userId`
+- `PROJECT / TEAM / SPACE` 目标必须传 `projectId`
 
-## 十三、常见错误
+## 十四、GetProfileBundle
+
+### FULL 模式
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "userId": 7,
+    "projectId": 9,
+    "mode": "PROFILE_BUNDLE_MODE_FULL",
+    "includeExplanation": true
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/GetProfileBundle
+```
+
+### SPLIT 模式
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "userId": 7,
+    "projectId": 9,
+    "mode": "PROFILE_BUNDLE_MODE_SPLIT"
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/GetProfileBundle
+```
+
+## 十五、ApplyProfileInstruction
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "target": "PROFILE_TARGET_PROJECT",
+    "projectId": 9,
+    "instruction": "这个项目统一使用 Go 1.24，并默认中文回复代码审查意见。"
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/ApplyProfileInstruction
+```
+
+## 十六、SearchMemoryEvents
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "userId": 7,
+    "projectId": 9,
+    "queries": [
+      "最近确认过的架构决策",
+      "当前项目的持久化限制"
+    ],
+    "topK": 5
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/SearchMemoryEvents
+```
+
+说明：
+
+- `queries` 是简单字符串数组
+- 不再使用 `query_json`
+- 不再使用 `background`
+
+## 十七、GetTurnDetails
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "turnIds": [12, 15]
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/GetTurnDetails
+```
+
+## 十八、WriteMemories
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "sessionId": "sess_001",
+    "userId": 7,
+    "projectId": 9,
+    "items": [
+      {
+        "scopeLevel": 2,
+        "abstract": "项目默认使用 gRPC 接口",
+        "details": "当前 OSS 本地版只暴露 gRPC，不再内建 HTTP 服务。",
+        "category": 5,
+        "priority": 2,
+        "memoryLevel": 3
+      }
+    ]
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/WriteMemories
+```
+
+说明：
+
+- `scopeLevel` 当前语义：
+  - `1 = session`
+  - `2 = project`
+  - `3 = user`
+- 返回只保留 `memoryId` 与 `deduped`
+
+## 十九、常见错误
 
 ### 参数错误
 
@@ -364,9 +421,9 @@ grpcurl -plaintext `
 
 - gRPC code：`ResourceExhausted`
 
-## 十四、推荐测试顺序
+## 二十、推荐测试顺序
 
-建议按这个顺序：
+建议按这个顺序联调：
 
 1. `Healthz`
 2. `ListProjects`
@@ -375,4 +432,9 @@ grpcurl -plaintext `
 5. `PostAction`
 6. `ChatCompact`
 7. `PreCheck`
-8. `DeleteProject/DeleteUser/MigrateProject`
+8. `SearchMemoryEvents`
+9. `GetTurnDetails`
+10. `GetProfileNodes / GetProfileBundle`
+11. `ApplyProfileInstruction`
+12. `WriteMemories`
+13. `DeleteProject / DeleteUser / MigrateProject`

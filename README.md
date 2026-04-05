@@ -9,20 +9,19 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 当前运行时的定位是：
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
-- 默认用 SQLite 保存层级、session、turn 记录、turn 提炼结果与长期 SQL 数据
-- 用 LanceDB 保存向量数据
+- 默认 `split` 模式使用 SQLite 保存关系数据、用 LanceDB 保存向量数据
+- 显式切换 `storage.mode=combined` 后，会改为由 PostgreSQL 统一承载关系与向量能力
 - 由 Caddy 等外部反向代理负责 TLS
 
 ## 文档导航
 
-- [层级数据模型与 gRPC 设计（中文）](./docs/hierarchy-grpc-design_CN.md)
+- [当前架构与存储模型（中文）](./docs/hierarchy-grpc-design_CN.md)
 - [gRPC 对接说明（中文）](./docs/grpc-integration-guide_CN.md)
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
 - [冷数据回收治理说明（中文）](./docs/retention-governance-guide_CN.md)
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
-- [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 - [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
 - [画像 gRPC 查询与手工指令接口（中文）](./docs/profile-grpc-interfaces_CN.md)
 
@@ -57,21 +56,25 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 ### 数据后端
 
-当前主线默认保留两条本地数据线：
+当前主线保留两种正式运行模式：
 
-- SQLite：默认关系库存储，负责层级、用户、session、turn 记录和长期 SQL 记录
-  - 适配层优先使用 typed params、`ExecuteBatch` 和 sqlite 网关声明的可重试 trailer 语义
-  - schema 升级改为非破坏性 migration，不再因版本变化直接清空历史调试数据
-  - 当前版本信息会写入 `vmm_schema_versions`，并保留对旧 `vmm_version` 的兼容同步
-- LanceDB：向量写入、检索和删除
-  - 向量 schema 版本与 SQLite 独立跟踪
-  - 只有 LanceDB 列结构变化时，启动期才会触发表重建与 SQLite 回灌
+- `split`（默认）
+  - SQLite：关系库存储，负责层级、用户、session、turn、长期记忆、画像与回收治理元数据
+    - 适配层优先使用 typed params、`ExecuteBatch` 和 sqlite 网关声明的可重试 trailer 语义
+    - schema 升级改为非破坏性 migration，不再因版本变化直接清空历史调试数据
+    - 当前版本信息会写入 `vmm_schema_versions`，并保留对旧 `vmm_version` 的兼容同步
+  - LanceDB：向量写入、检索和删除
+    - 向量 schema 版本与 SQLite 独立跟踪
+    - 只有 LanceDB 列结构变化时，启动期才会触发表重建与 SQLite 回灌
+- `combined`（显式启用）
+  - PostgreSQL：统一承载关系数据、检索索引与向量能力
+  - 该模式只在 `storage.mode=combined` 且 `storage.combined_provider=postgres` 时启用
 
 运行时已经移除：
 
 - HTTP 服务
 - 应用内 TLS
-- 旧兼容关系库存 provider
+- 旧历史兼容 provider 回退路径
 - 内存关系库存根 / 内存向量库存根回退
 
 ## 核心约束
@@ -195,7 +198,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 然后把记忆候选、相似旧记忆、画像活跃节点和新画像候选，一起送入一次 `review_postaction_candidates`
     - 自动提炼与统一评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
 15. 对统一评审后保留下来的新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
-16. 只有 LanceDB 成功后，才会回写关系库存储（默认 SQLite）：
+16. 只有向量侧写入成功后，才会回写当前启用的关系库存储：
     - `vmm_turn_records.details / details_budget / extracted_status`
     - 统一后的 `vmm_memory_nodes`
       - 包含聚合后的 `support_count / rebuttal_count`

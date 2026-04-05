@@ -2,9 +2,9 @@
 
 ## 文档目标
 
-这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何在单轮写入后先稳定落库并立即返回，再由后台异步完成 LLM 提炼，并把结果写入 SQLite（默认）与 LanceDB。
+这份文档说明当前主线版本唯一有效的 `PostAction` gRPC 契约、清洗流程、噪声门位置，以及当前如何在单轮写入后先稳定落库并立即返回，再由后台异步完成 LLM 提炼，并把结果写入当前启用的存储后端。
 
-当前默认的 SQLite 关系库存储适配层会优先使用：
+当前默认 `split` 模式下的 SQLite 关系库存储适配层会优先使用：
 
 - typed params
 - `ExecuteBatch`
@@ -30,7 +30,7 @@
 2. 记录原始日志
 3. 清洗待存储文本
 4. 记录清洗后日志
-5. 先把脱水后的 turn 记录稳定写入关系库存储（默认 SQLite）
+5. 先把脱水后的 turn 记录稳定写入当前启用的关系库存储
 6. 把后续 LLM 分析转交给 session 队列，并立即返回 `accepted=true`
 
 ## 请求结构
@@ -174,7 +174,7 @@ message PostActionTimelineItem {
     - 顶层 `assistant_content` 保留
     - 这里的“脱水”指的是整理成稳定 JSON 分析单元，不再对 `timeline[*].type=assistant` 做二次占位替换
 13. 计算脱水 JSON 的 token 预算
-14. 追加到 SQLite：
+14. 追加到关系库存储（默认 `split` 模式为 SQLite；`combined` 模式为 PostgreSQL）：
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
 15. turn 写入成功后，会由后台队列异步发起一次单轮 `analyze_turn`
@@ -254,7 +254,7 @@ message PostActionTimelineItem {
     - 会先对每条 `memory_nodes[].abstract` 做 embedding
     - 先把新向量写入 LanceDB
     - LanceDB 行 `id` 会回填成对应 `memory_nodes[].vector_id`
-21. 只有新向量写入成功后，才会回写 SQLite：
+21. 只有新向量写入成功后，才会回写当前启用的关系库存储：
     - 更新当前 turn：
       - `details`
       - `details_budget`
@@ -304,7 +304,7 @@ message PostActionTimelineItem {
     - 把这些节点批量标记成 `expired`
     - 读取受影响 user/project 当前剩余的 `active` 节点
     - 由后端重新渲染 `vmm_users.profile / vmm_projects.profile`
-26. 如果 LanceDB 已写入新向量，但 SQLite 异步回写失败：
+26. 在 `split` 模式下，如果 LanceDB 已写入新向量，但关系库异步回写失败：
     - 会尝试按这次新生成的 `vector_id` 反向删除 LanceDB 行
     - 避免 `extracted_status=0` 却残留孤立新向量
 27. 当前限制：
@@ -369,7 +369,7 @@ message PostActionTimelineItem {
 语义：
 
 - `pending`
-  - turn 已写入 SQLite，但还没完成 LLM 提炼
+  - turn 已写入关系库存储，但还没完成 LLM 提炼
 - `done`
   - `details / memory_nodes / profile_nodes` 已完成回写
 
@@ -449,7 +449,7 @@ message PostActionTimelineItem {
 
 ## 最终写入的表
 
-当前主线会写入 SQLite 的以下表：
+当前主线会把关系数据写入当前启用的关系库存储（默认 `split` 模式为 SQLite；`combined` 模式为 PostgreSQL），逻辑表包括：
 
 - `vmm_sessions`
 - `vmm_turn_records`
@@ -461,7 +461,7 @@ message PostActionTimelineItem {
 - `vmm_users.profile`
 - `vmm_projects.profile`
 
-同时会在 LanceDB 中写入当前 turn 提炼出的记忆向量：
+在 `split` 模式下，还会在 LanceDB 中写入当前 turn 提炼出的记忆向量：
 
 - 行主键：`id`
 - 关联键：与 `vmm_memory_nodes.vector_id` 一一对应

@@ -1,5 +1,8 @@
 # VulcanMemoryMesh 审阅内容核实与修复报告
 
+> 说明：这是一份历史审阅记录，不是当前主线接口规范。
+> 当前对外契约与运行时行为应以 `README.md`、`docs/grpc-integration-guide_CN.md`、`docs/api-test-guide_CN.md`、`docs/post-action-guide_CN.md` 和 `vmm.proto` 为准。
+
 ## 摘要
 
 本次对审阅内容中的 11 条判断逐条做了代码级核实。结论是：

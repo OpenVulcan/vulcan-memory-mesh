@@ -60,7 +60,7 @@
 5. 清洗后日志记录
 6. 后台 `PostActionUseCase`
 7. **NoiseGate**
-8. SQLite 写入
+8. 关系库存写入（默认 `split` 模式为 SQLite；`combined` 模式为 PostgreSQL）
 
 也就是说：
 
@@ -264,7 +264,7 @@
 结果：
 
 - 跳过 `NoiseGate`
-- 直接把 `user / timeline / assistant` 组装成一条脱水 turn 写入关系库存储（默认 SQLite）
+- 直接把 `user / timeline / assistant` 组装成一条脱水 turn 写入当前启用的关系库存储
 
 ## 编写规则建议
 

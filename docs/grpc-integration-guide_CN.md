@@ -10,7 +10,7 @@
 - 业务接口应该传什么
 - 管理接口应该传什么
 - trace、大小限制、超时和 TLS 应该怎么处理
-- 默认关系库存储已经切到 SQLite，旧兼容 provider 已移除
+- 默认运行模式是 `split(SQLite + LanceDB)`，显式切换 `storage.mode=combined` 时会改为 PostgreSQL 组合库
 
 ## 一、当前服务模型
 
@@ -681,7 +681,7 @@
 - 清洗 `user_content` / `timeline[].content` / `assistant_content`
 - 稳定写入一条 turn 后立即返回 `accepted=true`
 - 后台异步工作器再继续执行单轮提炼
-- 异步提炼写入关系库存储（默认 SQLite）前，会先完成统一记忆向量写入和必要的回滚保护
+- 异步提炼在写回当前启用的存储后端前，会先完成统一记忆写入和必要的回滚保护
 
 同样也有一个前提：
 
