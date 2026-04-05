@@ -230,3 +230,38 @@ func TestBuildPostgresDeleteCompletedVectorGCJobsSQLDeletesRows(t *testing.T) {
 		t.Fatalf("delete completed vector gc jobs sql should not update metadata rows: %q", sql)
 	}
 }
+
+// TestBuildPostgresColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns verifies the independent cold-turn scan only queues sessions whose old turns are both outside the hot window and free from memory/profile references.
+// TestBuildPostgresColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns 用于验证独立冷 turn 扫描只会为“超出热窗口且没有记忆/画像引用”的旧 turn 所在 session 入队。
+func TestBuildPostgresColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns(t *testing.T) {
+	args := &sqlArgsBuilder{}
+	store := &Store{cfg: Config{Schema: "public"}}
+	clause := buildPostgresColdTurnJobSessionAvailabilityClause(args, store, 8)
+	if !strings.Contains(clause, "LIMIT 8") {
+		t.Fatalf("cold-turn availability clause missing hot-window limit: %q", clause)
+	}
+	if !strings.Contains(clause, "FROM "+store.memoryNodesTable()+" mn WHERE mn.source_turn_id = tr.id") {
+		t.Fatalf("cold-turn availability clause missing memory reference guard: %q", clause)
+	}
+	if !strings.Contains(clause, "FROM "+store.profileNodesTable()+" pn WHERE pn.turn_id = tr.id") {
+		t.Fatalf("cold-turn availability clause missing profile reference guard: %q", clause)
+	}
+	if got := len(args.Args()); got != 1 {
+		t.Fatalf("cold-turn availability args len = %d, want 1", got)
+	}
+}
+
+// TestBuildPostgresClaimPendingRecycleJobsSQLUsesSkipLocked verifies the recycle-job claim SQL keeps the SKIP LOCKED lease semantics so concurrent maintenance workers do not consume the same cold-turn job twice.
+// TestBuildPostgresClaimPendingRecycleJobsSQLUsesSkipLocked 用于验证回收任务领取 SQL 保留了 SKIP LOCKED 租约语义，避免并发维护工作器重复消费同一冷 turn 任务。
+func TestBuildPostgresClaimPendingRecycleJobsSQLUsesSkipLocked(t *testing.T) {
+	sql := buildPostgresClaimPendingRecycleJobsSQL("public.vmm_recycle_jobs")
+	if !strings.Contains(sql, "FOR UPDATE SKIP LOCKED") {
+		t.Fatalf("claim recycle jobs sql missing SKIP LOCKED: %q", sql)
+	}
+	if !strings.Contains(sql, "UPDATE public.vmm_recycle_jobs AS jobs") {
+		t.Fatalf("claim recycle jobs sql missing queue update target: %q", sql)
+	}
+	if !strings.Contains(sql, "RETURNING jobs.id, jobs.session_id") {
+		t.Fatalf("claim recycle jobs sql missing returned job payload: %q", sql)
+	}
+}

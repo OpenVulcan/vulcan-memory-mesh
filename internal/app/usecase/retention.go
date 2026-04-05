@@ -19,6 +19,14 @@ const (
 	// defaultRetentionRecycleBatchSize 用于限制单次回收批量，避免维护流程长时间独占共享存储。
 	defaultRetentionRecycleBatchSize = 128
 
+	// defaultRetentionTurnJobScanBatchSize bounds one cold-turn candidate scan so the maintenance worker can enqueue recyclable sessions incrementally instead of building one unbounded queue burst.
+	// defaultRetentionTurnJobScanBatchSize 用于限制一次冷 turn 候选扫描批量，让维护工作器按增量入队可回收 session，而不是一次性制造无界任务洪峰。
+	defaultRetentionTurnJobScanBatchSize = 64
+
+	// defaultRetentionRecycleJobBatchSize bounds one claimed recycle-job batch so cold-turn execution stays incremental and does not monopolize the shared stores.
+	// defaultRetentionRecycleJobBatchSize 用于限制一次领取的回收任务批量，让冷 turn 执行保持渐进，不会长时间独占共享存储。
+	defaultRetentionRecycleJobBatchSize = 16
+
 	// defaultRetentionIdleSessionBatchSize bounds one idle-session recycle pass so the maintenance worker can compact several cold sessions without monopolizing the shared stores.
 	// defaultRetentionIdleSessionBatchSize 用于限制单次 idle-session 回收批量，让维护工作器能压缩多个冷 session，同时避免长时间独占共享存储。
 	defaultRetentionIdleSessionBatchSize = 32
@@ -34,6 +42,14 @@ const (
 	// defaultRetentionVectorGCRetryDelay keeps failed sidecar vector deletes on a calm fixed retry cadence so transient vector-store outages do not create a busy retry loop.
 	// defaultRetentionVectorGCRetryDelay 用于给失败的旁路向量删除设置平稳且固定的重试延迟，避免向量库瞬时故障引发忙等式重试。
 	defaultRetentionVectorGCRetryDelay = 5 * time.Minute
+
+	// defaultRetentionRecycleJobRetryDelay keeps failed cold-turn recycle jobs on a calm fixed retry cadence so transient lock contention does not create a busy retry loop.
+	// defaultRetentionRecycleJobRetryDelay 用于给失败的冷 turn 回收任务设置平稳且固定的重试延迟，避免瞬时锁竞争引发忙等式重试。
+	defaultRetentionRecycleJobRetryDelay = 5 * time.Minute
+
+	// defaultRetentionRecycleJobClaimLease reserves one claimed recycle-job batch for a short bounded window so concurrent maintenance workers do not execute the same cold-turn work twice.
+	// defaultRetentionRecycleJobClaimLease 用于给一批已领取的回收任务保留一个短而有界的租约窗口，避免并发维护工作器重复执行同一批冷 turn 工作。
+	defaultRetentionRecycleJobClaimLease = 2 * time.Minute
 
 	// defaultRetentionVectorGCClaimLease reserves one claimed retry batch for a short bounded window so concurrent maintenance workers do not delete the same vectors repeatedly.
 	// defaultRetentionVectorGCClaimLease 用于给一批已领取的重试任务保留一个短而有界的租约窗口，避免并发维护工作器重复删除同一批向量。
@@ -158,6 +174,21 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		u.logRecycleResult(recycleResult)
 	}
 
+	// Enqueue independent cold-turn recycle work before execution so scan and execution no longer share one transaction path.
+	// 先为独立冷 turn 回收入队，再单独执行已领取任务，让扫描与执行不再共用同一事务路径。
+	enqueuedJobCount, enqueueErr := u.store.EnqueueColdTurnRecycleJobs(ctx, logicdomain.ColdTurnRecycleJobEnqueueQuery{
+		Limit:             defaultRetentionTurnJobScanBatchSize,
+		ScannedAt:         now,
+		NextRunAt:         now,
+		TurnHotWindowSize: normalizeRetentionTurnHotWindowSize(u.cfg.TurnHotWindowSize),
+	})
+	if enqueueErr != nil {
+		u.logError("retention cold turn job enqueue failed", enqueueErr)
+	} else {
+		u.logRecycleJobEnqueueCount(enqueuedJobCount)
+	}
+	u.runPendingColdTurnRecycleJobs(ctx, now)
+
 	// Recycle long-idle sessions only after terminal-memory recycle has already shrunk the obvious cold rows, so the session pass can focus on active-but-expired session facts and orphaned turns.
 	// 先完成终态记忆回收，再处理长期空闲 session，让后者聚焦 active 但已失效的 session 事实和无引用旧 turn。
 	idleBefore := now.Add(-u.cfg.SessionIdleRecycleAfter)
@@ -188,6 +219,58 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		return
 	}
 	u.logPurgeResult(purgeResult)
+}
+
+// runPendingColdTurnRecycleJobs claims one bounded recycle-job batch from the persistent cold-turn queue and executes each claimed session archive independently so scan and execution remain separated.
+// runPendingColdTurnRecycleJobs 用于从持久化冷 turn 队列里领取一批有界回收任务，并逐条独立执行每个 session 归档，让扫描与执行保持分离。
+func (u *RetentionUseCase) runPendingColdTurnRecycleJobs(ctx context.Context, now time.Time) {
+	if u == nil || u.store == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now = chooseRetentionTimeOrNow(now)
+	claimUntil := now.Add(defaultRetentionRecycleJobClaimLease)
+	jobs, err := u.store.ClaimPendingRecycleJobs(ctx, logicdomain.RecycleJobTypeColdTurn, now, claimUntil, defaultRetentionRecycleJobBatchSize)
+	if err != nil {
+		u.logError("retention cold turn recycle job claim failed", err)
+		return
+	}
+	if len(jobs) == 0 {
+		return
+	}
+
+	batchIDs := make([]uint64, 0, len(jobs))
+	sessionIDs := make([]uint64, 0, len(jobs))
+	recycledTurnCount := 0
+	for _, job := range jobs {
+		result, recycleErr := u.store.RecycleColdTurns(ctx, logicdomain.ColdTurnRecycleQuery{
+			SessionID:         job.SessionID,
+			RecycledAt:        now,
+			TurnHotWindowSize: normalizeRetentionTurnHotWindowSize(u.cfg.TurnHotWindowSize),
+			RecycleReason:     logicdomain.RecycleReasonColdTurnArchive,
+		})
+		if recycleErr != nil {
+			u.logError("retention cold turn recycle execution failed", recycleErr)
+			retryAt := now.Add(defaultRetentionRecycleJobRetryDelay)
+			if retryErr := u.store.RetryRecycleJobs(ctx, []uint64{job.ID}, retryAt, recycleErr.Error()); retryErr != nil {
+				u.logError("retention cold turn recycle reschedule failed", retryErr)
+			}
+			continue
+		}
+		if completeErr := u.store.CompleteRecycleJobs(ctx, []uint64{job.ID}, now); completeErr != nil {
+			u.logError("retention cold turn recycle completion failed", completeErr)
+			continue
+		}
+		if result.BatchID == 0 || result.RecycledTurnCount <= 0 {
+			continue
+		}
+		batchIDs = append(batchIDs, result.BatchID)
+		sessionIDs = append(sessionIDs, result.SessionID)
+		recycledTurnCount += result.RecycledTurnCount
+	}
+	u.logColdTurnRecycleResult(batchIDs, sessionIDs, recycledTurnCount)
 }
 
 // cleanupVectors removes obsolete vector rows after the relational recycle transaction has succeeded; if the sidecar delete fails, the vector ids are persisted into the retry queue instead of being lost after trash purge.
@@ -297,6 +380,32 @@ func (u *RetentionUseCase) logRecycleResult(result logicdomain.MemoryRecycleResu
 		"memory_count", result.RecycledMemoryCount,
 		"context_count", result.RecycledContextCount,
 		"vector_count", len(result.RecycledVectorIDs),
+	)
+}
+
+// logRecycleJobEnqueueCount emits one concise operational log only when the cold-turn scan actually persisted new recycle jobs.
+// logRecycleJobEnqueueCount 用于仅在冷 turn 扫描确实持久化了新回收任务时输出一条简洁运维日志。
+func (u *RetentionUseCase) logRecycleJobEnqueueCount(enqueuedJobCount int) {
+	if u == nil || u.logger == nil || enqueuedJobCount <= 0 {
+		return
+	}
+	u.logger.Info(
+		"retention enqueued cold turn recycle jobs",
+		"job_count", enqueuedJobCount,
+	)
+}
+
+// logColdTurnRecycleResult emits one concise operational log only when one claimed cold-turn recycle batch actually archived old turns into trash.
+// logColdTurnRecycleResult 用于仅在已领取的冷 turn 回收任务确实把旧 turn 迁入回收站时输出一条简洁运维日志。
+func (u *RetentionUseCase) logColdTurnRecycleResult(batchIDs, sessionIDs []uint64, recycledTurnCount int) {
+	if u == nil || u.logger == nil || recycledTurnCount <= 0 {
+		return
+	}
+	u.logger.Info(
+		"retention recycled cold turns",
+		"batch_count", len(batchIDs),
+		"session_count", len(sessionIDs),
+		"turn_count", recycledTurnCount,
 	)
 }
 

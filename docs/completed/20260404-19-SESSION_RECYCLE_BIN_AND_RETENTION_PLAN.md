@@ -377,3 +377,57 @@
 13. PostgreSQL 主实现下，多 worker / 多实例不会重复消费同一 recycle batch 或同一 vector GC job。
 14. 历史 `superseded / expired / deleted` 存量能够被补扫收敛，不再无限滞留在热主表。
 15. 配置、用例、存储与文档更新全部补齐，并通过仓库要求的测试集合。
+
+---
+
+## 执行变更总结
+
+### 1. 核心修复与调整概述
+
+1. 本计划所定义的大部分主线能力已经在后续分阶段任务中落地，尤其包括：
+   - 跨 scope 记忆替代闭环；
+   - `memory_replace_scope` 配置接入；
+   - 冷状态记忆回收与 idle-session recycle；
+   - recycle trash / vector GC retry / metadata compaction；
+   - 多轮全局代码审核后的 correctness 与 stability hardening。
+2. 经后续核验，原计划中部分早期判断已被现实实现覆盖，不能再继续作为当前 backlog 直接使用。
+3. 当前仍未完全完成的真实遗留项已经被收敛并转移到新的现行计划：
+   - `docs/plan/20260405-26-RETENTION_REMAINING_ISSUES_REMEDIATION.md`
+4. 因此本计划从“唯一总控计划”转为“历史总控设计记录”，不再继续保留在 `docs/plan/` 目录中作为当前执行入口。
+
+### 2. 📂文件变更清单
+
+新增：
+
+1. 无
+
+修改：
+
+1. `docs/plan/20260404-19-SESSION_RECYCLE_BIN_AND_RETENTION_PLAN.md`
+
+删除：
+
+1. 无
+
+### 3. 💻关键落地结果归纳
+
+1. 已落地的核心能力：
+   - `post-action` 与 `WriteMemories` 的记忆替代闭环；
+   - retention 独立维护器；
+   - 终态记忆回收、session idle recycle、trash purge；
+   - SQLite / PostgreSQL 两侧的回收站与向量 GC 重试链路；
+   - 针对 pre-check、retrieval、lifecycle、retention 的多轮稳定性修复。
+2. 经复核后确认仍未彻底闭环的事项：
+   - 独立冷 `turn` 回收扫描 pass；
+   - recycle batch 显式批次 claim 与 scan / execute 分离；
+   - retention 专题文档；
+   - `README.md` 中记忆查询章节与当前 proto 的文档漂移。
+3. 已证伪或不再继续追踪的事项：
+   - `GRPC_MEMORY_API_SIMPLIFICATION_FOR_AI_TOOLS.md` 不再视为当前未实现主问题来源；
+   - pre-check 的同 turn 单代表项与等价文本保留第一条，视为当前确认过的设计取舍。
+
+### 4. ⚠️遗留问题与注意事项
+
+1. 本计划的原始内容已经不再适合作为当前唯一 backlog 真源，后续如继续引用，必须以后续完成计划与现行计划为准。
+2. 本计划归档后，真实未完成项统一由 `20260405-26-RETENTION_REMAINING_ISSUES_REMEDIATION.md` 承接。
+3. 若未来继续补 retention 工程尾项，应避免重新开启第二份总控计划，防止再次出现“多个计划同时描述同一 backlog”的问题。

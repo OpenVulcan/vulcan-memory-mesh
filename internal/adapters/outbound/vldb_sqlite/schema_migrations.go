@@ -111,6 +111,12 @@ func buildSQLiteSchemaMigrationPlan() schemaMigrationPlan {
 				Name:        "add turn trash table for idle session recycle",
 				Up:          migrateSQLiteSchema16To17,
 			},
+			{
+				FromVersion: 17,
+				ToVersion:   18,
+				Name:        "add recycle job queue for cold turn scan execute split",
+				Up:          migrateSQLiteSchema17To18,
+			},
 		},
 	}
 }
@@ -447,6 +453,35 @@ CREATE TABLE IF NOT EXISTS vmm_turn_records_trash (
 )`,
 		`CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_trash_recycled ON vmm_turn_records_trash(recycled_at, batch_id, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_trash_batch ON vmm_turn_records_trash(batch_id, session_id, id)`,
+	}
+	for _, statement := range statements {
+		if err := s.exec(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateSQLiteSchema17To18 adds the recycle-job queue used by the independent cold-turn scan/claim/execute pipeline.
+// migrateSQLiteSchema17To18 用于新增独立冷 turn 扫描/领取/执行链路使用的回收任务队列表。
+func migrateSQLiteSchema17To18(ctx context.Context, s *Store) error {
+	statements := []string{
+		`
+CREATE TABLE IF NOT EXISTS vmm_recycle_jobs (
+  id BIGINT PRIMARY KEY,
+  session_id BIGINT NOT NULL DEFAULT 0,
+  project_id BIGINT NOT NULL DEFAULT 0,
+  job_type TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_run_timestamp BIGINT NOT NULL DEFAULT 0,
+  claimed_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL
+)`,
+		`CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_unique ON vmm_recycle_jobs(session_id, job_type)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_pending ON vmm_recycle_jobs(job_type, next_run_timestamp, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_session ON vmm_recycle_jobs(session_id, project_id, id)`,
 	}
 	for _, statement := range statements {
 		if err := s.exec(ctx, statement); err != nil {

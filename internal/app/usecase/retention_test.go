@@ -17,6 +17,17 @@ import (
 // fakeRetentionStore 用于捕获 recycle 与 purge 调用，让 retention 维护测试可以断言精确治理输入，而不依赖真实数据库。
 type fakeRetentionStore struct {
 	recycleQuery     logicdomain.MemoryRecycleQuery
+	turnJobQuery     logicdomain.ColdTurnRecycleJobEnqueueQuery
+	claimJobType     string
+	claimJobDueBefore time.Time
+	claimJobUntil    time.Time
+	claimJobLimit    int
+	coldTurnQuery    logicdomain.ColdTurnRecycleQuery
+	completedRecycleJobIDs []uint64
+	completedRecycleAt time.Time
+	retriedRecycleJobIDs []uint64
+	recycleRetryAt   time.Time
+	recycleRetryLastError string
 	idleSessionQuery logicdomain.SessionIdleRecycleQuery
 	purgeBefore      time.Time
 	purgeLimit       int
@@ -31,11 +42,17 @@ type fakeRetentionStore struct {
 	retryLastError   string
 
 	recycleResult     logicdomain.MemoryRecycleResult
+	turnJobCount      int
+	claimedRecycleJobs []logicdomain.RecycleJobRecord
+	coldTurnResult    logicdomain.ColdTurnRecycleResult
 	idleSessionResult logicdomain.SessionIdleRecycleResult
 	purgeResult       logicdomain.RetentionTrashPurgeResult
 	claimedJobs       []logicdomain.VectorGCJobRecord
 
 	recycleErr     error
+	turnJobErr     error
+	claimJobErr    error
+	coldTurnErr    error
 	idleSessionErr error
 	purgeErr       error
 }
@@ -45,6 +62,47 @@ type fakeRetentionStore struct {
 func (f *fakeRetentionStore) RecycleColdMemories(_ context.Context, query logicdomain.MemoryRecycleQuery) (logicdomain.MemoryRecycleResult, error) {
 	f.recycleQuery = query
 	return f.recycleResult, f.recycleErr
+}
+
+// EnqueueColdTurnRecycleJobs records the latest cold-turn scan inputs and returns the configured fake enqueue count.
+// EnqueueColdTurnRecycleJobs 用于记录最近一次冷 turn 扫描输入，并返回预设的 fake 入队数量。
+func (f *fakeRetentionStore) EnqueueColdTurnRecycleJobs(_ context.Context, query logicdomain.ColdTurnRecycleJobEnqueueQuery) (int, error) {
+	f.turnJobQuery = query
+	return f.turnJobCount, f.turnJobErr
+}
+
+// ClaimPendingRecycleJobs records the latest recycle-job claim inputs and returns the configured fake recycle jobs.
+// ClaimPendingRecycleJobs 用于记录最近一次回收任务领取输入，并返回预设的 fake 回收任务。
+func (f *fakeRetentionStore) ClaimPendingRecycleJobs(_ context.Context, jobType string, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.RecycleJobRecord, error) {
+	f.claimJobType = jobType
+	f.claimJobDueBefore = dueBefore
+	f.claimJobUntil = claimUntil
+	f.claimJobLimit = limit
+	return append([]logicdomain.RecycleJobRecord(nil), f.claimedRecycleJobs...), f.claimJobErr
+}
+
+// RecycleColdTurns records the latest cold-turn execution query and returns the configured fake recycle result.
+// RecycleColdTurns 用于记录最近一次冷 turn 执行查询，并返回预设的 fake 回收结果。
+func (f *fakeRetentionStore) RecycleColdTurns(_ context.Context, query logicdomain.ColdTurnRecycleQuery) (logicdomain.ColdTurnRecycleResult, error) {
+	f.coldTurnQuery = query
+	return f.coldTurnResult, f.coldTurnErr
+}
+
+// CompleteRecycleJobs records the recycle-job ids completed after one cold-turn execution succeeds.
+// CompleteRecycleJobs 用于记录冷 turn 执行成功后被关闭的回收任务 id。
+func (f *fakeRetentionStore) CompleteRecycleJobs(_ context.Context, jobIDs []uint64, completedAt time.Time) error {
+	f.completedRecycleJobIDs = append([]uint64(nil), jobIDs...)
+	f.completedRecycleAt = completedAt
+	return nil
+}
+
+// RetryRecycleJobs records the recycle-job ids rescheduled after one cold-turn execution fails.
+// RetryRecycleJobs 用于记录冷 turn 执行失败后被重新调度的回收任务 id。
+func (f *fakeRetentionStore) RetryRecycleJobs(_ context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
+	f.retriedRecycleJobIDs = append([]uint64(nil), jobIDs...)
+	f.recycleRetryAt = nextRunAt
+	f.recycleRetryLastError = lastError
+	return nil
 }
 
 // RecycleIdleSessions records the latest idle-session recycle inputs and returns the configured fake result.
@@ -187,6 +245,18 @@ func TestRetentionUseCaseRunMaintenanceRecyclesAndPurges(t *testing.T) {
 	}
 	if store.recycleQuery.RecycleReason != logicdomain.RecycleReasonColdTerminalMemory {
 		t.Fatalf("recycle reason = %q", store.recycleQuery.RecycleReason)
+	}
+	if got, want := store.turnJobQuery.Limit, defaultRetentionTurnJobScanBatchSize; got != want {
+		t.Fatalf("cold-turn job scan limit = %d, want %d", got, want)
+	}
+	if got, want := store.turnJobQuery.TurnHotWindowSize, 8; got != want {
+		t.Fatalf("cold-turn job hot window = %d, want %d", got, want)
+	}
+	if got, want := store.claimJobType, logicdomain.RecycleJobTypeColdTurn; got != want {
+		t.Fatalf("recycle job claim type = %q, want %q", got, want)
+	}
+	if got, want := store.claimJobLimit, defaultRetentionRecycleJobBatchSize; got != want {
+		t.Fatalf("recycle job claim limit = %d, want %d", got, want)
 	}
 	if store.recycleQuery.ProtectPriorityFloor != logicdomain.MemoryPriorityP1 {
 		t.Fatalf("priority floor = %d, want %d", store.recycleQuery.ProtectPriorityFloor, logicdomain.MemoryPriorityP1)
@@ -386,6 +456,103 @@ func TestRetentionUseCaseRunMaintenanceCompletesClaimedVectorGCJobs(t *testing.T
 	}
 	if store.claimUntil.Before(beforeRun.Add(defaultRetentionVectorGCClaimLease-time.Second)) || store.claimUntil.After(afterRun.Add(defaultRetentionVectorGCClaimLease+time.Second)) {
 		t.Fatalf("claim until = %v, want around maintenance time + lease", store.claimUntil)
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceExecutesColdTurnRecycleJobs verifies maintenance now scans, claims, executes, and completes one bounded cold-turn recycle batch before idle-session compaction runs.
+// TestRetentionUseCaseRunMaintenanceExecutesColdTurnRecycleJobs 用于验证维护流程现在会在 idle-session 压缩前扫描、领取、执行并关闭一批有界的冷 turn 回收任务。
+func TestRetentionUseCaseRunMaintenanceExecutesColdTurnRecycleJobs(t *testing.T) {
+	store := &fakeRetentionStore{
+		turnJobCount: 1,
+		claimedRecycleJobs: []logicdomain.RecycleJobRecord{
+			{ID: 71, SessionID: 33, ProjectID: 9, JobType: logicdomain.RecycleJobTypeColdTurn, AttemptCount: 1},
+		},
+		coldTurnResult: logicdomain.ColdTurnRecycleResult{
+			BatchID:           17,
+			SessionID:         33,
+			ProjectID:         9,
+			RecycledTurnCount: 4,
+		},
+	}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: &fakeVectorStore{},
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	beforeRun := time.Now().UTC()
+	useCase.runMaintenance(context.Background())
+	afterRun := time.Now().UTC()
+
+	if got, want := store.turnJobQuery.Limit, defaultRetentionTurnJobScanBatchSize; got != want {
+		t.Fatalf("cold-turn job scan limit = %d, want %d", got, want)
+	}
+	if got, want := store.claimJobType, logicdomain.RecycleJobTypeColdTurn; got != want {
+		t.Fatalf("recycle job claim type = %q, want %q", got, want)
+	}
+	if got, want := store.claimJobLimit, defaultRetentionRecycleJobBatchSize; got != want {
+		t.Fatalf("recycle job claim limit = %d, want %d", got, want)
+	}
+	if got, want := store.coldTurnQuery.SessionID, uint64(33); got != want {
+		t.Fatalf("cold-turn recycle session id = %d, want %d", got, want)
+	}
+	if got, want := store.coldTurnQuery.TurnHotWindowSize, 8; got != want {
+		t.Fatalf("cold-turn recycle hot window = %d, want %d", got, want)
+	}
+	if got, want := store.coldTurnQuery.RecycleReason, logicdomain.RecycleReasonColdTurnArchive; got != want {
+		t.Fatalf("cold-turn recycle reason = %q, want %q", got, want)
+	}
+	if len(store.completedRecycleJobIDs) != 1 || store.completedRecycleJobIDs[0] != 71 {
+		t.Fatalf("completed recycle job ids = %v, want [71]", store.completedRecycleJobIDs)
+	}
+	if !store.completedRecycleAt.IsZero() && (store.completedRecycleAt.Before(beforeRun.Add(-time.Second)) || store.completedRecycleAt.After(afterRun.Add(time.Second))) {
+		t.Fatalf("completed recycle at = %v, want between %v and %v", store.completedRecycleAt, beforeRun, afterRun)
+	}
+	if store.claimJobUntil.Before(beforeRun.Add(defaultRetentionRecycleJobClaimLease-time.Second)) || store.claimJobUntil.After(afterRun.Add(defaultRetentionRecycleJobClaimLease+time.Second)) {
+		t.Fatalf("recycle job claim until = %v, want around maintenance time + lease", store.claimJobUntil)
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceRetriesFailedColdTurnRecycleJobs verifies failed cold-turn execution is rescheduled with a later next-run timestamp instead of being silently dropped.
+// TestRetentionUseCaseRunMaintenanceRetriesFailedColdTurnRecycleJobs 用于验证冷 turn 执行失败后会带着更晚的 next-run 时间重新调度，而不是被静默丢弃。
+func TestRetentionUseCaseRunMaintenanceRetriesFailedColdTurnRecycleJobs(t *testing.T) {
+	store := &fakeRetentionStore{
+		claimedRecycleJobs: []logicdomain.RecycleJobRecord{
+			{ID: 72, SessionID: 34, ProjectID: 9, JobType: logicdomain.RecycleJobTypeColdTurn, AttemptCount: 2},
+		},
+		coldTurnErr: errors.New("cold turn recycle failed"),
+	}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: &fakeVectorStore{},
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	beforeRun := time.Now().UTC()
+	useCase.runMaintenance(context.Background())
+	afterRun := time.Now().UTC()
+
+	if len(store.retriedRecycleJobIDs) != 1 || store.retriedRecycleJobIDs[0] != 72 {
+		t.Fatalf("retried recycle job ids = %v, want [72]", store.retriedRecycleJobIDs)
+	}
+	if store.recycleRetryLastError == "" || !strings.Contains(store.recycleRetryLastError, "cold turn recycle failed") {
+		t.Fatalf("recycle retry last error = %q", store.recycleRetryLastError)
+	}
+	minRetryAt := beforeRun.Add(defaultRetentionRecycleJobRetryDelay)
+	maxRetryAt := afterRun.Add(defaultRetentionRecycleJobRetryDelay)
+	if store.recycleRetryAt.Before(minRetryAt.Add(-time.Second)) || store.recycleRetryAt.After(maxRetryAt.Add(time.Second)) {
+		t.Fatalf("recycle retry at = %v, want between %v and %v", store.recycleRetryAt, minRetryAt, maxRetryAt)
+	}
+	if len(store.completedRecycleJobIDs) != 0 {
+		t.Fatalf("completed recycle job ids = %v, want none", store.completedRecycleJobIDs)
 	}
 }
 

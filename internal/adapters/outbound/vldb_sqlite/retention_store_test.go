@@ -366,3 +366,120 @@ func TestSQLiteVectorGCJobsClaimRetryAndComplete(t *testing.T) {
 		}
 	}
 }
+
+// TestBuildSQLiteColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns verifies the independent cold-turn scan only queues sessions whose old turns are both outside the hot window and free from memory/profile references.
+// TestBuildSQLiteColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns 用于验证独立冷 turn 扫描只会为“超出热窗口且没有记忆/画像引用”的旧 turn 所在 session 入队。
+func TestBuildSQLiteColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns(t *testing.T) {
+	clause, args := buildSQLiteColdTurnJobSessionAvailabilityClause(8)
+	if !strings.Contains(clause, "LIMIT 8") {
+		t.Fatalf("cold-turn availability clause missing hot-window limit: %q", clause)
+	}
+	if !strings.Contains(clause, "FROM vmm_memory_nodes mn WHERE mn.source_turn_id = tr.id") {
+		t.Fatalf("cold-turn availability clause missing memory reference guard: %q", clause)
+	}
+	if !strings.Contains(clause, "FROM vmm_profile_nodes pn WHERE pn.turn_id = tr.id") {
+		t.Fatalf("cold-turn availability clause missing profile reference guard: %q", clause)
+	}
+	if len(args) != 1 {
+		t.Fatalf("cold-turn availability args len = %d, want 1", len(args))
+	}
+}
+
+// TestEnqueueColdTurnRecycleJobsPersistsQueueRows verifies SQLite persists bounded cold-turn recycle jobs into the dedicated recycle-job queue instead of executing scan and archive in one coupled script.
+// TestEnqueueColdTurnRecycleJobsPersistsQueueRows 用于验证 SQLite 会把有界冷 turn 回收任务持久化到独立回收队列表，而不是把扫描和归档耦合在同一段脚本里直接执行。
+func TestEnqueueColdTurnRecycleJobsPersistsQueueRows(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	var capturedSQL string
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "SELECT id, session_key, user_id, team_id, space_id, project_id") && strings.Contains(sql, "FROM vmm_sessions"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":41,"session_key":"sess-cold-turn","user_id":1,"team_id":2,"space_id":3,"project_id":4,"turn_count":12,"last_summarized_id":0,"last_compacted_turn_id":0,"summarize_content":"","summarize_budget":0,"last_extract_observed_timestamp":0,"last_extract_completed_timestamp":0,"last_compacted_timestamp":0,"created_timestamp":1,"updated_timestamp":2}
+]`}, nil
+		case strings.Contains(sql, "SELECT COALESCE(MAX(id), 0) + 1 AS next_id FROM vmm_recycle_jobs"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"next_id":51}]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		capturedSQL = req.GetSql()
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	count, err := store.EnqueueColdTurnRecycleJobs(context.Background(), logicdomain.ColdTurnRecycleJobEnqueueQuery{
+		Limit:             4,
+		ScannedAt:         time.Unix(100, 0).UTC(),
+		NextRunAt:         time.Unix(100, 0).UTC(),
+		TurnHotWindowSize: 8,
+	})
+	if err != nil {
+		t.Fatalf("EnqueueColdTurnRecycleJobs returned error: %v", err)
+	}
+	if count != 1 {
+		t.Fatalf("enqueued job count = %d, want 1", count)
+	}
+	for _, fragment := range []string{
+		"INSERT OR IGNORE INTO vmm_recycle_jobs",
+		"'cold_turn_recycle_job'",
+		"BEGIN IMMEDIATE;",
+		"COMMIT;",
+	} {
+		if !strings.Contains(capturedSQL, fragment) {
+			t.Fatalf("expected enqueue sql to contain %q, got %q", fragment, capturedSQL)
+		}
+	}
+}
+
+// TestSQLiteRecycleJobsClaimRetryAndComplete verifies SQLite can lease due cold-turn recycle jobs and then reschedule or complete them through the dedicated persistent queue.
+// TestSQLiteRecycleJobsClaimRetryAndComplete 用于验证 SQLite 可以领取到期的冷 turn 回收任务，并通过独立持久化队列表完成重新调度或关闭。
+func TestSQLiteRecycleJobsClaimRetryAndComplete(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	executedSQL := make([]string, 0, 3)
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_recycle_jobs"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[
+{"id":61,"session_id":41,"project_id":4,"job_type":"cold_turn_recycle_job","attempt_count":1,"next_run_timestamp":1000,"claimed_timestamp":0,"last_error":"old error","created_timestamp":10,"updated_timestamp":20}
+]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		executedSQL = append(executedSQL, req.GetSql())
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+
+	jobs, err := store.ClaimPendingRecycleJobs(context.Background(), logicdomain.RecycleJobTypeColdTurn, time.Unix(2, 0).UTC(), time.Unix(5, 0).UTC(), 8)
+	if err != nil {
+		t.Fatalf("ClaimPendingRecycleJobs returned error: %v", err)
+	}
+	if len(jobs) != 1 || jobs[0].ID != 61 || jobs[0].SessionID != 41 {
+		t.Fatalf("claimed recycle jobs = %+v", jobs)
+	}
+	if err := store.RetryRecycleJobs(context.Background(), []uint64{61}, time.Unix(9, 0).UTC(), "retry failed"); err != nil {
+		t.Fatalf("RetryRecycleJobs returned error: %v", err)
+	}
+	if err := store.CompleteRecycleJobs(context.Background(), []uint64{61}, time.Unix(12, 0).UTC()); err != nil {
+		t.Fatalf("CompleteRecycleJobs returned error: %v", err)
+	}
+	if len(executedSQL) != 3 {
+		t.Fatalf("executed sql count = %d, want 3", len(executedSQL))
+	}
+	for idx, fragment := range []string{
+		"UPDATE vmm_recycle_jobs\nSET claimed_timestamp",
+		"attempt_count = attempt_count + 1",
+		"DELETE FROM vmm_recycle_jobs",
+	} {
+		if !strings.Contains(executedSQL[idx], fragment) {
+			t.Fatalf("expected executed sql #%d to contain %q, got %q", idx, fragment, executedSQL[idx])
+		}
+	}
+}

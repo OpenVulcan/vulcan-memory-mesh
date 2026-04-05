@@ -9,6 +9,10 @@ const (
 	// RecycleTypeColdMemory 用于标记一类回收批次：把终态长期记忆迁入回收站表。
 	RecycleTypeColdMemory = "cold_memory_recycle"
 
+	// RecycleTypeColdTurn marks one recycle batch that moved old unreferenced turns into the turn-trash table.
+	// RecycleTypeColdTurn 用于标记一类回收批次：把超出热窗口且无引用的旧 turn 迁入 turn 回收站表。
+	RecycleTypeColdTurn = "cold_turn_recycle"
+
 	// RecycleTypeSessionIdle marks one recycle batch that compacted one long-idle session by removing stale session memories and archiving orphaned cold turns.
 	// RecycleTypeSessionIdle 用于标记一类回收批次：对长期空闲 session 做压缩，移出陈旧 session 记忆并归档无引用旧 turn。
 	RecycleTypeSessionIdle = "session_idle_recycle"
@@ -17,9 +21,17 @@ const (
 	// RecycleReasonColdTerminalMemory 用于保存第一阶段 retention 工作器使用的稳定回收原因文本。
 	RecycleReasonColdTerminalMemory = "terminal durable memory recycled by retention maintenance"
 
+	// RecycleReasonColdTurnArchive keeps the stable batch reason text used when retention archives old turns outside the hot window.
+	// RecycleReasonColdTurnArchive 用于保存 retention 归档热窗口外旧 turn 时使用的稳定回收原因文本。
+	RecycleReasonColdTurnArchive = "cold turns archived by retention maintenance"
+
 	// RecycleReasonIdleSessionCompact keeps the stable batch reason text used when one idle session is compacted by retention maintenance.
 	// RecycleReasonIdleSessionCompact 用于保存 retention 维护器压缩长期空闲 session 时使用的稳定回收原因文本。
 	RecycleReasonIdleSessionCompact = "idle session compacted by retention maintenance"
+
+	// RecycleJobTypeColdTurn keeps the stable recycle-job type used by the independent cold-turn scan/claim/execute pipeline.
+	// RecycleJobTypeColdTurn 用于保存独立冷 turn 扫描/领取/执行链路使用的稳定回收任务类型。
+	RecycleJobTypeColdTurn = "cold_turn_recycle_job"
 
 	// VectorGCJobTypeRetentionRecycle keeps the stable vector-GC job type used when retention must retry a failed sidecar vector delete after relational recycle already committed.
 	// VectorGCJobTypeRetentionRecycle 用于保存 retention 在关系回收已提交后重试失败向量删除时使用的稳定向量 GC 任务类型。
@@ -67,6 +79,33 @@ type SessionIdleRecycleResult struct {
 	RecycledVectorIDs    []string
 }
 
+// ColdTurnRecycleJobEnqueueQuery describes one scan pass that should enqueue bounded cold-turn recycle jobs for sessions that currently expose recyclable turns.
+// ColdTurnRecycleJobEnqueueQuery 用于描述一次扫描任务，让系统为当前存在可回收旧 turn 的 session 入队一批有界的冷 turn 回收任务。
+type ColdTurnRecycleJobEnqueueQuery struct {
+	Limit             int
+	ScannedAt         time.Time
+	NextRunAt         time.Time
+	TurnHotWindowSize int
+}
+
+// ColdTurnRecycleQuery describes one execution pass for a claimed cold-turn recycle job.
+// ColdTurnRecycleQuery 用于描述一条已领取冷 turn 回收任务的执行参数。
+type ColdTurnRecycleQuery struct {
+	SessionID         uint64
+	RecycledAt        time.Time
+	TurnHotWindowSize int
+	RecycleReason     string
+}
+
+// ColdTurnRecycleResult stores the concrete recycle batch and old-turn count produced when one claimed cold-turn job is executed.
+// ColdTurnRecycleResult 用于保存执行一条已领取冷 turn 回收任务后产生的具体回收批次与旧 turn 数量。
+type ColdTurnRecycleResult struct {
+	BatchID           uint64
+	SessionID         uint64
+	ProjectID         uint64
+	RecycledTurnCount int
+}
+
 // RetentionTrashPurgeResult stores how many trash rows were permanently removed after the configured retention window elapsed.
 // RetentionTrashPurgeResult 用于保存超过保留窗口后被永久删除的回收站行数量。
 type RetentionTrashPurgeResult struct {
@@ -74,6 +113,21 @@ type RetentionTrashPurgeResult struct {
 	PurgedMemoryCount  int
 	PurgedContextCount int
 	PurgedTurnCount    int
+}
+
+// RecycleJobRecord stores one leased retention recycle job selected from the persistent cold-turn queue.
+// RecycleJobRecord 用于保存一条从持久化冷 turn 队列里领取出来的 retention 回收任务。
+type RecycleJobRecord struct {
+	ID           uint64
+	SessionID    uint64
+	ProjectID    uint64
+	JobType      string
+	AttemptCount int
+	NextRunAt    time.Time
+	ClaimedAt    time.Time
+	LastError    string
+	CreatedAt    time.Time
+	UpdatedAt    time.Time
 }
 
 // VectorGCJobEnqueueQuery describes one batch of vector ids that should be retried asynchronously after a best-effort delete failed.

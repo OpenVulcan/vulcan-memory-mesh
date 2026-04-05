@@ -20,6 +20,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
+- [冷数据回收治理说明（中文）](./docs/retention-governance-guide_CN.md)
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [后续记忆提炼与画像合并分析（非决案，中文）](./docs/memory-extraction-analysis_CN.md)
 - [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
@@ -308,50 +309,66 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 输入固定是：
   - `project_id`
   - `user_id`
-  - `query_json`
+  - `queries[]`
   - `top_k`
-- `query_json` 必须是 JSON 数组，每项结构为：
-  - `background`
-  - `query`
+- `queries[]` 是简单字符串数组：
+  - 每项代表一条独立检索语句
+  - 不再使用 `query_json`
+  - 不再使用 `background`
 - 服务端会：
   - 先解析 `project_id + user_id`
-  - 对每条 JSON 查询做 embedding
-  - 在当前 `team / space / project / user` 范围内搜索向量记忆
-- 返回内容会原样回显：
-  - `background`
-  - `query`
-- 每条命中都至少包含：
+  - 对每条 query 做裁剪、规范化和 embedding
+  - 在当前 `team / space / project / user` 范围内执行统一检索链路
+- 返回结果按 query 分组：
+  - `results[].query_index`
+  - `results[].query`
+  - `results[].hits[]`
+- 每条命中当前只返回 AI 真正需要的最小字段：
   - `memory_id`
-  - `turn_id`
-  - `session_id`
-  - `content`
-  - `details`
+  - `source_turn_id`
+  - `abstract`
+  - `details_preview`
   - `category`
-  - `score`
+- 如果 `source_turn_id > 0`：
+  - 可以继续调用 `GetTurnDetails`
+  - 读取对应 turn 的结构化对话详情
 
 `GetTurnDetails` 的特点：
 
 - 输入固定是：
   - `turn_ids[]`
 - 支持单条或多条查询
-- 返回的是数据库里保存的脱水 turn 原文，以及服务端已经拆好的具体对话字段：
-  - `dehydrated_content`
-  - `user_content`
+- 返回的是面向 AI 的结构化 turn 视图，而不是存储导向的脱水 JSON：
+  - `user_question`
   - `timeline`
-  - `assistant_content`
-  - `dehydrated_budget`
-  - `extracted_status`
-  - `details`
-  - `details_budget`
-  - `created_timestamp`
-  - `updated_timestamp`
+  - `assistant_answer`
+  - `detail`
 - 同时还会补充当前 turn 在同一 session 中的上下文编号：
   - `previous_turn_ids`
   - `next_turn_ids`
 - 默认返回当前 turn 前后各 `3` 轮的编号，方便上层 AI 继续按 id 发起更细的详情查询
 - 适合和 `SearchMemoryEvents` 联动：
-  - 先通过向量记忆查询拿到 `turn_id`
-  - 再按 `turn_id` 回查脱水原文和相邻编号
+  - 先通过记忆查询拿到 `source_turn_id`
+  - 再按 `source_turn_id` 回查结构化对话和相邻编号
+
+`WriteMemories` 的特点：
+
+- 输入固定是：
+  - `session_id`
+  - `user_id`
+  - `project_id`
+  - `items[]`
+- 每条 `items[]` 当前只保留最小主动写记忆载荷：
+  - `scope_level`
+  - `abstract`
+  - `details`
+  - `category`
+  - `priority`
+  - `memory_level`
+- 服务端会在已解析范围内补齐生命周期、执行短窗口软幂等，并复用统一 reviewer 做语义去重或替代
+- 返回只保留最小结果字段：
+  - `items[].memory_id`
+  - `items[].deduped`
 
 ## 构建与运行
 
@@ -683,10 +700,23 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 当前阶段说明：
 
 - 这组参数已经接入独立 retention 维护器
+- 当前维护器每轮会按固定顺序执行：
+  - 终态记忆回收
+  - 独立冷 `turn` 扫描入队
+  - 已领取冷 `turn` 回收任务执行
+  - idle-session recycle
+  - vector GC retry
+  - trash purge
 - 当前维护器会周期性回收 `superseded / expired / deleted` 的终态记忆，并把对应 `memory_context_edges` 一并迁入回收站
+- 独立冷 `turn` 回收现在使用持久化 `recycle_jobs` 队列做 scan / claim / execute 分离：
+  - 扫描阶段只为确实存在可回收旧 `turn` 的 session 入队
+  - 执行阶段只消费已 claim 的任务
+  - 多 worker 依赖队列租约语义避免重复消费同一条任务
 - 当前维护器也会按 `session_idle_recycle_after` 扫描长期空闲 session，并回收：
   - 已过期且长期未被强化的 `session` 级记忆
   - 超出热窗口 `session_analysis_history_turns + turn_keep_extra_turns` 且不再被主表记忆/画像引用的旧 `turn`
+- 冷 `turn` 回收与 idle-session 回收都只会迁移“没有主表记忆/画像引用”的旧 `turn`，以保持 `source_turn_id -> GetTurnDetails` 契约不被破坏
+- 已执行的回收结果会记录到 `recycle_batches`，只承担当前回收站批次锚点职责，不再作为长期恢复台账
 - SQLite 会同步清理 `vmm_memory_nodes_fts` 镜像；PostgreSQL 组合存储模式下不额外走向量 GC
 - 超过 `trash_retention` 的回收站批次会被后台 purge 永久清理，覆盖：
   - `memory_nodes_trash`

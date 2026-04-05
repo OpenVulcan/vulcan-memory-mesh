@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 17
+	currentSchemaVersion = 18
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -70,6 +70,7 @@ DROP TABLE IF EXISTS vmm_turn_records_trash;
 DROP TABLE IF EXISTS vmm_memory_context_edges_trash;
 DROP TABLE IF EXISTS vmm_memory_nodes_trash;
 DROP TABLE IF EXISTS vmm_recycle_batches;
+DROP TABLE IF EXISTS vmm_recycle_jobs;
 DROP TABLE IF EXISTS vmm_vector_gc_jobs;
 DROP TABLE IF EXISTS vmm_memory_nodes_fts;
 DROP TABLE IF EXISTS vmm_memory_context_edges;
@@ -258,6 +259,22 @@ CREATE TABLE IF NOT EXISTS vmm_recycle_batches (
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_recycle_batches_lookup ON vmm_recycle_batches(recycle_type, recycled_at, id);
 CREATE INDEX IF NOT EXISTS idx_vmm_recycle_batches_session ON vmm_recycle_batches(session_id, project_id, id);
+
+CREATE TABLE IF NOT EXISTS vmm_recycle_jobs (
+  id BIGINT PRIMARY KEY,
+  session_id BIGINT NOT NULL DEFAULT 0,
+  project_id BIGINT NOT NULL DEFAULT 0,
+  job_type TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  next_run_timestamp BIGINT NOT NULL DEFAULT 0,
+  claimed_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_error TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_unique ON vmm_recycle_jobs(session_id, job_type);
+CREATE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_pending ON vmm_recycle_jobs(job_type, next_run_timestamp, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_session ON vmm_recycle_jobs(session_id, project_id, id);
 
 CREATE TABLE IF NOT EXISTS vmm_memory_nodes_trash (
   batch_id BIGINT NOT NULL,

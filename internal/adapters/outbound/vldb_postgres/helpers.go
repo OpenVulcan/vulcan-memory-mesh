@@ -124,6 +124,12 @@ func (s *Store) recycleBatchesTable() string {
 	return s.qualifiedTable("vmm_recycle_batches")
 }
 
+// recycleJobsTable returns the fully-qualified recycle-job table name used by the cold-turn scan/claim/execute queue.
+// recycleJobsTable 用于返回冷 turn 扫描/领取/执行队列使用的回收任务表完整限定名称。
+func (s *Store) recycleJobsTable() string {
+	return s.qualifiedTable("vmm_recycle_jobs")
+}
+
 // vectorGCJobsTable returns the fully-qualified vector-gc job table name used to bridge SQL transactions and async vector deletion.
 // vectorGCJobsTable 用于返回向量 GC 任务表的完整限定名称，承接 SQL 事务与异步向量删除之间的衔接。
 func (s *Store) vectorGCJobsTable() string {
