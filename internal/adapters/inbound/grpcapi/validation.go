@@ -173,6 +173,69 @@ func NormalizeWriteMemoriesRequest(req *vmmv1.WriteMemoriesRequest) {
 	}
 }
 
+// NormalizeScratchpadUpsertRequest trims the isolated DWM upsert payload while preserving the caller's single-item vs batch-item intent for later conflict validation.
+// NormalizeScratchpadUpsertRequest 用于裁剪隔离 DWM upsert 载荷，并保留调用方原始的单项/批量意图，供后续冲突校验使用。
+func NormalizeScratchpadUpsertRequest(req *vmmv1.ScratchpadUpsertRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionId = strings.TrimSpace(req.GetSessionId())
+	req.PlanName = strings.TrimSpace(req.GetPlanName())
+	singleKey := strings.TrimSpace(req.GetKey())
+	singleValue := strings.TrimSpace(req.GetValue())
+	if req.Key != nil {
+		req.Key = proto.String(singleKey)
+	}
+	if req.Value != nil {
+		req.Value = proto.String(singleValue)
+	}
+	for _, item := range req.GetItems() {
+		if item == nil {
+			continue
+		}
+		item.Key = strings.TrimSpace(item.GetKey())
+		item.Value = strings.TrimSpace(item.GetValue())
+	}
+}
+
+// NormalizeScratchpadDeleteRequest trims the isolated DWM delete payload while preserving the caller's single-key vs batch-key intent for later conflict validation.
+// NormalizeScratchpadDeleteRequest 用于裁剪隔离 DWM delete 载荷，并保留调用方原始的单键/批量意图，供后续冲突校验使用。
+func NormalizeScratchpadDeleteRequest(req *vmmv1.ScratchpadDeleteRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionId = strings.TrimSpace(req.GetSessionId())
+	req.PlanName = strings.TrimSpace(req.GetPlanName())
+	singleKey := strings.TrimSpace(req.GetKey())
+	if req.Key != nil {
+		req.Key = proto.String(singleKey)
+	}
+	for idx, key := range req.GetKeys() {
+		req.Keys[idx] = strings.TrimSpace(key)
+	}
+}
+
+// NormalizeScratchpadGetRequest trims the isolated DWM get payload before validation and use-case execution begin.
+// NormalizeScratchpadGetRequest 用于在校验和用例执行开始前裁剪隔离 DWM get 载荷。
+func NormalizeScratchpadGetRequest(req *vmmv1.ScratchpadGetRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionId = strings.TrimSpace(req.GetSessionId())
+	if req.Key != nil {
+		req.Key = proto.String(strings.TrimSpace(req.GetKey()))
+	}
+}
+
+// NormalizeScratchpadCleanRequest trims the isolated DWM clean payload before validation starts.
+// NormalizeScratchpadCleanRequest 用于在校验开始前裁剪隔离 DWM clean 载荷。
+func NormalizeScratchpadCleanRequest(req *vmmv1.ScratchpadCleanRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionId = strings.TrimSpace(req.GetSessionId())
+}
+
 // NormalizeChatCompactRequest trims the compact acknowledgement payload before the scope resolver runs.
 // NormalizeChatCompactRequest 用于在范围解析执行前裁剪 compact 确认载荷。
 func NormalizeChatCompactRequest(req *vmmv1.ChatCompactRequest) {
@@ -471,6 +534,143 @@ func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest
 		if item.GetMemoryLevel() < 0 || item.GetMemoryLevel() > 4 {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].memory_level", idx), Message: "must be one supported memory level"}
 		}
+	}
+	return nil
+}
+
+// ValidateScratchpadUpsert checks the isolated DWM upsert payload before any plan guard or SQL mutation begins.
+// ValidateScratchpadUpsert 用于在任何计划守卫或 SQL 变更开始前校验隔离 DWM upsert 载荷。
+func (v *RequestValidator) ValidateScratchpadUpsert(req *vmmv1.ScratchpadUpsertRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "scratchpad_upsert", Message: "is required"}
+	}
+	if err := requireString("session_id", req.GetSessionId(), 128); err != nil {
+		return err
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	if err := requireString("plan_name", req.GetPlanName(), 128); err != nil {
+		return err
+	}
+	hasBatch := len(req.GetItems()) > 0
+	hasSingleKey := req.Key != nil
+	hasSingleValue := req.Value != nil
+	if hasBatch && (hasSingleKey || hasSingleValue) {
+		return logicdomain.ValidationError{Field: "items", Message: "must not be combined with key/value"}
+	}
+	if !hasBatch {
+		if !hasSingleKey || !hasSingleValue {
+			return logicdomain.ValidationError{Field: "key", Message: "key/value or items[] is required"}
+		}
+		if err := requireString("key", req.GetKey(), 128); err != nil {
+			return err
+		}
+		if err := requireString("value", req.GetValue(), 16000); err != nil {
+			return err
+		}
+		return nil
+	}
+	if len(req.GetItems()) > 32 {
+		return logicdomain.ValidationError{Field: "items", Message: "must contain at most 32 items"}
+	}
+	for idx, item := range req.GetItems() {
+		if item == nil {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d]", idx), Message: "item is required"}
+		}
+		if err := requireString(fmt.Sprintf("items[%d].key", idx), item.GetKey(), 128); err != nil {
+			return err
+		}
+		if err := requireString(fmt.Sprintf("items[%d].value", idx), item.GetValue(), 16000); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateScratchpadDelete checks the isolated DWM delete payload before plan-guard evaluation begins.
+// ValidateScratchpadDelete 用于在计划守卫开始前校验隔离 DWM delete 载荷。
+func (v *RequestValidator) ValidateScratchpadDelete(req *vmmv1.ScratchpadDeleteRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "scratchpad_delete", Message: "is required"}
+	}
+	if err := requireString("session_id", req.GetSessionId(), 128); err != nil {
+		return err
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	if err := requireString("plan_name", req.GetPlanName(), 128); err != nil {
+		return err
+	}
+	hasBatch := len(req.GetKeys()) > 0
+	hasSingleKey := req.Key != nil
+	if hasBatch && hasSingleKey {
+		return logicdomain.ValidationError{Field: "keys", Message: "must not be combined with key"}
+	}
+	if !hasBatch {
+		if !hasSingleKey {
+			return logicdomain.ValidationError{Field: "key", Message: "key or keys[] is required"}
+		}
+		if err := requireString("key", req.GetKey(), 128); err != nil {
+			return err
+		}
+		return nil
+	}
+	if len(req.GetKeys()) > 64 {
+		return logicdomain.ValidationError{Field: "keys", Message: "must contain at most 64 keys"}
+	}
+	for idx, key := range req.GetKeys() {
+		if err := requireString(fmt.Sprintf("keys[%d]", idx), key, 128); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateScratchpadGet checks the isolated DWM get payload before one read-only reload starts.
+// ValidateScratchpadGet 用于在只读 reload 开始前校验隔离 DWM get 载荷。
+func (v *RequestValidator) ValidateScratchpadGet(req *vmmv1.ScratchpadGetRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "scratchpad_get", Message: "is required"}
+	}
+	if err := requireString("session_id", req.GetSessionId(), 128); err != nil {
+		return err
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	if req.Key != nil {
+		if err := requireString("key", req.GetKey(), 128); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// ValidateScratchpadClean checks the isolated DWM clean payload before one explicit full-scope purge begins.
+// ValidateScratchpadClean 用于在显式整范围清空开始前校验隔离 DWM clean 载荷。
+func (v *RequestValidator) ValidateScratchpadClean(req *vmmv1.ScratchpadCleanRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "scratchpad_clean", Message: "is required"}
+	}
+	if err := requireString("session_id", req.GetSessionId(), 128); err != nil {
+		return err
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 	}
 	return nil
 }

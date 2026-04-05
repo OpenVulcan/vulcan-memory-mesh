@@ -6,6 +6,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `ChatCompact`
 - `PostAction`
 
+另外当前还提供一条与主长期记忆体系隔离的 DWM 支线：
+
+- `ScratchpadUpsert / ScratchpadDelete / ScratchpadGet / ScratchpadClean`
+
 当前运行时的定位是：
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
@@ -21,6 +25,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
 - [冷数据回收治理说明（中文）](./docs/retention-governance-guide_CN.md)
+- [DWM 确定性工作记忆说明（中文）](./docs/dwm-working-memory-guide_CN.md)
+- [DWM Deterministic Working Memory Guide (English)](./docs/dwm-working-memory-guide_EN.md)
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
 - [画像 gRPC 查询与手工指令接口（中文）](./docs/profile-grpc-interfaces_CN.md)
@@ -50,6 +56,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `SearchMemoryEvents`
 - `GetTurnDetails`
 - `WriteMemories`
+- `ScratchpadUpsert`
+- `ScratchpadDelete`
+- `ScratchpadGet`
+- `ScratchpadClean`
 - `ChatCompact`
 - `PreCheck`
 - `PostAction`
@@ -372,6 +382,88 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 返回只保留最小结果字段：
   - `items[].memory_id`
   - `items[].deduped`
+
+### DWM / Scratchpad 接口
+
+当前还提供一组独立于长期记忆体系的 DWM 接口：
+
+- `ScratchpadUpsert`
+- `ScratchpadDelete`
+- `ScratchpadGet`
+- `ScratchpadClean`
+
+这组接口的定位不是长期记忆，也不是 turn 提炼结果，而是给 AI Agent 保存“当前任务计划、关键步骤、关键文件摘要、关键约束”的确定性工作态。
+
+核心约束：
+
+- 固定定位字段：
+  - `project_id`
+  - `user_id`
+  - `session_id`
+- `session_id` 在这条链路里只是字符串定位键：
+  - 不会自动创建 `vmm_sessions`
+  - 不依赖主 session 生命周期
+- 每个 `project_id + user_id + session_id` 只允许存在一个 canonical `plan_name`
+- `ScratchpadUpsert`：
+  - 允许 `key + value` 单项写入
+  - 也允许 `items[]` 批量写入
+  - 但两种形式不能混传；一旦混传直接返回校验错误
+- `ScratchpadDelete`：
+  - 允许 `key` 单键删除
+  - 也允许 `keys[]` 批量删除
+  - 但两种形式不能混传；一旦混传直接返回校验错误
+- `Delete` 在空范围下不会锁定新计划：
+  - 直接返回成功
+  - `msg = "No scratchpad plan exists for the current session. Create records first."`
+- `Get` 在无数据时不会报错：
+  - 返回成功
+  - `items = []`
+  - `msg = "No scratchpad records found for the current session."`
+- `Get` 返回 metadata：
+  - `plan_name`
+  - `item_count`
+  - `updated_timestamp`
+- `Upsert / Delete` 返回稳定计数字段：
+  - `affected_count`
+  - `inserted_count`
+  - `updated_count`（仅 `Upsert`）
+- `Get` 返回的 `plan_name` 永远是当前 canonical 值
+- scratchpad 的批量写入/删除采用整批原子语义：
+  - 任一 item 非法则整批失败
+- scratchpad 不参与 `MigrateProject`
+  - 仅参与 `DeleteProject / DeleteUser` 的级联清理
+
+计划守卫规则：
+
+- 完全不一致：
+  - 拦截写入
+  - 返回英文自然语言提示，要求检查拼写或先执行 `Clean`
+- 忽略大小写后一致，但原始拼写不一致：
+  - 允许写入
+  - 返回消息前缀强插：
+    - `[FORMAT DRIFT WARNING] ...`
+
+接口返回约束：
+
+- `status` 使用 proto enum
+- `msg` 固定英文
+- 如果上层直接把结果暴露给 AI Agent：
+  - 调用方应先把 `status enum` 转译成模型更容易理解的文本语义
+
+当前 DWM 持久化模型：
+
+- `vmm_scratchpad_plans`
+  - 锁定唯一 `plan_name`
+  - `updated_timestamp` 作为整个 scratchpad session 的最后活动时间
+- `vmm_scratchpad_nodes`
+  - 保存具体 `key/value` 锚点
+
+当前过期治理：
+
+- 超过 `15` 天未更新的 scratchpad session 会被硬删除
+- 直接删 `nodes`，再删 `plans`
+- 不进入 recycle trash
+- 这条清理 pass 复用系统现有的半小时维护时钟
 
 ## 构建与运行
 

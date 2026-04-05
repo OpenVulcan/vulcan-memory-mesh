@@ -48,6 +48,8 @@ func DebugCleanManagedSchema(ctx context.Context, cfg Config) error {
 		"vmm_profile_nodes",
 		"vmm_memory_context_edges",
 		"vmm_memory_nodes",
+		"vmm_scratchpad_nodes",
+		"vmm_scratchpad_plans",
 		"vmm_turn_records",
 		"vmm_sessions",
 		"vmm_projects",

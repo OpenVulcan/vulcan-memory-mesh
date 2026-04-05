@@ -99,7 +99,21 @@ flowchart TD
 - `profile_instructions` 记录显式手工画像指令
 - 各 scope 的 `profile` 字段只是渲染结果，不再是事实源
 
-### 4. 回收治理
+### 4. DWM / Scratchpad
+
+- `scratchpad_plans`
+- `scratchpad_nodes`
+
+说明：
+
+- `scratchpad_plans` 锁定 `project_id + user_id + session_key` 下唯一 canonical `plan_name`
+- `scratchpad_nodes` 保存该计划下的确定性 `key/value` 锚点
+- 这条链路独立于 `sessions / turn_records / memory_nodes`
+- `session_id` 在这里仅作为字符串 `session_key` 使用
+- 超过 `15` 天未更新时会直接硬删除，不进入 recycle trash
+- 不参与 `MigrateProject`
+
+### 5. 回收治理
 
 - `recycle_batches`
 - `recycle_jobs`
@@ -147,7 +161,14 @@ flowchart TD
 - `GetTurnDetails`
 - `WriteMemories`
 
-### 4. 业务主链
+### 4. DWM 接口
+
+- `ScratchpadUpsert`
+- `ScratchpadDelete`
+- `ScratchpadGet`
+- `ScratchpadClean`
+
+### 5. 业务主链
 
 - `PreCheck`
 - `ChatCompact`
@@ -169,6 +190,12 @@ flowchart TD
 
 - 写入链和检索链看到的是同一套范围坐标
 - 不会因为客户端重复传层级字段而产生漂移
+
+例外：
+
+- `Scratchpad*` 不走这条统一范围解析器
+- 它不会自动创建 `vmm_sessions`
+- 只校验 `project_id / user_id` 是否真实存在，并把 `session_id` 当成独立字符串键使用
 
 ## 六、当前核心业务链
 
@@ -223,7 +250,36 @@ flowchart TD
 - 再走统一 reviewer 做语义去重或替代
 - 最终只返回 `memory_id + deduped`
 
-### 5. 画像接口
+### 5. `Scratchpad*`
+
+当前 DWM scratchpad 语义是：
+
+1. `ScratchpadUpsert`
+   - 首次写入会为当前 `project_id + user_id + session_id` 创建唯一计划锁
+   - 后续写入必须继续命中同一 `plan_name`
+   - `key + value` 与 `items[]` 不能混传
+   - 批量写入采用整批原子事务
+2. `ScratchpadDelete`
+   - 要求传 `plan_name`
+   - 但当前范围为空时不会锁定新计划，只返回引导消息
+   - `key` 与 `keys[]` 不能混传
+   - 批量删除采用整批原子事务
+3. `ScratchpadGet`
+   - 不带 `key` 时返回完整 scratchpad
+   - 带 `key` 时返回单项或空数组
+   - 返回 `plan_name / item_count / updated_timestamp`
+4. `ScratchpadClean`
+   - 删除当前范围下的全部 scratchpad 节点与计划锁
+
+计划守卫规则：
+
+- 忽略大小写后不一致：
+  - 拦截并返回英文提示
+- 仅大小写不同：
+  - 放行
+  - 在 `msg` 前缀追加 `[FORMAT DRIFT WARNING]`
+
+### 6. 画像接口
 
 - `GetProfileNodes`
   - 只返回单目标下当前 `active` 的原子化画像节点

@@ -52,6 +52,10 @@
 - `SearchMemoryEvents`
 - `GetTurnDetails`
 - `WriteMemories`
+- `ScratchpadUpsert`
+- `ScratchpadDelete`
+- `ScratchpadGet`
+- `ScratchpadClean`
 
 ### 业务面
 
@@ -148,6 +152,7 @@
 - `SearchMemoryEvents` 用于按 `project_id + user_id + queries[]` 主动搜索长期记忆
 - `GetTurnDetails` 用于按 `turn_ids[]` 回查结构化 turn 详情
 - `WriteMemories` 用于让 AI 工具主动写入长期记忆，不生成 turn
+- `Scratchpad*` 用于让 AI Agent 把当前任务的确定性工作态写入独立 DWM scratchpad
 - 如果默认 SQLite provider 返回 `SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA`，并通过 trailer 标记为可重试：
   - 服务端适配层会先做有界指数退避重试
 - 如果手工画像持久化阶段遇到关系库存储 provider 返回的“提交结果不确定”错误：
@@ -229,6 +234,92 @@
 - 如果当前 session 没有 turn，允许返回成功但不更新 compact 边界
 - 如果重复 compact 到同一最新 turn，会保持幂等
 
+### 2.5 DWM / Scratchpad
+
+当前还提供一条与长期记忆主链隔离的 DWM scratchpad 支线：
+
+- `ScratchpadUpsert`
+- `ScratchpadDelete`
+- `ScratchpadGet`
+- `ScratchpadClean`
+
+这条支线的边界非常明确：
+
+- 不进入 `memory_nodes`
+- 不进入 `SearchMemoryEvents`
+- 不创建 `vmm_sessions`
+- 不复用 retention trash
+- 只保存当前任务的确定性工作态
+
+固定定位字段：
+
+- `project_id`
+- `user_id`
+- `session_id`
+
+其中：
+
+- `session_id` 在这条链路里只是字符串 `session_key`
+- 服务端不会像 `PreCheck / ChatCompact / PostAction` 那样通过统一范围解析拦截器自动创建主 session
+
+计划守卫规则：
+
+- `ScratchpadUpsert / ScratchpadDelete` 都要求传 `plan_name`
+- 同一 `project_id + user_id + session_id` 只允许存在一个 canonical `plan_name`
+- 若当前范围还没有任何 scratchpad 数据：
+  - `Upsert` 首次写入会创建计划锁
+  - `Delete` 不会创建计划锁，只返回引导消息
+- 若输入计划名与当前计划名忽略大小写后不一致：
+  - 拦截写入或删除
+  - 返回英文自然语言提示，要求检查拼写或先调用 `Clean`
+- 若忽略大小写后一致，但原始拼写不同：
+  - 允许放行
+  - `msg` 最前面强插 `[FORMAT DRIFT WARNING]`
+
+请求形态规则：
+
+- `ScratchpadUpsert`
+  - 允许 `key + value`
+  - 也允许 `items[]`
+  - 但两种形式不能混传
+  - 若混传，直接返回 `InvalidArgument`
+- `ScratchpadDelete`
+  - 允许 `key`
+  - 也允许 `keys[]`
+  - 但两种形式不能混传
+  - 若混传，直接返回 `InvalidArgument`
+
+返回约束：
+
+- `status` 使用 `ScratchpadStatus` 枚举
+- `msg` 固定英文
+- `ScratchpadGet` 额外返回：
+  - `plan_name`
+  - `item_count`
+  - `updated_timestamp`
+- `ScratchpadUpsert` 额外返回：
+  - `affected_count`
+  - `inserted_count`
+  - `updated_count`
+- `ScratchpadDelete` 额外返回：
+  - `affected_count`
+- 调用方如果要把结果直接交给 AI Agent：
+  - 应先把 `ScratchpadStatus` 转译成模型更容易理解的文本状态
+
+空数据语义：
+
+- `Get` 无数据时：
+  - 返回成功
+  - `items = []`
+  - `msg = "No scratchpad records found for the current session."`
+- `Delete` 在当前无计划时：
+  - 返回成功
+  - `msg = "No scratchpad plan exists for the current session. Create records first."`
+- `Get` 返回的 `plan_name` 永远是当前 canonical 值
+- scratchpad 批量写入和批量删除都采用整批原子事务语义
+- scratchpad 不参与 `MigrateProject`
+  - 仅参与 `DeleteProject / DeleteUser` 的级联清理
+
 ### 3. PostAction
 
 当前业务请求只接受：
@@ -282,6 +373,10 @@
 - 这类失败发生在拦截器阶段
   - 不会进入 `PreCheck` / `ChatCompact` / `PostAction` 用例层
   - 不会自动创建 `session`
+- `Scratchpad*` 不走这条拦截器
+  - 它只校验 `project_id / user_id / session_id`
+  - 并确认 `project_id / user_id` 对应记录真实存在
+  - `session_id` 仅作为隔离 DWM 的字符串定位键
 
 ## 九、当前方法语义
 
@@ -649,6 +744,100 @@
 - `deduped`
   - `true` 表示命中软幂等，复用了既有 memory
   - `false` 表示这次实际创建了新 memory
+
+### ScratchpadUpsert
+
+用途：
+
+- 把当前任务的确定性工作记忆写入隔离 DWM scratchpad
+- 适合写入：
+  - 当前计划
+  - 关键发现
+  - 文件级摘要
+  - 后续执行步骤
+
+请求字段：
+
+- `session_id`
+- `user_id`
+- `project_id`
+- `plan_name`
+- `key + value`
+  或
+- `items[] = { key, value }`
+
+约束：
+
+- `plan_name` 长度必须 `<= 128`
+- 单次批量最多 `32` 条 item
+- `key` 长度必须 `<= 128`
+- `value` 长度必须 `<= 16000`
+- `key + value` 与 `items[]` 不能混传
+- 批量写入采用整批原子事务
+
+### ScratchpadDelete
+
+用途：
+
+- 删除当前 DWM scratchpad 中的一个或多个 key
+
+请求字段：
+
+- `session_id`
+- `user_id`
+- `project_id`
+- `plan_name`
+- `key`
+  或
+- `keys[]`
+
+约束：
+
+- `Delete` 在空范围时不会锁定 plan
+- `key` 与 `keys[]` 不能混传
+- 批量删除采用整批原子事务
+
+### ScratchpadGet
+
+用途：
+
+- 在上下文压缩后重新拉取完整 scratchpad 或某个单键锚点
+
+请求字段：
+
+- `session_id`
+- `user_id`
+- `project_id`
+- 可选 `key`
+
+语义：
+
+- 不传 `key`
+  - 返回当前范围下全部 scratchpad item
+- 传 `key`
+  - 返回命中的单项或空数组
+- 同时返回 metadata：
+  - `plan_name`
+  - `item_count`
+  - `updated_timestamp`
+
+### ScratchpadClean
+
+用途：
+
+- 显式结束当前任务并清空整份 DWM scratchpad
+
+请求字段：
+
+- `session_id`
+- `user_id`
+- `project_id`
+
+语义：
+
+- 删除当前范围下全部 scratchpad nodes 与 plan 锁
+- 空范围返回成功，不报错
+- 不参与项目迁移
 
 ### PreCheck
 

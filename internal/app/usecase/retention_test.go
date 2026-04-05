@@ -16,38 +16,38 @@ import (
 // fakeRetentionStore captures recycle and purge calls so retention maintenance tests can assert the exact governance inputs without touching a real database.
 // fakeRetentionStore 用于捕获 recycle 与 purge 调用，让 retention 维护测试可以断言精确治理输入，而不依赖真实数据库。
 type fakeRetentionStore struct {
-	recycleQuery     logicdomain.MemoryRecycleQuery
-	turnJobQuery     logicdomain.ColdTurnRecycleJobEnqueueQuery
-	claimJobType     string
-	claimJobDueBefore time.Time
-	claimJobUntil    time.Time
-	claimJobLimit    int
-	coldTurnQuery    logicdomain.ColdTurnRecycleQuery
+	recycleQuery           logicdomain.MemoryRecycleQuery
+	turnJobQuery           logicdomain.ColdTurnRecycleJobEnqueueQuery
+	claimJobType           string
+	claimJobDueBefore      time.Time
+	claimJobUntil          time.Time
+	claimJobLimit          int
+	coldTurnQuery          logicdomain.ColdTurnRecycleQuery
 	completedRecycleJobIDs []uint64
-	completedRecycleAt time.Time
-	retriedRecycleJobIDs []uint64
-	recycleRetryAt   time.Time
-	recycleRetryLastError string
-	idleSessionQuery logicdomain.SessionIdleRecycleQuery
-	purgeBefore      time.Time
-	purgeLimit       int
-	enqueueQuery     logicdomain.VectorGCJobEnqueueQuery
-	claimDueBefore   time.Time
-	claimUntil       time.Time
-	claimLimit       int
-	completedJobIDs  []uint64
-	completedAt      time.Time
-	retriedJobIDs    []uint64
-	retryAt          time.Time
-	retryLastError   string
+	completedRecycleAt     time.Time
+	retriedRecycleJobIDs   []uint64
+	recycleRetryAt         time.Time
+	recycleRetryLastError  string
+	idleSessionQuery       logicdomain.SessionIdleRecycleQuery
+	purgeBefore            time.Time
+	purgeLimit             int
+	enqueueQuery           logicdomain.VectorGCJobEnqueueQuery
+	claimDueBefore         time.Time
+	claimUntil             time.Time
+	claimLimit             int
+	completedJobIDs        []uint64
+	completedAt            time.Time
+	retriedJobIDs          []uint64
+	retryAt                time.Time
+	retryLastError         string
 
-	recycleResult     logicdomain.MemoryRecycleResult
-	turnJobCount      int
+	recycleResult      logicdomain.MemoryRecycleResult
+	turnJobCount       int
 	claimedRecycleJobs []logicdomain.RecycleJobRecord
-	coldTurnResult    logicdomain.ColdTurnRecycleResult
-	idleSessionResult logicdomain.SessionIdleRecycleResult
-	purgeResult       logicdomain.RetentionTrashPurgeResult
-	claimedJobs       []logicdomain.VectorGCJobRecord
+	coldTurnResult     logicdomain.ColdTurnRecycleResult
+	idleSessionResult  logicdomain.SessionIdleRecycleResult
+	purgeResult        logicdomain.RetentionTrashPurgeResult
+	claimedJobs        []logicdomain.VectorGCJobRecord
 
 	recycleErr     error
 	turnJobErr     error
@@ -160,6 +160,23 @@ type fakeVectorStore struct {
 	deleteErrs []error
 }
 
+// fakeScratchpadMaintenanceStore captures scratchpad GC calls so retention scheduling tests can assert the isolated DWM cleanup piggybacks on the shared maintenance ticker.
+// fakeScratchpadMaintenanceStore 用于捕获 scratchpad GC 调用，让 retention 调度测试可以断言隔离 DWM 清理会复用共享维护 ticker。
+type fakeScratchpadMaintenanceStore struct {
+	before time.Time
+	limit  int
+	result logicdomain.ScratchpadGCResult
+	err    error
+}
+
+// DeleteExpiredScratchpadSessions records the latest hard-delete threshold and returns the configured fake result.
+// DeleteExpiredScratchpadSessions 用于记录最近一次硬删除阈值，并返回预设的 fake 结果。
+func (f *fakeScratchpadMaintenanceStore) DeleteExpiredScratchpadSessions(_ context.Context, before time.Time, limit int) (logicdomain.ScratchpadGCResult, error) {
+	f.before = before
+	f.limit = limit
+	return f.result, f.err
+}
+
 // Upsert is unused in these maintenance tests and intentionally succeeds as a no-op.
 // Upsert 在这些维护测试中不会被使用，因此有意作为 no-op 成功返回。
 func (*fakeVectorStore) Upsert(context.Context, logicdomain.MemoryRecord) error { return nil }
@@ -196,6 +213,7 @@ func (*fakeVectorStore) Shutdown(context.Context) error { return nil }
 
 var _ appports.RetentionStore = (*fakeRetentionStore)(nil)
 var _ appports.VectorStore = (*fakeVectorStore)(nil)
+var _ appports.ScratchpadMaintenanceStore = (*fakeScratchpadMaintenanceStore)(nil)
 
 // TestRetentionUseCaseRunMaintenanceRecyclesAndPurges verifies one maintenance pass forwards the normalized protection floors, runs idle-session recycle with the configured hot window, bridges vector cleanup, and computes the trash purge threshold from config.
 // TestRetentionUseCaseRunMaintenanceRecyclesAndPurges 用于验证一次维护会透传规范化后的保护阈值、按配置热窗口执行 idle-session 回收、衔接向量清理，并根据配置计算回收站 purge 阈值。
@@ -291,6 +309,40 @@ func TestRetentionUseCaseRunMaintenanceRecyclesAndPurges(t *testing.T) {
 	maxBefore := afterRun.Add(-30 * 24 * time.Hour)
 	if store.purgeBefore.Before(minBefore.Add(-time.Second)) || store.purgeBefore.After(maxBefore.Add(time.Second)) {
 		t.Fatalf("purge before = %v, want between %v and %v", store.purgeBefore, minBefore, maxBefore)
+	}
+}
+
+// TestRetentionUseCaseRunScheduledMaintenanceStillCleansExpiredScratchpads verifies the shared half-hour ticker still executes scratchpad expiry cleanup even when classic retention governance is disabled.
+// TestRetentionUseCaseRunScheduledMaintenanceStillCleansExpiredScratchpads 用于验证即使传统 retention 治理被关闭，共享半小时 ticker 仍会执行 scratchpad 过期清理。
+func TestRetentionUseCaseRunScheduledMaintenanceStillCleansExpiredScratchpads(t *testing.T) {
+	scratchpad := &fakeScratchpadMaintenanceStore{
+		result: logicdomain.ScratchpadGCResult{
+			DeletedPlanCount: 2,
+			DeletedNodeCount: 5,
+		},
+	}
+	uc := &RetentionUseCase{
+		cfg: RetentionConfig{
+			Enabled:             false,
+			RecycleScanInterval: 30 * time.Minute,
+		},
+		scratchpad: scratchpad,
+	}
+
+	beforeCall := time.Now().UTC()
+	uc.runScheduledMaintenance(context.Background())
+	afterCall := time.Now().UTC()
+
+	if scratchpad.limit != defaultScratchpadGCBatchSize {
+		t.Fatalf("scratchpad gc limit = %d, want %d", scratchpad.limit, defaultScratchpadGCBatchSize)
+	}
+	if scratchpad.before.IsZero() {
+		t.Fatalf("scratchpad gc before timestamp is zero")
+	}
+	oldestExpected := beforeCall.Add(-defaultScratchpadRetention).Add(-2 * time.Second)
+	newestExpected := afterCall.Add(-defaultScratchpadRetention).Add(2 * time.Second)
+	if scratchpad.before.Before(oldestExpected) || scratchpad.before.After(newestExpected) {
+		t.Fatalf("scratchpad gc before = %v, want within [%v, %v]", scratchpad.before, oldestExpected, newestExpected)
 	}
 }
 

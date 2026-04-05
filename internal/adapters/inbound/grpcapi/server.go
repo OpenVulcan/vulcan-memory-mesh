@@ -29,6 +29,7 @@ type Dependencies struct {
 	Workspace         usecase.WorkspaceExecutor
 	Profiles          usecase.ProfileExecutor
 	Memory            usecase.MemoryExecutor
+	Scratchpad        usecase.ScratchpadExecutor
 	ChatCompact       usecase.ChatCompactExecutor
 	PreCheck          usecase.PreCheckExecutor
 	PostAction        usecase.PostActionExecutor
@@ -50,6 +51,7 @@ type Server struct {
 	workspace        usecase.WorkspaceExecutor
 	profiles         usecase.ProfileExecutor
 	memory           usecase.MemoryExecutor
+	scratchpad       usecase.ScratchpadExecutor
 	chatCompact      usecase.ChatCompactExecutor
 	preCheck         usecase.PreCheckExecutor
 	postAction       usecase.PostActionExecutor
@@ -79,6 +81,7 @@ func NewServer(deps Dependencies) *Server {
 		workspace:        deps.Workspace,
 		profiles:         deps.Profiles,
 		memory:           deps.Memory,
+		scratchpad:       deps.Scratchpad,
 		chatCompact:      deps.ChatCompact,
 		preCheck:         deps.PreCheck,
 		postAction:       deps.PostAction,
@@ -646,6 +649,143 @@ func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequ
 	}, nil
 }
 
+// ScratchpadUpsert persists one deterministic DWM batch into the isolated scratchpad chain without touching the main session auto-create flow.
+// ScratchpadUpsert 用于把一批确定性 DWM 数据写入隔离 scratchpad 链路，同时不触碰主 session 自动创建流程。
+func (s *Server) ScratchpadUpsert(ctx context.Context, req *vmmv1.ScratchpadUpsertRequest) (*vmmv1.ScratchpadUpsertResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
+	if s.scratchpad == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeScratchpadUpsertRequest(req)
+	if err := s.validator().ValidateScratchpadUpsert(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.scratchpad.Upsert(ctx, usecase.ScratchpadUpsertCommand{
+		Scope: logicdomain.ScratchpadScope{
+			ProjectID:  req.GetProjectId(),
+			UserID:     req.GetUserId(),
+			SessionKey: req.GetSessionId(),
+		},
+		PlanName: req.GetPlanName(),
+		Items:    collectScratchpadUpsertItems(req),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.ScratchpadUpsertResponse{
+		Status:        toProtoScratchpadStatus(result.Status),
+		Msg:           result.Message,
+		AffectedCount: uint32(maxInt(result.AffectedCount, 0)),
+		InsertedCount: uint32(maxInt(result.InsertedCount, 0)),
+		UpdatedCount:  uint32(maxInt(result.UpdatedCount, 0)),
+	}, nil
+}
+
+// ScratchpadDelete removes one or more deterministic DWM keys while keeping empty-session deletes non-locking and idempotent.
+// ScratchpadDelete 用于删除一个或多个确定性 DWM key，同时保持空 session 删除行为不锁定且幂等。
+func (s *Server) ScratchpadDelete(ctx context.Context, req *vmmv1.ScratchpadDeleteRequest) (*vmmv1.ScratchpadDeleteResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
+	if s.scratchpad == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeScratchpadDeleteRequest(req)
+	if err := s.validator().ValidateScratchpadDelete(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.scratchpad.Delete(ctx, usecase.ScratchpadDeleteCommand{
+		Scope: logicdomain.ScratchpadScope{
+			ProjectID:  req.GetProjectId(),
+			UserID:     req.GetUserId(),
+			SessionKey: req.GetSessionId(),
+		},
+		PlanName: req.GetPlanName(),
+		Keys:     collectScratchpadDeleteKeys(req),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.ScratchpadDeleteResponse{
+		Status:        toProtoScratchpadStatus(result.Status),
+		Msg:           result.Message,
+		AffectedCount: uint32(maxInt(result.AffectedCount, 0)),
+	}, nil
+}
+
+// ScratchpadGet reloads either one deterministic DWM key or the whole isolated scratchpad payload for the current scope.
+// ScratchpadGet 用于为当前范围重新加载单个确定性 DWM key 或整个隔离 scratchpad 载荷。
+func (s *Server) ScratchpadGet(ctx context.Context, req *vmmv1.ScratchpadGetRequest) (*vmmv1.ScratchpadGetResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
+	if s.scratchpad == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeScratchpadGetRequest(req)
+	if err := s.validator().ValidateScratchpadGet(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.scratchpad.Get(ctx, usecase.ScratchpadGetQuery{
+		Scope: logicdomain.ScratchpadScope{
+			ProjectID:  req.GetProjectId(),
+			UserID:     req.GetUserId(),
+			SessionKey: req.GetSessionId(),
+		},
+		Key: req.GetKey(),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.ScratchpadGetResponse{
+		Status:           toProtoScratchpadStatus(result.Status),
+		Msg:              result.Message,
+		Items:            toProtoScratchpadItems(result.Items),
+		PlanName:         result.PlanName,
+		ItemCount:        uint32(maxInt(result.ItemCount, 0)),
+		UpdatedTimestamp: toUnixMillis(result.UpdatedAt),
+	}, nil
+}
+
+// ScratchpadClean clears the whole isolated DWM payload for the current scope without touching the main session chain.
+// ScratchpadClean 用于清空当前范围下的整个隔离 DWM 载荷，同时不触碰主 session 链路。
+func (s *Server) ScratchpadClean(ctx context.Context, req *vmmv1.ScratchpadCleanRequest) (*vmmv1.ScratchpadCleanResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
+	if s.scratchpad == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeScratchpadCleanRequest(req)
+	if err := s.validator().ValidateScratchpadClean(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.scratchpad.Clean(ctx, usecase.ScratchpadCleanCommand{
+		Scope: logicdomain.ScratchpadScope{
+			ProjectID:  req.GetProjectId(),
+			UserID:     req.GetUserId(),
+			SessionKey: req.GetSessionId(),
+		},
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.ScratchpadCleanResponse{
+		Status: toProtoScratchpadStatus(result.Status),
+		Msg:    result.Message,
+	}, nil
+}
+
 // ChatCompact validates the request, consumes the resolved session scope, and records the latest persisted turn as the active compact boundary.
 // ChatCompact 用于校验请求、消费已解析 session 范围，并把最新持久化 turn 记录为当前 compact 边界。
 func (s *Server) ChatCompact(ctx context.Context, req *vmmv1.ChatCompactRequest) (*vmmv1.ChatCompactResponse, error) {
@@ -876,6 +1016,69 @@ func toUserEntry(user logicdomain.UserRecord) *vmmv1.UserEntry {
 		UserId:   user.ID,
 		UserName: user.Name,
 	}
+}
+
+// toProtoScratchpadStatus converts the internal DWM business status into the transport enum exposed by gRPC callers.
+// toProtoScratchpadStatus 用于把内部 DWM 业务状态转换成 gRPC 调用方可见的传输层枚举。
+func toProtoScratchpadStatus(status logicdomain.ScratchpadStatus) vmmv1.ScratchpadStatus {
+	switch status {
+	case logicdomain.ScratchpadStatusSuccess:
+		return vmmv1.ScratchpadStatus_SCRATCHPAD_STATUS_SUCCESS
+	case logicdomain.ScratchpadStatusFailed:
+		return vmmv1.ScratchpadStatus_SCRATCHPAD_STATUS_FAILED
+	default:
+		return vmmv1.ScratchpadStatus_SCRATCHPAD_STATUS_UNSPECIFIED
+	}
+}
+
+// toProtoScratchpadItems converts isolated DWM key/value anchors into the compact protobuf transport shape returned by the scratchpad get RPC.
+// toProtoScratchpadItems 用于把隔离 DWM key/value 锚点转换成 scratchpad get RPC 返回的紧凑 protobuf 结构。
+func toProtoScratchpadItems(items []logicdomain.ScratchpadItem) []*vmmv1.ScratchpadItem {
+	out := make([]*vmmv1.ScratchpadItem, 0, len(items))
+	for _, item := range items {
+		out = append(out, &vmmv1.ScratchpadItem{
+			Key:   item.Key,
+			Value: item.Value,
+		})
+	}
+	return out
+}
+
+// collectScratchpadUpsertItems reconstructs the deterministic DWM item batch from either the explicit batch payload or the validated single-item shorthand.
+// collectScratchpadUpsertItems 用于从显式批量载荷或已校验的单项简写中重建确定性的 DWM item 批次。
+func collectScratchpadUpsertItems(req *vmmv1.ScratchpadUpsertRequest) []logicdomain.ScratchpadItem {
+	if req == nil {
+		return nil
+	}
+	if len(req.GetItems()) > 0 {
+		items := make([]logicdomain.ScratchpadItem, 0, len(req.GetItems()))
+		for _, item := range req.GetItems() {
+			if item == nil {
+				continue
+			}
+			items = append(items, logicdomain.ScratchpadItem{
+				Key:   item.GetKey(),
+				Value: item.GetValue(),
+			})
+		}
+		return items
+	}
+	return []logicdomain.ScratchpadItem{{
+		Key:   req.GetKey(),
+		Value: req.GetValue(),
+	}}
+}
+
+// collectScratchpadDeleteKeys reconstructs the deterministic DWM delete batch from either the explicit key list or the validated single-key shorthand.
+// collectScratchpadDeleteKeys 用于从显式 key 列表或已校验的单键简写中重建确定性的 DWM 删除批次。
+func collectScratchpadDeleteKeys(req *vmmv1.ScratchpadDeleteRequest) []string {
+	if req == nil {
+		return nil
+	}
+	if len(req.GetKeys()) > 0 {
+		return append([]string(nil), req.GetKeys()...)
+	}
+	return []string{req.GetKey()}
 }
 
 // toProfileNodeEntry converts one active profile node into the protobuf transport shape used by profile query and manual instruction RPCs.

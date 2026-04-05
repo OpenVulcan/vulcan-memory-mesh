@@ -331,6 +331,48 @@ func TestStoreEnsureSQLiteSchemaResetsLegacyPre14Version(t *testing.T) {
 	}
 }
 
+// TestStoreEnsureSQLiteSchemaMigratesScratchpadTables verifies schema version 18 upgrades through the dedicated scratchpad migration step instead of relying on a destructive full reset.
+// TestStoreEnsureSQLiteSchemaMigratesScratchpadTables 用于验证 schema 版本 18 会通过独立的 scratchpad 迁移步骤升级，而不是依赖破坏性的全量重建。
+func TestStoreEnsureSQLiteSchemaMigratesScratchpadTables(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	executedSQL := make([]string, 0)
+	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_schema_versions"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[{"component":"sqlite","schema_version":18}]`}, nil
+		case strings.Contains(sql, "FROM vmm_version"):
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		default:
+			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		}
+	}
+
+	if err := store.ensureSQLiteSchema(context.Background()); err != nil {
+		t.Fatalf("ensureSQLiteSchema returned error: %v", err)
+	}
+
+	joined := strings.Join(executedSQL, "\n")
+	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_scratchpad_plans") {
+		t.Fatalf("expected scratchpad plan migration SQL, got %q", joined)
+	}
+	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_scratchpad_nodes") {
+		t.Fatalf("expected scratchpad node migration SQL, got %q", joined)
+	}
+	if !strings.Contains(joined, "idx_vmm_scratchpad_plans_scope") || !strings.Contains(joined, "idx_vmm_scratchpad_nodes_plan") {
+		t.Fatalf("expected scratchpad index migration SQL, got %q", joined)
+	}
+	if strings.Contains(joined, "DROP TABLE IF EXISTS vmm_sessions;") {
+		t.Fatalf("unexpected legacy reset during 18->19 migration, got %q", joined)
+	}
+}
+
 // TestStoreSearchLexicalMemoryUsesTypedSQLiteParams verifies hybrid lexical recall keeps using MATCH with typed params instead of falling back to params_json.
 // TestStoreSearchLexicalMemoryUsesTypedSQLiteParams 用于验证混合 lexical 召回仍通过 MATCH 和强类型参数执行，而不是退回 params_json。
 func TestStoreSearchLexicalMemoryUsesTypedSQLiteParams(t *testing.T) {

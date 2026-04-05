@@ -28,7 +28,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 18
+	currentSchemaVersion = 19
 
 	// versionSingletonID pins the schema-version row to one deterministic singleton record.
 	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
@@ -78,6 +78,8 @@ DROP TABLE IF EXISTS vmm_memory_nodes;
 DROP TABLE IF EXISTS vmm_turn_records;
 DROP TABLE IF EXISTS vmm_chat_messages;
 DROP TABLE IF EXISTS vmm_memory_entries;
+DROP TABLE IF EXISTS vmm_scratchpad_nodes;
+DROP TABLE IF EXISTS vmm_scratchpad_plans;
 DROP TABLE IF EXISTS vmm_sessions;
 DROP TABLE IF EXISTS vmm_projects;
 DROP TABLE IF EXISTS vmm_spaces;
@@ -165,6 +167,35 @@ CREATE TABLE IF NOT EXISTS vmm_sessions (
 CREATE INDEX IF NOT EXISTS idx_vmm_sessions_scope ON vmm_sessions(user_id, team_id, space_id, project_id, updated_timestamp);
 CREATE INDEX IF NOT EXISTS idx_vmm_sessions_project_session ON vmm_sessions(project_id, session_key);
 CREATE INDEX IF NOT EXISTS idx_vmm_sessions_compact_boundary ON vmm_sessions(project_id, last_compacted_turn_id, id);
+
+CREATE TABLE IF NOT EXISTS vmm_scratchpad_plans (
+  id BIGINT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  session_key TEXT NOT NULL,
+  plan_name TEXT NOT NULL,
+  plan_name_norm TEXT NOT NULL,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  UNIQUE(project_id, user_id, session_key),
+  FOREIGN KEY(user_id) REFERENCES vmm_users(id),
+  FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_scope ON vmm_scratchpad_plans(project_id, user_id, session_key, updated_timestamp);
+CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_gc ON vmm_scratchpad_plans(updated_timestamp, id);
+
+CREATE TABLE IF NOT EXISTS vmm_scratchpad_nodes (
+  id BIGINT PRIMARY KEY,
+  plan_id BIGINT NOT NULL,
+  item_key TEXT NOT NULL,
+  item_value TEXT NOT NULL,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  UNIQUE(plan_id, item_key),
+  FOREIGN KEY(plan_id) REFERENCES vmm_scratchpad_plans(id)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_plan ON vmm_scratchpad_nodes(plan_id, updated_timestamp, id);
+CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_created ON vmm_scratchpad_nodes(created_timestamp, id);
 
 CREATE TABLE IF NOT EXISTS vmm_turn_records (
   id BIGINT PRIMARY KEY,
@@ -2903,6 +2934,15 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE project_id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project memory nodes: %w", err)
 	}
+	if err := s.exec(ctx, `
+DELETE FROM vmm_scratchpad_nodes
+WHERE plan_id IN (SELECT id FROM vmm_scratchpad_plans WHERE project_id = ?)
+`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project scratchpad nodes: %w", err)
+	}
+	if err := s.exec(ctx, `DELETE FROM vmm_scratchpad_plans WHERE project_id = ?`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project scratchpad plans: %w", err)
+	}
 	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE project_id = ?`, project.ID); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project turn records: %w", err)
 	}
@@ -3148,6 +3188,15 @@ WHERE profile_type <> ? AND turn_id IN (
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE user_id = ?`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user memory nodes: %w", err)
+	}
+	if err := s.exec(ctx, `
+DELETE FROM vmm_scratchpad_nodes
+WHERE plan_id IN (SELECT id FROM vmm_scratchpad_plans WHERE user_id = ?)
+`, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user scratchpad nodes: %w", err)
+	}
+	if err := s.exec(ctx, `DELETE FROM vmm_scratchpad_plans WHERE user_id = ?`, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user scratchpad plans: %w", err)
 	}
 	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, currentUser.ID); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user turn records: %w", err)

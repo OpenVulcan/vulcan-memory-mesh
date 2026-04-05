@@ -117,6 +117,12 @@ func buildSQLiteSchemaMigrationPlan() schemaMigrationPlan {
 				Name:        "add recycle job queue for cold turn scan execute split",
 				Up:          migrateSQLiteSchema17To18,
 			},
+			{
+				FromVersion: 18,
+				ToVersion:   19,
+				Name:        "add isolated scratchpad plan and node tables",
+				Up:          migrateSQLiteSchema18To19,
+			},
 		},
 	}
 }
@@ -482,6 +488,48 @@ CREATE TABLE IF NOT EXISTS vmm_recycle_jobs (
 		`CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_unique ON vmm_recycle_jobs(session_id, job_type)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_pending ON vmm_recycle_jobs(job_type, next_run_timestamp, id)`,
 		`CREATE INDEX IF NOT EXISTS idx_vmm_recycle_jobs_session ON vmm_recycle_jobs(session_id, project_id, id)`,
+	}
+	for _, statement := range statements {
+		if err := s.exec(ctx, statement); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// migrateSQLiteSchema18To19 adds the isolated DWM scratchpad tables so task-working anchors can live outside the main memory/session chain.
+// migrateSQLiteSchema18To19 用于新增隔离 DWM scratchpad 表，让任务工作锚点独立于主记忆/主 session 链存在。
+func migrateSQLiteSchema18To19(ctx context.Context, s *Store) error {
+	statements := []string{
+		`
+CREATE TABLE IF NOT EXISTS vmm_scratchpad_plans (
+  id BIGINT PRIMARY KEY,
+  project_id BIGINT NOT NULL,
+  user_id BIGINT NOT NULL,
+  session_key TEXT NOT NULL,
+  plan_name TEXT NOT NULL,
+  plan_name_norm TEXT NOT NULL,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  UNIQUE(project_id, user_id, session_key),
+  FOREIGN KEY(user_id) REFERENCES vmm_users(id),
+  FOREIGN KEY(project_id) REFERENCES vmm_projects(id)
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_scope ON vmm_scratchpad_plans(project_id, user_id, session_key, updated_timestamp)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_gc ON vmm_scratchpad_plans(updated_timestamp, id)`,
+		`
+CREATE TABLE IF NOT EXISTS vmm_scratchpad_nodes (
+  id BIGINT PRIMARY KEY,
+  plan_id BIGINT NOT NULL,
+  item_key TEXT NOT NULL,
+  item_value TEXT NOT NULL,
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  UNIQUE(plan_id, item_key),
+  FOREIGN KEY(plan_id) REFERENCES vmm_scratchpad_plans(id)
+)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_plan ON vmm_scratchpad_nodes(plan_id, updated_timestamp, id)`,
+		`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_created ON vmm_scratchpad_nodes(created_timestamp, id)`,
 	}
 	for _, statement := range statements {
 		if err := s.exec(ctx, statement); err != nil {

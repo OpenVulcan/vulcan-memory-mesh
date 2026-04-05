@@ -54,6 +54,14 @@ const (
 	// defaultRetentionVectorGCClaimLease reserves one claimed retry batch for a short bounded window so concurrent maintenance workers do not delete the same vectors repeatedly.
 	// defaultRetentionVectorGCClaimLease 用于给一批已领取的重试任务保留一个短而有界的租约窗口，避免并发维护工作器重复删除同一批向量。
 	defaultRetentionVectorGCClaimLease = 2 * time.Minute
+
+	// defaultScratchpadRetention keeps isolated DWM notes strictly short-lived, so abandoned session scratchpads are hard-deleted after fifteen days of inactivity.
+	// defaultScratchpadRetention 用于把隔离 DWM 笔记严格限制为短期数据，让废弃 session scratchpad 在十五天未更新后被硬删除。
+	defaultScratchpadRetention = 15 * 24 * time.Hour
+
+	// defaultScratchpadGCBatchSize bounds one scratchpad hard-delete pass so deterministic working-memory cleanup stays incremental and non-disruptive.
+	// defaultScratchpadGCBatchSize 用于限制一次 scratchpad 硬删除批量，让确定性工作记忆清理保持渐进且不打扰主链路。
+	defaultScratchpadGCBatchSize = 128
 )
 
 // RetentionConfig keeps the narrow runtime knobs needed by the cold-data maintenance worker after process-level config normalization is complete.
@@ -72,13 +80,15 @@ type RetentionConfig struct {
 // RetentionUseCase owns the background maintenance loop that keeps cold durable data out of the hot relational tables without disturbing active recall traffic.
 // RetentionUseCase 用于承载后台维护循环，在不干扰活跃召回流量的前提下，把冷状态长期数据从热关系表中移出。
 type RetentionUseCase struct {
-	store        appports.RetentionStore
-	vector       appports.VectorStore
-	cfg          RetentionConfig
-	logger       *logx.Logger
-	workerCtx    context.Context
-	workerCancel context.CancelFunc
-	workerWG     sync.WaitGroup
+	store             appports.RetentionStore
+	scratchpad        appports.ScratchpadMaintenanceStore
+	vector            appports.VectorStore
+	cfg               RetentionConfig
+	logger            *logx.Logger
+	workerCtx         context.Context
+	workerCancel      context.CancelFunc
+	workerWG          sync.WaitGroup
+	workerInitialized bool
 }
 
 // NewRetentionUseCase constructs the cold-data maintenance worker and starts the background loop only when the runtime configuration explicitly enables it.
@@ -92,6 +102,16 @@ func NewRetentionUseCase(store appports.RetentionStore, vector appports.VectorSt
 	}
 	u.startWorker()
 	return u
+}
+
+// ConfigureScratchpadMaintenanceStore attaches the isolated DWM hard-delete maintenance port to the shared half-hour worker without coupling scratchpad CRUD to the main memory/session chain.
+// ConfigureScratchpadMaintenanceStore 用于把隔离 DWM 的硬删除维护端口挂到共享半小时工作器上，同时避免让 scratchpad CRUD 耦合主记忆/主 session 链路。
+func (u *RetentionUseCase) ConfigureScratchpadMaintenanceStore(store appports.ScratchpadMaintenanceStore) {
+	if u == nil {
+		return
+	}
+	u.scratchpad = store
+	u.startWorker()
 }
 
 // Shutdown stops the retention worker before downstream relational or vector stores are closed.
@@ -120,10 +140,11 @@ func (u *RetentionUseCase) Shutdown(ctx context.Context) error {
 // startWorker boots the background ticker only when retention governance is enabled and the required stores are available.
 // startWorker 用于仅在 retention 治理已启用且所需存储可用时启动后台 ticker。
 func (u *RetentionUseCase) startWorker() {
-	if u == nil || u.store == nil || !u.cfg.Enabled || u.cfg.RecycleScanInterval <= 0 || u.workerCancel != nil {
+	if u == nil || u.workerInitialized || u.cfg.RecycleScanInterval <= 0 || !u.maintenanceEnabled() {
 		return
 	}
 	u.workerCtx, u.workerCancel = context.WithCancel(context.Background())
+	u.workerInitialized = true
 	u.workerWG.Add(1)
 	go u.workerLoop()
 }
@@ -132,7 +153,7 @@ func (u *RetentionUseCase) startWorker() {
 // workerLoop 用于在启动后立即执行一次维护，并在后续按照配置周期持续扫描，直到收到关闭信号。
 func (u *RetentionUseCase) workerLoop() {
 	defer u.workerWG.Done()
-	u.runMaintenance(u.workerCtx)
+	u.runScheduledMaintenance(u.workerCtx)
 
 	ticker := time.NewTicker(u.cfg.RecycleScanInterval)
 	defer ticker.Stop()
@@ -141,9 +162,21 @@ func (u *RetentionUseCase) workerLoop() {
 		case <-u.workerCtx.Done():
 			return
 		case <-ticker.C:
-			u.runMaintenance(u.workerCtx)
+			u.runScheduledMaintenance(u.workerCtx)
 		}
 	}
+}
+
+// runScheduledMaintenance executes the configured retention workload plus the always-on scratchpad expiry cleanup on the shared maintenance cadence.
+// runScheduledMaintenance 用于在共享维护节奏上执行已启用的 retention 工作负载，以及始终开启的 scratchpad 过期清理。
+func (u *RetentionUseCase) runScheduledMaintenance(ctx context.Context) {
+	if u == nil {
+		return
+	}
+	if u.retentionMaintenanceEnabled() {
+		u.runMaintenance(ctx)
+	}
+	u.runScratchpadMaintenance(ctx)
 }
 
 // runMaintenance executes terminal-memory recycle, idle-session recycle, and one trash purge pass so hot-table compaction and delayed hard-delete share the same maintenance cadence.
@@ -219,6 +252,25 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		return
 	}
 	u.logPurgeResult(purgeResult)
+}
+
+// runScratchpadMaintenance hard-deletes abandoned DWM scopes on the shared cadence without reusing any recycle-trash semantics.
+// runScratchpadMaintenance 用于在共享维护节奏上硬删除废弃 DWM 范围，同时完全不复用任何 recycle-trash 语义。
+func (u *RetentionUseCase) runScratchpadMaintenance(ctx context.Context) {
+	if u == nil || u.scratchpad == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	now := time.Now().UTC()
+	scratchpadBefore := now.Add(-defaultScratchpadRetention)
+	scratchpadResult, scratchpadErr := u.scratchpad.DeleteExpiredScratchpadSessions(ctx, scratchpadBefore, defaultScratchpadGCBatchSize)
+	if scratchpadErr != nil {
+		u.logError("scratchpad expired session cleanup failed", scratchpadErr)
+		return
+	}
+	u.logScratchpadGCResult(scratchpadResult)
 }
 
 // runPendingColdTurnRecycleJobs claims one bounded recycle-job batch from the persistent cold-turn queue and executes each claimed session archive independently so scan and execution remain separated.
@@ -444,6 +496,19 @@ func (u *RetentionUseCase) logPurgeResult(result logicdomain.RetentionTrashPurge
 	)
 }
 
+// logScratchpadGCResult emits one concise operational log only when one maintenance pass permanently deleted abandoned DWM scopes.
+// logScratchpadGCResult 用于仅在某次维护真正永久删除废弃 DWM 范围时输出一条简洁运维日志。
+func (u *RetentionUseCase) logScratchpadGCResult(result logicdomain.ScratchpadGCResult) {
+	if u == nil || u.logger == nil || result.DeletedPlanCount == 0 && result.DeletedNodeCount == 0 {
+		return
+	}
+	u.logger.Info(
+		"retention purged expired scratchpad sessions",
+		"plan_count", result.DeletedPlanCount,
+		"node_count", result.DeletedNodeCount,
+	)
+}
+
 // logError centralizes nil-safe maintenance error logging so worker failures remain observable without crashing the runtime.
 // logError 用于集中处理 nil-safe 维护错误日志，让工作器失败可观测但不会拖垮运行时。
 func (u *RetentionUseCase) logError(message string, err error) {
@@ -451,6 +516,24 @@ func (u *RetentionUseCase) logError(message string, err error) {
 		return
 	}
 	u.logger.Error(message, "err", err)
+}
+
+// maintenanceEnabled reports whether the shared maintenance ticker currently has at least one real workload to execute.
+// maintenanceEnabled 用于判断共享维护 ticker 当前是否至少承载了一项真实工作负载。
+func (u *RetentionUseCase) maintenanceEnabled() bool {
+	return u.retentionMaintenanceEnabled() || u.scratchpadMaintenanceEnabled()
+}
+
+// retentionMaintenanceEnabled reports whether the classic cold-data governance chain should run on the shared ticker.
+// retentionMaintenanceEnabled 用于判断传统冷数据治理链是否应在共享 ticker 上运行。
+func (u *RetentionUseCase) retentionMaintenanceEnabled() bool {
+	return u != nil && u.store != nil && u.cfg.Enabled
+}
+
+// scratchpadMaintenanceEnabled reports whether isolated DWM scratchpad hard-delete should piggyback on the shared ticker.
+// scratchpadMaintenanceEnabled 用于判断隔离 DWM scratchpad 的硬删除是否应复用共享 ticker。
+func (u *RetentionUseCase) scratchpadMaintenanceEnabled() bool {
+	return u != nil && u.scratchpad != nil
 }
 
 // retentionPriorityFloorValue converts the normalized config token into the numeric durable-memory priority threshold used by storage predicates.

@@ -187,6 +187,57 @@ func (ProfileBundleMode) EnumDescriptor() ([]byte, []int) {
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{2}
 }
 
+// ScratchpadStatus reports the final DWM CRUD outcome in a transport-stable enum form that callers should translate before exposing it to AI models.
+// ScratchpadStatus 用于以传输层稳定枚举的形式表示 DWM CRUD 最终结果；在直接对接 AI 模型前，调用方应先做语义转译。
+type ScratchpadStatus int32
+
+const (
+	ScratchpadStatus_SCRATCHPAD_STATUS_UNSPECIFIED ScratchpadStatus = 0
+	ScratchpadStatus_SCRATCHPAD_STATUS_SUCCESS     ScratchpadStatus = 1
+	ScratchpadStatus_SCRATCHPAD_STATUS_FAILED      ScratchpadStatus = 2
+)
+
+// Enum value maps for ScratchpadStatus.
+var (
+	ScratchpadStatus_name = map[int32]string{
+		0: "SCRATCHPAD_STATUS_UNSPECIFIED",
+		1: "SCRATCHPAD_STATUS_SUCCESS",
+		2: "SCRATCHPAD_STATUS_FAILED",
+	}
+	ScratchpadStatus_value = map[string]int32{
+		"SCRATCHPAD_STATUS_UNSPECIFIED": 0,
+		"SCRATCHPAD_STATUS_SUCCESS":     1,
+		"SCRATCHPAD_STATUS_FAILED":      2,
+	}
+)
+
+func (x ScratchpadStatus) Enum() *ScratchpadStatus {
+	p := new(ScratchpadStatus)
+	*p = x
+	return p
+}
+
+func (x ScratchpadStatus) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (ScratchpadStatus) Descriptor() protoreflect.EnumDescriptor {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3].Descriptor()
+}
+
+func (ScratchpadStatus) Type() protoreflect.EnumType {
+	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3]
+}
+
+func (x ScratchpadStatus) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use ScratchpadStatus.Descriptor instead.
+func (ScratchpadStatus) EnumDescriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{3}
+}
+
 // PreCheckRecallMode defines which memory-recall strategy one pre-check request wants the server to apply.
 // PreCheckRecallMode 用于定义单次 pre-check 请求希望服务端采用哪一种记忆召回策略。
 type PreCheckRecallMode int32
@@ -223,11 +274,11 @@ func (x PreCheckRecallMode) String() string {
 }
 
 func (PreCheckRecallMode) Descriptor() protoreflect.EnumDescriptor {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3].Descriptor()
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[4].Descriptor()
 }
 
 func (PreCheckRecallMode) Type() protoreflect.EnumType {
-	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[3]
+	return &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes[4]
 }
 
 func (x PreCheckRecallMode) Number() protoreflect.EnumNumber {
@@ -236,7 +287,7 @@ func (x PreCheckRecallMode) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use PreCheckRecallMode.Descriptor instead.
 func (PreCheckRecallMode) EnumDescriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{3}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{4}
 }
 
 // HealthzResponse returns the runtime status plus trace metadata.
@@ -2871,6 +2922,652 @@ func (x *WriteMemoriesResponse) GetTraceId() string {
 	return ""
 }
 
+// ScratchpadItem carries one deterministic DWM key/value anchor.
+// ScratchpadItem 用于承载一条确定性的 DWM key/value 锚点。
+type ScratchpadItem struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Key           string                 `protobuf:"bytes,1,opt,name=key,proto3" json:"key,omitempty"`
+	Value         string                 `protobuf:"bytes,2,opt,name=value,proto3" json:"value,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadItem) Reset() {
+	*x = ScratchpadItem{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadItem) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadItem) ProtoMessage() {}
+
+func (x *ScratchpadItem) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadItem.ProtoReflect.Descriptor instead.
+func (*ScratchpadItem) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *ScratchpadItem) GetKey() string {
+	if x != nil {
+		return x.Key
+	}
+	return ""
+}
+
+func (x *ScratchpadItem) GetValue() string {
+	if x != nil {
+		return x.Value
+	}
+	return ""
+}
+
+// ScratchpadUpsertRequest carries the deterministic scope, canonical plan name, and either one single item or one batch item payload that should be written into DWM.
+// ScratchpadUpsertRequest 用于承载应写入 DWM 的确定性范围、canonical 计划名，以及单项或批量二选一的 item 载荷。
+type ScratchpadUpsertRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	PlanName      string                 `protobuf:"bytes,4,opt,name=plan_name,json=planName,proto3" json:"plan_name,omitempty"`
+	Key           *string                `protobuf:"bytes,5,opt,name=key,proto3,oneof" json:"key,omitempty"`
+	Value         *string                `protobuf:"bytes,6,opt,name=value,proto3,oneof" json:"value,omitempty"`
+	Items         []*ScratchpadItem      `protobuf:"bytes,7,rep,name=items,proto3" json:"items,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadUpsertRequest) Reset() {
+	*x = ScratchpadUpsertRequest{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadUpsertRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadUpsertRequest) ProtoMessage() {}
+
+func (x *ScratchpadUpsertRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadUpsertRequest.ProtoReflect.Descriptor instead.
+func (*ScratchpadUpsertRequest) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *ScratchpadUpsertRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ScratchpadUpsertRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ScratchpadUpsertRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+func (x *ScratchpadUpsertRequest) GetPlanName() string {
+	if x != nil {
+		return x.PlanName
+	}
+	return ""
+}
+
+func (x *ScratchpadUpsertRequest) GetKey() string {
+	if x != nil && x.Key != nil {
+		return *x.Key
+	}
+	return ""
+}
+
+func (x *ScratchpadUpsertRequest) GetValue() string {
+	if x != nil && x.Value != nil {
+		return *x.Value
+	}
+	return ""
+}
+
+func (x *ScratchpadUpsertRequest) GetItems() []*ScratchpadItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+// ScratchpadUpsertResponse returns the enum status, one English guidance message, and stable write counters for deterministic host integrations.
+// ScratchpadUpsertResponse 用于返回枚举状态、一条英文提示消息，以及面向确定性宿主集成的稳定写入计数字段。
+type ScratchpadUpsertResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        ScratchpadStatus       `protobuf:"varint,1,opt,name=status,proto3,enum=vmm.v1.ScratchpadStatus" json:"status,omitempty"`
+	Msg           string                 `protobuf:"bytes,2,opt,name=msg,proto3" json:"msg,omitempty"`
+	AffectedCount uint32                 `protobuf:"varint,3,opt,name=affected_count,json=affectedCount,proto3" json:"affected_count,omitempty"`
+	InsertedCount uint32                 `protobuf:"varint,4,opt,name=inserted_count,json=insertedCount,proto3" json:"inserted_count,omitempty"`
+	UpdatedCount  uint32                 `protobuf:"varint,5,opt,name=updated_count,json=updatedCount,proto3" json:"updated_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadUpsertResponse) Reset() {
+	*x = ScratchpadUpsertResponse{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadUpsertResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadUpsertResponse) ProtoMessage() {}
+
+func (x *ScratchpadUpsertResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadUpsertResponse.ProtoReflect.Descriptor instead.
+func (*ScratchpadUpsertResponse) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *ScratchpadUpsertResponse) GetStatus() ScratchpadStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ScratchpadStatus_SCRATCHPAD_STATUS_UNSPECIFIED
+}
+
+func (x *ScratchpadUpsertResponse) GetMsg() string {
+	if x != nil {
+		return x.Msg
+	}
+	return ""
+}
+
+func (x *ScratchpadUpsertResponse) GetAffectedCount() uint32 {
+	if x != nil {
+		return x.AffectedCount
+	}
+	return 0
+}
+
+func (x *ScratchpadUpsertResponse) GetInsertedCount() uint32 {
+	if x != nil {
+		return x.InsertedCount
+	}
+	return 0
+}
+
+func (x *ScratchpadUpsertResponse) GetUpdatedCount() uint32 {
+	if x != nil {
+		return x.UpdatedCount
+	}
+	return 0
+}
+
+// ScratchpadDeleteRequest carries the deterministic scope, canonical plan name, and either one single key or one batch key payload that should be removed from DWM.
+// ScratchpadDeleteRequest 用于承载应从 DWM 删除的确定性范围、canonical 计划名，以及单键或批量 key 二选一的载荷。
+type ScratchpadDeleteRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	PlanName      string                 `protobuf:"bytes,4,opt,name=plan_name,json=planName,proto3" json:"plan_name,omitempty"`
+	Key           *string                `protobuf:"bytes,5,opt,name=key,proto3,oneof" json:"key,omitempty"`
+	Keys          []string               `protobuf:"bytes,6,rep,name=keys,proto3" json:"keys,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadDeleteRequest) Reset() {
+	*x = ScratchpadDeleteRequest{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadDeleteRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadDeleteRequest) ProtoMessage() {}
+
+func (x *ScratchpadDeleteRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadDeleteRequest.ProtoReflect.Descriptor instead.
+func (*ScratchpadDeleteRequest) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{39}
+}
+
+func (x *ScratchpadDeleteRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ScratchpadDeleteRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ScratchpadDeleteRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+func (x *ScratchpadDeleteRequest) GetPlanName() string {
+	if x != nil {
+		return x.PlanName
+	}
+	return ""
+}
+
+func (x *ScratchpadDeleteRequest) GetKey() string {
+	if x != nil && x.Key != nil {
+		return *x.Key
+	}
+	return ""
+}
+
+func (x *ScratchpadDeleteRequest) GetKeys() []string {
+	if x != nil {
+		return x.Keys
+	}
+	return nil
+}
+
+// ScratchpadDeleteResponse returns the enum status, one English guidance message, and the deterministic delete counter consumed by hosts.
+// ScratchpadDeleteResponse 用于返回枚举状态、一条英文提示消息，以及宿主侧消费的确定性删除计数。
+type ScratchpadDeleteResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        ScratchpadStatus       `protobuf:"varint,1,opt,name=status,proto3,enum=vmm.v1.ScratchpadStatus" json:"status,omitempty"`
+	Msg           string                 `protobuf:"bytes,2,opt,name=msg,proto3" json:"msg,omitempty"`
+	AffectedCount uint32                 `protobuf:"varint,3,opt,name=affected_count,json=affectedCount,proto3" json:"affected_count,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadDeleteResponse) Reset() {
+	*x = ScratchpadDeleteResponse{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadDeleteResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadDeleteResponse) ProtoMessage() {}
+
+func (x *ScratchpadDeleteResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadDeleteResponse.ProtoReflect.Descriptor instead.
+func (*ScratchpadDeleteResponse) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{40}
+}
+
+func (x *ScratchpadDeleteResponse) GetStatus() ScratchpadStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ScratchpadStatus_SCRATCHPAD_STATUS_UNSPECIFIED
+}
+
+func (x *ScratchpadDeleteResponse) GetMsg() string {
+	if x != nil {
+		return x.Msg
+	}
+	return ""
+}
+
+func (x *ScratchpadDeleteResponse) GetAffectedCount() uint32 {
+	if x != nil {
+		return x.AffectedCount
+	}
+	return 0
+}
+
+// ScratchpadGetRequest carries the deterministic scope plus an optional single-key selector for DWM reloads.
+// ScratchpadGetRequest 用于承载 DWM 读取所需的确定性范围，以及可选的单 key 选择器。
+type ScratchpadGetRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	Key           *string                `protobuf:"bytes,4,opt,name=key,proto3,oneof" json:"key,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadGetRequest) Reset() {
+	*x = ScratchpadGetRequest{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadGetRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadGetRequest) ProtoMessage() {}
+
+func (x *ScratchpadGetRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadGetRequest.ProtoReflect.Descriptor instead.
+func (*ScratchpadGetRequest) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{41}
+}
+
+func (x *ScratchpadGetRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ScratchpadGetRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ScratchpadGetRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+func (x *ScratchpadGetRequest) GetKey() string {
+	if x != nil && x.Key != nil {
+		return *x.Key
+	}
+	return ""
+}
+
+// ScratchpadGetResponse returns the enum status, one English message, stable metadata for the canonical plan, and the selected DWM key/value anchors.
+// ScratchpadGetResponse 用于返回枚举状态、一条英文提示消息、canonical 计划的稳定 metadata，以及选中的 DWM key/value 锚点。
+type ScratchpadGetResponse struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	Status           ScratchpadStatus       `protobuf:"varint,1,opt,name=status,proto3,enum=vmm.v1.ScratchpadStatus" json:"status,omitempty"`
+	Msg              string                 `protobuf:"bytes,2,opt,name=msg,proto3" json:"msg,omitempty"`
+	Items            []*ScratchpadItem      `protobuf:"bytes,3,rep,name=items,proto3" json:"items,omitempty"`
+	PlanName         string                 `protobuf:"bytes,4,opt,name=plan_name,json=planName,proto3" json:"plan_name,omitempty"`
+	ItemCount        uint32                 `protobuf:"varint,5,opt,name=item_count,json=itemCount,proto3" json:"item_count,omitempty"`
+	UpdatedTimestamp int64                  `protobuf:"varint,6,opt,name=updated_timestamp,json=updatedTimestamp,proto3" json:"updated_timestamp,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ScratchpadGetResponse) Reset() {
+	*x = ScratchpadGetResponse{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadGetResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadGetResponse) ProtoMessage() {}
+
+func (x *ScratchpadGetResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadGetResponse.ProtoReflect.Descriptor instead.
+func (*ScratchpadGetResponse) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{42}
+}
+
+func (x *ScratchpadGetResponse) GetStatus() ScratchpadStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ScratchpadStatus_SCRATCHPAD_STATUS_UNSPECIFIED
+}
+
+func (x *ScratchpadGetResponse) GetMsg() string {
+	if x != nil {
+		return x.Msg
+	}
+	return ""
+}
+
+func (x *ScratchpadGetResponse) GetItems() []*ScratchpadItem {
+	if x != nil {
+		return x.Items
+	}
+	return nil
+}
+
+func (x *ScratchpadGetResponse) GetPlanName() string {
+	if x != nil {
+		return x.PlanName
+	}
+	return ""
+}
+
+func (x *ScratchpadGetResponse) GetItemCount() uint32 {
+	if x != nil {
+		return x.ItemCount
+	}
+	return 0
+}
+
+func (x *ScratchpadGetResponse) GetUpdatedTimestamp() int64 {
+	if x != nil {
+		return x.UpdatedTimestamp
+	}
+	return 0
+}
+
+// ScratchpadCleanRequest carries the deterministic scope whose full DWM state should be cleared.
+// ScratchpadCleanRequest 用于承载需要被整体清空 DWM 状态的确定性范围。
+type ScratchpadCleanRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	UserId        uint64                 `protobuf:"varint,2,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,3,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadCleanRequest) Reset() {
+	*x = ScratchpadCleanRequest{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadCleanRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadCleanRequest) ProtoMessage() {}
+
+func (x *ScratchpadCleanRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadCleanRequest.ProtoReflect.Descriptor instead.
+func (*ScratchpadCleanRequest) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{43}
+}
+
+func (x *ScratchpadCleanRequest) GetSessionId() string {
+	if x != nil {
+		return x.SessionId
+	}
+	return ""
+}
+
+func (x *ScratchpadCleanRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *ScratchpadCleanRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+// ScratchpadCleanResponse returns the enum status plus one English message describing whether the current DWM state was cleared or already empty.
+// ScratchpadCleanResponse 用于返回枚举状态以及一条英文消息，说明当前 DWM 状态已被清空还是本来就为空。
+type ScratchpadCleanResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Status        ScratchpadStatus       `protobuf:"varint,1,opt,name=status,proto3,enum=vmm.v1.ScratchpadStatus" json:"status,omitempty"`
+	Msg           string                 `protobuf:"bytes,2,opt,name=msg,proto3" json:"msg,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *ScratchpadCleanResponse) Reset() {
+	*x = ScratchpadCleanResponse{}
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[44]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ScratchpadCleanResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ScratchpadCleanResponse) ProtoMessage() {}
+
+func (x *ScratchpadCleanResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[44]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ScratchpadCleanResponse.ProtoReflect.Descriptor instead.
+func (*ScratchpadCleanResponse) Descriptor() ([]byte, []int) {
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{44}
+}
+
+func (x *ScratchpadCleanResponse) GetStatus() ScratchpadStatus {
+	if x != nil {
+		return x.Status
+	}
+	return ScratchpadStatus_SCRATCHPAD_STATUS_UNSPECIFIED
+}
+
+func (x *ScratchpadCleanResponse) GetMsg() string {
+	if x != nil {
+		return x.Msg
+	}
+	return ""
+}
+
 type PreCheckRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -2884,7 +3581,7 @@ type PreCheckRequest struct {
 
 func (x *PreCheckRequest) Reset() {
 	*x = PreCheckRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2896,7 +3593,7 @@ func (x *PreCheckRequest) String() string {
 func (*PreCheckRequest) ProtoMessage() {}
 
 func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[36]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2909,7 +3606,7 @@ func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckRequest.ProtoReflect.Descriptor instead.
 func (*PreCheckRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{36}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *PreCheckRequest) GetSessionId() string {
@@ -2960,7 +3657,7 @@ type ChatCompactRequest struct {
 
 func (x *ChatCompactRequest) Reset() {
 	*x = ChatCompactRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[46]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2972,7 +3669,7 @@ func (x *ChatCompactRequest) String() string {
 func (*ChatCompactRequest) ProtoMessage() {}
 
 func (x *ChatCompactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[46]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2985,7 +3682,7 @@ func (x *ChatCompactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompactRequest.ProtoReflect.Descriptor instead.
 func (*ChatCompactRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{37}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{46}
 }
 
 func (x *ChatCompactRequest) GetSessionId() string {
@@ -3023,7 +3720,7 @@ type ChatCompactResponse struct {
 
 func (x *ChatCompactResponse) Reset() {
 	*x = ChatCompactResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[47]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3035,7 +3732,7 @@ func (x *ChatCompactResponse) String() string {
 func (*ChatCompactResponse) ProtoMessage() {}
 
 func (x *ChatCompactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[38]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[47]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3048,7 +3745,7 @@ func (x *ChatCompactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompactResponse.ProtoReflect.Descriptor instead.
 func (*ChatCompactResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{38}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{47}
 }
 
 func (x *ChatCompactResponse) GetAccepted() bool {
@@ -3099,7 +3796,7 @@ type ContextItem struct {
 
 func (x *ContextItem) Reset() {
 	*x = ContextItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[48]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3111,7 +3808,7 @@ func (x *ContextItem) String() string {
 func (*ContextItem) ProtoMessage() {}
 
 func (x *ContextItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[48]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3124,7 +3821,7 @@ func (x *ContextItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextItem.ProtoReflect.Descriptor instead.
 func (*ContextItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{39}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{48}
 }
 
 // Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
@@ -3195,7 +3892,7 @@ type PreCheckResponse struct {
 
 func (x *PreCheckResponse) Reset() {
 	*x = PreCheckResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[49]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3207,7 +3904,7 @@ func (x *PreCheckResponse) String() string {
 func (*PreCheckResponse) ProtoMessage() {}
 
 func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[40]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[49]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3220,7 +3917,7 @@ func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckResponse.ProtoReflect.Descriptor instead.
 func (*PreCheckResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{40}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{49}
 }
 
 func (x *PreCheckResponse) GetShouldInject() bool {
@@ -3271,7 +3968,7 @@ type PostActionTimelineItem struct {
 
 func (x *PostActionTimelineItem) Reset() {
 	*x = PostActionTimelineItem{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[50]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3283,7 +3980,7 @@ func (x *PostActionTimelineItem) String() string {
 func (*PostActionTimelineItem) ProtoMessage() {}
 
 func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[50]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3296,7 +3993,7 @@ func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionTimelineItem.ProtoReflect.Descriptor instead.
 func (*PostActionTimelineItem) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{41}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{50}
 }
 
 func (x *PostActionTimelineItem) GetType() string {
@@ -3329,7 +4026,7 @@ type PostActionRequest struct {
 
 func (x *PostActionRequest) Reset() {
 	*x = PostActionRequest{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[51]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3341,7 +4038,7 @@ func (x *PostActionRequest) String() string {
 func (*PostActionRequest) ProtoMessage() {}
 
 func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[42]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[51]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3354,7 +4051,7 @@ func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionRequest.ProtoReflect.Descriptor instead.
 func (*PostActionRequest) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{42}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{51}
 }
 
 func (x *PostActionRequest) GetSessionId() string {
@@ -3411,7 +4108,7 @@ type PostActionResponse struct {
 
 func (x *PostActionResponse) Reset() {
 	*x = PostActionResponse{}
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[52]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3423,7 +4120,7 @@ func (x *PostActionResponse) String() string {
 func (*PostActionResponse) ProtoMessage() {}
 
 func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[43]
+	mi := &file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[52]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3436,7 +4133,7 @@ func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionResponse.ProtoReflect.Descriptor instead.
 func (*PostActionResponse) Descriptor() ([]byte, []int) {
-	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{43}
+	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP(), []int{52}
 }
 
 func (x *PostActionResponse) GetAccepted() bool {
@@ -3669,7 +4366,67 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\"g\n" +
 	"\x15WriteMemoriesResponse\x123\n" +
 	"\x05items\x18\x01 \x03(\v2\x1d.vmm.v1.WriteMemoryResultItemR\x05items\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xc8\x01\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId\"8\n" +
+	"\x0eScratchpadItem\x12\x10\n" +
+	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
+	"\x05value\x18\x02 \x01(\tR\x05value\"\xff\x01\n" +
+	"\x17ScratchpadUpsertRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x03 \x01(\x04R\tprojectId\x12\x1b\n" +
+	"\tplan_name\x18\x04 \x01(\tR\bplanName\x12\x15\n" +
+	"\x03key\x18\x05 \x01(\tH\x00R\x03key\x88\x01\x01\x12\x19\n" +
+	"\x05value\x18\x06 \x01(\tH\x01R\x05value\x88\x01\x01\x12,\n" +
+	"\x05items\x18\a \x03(\v2\x16.vmm.v1.ScratchpadItemR\x05itemsB\x06\n" +
+	"\x04_keyB\b\n" +
+	"\x06_value\"\xd1\x01\n" +
+	"\x18ScratchpadUpsertResponse\x120\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x18.vmm.v1.ScratchpadStatusR\x06status\x12\x10\n" +
+	"\x03msg\x18\x02 \x01(\tR\x03msg\x12%\n" +
+	"\x0eaffected_count\x18\x03 \x01(\rR\raffectedCount\x12%\n" +
+	"\x0einserted_count\x18\x04 \x01(\rR\rinsertedCount\x12#\n" +
+	"\rupdated_count\x18\x05 \x01(\rR\fupdatedCount\"\xc0\x01\n" +
+	"\x17ScratchpadDeleteRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x03 \x01(\x04R\tprojectId\x12\x1b\n" +
+	"\tplan_name\x18\x04 \x01(\tR\bplanName\x12\x15\n" +
+	"\x03key\x18\x05 \x01(\tH\x00R\x03key\x88\x01\x01\x12\x12\n" +
+	"\x04keys\x18\x06 \x03(\tR\x04keysB\x06\n" +
+	"\x04_key\"\x85\x01\n" +
+	"\x18ScratchpadDeleteResponse\x120\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x18.vmm.v1.ScratchpadStatusR\x06status\x12\x10\n" +
+	"\x03msg\x18\x02 \x01(\tR\x03msg\x12%\n" +
+	"\x0eaffected_count\x18\x03 \x01(\rR\raffectedCount\"\x8c\x01\n" +
+	"\x14ScratchpadGetRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x03 \x01(\x04R\tprojectId\x12\x15\n" +
+	"\x03key\x18\x04 \x01(\tH\x00R\x03key\x88\x01\x01B\x06\n" +
+	"\x04_key\"\xf2\x01\n" +
+	"\x15ScratchpadGetResponse\x120\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x18.vmm.v1.ScratchpadStatusR\x06status\x12\x10\n" +
+	"\x03msg\x18\x02 \x01(\tR\x03msg\x12,\n" +
+	"\x05items\x18\x03 \x03(\v2\x16.vmm.v1.ScratchpadItemR\x05items\x12\x1b\n" +
+	"\tplan_name\x18\x04 \x01(\tR\bplanName\x12\x1d\n" +
+	"\n" +
+	"item_count\x18\x05 \x01(\rR\titemCount\x12+\n" +
+	"\x11updated_timestamp\x18\x06 \x01(\x03R\x10updatedTimestamp\"o\n" +
+	"\x16ScratchpadCleanRequest\x12\x1d\n" +
+	"\n" +
+	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
+	"\auser_id\x18\x02 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x03 \x01(\x04R\tprojectId\"]\n" +
+	"\x17ScratchpadCleanResponse\x120\n" +
+	"\x06status\x18\x01 \x01(\x0e2\x18.vmm.v1.ScratchpadStatusR\x06status\x12\x10\n" +
+	"\x03msg\x18\x02 \x01(\tR\x03msg\"\xc8\x01\n" +
 	"\x0fPreCheckRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
@@ -3734,11 +4491,14 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x11ProfileBundleMode\x12#\n" +
 	"\x1fPROFILE_BUNDLE_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18PROFILE_BUNDLE_MODE_FULL\x10\x01\x12\x1d\n" +
-	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x02*a\n" +
+	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x02*r\n" +
+	"\x10ScratchpadStatus\x12!\n" +
+	"\x1dSCRATCHPAD_STATUS_UNSPECIFIED\x10\x00\x12\x1d\n" +
+	"\x19SCRATCHPAD_STATUS_SUCCESS\x10\x01\x12\x1c\n" +
+	"\x18SCRATCHPAD_STATUS_FAILED\x10\x02*a\n" +
 	"\x12PreCheckRecallMode\x12 \n" +
 	"\x1cPRE_CHECK_RECALL_MODE_LEGACY\x10\x00\x12)\n" +
-	"%PRE_CHECK_RECALL_MODE_SESSION_COMPACT\x10\x012\xf8\n" +
-	"\n" +
+	"%PRE_CHECK_RECALL_MODE_SESSION_COMPACT\x10\x012\xc8\r\n" +
 	"\n" +
 	"VMMService\x12:\n" +
 	"\aHealthz\x12\x16.google.protobuf.Empty\x1a\x17.vmm.v1.HealthzResponse\x12D\n" +
@@ -3756,7 +4516,11 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x17ApplyProfileInstruction\x12&.vmm.v1.ApplyProfileInstructionRequest\x1a'.vmm.v1.ApplyProfileInstructionResponse\x12[\n" +
 	"\x12SearchMemoryEvents\x12!.vmm.v1.SearchMemoryEventsRequest\x1a\".vmm.v1.SearchMemoryEventsResponse\x12O\n" +
 	"\x0eGetTurnDetails\x12\x1d.vmm.v1.GetTurnDetailsRequest\x1a\x1e.vmm.v1.GetTurnDetailsResponse\x12L\n" +
-	"\rWriteMemories\x12\x1c.vmm.v1.WriteMemoriesRequest\x1a\x1d.vmm.v1.WriteMemoriesResponse\x12F\n" +
+	"\rWriteMemories\x12\x1c.vmm.v1.WriteMemoriesRequest\x1a\x1d.vmm.v1.WriteMemoriesResponse\x12U\n" +
+	"\x10ScratchpadUpsert\x12\x1f.vmm.v1.ScratchpadUpsertRequest\x1a .vmm.v1.ScratchpadUpsertResponse\x12U\n" +
+	"\x10ScratchpadDelete\x12\x1f.vmm.v1.ScratchpadDeleteRequest\x1a .vmm.v1.ScratchpadDeleteResponse\x12L\n" +
+	"\rScratchpadGet\x12\x1c.vmm.v1.ScratchpadGetRequest\x1a\x1d.vmm.v1.ScratchpadGetResponse\x12R\n" +
+	"\x0fScratchpadClean\x12\x1e.vmm.v1.ScratchpadCleanRequest\x1a\x1f.vmm.v1.ScratchpadCleanResponse\x12F\n" +
 	"\vChatCompact\x12\x1a.vmm.v1.ChatCompactRequest\x1a\x1b.vmm.v1.ChatCompactResponse\x12=\n" +
 	"\bPreCheck\x12\x17.vmm.v1.PreCheckRequest\x1a\x18.vmm.v1.PreCheckResponse\x12C\n" +
 	"\n" +
@@ -3774,128 +4538,152 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescGZIP() []b
 	return file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDescData
 }
 
-var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 5)
+var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 53)
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_goTypes = []any{
 	(ProfileTarget)(0),                      // 0: vmm.v1.ProfileTarget
 	(ProfileNodeSourceKind)(0),              // 1: vmm.v1.ProfileNodeSourceKind
 	(ProfileBundleMode)(0),                  // 2: vmm.v1.ProfileBundleMode
-	(PreCheckRecallMode)(0),                 // 3: vmm.v1.PreCheckRecallMode
-	(*HealthzResponse)(nil),                 // 4: vmm.v1.HealthzResponse
-	(*ProjectEntry)(nil),                    // 5: vmm.v1.ProjectEntry
-	(*UserEntry)(nil),                       // 6: vmm.v1.UserEntry
-	(*ListProjectsResponse)(nil),            // 7: vmm.v1.ListProjectsResponse
-	(*ResolveProjectRequest)(nil),           // 8: vmm.v1.ResolveProjectRequest
-	(*ResolveProjectResponse)(nil),          // 9: vmm.v1.ResolveProjectResponse
-	(*EnsureProjectRequest)(nil),            // 10: vmm.v1.EnsureProjectRequest
-	(*EnsureProjectResponse)(nil),           // 11: vmm.v1.EnsureProjectResponse
-	(*DeleteProjectRequest)(nil),            // 12: vmm.v1.DeleteProjectRequest
-	(*DeleteProjectResponse)(nil),           // 13: vmm.v1.DeleteProjectResponse
-	(*MigrateProjectRequest)(nil),           // 14: vmm.v1.MigrateProjectRequest
-	(*MigrateProjectResponse)(nil),          // 15: vmm.v1.MigrateProjectResponse
-	(*ResolveUserRequest)(nil),              // 16: vmm.v1.ResolveUserRequest
-	(*ResolveUserResponse)(nil),             // 17: vmm.v1.ResolveUserResponse
-	(*ListUsersResponse)(nil),               // 18: vmm.v1.ListUsersResponse
-	(*DeleteUserRequest)(nil),               // 19: vmm.v1.DeleteUserRequest
-	(*DeleteUserResponse)(nil),              // 20: vmm.v1.DeleteUserResponse
-	(*ProfileNodeEntry)(nil),                // 21: vmm.v1.ProfileNodeEntry
-	(*RetiredProfileNodeEntry)(nil),         // 22: vmm.v1.RetiredProfileNodeEntry
-	(*GetProfileNodesRequest)(nil),          // 23: vmm.v1.GetProfileNodesRequest
-	(*GetProfileNodesResponse)(nil),         // 24: vmm.v1.GetProfileNodesResponse
-	(*GetProfileBundleRequest)(nil),         // 25: vmm.v1.GetProfileBundleRequest
-	(*GetProfileBundleResponse)(nil),        // 26: vmm.v1.GetProfileBundleResponse
-	(*ApplyProfileInstructionRequest)(nil),  // 27: vmm.v1.ApplyProfileInstructionRequest
-	(*ApplyProfileInstructionResponse)(nil), // 28: vmm.v1.ApplyProfileInstructionResponse
-	(*SearchMemoryEventsRequest)(nil),       // 29: vmm.v1.SearchMemoryEventsRequest
-	(*MemorySearchHit)(nil),                 // 30: vmm.v1.MemorySearchHit
-	(*MemorySearchGroupResult)(nil),         // 31: vmm.v1.MemorySearchGroupResult
-	(*SearchMemoryEventsResponse)(nil),      // 32: vmm.v1.SearchMemoryEventsResponse
-	(*GetTurnDetailsRequest)(nil),           // 33: vmm.v1.GetTurnDetailsRequest
-	(*TurnDetailEntry)(nil),                 // 34: vmm.v1.TurnDetailEntry
-	(*GetTurnDetailsResponse)(nil),          // 35: vmm.v1.GetTurnDetailsResponse
-	(*WriteMemoryItem)(nil),                 // 36: vmm.v1.WriteMemoryItem
-	(*WriteMemoriesRequest)(nil),            // 37: vmm.v1.WriteMemoriesRequest
-	(*WriteMemoryResultItem)(nil),           // 38: vmm.v1.WriteMemoryResultItem
-	(*WriteMemoriesResponse)(nil),           // 39: vmm.v1.WriteMemoriesResponse
-	(*PreCheckRequest)(nil),                 // 40: vmm.v1.PreCheckRequest
-	(*ChatCompactRequest)(nil),              // 41: vmm.v1.ChatCompactRequest
-	(*ChatCompactResponse)(nil),             // 42: vmm.v1.ChatCompactResponse
-	(*ContextItem)(nil),                     // 43: vmm.v1.ContextItem
-	(*PreCheckResponse)(nil),                // 44: vmm.v1.PreCheckResponse
-	(*PostActionTimelineItem)(nil),          // 45: vmm.v1.PostActionTimelineItem
-	(*PostActionRequest)(nil),               // 46: vmm.v1.PostActionRequest
-	(*PostActionResponse)(nil),              // 47: vmm.v1.PostActionResponse
-	(*emptypb.Empty)(nil),                   // 48: google.protobuf.Empty
+	(ScratchpadStatus)(0),                   // 3: vmm.v1.ScratchpadStatus
+	(PreCheckRecallMode)(0),                 // 4: vmm.v1.PreCheckRecallMode
+	(*HealthzResponse)(nil),                 // 5: vmm.v1.HealthzResponse
+	(*ProjectEntry)(nil),                    // 6: vmm.v1.ProjectEntry
+	(*UserEntry)(nil),                       // 7: vmm.v1.UserEntry
+	(*ListProjectsResponse)(nil),            // 8: vmm.v1.ListProjectsResponse
+	(*ResolveProjectRequest)(nil),           // 9: vmm.v1.ResolveProjectRequest
+	(*ResolveProjectResponse)(nil),          // 10: vmm.v1.ResolveProjectResponse
+	(*EnsureProjectRequest)(nil),            // 11: vmm.v1.EnsureProjectRequest
+	(*EnsureProjectResponse)(nil),           // 12: vmm.v1.EnsureProjectResponse
+	(*DeleteProjectRequest)(nil),            // 13: vmm.v1.DeleteProjectRequest
+	(*DeleteProjectResponse)(nil),           // 14: vmm.v1.DeleteProjectResponse
+	(*MigrateProjectRequest)(nil),           // 15: vmm.v1.MigrateProjectRequest
+	(*MigrateProjectResponse)(nil),          // 16: vmm.v1.MigrateProjectResponse
+	(*ResolveUserRequest)(nil),              // 17: vmm.v1.ResolveUserRequest
+	(*ResolveUserResponse)(nil),             // 18: vmm.v1.ResolveUserResponse
+	(*ListUsersResponse)(nil),               // 19: vmm.v1.ListUsersResponse
+	(*DeleteUserRequest)(nil),               // 20: vmm.v1.DeleteUserRequest
+	(*DeleteUserResponse)(nil),              // 21: vmm.v1.DeleteUserResponse
+	(*ProfileNodeEntry)(nil),                // 22: vmm.v1.ProfileNodeEntry
+	(*RetiredProfileNodeEntry)(nil),         // 23: vmm.v1.RetiredProfileNodeEntry
+	(*GetProfileNodesRequest)(nil),          // 24: vmm.v1.GetProfileNodesRequest
+	(*GetProfileNodesResponse)(nil),         // 25: vmm.v1.GetProfileNodesResponse
+	(*GetProfileBundleRequest)(nil),         // 26: vmm.v1.GetProfileBundleRequest
+	(*GetProfileBundleResponse)(nil),        // 27: vmm.v1.GetProfileBundleResponse
+	(*ApplyProfileInstructionRequest)(nil),  // 28: vmm.v1.ApplyProfileInstructionRequest
+	(*ApplyProfileInstructionResponse)(nil), // 29: vmm.v1.ApplyProfileInstructionResponse
+	(*SearchMemoryEventsRequest)(nil),       // 30: vmm.v1.SearchMemoryEventsRequest
+	(*MemorySearchHit)(nil),                 // 31: vmm.v1.MemorySearchHit
+	(*MemorySearchGroupResult)(nil),         // 32: vmm.v1.MemorySearchGroupResult
+	(*SearchMemoryEventsResponse)(nil),      // 33: vmm.v1.SearchMemoryEventsResponse
+	(*GetTurnDetailsRequest)(nil),           // 34: vmm.v1.GetTurnDetailsRequest
+	(*TurnDetailEntry)(nil),                 // 35: vmm.v1.TurnDetailEntry
+	(*GetTurnDetailsResponse)(nil),          // 36: vmm.v1.GetTurnDetailsResponse
+	(*WriteMemoryItem)(nil),                 // 37: vmm.v1.WriteMemoryItem
+	(*WriteMemoriesRequest)(nil),            // 38: vmm.v1.WriteMemoriesRequest
+	(*WriteMemoryResultItem)(nil),           // 39: vmm.v1.WriteMemoryResultItem
+	(*WriteMemoriesResponse)(nil),           // 40: vmm.v1.WriteMemoriesResponse
+	(*ScratchpadItem)(nil),                  // 41: vmm.v1.ScratchpadItem
+	(*ScratchpadUpsertRequest)(nil),         // 42: vmm.v1.ScratchpadUpsertRequest
+	(*ScratchpadUpsertResponse)(nil),        // 43: vmm.v1.ScratchpadUpsertResponse
+	(*ScratchpadDeleteRequest)(nil),         // 44: vmm.v1.ScratchpadDeleteRequest
+	(*ScratchpadDeleteResponse)(nil),        // 45: vmm.v1.ScratchpadDeleteResponse
+	(*ScratchpadGetRequest)(nil),            // 46: vmm.v1.ScratchpadGetRequest
+	(*ScratchpadGetResponse)(nil),           // 47: vmm.v1.ScratchpadGetResponse
+	(*ScratchpadCleanRequest)(nil),          // 48: vmm.v1.ScratchpadCleanRequest
+	(*ScratchpadCleanResponse)(nil),         // 49: vmm.v1.ScratchpadCleanResponse
+	(*PreCheckRequest)(nil),                 // 50: vmm.v1.PreCheckRequest
+	(*ChatCompactRequest)(nil),              // 51: vmm.v1.ChatCompactRequest
+	(*ChatCompactResponse)(nil),             // 52: vmm.v1.ChatCompactResponse
+	(*ContextItem)(nil),                     // 53: vmm.v1.ContextItem
+	(*PreCheckResponse)(nil),                // 54: vmm.v1.PreCheckResponse
+	(*PostActionTimelineItem)(nil),          // 55: vmm.v1.PostActionTimelineItem
+	(*PostActionRequest)(nil),               // 56: vmm.v1.PostActionRequest
+	(*PostActionResponse)(nil),              // 57: vmm.v1.PostActionResponse
+	(*emptypb.Empty)(nil),                   // 58: google.protobuf.Empty
 }
 var file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_depIdxs = []int32{
-	5,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
-	5,  // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	5,  // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	5,  // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
-	5,  // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
-	5,  // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
-	6,  // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
-	6,  // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
-	6,  // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
+	6,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
+	6,  // 1: vmm.v1.ResolveProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	6,  // 2: vmm.v1.EnsureProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	6,  // 3: vmm.v1.DeleteProjectResponse.project:type_name -> vmm.v1.ProjectEntry
+	6,  // 4: vmm.v1.MigrateProjectResponse.source_project:type_name -> vmm.v1.ProjectEntry
+	6,  // 5: vmm.v1.MigrateProjectResponse.target_project:type_name -> vmm.v1.ProjectEntry
+	7,  // 6: vmm.v1.ResolveUserResponse.user:type_name -> vmm.v1.UserEntry
+	7,  // 7: vmm.v1.ListUsersResponse.users:type_name -> vmm.v1.UserEntry
+	7,  // 8: vmm.v1.DeleteUserResponse.user:type_name -> vmm.v1.UserEntry
 	0,  // 9: vmm.v1.ProfileNodeEntry.target:type_name -> vmm.v1.ProfileTarget
 	1,  // 10: vmm.v1.ProfileNodeEntry.source_kind:type_name -> vmm.v1.ProfileNodeSourceKind
 	0,  // 11: vmm.v1.GetProfileNodesRequest.target:type_name -> vmm.v1.ProfileTarget
-	21, // 12: vmm.v1.GetProfileNodesResponse.nodes:type_name -> vmm.v1.ProfileNodeEntry
+	22, // 12: vmm.v1.GetProfileNodesResponse.nodes:type_name -> vmm.v1.ProfileNodeEntry
 	2,  // 13: vmm.v1.GetProfileBundleRequest.mode:type_name -> vmm.v1.ProfileBundleMode
 	2,  // 14: vmm.v1.GetProfileBundleResponse.mode:type_name -> vmm.v1.ProfileBundleMode
 	0,  // 15: vmm.v1.ApplyProfileInstructionRequest.target:type_name -> vmm.v1.ProfileTarget
-	21, // 16: vmm.v1.ApplyProfileInstructionResponse.accepted_nodes:type_name -> vmm.v1.ProfileNodeEntry
-	22, // 17: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
-	30, // 18: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
-	31, // 19: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
-	45, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	34, // 21: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
-	36, // 22: vmm.v1.WriteMemoriesRequest.items:type_name -> vmm.v1.WriteMemoryItem
-	38, // 23: vmm.v1.WriteMemoriesResponse.items:type_name -> vmm.v1.WriteMemoryResultItem
-	3,  // 24: vmm.v1.PreCheckRequest.recall_mode:type_name -> vmm.v1.PreCheckRecallMode
-	43, // 25: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
-	45, // 26: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	48, // 27: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
-	48, // 28: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
-	8,  // 29: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
-	10, // 30: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
-	12, // 31: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
-	14, // 32: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
-	16, // 33: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
-	48, // 34: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
-	19, // 35: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
-	23, // 36: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
-	25, // 37: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
-	27, // 38: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
-	29, // 39: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
-	33, // 40: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
-	37, // 41: vmm.v1.VMMService.WriteMemories:input_type -> vmm.v1.WriteMemoriesRequest
-	41, // 42: vmm.v1.VMMService.ChatCompact:input_type -> vmm.v1.ChatCompactRequest
-	40, // 43: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
-	46, // 44: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
-	4,  // 45: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
-	7,  // 46: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
-	9,  // 47: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
-	11, // 48: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
-	13, // 49: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
-	15, // 50: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
-	17, // 51: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
-	18, // 52: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
-	20, // 53: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
-	24, // 54: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
-	26, // 55: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
-	28, // 56: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
-	32, // 57: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
-	35, // 58: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
-	39, // 59: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
-	42, // 60: vmm.v1.VMMService.ChatCompact:output_type -> vmm.v1.ChatCompactResponse
-	44, // 61: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
-	47, // 62: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
-	45, // [45:63] is the sub-list for method output_type
-	27, // [27:45] is the sub-list for method input_type
-	27, // [27:27] is the sub-list for extension type_name
-	27, // [27:27] is the sub-list for extension extendee
-	0,  // [0:27] is the sub-list for field type_name
+	22, // 16: vmm.v1.ApplyProfileInstructionResponse.accepted_nodes:type_name -> vmm.v1.ProfileNodeEntry
+	23, // 17: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
+	31, // 18: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
+	32, // 19: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
+	55, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	35, // 21: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
+	37, // 22: vmm.v1.WriteMemoriesRequest.items:type_name -> vmm.v1.WriteMemoryItem
+	39, // 23: vmm.v1.WriteMemoriesResponse.items:type_name -> vmm.v1.WriteMemoryResultItem
+	41, // 24: vmm.v1.ScratchpadUpsertRequest.items:type_name -> vmm.v1.ScratchpadItem
+	3,  // 25: vmm.v1.ScratchpadUpsertResponse.status:type_name -> vmm.v1.ScratchpadStatus
+	3,  // 26: vmm.v1.ScratchpadDeleteResponse.status:type_name -> vmm.v1.ScratchpadStatus
+	3,  // 27: vmm.v1.ScratchpadGetResponse.status:type_name -> vmm.v1.ScratchpadStatus
+	41, // 28: vmm.v1.ScratchpadGetResponse.items:type_name -> vmm.v1.ScratchpadItem
+	3,  // 29: vmm.v1.ScratchpadCleanResponse.status:type_name -> vmm.v1.ScratchpadStatus
+	4,  // 30: vmm.v1.PreCheckRequest.recall_mode:type_name -> vmm.v1.PreCheckRecallMode
+	53, // 31: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
+	55, // 32: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	58, // 33: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
+	58, // 34: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
+	9,  // 35: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
+	11, // 36: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
+	13, // 37: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
+	15, // 38: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
+	17, // 39: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
+	58, // 40: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
+	20, // 41: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
+	24, // 42: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
+	26, // 43: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
+	28, // 44: vmm.v1.VMMService.ApplyProfileInstruction:input_type -> vmm.v1.ApplyProfileInstructionRequest
+	30, // 45: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
+	34, // 46: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
+	38, // 47: vmm.v1.VMMService.WriteMemories:input_type -> vmm.v1.WriteMemoriesRequest
+	42, // 48: vmm.v1.VMMService.ScratchpadUpsert:input_type -> vmm.v1.ScratchpadUpsertRequest
+	44, // 49: vmm.v1.VMMService.ScratchpadDelete:input_type -> vmm.v1.ScratchpadDeleteRequest
+	46, // 50: vmm.v1.VMMService.ScratchpadGet:input_type -> vmm.v1.ScratchpadGetRequest
+	48, // 51: vmm.v1.VMMService.ScratchpadClean:input_type -> vmm.v1.ScratchpadCleanRequest
+	51, // 52: vmm.v1.VMMService.ChatCompact:input_type -> vmm.v1.ChatCompactRequest
+	50, // 53: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
+	56, // 54: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
+	5,  // 55: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
+	8,  // 56: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
+	10, // 57: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
+	12, // 58: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
+	14, // 59: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
+	16, // 60: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
+	18, // 61: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
+	19, // 62: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
+	21, // 63: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
+	25, // 64: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
+	27, // 65: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
+	29, // 66: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
+	33, // 67: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
+	36, // 68: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
+	40, // 69: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
+	43, // 70: vmm.v1.VMMService.ScratchpadUpsert:output_type -> vmm.v1.ScratchpadUpsertResponse
+	45, // 71: vmm.v1.VMMService.ScratchpadDelete:output_type -> vmm.v1.ScratchpadDeleteResponse
+	47, // 72: vmm.v1.VMMService.ScratchpadGet:output_type -> vmm.v1.ScratchpadGetResponse
+	49, // 73: vmm.v1.VMMService.ScratchpadClean:output_type -> vmm.v1.ScratchpadCleanResponse
+	52, // 74: vmm.v1.VMMService.ChatCompact:output_type -> vmm.v1.ChatCompactResponse
+	54, // 75: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
+	57, // 76: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
+	55, // [55:77] is the sub-list for method output_type
+	33, // [33:55] is the sub-list for method input_type
+	33, // [33:33] is the sub-list for extension type_name
+	33, // [33:33] is the sub-list for extension extendee
+	0,  // [0:33] is the sub-list for field type_name
 }
 
 func init() { file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() }
@@ -3904,13 +4692,16 @@ func file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_init() {
 		return
 	}
 	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[21].OneofWrappers = []any{}
+	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[37].OneofWrappers = []any{}
+	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[39].OneofWrappers = []any{}
+	file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_msgTypes[41].OneofWrappers = []any{}
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc), len(file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc)),
-			NumEnums:      4,
-			NumMessages:   44,
+			NumEnums:      5,
+			NumMessages:   53,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

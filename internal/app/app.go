@@ -132,6 +132,14 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if !ok {
 		return nil, fmt.Errorf("relational store does not support session compact updates")
 	}
+	scratchpadStore, ok := relational.(appports.ScratchpadStore)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support scratchpad management")
+	}
+	scratchpadMaintenanceStore, ok := relational.(appports.ScratchpadMaintenanceStore)
+	if !ok {
+		return nil, fmt.Errorf("relational store does not support scratchpad maintenance")
+	}
 	retentionStore, err := usecase.EnsureRetentionStore(relational)
 	if err != nil {
 		return nil, err
@@ -151,6 +159,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
+	scratchpad := usecase.NewScratchpadUseCase(scratchpadStore)
 	chatCompact := usecase.NewChatCompactUseCase(chatCompactStore)
 	candidateReviewer := processor.NewPostActionCandidateReviewer(llm, prompts, cfg.LLM.Model)
 	memory.ConfigureHybrid(cfg.MemoryPipeline.HybridEnabled, cfg.MemoryPipeline.LexicalTopK, cfg.MemoryPipeline.RRFK)
@@ -214,6 +223,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		ProtectMemoryLevelFloor:     cfg.Retention.ProtectMemoryLevelFloor,
 		SkipProtectedSharedMemories: cfg.Retention.SkipProtectedSharedMemories,
 	}, logger)
+	retention.ConfigureScratchpadMaintenanceStore(scratchpadMaintenanceStore)
 
 	// Wire gRPC handlers and shutdown dependencies into the application container.
 	// 将 gRPC 处理器和关闭依赖接入应用容器。
@@ -222,6 +232,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		Workspace:         workspace,
 		Profiles:          profiles,
 		Memory:            memory,
+		Scratchpad:        scratchpad,
 		ChatCompact:       chatCompact,
 		PreCheck:          pre,
 		PostAction:        post,
