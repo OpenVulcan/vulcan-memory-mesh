@@ -79,6 +79,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `combined`（显式启用）
   - PostgreSQL：统一承载关系数据、检索索引与向量能力
   - 该模式只在 `storage.mode=combined` 且 `storage.combined_provider=postgres` 时启用
+  - PostgreSQL 组合库现在支持受控的 tracked schema 自动升级；当前已覆盖共享 schema `1 -> 2` 的 scratchpad 升级
 
 运行时已经移除：
 

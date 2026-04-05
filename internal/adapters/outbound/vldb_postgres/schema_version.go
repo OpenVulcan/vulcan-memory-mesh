@@ -11,7 +11,7 @@ import (
 const (
 	// currentCombinedSchemaVersion tracks the shared PostgreSQL physical table layout used by every flavor.
 	// currentCombinedSchemaVersion 用于跟踪所有 flavor 共用的 PostgreSQL 物理表结构版本。
-	currentCombinedSchemaVersion = 1
+	currentCombinedSchemaVersion = 2
 
 	// currentCombinedSearchSchemaVersion tracks the active lexical-search layout generation for the current flavor.
 	// currentCombinedSearchSchemaVersion 用于跟踪当前 flavor 的词法检索布局版本。
@@ -42,22 +42,6 @@ func searchSchemaVersionComponent(flavor string) string {
 		flavor = "paradedb"
 	}
 	return "postgres_combined_search_" + flavor
-}
-
-// validateTrackedSchemaVersion rejects impossible newer versions and not-yet-supported older versions while still allowing missing bootstrap rows.
-// validateTrackedSchemaVersion 用于拒绝“不可能的新版本”和“尚未支持的旧版本”，同时允许缺失的初始版本记录在启动后补写。
-func validateTrackedSchemaVersion(component string, stored, current int) error {
-	component = strings.TrimSpace(component)
-	if stored == 0 {
-		return nil
-	}
-	if stored > current {
-		return fmt.Errorf("tracked postgres schema version for %s (%d) is newer than runtime target %d", component, stored, current)
-	}
-	if stored < current {
-		return fmt.Errorf("tracked postgres schema version for %s (%d) is older than runtime target %d: automatic postgres migration is not implemented yet", component, stored, current)
-	}
-	return nil
 }
 
 // ensureSchemaVersionTable bootstraps the schema-version table early so version checks can fail fast before later DDL mutates more objects.
