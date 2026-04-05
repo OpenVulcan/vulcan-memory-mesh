@@ -43,7 +43,19 @@ func DebugCleanManagedSchema(ctx context.Context, cfg Config) error {
 	if _, err := pool.Exec(callCtx, fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdentifier(cfg.Schema))); err != nil {
 		return fmt.Errorf("ensure postgres debug-clean schema: %w", err)
 	}
-	for _, tableName := range []string{
+	for _, tableName := range postgresManagedTableNamesForDebugClean() {
+		statement := fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s CASCADE`, quoteIdentifier(cfg.Schema), quoteIdentifier(tableName))
+		if _, err := pool.Exec(callCtx, statement); err != nil {
+			return fmt.Errorf("drop postgres managed table %s: %w", tableName, err)
+		}
+	}
+	return nil
+}
+
+// postgresManagedTableNamesForDebugClean returns the full managed-table drop order used by PostgreSQL debug-clean flows.
+// postgresManagedTableNamesForDebugClean 用于返回 PostgreSQL debug-clean 流程使用的完整受管表删除顺序。
+func postgresManagedTableNamesForDebugClean() []string {
+	return []string{
 		"vmm_profile_instructions",
 		"vmm_profile_nodes",
 		"vmm_memory_context_edges",
@@ -57,12 +69,12 @@ func DebugCleanManagedSchema(ctx context.Context, cfg Config) error {
 		"vmm_teams",
 		"vmm_users",
 		"vmm_noise_embeddings",
+		"vmm_memory_context_edges_trash",
+		"vmm_memory_nodes_trash",
+		"vmm_turn_records_trash",
+		"vmm_recycle_jobs",
+		"vmm_recycle_batches",
+		"vmm_vector_gc_jobs",
 		"vmm_schema_versions",
-	} {
-		statement := fmt.Sprintf(`DROP TABLE IF EXISTS %s.%s CASCADE`, quoteIdentifier(cfg.Schema), quoteIdentifier(tableName))
-		if _, err := pool.Exec(callCtx, statement); err != nil {
-			return fmt.Errorf("drop postgres managed table %s: %w", tableName, err)
-		}
 	}
-	return nil
 }

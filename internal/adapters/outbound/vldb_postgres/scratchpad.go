@@ -121,13 +121,29 @@ func (s *Store) CreateScratchpadPlan(ctx context.Context, scope logicdomain.Scra
 		_ = tx.Rollback(context.Background())
 	}()
 
-	// Re-check inside one transaction so concurrent creators cannot silently cross-wire different plan names under the same scope.
-	// 在同一事务内再次检查，避免并发创建者把不同计划名静默串接到同一范围上。
+	planName = strings.TrimSpace(planName)
+	insertSQL := buildPostgresScratchpadPlanInsertSQL(s.scratchpadPlansTable())
+	var created scratchpadPlanScanRow
+	at := chooseNonZeroTime(createdAt, time.Now().UTC())
+	if err := tx.QueryRow(callCtx, strings.TrimSpace(insertSQL), int64(scope.ProjectID), int64(scope.UserID), strings.TrimSpace(scope.SessionKey), planName, strings.ToLower(planName), at).Scan(
+		&created.ID, &created.ProjectID, &created.UserID, &created.SessionKey, &created.PlanName, &created.PlanNameNorm, &created.CreatedAt, &created.UpdatedAt,
+	); err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.ScratchpadPlanRecord{}, fmt.Errorf("insert postgres scratchpad plan: %w", err)
+		}
+	} else {
+		if err := tx.Commit(callCtx); err != nil {
+			return logicdomain.ScratchpadPlanRecord{}, fmt.Errorf("commit postgres scratchpad-create tx: %w", err)
+		}
+		return created.toDomain(), nil
+	}
+
+	// When the insert lost a concurrent race, lock and reuse the persisted winner if it belongs to the same canonical plan.
+	// 当插入在并发中败给先到者后，重新加锁读取持久化赢家；若仍属于同一 canonical 计划，则直接复用。
 	row, found, err := s.loadScratchpadPlanWithQueryer(callCtx, tx, scope, true)
 	if err != nil {
 		return logicdomain.ScratchpadPlanRecord{}, err
 	}
-	planName = strings.TrimSpace(planName)
 	if found {
 		existing := row.toDomain()
 		if strings.EqualFold(existing.PlanName, planName) {
@@ -141,23 +157,18 @@ func (s *Store) CreateScratchpadPlan(ctx context.Context, scope logicdomain.Scra
 			Message:  fmt.Sprintf("scratchpad plan already exists for session %s", strings.TrimSpace(scope.SessionKey)),
 		}
 	}
+	return logicdomain.ScratchpadPlanRecord{}, fmt.Errorf("postgres scratchpad plan insert race finished without a visible persisted row")
+}
 
-	insertSQL := fmt.Sprintf(`
+// buildPostgresScratchpadPlanInsertSQL renders the first-writer insert used by scratchpad plan creation, so concurrent creators can converge on one canonical session row.
+// buildPostgresScratchpadPlanInsertSQL 用于渲染 scratchpad 计划创建时的先写入 SQL，让并发创建者收敛到同一条 canonical session 行。
+func buildPostgresScratchpadPlanInsertSQL(table string) string {
+	return fmt.Sprintf(`
 INSERT INTO %s (project_id, user_id, session_key, plan_name, plan_name_norm, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $6, $6)
+ON CONFLICT (project_id, user_id, session_key) DO NOTHING
 RETURNING id, project_id, user_id, session_key, plan_name, plan_name_norm, created_at, updated_at
-`, s.scratchpadPlansTable())
-	var created scratchpadPlanScanRow
-	at := chooseNonZeroTime(createdAt, time.Now().UTC())
-	if err := tx.QueryRow(callCtx, strings.TrimSpace(insertSQL), int64(scope.ProjectID), int64(scope.UserID), strings.TrimSpace(scope.SessionKey), planName, strings.ToLower(planName), at).Scan(
-		&created.ID, &created.ProjectID, &created.UserID, &created.SessionKey, &created.PlanName, &created.PlanNameNorm, &created.CreatedAt, &created.UpdatedAt,
-	); err != nil {
-		return logicdomain.ScratchpadPlanRecord{}, fmt.Errorf("insert postgres scratchpad plan: %w", err)
-	}
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.ScratchpadPlanRecord{}, fmt.Errorf("commit postgres scratchpad-create tx: %w", err)
-	}
-	return created.toDomain(), nil
+`, strings.TrimSpace(table))
 }
 
 // UpsertScratchpadItems inserts or overwrites one deterministic DWM item batch and refreshes the parent plan timestamp only when real writes occurred.

@@ -70,12 +70,6 @@ func (r scratchpadNodeRow) toItem() logicdomain.ScratchpadItem {
 	}
 }
 
-// scratchpadIDRow mirrors one simple scratchpad id lookup row so helper queries do not overload the MAX(id) allocator payload.
-// scratchpadIDRow 用于映射简单的 scratchpad id 查询结果，避免辅助查询复用 MAX(id) 分配器的返回结构。
-type scratchpadIDRow struct {
-	ID uint64 `json:"id"`
-}
-
 // scratchpadCountRow mirrors one COUNT(*) query result used by deterministic scratchpad maintenance helpers.
 // scratchpadCountRow 用于映射 scratchpad 维护辅助逻辑里使用的 COUNT(*) 查询结果。
 type scratchpadCountRow struct {
@@ -185,46 +179,40 @@ func (s *Store) UpsertScratchpadItems(ctx context.Context, planID uint64, items 
 	for _, item := range items {
 		keys = append(keys, strings.TrimSpace(item.Key))
 	}
-	existingKeys, err := s.loadScratchpadExistingKeys(ctx, planID, keys)
+	existingNodes, err := s.loadScratchpadExistingNodes(ctx, planID, keys)
 	if err != nil {
 		return logicdomain.ScratchpadUpsertPersistResult{}, err
 	}
 	insertedCount := 0
 	updatedCount := 0
-	batchItems := make([][]any, 0, len(items))
 	nowMs := chooseScratchpadUnixMilli(updatedAt)
+	nodeIDs := make(map[string]uint64, len(items))
 	for _, item := range items {
 		itemKey := strings.TrimSpace(item.Key)
-		if _, exists := existingKeys[itemKey]; exists {
+		if nodeID, exists := existingNodes[itemKey]; exists {
 			updatedCount++
+			nodeIDs[itemKey] = nodeID
 		} else {
 			insertedCount++
+			nodeIDs[itemKey] = 0
 		}
-		nodeID, err := s.ensureScratchpadNodeID(ctx, planID, itemKey)
+	}
+	if insertedCount > 0 {
+		nextID, err := s.nextNumericID(ctx, "vmm_scratchpad_nodes")
 		if err != nil {
-			return logicdomain.ScratchpadUpsertPersistResult{}, err
+			return logicdomain.ScratchpadUpsertPersistResult{}, fmt.Errorf("allocate scratchpad node ids: %w", err)
 		}
-		batchItems = append(batchItems, []any{
-			nodeID,
-			planID,
-			itemKey,
-			strings.TrimSpace(item.Value),
-			nowMs,
-			nowMs,
-		})
+		for _, item := range items {
+			itemKey := strings.TrimSpace(item.Key)
+			if nodeIDs[itemKey] != 0 {
+				continue
+			}
+			nodeIDs[itemKey] = nextID
+			nextID++
+		}
 	}
-	if err := s.execBatch(ctx, `
-INSERT INTO vmm_scratchpad_nodes (
-  id, plan_id, item_key, item_value, created_timestamp, updated_timestamp
-) VALUES (?, ?, ?, ?, ?, ?)
-ON CONFLICT(plan_id, item_key) DO UPDATE SET
-  item_value = excluded.item_value,
-  updated_timestamp = excluded.updated_timestamp
-`, batchItems); err != nil {
+	if err := s.exec(ctx, buildSQLiteScratchpadUpsertScript(planID, items, nodeIDs, nowMs)); err != nil {
 		return logicdomain.ScratchpadUpsertPersistResult{}, fmt.Errorf("upsert scratchpad items: %w", err)
-	}
-	if err := s.exec(ctx, `UPDATE vmm_scratchpad_plans SET updated_timestamp = ? WHERE id = ?`, nowMs, planID); err != nil {
-		return logicdomain.ScratchpadUpsertPersistResult{}, fmt.Errorf("refresh scratchpad plan timestamp: %w", err)
 	}
 	return logicdomain.ScratchpadUpsertPersistResult{
 		InsertedCount: insertedCount,
@@ -249,30 +237,23 @@ func (s *Store) DeleteScratchpadItems(ctx context.Context, planID uint64, keys [
 	if err != nil {
 		return logicdomain.ScratchpadDeletePersistResult{}, err
 	}
-	if deletedCount == 0 {
-		remainingCount, err := s.countScratchpadNodes(ctx, planID)
-		if err != nil {
-			return logicdomain.ScratchpadDeletePersistResult{}, err
-		}
-		return logicdomain.ScratchpadDeletePersistResult{DeletedCount: 0, RemainingCount: remainingCount}, nil
-	}
-
-	deleteSQL, params := buildSQLiteScratchpadNodeKeyFilterSQL(`
-DELETE FROM vmm_scratchpad_nodes
-WHERE plan_id = ? AND `, planID, keys)
-	if err := s.exec(ctx, deleteSQL, params...); err != nil {
-		return logicdomain.ScratchpadDeletePersistResult{}, fmt.Errorf("delete scratchpad items: %w", err)
-	}
-	remainingCount, err := s.countScratchpadNodes(ctx, planID)
+	remainingCountBeforeDelete, err := s.countScratchpadNodes(ctx, planID)
 	if err != nil {
 		return logicdomain.ScratchpadDeletePersistResult{}, err
 	}
-	if err := s.exec(ctx, `UPDATE vmm_scratchpad_plans SET updated_timestamp = ? WHERE id = ?`, chooseScratchpadUnixMilli(updatedAt), planID); err != nil {
-		return logicdomain.ScratchpadDeletePersistResult{}, fmt.Errorf("refresh scratchpad plan after delete: %w", err)
+	if deletedCount == 0 {
+		return logicdomain.ScratchpadDeletePersistResult{DeletedCount: 0, RemainingCount: remainingCountBeforeDelete}, nil
+	}
+	if err := s.exec(ctx, buildSQLiteScratchpadDeleteScript(planID, keys, chooseScratchpadUnixMilli(updatedAt))); err != nil {
+		return logicdomain.ScratchpadDeletePersistResult{}, fmt.Errorf("delete scratchpad items: %w", err)
+	}
+	remainingCountAfterDelete := remainingCountBeforeDelete - deletedCount
+	if remainingCountAfterDelete < 0 {
+		remainingCountAfterDelete = 0
 	}
 	return logicdomain.ScratchpadDeletePersistResult{
 		DeletedCount:   deletedCount,
-		RemainingCount: remainingCount,
+		RemainingCount: remainingCountAfterDelete,
 	}, nil
 }
 
@@ -328,11 +309,8 @@ func (s *Store) CleanScratchpad(ctx context.Context, scope logicdomain.Scratchpa
 	if err != nil {
 		return logicdomain.ScratchpadCleanPersistResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_scratchpad_nodes WHERE plan_id = ?`, plan.ID); err != nil {
-		return logicdomain.ScratchpadCleanPersistResult{}, fmt.Errorf("delete scratchpad nodes during clean: %w", err)
-	}
-	if err := s.exec(ctx, `DELETE FROM vmm_scratchpad_plans WHERE id = ?`, plan.ID); err != nil {
-		return logicdomain.ScratchpadCleanPersistResult{}, fmt.Errorf("delete scratchpad plan during clean: %w", err)
+	if err := s.exec(ctx, buildSQLiteScratchpadCleanScript(plan.ID)); err != nil {
+		return logicdomain.ScratchpadCleanPersistResult{}, fmt.Errorf("clean scratchpad scope: %w", err)
 	}
 	return logicdomain.ScratchpadCleanPersistResult{
 		HadPlan:          true,
@@ -371,13 +349,8 @@ LIMIT ?
 	if err != nil {
 		return logicdomain.ScratchpadGCResult{}, err
 	}
-	deleteNodesSQL, nodeParams := buildSQLiteScratchpadIDFilterSQL(`DELETE FROM vmm_scratchpad_nodes WHERE `, "plan_id", planIDs)
-	if err := s.exec(ctx, deleteNodesSQL, nodeParams...); err != nil {
-		return logicdomain.ScratchpadGCResult{}, fmt.Errorf("delete expired scratchpad nodes: %w", err)
-	}
-	deletePlansSQL, planParams := buildSQLiteScratchpadIDFilterSQL(`DELETE FROM vmm_scratchpad_plans WHERE `, "id", planIDs)
-	if err := s.exec(ctx, deletePlansSQL, planParams...); err != nil {
-		return logicdomain.ScratchpadGCResult{}, fmt.Errorf("delete expired scratchpad plans: %w", err)
+	if err := s.exec(ctx, buildSQLiteScratchpadGCDeleteScript(planIDs)); err != nil {
+		return logicdomain.ScratchpadGCResult{}, fmt.Errorf("delete expired scratchpad sessions: %w", err)
 	}
 	return logicdomain.ScratchpadGCResult{
 		DeletedPlanCount: len(planIDs),
@@ -385,11 +358,11 @@ LIMIT ?
 	}, nil
 }
 
-// loadScratchpadExistingKeys loads the subset of keys that already exist under one plan so upsert can report inserted vs updated counts deterministically.
-// loadScratchpadExistingKeys 用于加载某个计划下已存在的 key 子集，让 upsert 能确定性地区分 inserted 与 updated 计数。
-func (s *Store) loadScratchpadExistingKeys(ctx context.Context, planID uint64, keys []string) (map[string]struct{}, error) {
+// loadScratchpadExistingNodes loads the subset of existing nodes under one plan so upsert can reuse stable ids and report inserted vs updated counts deterministically.
+// loadScratchpadExistingNodes 用于加载某个计划下已存在的节点子集，让 upsert 能复用稳定 id，并确定性地区分 inserted 与 updated 计数。
+func (s *Store) loadScratchpadExistingNodes(ctx context.Context, planID uint64, keys []string) (map[string]uint64, error) {
 	if len(keys) == 0 {
-		return map[string]struct{}{}, nil
+		return map[string]uint64{}, nil
 	}
 	sqlText, params := buildSQLiteScratchpadNodeKeyFilterSQL(`
 SELECT id, plan_id, item_key, item_value, created_timestamp, updated_timestamp
@@ -397,35 +370,13 @@ FROM vmm_scratchpad_nodes
 WHERE plan_id = ? AND `, planID, keys)
 	rows, err := queryRows[scratchpadNodeRow](s, ctx, sqlText, params...)
 	if err != nil {
-		return nil, fmt.Errorf("load existing scratchpad keys: %w", err)
+		return nil, fmt.Errorf("load existing scratchpad nodes: %w", err)
 	}
-	out := make(map[string]struct{}, len(rows))
+	out := make(map[string]uint64, len(rows))
 	for _, row := range rows {
-		out[strings.TrimSpace(row.ItemKey)] = struct{}{}
+		out[strings.TrimSpace(row.ItemKey)] = row.ID
 	}
 	return out, nil
-}
-
-// ensureScratchpadNodeID resolves one existing node id by logical key or allocates a fresh deterministic id for new rows.
-// ensureScratchpadNodeID 用于按逻辑 key 解析已有节点 id，或为新行分配一个确定性的全新 id。
-func (s *Store) ensureScratchpadNodeID(ctx context.Context, planID uint64, key string) (uint64, error) {
-	rows, err := queryRows[scratchpadIDRow](s, ctx, `
-SELECT id
-FROM vmm_scratchpad_nodes
-WHERE plan_id = ? AND item_key = ?
-LIMIT 1
-`, planID, strings.TrimSpace(key))
-	if err != nil {
-		return 0, fmt.Errorf("load scratchpad node id: %w", err)
-	}
-	if len(rows) > 0 && rows[0].ID > 0 {
-		return rows[0].ID, nil
-	}
-	nextID, err := s.nextNumericID(ctx, "vmm_scratchpad_nodes")
-	if err != nil {
-		return 0, fmt.Errorf("allocate scratchpad node id: %w", err)
-	}
-	return nextID, nil
 }
 
 // countScratchpadNodes returns how many nodes currently remain under one plan.
@@ -517,4 +468,70 @@ func chooseScratchpadUnixMilli(value time.Time) int64 {
 		return time.Now().UTC().UnixMilli()
 	}
 	return value.UTC().UnixMilli()
+}
+
+// buildSQLiteScratchpadUpsertScript renders one explicit sqlite transaction so item upserts and parent plan timestamp refresh succeed or fail as one atomic batch.
+// buildSQLiteScratchpadUpsertScript 用于渲染一个显式 sqlite 事务，让 item upsert 与父计划时间戳刷新以单批原子方式共同成功或共同失败。
+func buildSQLiteScratchpadUpsertScript(planID uint64, items []logicdomain.ScratchpadItem, nodeIDs map[string]uint64, nowMs int64) string {
+	var builder strings.Builder
+	builder.WriteString("BEGIN IMMEDIATE;\n")
+	for _, item := range items {
+		itemKey := strings.TrimSpace(item.Key)
+		builder.WriteString(fmt.Sprintf(`
+INSERT INTO vmm_scratchpad_nodes (
+  id, plan_id, item_key, item_value, created_timestamp, updated_timestamp
+) VALUES (%d, %d, %s, %s, %d, %d)
+ON CONFLICT(plan_id, item_key) DO UPDATE SET
+  item_value = excluded.item_value,
+  updated_timestamp = excluded.updated_timestamp;
+`, nodeIDs[itemKey], planID, sqlStringLiteral(itemKey), sqlStringLiteral(strings.TrimSpace(item.Value)), nowMs, nowMs))
+	}
+	builder.WriteString(fmt.Sprintf(`
+UPDATE vmm_scratchpad_plans
+SET updated_timestamp = %d
+WHERE id = %d;
+COMMIT;
+`, nowMs, planID))
+	return builder.String()
+}
+
+// buildSQLiteScratchpadDeleteScript renders one explicit sqlite transaction so key deletion and plan timestamp refresh cannot diverge under transient gateway failures.
+// buildSQLiteScratchpadDeleteScript 用于渲染一个显式 sqlite 事务，避免 key 删除与计划时间戳刷新在网关瞬时失败时发生分叉。
+func buildSQLiteScratchpadDeleteScript(planID uint64, keys []string, nowMs int64) string {
+	keyList := make([]string, 0, len(keys))
+	for _, key := range keys {
+		keyList = append(keyList, sqlStringLiteral(strings.TrimSpace(key)))
+	}
+	return fmt.Sprintf(`
+BEGIN IMMEDIATE;
+DELETE FROM vmm_scratchpad_nodes
+WHERE plan_id = %d AND item_key IN (%s);
+UPDATE vmm_scratchpad_plans
+SET updated_timestamp = %d
+WHERE id = %d;
+COMMIT;
+`, planID, strings.Join(keyList, ", "), nowMs, planID)
+}
+
+// buildSQLiteScratchpadCleanScript renders one explicit sqlite transaction so deleting one full scope never leaves nodes and plan rows out of sync.
+// buildSQLiteScratchpadCleanScript 用于渲染一个显式 sqlite 事务，确保整份 scope 删除时不会留下节点与计划行不同步的中间态。
+func buildSQLiteScratchpadCleanScript(planID uint64) string {
+	return fmt.Sprintf(`
+BEGIN IMMEDIATE;
+DELETE FROM vmm_scratchpad_nodes WHERE plan_id = %d;
+DELETE FROM vmm_scratchpad_plans WHERE id = %d;
+COMMIT;
+`, planID, planID)
+}
+
+// buildSQLiteScratchpadGCDeleteScript renders one explicit sqlite transaction so expired scratchpad sessions are hard-deleted as one maintenance unit.
+// buildSQLiteScratchpadGCDeleteScript 用于渲染一个显式 sqlite 事务，让过期 scratchpad session 作为一个维护单元被整体硬删除。
+func buildSQLiteScratchpadGCDeleteScript(planIDs []uint64) string {
+	planIDList := sqlUint64List(planIDs)
+	return fmt.Sprintf(`
+BEGIN IMMEDIATE;
+DELETE FROM vmm_scratchpad_nodes WHERE plan_id IN (%s);
+DELETE FROM vmm_scratchpad_plans WHERE id IN (%s);
+COMMIT;
+`, planIDList, planIDList)
 }
