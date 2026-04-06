@@ -1,0 +1,11 @@
+{
+  "language": "de-DE",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "DE_TAX_ID", "pattern": "\\b\\d{2} ?\\d{3} ?\\d{3} ?\\d{3}\\b", "replacement": "[DE_TAX_ID_MASKED]" },
+    { "name": "DE_VAT_ID", "pattern": "\\bDE\\d{9}\\b", "replacement": "[DE_VAT_MASKED]" },
+    { "name": "DE_MOBILE_NUMBER", "pattern": "\\b(?:\\+49[ -]?)?0?1[5-7]\\d(?:[ -]?\\d){7,9}\\b", "replacement": "[DE_PHONE_MASKED]" },
+    { "name": "DE_STREET_ADDRESS", "pattern": "\\b[A-Za-zÄÖÜäöüß0-9.'-]{2,30}(?:straße|strasse|weg|allee|platz|gasse)\\s+\\d{1,4}[A-Za-z]?\\b", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

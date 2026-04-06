@@ -1,0 +1,11 @@
+{
+  "language": "fr-FR",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "FR_NIR", "pattern": "\\b[12]\\d(?: ?\\d{2}){6} ?\\d{2}\\b", "replacement": "[FR_NIR_MASKED]" },
+    { "name": "FR_SIREN", "pattern": "\\b\\d{3} ?\\d{3} ?\\d{3}\\b", "replacement": "[FR_SIREN_MASKED]" },
+    { "name": "FR_PHONE_NUMBER", "pattern": "\\b(?:\\+33[ -]?[1-9]|0[1-9])(?:[ -]?\\d{2}){4}\\b", "replacement": "[FR_PHONE_MASKED]" },
+    { "name": "FR_STREET_ADDRESS", "pattern": "\\b\\d{1,4}\\s+(?:Rue|Avenue|Boulevard|Chemin|All[eé]e|Impasse|Route|Place)\\s+(?:[A-Za-zÀ-ÿ0-9.'-]{2,20}\\s*){1,4}", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

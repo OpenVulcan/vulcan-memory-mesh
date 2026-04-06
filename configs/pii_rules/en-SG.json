@@ -1,0 +1,11 @@
+{
+  "language": "en-SG",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "SG_NRIC_FIN", "pattern": "\\b[STFG]\\d{7}[A-Z]\\b", "replacement": "[SG_NRIC_MASKED]" },
+    { "name": "SG_UEN", "pattern": "\\b(?:\\d{8}[A-Z]|\\d{9}[A-Z]|[STFG]\\d{7}[A-Z])\\b", "replacement": "[SG_UEN_MASKED]" },
+    { "name": "SG_PHONE_NUMBER", "pattern": "\\b(?:\\+65[ -]?)?[3689]\\d{7}\\b", "replacement": "[SG_PHONE_MASKED]" },
+    { "name": "SG_STREET_ADDRESS", "pattern": "(?:Block|Blk)\\s*\\d{1,4}[A-Za-z]?(?:\\s+[A-Za-z0-9.'-]{2,20}){1,4}\\s+(?:Road|Rd|Street|St|Avenue|Ave|Drive|Dr|Close)(?:\\s+#\\d{2}-\\d{2})?", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

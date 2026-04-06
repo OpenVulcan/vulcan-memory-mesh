@@ -1,0 +1,11 @@
+{
+  "language": "es-AR",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "AR_DNI", "pattern": "\\b\\d{2}\\.\\d{3}\\.\\d{3}\\b", "replacement": "[AR_DNI_MASKED]" },
+    { "name": "AR_CUIL_CUIT", "pattern": "\\b\\d{2}-\\d{8}-\\d\\b", "replacement": "[AR_TAX_ID_MASKED]" },
+    { "name": "AR_PHONE_NUMBER", "pattern": "\\b(?:\\+54[ -]?)?(?:9[ -]?)?\\d{2,4}[ -]?\\d{4}-\\d{4}\\b", "replacement": "[AR_PHONE_MASKED]" },
+    { "name": "AR_STREET_ADDRESS", "pattern": "(?:Calle|Avenida|Av\\.?|Pasaje)\\s+(?:[A-Za-zÀ-ÿ0-9.'-]{2,20}\\s+){1,4}\\d{1,6}[A-Za-z]?(?:\\s*(?:Depto|Departamento|Piso|Casa)\\s*[A-Za-z0-9-]{1,8})?", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

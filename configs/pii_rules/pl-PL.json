@@ -1,0 +1,10 @@
+{
+  "language": "pl-PL",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "PL_NIP", "pattern": "\\b\\d{3}-\\d{3}-\\d{2}-\\d{2}\\b", "replacement": "[PL_NIP_MASKED]" },
+    { "name": "PL_MOBILE_NUMBER", "pattern": "\\b(?:\\+48[ -]?)?[45-8]\\d{2}[ -]?\\d{3}[ -]?\\d{3}\\b", "replacement": "[PL_PHONE_MASKED]" },
+    { "name": "PL_STREET_ADDRESS", "pattern": "(?:ul\\.?|Aleja|Plac)\\s+(?:[A-Za-zÀ-ÿĄĆĘŁŃÓŚŹŻąćęłńóśźż0-9.'-]{2,20}\\s+){1,4}\\d{1,4}[A-Za-z]?(?:/\\d{1,4})?", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

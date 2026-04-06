@@ -1,0 +1,10 @@
+{
+  "language": "es-CL",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "CL_RUT", "pattern": "\\b\\d{1,2}\\.\\d{3}\\.\\d{3}-[0-9Kk]\\b", "replacement": "[CL_RUT_MASKED]" },
+    { "name": "CL_PHONE_NUMBER", "pattern": "\\b(?:\\+56[ -]?)?9\\d{4}[ -]?\\d{4}\\b", "replacement": "[CL_PHONE_MASKED]" },
+    { "name": "CL_STREET_ADDRESS", "pattern": "(?:Calle|Avenida|Av\\.?|Pasaje)\\s+(?:[A-Za-zÀ-ÿ0-9.'-]{2,20}\\s+){1,4}\\d{1,6}[A-Za-z]?(?:\\s*(?:Depto|Departamento|Casa)\\s*[A-Za-z0-9-]{1,8})?", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

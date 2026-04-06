@@ -1,0 +1,11 @@
+{
+  "language": "es-MX",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "MX_CURP", "pattern": "\\b[A-Z][AEIOUX][A-Z]{2}\\d{2}(?:0[1-9]|1[0-2])(?:0[1-9]|[12]\\d|3[01])[HM](?:AS|BC|BS|CC|CL|CM|CS|CH|DF|DG|GT|GR|HG|JC|MC|MN|MS|NT|NL|OC|PL|QT|QR|SP|SL|SR|TC|TS|TL|VZ|YN|ZS|NE)[B-DF-HJ-NP-TV-Z]{3}[A-Z0-9]\\d\\b", "replacement": "[MX_CURP_MASKED]" },
+    { "name": "MX_RFC", "pattern": "\\b[A-Z&Ñ]{3,4}\\d{6}[A-Z0-9]{3}\\b", "replacement": "[MX_RFC_MASKED]" },
+    { "name": "MX_PHONE_NUMBER", "pattern": "\\b(?:\\+52[ -]?)?\\d{2,3}[ -]\\d{3,4}[ -]\\d{4}\\b", "replacement": "[MX_PHONE_MASKED]" },
+    { "name": "MX_STREET_ADDRESS", "pattern": "(?:Calle|Avenida|Av\\.?|Boulevard|Blvd\\.?|Privada|Prolongaci[oó]n|Calzada)\\s+(?:[A-Za-zÀ-ÿ0-9.'-]{2,20}\\s+){1,4}\\d{1,6}[A-Za-z]?(?:\\s*(?:Depto|Departamento|Apto|Oficina|Casa)\\s*[A-Za-z0-9-]{1,8})?", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

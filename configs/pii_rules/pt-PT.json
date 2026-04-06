@@ -1,0 +1,10 @@
+{
+  "language": "pt-PT",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "PT_NIF", "pattern": "\\b[125689]\\d{8}\\b", "replacement": "[PT_NIF_MASKED]" },
+    { "name": "PT_MOBILE_NUMBER", "pattern": "\\b(?:\\+351[ -]?)?9\\d{8}\\b", "replacement": "[PT_PHONE_MASKED]" },
+    { "name": "PT_STREET_ADDRESS", "pattern": "(?:Rua|Avenida|Av\\.?|Travessa|Largo|Praça)\\s+(?:[A-Za-zÀ-ÿ0-9.'-]{2,20}\\s+){1,4}\\d{1,6}[A-Za-z]?", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

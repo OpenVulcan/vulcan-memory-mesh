@@ -24,12 +24,43 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
 - [记忆准入噪声门说明（中文）](./docs/noise-gate-guide_CN.md)
+- [PII 规则配置说明（中文）](./docs/pii-validator-config_CN.md)
+- [PII Rule Configuration Guide (English)](./docs/pii-validator-config_EN.md)
+- [PII 引擎开发说明（中文）](./docs/pii-validator-developer_CN.md)
+- [PII Validator Developer Guide (English)](./docs/pii-validator-developer_EN.md)
+- [PII 国家与地区规则矩阵（中文）](./docs/pii-country-matrix_CN.md)
 - [冷数据回收治理说明（中文）](./docs/retention-governance-guide_CN.md)
 - [DWM 确定性工作记忆说明（中文）](./docs/dwm-working-memory-guide_CN.md)
 - [DWM Deterministic Working Memory Guide (English)](./docs/dwm-working-memory-guide_EN.md)
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
 - [画像 gRPC 查询与手工指令接口（中文）](./docs/profile-grpc-interfaces_CN.md)
+
+## PII 规则开发与验证
+
+当前仓库保留一套独立的 PII 规则引擎和测试器，主要用于规则研发、误杀排查和离线验证：
+
+- 规则实现位于 `internal/platform/pii`
+- 独立测试入口位于 `cmd/vmm-pii-tester`
+- 系统规则目录固定为 `configs/pii_rules`
+- 用户覆盖目录固定为 `~/.vmm/pii_rules` 或 `-config` 指向根目录下的 `pii_rules`
+
+可以直接使用以下命令编译测试器：
+
+```powershell
+.\make.ps1 tester
+```
+
+也可以按标准构建一起产出：
+
+```powershell
+.\make.ps1 build
+```
+
+说明：
+
+- 当前主线 gRPC 运行时并不会自动把这套脱敏器挂接到现有接口链路
+- 如需验证或演进规则，请优先使用 `vmm-pii-tester` 或直接调用 `internal/platform/pii`
 
 ## 当前运行模型
 

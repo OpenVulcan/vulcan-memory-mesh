@@ -1,0 +1,10 @@
+{
+  "language": "ja-JP",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "JP_MY_NUMBER", "pattern": "\\b\\d{4}-\\d{4}-\\d{4}\\b", "replacement": "[JP_MY_NUMBER_MASKED]" },
+    { "name": "JP_PHONE_NUMBER", "pattern": "\\b0\\d{1,4}-\\d{1,4}-\\d{4}\\b", "replacement": "[JP_PHONE_MASKED]" },
+    { "name": "JP_STREET_ADDRESS", "pattern": "((?:[\\p{Han}\\p{Hiragana}\\p{Katakana}A-Za-z0-9]{2,30}\\d{1,4}丁目))(\\s*\\d{1,4}(?:-\\d{1,4}){1,2})", "replacement": "$1[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}

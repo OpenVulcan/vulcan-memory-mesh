@@ -1,0 +1,122 @@
+{
+  "language": "common",
+  "version": "2.0.0",
+  "rules": [
+    {
+      "name": "PEM_PRIVATE_KEY_BLOCK",
+      "pattern": "(?s)-----BEGIN (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----.*?-----END (?:RSA |EC |DSA |OPENSSH |ENCRYPTED )?PRIVATE KEY-----",
+      "replacement": "[PRIVATE_KEY_MASKED]"
+    },
+    {
+      "name": "CREDIT_CARD_GLOBAL",
+      "pattern": "\\b(?:4\\d{12}(?:\\d{3}){0,2}|(?:5[1-5]|2[2-7])\\d{14}|3[47]\\d{13}|6(?:011|5\\d{2})\\d{12}|35\\d{14}|3(?:0[0-5]|[68]\\d)\\d{11})\\b",
+      "replacement": "[CREDIT_CARD_MASKED]",
+      "condition": "is_luhn($0)"
+    },
+    {
+      "name": "BITCOIN_ADDRESS",
+      "pattern": "\\b(?:[13][a-km-zA-HJ-NP-Z1-9]{25,34}|bc1[ac-hj-np-z02-9]{11,71}|BC1[AC-HJ-NP-Z02-9]{11,71})\\b",
+      "replacement": "[BTC_ADDRESS_MASKED]",
+      "condition": "len($0) > 25"
+    },
+    {
+      "name": "BTC_WIF_KEY",
+      "pattern": "\\b(?:5[1-9A-HJ-NP-Za-km-z]{50}|[KL][1-9A-HJ-NP-Za-km-z]{51})\\b",
+      "replacement": "[BTC_WIF_MASKED]"
+    },
+    {
+      "name": "ETHEREUM_ADDRESS",
+      "pattern": "\\b0x[a-fA-F0-9]{40}\\b",
+      "replacement": "[ETH_ADDRESS_MASKED]",
+      "condition": "len($0) == 42"
+    },
+    {
+      "name": "JWT_TOKEN",
+      "pattern": "\\beyJ[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\.[A-Za-z0-9_-]+\\b",
+      "replacement": "[JWT_TOKEN_MASKED]"
+    },
+    {
+      "name": "BEARER_TOKEN",
+      "pattern": "(?i)\\b(Bearer\\s+)[A-Za-z0-9._~+/=-]{20,}",
+      "replacement": "$1[BEARER_TOKEN_MASKED]"
+    },
+    {
+      "name": "LLM_API_KEY",
+      "pattern": "\\b(?:sk-[A-Za-z0-9_-]{20,}|sk-ant-[A-Za-z0-9_-]{20,})\\b",
+      "replacement": "[LLM_API_KEY_MASKED]",
+      "condition": "len($0) > 40"
+    },
+    {
+      "name": "AWS_ACCESS_KEY_ID",
+      "pattern": "\\bAKIA[A-Z0-9]{16}\\b",
+      "replacement": "[AWS_KEY_MASKED]",
+      "condition": "len($0) == 20"
+    },
+    {
+      "name": "ALIYUN_ACCESS_KEY_ID",
+      "pattern": "\\bLTAI[A-Za-z0-9]{12,30}\\b",
+      "replacement": "[ALIYUN_ACCESS_KEY_MASKED]"
+    },
+    {
+      "name": "TENCENT_SECRET_ID",
+      "pattern": "\\bAKID[A-Za-z0-9]{13,40}\\b",
+      "replacement": "[TENCENT_SECRET_ID_MASKED]"
+    },
+    {
+      "name": "GITHUB_PAT",
+      "pattern": "\\b(?:ghp_[A-Za-z0-9]{36}|github_pat_[A-Za-z0-9_]{20,255})\\b",
+      "replacement": "[GITHUB_TOKEN_MASKED]",
+      "condition": "len($0) > 30"
+    },
+    {
+      "name": "SLACK_TOKEN",
+      "pattern": "\\bxox(?:a|b|p|r|s)-[A-Za-z0-9-]{10,200}\\b",
+      "replacement": "[SLACK_TOKEN_MASKED]"
+    },
+    {
+      "name": "GOOGLE_API_KEY",
+      "pattern": "\\bAIza[0-9A-Za-z_-]{35}\\b",
+      "replacement": "[GOOGLE_API_KEY_MASKED]"
+    },
+    {
+      "name": "NPM_TOKEN",
+      "pattern": "\\bnpm_[A-Za-z0-9]{36}\\b",
+      "replacement": "[NPM_TOKEN_MASKED]"
+    },
+    {
+      "name": "CONTEXT_SECRET_DOUBLE_QUOTED",
+      "pattern": "(?i)([\"']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|auth[_-]?token|private[_-]?token|api[_-]?key|x[_-]?api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|webhook[_-]?secret|secret(?:[_-]?key)?|token|password|passwd|pwd)[\"']?)(\\s*[:=]\\s*)(\")((?:\\$\\{[^}\\r\\n\"]+\\}[^\\r\\n\"]+|[^$\\r\\n\"][^\\r\\n\"]{3,}|\\$[^\\{\\r\\n\"][^\\r\\n\"]{2,}))(\\\")",
+      "replacement": "$1$2$3[SECRET_VALUE_MASKED]$5"
+    },
+    {
+      "name": "CONTEXT_SECRET_SINGLE_QUOTED",
+      "pattern": "(?i)([\"']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|auth[_-]?token|private[_-]?token|api[_-]?key|x[_-]?api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|webhook[_-]?secret|secret(?:[_-]?key)?|token|password|passwd|pwd)[\"']?)(\\s*[:=]\\s*)(')((?:\\$\\{[^}\\r\\n']+\\}[^\\r\\n']+|[^$\\r\\n'][^\\r\\n']{3,}|\\$[^\\{\\r\\n'][^\\r\\n']{2,}))(')",
+      "replacement": "$1$2$3[SECRET_VALUE_MASKED]$5"
+    },
+    {
+      "name": "CONTEXT_SECRET_BARE",
+      "pattern": "(?i)([\"']?(?:access[_-]?token|refresh[_-]?token|id[_-]?token|session[_-]?token|auth[_-]?token|private[_-]?token|api[_-]?key|x[_-]?api[_-]?key|access[_-]?key|secret[_-]?access[_-]?key|private[_-]?key|client[_-]?secret|signing[_-]?secret|webhook[_-]?secret|secret(?:[_-]?key)?|token|password|passwd|pwd)[\"']?)(\\s*[:=]\\s*)([A-Za-z0-9._~+/=-]{12,})",
+      "replacement": "$1$2[SECRET_VALUE_MASKED]"
+    },
+    {
+      "name": "URL_BASIC_AUTH",
+      "pattern": "([A-Za-z][A-Za-z0-9+.-]*://)[^/\\s:@]+:[^/\\s@]+@",
+      "replacement": "$1[BASIC_AUTH_MASKED]@"
+    },
+    {
+      "name": "EMAIL_ADDRESS",
+      "pattern": "\\b[A-Za-z0-9._%+-]+@(?:[A-Za-z0-9-]+\\.)+[A-Za-z]{2,63}\\b",
+      "replacement": "[EMAIL_MASKED]"
+    },
+    {
+      "name": "PUBLIC_IPV4",
+      "pattern": "\\b(?:(?:[1-9]|1[1-9]|[2-9]\\d|1(?:0[1-9]|1\\d|2[0-6]|2[89]|[3-5]\\d|6[0-8]|7[01]|7[3-9]|8\\d|9[01])|19[3-9]|2(?:0\\d|1\\d|2[0-3]))(?:\\.(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)){3})\\b",
+      "replacement": "[PUBLIC_IP_MASKED]"
+    },
+    {
+      "name": "PUBLIC_IPV6",
+      "pattern": "(?i)\\b(?:2[0-9a-f]{3}|3[0-9a-f]{3})(?::[0-9a-f]{1,4}){7}\\b",
+      "replacement": "[PUBLIC_IP_MASKED]"
+    }
+  ]
+}

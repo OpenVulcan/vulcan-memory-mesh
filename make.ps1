@@ -8,7 +8,7 @@
 #>
 Param(
     [Parameter(Position=0)]
-    [ValidateSet("build", "run", "clean", "all")]
+    [ValidateSet("build", "run", "clean", "all", "tester")]
     $Target = "build",
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$ForwardArgs = @()
@@ -18,7 +18,7 @@ $ErrorActionPreference = "Stop"
 
 # 1. 定位脚本目录
 $PSScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$VmmScript = Join-Path $PSScriptDir "scripts" "vmm.ps1"
+$VmmScript = Join-Path (Join-Path $PSScriptDir "scripts") "vmm.ps1"
 
 # 2. 检查核心脚本是否存在
 if (!(Test-Path $VmmScript)) {
@@ -33,9 +33,10 @@ switch ($Target) {
     "build" { & $VmmScript build }
     "run"   { & $VmmScript run @ForwardArgs }
     "clean" { & $VmmScript clean }
+    "tester" { & $VmmScript tester }
     Default { & $VmmScript build }
 }
 
-if ($LASTEXITCODE -ne 0) {
+if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) {
     exit $LASTEXITCODE
 }

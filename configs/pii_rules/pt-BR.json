@@ -1,0 +1,11 @@
+{
+  "language": "pt-BR",
+  "version": "2.0.0",
+  "rules": [
+    { "name": "BR_CPF", "pattern": "\\b\\d{3}\\.\\d{3}\\.\\d{3}-\\d{2}\\b", "replacement": "[BR_CPF_MASKED]" },
+    { "name": "BR_CNPJ", "pattern": "\\b\\d{2}\\.\\d{3}\\.\\d{3}/\\d{4}-\\d{2}\\b", "replacement": "[BR_CNPJ_MASKED]" },
+    { "name": "BR_PHONE_NUMBER", "pattern": "\\b(?:\\+55[ -]?)?\\(?\\d{2}\\)?[ -]?9?\\d{4}-\\d{4}\\b", "replacement": "[BR_PHONE_MASKED]" },
+    { "name": "BR_STREET_ADDRESS", "pattern": "(?:Rua|Avenida|Av\\.?|Travessa|Alameda|Rodovia)\\s+(?:[A-Za-zÀ-ÿ0-9.'-]{2,20}\\s+){1,4}\\d{1,6}[A-Za-z]?(?:\\s*(?:Apto|Apartamento|Bloco|Casa|Sala)\\s*[A-Za-z0-9-]{1,8})?", "replacement": "[SPECIFIC_ADDRESS_MASKED]" }
+  ],
+  "excludes": ["session_id", "request_id", "max_tokens"]
+}
