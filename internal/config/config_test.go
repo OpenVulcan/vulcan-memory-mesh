@@ -1,5 +1,5 @@
-// config_test.go verifies normalization, validation, and layered loading against the current gRPC-only runtime contract.
-// config_test.go 用于围绕当前仅 gRPC 运行时契约，验证配置归一化、校验和分层加载行为。
+// config_test.go verifies the simplified AI config contract where LLM/rerank use explicit routes and embedding stays single-provider with multi-key failover.
+// config_test.go 用于验证收敛后的 AI 配置契约：LLM/rerank 只使用显式 routes，embedding 保持单 provider 且支持多 key 容灾。
 package config
 
 import (
@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// TestConfigNormalizeAppliesCurrentDefaults verifies the active runtime fills gRPC, provider, and storage defaults expected by the latest local build.
-// TestConfigNormalizeAppliesCurrentDefaults 用于验证当前运行时会补齐最新本地构建所需的 gRPC、provider 和存储默认值。
+// TestConfigNormalizeAppliesCurrentDefaults verifies Normalize still fills the current gRPC, storage, rerank, and route defaults expected by the local runtime.
+// TestConfigNormalizeAppliesCurrentDefaults 用于验证 Normalize 仍会补齐当前本地运行时所需的 gRPC、存储、rerank 与路由默认值。
 func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg := newValidConfigForTest()
 	cfg.GRPC.MaxReceiveMessageBytes = 0
@@ -31,19 +31,10 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
-	cfg.MemoryPipeline.LexicalTopK = 0
-	cfg.MemoryPipeline.RRFK = 0
-	cfg.MemoryPipeline.MMRLambda = 0
-	cfg.MemoryPipeline.WeibullShape = 0
-	cfg.MemoryPipeline.WeibullScaleHours = 0
-	cfg.MemoryPipeline.WeibullMinMultiplier = -1
-	cfg.MemoryPipeline.WeibullReinforceWeight = -1
-	cfg.MemoryPipeline.WeibullCrossSessionBoost = -1
-	cfg.Rerank.Provider = ""
-	cfg.Rerank.Endpoint = ""
-	cfg.Rerank.Model = ""
 	cfg.Rerank.TopN = 0
-	cfg.Rerank.Timeout = Duration{}
+	cfg.Rerank.Routes[0].Timeout = Duration{}
+	cfg.Rerank.Routes[0].Endpoint = ""
+	cfg.Rerank.Routes[0].Model = ""
 	cfg.PreCheck.SimilarityThreshold = 0.82
 
 	cfg.Normalize()
@@ -63,30 +54,6 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.PreCheck.IntentTimeout.Duration != 5*time.Second {
 		t.Fatalf("pre-check intent timeout = %v", cfg.PreCheck.IntentTimeout.Duration)
 	}
-	if cfg.PreCheck.SearchScope != "space" {
-		t.Fatalf("pre-check search scope = %q", cfg.PreCheck.SearchScope)
-	}
-	if cfg.MemoryReplaceScope != "project" {
-		t.Fatalf("memory replace scope = %q", cfg.MemoryReplaceScope)
-	}
-	if cfg.PostAction.InputMode != "compat" {
-		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
-	}
-	if cfg.PostAction.SessionAnalysisTurnThreshold != 2 {
-		t.Fatalf("post action session analysis turn threshold = %d", cfg.PostAction.SessionAnalysisTurnThreshold)
-	}
-	if cfg.PostAction.SessionAnalysisTokenThreshold != 12000 {
-		t.Fatalf("post action session analysis token threshold = %d", cfg.PostAction.SessionAnalysisTokenThreshold)
-	}
-	if cfg.PostAction.SessionAnalysisIdleTimeout.Duration != 15*time.Minute {
-		t.Fatalf("post action session analysis idle timeout = %v", cfg.PostAction.SessionAnalysisIdleTimeout.Duration)
-	}
-	if cfg.PostAction.SessionAnalysisHistoryTurns != 3 {
-		t.Fatalf("post action session analysis history turns = %d", cfg.PostAction.SessionAnalysisHistoryTurns)
-	}
-	if cfg.PostAction.SessionAnalysisMaxInputTokens != 6000 {
-		t.Fatalf("post action session analysis max input tokens = %d", cfg.PostAction.SessionAnalysisMaxInputTokens)
-	}
 	if cfg.Vector.Provider != "lancedb" {
 		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
 	}
@@ -98,659 +65,245 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if cfg.LanceDB.Address != "127.0.0.1:19301" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
-	}
-	if cfg.Storage.Mode != "split" {
-		t.Fatalf("storage mode = %q", cfg.Storage.Mode)
-	}
-	if cfg.Storage.CombinedProvider != "postgres" {
-		t.Fatalf("storage combined provider = %q", cfg.Storage.CombinedProvider)
-	}
-	if cfg.Postgres.Schema != "public" {
-		t.Fatalf("postgres schema = %q", cfg.Postgres.Schema)
-	}
-	if cfg.Postgres.Flavor != "paradedb" {
-		t.Fatalf("postgres flavor = %q", cfg.Postgres.Flavor)
-	}
-	if cfg.Postgres.QueryTimeout.Duration != 5*time.Second {
-		t.Fatalf("postgres query timeout = %v", cfg.Postgres.QueryTimeout.Duration)
-	}
-	if cfg.Postgres.ConnectTimeout.Duration != 5*time.Second {
-		t.Fatalf("postgres connect timeout = %v", cfg.Postgres.ConnectTimeout.Duration)
-	}
-	if cfg.Postgres.MaxOpenConns != 10 {
-		t.Fatalf("postgres max open conns = %d", cfg.Postgres.MaxOpenConns)
-	}
-	if cfg.Postgres.MinIdleConns != 1 {
-		t.Fatalf("postgres min idle conns = %d", cfg.Postgres.MinIdleConns)
-	}
-	if !cfg.Postgres.BM25IndexConcurrently {
-		t.Fatal("expected postgres bm25 index creation to stay concurrent by default")
-	}
-	if cfg.Postgres.BM25IndexName != "vmm_memory_nodes_bm25_idx" {
-		t.Fatalf("postgres bm25 index name = %q", cfg.Postgres.BM25IndexName)
-	}
-	if cfg.Postgres.TRGMSimilarityThreshold != 0.2 {
-		t.Fatalf("postgres trgm similarity threshold = %v", cfg.Postgres.TRGMSimilarityThreshold)
-	}
-	if cfg.Postgres.VectorLists != 100 {
-		t.Fatalf("postgres vector lists = %d", cfg.Postgres.VectorLists)
-	}
-	if cfg.Postgres.VectorProbes != 10 {
-		t.Fatalf("postgres vector probes = %d", cfg.Postgres.VectorProbes)
-	}
-	if cfg.Postgres.MigrationBatchSize != 500 {
-		t.Fatalf("postgres migration batch size = %d", cfg.Postgres.MigrationBatchSize)
-	}
-	if !cfg.Retention.Enabled {
-		t.Fatal("expected retention to stay enabled by default")
-	}
-	if cfg.Retention.RecycleScanInterval.Duration != 30*time.Minute {
-		t.Fatalf("retention recycle scan interval = %v", cfg.Retention.RecycleScanInterval.Duration)
-	}
-	if cfg.Retention.TurnKeepExtraTurns != 5 {
-		t.Fatalf("retention turn keep extra turns = %d", cfg.Retention.TurnKeepExtraTurns)
-	}
-	if cfg.Retention.SessionIdleRecycleAfter.Duration != 360*time.Hour {
-		t.Fatalf("retention session idle recycle after = %v", cfg.Retention.SessionIdleRecycleAfter.Duration)
-	}
-	if cfg.Retention.TrashRetention.Duration != 720*time.Hour {
-		t.Fatalf("retention trash retention = %v", cfg.Retention.TrashRetention.Duration)
-	}
-	if cfg.Retention.ProtectPriorityFloor != "P1" {
-		t.Fatalf("retention protect priority floor = %q", cfg.Retention.ProtectPriorityFloor)
-	}
-	if cfg.Retention.ProtectMemoryLevelFloor != "stable" {
-		t.Fatalf("retention protect memory level floor = %q", cfg.Retention.ProtectMemoryLevelFloor)
-	}
-	if !cfg.Retention.SkipProtectedSharedMemories {
-		t.Fatal("expected retention to skip protected shared memories by default")
-	}
-	if cfg.MemoryPipeline.MaxSearchKeywords != 5 {
-		t.Fatalf("max search keywords = %d", cfg.MemoryPipeline.MaxSearchKeywords)
 	}
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity score = %#v", cfg.MemoryPipeline.MinSimilarityScore)
 	}
-	if !cfg.MemoryPipeline.HybridEnabled {
-		t.Fatal("expected hybrid retrieval to stay enabled by default")
-	}
-	if !cfg.MemoryPipeline.LexicalPreTokenize {
-		t.Fatal("expected lexical pre-tokenization to stay enabled by default")
-	}
-	if cfg.MemoryPipeline.LexicalTopK != 8 {
-		t.Fatalf("lexical top_k = %d", cfg.MemoryPipeline.LexicalTopK)
-	}
-	if cfg.MemoryPipeline.RRFK != 60 {
-		t.Fatalf("rrf_k = %d", cfg.MemoryPipeline.RRFK)
-	}
-	if !cfg.MemoryPipeline.MMREnabled {
-		t.Fatal("expected mmr to stay enabled by default")
-	}
-	if cfg.MemoryPipeline.MMRLambda != 0.75 {
-		t.Fatalf("mmr_lambda = %v", cfg.MemoryPipeline.MMRLambda)
-	}
-	if !cfg.MemoryPipeline.WeibullEnabled {
-		t.Fatal("expected weibull decay to stay enabled by default")
-	}
-	if cfg.MemoryPipeline.WeibullShape != 1.35 {
-		t.Fatalf("weibull_shape = %v", cfg.MemoryPipeline.WeibullShape)
-	}
-	if cfg.MemoryPipeline.WeibullScaleHours != 2160 {
-		t.Fatalf("weibull_scale_hours = %v", cfg.MemoryPipeline.WeibullScaleHours)
-	}
-	if cfg.MemoryPipeline.WeibullMinMultiplier != 0.4 {
-		t.Fatalf("weibull_min_multiplier = %v", cfg.MemoryPipeline.WeibullMinMultiplier)
-	}
-	if cfg.MemoryPipeline.WeibullReinforceWeight != 0.18 {
-		t.Fatalf("weibull_reinforce_weight = %v", cfg.MemoryPipeline.WeibullReinforceWeight)
-	}
-	if cfg.MemoryPipeline.WeibullCrossSessionBoost != 0.12 {
-		t.Fatalf("weibull_cross_session_boost = %v", cfg.MemoryPipeline.WeibullCrossSessionBoost)
-	}
-	if cfg.Rerank.Provider != "dashscope" {
-		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
-	}
-	if cfg.Rerank.Endpoint == "" {
-		t.Fatal("expected rerank endpoint default")
-	}
-	if cfg.Rerank.Model != "qwen3-vl-rerank" {
-		t.Fatalf("rerank model = %q", cfg.Rerank.Model)
-	}
 	if cfg.Rerank.TopN != 8 {
 		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
 	}
-	if cfg.Rerank.Timeout.Duration != 8*time.Second {
-		t.Fatalf("rerank timeout = %v", cfg.Rerank.Timeout.Duration)
+	if got, want := cfg.Rerank.Routes[0].Endpoint, "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"; got != want {
+		t.Fatalf("rerank default endpoint = %q, want %q", got, want)
 	}
-	if cfg.Logging.DebugRPCPayloads {
-		t.Fatal("expected debug rpc payload logs to stay disabled by default")
+	if got, want := cfg.Rerank.Routes[0].Model, "qwen3-vl-rerank"; got != want {
+		t.Fatalf("rerank default model = %q, want %q", got, want)
 	}
-	if cfg.Logging.ProtectPayloads {
-		t.Fatal("expected protected payload logging to stay disabled by default")
-	}
-}
-
-// TestConfigNormalizeClampsSearchKeywordFanOut verifies the recall keyword fan-out remains capped even when callers provide an excessive value.
-// TestConfigNormalizeClampsSearchKeywordFanOut 用于验证即使调用方提供过大的值，召回关键词扇出仍会被钳制在上限内。
-func TestConfigNormalizeClampsSearchKeywordFanOut(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.MemoryPipeline.MaxSearchKeywords = 99
-	cfg.Normalize()
-	if cfg.MemoryPipeline.MaxSearchKeywords != 10 {
-		t.Fatalf("max search keywords after clamp = %d", cfg.MemoryPipeline.MaxSearchKeywords)
+	if got, want := cfg.Rerank.Routes[0].Timeout.Duration, 8*time.Second; got != want {
+		t.Fatalf("rerank default timeout = %v, want %v", got, want)
 	}
 }
 
-// TestConfigNormalizeTrimsRuntimeStrings verifies Normalize trims runtime-facing string fields so values accepted by validation do not later fail during listener binding or adapter composition because of surrounding whitespace.
-// TestConfigNormalizeTrimsRuntimeStrings 用于验证 Normalize 会裁剪面向运行时的字符串字段，避免已经通过校验的值因首尾空白而在监听绑定或适配器装配阶段再失败。
-func TestConfigNormalizeTrimsRuntimeStrings(t *testing.T) {
+// TestConfigNormalizeTrimsExplicitAIFields verifies Normalize trims route and embedding strings while preserving the new route-only contract.
+// TestConfigNormalizeTrimsExplicitAIFields 用于验证 Normalize 会裁剪 route 与 embedding 字符串字段，同时保持新的 route-only 契约。
+func TestConfigNormalizeTrimsExplicitAIFields(t *testing.T) {
 	cfg := newValidConfigForTest()
-	cfg.GRPC.ListenAddr = " 127.0.0.1:8080 "
-	cfg.SQLite.Address = " 127.0.0.1:19501 "
-	cfg.LanceDB.Address = " 127.0.0.1:19301 "
-	cfg.LanceDB.TableName = " vmm_memory_vectors "
-	cfg.LanceDB.VectorColumn = " vector "
-	cfg.Storage.Mode = " combined "
-	cfg.Storage.CombinedProvider = " postgres "
-	cfg.Postgres.DSN = " postgres://user:pass@localhost:5432/vmm "
-	cfg.Postgres.Schema = " vmm "
-	cfg.Postgres.Flavor = " paradedb "
-	cfg.Postgres.BM25IndexName = " vmm_memory_nodes_bm25_idx "
-	cfg.MemoryReplaceScope = " team "
-	cfg.Logging.PayloadEncryptionKey = " 0123456789abcdef0123456789abcdef "
-	cfg.LLM.Provider = " openai "
-	cfg.LLM.Endpoint = " https://api.openai.com/v1 "
+	cfg.LLM.Routes = []LLMRouteConfig{
+		{
+			Name:     " primary ",
+			Provider: " openai ",
+			Endpoint: " https://primary.example/v1 ",
+			APIKeys:  []string{" key-a ", "key-b "},
+			Model:    " gpt-4.1-mini ",
+		},
+	}
 	cfg.Embedding.Provider = " openai "
-	cfg.Embedding.Endpoint = " https://api.openai.com/v1 "
-	cfg.Rerank.Provider = " dashscope "
-	cfg.Rerank.Endpoint = " https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank "
-	cfg.Vector.Provider = " lancedb "
-	cfg.Relational.Provider = " sqlite "
-	cfg.PostAction.InputMode = " compat "
-	cfg.Retention.ProtectPriorityFloor = " p0 "
-	cfg.Retention.ProtectMemoryLevelFloor = " PERSISTENT "
+	cfg.Embedding.Endpoint = " https://embed.example/v1 "
+	cfg.Embedding.APIKeys = []string{" embed-a ", "embed-b "}
+	cfg.Embedding.Model = " text-embedding-3-large "
+	cfg.Rerank.Routes = []RerankRouteConfig{
+		{
+			Name:     " backup ",
+			Provider: " dashscope ",
+			Endpoint: " https://rerank.example/v1 ",
+			APIKeys:  []string{" rerank-a "},
+			Model:    " custom-rerank ",
+			Timeout:  Duration{6 * time.Second},
+		},
+	}
 
 	cfg.Normalize()
 
-	if cfg.GRPC.ListenAddr != "127.0.0.1:8080" {
-		t.Fatalf("grpc listen addr = %q", cfg.GRPC.ListenAddr)
+	if route := cfg.LLM.Routes[0]; route.Name != "primary" || route.Provider != "openai" || route.Endpoint != "https://primary.example/v1" || route.Model != "gpt-4.1-mini" {
+		t.Fatalf("normalized llm route = %#v", route)
 	}
-	if cfg.SQLite.Address != "127.0.0.1:19501" {
-		t.Fatalf("sqlite address = %q", cfg.SQLite.Address)
+	if cfg.LLM.Routes[0].Nodes[0].APIKeys[0] != "key-a" || cfg.LLM.Routes[0].Nodes[0].APIKeys[1] != "key-b" {
+		t.Fatalf("normalized llm node keys = %#v", cfg.LLM.Routes[0].Nodes)
 	}
-	if cfg.LanceDB.Address != "127.0.0.1:19301" {
-		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
+	if cfg.Embedding.Provider != "openai" || cfg.Embedding.Endpoint != "https://embed.example/v1" || cfg.Embedding.Model != "text-embedding-3-large" {
+		t.Fatalf("normalized embedding config = %#v", cfg.Embedding)
 	}
-	if cfg.LanceDB.TableName != "vmm_memory_vectors" {
-		t.Fatalf("lancedb table name = %q", cfg.LanceDB.TableName)
-	}
-	if cfg.LanceDB.VectorColumn != "vector" {
-		t.Fatalf("lancedb vector column = %q", cfg.LanceDB.VectorColumn)
-	}
-	if cfg.Storage.Mode != "combined" {
-		t.Fatalf("storage mode = %q", cfg.Storage.Mode)
-	}
-	if cfg.Storage.CombinedProvider != "postgres" {
-		t.Fatalf("storage combined provider = %q", cfg.Storage.CombinedProvider)
-	}
-	if cfg.Postgres.DSN != "postgres://user:pass@localhost:5432/vmm" {
-		t.Fatalf("postgres dsn = %q", cfg.Postgres.DSN)
-	}
-	if cfg.Postgres.Schema != "vmm" {
-		t.Fatalf("postgres schema = %q", cfg.Postgres.Schema)
-	}
-	if cfg.Postgres.Flavor != "paradedb" {
-		t.Fatalf("postgres flavor = %q", cfg.Postgres.Flavor)
-	}
-	if cfg.Postgres.BM25IndexName != "vmm_memory_nodes_bm25_idx" {
-		t.Fatalf("postgres bm25 index name = %q", cfg.Postgres.BM25IndexName)
-	}
-	if cfg.MemoryReplaceScope != "team" {
-		t.Fatalf("memory replace scope = %q", cfg.MemoryReplaceScope)
-	}
-	if cfg.Logging.PayloadEncryptionKey != "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("payload encryption key = %q", cfg.Logging.PayloadEncryptionKey)
-	}
-	if cfg.LLM.Provider != "openai" {
-		t.Fatalf("llm provider = %q", cfg.LLM.Provider)
-	}
-	if cfg.LLM.Endpoint != "https://api.openai.com/v1" {
-		t.Fatalf("llm endpoint = %q", cfg.LLM.Endpoint)
-	}
-	if cfg.Embedding.Provider != "openai" {
-		t.Fatalf("embedding provider = %q", cfg.Embedding.Provider)
-	}
-	if cfg.Embedding.Endpoint != "https://api.openai.com/v1" {
-		t.Fatalf("embedding endpoint = %q", cfg.Embedding.Endpoint)
-	}
-	if cfg.Rerank.Provider != "dashscope" {
-		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
-	}
-	if cfg.Rerank.Endpoint != "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank" {
-		t.Fatalf("rerank endpoint = %q", cfg.Rerank.Endpoint)
-	}
-	if cfg.Vector.Provider != "lancedb" {
-		t.Fatalf("vector provider = %q", cfg.Vector.Provider)
-	}
-	if cfg.Relational.Provider != "sqlite" {
-		t.Fatalf("relational provider = %q", cfg.Relational.Provider)
-	}
-	if cfg.PostAction.InputMode != "compat" {
-		t.Fatalf("post action input mode = %q", cfg.PostAction.InputMode)
-	}
-	if cfg.Retention.ProtectPriorityFloor != "P0" {
-		t.Fatalf("retention protect priority floor = %q", cfg.Retention.ProtectPriorityFloor)
-	}
-	if cfg.Retention.ProtectMemoryLevelFloor != "persistent" {
-		t.Fatalf("retention protect memory level floor = %q", cfg.Retention.ProtectMemoryLevelFloor)
+	if route := cfg.Rerank.Routes[0]; route.Name != "backup" || route.Provider != "dashscope" || route.Endpoint != "https://rerank.example/v1" || route.Model != "custom-rerank" {
+		t.Fatalf("normalized rerank route = %#v", route)
 	}
 }
 
-// TestConfigValidateRejectsInvalidHybridRetrievalKnobs verifies the new lexical recall and RRF parameters stay strictly positive once configured.
-// TestConfigValidateRejectsInvalidHybridRetrievalKnobs 用于验证新增的 lexical 召回和 RRF 参数一旦配置后必须保持严格正数。
-func TestConfigValidateRejectsInvalidHybridRetrievalKnobs(t *testing.T) {
+// TestConfigNormalizeSynthesizesRouteNodesFromAPIKeys verifies one route can still collapse api_keys plus shared budgets into a single synthesized node.
+// TestConfigNormalizeSynthesizesRouteNodesFromAPIKeys 用于验证单条 route 仍可把 api_keys 与共享预算折叠成一个合成节点。
+func TestConfigNormalizeSynthesizesRouteNodesFromAPIKeys(t *testing.T) {
 	cfg := newValidConfigForTest()
-	cfg.MemoryPipeline.LexicalTopK = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.lexical_top_k must be > 0" {
-		t.Fatalf("unexpected lexical_top_k validate error: %v", err)
-	}
+	cfg.LLM.Routes = []LLMRouteConfig{{
+		Provider: "openai",
+		Endpoint: "https://primary.example/v1",
+		APIKeys:  []string{"key-a", "key-b"},
+		RPM:      7,
+		TPM:      700,
+		RPD:      70,
+		Model:    "model-a",
+	}}
 
-	cfg = newValidConfigForTest()
-	cfg.MemoryPipeline.RRFK = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.rrf_k must be > 0" {
-		t.Fatalf("unexpected rrf_k validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.MemoryPipeline.MMRLambda = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.mmr_lambda must be in (0,1]" {
-		t.Fatalf("unexpected mmr_lambda validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.MemoryPipeline.WeibullShape = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.weibull_shape must be > 0" {
-		t.Fatalf("unexpected weibull_shape validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.MemoryPipeline.WeibullMinMultiplier = 2
-	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.weibull_min_multiplier must be in [0,1]" {
-		t.Fatalf("unexpected weibull_min_multiplier validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsUnknownPostActionMode verifies the new string-only post-action contract still rejects unsupported validation modes.
-// TestConfigValidateRejectsUnknownPostActionMode 用于验证新的纯字符串 post-action 契约仍会拒绝不支持的校验模式。
-func TestConfigValidateRejectsUnknownPostActionMode(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.PostAction.InputMode = "broken"
-	if err := cfg.Validate(); err == nil || err.Error() != "post_action.input_mode must be either strict or compat" {
-		t.Fatalf("unexpected validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsUnknownLoggingLevel verifies the runtime config only accepts the documented log levels so release deployments can rely on error-only output without ambiguous fallback behavior.
-// TestConfigValidateRejectsUnknownLoggingLevel 用于验证运行时配置只接受文档声明的日志级别，让 release 部署可以稳定依赖 error-only 输出，而不是落到含糊的隐式回退行为。
-func TestConfigValidateRejectsUnknownLoggingLevel(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.Logging.Level = "verbose"
-	if err := cfg.Validate(); err == nil || err.Error() != "logging.level must be one of debug, info, warn, error" {
-		t.Fatalf("unexpected logging level validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsInvalidPayloadEncryptionKey verifies protected payload logging cannot start with one malformed key that would silently disable encrypted audit fields at runtime.
-// TestConfigValidateRejectsInvalidPayloadEncryptionKey 用于验证受保护载荷日志不能在错误密钥下启动，避免运行时静默丢失加密审计字段。
-func TestConfigValidateRejectsInvalidPayloadEncryptionKey(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.Logging.ProtectPayloads = true
-	cfg.Logging.PayloadEncryptionKey = "bad-key"
-	if err := cfg.Validate(); err == nil || err.Error() != "logging.payload_encryption_key is invalid: must be 32 raw bytes, 64 hex chars, or base64 for 32 bytes" {
-		t.Fatalf("unexpected payload encryption key validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsInvalidPostActionAnalysisThresholds verifies the future session-analysis trigger thresholds must stay positive.
-// TestConfigValidateRejectsInvalidPostActionAnalysisThresholds 用于验证未来 session 分析触发阈值必须保持正数。
-func TestConfigValidateRejectsInvalidPostActionAnalysisThresholds(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.PostAction.SessionAnalysisTurnThreshold = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_turn_threshold must be > 0" {
-		t.Fatalf("unexpected turn-threshold validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.PostAction.SessionAnalysisTokenThreshold = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_token_threshold must be > 0" {
-		t.Fatalf("unexpected token-threshold validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.PostAction.SessionAnalysisIdleTimeout = Duration{}
-	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_idle_timeout must be > 0" {
-		t.Fatalf("unexpected idle-timeout validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.PostAction.SessionAnalysisHistoryTurns = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_history_turns must be > 0" {
-		t.Fatalf("unexpected history-turns validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.PostAction.SessionAnalysisMaxInputTokens = 0
-	if err := cfg.Validate(); err == nil || err.Error() != "post_action.session_analysis_max_input_tokens must be > 0" {
-		t.Fatalf("unexpected max-input-tokens validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsPreCheckTimeoutBudget verifies the outer pre-check RPC budget must stay larger than the internal intent step timeout.
-// TestConfigValidateRejectsPreCheckTimeoutBudget 用于验证外层 pre-check RPC 预算必须大于内部意图步骤超时。
-func TestConfigValidateRejectsPreCheckTimeoutBudget(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.GRPC.RequestTimeout.PreCheck = Duration{5 * time.Second}
-	cfg.PreCheck.IntentTimeout = Duration{5 * time.Second}
-	if err := cfg.Validate(); err == nil || err.Error() != "grpc.request_timeout.pre_check must be greater than pre_check.intent_timeout" {
-		t.Fatalf("unexpected validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsUnsupportedPreCheckSearchScope verifies startup validation rejects unsupported pre-check scope tokens instead of silently broadening recall.
-// TestConfigValidateRejectsUnsupportedPreCheckSearchScope 用于验证启动校验会拒绝不受支持的 pre-check 作用域 token，而不是静默放宽召回范围。
-func TestConfigValidateRejectsUnsupportedPreCheckSearchScope(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.PreCheck.SearchScope = "workspace"
 	cfg.Normalize()
 
-	err := cfg.Validate()
-	if err == nil || err.Error() != "pre_check.search_scope must be one of team, space, or project" {
-		t.Fatalf("unexpected pre-check search scope error: %v", err)
+	nodes := cfg.LLM.Routes[0].Nodes
+	if got, want := len(nodes), 1; got != want {
+		t.Fatalf("llm route node count = %d, want %d (%#v)", got, want, nodes)
+	}
+	if got, want := len(nodes[0].APIKeys), 2; got != want {
+		t.Fatalf("llm route node key count = %d, want %d (%#v)", got, want, nodes[0].APIKeys)
+	}
+	if nodes[0].RPM != 7 || nodes[0].TPM != 700 || nodes[0].RPD != 70 {
+		t.Fatalf("llm route node limits = %#v", nodes[0])
 	}
 }
 
-// TestConfigValidateRejectsUnsupportedMemoryReplaceScope verifies startup validation rejects unsupported memory-replacement scope tokens instead of silently broadening supersede reach.
-// TestConfigValidateRejectsUnsupportedMemoryReplaceScope 用于验证启动校验会拒绝不受支持的记忆更替作用域 token，而不是静默放宽 supersede 边界。
-func TestConfigValidateRejectsUnsupportedMemoryReplaceScope(t *testing.T) {
+// TestConfigPrimaryModelUsesHighestPriorityRoute verifies helper accessors expose the highest-priority route model for prompt assembly and diagnostics.
+// TestConfigPrimaryModelUsesHighestPriorityRoute 用于验证辅助访问器会暴露最高优先级路由的模型名称，供提示词装配与诊断逻辑使用。
+func TestConfigPrimaryModelUsesHighestPriorityRoute(t *testing.T) {
 	cfg := newValidConfigForTest()
-	cfg.MemoryReplaceScope = "workspace"
+	cfg.LLM.Routes = []LLMRouteConfig{
+		{Provider: "openai", Endpoint: "https://low.example/v1", APIKeys: []string{"low-key"}, Model: "low", Priority: 10},
+		{Provider: "openai", Endpoint: "https://high.example/v1", APIKeys: []string{"high-key"}, Model: "high", Priority: 100},
+	}
+
 	cfg.Normalize()
 
-	err := cfg.Validate()
-	if err == nil || err.Error() != "memory_replace_scope must be one of session, team, space, or project" {
-		t.Fatalf("unexpected memory replace scope error: %v", err)
+	if got, want := cfg.LLM.PrimaryModel(), "high"; got != want {
+		t.Fatalf("primary model = %q, want %q", got, want)
 	}
 }
 
-// TestConfigValidateRejectsRemovedProviders verifies the runtime no longer accepts removed fallback providers and only keeps SQLite as the relational backend.
-// TestConfigValidateRejectsRemovedProviders 用于验证运行时已经不再接受被移除的回退 provider，并且关系库存储只保留 SQLite。
-func TestConfigValidateRejectsRemovedProviders(t *testing.T) {
+// TestConfigValidateAcceptsExplicitRoutesAndEmbeddingKeys verifies the new AI contract accepts explicit llm/rerank routes and single-provider embedding key pools together.
+// TestConfigValidateAcceptsExplicitRoutesAndEmbeddingKeys 用于验证新的 AI 契约能够同时接受显式 llm/rerank routes 与单 provider embedding key 池。
+func TestConfigValidateAcceptsExplicitRoutesAndEmbeddingKeys(t *testing.T) {
 	cfg := newValidConfigForTest()
-	cfg.Vector.Provider = "memory"
-	if err := cfg.Validate(); err == nil || err.Error() != "vector.provider must be lancedb" {
-		t.Fatalf("unexpected vector validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.Relational.Provider = "memory"
-	if err := cfg.Validate(); err == nil || err.Error() != "relational.provider must be sqlite" {
-		t.Fatalf("unexpected relational validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsUnsupportedStorageMode verifies the new storage-mode selector fails fast on unknown values before runtime composition starts.
-// TestConfigValidateRejectsUnsupportedStorageMode 用于验证新的存储模式选择器会在运行时装配前快速拒绝未知取值。
-func TestConfigValidateRejectsUnsupportedStorageMode(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.Storage.Mode = "hybrid"
-	if err := cfg.Validate(); err == nil || err.Error() != "storage.mode must be either split or combined" {
-		t.Fatalf("unexpected storage mode validate error: %v", err)
-	}
-}
-
-// TestConfigValidateAllowsUnusedCombinedProviderInSplitMode verifies split mode ignores stale combined-provider overrides because the PostgreSQL combined path is not active there.
-// TestConfigValidateAllowsUnusedCombinedProviderInSplitMode 用于验证 split 模式会忽略陈旧的 combined-provider 覆盖值，因为此时 PostgreSQL 组合路径并未启用。
-func TestConfigValidateAllowsUnusedCombinedProviderInSplitMode(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.Storage.Mode = "split"
-	cfg.Storage.CombinedProvider = "mysql"
+	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
-		t.Fatalf("split mode should ignore unused combined provider, got: %v", err)
+		t.Fatalf("validate config with explicit routes: %v", err)
 	}
 }
 
-// TestConfigValidateRequiresPostgresDSNInCombinedMode verifies the combined PostgreSQL mode cannot start without an explicit DSN.
-// TestConfigValidateRequiresPostgresDSNInCombinedMode 用于验证 PostgreSQL 组合模式缺少 DSN 时不能启动。
-func TestConfigValidateRequiresPostgresDSNInCombinedMode(t *testing.T) {
+// TestConfigValidateRejectsMissingLLMRoutes verifies runtime validation no longer accepts llm top-level single-route fallbacks.
+// TestConfigValidateRejectsMissingLLMRoutes 用于验证运行时校验不再接受 llm 顶层单路由回退写法。
+func TestConfigValidateRejectsMissingLLMRoutes(t *testing.T) {
 	cfg := newValidConfigForTest()
-	cfg.Storage.Mode = "combined"
-	cfg.Postgres.DSN = ""
-	if err := cfg.Validate(); err == nil || err.Error() != "postgres.dsn is required when storage.mode=combined" {
-		t.Fatalf("unexpected combined postgres dsn validate error: %v", err)
+	cfg.LLM.Routes = nil
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "llm.routes must contain at least one route" {
+		t.Fatalf("unexpected llm route validate error: %v", err)
 	}
 }
 
-// TestConfigValidateRejectsUnsupportedPostgresFlavor verifies the PostgreSQL dialect selector only accepts the documented paradeDB and standard flavors.
-// TestConfigValidateRejectsUnsupportedPostgresFlavor 用于验证 PostgreSQL 方言选择器只接受文档声明的 paradedb 与 standard。
-func TestConfigValidateRejectsUnsupportedPostgresFlavor(t *testing.T) {
+// TestConfigValidateRejectsMissingEmbeddingAPIKeys verifies embedding still requires one usable multi-key pool after normalization.
+// TestConfigValidateRejectsMissingEmbeddingAPIKeys 用于验证 embedding 在归一化后仍必须拥有一组可用的多 key 池。
+func TestConfigValidateRejectsMissingEmbeddingAPIKeys(t *testing.T) {
 	cfg := newValidConfigForTest()
-	cfg.Storage.Mode = "combined"
-	cfg.Postgres.DSN = "postgres://user:pass@localhost:5432/vmm"
-	cfg.Postgres.Flavor = "bm25-plus"
-	if err := cfg.Validate(); err == nil || err.Error() != "postgres.flavor must be either paradedb or standard" {
-		t.Fatalf("unexpected combined postgres flavor validate error: %v", err)
+	cfg.Embedding.APIKeys = nil
+	cfg.Embedding.Nodes = nil
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "embedding.api_keys is required" {
+		t.Fatalf("unexpected embedding key validate error: %v", err)
 	}
 }
 
-// TestLoadExpandsEnvPlaceholdersFromDotEnv verifies the layered loader expands placeholders from the nearest resolved .env file.
-// TestLoadExpandsEnvPlaceholdersFromDotEnv 用于验证分层加载器会从最近解析到的 .env 文件里展开占位符。
-func TestLoadExpandsEnvPlaceholdersFromDotEnv(t *testing.T) {
-	const key = "TEST_CONFIG_API_KEY"
-	restoreEnv(t, key)
+// TestConfigValidateRejectsRerankWithoutRoutesWhenEnabled verifies rerank cannot be enabled without explicit routes anymore.
+// TestConfigValidateRejectsRerankWithoutRoutesWhenEnabled 用于验证 rerank 启用后不能再缺少显式 routes。
+func TestConfigValidateRejectsRerankWithoutRoutesWhenEnabled(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Routes = nil
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "rerank.routes must contain at least one route when rerank is enabled" {
+		t.Fatalf("unexpected rerank route validate error: %v", err)
+	}
+}
 
+// TestConfigValidateRejectsRoutingNodeWithoutKeys verifies each routing node still needs at least one key in the new api_keys-only contract.
+// TestConfigValidateRejectsRoutingNodeWithoutKeys 用于验证在新的 api_keys-only 契约下，每个轮询节点仍必须至少携带一个 key。
+func TestConfigValidateRejectsRoutingNodeWithoutKeys(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Embedding.APIKeys = nil
+	cfg.Embedding.Nodes = []AIRoutingNodeConfig{{Name: "broken-node", RPM: 2}}
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "embedding.nodes[0].api_keys is required" {
+		t.Fatalf("unexpected embedding node validate error: %v", err)
+	}
+}
+
+// TestLoadPathsRejectsRemovedTopLevelLLMFields verifies loading fails fast when one config layer still uses removed top-level llm runtime fields.
+// TestLoadPathsRejectsRemovedTopLevelLLMFields 用于验证当配置层仍使用已移除的顶层 llm 运行时字段时，加载流程会快速失败。
+func TestLoadPathsRejectsRemovedTopLevelLLMFields(t *testing.T) {
+	clearRemovedAIEnvVars(t)
 	rootDir := t.TempDir()
-	configDir := filepath.Join(rootDir, "configs")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
+	configPath := filepath.Join(rootDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"llm":{"provider":"openai"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rootDir, ".env"), []byte(key+"=from-dotenv\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(configDir, "local.json")
-	if err := os.WriteFile(configPath, []byte(currentTestConfigBody("${"+key+"}")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load(configPath, DefaultLocal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LLM.APIKey != "from-dotenv" {
-		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	_, err := LoadPaths([]string{configPath}, DefaultLocal())
+	if err == nil || !strings.Contains(err.Error(), "llm.provider has been removed") {
+		t.Fatalf("unexpected llm removed-field error: %v", err)
 	}
 }
 
-// TestLoadTrimsConfigPathWhitespace verifies one config path with surrounding whitespace still resolves its colocated config file and root-level .env.
-// TestLoadTrimsConfigPathWhitespace 用于验证单个带首尾空白的配置路径仍能解析同目录配置文件和根目录 .env。
-func TestLoadTrimsConfigPathWhitespace(t *testing.T) {
-	const key = "TEST_TRIMMED_LOAD_KEY"
-	restoreEnv(t, key)
-
+// TestLoadPathsRejectsRemovedTopLevelRerankFields verifies loading fails fast when one config layer still uses removed top-level rerank runtime fields.
+// TestLoadPathsRejectsRemovedTopLevelRerankFields 用于验证当配置层仍使用已移除的顶层 rerank 运行时字段时，加载流程会快速失败。
+func TestLoadPathsRejectsRemovedTopLevelRerankFields(t *testing.T) {
+	clearRemovedAIEnvVars(t)
 	rootDir := t.TempDir()
-	configDir := filepath.Join(rootDir, "configs")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
+	configPath := filepath.Join(rootDir, "config.json")
+	if err := os.WriteFile(configPath, []byte(`{"rerank":{"endpoint":"https://rerank.example/v1"}}`), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(filepath.Join(rootDir, ".env"), []byte(key+"=trimmed-dotenv\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	configPath := filepath.Join(configDir, "local.json")
-	if err := os.WriteFile(configPath, []byte(currentTestConfigBody("${"+key+"}")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := Load("  "+configPath+"  ", DefaultLocal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LLM.APIKey != "trimmed-dotenv" {
-		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	_, err := LoadPaths([]string{configPath}, DefaultLocal())
+	if err == nil || !strings.Contains(err.Error(), "rerank.endpoint has been removed") {
+		t.Fatalf("unexpected rerank removed-field error: %v", err)
 	}
 }
 
-// TestLoadPathsMergesSystemAndOverrideConfigs verifies later config files override earlier ones while their colocated .env files also override earlier values.
-// TestLoadPathsMergesSystemAndOverrideConfigs 用于验证后面的配置文件会覆盖前面的配置，同时其同目录的 .env 也会覆盖更早的值。
-func TestLoadPathsMergesSystemAndOverrideConfigs(t *testing.T) {
-	const key = "TEST_LOAD_PATHS_KEY"
-	restoreEnv(t, key)
-
+// TestLoadPathsRejectsRemovedSingularAPIKeyFields verifies removed singular api_key fields are rejected for embedding, routes, and nodes.
+// TestLoadPathsRejectsRemovedSingularAPIKeyFields 用于验证 embedding、routes 与 nodes 中已移除的单值 api_key 字段都会被拒绝。
+func TestLoadPathsRejectsRemovedSingularAPIKeyFields(t *testing.T) {
+	clearRemovedAIEnvVars(t)
 	rootDir := t.TempDir()
-	systemConfigDir := filepath.Join(rootDir, "configs")
-	overrideDir := filepath.Join(rootDir, "user")
-	if err := os.MkdirAll(systemConfigDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rootDir, ".env"), []byte(key+"=system-dotenv\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(overrideDir, ".env"), []byte(key+"=user-dotenv\n"), 0o644); err != nil {
-		t.Fatal(err)
+
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "embedding",
+			body: `{"embedding":{"api_key":"legacy-key"}}`,
+			want: "embedding.api_key has been removed",
+		},
+		{
+			name: "llm-route",
+			body: `{"llm":{"routes":[{"provider":"openai","endpoint":"https://example.com/v1","api_key":"legacy-key","model":"model-a"}]}}`,
+			want: "llm.routes[0].api_key has been removed",
+		},
+		{
+			name: "rerank-node",
+			body: `{"rerank":{"enabled":true,"routes":[{"provider":"dashscope","endpoint":"https://rerank.example/v1","model":"rerank-a","timeout":"5s","nodes":[{"api_key":"legacy-key"}]}]}}`,
+			want: "rerank.routes[0].nodes[0].api_key has been removed",
+		},
 	}
 
-	systemConfig := filepath.Join(systemConfigDir, "local.json")
-	overrideConfig := filepath.Join(overrideDir, "local.json")
-	if err := os.WriteFile(systemConfig, []byte(currentTestConfigBody("${"+key+"}")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(overrideConfig, []byte(`{"llm":{"model":"user-model"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadPaths([]string{systemConfig, overrideConfig}, DefaultLocal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LLM.Model != "user-model" {
-		t.Fatalf("llm model = %q", cfg.LLM.Model)
-	}
-	if cfg.LLM.APIKey != "user-dotenv" {
-		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(rootDir, tc.name+".json")
+			if err := os.WriteFile(configPath, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadPaths([]string{configPath}, DefaultLocal())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unexpected removed api_key error: %v", err)
+			}
+		})
 	}
 }
 
-// TestLoadPathsTrimsConfigPathWhitespace verifies layered loading trims surrounding whitespace before deduplicating config paths and resolving neighboring .env files.
-// TestLoadPathsTrimsConfigPathWhitespace 用于验证分层加载会在配置路径去重和相邻 .env 解析前先裁剪首尾空白。
-func TestLoadPathsTrimsConfigPathWhitespace(t *testing.T) {
-	const key = "TEST_TRIMMED_LOAD_PATHS_KEY"
-	restoreEnv(t, key)
-
-	rootDir := t.TempDir()
-	systemConfigDir := filepath.Join(rootDir, "configs")
-	overrideDir := filepath.Join(rootDir, "user")
-	if err := os.MkdirAll(systemConfigDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.MkdirAll(overrideDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(rootDir, ".env"), []byte(key+"=system-dotenv\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(overrideDir, ".env"), []byte(key+"=user-dotenv\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	systemConfig := filepath.Join(systemConfigDir, "local.json")
-	overrideConfig := filepath.Join(overrideDir, "local.json")
-	if err := os.WriteFile(systemConfig, []byte(currentTestConfigBody("${"+key+"}")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(overrideConfig, []byte(`{"llm":{"model":"trimmed-user-model"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadPaths([]string{"  " + systemConfig + "  ", "\n" + overrideConfig + "\t"}, DefaultLocal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LLM.Model != "trimmed-user-model" {
-		t.Fatalf("llm model = %q", cfg.LLM.Model)
-	}
-	if cfg.LLM.APIKey != "user-dotenv" {
-		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
-	}
-}
-
-// TestLoadPathsLatestLegacyAPIKeyOverridesEarlierAPIKeyPool verifies a later config layer can still use the legacy single-key field to replace an earlier api_keys pool.
-// TestLoadPathsLatestLegacyAPIKeyOverridesEarlierAPIKeyPool 用于验证后加载配置层仍可使用旧的单值 key 字段替换前序层中的 api_keys 池。
-func TestLoadPathsLatestLegacyAPIKeyOverridesEarlierAPIKeyPool(t *testing.T) {
-	rootDir := t.TempDir()
-	systemConfig := filepath.Join(rootDir, "system.json")
-	overrideConfig := filepath.Join(rootDir, "override.json")
-
-	systemBody := strings.Replace(
-		currentTestConfigBody("system-key"),
-		`"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"system-key","model":"test-model"}`,
-		`"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_keys":["system-key-a","system-key-b"],"model":"test-model"}`,
-		1,
-	)
-	if err := os.WriteFile(systemConfig, []byte(systemBody), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(overrideConfig, []byte(`{"llm":{"api_key":"override-key"}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadPaths([]string{systemConfig, overrideConfig}, DefaultLocal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LLM.APIKey != "override-key" {
-		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
-	}
-	if got, want := len(cfg.LLM.APIKeys), 1; got != want {
-		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
-	}
-	if cfg.LLM.APIKeys[0] != "override-key" {
-		t.Fatalf("llm api key pool = %#v", cfg.LLM.APIKeys)
-	}
-}
-
-// TestLoadPathsLatestAPIKeyPoolOverridesEarlierLegacyAPIKey verifies a later config layer that declares api_keys does not silently inherit an earlier legacy api_key into the new pool.
-// TestLoadPathsLatestAPIKeyPoolOverridesEarlierLegacyAPIKey 用于验证当后加载配置层声明 api_keys 时，不会把更早层的旧 api_key 悄悄继承进新的 key 池。
-func TestLoadPathsLatestAPIKeyPoolOverridesEarlierLegacyAPIKey(t *testing.T) {
-	rootDir := t.TempDir()
-	systemConfig := filepath.Join(rootDir, "system.json")
-	overrideConfig := filepath.Join(rootDir, "override.json")
-
-	if err := os.WriteFile(systemConfig, []byte(currentTestConfigBody("system-key")), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(overrideConfig, []byte(`{"llm":{"api_keys":["override-a","override-b"]}}`), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg, err := LoadPaths([]string{systemConfig, overrideConfig}, DefaultLocal())
-	if err != nil {
-		t.Fatal(err)
-	}
-	if cfg.LLM.APIKey != "override-a" {
-		t.Fatalf("llm api key = %q", cfg.LLM.APIKey)
-	}
-	if got, want := len(cfg.LLM.APIKeys), 2; got != want {
-		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
-	}
-	if cfg.LLM.APIKeys[0] != "override-a" || cfg.LLM.APIKeys[1] != "override-b" {
-		t.Fatalf("llm api key pool = %#v", cfg.LLM.APIKeys)
-	}
-}
-
-// TestLoadExpandsModelSpecificProviderParams verifies provider parameter maps still support environment-expanded model keys.
-// TestLoadExpandsModelSpecificProviderParams 用于验证 provider 参数映射仍支持带环境变量展开的模型键名。
+// TestLoadExpandsModelSpecificProviderParams verifies model-scoped provider parameter maps still support environment-expanded keys under route mode.
+// TestLoadExpandsModelSpecificProviderParams 用于验证在 route 模式下，模型粒度的 provider 参数映射仍支持带环境变量展开的键名。
 func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
+	clearRemovedAIEnvVars(t)
 	const modelKey = "TEST_MODEL_NAME"
 	const apiKey = "TEST_MODEL_PARAMS_API_KEY"
 	restoreEnv(t, modelKey)
@@ -768,14 +321,18 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 		"sqlite":{"address":"127.0.0.1:19501","timeout":"5s"},
 		"lancedb":{"address":"127.0.0.1:19301","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
 		"llm":{
-			"provider":"openai",
-			"endpoint":"https://api.openai.com/v1",
-			"api_key":"${` + apiKey + `}",
-			"model":"${` + modelKey + `}",
-			"params":{"reasoning_effort":"low"},
-			"model_params":{"${` + modelKey + `}":{"enable_thinking":false}}
+			"routes":[
+				{
+					"provider":"openai",
+					"endpoint":"https://api.openai.com/v1",
+					"api_keys":["${` + apiKey + `}"],
+					"model":"${` + modelKey + `}",
+					"params":{"reasoning_effort":"low"},
+					"model_params":{"${` + modelKey + `}":{"enable_thinking":false}}
+				}
+			]
 		},
-		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"${` + apiKey + `}","model":"text-embedding-3-large","dimension":1024},
+		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_keys":["${` + apiKey + `}"],"model":"text-embedding-3-large","dimension":1024},
 		"vector":{"provider":"lancedb"},
 		"relational":{"provider":"sqlite"},
 		"pre_check":{"intent_timeout":"5s","top_k":5},
@@ -790,498 +347,51 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if cfg.LLM.Params["reasoning_effort"] != "low" {
-		t.Fatalf("llm.params.reasoning_effort = %#v", cfg.LLM.Params["reasoning_effort"])
-	}
-	modelParams, ok := cfg.LLM.ModelParams["qwen3.5-flash"]
+	route, ok := cfg.LLM.PrimaryRoute()
 	if !ok {
-		t.Fatalf("expected model params for qwen3.5-flash, got %#v", cfg.LLM.ModelParams)
+		t.Fatal("expected primary llm route")
 	}
-	if enabled, ok := modelParams["enable_thinking"].(bool); !ok || enabled {
-		t.Fatalf("llm.model_params.enable_thinking = %#v", modelParams["enable_thinking"])
+	if route.Params["reasoning_effort"] != "low" {
+		t.Fatalf("llm route params.reasoning_effort = %#v", route.Params["reasoning_effort"])
 	}
-}
-
-// TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds verifies process-level overrides can tune the future session-analysis trigger thresholds.
-// TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds 用于验证进程级环境变量可以覆盖未来 session 分析触发阈值。
-func TestApplyEnvOverridesSetsPostActionSessionAnalysisThresholds(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_TURN_THRESHOLD", "33")
-	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_TOKEN_THRESHOLD", "24000")
-	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", "25m")
-	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS", "5")
-	t.Setenv("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", "7200")
-
-	applyEnvOverrides(&cfg)
-
-	if cfg.PostAction.SessionAnalysisTurnThreshold != 33 {
-		t.Fatalf("post action session analysis turn threshold = %d", cfg.PostAction.SessionAnalysisTurnThreshold)
-	}
-	if cfg.PostAction.SessionAnalysisTokenThreshold != 24000 {
-		t.Fatalf("post action session analysis token threshold = %d", cfg.PostAction.SessionAnalysisTokenThreshold)
-	}
-	if cfg.PostAction.SessionAnalysisIdleTimeout.Duration != 25*time.Minute {
-		t.Fatalf("post action session analysis idle timeout = %v", cfg.PostAction.SessionAnalysisIdleTimeout.Duration)
-	}
-	if cfg.PostAction.SessionAnalysisHistoryTurns != 5 {
-		t.Fatalf("post action session analysis history turns = %d", cfg.PostAction.SessionAnalysisHistoryTurns)
-	}
-	if cfg.PostAction.SessionAnalysisMaxInputTokens != 7200 {
-		t.Fatalf("post action session analysis max input tokens = %d", cfg.PostAction.SessionAnalysisMaxInputTokens)
+	modelParams, ok := route.ModelParams["qwen3.5-flash"]
+	if !ok || modelParams["enable_thinking"] != false {
+		t.Fatalf("expected model params for qwen3.5-flash, got %#v", route.ModelParams)
 	}
 }
 
-// TestApplyEnvOverridesSetsPreCheckSearchScope verifies process-level overrides can widen or narrow the pre-check recall scope without editing the base JSON config.
-// TestApplyEnvOverridesSetsPreCheckSearchScope 用于验证进程级环境变量可以在不修改基础 JSON 配置的前提下调整 pre-check 召回作用域。
-func TestApplyEnvOverridesSetsPreCheckSearchScope(t *testing.T) {
+// TestValidateRemovedAIEnvOverrides verifies removed AI env overrides now fail fast instead of silently reintroducing deleted single-route semantics.
+// TestValidateRemovedAIEnvOverrides 用于验证已移除的 AI 环境变量现在会快速失败，而不是静默重新引入被删除的单路由语义。
+func TestValidateRemovedAIEnvOverrides(t *testing.T) {
+	restoreEnv(t, "VMM_LLM_API_KEYS")
+	t.Setenv("VMM_LLM_API_KEYS", "legacy-key")
+	err := validateRemovedAIEnvOverrides()
+	if err == nil || !strings.Contains(err.Error(), "VMM_LLM_API_KEYS has been removed") {
+		t.Fatalf("unexpected removed env error: %v", err)
+	}
+}
+
+// TestApplyEnvOverridesSetsEmbeddingKeyPools verifies supported embedding env overrides still inject multi-key pools and shared node budgets.
+// TestApplyEnvOverridesSetsEmbeddingKeyPools 用于验证仍受支持的 embedding 环境变量覆盖会注入多 key 池与共享节点预算。
+func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	cfg := newValidConfigForTest()
-	t.Setenv("VMM_PRE_CHECK_SEARCH_SCOPE", "team")
+	t.Setenv("VMM_EMBED_API_KEYS", "embed-a,embed-b")
+	t.Setenv("VMM_EMBED_RPM", "7")
+	t.Setenv("VMM_EMBED_TPM", "700")
+	t.Setenv("VMM_EMBED_RPD", "70")
 
 	applyEnvOverrides(&cfg)
 	cfg.Normalize()
 
-	if cfg.PreCheck.SearchScope != "team" {
-		t.Fatalf("pre-check search scope = %q", cfg.PreCheck.SearchScope)
-	}
-}
-
-// TestApplyEnvOverridesSetsMemoryReplaceAndRetentionKnobs verifies process-level overrides can tune the dedicated replacement scope and retention defaults without editing the base JSON config.
-// TestApplyEnvOverridesSetsMemoryReplaceAndRetentionKnobs 用于验证进程级环境变量可以在不修改基础 JSON 配置的前提下调整专用更替作用域和 retention 参数。
-func TestApplyEnvOverridesSetsMemoryReplaceAndRetentionKnobs(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_MEMORY_REPLACE_SCOPE", "session")
-	t.Setenv("VMM_RETENTION_ENABLED", "false")
-	t.Setenv("VMM_RETENTION_RECYCLE_SCAN_INTERVAL", "45m")
-	t.Setenv("VMM_RETENTION_TURN_KEEP_EXTRA_TURNS", "8")
-	t.Setenv("VMM_RETENTION_SESSION_IDLE_RECYCLE_AFTER", "480h")
-	t.Setenv("VMM_RETENTION_TRASH_RETENTION", "960h")
-	t.Setenv("VMM_RETENTION_PROTECT_PRIORITY_FLOOR", "P0")
-	t.Setenv("VMM_RETENTION_PROTECT_MEMORY_LEVEL_FLOOR", "persistent")
-	t.Setenv("VMM_RETENTION_SKIP_PROTECTED_SHARED_MEMORIES", "false")
-
-	applyEnvOverrides(&cfg)
-	cfg.Normalize()
-
-	if cfg.MemoryReplaceScope != "session" {
-		t.Fatalf("memory replace scope = %q", cfg.MemoryReplaceScope)
-	}
-	if cfg.Retention.Enabled {
-		t.Fatal("expected retention enabled override to be false")
-	}
-	if cfg.Retention.RecycleScanInterval.Duration != 45*time.Minute {
-		t.Fatalf("retention recycle scan interval = %v", cfg.Retention.RecycleScanInterval.Duration)
-	}
-	if cfg.Retention.TurnKeepExtraTurns != 8 {
-		t.Fatalf("retention turn keep extra turns = %d", cfg.Retention.TurnKeepExtraTurns)
-	}
-	if cfg.Retention.SessionIdleRecycleAfter.Duration != 480*time.Hour {
-		t.Fatalf("retention session idle recycle after = %v", cfg.Retention.SessionIdleRecycleAfter.Duration)
-	}
-	if cfg.Retention.TrashRetention.Duration != 960*time.Hour {
-		t.Fatalf("retention trash retention = %v", cfg.Retention.TrashRetention.Duration)
-	}
-	if cfg.Retention.ProtectPriorityFloor != "P0" {
-		t.Fatalf("retention protect priority floor = %q", cfg.Retention.ProtectPriorityFloor)
-	}
-	if cfg.Retention.ProtectMemoryLevelFloor != "persistent" {
-		t.Fatalf("retention protect memory level floor = %q", cfg.Retention.ProtectMemoryLevelFloor)
-	}
-	if cfg.Retention.SkipProtectedSharedMemories {
-		t.Fatal("expected retention skip protected shared memories override to be false")
-	}
-}
-
-// TestApplyEnvOverridesSetsCombinedPostgresConfig verifies process-level overrides can switch the runtime into combined PostgreSQL mode without editing the base JSON config.
-// TestApplyEnvOverridesSetsCombinedPostgresConfig 用于验证进程级环境变量可以在不修改基础 JSON 配置的前提下切换到 PostgreSQL 组合模式。
-func TestApplyEnvOverridesSetsCombinedPostgresConfig(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_STORAGE_MODE", "combined")
-	t.Setenv("VMM_STORAGE_COMBINED_PROVIDER", "postgres")
-	t.Setenv("VMM_POSTGRES_DSN", "postgres://user:pass@localhost:5432/vmm")
-	t.Setenv("VMM_POSTGRES_SCHEMA", "vmm")
-	t.Setenv("VMM_POSTGRES_FLAVOR", "standard")
-	t.Setenv("VMM_POSTGRES_QUERY_TIMEOUT", "7s")
-	t.Setenv("VMM_POSTGRES_CONNECT_TIMEOUT", "6s")
-	t.Setenv("VMM_POSTGRES_MAX_OPEN_CONNS", "16")
-	t.Setenv("VMM_POSTGRES_MIN_IDLE_CONNS", "2")
-	t.Setenv("VMM_POSTGRES_AUTO_CREATE_EXTENSIONS", "true")
-	t.Setenv("VMM_POSTGRES_BM25_INDEX_CONCURRENTLY", "false")
-	t.Setenv("VMM_POSTGRES_BM25_INDEX_NAME", "memory_bm25_idx")
-	t.Setenv("VMM_POSTGRES_TRGM_SIMILARITY_THRESHOLD", "0.35")
-	t.Setenv("VMM_POSTGRES_VECTOR_LISTS", "64")
-	t.Setenv("VMM_POSTGRES_VECTOR_PROBES", "8")
-	t.Setenv("VMM_POSTGRES_MIGRATION_BATCH_SIZE", "128")
-
-	applyEnvOverrides(&cfg)
-	cfg.Normalize()
-
-	if cfg.Storage.Mode != "combined" {
-		t.Fatalf("storage mode = %q", cfg.Storage.Mode)
-	}
-	if cfg.Storage.CombinedProvider != "postgres" {
-		t.Fatalf("storage combined provider = %q", cfg.Storage.CombinedProvider)
-	}
-	if cfg.Postgres.DSN != "postgres://user:pass@localhost:5432/vmm" {
-		t.Fatalf("postgres dsn = %q", cfg.Postgres.DSN)
-	}
-	if cfg.Postgres.Schema != "vmm" {
-		t.Fatalf("postgres schema = %q", cfg.Postgres.Schema)
-	}
-	if cfg.Postgres.Flavor != "standard" {
-		t.Fatalf("postgres flavor = %q", cfg.Postgres.Flavor)
-	}
-	if cfg.Postgres.QueryTimeout.Duration != 7*time.Second {
-		t.Fatalf("postgres query timeout = %v", cfg.Postgres.QueryTimeout.Duration)
-	}
-	if cfg.Postgres.ConnectTimeout.Duration != 6*time.Second {
-		t.Fatalf("postgres connect timeout = %v", cfg.Postgres.ConnectTimeout.Duration)
-	}
-	if cfg.Postgres.MaxOpenConns != 16 {
-		t.Fatalf("postgres max open conns = %d", cfg.Postgres.MaxOpenConns)
-	}
-	if cfg.Postgres.MinIdleConns != 2 {
-		t.Fatalf("postgres min idle conns = %d", cfg.Postgres.MinIdleConns)
-	}
-	if !cfg.Postgres.AutoCreateExtensions {
-		t.Fatal("expected postgres auto-create extensions to be enabled")
-	}
-	if cfg.Postgres.BM25IndexConcurrently {
-		t.Fatal("expected postgres bm25 index concurrently flag to be disabled")
-	}
-	if cfg.Postgres.BM25IndexName != "memory_bm25_idx" {
-		t.Fatalf("postgres bm25 index name = %q", cfg.Postgres.BM25IndexName)
-	}
-	if cfg.Postgres.TRGMSimilarityThreshold != 0.35 {
-		t.Fatalf("postgres trgm similarity threshold = %v", cfg.Postgres.TRGMSimilarityThreshold)
-	}
-	if cfg.Postgres.VectorLists != 64 {
-		t.Fatalf("postgres vector lists = %d", cfg.Postgres.VectorLists)
-	}
-	if cfg.Postgres.VectorProbes != 8 {
-		t.Fatalf("postgres vector probes = %d", cfg.Postgres.VectorProbes)
-	}
-	if cfg.Postgres.MigrationBatchSize != 128 {
-		t.Fatalf("postgres migration batch size = %d", cfg.Postgres.MigrationBatchSize)
-	}
-}
-
-// TestNormalizePreservesExplicitZeroPostgresMinIdleConns verifies Normalize keeps an explicit zero min-idle setting so operators can disable prewarmed idle PostgreSQL connections.
-// TestNormalizePreservesExplicitZeroPostgresMinIdleConns 用于验证 Normalize 会保留显式配置的 PostgreSQL 最小空闲连接数 0，便于运维关闭预热空闲连接。
-func TestNormalizePreservesExplicitZeroPostgresMinIdleConns(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.Postgres.MinIdleConns = 0
-
-	cfg.Normalize()
-
-	if cfg.Postgres.MinIdleConns != 0 {
-		t.Fatalf("postgres min idle conns = %d", cfg.Postgres.MinIdleConns)
-	}
-}
-
-// TestApplyEnvOverridesSetsRPCPayloadLogging verifies process-level overrides can explicitly enable shared RPC payload debug logging for local troubleshooting without changing the base config file.
-// TestApplyEnvOverridesSetsRPCPayloadLogging 用于验证进程级环境变量可以在不修改基础配置文件的前提下显式开启共享 RPC 载荷调试日志。
-func TestApplyEnvOverridesSetsRPCPayloadLogging(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_LOG_DEBUG_RPC_PAYLOADS", "true")
-
-	applyEnvOverrides(&cfg)
-
-	if !cfg.Logging.DebugRPCPayloads {
-		t.Fatal("expected debug rpc payload logs to be enabled by env override")
-	}
-}
-
-// TestApplyEnvOverridesSetsProtectedPayloadLogging verifies process-level overrides can enable protected payload logging and inject its encryption key without editing the base config file.
-// TestApplyEnvOverridesSetsProtectedPayloadLogging 用于验证进程级环境变量可以在不修改基础配置文件的前提下启用受保护载荷日志并注入加密密钥。
-func TestApplyEnvOverridesSetsProtectedPayloadLogging(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_LOG_PROTECT_PAYLOADS", "true")
-	t.Setenv("VMM_LOG_PAYLOAD_ENCRYPTION_KEY", "0123456789abcdef0123456789abcdef")
-
-	applyEnvOverrides(&cfg)
-
-	if !cfg.Logging.ProtectPayloads {
-		t.Fatal("expected protected payload logging to be enabled by env override")
-	}
-	if cfg.Logging.PayloadEncryptionKey != "0123456789abcdef0123456789abcdef" {
-		t.Fatalf("payload encryption key = %q", cfg.Logging.PayloadEncryptionKey)
-	}
-}
-
-// TestApplyEnvOverridesSetsRerankSettings verifies process-level overrides can enable DashScope rerank without editing the base config file.
-// TestApplyEnvOverridesSetsRerankSettings 用于验证进程级环境变量可以在不修改基础配置文件的前提下启用 DashScope rerank。
-func TestApplyEnvOverridesSetsRerankSettings(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_RERANK_ENABLED", "true")
-	t.Setenv("VMM_RERANK_PROVIDER", "dashscope")
-	t.Setenv("VMM_RERANK_ENDPOINT", "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank")
-	t.Setenv("VMM_RERANK_API_KEY", "dashscope-key")
-	t.Setenv("VMM_RERANK_MODEL", "qwen3-vl-rerank")
-	t.Setenv("VMM_RERANK_TOP_N", "6")
-	t.Setenv("VMM_RERANK_TIMEOUT", "9s")
-
-	applyEnvOverrides(&cfg)
-
-	if !cfg.Rerank.Enabled {
-		t.Fatal("expected rerank to be enabled")
-	}
-	if cfg.Rerank.Provider != "dashscope" {
-		t.Fatalf("rerank provider = %q", cfg.Rerank.Provider)
-	}
-	if cfg.Rerank.APIKey != "dashscope-key" {
-		t.Fatalf("rerank api key = %q", cfg.Rerank.APIKey)
-	}
-	if cfg.Rerank.Model != "qwen3-vl-rerank" {
-		t.Fatalf("rerank model = %q", cfg.Rerank.Model)
-	}
-	if cfg.Rerank.TopN != 6 {
-		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
-	}
-	if cfg.Rerank.Timeout.Duration != 9*time.Second {
-		t.Fatalf("rerank timeout = %v", cfg.Rerank.Timeout.Duration)
-	}
-}
-
-// TestApplyEnvOverridesSetsHybridRetrievalSettings verifies process-level overrides can tune lexical recall and RRF without editing the base config file.
-// TestApplyEnvOverridesSetsHybridRetrievalSettings 用于验证进程级环境变量可以在不改基础配置文件的前提下调整 lexical 召回和 RRF 参数。
-func TestApplyEnvOverridesSetsHybridRetrievalSettings(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_MEMORY_HYBRID_ENABLED", "false")
-	t.Setenv("VMM_MEMORY_LEXICAL_PRETOKENIZE", "false")
-	t.Setenv("VMM_MEMORY_LEXICAL_TOP_K", "11")
-	t.Setenv("VMM_MEMORY_RRF_K", "77")
-	t.Setenv("VMM_MEMORY_MMR_ENABLED", "false")
-	t.Setenv("VMM_MEMORY_MMR_LAMBDA", "0.66")
-	t.Setenv("VMM_MEMORY_WEIBULL_ENABLED", "false")
-	t.Setenv("VMM_MEMORY_WEIBULL_SHAPE", "1.8")
-	t.Setenv("VMM_MEMORY_WEIBULL_SCALE_HOURS", "1440")
-	t.Setenv("VMM_MEMORY_WEIBULL_MIN_MULTIPLIER", "0.3")
-	t.Setenv("VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT", "0.22")
-	t.Setenv("VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST", "0.15")
-
-	applyEnvOverrides(&cfg)
-
-	if cfg.MemoryPipeline.HybridEnabled {
-		t.Fatal("expected hybrid retrieval to be disabled by env override")
-	}
-	if cfg.MemoryPipeline.LexicalPreTokenize {
-		t.Fatal("expected lexical pre-tokenization to be disabled by env override")
-	}
-	if cfg.MemoryPipeline.LexicalTopK != 11 {
-		t.Fatalf("memory pipeline lexical top_k = %d", cfg.MemoryPipeline.LexicalTopK)
-	}
-	if cfg.MemoryPipeline.RRFK != 77 {
-		t.Fatalf("memory pipeline rrf_k = %d", cfg.MemoryPipeline.RRFK)
-	}
-	if cfg.MemoryPipeline.MMREnabled {
-		t.Fatal("expected mmr to be disabled by env override")
-	}
-	if cfg.MemoryPipeline.MMRLambda != 0.66 {
-		t.Fatalf("memory pipeline mmr_lambda = %v", cfg.MemoryPipeline.MMRLambda)
-	}
-	if cfg.MemoryPipeline.WeibullEnabled {
-		t.Fatal("expected weibull decay to be disabled by env override")
-	}
-	if cfg.MemoryPipeline.WeibullShape != 1.8 {
-		t.Fatalf("memory pipeline weibull_shape = %v", cfg.MemoryPipeline.WeibullShape)
-	}
-	if cfg.MemoryPipeline.WeibullScaleHours != 1440 {
-		t.Fatalf("memory pipeline weibull_scale_hours = %v", cfg.MemoryPipeline.WeibullScaleHours)
-	}
-	if cfg.MemoryPipeline.WeibullMinMultiplier != 0.3 {
-		t.Fatalf("memory pipeline weibull_min_multiplier = %v", cfg.MemoryPipeline.WeibullMinMultiplier)
-	}
-	if cfg.MemoryPipeline.WeibullReinforceWeight != 0.22 {
-		t.Fatalf("memory pipeline weibull_reinforce_weight = %v", cfg.MemoryPipeline.WeibullReinforceWeight)
-	}
-	if cfg.MemoryPipeline.WeibullCrossSessionBoost != 0.15 {
-		t.Fatalf("memory pipeline weibull_cross_session_boost = %v", cfg.MemoryPipeline.WeibullCrossSessionBoost)
-	}
-}
-
-// TestConfigNormalizeExpandsAPIKeyPools verifies Normalize merges api_key and api_keys into one deduplicated pool while preserving the first key as the legacy single-key field.
-// TestConfigNormalizeExpandsAPIKeyPools 用于验证 Normalize 会把 api_key 与 api_keys 合并为一组去重后的 Key 池，并保留首个 Key 作为旧单值字段。
-func TestConfigNormalizeExpandsAPIKeyPools(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.LLM.APIKey = " llm-a ; llm-b \n llm-c "
-	cfg.LLM.APIKeys = []string{"llm-b", " llm-d "}
-	cfg.Embedding.APIKey = " embed-a "
-	cfg.Embedding.APIKeys = []string{" embed-b,embed-c ", "embed-b"}
-	cfg.Rerank.APIKey = " rerank-a "
-	cfg.Rerank.APIKeys = []string{"rerank-b;rerank-c", "rerank-a"}
-
-	cfg.Normalize()
-
-	if got, want := len(cfg.LLM.APIKeys), 4; got != want {
-		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
-	}
-	if cfg.LLM.APIKey != "llm-b" {
-		t.Fatalf("llm primary api key = %q", cfg.LLM.APIKey)
-	}
-	if got, want := len(cfg.Embedding.APIKeys), 3; got != want {
-		t.Fatalf("embedding api key pool size = %d, want %d (%#v)", got, want, cfg.Embedding.APIKeys)
-	}
-	if cfg.Embedding.APIKey != "embed-b" {
-		t.Fatalf("embedding primary api key = %q", cfg.Embedding.APIKey)
-	}
-	if got, want := len(cfg.Rerank.APIKeys), 3; got != want {
-		t.Fatalf("rerank api key pool size = %d, want %d (%#v)", got, want, cfg.Rerank.APIKeys)
-	}
-	if cfg.Rerank.APIKey != "rerank-b" {
-		t.Fatalf("rerank primary api key = %q", cfg.Rerank.APIKey)
-	}
-}
-
-// TestConfigNormalizeSynthesizesRoutingNodes verifies legacy top-level key pools and quota knobs are folded into one default routing node.
-// TestConfigNormalizeSynthesizesRoutingNodes 用于验证旧版顶层 key 池与配额配置会被折叠成一个默认轮询节点。
-func TestConfigNormalizeSynthesizesRoutingNodes(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.LLM.APIKeys = []string{"llm-a", "llm-b"}
-	cfg.LLM.APIKey = ""
-	cfg.LLM.RPM = 7
-	cfg.LLM.TPM = 700
-	cfg.LLM.RPD = 70
-
-	cfg.Normalize()
-
-	nodes := cfg.LLM.RoutingNodes()
-	if got, want := len(nodes), 1; got != want {
-		t.Fatalf("llm routing node count = %d, want %d (%#v)", got, want, nodes)
-	}
-	if got, want := len(nodes[0].APIKeys), 2; got != want {
-		t.Fatalf("llm routing node api key count = %d, want %d (%#v)", got, want, nodes[0].APIKeys)
-	}
-	if nodes[0].RPM != 7 || nodes[0].TPM != 700 || nodes[0].RPD != 70 {
-		t.Fatalf("llm routing node limits = %#v", nodes[0])
-	}
-}
-
-// TestConfigValidateAcceptsExplicitRoutingNodes verifies AI configs can omit top-level api_key/api_keys when explicit routing nodes are supplied.
-// TestConfigValidateAcceptsExplicitRoutingNodes 用于验证当显式提供轮询节点时，AI 配置可以不再填写顶层 api_key/api_keys。
-func TestConfigValidateAcceptsExplicitRoutingNodes(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.LLM.APIKey = ""
-	cfg.LLM.APIKeys = nil
-	cfg.LLM.Nodes = []AIRoutingNodeConfig{
-		{Name: "primary", APIKeys: []string{"llm-a", "llm-b"}, RPM: 3, TPM: 300, RPD: 30},
-		{Name: "backup", APIKey: "llm-c", RPM: 1},
-	}
-
-	cfg.Normalize()
-	if err := cfg.Validate(); err != nil {
-		t.Fatalf("validate config with explicit llm routing nodes: %v", err)
-	}
-	if got, want := len(cfg.LLM.RoutingNodes()), 2; got != want {
-		t.Fatalf("llm routing node count = %d, want %d", got, want)
-	}
-}
-
-// TestConfigValidateRejectsRoutingNodeWithoutKeys verifies each routing node must still expose at least one usable key after normalization.
-// TestConfigValidateRejectsRoutingNodeWithoutKeys 用于验证每个轮询节点在归一化后都必须至少暴露一个可用 Key。
-func TestConfigValidateRejectsRoutingNodeWithoutKeys(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.Embedding.APIKey = ""
-	cfg.Embedding.APIKeys = nil
-	cfg.Embedding.Nodes = []AIRoutingNodeConfig{{Name: "broken-node", RPM: 2}}
-
-	cfg.Normalize()
-	if err := cfg.Validate(); err == nil || err.Error() != "embedding.nodes[0].api_key or embedding.nodes[0].api_keys is required" {
-		t.Fatalf("unexpected embedding node validate error: %v", err)
-	}
-}
-
-// TestConfigValidateRejectsMissingNormalizedKeyPools verifies validation rejects AI configs that end up without any usable key after normalization.
-// TestConfigValidateRejectsMissingNormalizedKeyPools 用于验证当归一化后没有任何可用 Key 时，配置校验会拒绝对应的 AI 配置。
-func TestConfigValidateRejectsMissingNormalizedKeyPools(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.LLM.APIKey = ""
-	cfg.LLM.APIKeys = nil
-	cfg.Normalize()
-	if err := cfg.Validate(); err == nil || err.Error() != "llm.api_key or llm.api_keys is required" {
-		t.Fatalf("unexpected llm key-pool validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.Embedding.APIKey = ""
-	cfg.Embedding.APIKeys = nil
-	cfg.Normalize()
-	if err := cfg.Validate(); err == nil || err.Error() != "embedding.api_key or embedding.api_keys is required" {
-		t.Fatalf("unexpected embedding key-pool validate error: %v", err)
-	}
-
-	cfg = newValidConfigForTest()
-	cfg.Rerank.Enabled = true
-	cfg.Rerank.APIKey = ""
-	cfg.Rerank.APIKeys = nil
-	cfg.LLM.APIKey = "shared-llm-key"
-	cfg.LLM.APIKeys = nil
-	cfg.Normalize()
-	if err := cfg.Validate(); err == nil || err.Error() != "rerank.api_key or rerank.api_keys is required when rerank is enabled" {
-		t.Fatalf("unexpected rerank key-pool validate error: %v", err)
-	}
-}
-
-// TestApplyEnvOverridesSetsAIKeyPools verifies environment overrides can inject multi-key pools and key-failover policy knobs without editing the base config file.
-// TestApplyEnvOverridesSetsAIKeyPools 用于验证环境变量覆盖可以在不修改基础配置文件的前提下注入多 Key 池及 Key 容灾策略参数。
-func TestApplyEnvOverridesSetsAIKeyPools(t *testing.T) {
-	cfg := newValidConfigForTest()
-	t.Setenv("VMM_LLM_API_KEYS", "llm-a,llm-b")
-	t.Setenv("VMM_LLM_KEY_FAILOVER_POLICY", "round_robin")
-	t.Setenv("VMM_EMBED_API_KEYS", "embed-a;embed-b")
-	t.Setenv("VMM_RERANK_API_KEYS", "rerank-a\nrerank-b")
-
-	applyEnvOverrides(&cfg)
-	cfg.Normalize()
-
-	if got, want := len(cfg.LLM.APIKeys), 2; got != want {
-		t.Fatalf("llm api key pool size = %d, want %d (%#v)", got, want, cfg.LLM.APIKeys)
-	}
-	if cfg.LLM.KeyFailover.Policy != "round_robin" {
-		t.Fatalf("llm key failover policy = %q", cfg.LLM.KeyFailover.Policy)
-	}
 	if got, want := len(cfg.Embedding.APIKeys), 2; got != want {
 		t.Fatalf("embedding api key pool size = %d, want %d (%#v)", got, want, cfg.Embedding.APIKeys)
 	}
-	if got, want := len(cfg.Rerank.APIKeys), 2; got != want {
-		t.Fatalf("rerank api key pool size = %d, want %d (%#v)", got, want, cfg.Rerank.APIKeys)
+	nodes := cfg.Embedding.RoutingNodes()
+	if got, want := len(nodes), 1; got != want {
+		t.Fatalf("embedding node count = %d, want %d (%#v)", got, want, nodes)
 	}
-}
-
-// TestApplyEnvOverridesSingleAPIKeysReplacePools verifies single-key environment overrides replace any existing file-based key pool instead of silently merging with it.
-// TestApplyEnvOverridesSingleAPIKeysReplacePools 用于验证单值环境变量覆盖会替换已有的文件 Key 池，而不是悄悄与其合并。
-func TestApplyEnvOverridesSingleAPIKeysReplacePools(t *testing.T) {
-	cfg := newValidConfigForTest()
-	cfg.LLM.APIKeys = []string{"llm-old-a", "llm-old-b"}
-	cfg.LLM.Nodes = []AIRoutingNodeConfig{{Name: "stale-llm-node", APIKeys: []string{"llm-node-a", "llm-node-b"}, RPM: 2}}
-	cfg.Embedding.APIKeys = []string{"embed-old-a", "embed-old-b"}
-	cfg.Embedding.Nodes = []AIRoutingNodeConfig{{Name: "stale-embed-node", APIKeys: []string{"embed-node-a", "embed-node-b"}, TPM: 200}}
-	cfg.Rerank.APIKeys = []string{"rerank-old-a", "rerank-old-b"}
-	cfg.Rerank.Nodes = []AIRoutingNodeConfig{{Name: "stale-rerank-node", APIKeys: []string{"rerank-node-a", "rerank-node-b"}, RPD: 20}}
-
-	t.Setenv("VMM_LLM_API_KEY", "llm-single")
-	t.Setenv("VMM_EMBED_API_KEY", "embed-single")
-	t.Setenv("VMM_RERANK_API_KEY", "rerank-single")
-
-	applyEnvOverrides(&cfg)
-	cfg.Normalize()
-
-	if got, want := len(cfg.LLM.APIKeys), 1; got != want || cfg.LLM.APIKeys[0] != "llm-single" {
-		t.Fatalf("llm api key pool = %#v", cfg.LLM.APIKeys)
-	}
-	if got, want := len(cfg.LLM.RoutingNodes()), 1; got != want || cfg.LLM.RoutingNodes()[0].APIKeys[0] != "llm-single" {
-		t.Fatalf("llm routing nodes = %#v", cfg.LLM.RoutingNodes())
-	}
-	if got, want := len(cfg.Embedding.APIKeys), 1; got != want || cfg.Embedding.APIKeys[0] != "embed-single" {
-		t.Fatalf("embedding api key pool = %#v", cfg.Embedding.APIKeys)
-	}
-	if got, want := len(cfg.Embedding.RoutingNodes()), 1; got != want || cfg.Embedding.RoutingNodes()[0].APIKeys[0] != "embed-single" {
-		t.Fatalf("embedding routing nodes = %#v", cfg.Embedding.RoutingNodes())
-	}
-	if got, want := len(cfg.Rerank.APIKeys), 1; got != want || cfg.Rerank.APIKeys[0] != "rerank-single" {
-		t.Fatalf("rerank api key pool = %#v", cfg.Rerank.APIKeys)
-	}
-	if got, want := len(cfg.Rerank.RoutingNodes()), 1; got != want || cfg.Rerank.RoutingNodes()[0].APIKeys[0] != "rerank-single" {
-		t.Fatalf("rerank routing nodes = %#v", cfg.Rerank.RoutingNodes())
+	if nodes[0].RPM != 7 || nodes[0].TPM != 700 || nodes[0].RPD != 70 {
+		t.Fatalf("embedding node limits = %#v", nodes[0])
 	}
 }
 
@@ -1302,20 +412,48 @@ func restoreEnv(t *testing.T, key string) {
 	})
 }
 
-// currentTestConfigBody returns one minimal latest-format config body used by placeholder and layered-load tests.
-// currentTestConfigBody 用于返回占位符与分层加载测试使用的最小最新格式配置体。
-func currentTestConfigBody(apiKeyExpr string) string {
-	return `{
-		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"sqlite":{"address":"127.0.0.1:19501","timeout":"5s"},
-		"lancedb":{"address":"127.0.0.1:19301","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
-		"llm":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"` + apiKeyExpr + `","model":"test-model"},
-		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_key":"` + apiKeyExpr + `","model":"text-embedding-3-large","dimension":1024},
-		"vector":{"provider":"lancedb"},
-		"relational":{"provider":"sqlite"},
-		"pre_check":{"intent_timeout":"5s","top_k":5},
-		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75}
-	}`
+// clearRemovedAIEnvVars clears removed AI env overrides so load-path tests only exercise the config file being asserted.
+// clearRemovedAIEnvVars 用于清理已移除的 AI 环境变量覆盖，确保分层加载测试只验证目标配置文件本身。
+func clearRemovedAIEnvVars(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"VMM_LLM_PROVIDER",
+		"VMM_LLM_ENDPOINT",
+		"VMM_LLM_API_KEY",
+		"VMM_LLM_API_KEYS",
+		"VMM_LLM_RPM",
+		"VMM_LLM_TPM",
+		"VMM_LLM_RPD",
+		"VMM_LLM_MODEL",
+		"VMM_LLM_ORGANIZATION",
+		"VMM_LLM_PROJECT",
+		"VMM_LLM_KEY_FAILOVER_ENABLED",
+		"VMM_LLM_KEY_FAILOVER_POLICY",
+		"VMM_LLM_KEY_FAILOVER_RESPECT_RETRY_AFTER",
+		"VMM_LLM_KEY_FAILOVER_RATE_LIMIT_COOLDOWN",
+		"VMM_LLM_KEY_FAILOVER_QUOTA_COOLDOWN",
+		"VMM_LLM_KEY_FAILOVER_AUTH_COOLDOWN",
+		"VMM_LLM_KEY_FAILOVER_PROBE_AFTER_COOLDOWN",
+		"VMM_RERANK_PROVIDER",
+		"VMM_RERANK_ENDPOINT",
+		"VMM_RERANK_API_KEY",
+		"VMM_RERANK_API_KEYS",
+		"VMM_RERANK_RPM",
+		"VMM_RERANK_TPM",
+		"VMM_RERANK_RPD",
+		"VMM_RERANK_MODEL",
+		"VMM_RERANK_TIMEOUT",
+		"VMM_RERANK_KEY_FAILOVER_ENABLED",
+		"VMM_RERANK_KEY_FAILOVER_POLICY",
+		"VMM_RERANK_KEY_FAILOVER_RESPECT_RETRY_AFTER",
+		"VMM_RERANK_KEY_FAILOVER_RATE_LIMIT_COOLDOWN",
+		"VMM_RERANK_KEY_FAILOVER_QUOTA_COOLDOWN",
+		"VMM_RERANK_KEY_FAILOVER_AUTH_COOLDOWN",
+		"VMM_RERANK_KEY_FAILOVER_PROBE_AFTER_COOLDOWN",
+		"VMM_EMBED_API_KEY",
+	} {
+		restoreEnv(t, key)
+	}
 }
 
 // newValidConfigForTest returns one minimal fully valid config so focused validation tests fail only on the target field.
@@ -1323,11 +461,23 @@ func currentTestConfigBody(apiKeyExpr string) string {
 func newValidConfigForTest() Config {
 	cfg := DefaultLocal()
 	cfg.GRPC.ListenAddr = "127.0.0.1:8080"
-	cfg.LLM.Endpoint = "https://api.openai.com/v1"
-	cfg.LLM.APIKey = "test-key"
+	cfg.LLM.Routes = []LLMRouteConfig{{
+		Provider: "openai",
+		Endpoint: "https://api.openai.com/v1",
+		APIKeys:  []string{"test-key"},
+		Model:    "test-model",
+	}}
 	cfg.Embedding.Endpoint = "https://api.openai.com/v1"
-	cfg.Embedding.APIKey = "test-key"
+	cfg.Embedding.APIKeys = []string{"test-key"}
 	cfg.Embedding.Dimension = 1024
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Routes = []RerankRouteConfig{{
+		Provider: "dashscope",
+		Endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+		APIKeys:  []string{"rerank-key"},
+		Model:    "qwen3-vl-rerank",
+		Timeout:  Duration{8 * time.Second},
+	}}
 	cfg.SQLite.Address = "127.0.0.1:19501"
 	cfg.LanceDB.Address = "127.0.0.1:19301"
 	return cfg

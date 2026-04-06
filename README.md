@@ -643,24 +643,40 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 - `enabled`
   - 是否启用 DashScope rerank；关闭时检索链保持当前首轮召回 / 融合排序结果
-- `provider`
-  - 当前仅支持 `dashscope`
-- `endpoint`
-  - 默认使用阿里云 DashScope `text-rerank` 地址
-- `api_key`
-  - `rerank.enabled=true` 时必须显式配置；不会回退复用 `llm.api_key`
-- `api_keys`
-  - 推荐使用独立的 rerank key 池；运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
-- `nodes`
-  - 可显式声明固定模型 rerank 节点；每个节点可配置独立的 `api_key / api_keys + rpm / tpm / rpd`，该额度配置表示节点下每个 key 各自独享的额度
-- `model`
-  - 当前默认 `qwen3-vl-rerank`
 - `top_n`
   - 每个 query group 最多送多少条首轮向量命中进入 rerank
-- `timeout`
-  - 单次 rerank HTTP 调用预算；超时或失败时检索链会按 `rerank=false` 语义降级回首轮排序
-- `key_failover`
-  - 固定模型下的 API Key 容灾策略；所有 key 不可用时会记录 warning 并继续主检索链路
+- `routes`
+  - 当前只认 `rerank.routes[]`
+  - 每条 route 必须自包含 `provider + endpoint + model + api_keys/nodes + timeout`
+  - 如果不拆 `nodes`，可以直接在 route 上配置 `rpm / tpm / rpd`
+  - route 间按 `priority` 做有序容灾，route 内部继续执行 `nodes + key_failover`
+  - 当前内置 provider 仍只有 `dashscope`
+  - route 全部失败时，检索链会按 `rerank=false` 语义降级回首轮排序
+
+AI 容灾边界当前统一为：
+
+- `llm`
+  - 只支持 `llm.routes[]`
+  - 支持多 provider / 多 model / 多 route 的有序容灾
+  - `llm.routes[]` 示例现已包含 `rpm / tpm / rpd`
+  - route 之间按 `priority` 切换，route 内部再做 `nodes + key_failover`
+- `rerank`
+  - 只支持 `rerank.routes[]`
+  - 顶层只保留 `enabled / top_n / routes`
+  - `rerank.routes[]` 示例现已包含 `rpm / tpm / rpd`
+  - 所有 route 都失败时检索链退回首轮排序
+- `embedding`
+  - 不支持 `routes`
+  - 只支持固定 `provider + endpoint + model + dimension` 下的多 key 与 `nodes + key_failover`
+  - `embedding` 示例现已包含顶层 `rpm / tpm / rpd`
+  - `nodes` 只负责吞吐分档，不允许跨模型或跨 provider 混用向量空间
+
+当前已彻底移除：
+
+- `llm` 顶层单路由字段
+- `rerank` 顶层单路由字段
+- 所有位置的单值 `api_key`
+- 对应的旧版 `VMM_LLM_*` 与 route 顶层 `VMM_RERANK_*` 运行时覆盖
 
 `post_action` 下当前保留 5 个与异步单轮提炼窗口和恢复扫描相关的参数：
 

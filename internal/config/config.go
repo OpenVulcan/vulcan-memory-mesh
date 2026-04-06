@@ -158,31 +158,17 @@ type PostgresConfig struct {
 	MigrationBatchSize      int      `json:"migration_batch_size"`
 }
 
-// LLMConfig holds the provider and model settings used for intent extraction and other LLM tasks.
-// LLMConfig 用于保存意图提取等 LLM 任务使用的 provider 和模型配置。
+// LLMConfig holds the explicit multi-route LLM configuration used by intent extraction and other generation tasks.
+// LLMConfig 用于保存意图提取等生成任务使用的显式多路由 LLM 配置。
 type LLMConfig struct {
-	Provider     string                    `json:"provider"`
-	Endpoint     string                    `json:"endpoint,omitempty"`
-	APIKey       string                    `json:"api_key,omitempty"`
-	APIKeys      []string                  `json:"api_keys,omitempty"`
-	RPM          int                       `json:"rpm,omitempty"`
-	TPM          int                       `json:"tpm,omitempty"`
-	RPD          int                       `json:"rpd,omitempty"`
-	Nodes        []AIRoutingNodeConfig     `json:"nodes,omitempty"`
-	Model        string                    `json:"model,omitempty"`
-	Organization string                    `json:"organization,omitempty"`
-	Project      string                    `json:"project,omitempty"`
-	Params       map[string]any            `json:"params,omitempty"`
-	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
-	KeyFailover  KeyFailoverConfig         `json:"key_failover,omitempty"`
+	Routes []LLMRouteConfig `json:"routes,omitempty"`
 }
 
-// EmbeddingConfig holds the provider and model settings used when generating recall vectors.
-// EmbeddingConfig 用于保存生成召回向量时使用的 provider 和模型配置。
+// EmbeddingConfig holds the single-provider, single-model embedding configuration while still allowing multiple API keys and node-level throughput budgets.
+// EmbeddingConfig 用于保存单 provider、单模型的 embedding 配置，同时保留多 API Key 与节点级吞吐预算能力。
 type EmbeddingConfig struct {
 	Provider     string                    `json:"provider"`
 	Endpoint     string                    `json:"endpoint,omitempty"`
-	APIKey       string                    `json:"api_key,omitempty"`
 	APIKeys      []string                  `json:"api_keys,omitempty"`
 	RPM          int                       `json:"rpm,omitempty"`
 	TPM          int                       `json:"tpm,omitempty"`
@@ -197,22 +183,12 @@ type EmbeddingConfig struct {
 	KeyFailover  KeyFailoverConfig         `json:"key_failover,omitempty"`
 }
 
-// RerankConfig holds the optional second-stage rerank settings used to reorder vector recall hits.
-// RerankConfig 用于保存可选的第二阶段重排序配置，让系统在向量召回后重新排序候选。
+// RerankConfig holds the optional multi-route rerank configuration used to reorder vector recall hits.
+// RerankConfig 用于保存可选的多路由 rerank 配置，让系统在向量召回后重新排序候选。
 type RerankConfig struct {
-	Enabled     bool                  `json:"enabled"`
-	Provider    string                `json:"provider,omitempty"`
-	Endpoint    string                `json:"endpoint,omitempty"`
-	APIKey      string                `json:"api_key,omitempty"`
-	APIKeys     []string              `json:"api_keys,omitempty"`
-	RPM         int                   `json:"rpm,omitempty"`
-	TPM         int                   `json:"tpm,omitempty"`
-	RPD         int                   `json:"rpd,omitempty"`
-	Nodes       []AIRoutingNodeConfig `json:"nodes,omitempty"`
-	Model       string                `json:"model,omitempty"`
-	TopN        int                   `json:"top_n,omitempty"`
-	Timeout     Duration              `json:"timeout,omitempty"`
-	KeyFailover KeyFailoverConfig     `json:"key_failover,omitempty"`
+	Enabled bool                `json:"enabled"`
+	Routes  []RerankRouteConfig `json:"routes,omitempty"`
+	TopN    int                 `json:"top_n,omitempty"`
 }
 
 // KeyFailoverConfig keeps the in-memory API-key rotation policy for one fixed provider/endpoint/model tuple.
@@ -227,15 +203,51 @@ type KeyFailoverConfig struct {
 	ProbeAfterCooldown bool     `json:"probe_after_cooldown"`
 }
 
-// AIRoutingNodeConfig describes one fixed-model routing node that may own multiple API keys while assigning the same per-key RPM/TPM/RPD limits to each member.
-// AIRoutingNodeConfig 用于描述一个固定模型轮询节点：它可以拥有多个 API Key，并给每个成员分配同一组独立的 RPM/TPM/RPD 限额。
+// AIRoutingNodeConfig describes one fixed-model routing node that owns one API key pool and assigns the same per-key RPM/TPM/RPD limits to each member.
+// AIRoutingNodeConfig 用于描述一个固定模型轮询节点：它拥有一组 API Key 池，并给每个成员分配同一组独立的 RPM/TPM/RPD 限额。
 type AIRoutingNodeConfig struct {
 	Name    string   `json:"name,omitempty"`
-	APIKey  string   `json:"api_key,omitempty"`
 	APIKeys []string `json:"api_keys,omitempty"`
 	RPM     int      `json:"rpm,omitempty"`
 	TPM     int      `json:"tpm,omitempty"`
 	RPD     int      `json:"rpd,omitempty"`
+}
+
+// LLMRouteConfig describes one concrete LLM route that owns its provider, endpoint, model, key pool, and node budget policy.
+// LLMRouteConfig 用于描述一条具体的 LLM 路由：它自包含 provider、endpoint、model、Key 池与节点预算策略。
+type LLMRouteConfig struct {
+	Name         string                    `json:"name,omitempty"`
+	Priority     int                       `json:"priority,omitempty"`
+	Provider     string                    `json:"provider,omitempty"`
+	Endpoint     string                    `json:"endpoint,omitempty"`
+	APIKeys      []string                  `json:"api_keys,omitempty"`
+	RPM          int                       `json:"rpm,omitempty"`
+	TPM          int                       `json:"tpm,omitempty"`
+	RPD          int                       `json:"rpd,omitempty"`
+	Nodes        []AIRoutingNodeConfig     `json:"nodes,omitempty"`
+	Model        string                    `json:"model,omitempty"`
+	Organization string                    `json:"organization,omitempty"`
+	Project      string                    `json:"project,omitempty"`
+	Params       map[string]any            `json:"params,omitempty"`
+	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
+	KeyFailover  KeyFailoverConfig         `json:"key_failover,omitempty"`
+}
+
+// RerankRouteConfig describes one concrete rerank route that switches provider, endpoint, model, and key pool as one ordered failover step.
+// RerankRouteConfig 用于描述一条具体的 rerank 路由：它把 provider、endpoint、model 与 Key 池作为一个有序容灾单元进行切换。
+type RerankRouteConfig struct {
+	Name        string                `json:"name,omitempty"`
+	Priority    int                   `json:"priority,omitempty"`
+	Provider    string                `json:"provider,omitempty"`
+	Endpoint    string                `json:"endpoint,omitempty"`
+	APIKeys     []string              `json:"api_keys,omitempty"`
+	RPM         int                   `json:"rpm,omitempty"`
+	TPM         int                   `json:"tpm,omitempty"`
+	RPD         int                   `json:"rpd,omitempty"`
+	Nodes       []AIRoutingNodeConfig `json:"nodes,omitempty"`
+	Model       string                `json:"model,omitempty"`
+	Timeout     Duration              `json:"timeout,omitempty"`
+	KeyFailover KeyFailoverConfig     `json:"key_failover,omitempty"`
 }
 
 // VectorConfig selects the vector backend used by recall and long-term memory indexing.
@@ -336,9 +348,11 @@ func DefaultLocal() Config {
 			MigrationBatchSize:      500,
 		},
 		LLM: LLMConfig{
-			Provider:    "openai",
-			Model:       "gpt-4.1-mini",
-			KeyFailover: defaultKeyFailoverConfig(),
+			Routes: []LLMRouteConfig{{
+				Provider:    "openai",
+				Model:       "gpt-4.1-mini",
+				KeyFailover: defaultKeyFailoverConfig(),
+			}},
 		},
 		Embedding: EmbeddingConfig{
 			Provider:    "openai",
@@ -347,13 +361,15 @@ func DefaultLocal() Config {
 			KeyFailover: defaultKeyFailoverConfig(),
 		},
 		Rerank: RerankConfig{
-			Enabled:     false,
-			Provider:    "dashscope",
-			Endpoint:    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
-			Model:       "qwen3-vl-rerank",
-			TopN:        8,
-			Timeout:     Duration{8 * time.Second},
-			KeyFailover: defaultKeyFailoverConfig(),
+			Enabled: false,
+			TopN:    8,
+			Routes: []RerankRouteConfig{{
+				Provider:    "dashscope",
+				Endpoint:    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+				Model:       "qwen3-vl-rerank",
+				Timeout:     Duration{8 * time.Second},
+				KeyFailover: defaultKeyFailoverConfig(),
+			}},
 		},
 		Vector: VectorConfig{Provider: "lancedb"},
 		Relational: RelationalConfig{
@@ -434,6 +450,9 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 
 	// Apply environment overrides and then finalize normalization plus validation.
 	// 应用环境变量覆盖，然后完成归一化与校验。
+	if err := validateRemovedAIEnvOverrides(); err != nil {
+		return Config{}, err
+	}
 	applyEnvOverrides(&cfg)
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
@@ -442,16 +461,16 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	return cfg, nil
 }
 
-// aiKeyFieldPresence tracks whether one config layer explicitly mentions the legacy single-key field or the newer key-pool field.
-// aiKeyFieldPresence 用于记录某一层配置是否显式声明了旧的单值 key 字段或新的 key 池字段。
+// aiKeyFieldPresence tracks whether one config layer explicitly mentions api_keys or nodes so layered embedding overrides can clear stale lower-priority shapes before unmarshal.
+// aiKeyFieldPresence 用于记录某一层配置是否显式声明了 api_keys 或 nodes，让 embedding 分层覆盖可以在反序列化前清理低优先级残留形态。
 type aiKeyFieldPresence struct {
 	HasAPIKey  bool
 	HasAPIKeys bool
 	HasNodes   bool
 }
 
-// applyLayeredAIKeyOverrideReset clears stale lower-priority key fields before one higher-priority config layer is unmarshaled.
-// applyLayeredAIKeyOverrideReset 用于在反序列化更高优先级配置层前，清理来自低优先级层的残留 key 字段。
+// applyLayeredAIKeyOverrideReset validates removed AI config modes early and clears stale lower-priority embedding key shapes before one higher-priority config layer is unmarshaled.
+// applyLayeredAIKeyOverrideReset 用于在反序列化更高优先级配置层前，提前拒绝已移除的 AI 配置模式，并清理 embedding 的低优先级残留 key 形态。
 func applyLayeredAIKeyOverrideReset(cfg *Config, body []byte) error {
 	if cfg == nil || len(body) == 0 {
 		return nil
@@ -460,46 +479,30 @@ func applyLayeredAIKeyOverrideReset(cfg *Config, body []byte) error {
 	if err := json.Unmarshal(body, &root); err != nil {
 		return err
 	}
-	if err := resetAIKeyFieldPair(root["llm"], &cfg.LLM.APIKey, &cfg.LLM.APIKeys, &cfg.LLM.Nodes); err != nil {
-		return fmt.Errorf("parse llm key fields: %w", err)
+	if err := rejectRemovedAIConfigModes(root); err != nil {
+		return err
 	}
-	if err := resetAIKeyFieldPair(root["embedding"], &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes); err != nil {
+	if err := resetAIKeyFieldPair(root["embedding"], &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes); err != nil {
 		return fmt.Errorf("parse embedding key fields: %w", err)
-	}
-	if err := resetAIKeyFieldPair(root["rerank"], &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys, &cfg.Rerank.Nodes); err != nil {
-		return fmt.Errorf("parse rerank key fields: %w", err)
 	}
 	return nil
 }
 
-// resetAIKeyFieldPair keeps layered config precedence stable by clearing the opposite field only when the current layer chooses exactly one key shape.
-// resetAIKeyFieldPair 用于在当前配置层只选择一种 key 写法时清空另一种写法，从而保持分层配置覆盖优先级稳定。
-func resetAIKeyFieldPair(sectionBody []byte, single *string, many *[]string, nodes *[]AIRoutingNodeConfig) error {
+// resetAIKeyFieldPair keeps layered config precedence stable by clearing the opposite field only when the current layer chooses exactly one embedding key shape.
+// resetAIKeyFieldPair 用于在当前配置层只选择一种 embedding key 写法时清空另一种写法，从而保持分层配置覆盖优先级稳定。
+func resetAIKeyFieldPair(sectionBody []byte, many *[]string, nodes *[]AIRoutingNodeConfig) error {
 	presence, err := detectAIKeyFieldPresence(sectionBody)
 	if err != nil {
 		return err
 	}
 	switch {
-	case presence.HasNodes && !presence.HasAPIKey && !presence.HasAPIKeys:
-		if single != nil {
-			*single = ""
-		}
+	case presence.HasNodes && !presence.HasAPIKeys:
 		if many != nil {
 			*many = nil
 		}
-	case (presence.HasAPIKey || presence.HasAPIKeys) && !presence.HasNodes:
+	case presence.HasAPIKeys && !presence.HasNodes:
 		if nodes != nil {
 			*nodes = nil
-		}
-	}
-	switch {
-	case presence.HasAPIKey && !presence.HasAPIKeys:
-		if many != nil {
-			*many = nil
-		}
-	case presence.HasAPIKeys && !presence.HasAPIKey:
-		if single != nil {
-			*single = ""
 		}
 	}
 	return nil
@@ -523,6 +526,134 @@ func detectAIKeyFieldPresence(sectionBody []byte) (aiKeyFieldPresence, error) {
 		HasAPIKeys: hasAPIKeys,
 		HasNodes:   hasNodes,
 	}, nil
+}
+
+// rejectRemovedAIConfigModes blocks deprecated AI config shapes at load time so runtime code only needs to reason about the new route-only or multi-key-only contracts.
+// rejectRemovedAIConfigModes 用于在加载期阻断已废弃的 AI 配置形态，让运行时代码只需要处理新的 route-only 或 multi-key-only 契约。
+func rejectRemovedAIConfigModes(root map[string]json.RawMessage) error {
+	if err := rejectRemovedLLMConfigFields(root["llm"]); err != nil {
+		return err
+	}
+	if err := rejectRemovedEmbeddingConfigFields(root["embedding"]); err != nil {
+		return err
+	}
+	if err := rejectRemovedRerankConfigFields(root["rerank"]); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rejectRemovedLLMConfigFields rejects top-level legacy single-route LLM fields and the removed singular api_key shape inside routes or nodes.
+// rejectRemovedLLMConfigFields 用于拒绝顶层 legacy 单路由 LLM 字段，以及 routes 或 nodes 中已移除的单值 api_key 写法。
+func rejectRemovedLLMConfigFields(sectionBody []byte) error {
+	if len(sectionBody) == 0 {
+		return nil
+	}
+	fields, err := parseSectionFields(sectionBody)
+	if err != nil {
+		return err
+	}
+	for _, field := range []string{"provider", "endpoint", "api_key", "api_keys", "rpm", "tpm", "rpd", "nodes", "model", "organization", "project", "params", "model_params", "key_failover"} {
+		if _, ok := fields[field]; ok {
+			return fmt.Errorf("llm.%s has been removed; please move llm runtime settings into llm.routes[*]", field)
+		}
+	}
+	if err := rejectRemovedAPIKeyInRoutes("llm.routes", fields["routes"]); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rejectRemovedEmbeddingConfigFields rejects the removed singular embedding api_key shape at the top level or inside nodes.
+// rejectRemovedEmbeddingConfigFields 用于拒绝 embedding 顶层或节点内部已移除的单值 api_key 写法。
+func rejectRemovedEmbeddingConfigFields(sectionBody []byte) error {
+	if len(sectionBody) == 0 {
+		return nil
+	}
+	fields, err := parseSectionFields(sectionBody)
+	if err != nil {
+		return err
+	}
+	if _, ok := fields["api_key"]; ok {
+		return errors.New("embedding.api_key has been removed; please use embedding.api_keys")
+	}
+	if err := rejectRemovedAPIKeyInNodes("embedding.nodes", fields["nodes"]); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rejectRemovedRerankConfigFields rejects top-level legacy single-route rerank fields and the removed singular api_key shape inside routes or nodes.
+// rejectRemovedRerankConfigFields 用于拒绝顶层 legacy 单路由 rerank 字段，以及 routes 或 nodes 中已移除的单值 api_key 写法。
+func rejectRemovedRerankConfigFields(sectionBody []byte) error {
+	if len(sectionBody) == 0 {
+		return nil
+	}
+	fields, err := parseSectionFields(sectionBody)
+	if err != nil {
+		return err
+	}
+	for _, field := range []string{"provider", "endpoint", "api_key", "api_keys", "rpm", "tpm", "rpd", "nodes", "model", "timeout", "key_failover"} {
+		if _, ok := fields[field]; ok {
+			return fmt.Errorf("rerank.%s has been removed; please move rerank runtime settings into rerank.routes[*]", field)
+		}
+	}
+	if err := rejectRemovedAPIKeyInRoutes("rerank.routes", fields["routes"]); err != nil {
+		return err
+	}
+	return nil
+}
+
+// rejectRemovedAPIKeyInRoutes rejects the removed singular api_key field inside one route array and inside each nested node list.
+// rejectRemovedAPIKeyInRoutes 用于拒绝 route 数组内部以及其嵌套节点列表内部已移除的单值 api_key 字段。
+func rejectRemovedAPIKeyInRoutes(label string, routesBody []byte) error {
+	if len(routesBody) == 0 {
+		return nil
+	}
+	var routes []map[string]json.RawMessage
+	if err := json.Unmarshal(routesBody, &routes); err != nil {
+		return err
+	}
+	for idx, route := range routes {
+		if _, ok := route["api_key"]; ok {
+			return fmt.Errorf("%s[%d].api_key has been removed; please use %s[%d].api_keys", label, idx, label, idx)
+		}
+		if err := rejectRemovedAPIKeyInNodes(fmt.Sprintf("%s[%d].nodes", label, idx), route["nodes"]); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// rejectRemovedAPIKeyInNodes rejects the removed singular api_key field inside one node array.
+// rejectRemovedAPIKeyInNodes 用于拒绝节点数组内部已移除的单值 api_key 字段。
+func rejectRemovedAPIKeyInNodes(label string, nodesBody []byte) error {
+	if len(nodesBody) == 0 {
+		return nil
+	}
+	var nodes []map[string]json.RawMessage
+	if err := json.Unmarshal(nodesBody, &nodes); err != nil {
+		return err
+	}
+	for idx, node := range nodes {
+		if _, ok := node["api_key"]; ok {
+			return fmt.Errorf("%s[%d].api_key has been removed; please use %s[%d].api_keys", label, idx, label, idx)
+		}
+	}
+	return nil
+}
+
+// parseSectionFields decodes one nested config object into a raw field map so layered-loading helpers can distinguish “field absent” from “field explicitly provided as zero value”.
+// parseSectionFields 用于把单个嵌套配置对象解码成原始字段表，让分层加载辅助逻辑能够区分“字段缺失”和“字段被显式写成零值”。
+func parseSectionFields(sectionBody []byte) (map[string]json.RawMessage, error) {
+	if len(sectionBody) == 0 {
+		return nil, nil
+	}
+	fields := make(map[string]json.RawMessage)
+	if err := json.Unmarshal(sectionBody, &fields); err != nil {
+		return nil, err
+	}
+	return fields, nil
 }
 
 // normalizeConfigPaths executes the normalizeConfigPaths logic.
@@ -631,22 +762,53 @@ func defaultKeyFailoverConfig() KeyFailoverConfig {
 	}
 }
 
-// RoutingNodes returns the normalized LLM routing nodes, synthesizing one legacy single-node view when only api_key/api_keys are configured.
-// RoutingNodes 用于返回归一化后的 LLM 轮询节点；当只配置 api_key/api_keys 时，会合成一个兼容旧配置的默认节点视图。
-func (c LLMConfig) RoutingNodes() []AIRoutingNodeConfig {
-	return normalizeAIRoutingNodes(c.APIKey, c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
-}
-
-// RoutingNodes returns the normalized embedding routing nodes, synthesizing one legacy single-node view when only api_key/api_keys are configured.
-// RoutingNodes 用于返回归一化后的 embedding 轮询节点；当只配置 api_key/api_keys 时，会合成一个兼容旧配置的默认节点视图。
+// RoutingNodes returns the normalized embedding routing nodes, synthesizing one default node from top-level api_keys when explicit nodes are absent.
+// RoutingNodes 用于返回归一化后的 embedding 轮询节点；当未显式声明 nodes 时，会把顶层 api_keys 折叠成一个默认节点。
 func (c EmbeddingConfig) RoutingNodes() []AIRoutingNodeConfig {
-	return normalizeAIRoutingNodes(c.APIKey, c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
+	return normalizeAIRoutingNodes(c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
 }
 
-// RoutingNodes returns the normalized rerank routing nodes, synthesizing one legacy single-node view when only api_key/api_keys are configured.
-// RoutingNodes 用于返回归一化后的 rerank 轮询节点；当只配置 api_key/api_keys 时，会合成一个兼容旧配置的默认节点视图。
-func (c RerankConfig) RoutingNodes() []AIRoutingNodeConfig {
-	return normalizeAIRoutingNodes(c.APIKey, c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
+// ProviderRoutes returns the normalized explicit LLM route list.
+// ProviderRoutes 用于返回归一化后的显式 LLM 路由列表。
+func (c LLMConfig) ProviderRoutes() []LLMRouteConfig {
+	return normalizeLLMRouteConfigs(c.Routes)
+}
+
+// PrimaryRoute returns the route that should represent the default runtime model identity for LLM-side prompt assembly and diagnostics.
+// PrimaryRoute 用于返回应该代表默认运行时模型身份的 LLM 路由，供提示词装配与诊断逻辑使用。
+func (c LLMConfig) PrimaryRoute() (LLMRouteConfig, bool) {
+	return primaryLLMRoute(c.ProviderRoutes())
+}
+
+// PrimaryModel returns the primary LLM model chosen from the highest-priority declared route.
+// PrimaryModel 用于返回从最高优先级声明路由中选出的主 LLM 模型名称。
+func (c LLMConfig) PrimaryModel() string {
+	route, ok := c.PrimaryRoute()
+	if !ok {
+		return ""
+	}
+	return route.Model
+}
+
+// ProviderRoutes returns the normalized explicit rerank route list.
+// ProviderRoutes 用于返回归一化后的显式 rerank 路由列表。
+func (c RerankConfig) ProviderRoutes() []RerankRouteConfig {
+	return normalizeRerankRouteConfigs(c.Routes)
+}
+
+// primaryLLMRoute returns the highest-priority LLM route while preserving declaration order for equal priorities.
+// primaryLLMRoute 用于返回最高优先级的 LLM 路由；若优先级相同，则保持声明顺序。
+func primaryLLMRoute(routes []LLMRouteConfig) (LLMRouteConfig, bool) {
+	if len(routes) == 0 {
+		return LLMRouteConfig{}, false
+	}
+	best := routes[0]
+	for _, route := range routes[1:] {
+		if route.Priority > best.Priority {
+			best = route
+		}
+	}
+	return best, true
 }
 
 // normalizeKeyFailoverPolicyValue canonicalizes the in-memory API-key rotation policy so config defaults, env overrides, and runtime wiring all compare one stable token.
@@ -682,14 +844,13 @@ func trimStringSlice(values []string) []string {
 	return trimmed
 }
 
-// normalizeAPIKeys merges the legacy single api_key field with the newer api_keys list, trims separators, and removes duplicates while preserving caller order.
-// normalizeAPIKeys 用于合并旧的单值 api_key 与新的 api_keys 列表，裁剪分隔符并在保持顺序的前提下去重。
-func normalizeAPIKeys(single string, many []string) []string {
-	merged := make([]string, 0, len(many)+1)
-	for _, value := range many {
+// normalizeAPIKeys expands raw api_keys declarations, trims separators, and removes duplicates while preserving caller order.
+// normalizeAPIKeys 用于展开原始 api_keys 声明，裁剪分隔符并在保持顺序的前提下去重。
+func normalizeAPIKeys(values []string) []string {
+	merged := make([]string, 0, len(values))
+	for _, value := range values {
 		merged = append(merged, splitConfigAPIKeys(value)...)
 	}
-	merged = append(merged, splitConfigAPIKeys(single)...)
 	merged = trimStringSlice(merged)
 	if len(merged) == 0 {
 		return nil
@@ -706,16 +867,15 @@ func normalizeAPIKeys(single string, many []string) []string {
 	return normalized
 }
 
-// normalizeAIRoutingNodes canonicalizes routing-node declarations while preserving the legacy top-level api_key/api_keys contract as one synthesized default node.
-// normalizeAIRoutingNodes 用于规范化轮询节点声明，并在仍使用旧版顶层 api_key/api_keys 时合成一个默认节点以保持兼容。
-func normalizeAIRoutingNodes(single string, many []string, rpm, tpm, rpd int, nodes []AIRoutingNodeConfig) []AIRoutingNodeConfig {
+// normalizeAIRoutingNodes canonicalizes routing-node declarations and can synthesize one default node from top-level api_keys plus shared budgets.
+// normalizeAIRoutingNodes 用于规范化轮询节点声明，并可根据顶层 api_keys 与共享预算合成一个默认节点。
+func normalizeAIRoutingNodes(apiKeys []string, rpm, tpm, rpd int, nodes []AIRoutingNodeConfig) []AIRoutingNodeConfig {
 	if len(nodes) == 0 {
-		apiKeys := normalizeAPIKeys(single, many)
+		apiKeys = normalizeAPIKeys(apiKeys)
 		if len(apiKeys) == 0 {
 			return nil
 		}
 		return []AIRoutingNodeConfig{{
-			APIKey:  apiKeys[0],
 			APIKeys: apiKeys,
 			RPM:     rpm,
 			TPM:     tpm,
@@ -726,13 +886,10 @@ func normalizeAIRoutingNodes(single string, many []string, rpm, tpm, rpd int, no
 	for _, node := range nodes {
 		current := AIRoutingNodeConfig{
 			Name:    strings.TrimSpace(node.Name),
-			APIKeys: normalizeAPIKeys(node.APIKey, node.APIKeys),
+			APIKeys: normalizeAPIKeys(node.APIKeys),
 			RPM:     node.RPM,
 			TPM:     node.TPM,
 			RPD:     node.RPD,
-		}
-		if len(current.APIKeys) > 0 {
-			current.APIKey = current.APIKeys[0]
 		}
 		normalized = append(normalized, current)
 	}
@@ -748,11 +905,124 @@ func normalizeAIRoutingNodeFields(nodes []AIRoutingNodeConfig) []AIRoutingNodeCo
 	normalized := make([]AIRoutingNodeConfig, 0, len(nodes))
 	for _, node := range nodes {
 		node.Name = strings.TrimSpace(node.Name)
-		node.APIKey = strings.TrimSpace(node.APIKey)
 		node.APIKeys = trimStringSlice(node.APIKeys)
 		normalized = append(normalized, node)
 	}
 	return normalized
+}
+
+// normalizeLLMRouteConfig trims one LLM route, normalizes its API key pool, folds legacy key pools into routing nodes, and fills safe key-failover defaults for the route itself.
+// normalizeLLMRouteConfig 用于裁剪单条 LLM 路由，规范化其 API Key 池，把旧版 key 池折叠成轮询节点，并为该路由补齐安全的 key-failover 默认值。
+func normalizeLLMRouteConfig(route LLMRouteConfig) LLMRouteConfig {
+	route.Name = strings.TrimSpace(route.Name)
+	route.Provider = strings.TrimSpace(route.Provider)
+	route.Endpoint = strings.TrimSpace(route.Endpoint)
+	route.APIKeys = trimStringSlice(route.APIKeys)
+	route.Nodes = normalizeAIRoutingNodeFields(route.Nodes)
+	route.Model = strings.TrimSpace(route.Model)
+	route.Organization = strings.TrimSpace(route.Organization)
+	route.Project = strings.TrimSpace(route.Project)
+	route.KeyFailover.Policy = strings.TrimSpace(route.KeyFailover.Policy)
+	route.APIKeys = normalizeAPIKeys(route.APIKeys)
+	route.Nodes = normalizeAIRoutingNodes(route.APIKeys, route.RPM, route.TPM, route.RPD, route.Nodes)
+	normalizeKeyFailoverConfig(&route.KeyFailover)
+	return route
+}
+
+// normalizeRerankRouteConfig trims one rerank route, normalizes its API key pool, folds legacy key pools into routing nodes, and fills safe key-failover defaults for the route itself.
+// normalizeRerankRouteConfig 用于裁剪单条 rerank 路由，规范化其 API Key 池，把旧版 key 池折叠成轮询节点，并为该路由补齐安全的 key-failover 默认值。
+func normalizeRerankRouteConfig(route RerankRouteConfig) RerankRouteConfig {
+	route.Name = strings.TrimSpace(route.Name)
+	route.Provider = strings.TrimSpace(route.Provider)
+	if route.Provider == "" {
+		route.Provider = "dashscope"
+	}
+	route.Endpoint = strings.TrimSpace(route.Endpoint)
+	if route.Endpoint == "" {
+		route.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+	}
+	route.APIKeys = trimStringSlice(route.APIKeys)
+	route.Nodes = normalizeAIRoutingNodeFields(route.Nodes)
+	route.Model = strings.TrimSpace(route.Model)
+	if route.Model == "" {
+		route.Model = "qwen3-vl-rerank"
+	}
+	if route.Timeout.Duration <= 0 {
+		route.Timeout = Duration{8 * time.Second}
+	}
+	route.KeyFailover.Policy = strings.TrimSpace(route.KeyFailover.Policy)
+	route.APIKeys = normalizeAPIKeys(route.APIKeys)
+	route.Nodes = normalizeAIRoutingNodes(route.APIKeys, route.RPM, route.TPM, route.RPD, route.Nodes)
+	normalizeKeyFailoverConfig(&route.KeyFailover)
+	return route
+}
+
+// normalizeLLMRouteConfigs normalizes one explicit LLM route slice in declaration order so config loading and runtime wiring share the same route view.
+// normalizeLLMRouteConfigs 用于按声明顺序规范化显式 LLM 路由切片，让配置加载与运行时装配共享同一份路由视图。
+func normalizeLLMRouteConfigs(routes []LLMRouteConfig) []LLMRouteConfig {
+	if len(routes) == 0 {
+		return nil
+	}
+	normalized := make([]LLMRouteConfig, 0, len(routes))
+	for _, route := range routes {
+		normalized = append(normalized, normalizeLLMRouteConfig(route))
+	}
+	return normalized
+}
+
+// normalizeRerankRouteConfigs normalizes one explicit rerank route slice in declaration order so config loading and runtime wiring share the same route view.
+// normalizeRerankRouteConfigs 用于按声明顺序规范化显式 rerank 路由切片，让配置加载与运行时装配共享同一份路由视图。
+func normalizeRerankRouteConfigs(routes []RerankRouteConfig) []RerankRouteConfig {
+	if len(routes) == 0 {
+		return nil
+	}
+	normalized := make([]RerankRouteConfig, 0, len(routes))
+	for _, route := range routes {
+		normalized = append(normalized, normalizeRerankRouteConfig(route))
+	}
+	return normalized
+}
+
+// trimLLMRouteFields trims only runtime-facing string fields inside one explicit LLM route slice, keeping the rest of Normalize responsible for full canonicalization.
+// trimLLMRouteFields 用于只裁剪显式 LLM 路由切片中的运行时字符串字段，把完整规范化职责继续留给后续 Normalize 阶段。
+func trimLLMRouteFields(routes []LLMRouteConfig) []LLMRouteConfig {
+	if len(routes) == 0 {
+		return nil
+	}
+	trimmed := make([]LLMRouteConfig, 0, len(routes))
+	for _, route := range routes {
+		route.Name = strings.TrimSpace(route.Name)
+		route.Provider = strings.TrimSpace(route.Provider)
+		route.Endpoint = strings.TrimSpace(route.Endpoint)
+		route.APIKeys = trimStringSlice(route.APIKeys)
+		route.Nodes = normalizeAIRoutingNodeFields(route.Nodes)
+		route.Model = strings.TrimSpace(route.Model)
+		route.Organization = strings.TrimSpace(route.Organization)
+		route.Project = strings.TrimSpace(route.Project)
+		route.KeyFailover.Policy = strings.TrimSpace(route.KeyFailover.Policy)
+		trimmed = append(trimmed, route)
+	}
+	return trimmed
+}
+
+// trimRerankRouteFields trims only runtime-facing string fields inside one explicit rerank route slice, keeping the rest of Normalize responsible for full canonicalization.
+// trimRerankRouteFields 用于只裁剪显式 rerank 路由切片中的运行时字符串字段，把完整规范化职责继续留给后续 Normalize 阶段。
+func trimRerankRouteFields(routes []RerankRouteConfig) []RerankRouteConfig {
+	if len(routes) == 0 {
+		return nil
+	}
+	trimmed := make([]RerankRouteConfig, 0, len(routes))
+	for _, route := range routes {
+		route.Name = strings.TrimSpace(route.Name)
+		route.Provider = strings.TrimSpace(route.Provider)
+		route.Endpoint = strings.TrimSpace(route.Endpoint)
+		route.APIKeys = trimStringSlice(route.APIKeys)
+		route.Nodes = normalizeAIRoutingNodeFields(route.Nodes)
+		route.Model = strings.TrimSpace(route.Model)
+		route.KeyFailover.Policy = strings.TrimSpace(route.KeyFailover.Policy)
+		trimmed = append(trimmed, route)
+	}
+	return trimmed
 }
 
 // validateAIRoutingNodes verifies that each routing node exposes at least one key and only non-negative budget limits.
@@ -761,7 +1031,7 @@ func validateAIRoutingNodes(serviceName string, nodes []AIRoutingNodeConfig) err
 	for idx, node := range nodes {
 		label := fmt.Sprintf("%s.nodes[%d]", serviceName, idx)
 		if len(node.APIKeys) == 0 {
-			return fmt.Errorf("%s.api_key or %s.api_keys is required", label, label)
+			return fmt.Errorf("%s.api_keys is required", label)
 		}
 		if node.RPM < 0 {
 			return fmt.Errorf("%s.rpm must be >= 0", label)
@@ -771,6 +1041,68 @@ func validateAIRoutingNodes(serviceName string, nodes []AIRoutingNodeConfig) err
 		}
 		if node.RPD < 0 {
 			return fmt.Errorf("%s.rpd must be >= 0", label)
+		}
+	}
+	return nil
+}
+
+// validateLLMRouteConfigs verifies each explicit LLM route remains self-contained so multi-route failover never falls back to partially inherited runtime wiring.
+// validateLLMRouteConfigs 用于校验每条显式 LLM 路由都保持自包含，避免多路由容灾退化成依赖部分隐式继承的运行时装配。
+func validateLLMRouteConfigs(routes []LLMRouteConfig) error {
+	if len(routes) == 0 {
+		return errors.New("llm.routes must contain at least one route when declared")
+	}
+	for idx, route := range routes {
+		label := fmt.Sprintf("llm.routes[%d]", idx)
+		if strings.TrimSpace(route.Provider) == "" {
+			return fmt.Errorf("%s.provider is required", label)
+		}
+		if !isOpenAIProvider(route.Provider) {
+			return fmt.Errorf("%s.provider must use one openai-compatible provider", label)
+		}
+		if strings.TrimSpace(route.Endpoint) == "" {
+			return fmt.Errorf("%s.endpoint is required", label)
+		}
+		if strings.TrimSpace(route.Model) == "" {
+			return fmt.Errorf("%s.model is required", label)
+		}
+		if len(route.Nodes) == 0 {
+			return fmt.Errorf("%s.api_keys or %s.nodes is required", label, label)
+		}
+		if err := validateAIRoutingNodes(label, route.Nodes); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateRerankRouteConfigs verifies each explicit rerank route stays self-contained so route failover can swap providers or models without guessing missing runtime fields.
+// validateRerankRouteConfigs 用于校验每条显式 rerank 路由都保持自包含，确保路由容灾在切 provider 或 model 时不必猜测缺失的运行时字段。
+func validateRerankRouteConfigs(routes []RerankRouteConfig) error {
+	if len(routes) == 0 {
+		return errors.New("rerank.routes must contain at least one route when declared")
+	}
+	for idx, route := range routes {
+		label := fmt.Sprintf("rerank.routes[%d]", idx)
+		switch strings.ToLower(strings.TrimSpace(route.Provider)) {
+		case "dashscope":
+		default:
+			return fmt.Errorf("%s.provider must be dashscope", label)
+		}
+		if strings.TrimSpace(route.Endpoint) == "" {
+			return fmt.Errorf("%s.endpoint is required", label)
+		}
+		if strings.TrimSpace(route.Model) == "" {
+			return fmt.Errorf("%s.model is required", label)
+		}
+		if len(route.Nodes) == 0 {
+			return fmt.Errorf("%s.api_keys or %s.nodes is required", label, label)
+		}
+		if err := validateAIRoutingNodes(label, route.Nodes); err != nil {
+			return err
+		}
+		if route.Timeout.Duration <= 0 {
+			return fmt.Errorf("%s.timeout must be > 0", label)
 		}
 	}
 	return nil
@@ -1045,42 +1377,17 @@ func (c *Config) Normalize() {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(0.75)
 		}
 	}
-	c.LLM.APIKeys = normalizeAPIKeys(c.LLM.APIKey, c.LLM.APIKeys)
-	if len(c.LLM.APIKeys) > 0 {
-		c.LLM.APIKey = c.LLM.APIKeys[0]
-	}
-	c.LLM.Nodes = normalizeAIRoutingNodes(c.LLM.APIKey, c.LLM.APIKeys, c.LLM.RPM, c.LLM.TPM, c.LLM.RPD, c.LLM.Nodes)
-	normalizeKeyFailoverConfig(&c.LLM.KeyFailover)
+	c.LLM.Routes = normalizeLLMRouteConfigs(c.LLM.Routes)
 	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
 		c.Embedding.Dimension = 1024
 	}
-	c.Embedding.APIKeys = normalizeAPIKeys(c.Embedding.APIKey, c.Embedding.APIKeys)
-	if len(c.Embedding.APIKeys) > 0 {
-		c.Embedding.APIKey = c.Embedding.APIKeys[0]
-	}
-	c.Embedding.Nodes = normalizeAIRoutingNodes(c.Embedding.APIKey, c.Embedding.APIKeys, c.Embedding.RPM, c.Embedding.TPM, c.Embedding.RPD, c.Embedding.Nodes)
+	c.Embedding.APIKeys = normalizeAPIKeys(c.Embedding.APIKeys)
+	c.Embedding.Nodes = normalizeAIRoutingNodes(c.Embedding.APIKeys, c.Embedding.RPM, c.Embedding.TPM, c.Embedding.RPD, c.Embedding.Nodes)
 	normalizeKeyFailoverConfig(&c.Embedding.KeyFailover)
-	if strings.TrimSpace(c.Rerank.Provider) == "" {
-		c.Rerank.Provider = "dashscope"
-	}
-	if strings.TrimSpace(c.Rerank.Endpoint) == "" {
-		c.Rerank.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
-	}
-	if strings.TrimSpace(c.Rerank.Model) == "" {
-		c.Rerank.Model = "qwen3-vl-rerank"
-	}
 	if c.Rerank.TopN <= 0 {
 		c.Rerank.TopN = 8
 	}
-	if c.Rerank.Timeout.Duration <= 0 {
-		c.Rerank.Timeout = Duration{8 * time.Second}
-	}
-	c.Rerank.APIKeys = normalizeAPIKeys(c.Rerank.APIKey, c.Rerank.APIKeys)
-	if len(c.Rerank.APIKeys) > 0 {
-		c.Rerank.APIKey = c.Rerank.APIKeys[0]
-	}
-	c.Rerank.Nodes = normalizeAIRoutingNodes(c.Rerank.APIKey, c.Rerank.APIKeys, c.Rerank.RPM, c.Rerank.TPM, c.Rerank.RPD, c.Rerank.Nodes)
-	normalizeKeyFailoverConfig(&c.Rerank.KeyFailover)
+	c.Rerank.Routes = normalizeRerankRouteConfigs(c.Rerank.Routes)
 	if strings.TrimSpace(c.Logging.Level) == "" {
 		c.Logging.Level = "info"
 	}
@@ -1183,31 +1490,16 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Postgres.BM25IndexName = strings.TrimSpace(c.Postgres.BM25IndexName)
 	c.PreCheck.SearchScope = strings.TrimSpace(c.PreCheck.SearchScope)
 	c.MemoryReplaceScope = strings.TrimSpace(c.MemoryReplaceScope)
-	c.LLM.Provider = strings.TrimSpace(c.LLM.Provider)
-	c.LLM.Endpoint = strings.TrimSpace(c.LLM.Endpoint)
-	c.LLM.APIKey = strings.TrimSpace(c.LLM.APIKey)
-	c.LLM.APIKeys = trimStringSlice(c.LLM.APIKeys)
-	c.LLM.Nodes = normalizeAIRoutingNodeFields(c.LLM.Nodes)
-	c.LLM.Model = strings.TrimSpace(c.LLM.Model)
-	c.LLM.Organization = strings.TrimSpace(c.LLM.Organization)
-	c.LLM.Project = strings.TrimSpace(c.LLM.Project)
-	c.LLM.KeyFailover.Policy = strings.TrimSpace(c.LLM.KeyFailover.Policy)
+	c.LLM.Routes = trimLLMRouteFields(c.LLM.Routes)
 	c.Embedding.Provider = strings.TrimSpace(c.Embedding.Provider)
 	c.Embedding.Endpoint = strings.TrimSpace(c.Embedding.Endpoint)
-	c.Embedding.APIKey = strings.TrimSpace(c.Embedding.APIKey)
 	c.Embedding.APIKeys = trimStringSlice(c.Embedding.APIKeys)
 	c.Embedding.Nodes = normalizeAIRoutingNodeFields(c.Embedding.Nodes)
 	c.Embedding.Model = strings.TrimSpace(c.Embedding.Model)
 	c.Embedding.Organization = strings.TrimSpace(c.Embedding.Organization)
 	c.Embedding.Project = strings.TrimSpace(c.Embedding.Project)
 	c.Embedding.KeyFailover.Policy = strings.TrimSpace(c.Embedding.KeyFailover.Policy)
-	c.Rerank.Provider = strings.TrimSpace(c.Rerank.Provider)
-	c.Rerank.Endpoint = strings.TrimSpace(c.Rerank.Endpoint)
-	c.Rerank.APIKey = strings.TrimSpace(c.Rerank.APIKey)
-	c.Rerank.APIKeys = trimStringSlice(c.Rerank.APIKeys)
-	c.Rerank.Nodes = normalizeAIRoutingNodeFields(c.Rerank.Nodes)
-	c.Rerank.Model = strings.TrimSpace(c.Rerank.Model)
-	c.Rerank.KeyFailover.Policy = strings.TrimSpace(c.Rerank.KeyFailover.Policy)
+	c.Rerank.Routes = trimRerankRouteFields(c.Rerank.Routes)
 	c.Vector.Provider = strings.TrimSpace(c.Vector.Provider)
 	c.Relational.Provider = strings.TrimSpace(c.Relational.Provider)
 	c.PostAction.InputMode = strings.TrimSpace(c.PostAction.InputMode)
@@ -1300,11 +1592,8 @@ func (c Config) Validate() error {
 	if c.Noise.SemanticThreshold < 0 || c.Noise.SemanticThreshold > 1 {
 		return errors.New("noise.semantic_threshold must be in [0,1]")
 	}
-	if strings.TrimSpace(c.LLM.Provider) == "" || strings.TrimSpace(c.Embedding.Provider) == "" {
-		return errors.New("provider fields are required")
-	}
-	if !isOpenAIProvider(c.LLM.Provider) {
-		return errors.New("llm.provider must use one openai-compatible provider")
+	if strings.TrimSpace(c.Embedding.Provider) == "" {
+		return errors.New("embedding.provider is required")
 	}
 	if !isOpenAIProvider(c.Embedding.Provider) {
 		return errors.New("embedding.provider must use one openai-compatible provider")
@@ -1377,25 +1666,18 @@ func (c Config) Validate() error {
 			return errors.New("postgres.migration_batch_size must be > 0 when storage.mode=combined")
 		}
 	}
-	if strings.TrimSpace(c.LLM.Endpoint) == "" {
-		return errors.New("llm.endpoint is required")
+	if len(c.LLM.Routes) == 0 {
+		return errors.New("llm.routes must contain at least one route")
 	}
-	llmNodes := c.LLM.RoutingNodes()
-	if len(llmNodes) == 0 {
-		return errors.New("llm.api_key or llm.api_keys is required")
-	}
-	if err := validateAIRoutingNodes("llm", llmNodes); err != nil {
+	if err := validateLLMRouteConfigs(c.LLM.Routes); err != nil {
 		return err
-	}
-	if strings.TrimSpace(c.LLM.Model) == "" {
-		return errors.New("llm.model is required")
 	}
 	if strings.TrimSpace(c.Embedding.Endpoint) == "" {
 		return errors.New("embedding.endpoint is required")
 	}
 	embeddingNodes := c.Embedding.RoutingNodes()
 	if len(embeddingNodes) == 0 {
-		return errors.New("embedding.api_key or embedding.api_keys is required")
+		return errors.New("embedding.api_keys is required")
 	}
 	if err := validateAIRoutingNodes("embedding", embeddingNodes); err != nil {
 		return err
@@ -1407,29 +1689,14 @@ func (c Config) Validate() error {
 		return errors.New("embedding.dimension must be > 0")
 	}
 	if c.Rerank.Enabled {
-		switch strings.ToLower(strings.TrimSpace(c.Rerank.Provider)) {
-		case "dashscope":
-		default:
-			return errors.New("rerank.provider must be dashscope when rerank is enabled")
+		if len(c.Rerank.Routes) == 0 {
+			return errors.New("rerank.routes must contain at least one route when rerank is enabled")
 		}
-		if strings.TrimSpace(c.Rerank.Endpoint) == "" {
-			return errors.New("rerank.endpoint is required when rerank is enabled")
-		}
-		if strings.TrimSpace(c.Rerank.Model) == "" {
-			return errors.New("rerank.model is required when rerank is enabled")
-		}
-		rerankNodes := c.Rerank.RoutingNodes()
-		if len(rerankNodes) == 0 {
-			return errors.New("rerank.api_key or rerank.api_keys is required when rerank is enabled")
-		}
-		if err := validateAIRoutingNodes("rerank", rerankNodes); err != nil {
+		if err := validateRerankRouteConfigs(c.Rerank.Routes); err != nil {
 			return err
 		}
 		if c.Rerank.TopN <= 0 {
 			return errors.New("rerank.top_n must be > 0 when rerank is enabled")
-		}
-		if c.Rerank.Timeout.Duration <= 0 {
-			return errors.New("rerank.timeout must be > 0 when rerank is enabled")
 		}
 	}
 	switch c.PostAction.InputMode {
@@ -1476,8 +1743,54 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// applyEnvOverrides applies the target settings.
-// applyEnvOverrides 用于应用目标设置。
+// validateRemovedAIEnvOverrides rejects deprecated AI environment variables so runtime startup no longer silently mixes removed single-route semantics into the new config contract.
+// validateRemovedAIEnvOverrides 用于拒绝已废弃的 AI 环境变量，避免运行时把已移除的单路由语义静默混入新的配置契约。
+func validateRemovedAIEnvOverrides() error {
+	for _, key := range []string{
+		"VMM_LLM_PROVIDER",
+		"VMM_LLM_ENDPOINT",
+		"VMM_LLM_API_KEY",
+		"VMM_LLM_API_KEYS",
+		"VMM_LLM_RPM",
+		"VMM_LLM_TPM",
+		"VMM_LLM_RPD",
+		"VMM_LLM_MODEL",
+		"VMM_LLM_ORGANIZATION",
+		"VMM_LLM_PROJECT",
+		"VMM_LLM_KEY_FAILOVER_ENABLED",
+		"VMM_LLM_KEY_FAILOVER_POLICY",
+		"VMM_LLM_KEY_FAILOVER_RESPECT_RETRY_AFTER",
+		"VMM_LLM_KEY_FAILOVER_RATE_LIMIT_COOLDOWN",
+		"VMM_LLM_KEY_FAILOVER_QUOTA_COOLDOWN",
+		"VMM_LLM_KEY_FAILOVER_AUTH_COOLDOWN",
+		"VMM_LLM_KEY_FAILOVER_PROBE_AFTER_COOLDOWN",
+		"VMM_RERANK_PROVIDER",
+		"VMM_RERANK_ENDPOINT",
+		"VMM_RERANK_API_KEY",
+		"VMM_RERANK_API_KEYS",
+		"VMM_RERANK_RPM",
+		"VMM_RERANK_TPM",
+		"VMM_RERANK_RPD",
+		"VMM_RERANK_MODEL",
+		"VMM_RERANK_TIMEOUT",
+		"VMM_RERANK_KEY_FAILOVER_ENABLED",
+		"VMM_RERANK_KEY_FAILOVER_POLICY",
+		"VMM_RERANK_KEY_FAILOVER_RESPECT_RETRY_AFTER",
+		"VMM_RERANK_KEY_FAILOVER_RATE_LIMIT_COOLDOWN",
+		"VMM_RERANK_KEY_FAILOVER_QUOTA_COOLDOWN",
+		"VMM_RERANK_KEY_FAILOVER_AUTH_COOLDOWN",
+		"VMM_RERANK_KEY_FAILOVER_PROBE_AFTER_COOLDOWN",
+		"VMM_EMBED_API_KEY",
+	} {
+		if strings.TrimSpace(os.Getenv(key)) != "" {
+			return fmt.Errorf("%s has been removed; please migrate AI runtime settings into config files", key)
+		}
+	}
+	return nil
+}
+
+// applyEnvOverrides applies the supported target settings.
+// applyEnvOverrides 用于应用仍然受支持的目标设置。
 func applyEnvOverrides(cfg *Config) {
 	// Reapply explicit process-level overrides after file-based expansion.
 	// 在文件占位符展开之后，再次应用进程级显式覆盖。
@@ -1486,23 +1799,9 @@ func applyEnvOverrides(cfg *Config) {
 			*target = v
 		}
 	}
-	setSingleKey := func(k string, target *string, pool *[]string, nodes *[]AIRoutingNodeConfig) {
-		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			*target = v
-			if pool != nil {
-				*pool = nil
-			}
-			if nodes != nil {
-				*nodes = nil
-			}
-		}
-	}
-	setStringSlice := func(k string, target *[]string, legacy *string, nodes *[]AIRoutingNodeConfig) {
+	setStringSlice := func(k string, target *[]string, nodes *[]AIRoutingNodeConfig) {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			*target = splitConfigAPIKeys(v)
-			if legacy != nil {
-				*legacy = ""
-			}
 			if nodes != nil {
 				*nodes = nil
 			}
@@ -1543,7 +1842,6 @@ func applyEnvOverrides(cfg *Config) {
 			}
 		}
 	}
-
 	setString("VMM_GRPC_LISTEN_ADDR", &cfg.GRPC.ListenAddr)
 	setInt("VMM_GRPC_MAX_RECEIVE_MESSAGE_BYTES", &cfg.GRPC.MaxReceiveMessageBytes)
 	setDuration("VMM_GRPC_WORKSPACE_TIMEOUT", &cfg.GRPC.RequestTimeout.Workspace)
@@ -1582,27 +1880,9 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_POSTGRES_VECTOR_LISTS", &cfg.Postgres.VectorLists)
 	setInt("VMM_POSTGRES_VECTOR_PROBES", &cfg.Postgres.VectorProbes)
 	setInt("VMM_POSTGRES_MIGRATION_BATCH_SIZE", &cfg.Postgres.MigrationBatchSize)
-	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)
-	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
-	setSingleKey("VMM_LLM_API_KEY", &cfg.LLM.APIKey, &cfg.LLM.APIKeys, &cfg.LLM.Nodes)
-	setStringSlice("VMM_LLM_API_KEYS", &cfg.LLM.APIKeys, &cfg.LLM.APIKey, &cfg.LLM.Nodes)
-	setInt("VMM_LLM_RPM", &cfg.LLM.RPM)
-	setInt("VMM_LLM_TPM", &cfg.LLM.TPM)
-	setInt("VMM_LLM_RPD", &cfg.LLM.RPD)
-	setString("VMM_LLM_MODEL", &cfg.LLM.Model)
-	setString("VMM_LLM_ORGANIZATION", &cfg.LLM.Organization)
-	setString("VMM_LLM_PROJECT", &cfg.LLM.Project)
-	setBool("VMM_LLM_KEY_FAILOVER_ENABLED", &cfg.LLM.KeyFailover.Enabled)
-	setString("VMM_LLM_KEY_FAILOVER_POLICY", &cfg.LLM.KeyFailover.Policy)
-	setBool("VMM_LLM_KEY_FAILOVER_RESPECT_RETRY_AFTER", &cfg.LLM.KeyFailover.RespectRetryAfter)
-	setDuration("VMM_LLM_KEY_FAILOVER_RATE_LIMIT_COOLDOWN", &cfg.LLM.KeyFailover.RateLimitCooldown)
-	setDuration("VMM_LLM_KEY_FAILOVER_QUOTA_COOLDOWN", &cfg.LLM.KeyFailover.QuotaCooldown)
-	setDuration("VMM_LLM_KEY_FAILOVER_AUTH_COOLDOWN", &cfg.LLM.KeyFailover.AuthCooldown)
-	setBool("VMM_LLM_KEY_FAILOVER_PROBE_AFTER_COOLDOWN", &cfg.LLM.KeyFailover.ProbeAfterCooldown)
 	setString("VMM_EMBED_PROVIDER", &cfg.Embedding.Provider)
 	setString("VMM_EMBED_ENDPOINT", &cfg.Embedding.Endpoint)
-	setSingleKey("VMM_EMBED_API_KEY", &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes)
-	setStringSlice("VMM_EMBED_API_KEYS", &cfg.Embedding.APIKeys, &cfg.Embedding.APIKey, &cfg.Embedding.Nodes)
+	setStringSlice("VMM_EMBED_API_KEYS", &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes)
 	setInt("VMM_EMBED_RPM", &cfg.Embedding.RPM)
 	setInt("VMM_EMBED_TPM", &cfg.Embedding.TPM)
 	setInt("VMM_EMBED_RPD", &cfg.Embedding.RPD)
@@ -1618,23 +1898,7 @@ func applyEnvOverrides(cfg *Config) {
 	setDuration("VMM_EMBED_KEY_FAILOVER_AUTH_COOLDOWN", &cfg.Embedding.KeyFailover.AuthCooldown)
 	setBool("VMM_EMBED_KEY_FAILOVER_PROBE_AFTER_COOLDOWN", &cfg.Embedding.KeyFailover.ProbeAfterCooldown)
 	setBool("VMM_RERANK_ENABLED", &cfg.Rerank.Enabled)
-	setString("VMM_RERANK_PROVIDER", &cfg.Rerank.Provider)
-	setString("VMM_RERANK_ENDPOINT", &cfg.Rerank.Endpoint)
-	setSingleKey("VMM_RERANK_API_KEY", &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys, &cfg.Rerank.Nodes)
-	setStringSlice("VMM_RERANK_API_KEYS", &cfg.Rerank.APIKeys, &cfg.Rerank.APIKey, &cfg.Rerank.Nodes)
-	setInt("VMM_RERANK_RPM", &cfg.Rerank.RPM)
-	setInt("VMM_RERANK_TPM", &cfg.Rerank.TPM)
-	setInt("VMM_RERANK_RPD", &cfg.Rerank.RPD)
-	setString("VMM_RERANK_MODEL", &cfg.Rerank.Model)
 	setInt("VMM_RERANK_TOP_N", &cfg.Rerank.TopN)
-	setDuration("VMM_RERANK_TIMEOUT", &cfg.Rerank.Timeout)
-	setBool("VMM_RERANK_KEY_FAILOVER_ENABLED", &cfg.Rerank.KeyFailover.Enabled)
-	setString("VMM_RERANK_KEY_FAILOVER_POLICY", &cfg.Rerank.KeyFailover.Policy)
-	setBool("VMM_RERANK_KEY_FAILOVER_RESPECT_RETRY_AFTER", &cfg.Rerank.KeyFailover.RespectRetryAfter)
-	setDuration("VMM_RERANK_KEY_FAILOVER_RATE_LIMIT_COOLDOWN", &cfg.Rerank.KeyFailover.RateLimitCooldown)
-	setDuration("VMM_RERANK_KEY_FAILOVER_QUOTA_COOLDOWN", &cfg.Rerank.KeyFailover.QuotaCooldown)
-	setDuration("VMM_RERANK_KEY_FAILOVER_AUTH_COOLDOWN", &cfg.Rerank.KeyFailover.AuthCooldown)
-	setBool("VMM_RERANK_KEY_FAILOVER_PROBE_AFTER_COOLDOWN", &cfg.Rerank.KeyFailover.ProbeAfterCooldown)
 	setString("VMM_VECTOR_PROVIDER", &cfg.Vector.Provider)
 	setString("VMM_RELATIONAL_PROVIDER", &cfg.Relational.Provider)
 	setString("VMM_POST_ACTION_INPUT_MODE", &cfg.PostAction.InputMode)

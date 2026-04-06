@@ -47,6 +47,69 @@ type storageDependencies struct {
 	ManageVectorSchema bool
 }
 
+// promptFolderMatcher exposes prompt-folder resolution so the composition root can detect whether multiple LLM routes still share one compatible prompt family.
+// promptFolderMatcher 用于暴露提示词目录解析能力，让组合根可以判断多条 LLM 路由是否仍共享同一套兼容的提示词族。
+type promptFolderMatcher interface {
+	MatchFolder(modelName string) string
+}
+
+// routeFailoverAwareLLMClient preserves prompt-side model routing while clearing request-level model pins in multi-route mode so processor calls can still fan out across heterogeneous llm.routes.
+// routeFailoverAwareLLMClient 用于在保留提示词侧模型路由的同时，于多路由模式清空请求级模型固定值，确保处理器调用仍能在不同模型名的 llm.routes 之间扩散容灾。
+type routeFailoverAwareLLMClient struct {
+	upstream appports.LLMClient
+}
+
+// Generate forwards one processor-originated LLM request after dropping the fixed model field that would otherwise block heterogeneous route failover.
+// Generate 用于转发一条来自处理器的 LLM 请求，并在转发前移除会阻断异构路由容灾的固定模型字段。
+func (c routeFailoverAwareLLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
+	if c.upstream == nil {
+		return appports.LLMResponse{}, fmt.Errorf("route failover aware llm client is nil")
+	}
+	req.Model = ""
+	return c.upstream.Generate(ctx, req)
+}
+
+// selectProcessorPromptModel chooses the model token that processors should use for prompt lookup so multi-route failover only keeps model-specific prompts when every route still resolves to the same prompt folder.
+// selectProcessorPromptModel 用于选择处理器做提示词查找时应使用的模型标识；只有当所有路由仍指向同一提示词目录时，才继续保留模型专属 prompt。
+func selectProcessorPromptModel(cfg config.Config, prompts appports.PromptSource) string {
+	routes := cfg.LLM.ProviderRoutes()
+	if len(routes) == 0 {
+		return ""
+	}
+	primaryModel := cfg.LLM.PrimaryModel()
+	if len(routes) == 1 {
+		return primaryModel
+	}
+	if allLLMRoutesSharePromptFolder(routes, prompts) {
+		return primaryModel
+	}
+	return ""
+}
+
+// allLLMRoutesSharePromptFolder reports whether every configured LLM route maps to the same prompt folder, which is the only case where one shared processor prompt model stays safe during route failover.
+// allLLMRoutesSharePromptFolder 用于判断所有已配置的 LLM 路由是否都映射到同一提示词目录；只有这种情况下，处理器在路由切换时继续共用一个 prompt 才是安全的。
+func allLLMRoutesSharePromptFolder(routes []config.LLMRouteConfig, prompts appports.PromptSource) bool {
+	if len(routes) <= 1 {
+		return true
+	}
+	if matcher, ok := prompts.(promptFolderMatcher); ok && matcher != nil {
+		baseFolder := matcher.MatchFolder(routes[0].Model)
+		for _, route := range routes[1:] {
+			if matcher.MatchFolder(route.Model) != baseFolder {
+				return false
+			}
+		}
+		return true
+	}
+	baseModel := strings.TrimSpace(routes[0].Model)
+	for _, route := range routes[1:] {
+		if strings.TrimSpace(route.Model) != baseModel {
+			return false
+		}
+	}
+	return true
+}
+
 // NewLocal creates the local application instance.
 // NewLocal 用于创建本地应用实例。
 func NewLocal(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
@@ -166,11 +229,13 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
-	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(llm, prompts, cfg.LLM.Model), logger)
+	llmPromptModel := selectProcessorPromptModel(cfg, prompts)
+	processorLLM := adaptLLMForProcessorRoutes(cfg, llm)
+	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(processorLLM, prompts, llmPromptModel), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
 	scratchpad := usecase.NewScratchpadUseCase(scratchpadStore)
 	chatCompact := usecase.NewChatCompactUseCase(chatCompactStore)
-	candidateReviewer := processor.NewPostActionCandidateReviewer(llm, prompts, cfg.LLM.Model)
+	candidateReviewer := processor.NewPostActionCandidateReviewer(processorLLM, prompts, llmPromptModel)
 	memory.ConfigureHybrid(cfg.MemoryPipeline.HybridEnabled, cfg.MemoryPipeline.LexicalTopK, cfg.MemoryPipeline.RRFK)
 	memory.ConfigureMMR(cfg.MemoryPipeline.MMREnabled, cfg.MemoryPipeline.MMRLambda)
 	memory.ConfigureDecay(
@@ -186,9 +251,9 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	pre := usecase.NewPreCheckUseCase(
 		memory,
 		relational,
-		processor.NewIntentExtractor(llm, prompts, cfg.LLM.Model, cfg.MemoryPipeline.MaxSearchKeywords),
-		processor.NewPreCheckMemoryReviewer(llm, prompts, cfg.LLM.Model),
-		processor.NewContextAssembler(prompts, cfg.LLM.Model),
+		processor.NewIntentExtractor(processorLLM, prompts, llmPromptModel, cfg.MemoryPipeline.MaxSearchKeywords),
+		processor.NewPreCheckMemoryReviewer(processorLLM, prompts, llmPromptModel),
+		processor.NewContextAssembler(prompts, llmPromptModel),
 		usecase.PreCheckConfig{
 			IntentTimeout:      cfg.PreCheck.IntentTimeout.Duration,
 			TopK:               cfg.PreCheck.TopK,
@@ -204,7 +269,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		relational,
 		embedding,
 		vector,
-		processor.NewTurnAnalyzer(llm, prompts, cfg.LLM.Model),
+		processor.NewTurnAnalyzer(processorLLM, prompts, llmPromptModel),
 		memory,
 		candidateReviewer,
 		usecase.PostActionAnalysisConfig{
@@ -439,20 +504,58 @@ func normalizeProviderAlias(provider string) string {
 // buildLLM 用于选择当前配置的生成后端，服务调试阶段的 post-action 摘要探测以及未来的 LLM 工作流。
 func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 	cfg.Normalize()
-	switch normalizeProviderAlias(cfg.LLM.Provider) {
+	routes := cfg.LLM.ProviderRoutes()
+	if len(routes) == 0 {
+		return nil, fmt.Errorf("llm.routes must contain at least one route")
+	}
+	if len(routes) == 1 {
+		return buildOneLLMRouteClient(routes[0], 0)
+	}
+	routeOptions := make([]ai_key_failover.LLMRouteOptions, 0, len(routes))
+	for idx, route := range routes {
+		routeOptions = append(routeOptions, ai_key_failover.LLMRouteOptions{
+			Name:         buildRouteName("llm", idx, route.Name),
+			Priority:     route.Priority,
+			Provider:     route.Provider,
+			Endpoint:     route.Endpoint,
+			Model:        route.Model,
+			Organization: route.Organization,
+			Project:      route.Project,
+			APIKeys:      append([]string(nil), route.APIKeys...),
+			Params:       route.Params,
+			ModelParams:  route.ModelParams,
+			Options:      buildKeyFailoverOptions(buildRouteName("llm", idx, route.Name), route.Nodes, route.KeyFailover),
+		})
+	}
+	return ai_key_failover.NewLLMMultiRouteClient(routeOptions)
+}
+
+// adaptLLMForProcessorRoutes keeps prompt routing anchored to the primary model while freeing processor-originated requests from route-blocking model pins in multi-route mode.
+// adaptLLMForProcessorRoutes 用于让提示词路由继续锚定主模型，同时在多路由模式下解除处理器请求对特定模型名的硬固定，避免阻断路由级容灾。
+func adaptLLMForProcessorRoutes(cfg config.Config, client appports.LLMClient) appports.LLMClient {
+	if len(cfg.LLM.ProviderRoutes()) <= 1 {
+		return client
+	}
+	return routeFailoverAwareLLMClient{upstream: client}
+}
+
+// buildOneLLMRouteClient materializes one concrete fixed-model LLM route that will handle provider-specific key failover inside its own key pool.
+// buildOneLLMRouteClient 用于实例化一条具体的固定模型 LLM 路由，让它在自己的 Key 池内部处理 provider 专属的 Key 容灾。
+func buildOneLLMRouteClient(route config.LLMRouteConfig, routeIndex int) (appports.LLMClient, error) {
+	switch normalizeProviderAlias(route.Provider) {
 	case "openai", "openai_native", "openai_go":
 		return ai_key_failover.NewLLMClient(
-			cfg.LLM.Endpoint,
-			cfg.LLM.Model,
-			cfg.LLM.Organization,
-			cfg.LLM.Project,
-			cfg.LLM.APIKeys,
-			cfg.LLM.Params,
-			cfg.LLM.ModelParams,
-			buildKeyFailoverOptions("llm", cfg.LLM.RoutingNodes(), cfg.LLM.KeyFailover),
+			route.Endpoint,
+			route.Model,
+			route.Organization,
+			route.Project,
+			route.APIKeys,
+			route.Params,
+			route.ModelParams,
+			buildKeyFailoverOptions(buildRouteName("llm", routeIndex, route.Name), route.Nodes, route.KeyFailover),
 		)
 	default:
-		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
+		return nil, fmt.Errorf("unsupported llm provider: %s", route.Provider)
 	}
 }
 
@@ -485,18 +588,54 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 	if !cfg.Rerank.Enabled {
 		return nil, nil
 	}
-	switch normalizeProviderAlias(cfg.Rerank.Provider) {
+	routes := cfg.Rerank.ProviderRoutes()
+	if len(routes) == 0 {
+		return nil, fmt.Errorf("rerank.routes must contain at least one route when rerank is enabled")
+	}
+	if len(routes) == 1 {
+		return buildOneRerankRouteClient(routes[0], 0)
+	}
+	routeOptions := make([]ai_key_failover.RerankRouteOptions, 0, len(routes))
+	for idx, route := range routes {
+		routeOptions = append(routeOptions, ai_key_failover.RerankRouteOptions{
+			Name:     buildRouteName("rerank", idx, route.Name),
+			Priority: route.Priority,
+			Provider: route.Provider,
+			Endpoint: route.Endpoint,
+			Model:    route.Model,
+			Timeout:  route.Timeout.Duration,
+			APIKeys:  append([]string(nil), route.APIKeys...),
+			Options:  buildKeyFailoverOptions(buildRouteName("rerank", idx, route.Name), route.Nodes, route.KeyFailover),
+		})
+	}
+	return ai_key_failover.NewRerankMultiRouteClient(routeOptions)
+}
+
+// buildOneRerankRouteClient materializes one concrete fixed-model rerank route that will handle provider-specific key failover inside its own key pool.
+// buildOneRerankRouteClient 用于实例化一条具体的固定模型 rerank 路由，让它在自己的 Key 池内部处理 provider 专属的 Key 容灾。
+func buildOneRerankRouteClient(route config.RerankRouteConfig, routeIndex int) (appports.RerankerClient, error) {
+	switch normalizeProviderAlias(route.Provider) {
 	case "dashscope":
 		return ai_key_failover.NewRerankerClient(
-			cfg.Rerank.Endpoint,
-			cfg.Rerank.Model,
-			cfg.Rerank.Timeout.Duration,
-			cfg.Rerank.APIKeys,
-			buildKeyFailoverOptions("rerank", cfg.Rerank.RoutingNodes(), cfg.Rerank.KeyFailover),
+			route.Endpoint,
+			route.Model,
+			route.Timeout.Duration,
+			route.APIKeys,
+			buildKeyFailoverOptions(buildRouteName("rerank", routeIndex, route.Name), route.Nodes, route.KeyFailover),
 		)
 	default:
-		return nil, fmt.Errorf("unsupported rerank provider: %s", cfg.Rerank.Provider)
+		return nil, fmt.Errorf("unsupported rerank provider: %s", route.Provider)
 	}
+}
+
+// buildRouteName returns one stable route label so route-level failover logs and selector error messages can point back to the configured route order.
+// buildRouteName 用于返回稳定的路由标签，让路由级容灾日志和选择器错误信息都能回指到配置里的路由顺序。
+func buildRouteName(serviceName string, routeIndex int, routeName string) string {
+	trimmed := strings.TrimSpace(routeName)
+	if trimmed != "" {
+		return trimmed
+	}
+	return fmt.Sprintf("%s-route-%d", serviceName, routeIndex+1)
 }
 
 // buildKeyFailoverOptions converts one normalized runtime config into the fixed-model API-key failover options consumed by outbound wrappers.

@@ -15,18 +15,18 @@ import (
 // TestClientRerankLive verifies the adapter can reach the real DashScope rerank API with the current shared API key.
 // TestClientRerankLive 用于验证适配器可以使用当前共享 API key 访问真实 DashScope rerank 接口。
 func TestClientRerankLive(t *testing.T) {
-	apiKey := strings.TrimSpace(os.Getenv("VMM_RERANK_API_KEY"))
+	apiKey := strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
 	if apiKey == "" {
-		apiKey = strings.TrimSpace(os.Getenv("OPENAI_API_KEY"))
-	}
-	if apiKey == "" {
-		t.Skip("skip live dashscope rerank test: no VMM_RERANK_API_KEY or OPENAI_API_KEY configured")
+		t.Skip("skip live dashscope rerank test: no OPENAI_API_KEY configured")
 	}
 
 	client := NewClient(
-		strings.TrimSpace(os.Getenv("VMM_RERANK_ENDPOINT")),
+		firstNonEmpty(
+			strings.TrimSpace(os.Getenv("OPENAI_RERANK_URL")),
+			"https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+		),
 		apiKey,
-		firstNonEmpty(strings.TrimSpace(os.Getenv("VMM_RERANK_MODEL")), "qwen3-vl-rerank"),
+		firstNonEmpty(strings.TrimSpace(os.Getenv("OPENAI_RERANK_MODEL")), "qwen3-vl-rerank"),
 		12*time.Second,
 		nil,
 	)

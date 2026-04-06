@@ -316,97 +316,92 @@
 
 ## 10. llm
 
-### `llm.provider`
+### `llm.routes`
 
-- 作用：LLM 提供方别名
-- 默认值：`openai`
+- 作用：声明 LLM 的显式多路由表
+- 默认值：
+  - `DefaultLocal()` 会提供一条默认 route，provider 为 `openai`，model 为 `gpt-4.1-mini`
+- 当前约束：
+  - `llm` 只允许使用 `routes`
+  - 不再支持顶层 `llm.provider / llm.endpoint / llm.model / llm.api_keys / llm.nodes / llm.key_failover`
+  - 不再支持任何位置的单值 `api_key`
+- 运行时行为：
+  - 先按 `priority` 从高到低选择 route
+  - 同优先级保持配置声明顺序
+  - 选中 route 后，再在 route 内部执行 `nodes + key_failover`
+
+### `llm.routes[].provider`
+
+- 作用：声明该 LLM route 使用的 provider
 - 当前要求：
-  - 必须是 OpenAI-compatible 提供方
+  - 必须是 OpenAI-compatible provider
 
-### `llm.endpoint`
+### `llm.routes[].endpoint`
 
-- 作用：LLM 接口根地址
-- 默认值：空，但启动时必填
-- 常见示例：
-  - `https://api.openai.com/v1`
-  - 其他兼容 `/v1` 接口
+- 作用：该 LLM route 的接口根地址
+- 启动要求：
+  - 必填
 
-### `llm.api_key`
+### `llm.routes[].api_keys`
 
-- 作用：LLM 鉴权密钥
-- 默认值：空，但启动时必填
-- 兼容性说明：
-  - 旧单值写法仍然支持
-  - 可以写成逗号、分号或换行分隔的多 key 字符串
-
-### `llm.api_keys`
-
-- 作用：LLM API Key 池
+- 作用：该 LLM route 的 API Key 池
 - 默认值：空数组
 - 说明：
-  - 推荐优先使用该字段声明多个 key
-  - 运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
-  - 不会以容灾名义切 provider 或切 model
+  - 当未显式声明 `nodes` 时，运行时会把 `api_keys + rpm/tpm/rpd` 折叠成一个默认节点
+  - 这是 route 内部的 key 池，不是跨 route 的容灾能力
 
-### `llm.rpm / llm.tpm / llm.rpd`
+### `llm.routes[].rpm / llm.routes[].tpm / llm.routes[].rpd`
 
-- 作用：旧兼容写法下默认节点的请求/Token/日请求上限
+- 作用：route 级默认节点的吞吐额度
 - 默认值：`0`
 - 说明：
-  - `0` 代表不限制
-  - 仅当未显式声明 `llm.nodes` 时生效
-  - 运行时会在真正发请求前基于默认节点内每个 key 的该配额做本地预判断
+  - 仅在该 route 未显式声明 `nodes` 时生效
+  - 表示默认节点下每个 key 各自独享的额度
 
-### `llm.nodes`
+### `llm.routes[].nodes`
 
-- 作用：显式声明 LLM 轮询节点
+- 作用：显式声明该 route 内部的吞吐节点
 - 默认值：空数组
 - 说明：
-  - 每个节点仍保持同一组固定的 `provider + endpoint + model`
+  - `nodes` 只在一条固定 `provider + endpoint + model` 路由内部工作
   - 每个节点可配置：
     - `name`
-    - `api_key` / `api_keys`
+    - `api_keys`
     - `rpm`
     - `tpm`
     - `rpd`
-  - 同一节点下多个 key 会各自独享这一组 `rpm / tpm / rpd`
-  - 如果同平台存在不同免费额度，建议拆成两个节点，而不是混成一个 key 池
-  - 显式声明 `nodes` 后，运行时优先按节点表工作
+  - 同一节点下多个 key 会各自独享该节点声明的额度
+  - 如果额度档位不同，应拆成不同节点
 
-### `llm.model`
+### `llm.routes[].model`
 
-- 作用：默认 LLM 模型名
-- 默认值：`gpt-4.1-mini`
+- 作用：该 route 使用的 LLM 模型名
+- 默认值：
+  - `DefaultLocal()` 为 `gpt-4.1-mini`
 
-### `llm.organization`
+### `llm.routes[].priority`
 
-- 作用：可选组织标识
+- 作用：控制 route 间的优先级
+- 默认值：`0`
+- 说明：
+  - 数值越大越优先
+
+### `llm.routes[].organization / llm.routes[].project`
+
+- 作用：OpenAI-compatible 路由的可选组织与 project 标识
 - 默认值：空
 
-### `llm.project`
+### `llm.routes[].params / llm.routes[].model_params`
 
-- 作用：可选 project 标识
-- 默认值：空
-
-### `llm.params`
-
-- 作用：全局 LLM 附加参数
+- 作用：该 route 的额外请求参数
 - 默认值：空对象
 - 常见用途：
   - provider 特定开关
-  - 通用补充参数
+  - 模型级参数差异
 
-### `llm.model_params`
+### `llm.routes[].key_failover`
 
-- 作用：按模型名细分的附加参数
-- 默认值：空对象
-- 常见用途：
-  - 按模型关闭 `thinking`
-  - 对不同模型单独调节参数
-
-### `llm.key_failover`
-
-- 作用：固定模型 LLM 的 API Key 容灾策略
+- 作用：该 route 内部 API Key 池的容灾策略
 - 默认值：
   - `enabled=true`
   - `policy=ordered_failover`
@@ -416,8 +411,8 @@
   - `auth_cooldown=12h`
   - `probe_after_cooldown=true`
 - 说明：
-  - 只对 key 轮换生效
-  - 不会切换到其他模型
+  - 只对当前 route 内部的 key 轮换生效
+  - route 之间的切换由 `priority + 声明顺序` 负责
 
 ## 11. embedding
 
@@ -425,52 +420,45 @@
 
 - 作用：Embedding 提供方别名
 - 默认值：`openai`
+- 当前约束：
+  - embedding 只允许固定 provider
+  - 不支持 `routes`
 
 ### `embedding.endpoint`
 
 - 作用：Embedding 接口根地址
-- 默认值：空，但启动时必填
-
-### `embedding.api_key`
-
-- 作用：Embedding 鉴权密钥
-- 默认值：空，但启动时必填
-- 兼容性说明：
-  - 旧单值写法仍然支持
-  - 可以写成逗号、分号或换行分隔的多 key 字符串
+- 启动要求：
+  - 必填
 
 ### `embedding.api_keys`
 
-- 作用：Embedding API Key 池
+- 作用：Embedding 的多 key 池
 - 默认值：空数组
 - 说明：
-  - 推荐优先使用该字段声明多个 key
-  - 运行时只会在固定 `provider + endpoint + model + dimension` 下做 key 级轮换
-  - 不允许以容灾名义混用不同 embedding 模型
+  - 如果未显式声明 `nodes`，运行时会把 `api_keys + rpm/tpm/rpd` 折叠成一个默认节点
+  - 不再支持 `embedding.api_key`
 
 ### `embedding.rpm / embedding.tpm / embedding.rpd`
 
-- 作用：旧兼容写法下默认 embedding 节点的请求/Token/日请求上限
+- 作用：默认 embedding 节点的吞吐额度
 - 默认值：`0`
 - 说明：
-  - `0` 代表不限制
-  - 仅当未显式声明 `embedding.nodes` 时生效
-  - 运行时会在真正发请求前基于默认节点内每个 key 的该配额做本地预判断
+  - 仅在未显式声明 `embedding.nodes` 时生效
+  - 表示默认节点下每个 key 各自独享的额度
 
 ### `embedding.nodes`
 
-- 作用：显式声明 embedding 轮询节点
+- 作用：显式声明 embedding 的吞吐节点
 - 默认值：空数组
 - 说明：
-  - 每个节点都必须保持同一组固定的 `provider + endpoint + model + dimension`
+  - `nodes` 只用于吞吐分档和多 key 轮换
+  - 不允许借由节点混用不同 provider / model / dimension
   - 每个节点可配置：
     - `name`
-    - `api_key` / `api_keys`
+    - `api_keys`
     - `rpm`
     - `tpm`
     - `rpd`
-  - 同一节点下多个 key 会各自独享这一组 `rpm / tpm / rpd`
-  - 不允许借由节点机制混用不同 embedding 模型或不同维度
 
 ### `embedding.model`
 
@@ -482,32 +470,22 @@
 - 作用：Embedding 维度
 - 默认值：`1024`
 - 注意：
-  - `split` 模式下必须和 LanceDB 实际表维度一致
-  - `combined` 模式下必须和 PostgreSQL 组合库中的向量列维度一致
+  - `split` 模式下必须与 LanceDB 实际表维度一致
+  - `combined` 模式下必须与 PostgreSQL 组合库向量列维度一致
 
-### `embedding.organization`
+### `embedding.organization / embedding.project`
 
-- 作用：可选组织标识
+- 作用：Embedding 请求的可选组织与 project 标识
 - 默认值：空
 
-### `embedding.project`
+### `embedding.params / embedding.model_params`
 
-- 作用：可选 project 标识
-- 默认值：空
-
-### `embedding.params`
-
-- 作用：Embedding 全局附加参数
-- 默认值：空对象
-
-### `embedding.model_params`
-
-- 作用：按模型名细分的 Embedding 附加参数
+- 作用：Embedding 的附加参数
 - 默认值：空对象
 
 ### `embedding.key_failover`
 
-- 作用：固定模型 Embedding 的 API Key 容灾策略
+- 作用：固定模型 embedding 的 API Key 容灾策略
 - 默认值：
   - `enabled=true`
   - `policy=ordered_failover`
@@ -517,9 +495,10 @@
   - `auth_cooldown=12h`
   - `probe_after_cooldown=true`
 - 重要说明：
-  - 只允许切 key
-  - 不允许切模型
-  - 向量维度相同不代表语义空间相同，因此禁止混用不同 embedding 模型
+  - embedding 只允许切 key
+  - 不允许切 provider
+  - 不允许切 model
+  - 不允许切 dimension
 
 ## 12. rerank
 
@@ -528,75 +507,82 @@
 - 作用：是否启用重排序
 - 默认值：`false`
 
-### `rerank.provider`
+### `rerank.top_n`
 
-- 作用：重排序提供方
-- 默认值：`dashscope`
+- 作用：进入 rerank 的候选数量
+- 默认值：`8`
 
-### `rerank.endpoint`
+### `rerank.routes`
 
-- 作用：重排序接口地址
-- 默认值：`https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank`
+- 作用：声明 rerank 的显式多路由表
+- 默认值：
+  - `DefaultLocal()` 会提供一条默认 route，provider 为 `dashscope`
+- 当前约束：
+  - `rerank` 只允许顶层保留 `enabled / top_n / routes`
+  - 不再支持顶层 `rerank.provider / rerank.endpoint / rerank.model / rerank.api_keys / rerank.timeout / rerank.key_failover`
+  - 不再支持任何位置的单值 `api_key`
+- 运行时行为：
+  - 先按 `priority` 从高到低选择 route
+  - 当前 route 失败后再切下一条 route
+  - 所有 route 都失败时，检索链按 `rerank=false` 语义降级
 
-### `rerank.api_key`
+### `rerank.routes[].provider`
 
-- 作用：重排序接口密钥
-- 默认值：空
-- 说明：
-  - `rerank.enabled=true` 时必须显式配置
-  - 不会回退复用 `llm` key 池
+- 作用：声明该 rerank route 使用的 provider
+- 当前要求：
+  - 当前内置实现只支持 `dashscope`
 
-### `rerank.api_keys`
+### `rerank.routes[].endpoint`
 
-- 作用：重排序接口 Key 池
+- 作用：该 rerank route 的接口地址
+- 默认值：
+  - `DefaultLocal()` 为 DashScope `text-rerank` 地址
+
+### `rerank.routes[].api_keys`
+
+- 作用：该 rerank route 的 key 池
 - 默认值：空数组
 - 说明：
-  - 推荐优先使用该字段声明多个 key
-  - 运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
-  - 所有 key 都失败时，会按 `rerank=false` 的效果退回首轮排序，并记录 warning
+  - 当未显式声明 `nodes` 时，运行时会把 `api_keys + rpm/tpm/rpd` 折叠成一个默认节点
 
-### `rerank.rpm / rerank.tpm / rerank.rpd`
+### `rerank.routes[].rpm / rerank.routes[].tpm / rerank.routes[].rpd`
 
-- 作用：旧兼容写法下默认 rerank 节点的请求/Token/日请求上限
+- 作用：route 级默认节点的吞吐额度
 - 默认值：`0`
-- 说明：
-  - `0` 代表不限制
-  - 仅当未显式声明 `rerank.nodes` 时生效
-  - 运行时会在真正发请求前基于默认节点内每个 key 的该配额做本地预判断
 
-### `rerank.nodes`
+### `rerank.routes[].nodes`
 
-- 作用：显式声明 rerank 轮询节点
+- 作用：显式声明该 rerank route 内部的吞吐节点
 - 默认值：空数组
 - 说明：
-  - 每个节点仍保持同一组固定的 `provider + endpoint + model`
+  - 每个节点只在当前固定模型 route 内部工作
   - 每个节点可配置：
     - `name`
-    - `api_key` / `api_keys`
+    - `api_keys`
     - `rpm`
     - `tpm`
     - `rpd`
-  - 同一节点下多个 key 会各自独享这一组 `rpm / tpm / rpd`
-  - 所有节点都不可用时，检索链会按 `rerank=false` 语义降级，并记录 warning
 
-### `rerank.model`
+### `rerank.routes[].model`
 
-- 作用：重排序模型名
-- 默认值：`qwen3-vl-rerank`
+- 作用：该 rerank route 的模型名
+- 默认值：
+  - `DefaultLocal()` 为 `qwen3-vl-rerank`
 
-### `rerank.top_n`
+### `rerank.routes[].timeout`
 
-- 作用：进入 rerank 的候选数
-- 默认值：`8`
+- 作用：该 route 的 HTTP 调用预算
+- 默认值：
+  - `DefaultLocal()` 为 `8s`
 
-### `rerank.timeout`
+### `rerank.routes[].priority`
 
-- 作用：rerank 调用超时
-- 默认值：`8s`
+- 作用：控制 route 间的优先级
+- 默认值：`0`
 
-### `rerank.key_failover`
+### `rerank.routes[].key_failover`
 
-- 作用：固定模型 rerank 的 API Key 容灾策略
+- 作用：该 route 内部 API Key 池的容灾策略
 - 默认值：
   - `enabled=true`
   - `policy=ordered_failover`
@@ -605,6 +591,8 @@
   - `quota_cooldown=10m`
   - `auth_cooldown=12h`
   - `probe_after_cooldown=true`
+- 说明：
+  - 只对当前 route 内部的 key 轮换生效
 
 ## 13. vector
 

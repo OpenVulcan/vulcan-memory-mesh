@@ -21,6 +21,85 @@ import (
 	"google.golang.org/grpc"
 )
 
+// newRuntimeConfigForTest builds one runtime-ready config fixture that follows the new AI contract:
+// LLM uses explicit routes, embedding stays single-provider/single-model with a multi-key pool, and rerank remains opt-in.
+// newRuntimeConfigForTest 用于构建一份符合新 AI 契约的运行时测试配置：LLM 使用显式 routes，embedding 保持单 provider/单模型但支持多 key 池，rerank 默认按需启用。
+func newRuntimeConfigForTest() config.Config {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		newLLMRouteForTest("openai", "https://example.com/v1", []string{"test-llm-key"}, "test-llm"),
+	}
+	cfg.Embedding.Provider = "openai"
+	cfg.Embedding.Endpoint = "https://example.com/v1"
+	cfg.Embedding.APIKeys = []string{"test-embedding-key"}
+	cfg.Embedding.Model = "test-embedding"
+	cfg.Embedding.Dimension = 1024
+	cfg.Rerank.Enabled = false
+	return cfg
+}
+
+// newLLMRouteForTest builds one explicit LLM route fixture so runtime tests always exercise the route-only configuration path.
+// newLLMRouteForTest 用于构造一条显式 LLM 路由测试夹具，确保运行时测试始终走 route-only 配置路径。
+func newLLMRouteForTest(provider string, endpoint string, apiKeys []string, model string) config.LLMRouteConfig {
+	return config.LLMRouteConfig{
+		Provider: provider,
+		Endpoint: endpoint,
+		APIKeys:  append([]string(nil), apiKeys...),
+		Model:    model,
+	}
+}
+
+// newRerankRouteForTest builds one explicit rerank route fixture so tests never rely on removed top-level rerank fields.
+// newRerankRouteForTest 用于构造一条显式 rerank 路由测试夹具，避免测试再依赖已移除的顶层 rerank 字段。
+func newRerankRouteForTest(provider string, endpoint string, apiKeys []string, model string, timeout time.Duration) config.RerankRouteConfig {
+	return config.RerankRouteConfig{
+		Provider: provider,
+		Endpoint: endpoint,
+		APIKeys:  append([]string(nil), apiKeys...),
+		Model:    model,
+		Timeout:  config.Duration{Duration: timeout},
+	}
+}
+
+// recordingLLMClient captures the last forwarded request so composition tests can verify whether runtime wrappers preserve or clear the request-level model pin.
+// recordingLLMClient 用于记录最后一次转发请求，让装配测试可以验证运行时包装器是否保留或清空了请求级模型固定值。
+type recordingLLMClient struct {
+	lastRequest appports.LLMRequest
+	response    appports.LLMResponse
+	err         error
+}
+
+// Generate records one request and then returns the canned response or error.
+// Generate 用于记录一次请求，然后返回预置响应或错误。
+func (c *recordingLLMClient) Generate(_ context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
+	c.lastRequest = req
+	if c.err != nil {
+		return appports.LLMResponse{}, c.err
+	}
+	return c.response, nil
+}
+
+// matchingPromptSource supplies deterministic prompt-folder matches so composition tests can verify whether multi-route wiring keeps or drops model-specific prompt routing.
+// matchingPromptSource 用于提供可预测的提示词目录匹配结果，让装配测试可以验证多路由场景下是否保留或降级模型专属 prompt 路由。
+type matchingPromptSource struct {
+	folders map[string]string
+}
+
+// GetPrompt satisfies the prompt source contract for composition tests that only care about folder selection.
+// GetPrompt 用于满足装配测试所需的提示词接口；这些测试只关心目录选择，不关心实际 prompt 内容。
+func (s matchingPromptSource) GetPrompt(scene, modelName string) (string, error) {
+	return scene + ":" + modelName, nil
+}
+
+// MatchFolder returns the configured folder for one model and falls back to `default` when no explicit mapping exists.
+// MatchFolder 用于返回指定模型对应的目录；若未显式配置，则回退到 `default`。
+func (s matchingPromptSource) MatchFolder(modelName string) string {
+	if folder, ok := s.folders[modelName]; ok && strings.TrimSpace(folder) != "" {
+		return folder
+	}
+	return "default"
+}
+
 // TestNewLocalRegistersReflection verifies the local runtime exposes both the main VMM service and gRPC reflection.
 // TestNewLocalRegistersReflection 用于验证本地运行时会同时暴露主 VMM 服务和 gRPC reflection。
 func TestNewLocalRegistersReflection(t *testing.T) {
@@ -52,16 +131,9 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 	lanceAddr, stopLance := startFakeLanceDBGateway(t)
 	defer stopLance()
 
-	cfg := config.DefaultLocal()
+	cfg := newRuntimeConfigForTest()
 	cfg.SQLite.Address = sqliteAddr
 	cfg.LanceDB.Address = lanceAddr
-	cfg.LLM.Endpoint = "https://example.com/v1"
-	cfg.LLM.APIKey = "test-key"
-	cfg.LLM.Model = "test-llm"
-	cfg.Embedding.Endpoint = "https://example.com/v1"
-	cfg.Embedding.APIKey = "test-key"
-	cfg.Embedding.Model = "test-embedding"
-	cfg.Embedding.Dimension = 1024
 
 	app, err := NewLocal(cfg, prompts, layout)
 	if err != nil {
@@ -123,16 +195,9 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 	lanceAddr, stopLance := startFakeLanceDBGateway(t)
 	defer stopLance()
 
-	cfg := config.DefaultLocal()
+	cfg := newRuntimeConfigForTest()
 	cfg.SQLite.Address = sqliteAddr
 	cfg.LanceDB.Address = lanceAddr
-	cfg.LLM.Endpoint = "https://example.com/v1"
-	cfg.LLM.APIKey = "test-key"
-	cfg.LLM.Model = "test-llm"
-	cfg.Embedding.Endpoint = "https://example.com/v1"
-	cfg.Embedding.APIKey = "test-key"
-	cfg.Embedding.Model = "test-embedding"
-	cfg.Embedding.Dimension = 1024
 
 	application, err := NewLocal(cfg, prompts, layout)
 	if err != nil {
@@ -163,8 +228,10 @@ func TestNewLocalClosesRuntimeLogFileOnInitFailure(t *testing.T) {
 	layout := config.PromptLayout{
 		SystemDir: filepath.Join(root, "configs"),
 	}
-	cfg := config.DefaultLocal()
-	cfg.LLM.Provider = "unsupported"
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		newLLMRouteForTest("unsupported", "https://example.com/v1", []string{"test-key"}, "test-llm"),
+	}
 
 	_, err := NewLocal(cfg, nil, layout)
 	if err == nil {
@@ -186,13 +253,19 @@ func TestNewLocalClosesRuntimeLogFileOnInitFailure(t *testing.T) {
 // TestBuildRerankerRejectsMissingDedicatedRerankKey verifies runtime composition no longer reuses LLM keys for DashScope rerank and instead requires one dedicated rerank key pool.
 // TestBuildRerankerRejectsMissingDedicatedRerankKey 用于验证运行时装配不再复用 LLM Key 给 DashScope rerank，而是要求显式配置独立 rerank Key 池。
 func TestBuildRerankerRejectsMissingDedicatedRerankKey(t *testing.T) {
-	cfg := config.DefaultLocal()
-	cfg.LLM.APIKey = "shared-llm-key"
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		newLLMRouteForTest("openai", "https://example.com/v1", []string{"shared-llm-key"}, "test-llm"),
+	}
 	cfg.Rerank.Enabled = true
-	cfg.Rerank.Provider = "dashscope"
-	cfg.Rerank.APIKey = ""
-	cfg.Rerank.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
-	cfg.Rerank.Model = "qwen3-vl-rerank"
+	cfg.Rerank.Routes = []config.RerankRouteConfig{
+		{
+			Provider: "dashscope",
+			Endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+			Model:    "qwen3-vl-rerank",
+			Timeout:  config.Duration{Duration: 8 * time.Second},
+		},
+	}
 
 	reranker, err := buildReranker(cfg)
 	if err == nil {
@@ -203,11 +276,10 @@ func TestBuildRerankerRejectsMissingDedicatedRerankKey(t *testing.T) {
 // TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys verifies runtime composition upgrades one fixed-model config with multiple keys into the dedicated key-failover wrapper instead of silently discarding extra keys.
 // TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys 用于验证当固定模型配置包含多个 Key 时，运行时装配会升级为专用 Key 容灾包装器，而不是静默丢弃额外 Key。
 func TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys(t *testing.T) {
-	cfg := config.DefaultLocal()
-	cfg.LLM.Endpoint = "https://example.com/v1"
-	cfg.LLM.APIKeys = []string{"key-a", "key-b"}
-	cfg.LLM.APIKey = ""
-	cfg.LLM.Model = "test-llm"
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		newLLMRouteForTest("openai", "https://example.com/v1", []string{"key-a", "key-b"}, "test-llm"),
+	}
 
 	client, err := buildLLM(cfg)
 	if err != nil {
@@ -221,15 +293,16 @@ func TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys(t *testing.T) {
 // TestBuildLLMUsesRoutingNodes verifies runtime composition can bootstrap the fixed-model wrapper from explicit routing nodes even when the legacy top-level key fields are empty.
 // TestBuildLLMUsesRoutingNodes 用于验证即使旧版顶层 key 字段为空，运行时装配也能从显式轮询节点启动固定模型包装器。
 func TestBuildLLMUsesRoutingNodes(t *testing.T) {
-	cfg := config.DefaultLocal()
-	cfg.LLM.Endpoint = "https://example.com/v1"
-	cfg.LLM.APIKey = ""
-	cfg.LLM.APIKeys = nil
-	cfg.LLM.Nodes = []config.AIRoutingNodeConfig{
-		{Name: "primary", APIKeys: []string{"key-a"}, RPM: 1},
-		{Name: "backup", APIKeys: []string{"key-b"}, RPM: 2},
-	}
-	cfg.LLM.Model = "test-llm"
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{{
+		Provider: "openai",
+		Endpoint: "https://example.com/v1",
+		Nodes: []config.AIRoutingNodeConfig{
+			{Name: "primary", APIKeys: []string{"key-a"}, RPM: 1},
+			{Name: "backup", APIKeys: []string{"key-b"}, RPM: 2},
+		},
+		Model: "test-llm",
+	}}
 
 	client, err := buildLLM(cfg)
 	if err != nil {
@@ -240,29 +313,149 @@ func TestBuildLLMUsesRoutingNodes(t *testing.T) {
 	}
 }
 
+// TestBuildLLMUsesMultiRouteWrapper verifies runtime composition upgrades explicit llm.routes into the ordered multi-route wrapper instead of collapsing them back into one fixed-model route.
+// TestBuildLLMUsesMultiRouteWrapper 用于验证当显式声明 llm.routes 时，运行时装配会升级为有序多路由包装器，而不是把它们重新折叠成单条固定模型路由。
+func TestBuildLLMUsesMultiRouteWrapper(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		newLLMRouteForTest("openai", "https://primary.example/v1", []string{"llm-a"}, "model-a"),
+		newLLMRouteForTest("openai_native", "https://backup.example/v1", []string{"llm-b"}, "model-b"),
+	}
+
+	client, err := buildLLM(cfg)
+	if err != nil {
+		t.Fatalf("build llm with provider routes: %v", err)
+	}
+	if _, ok := client.(*ai_key_failover.LLMMultiRouteClient); !ok {
+		t.Fatalf("expected multi-route llm wrapper, got %T", client)
+	}
+}
+
+// TestAdaptLLMForProcessorRoutesClearsPinnedModel verifies processor-facing runtime wiring drops the fixed request model in multi-route mode so heterogeneous route failover can still occur.
+// TestAdaptLLMForProcessorRoutesClearsPinnedModel 用于验证处理器侧运行时装配会在多路由模式下移除固定请求模型，从而允许不同模型名的路由继续参与容灾。
+func TestAdaptLLMForProcessorRoutesClearsPinnedModel(t *testing.T) {
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		newLLMRouteForTest("openai", "https://primary.example/v1", []string{"llm-a"}, "model-a"),
+		newLLMRouteForTest("openai", "https://backup.example/v1", []string{"llm-b"}, "model-b"),
+	}
+	upstream := &recordingLLMClient{response: appports.LLMResponse{Content: "ok"}}
+
+	client := adaptLLMForProcessorRoutes(cfg, upstream)
+	if _, err := client.Generate(context.Background(), appports.LLMRequest{
+		Model:        "model-a",
+		SystemPrompt: "system",
+		UserPrompt:   "user",
+	}); err != nil {
+		t.Fatalf("generate through processor adapter: %v", err)
+	}
+	if upstream.lastRequest.Model != "" {
+		t.Fatalf("expected multi-route processor client to clear request model, got %q", upstream.lastRequest.Model)
+	}
+}
+
+// TestAdaptLLMForProcessorRoutesPreservesPinnedModelForSingleRoute verifies single-route runtime wiring keeps the processor-selected model untouched so fixed-route behavior remains stable.
+// TestAdaptLLMForProcessorRoutesPreservesPinnedModelForSingleRoute 用于验证单路由运行时装配会保留处理器选择的模型名，确保固定路由行为继续稳定。
+func TestAdaptLLMForProcessorRoutesPreservesPinnedModelForSingleRoute(t *testing.T) {
+	cfg := newRuntimeConfigForTest()
+	upstream := &recordingLLMClient{response: appports.LLMResponse{Content: "ok"}}
+
+	client := adaptLLMForProcessorRoutes(cfg, upstream)
+	if _, err := client.Generate(context.Background(), appports.LLMRequest{
+		Model:        "test-llm",
+		SystemPrompt: "system",
+		UserPrompt:   "user",
+	}); err != nil {
+		t.Fatalf("generate through single-route processor adapter: %v", err)
+	}
+	if upstream.lastRequest.Model != "test-llm" {
+		t.Fatalf("expected single-route processor client to preserve request model, got %q", upstream.lastRequest.Model)
+	}
+}
+
+// TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder verifies multi-route processor wiring can safely keep the primary model prompt when every route still resolves to the same prompt directory.
+// TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder 用于验证当多条路由最终仍指向同一提示词目录时，处理器可以继续安全复用主模型 prompt。
+func TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder(t *testing.T) {
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		{Name: "primary", Priority: 100, Provider: "openai", Endpoint: "https://primary.example/v1", APIKeys: []string{"llm-a"}, Model: "qwen3.5-flash-plus"},
+		{Name: "backup", Priority: 50, Provider: "openai", Endpoint: "https://backup.example/v1", APIKeys: []string{"llm-b"}, Model: "qwen3.5-flash"},
+	}
+	prompts := matchingPromptSource{folders: map[string]string{
+		"qwen3.5-flash-plus": "qwen-flash",
+		"qwen3.5-flash":      "qwen-flash",
+	}}
+
+	if got, want := selectProcessorPromptModel(cfg, prompts), "qwen3.5-flash-plus"; got != want {
+		t.Fatalf("processor prompt model = %q, want %q", got, want)
+	}
+}
+
+// TestSelectProcessorPromptModelFallsBackToDefaultForMixedPromptFolders verifies heterogeneous multi-route models drop back to the default prompt family so backup routes do not inherit the primary model's dedicated prompt bundle.
+// TestSelectProcessorPromptModelFallsBackToDefaultForMixedPromptFolders 用于验证当多路由跨越不同提示词目录时，处理器会退回 default prompt，避免备用路由继承主模型的专属 prompt 包。
+func TestSelectProcessorPromptModelFallsBackToDefaultForMixedPromptFolders(t *testing.T) {
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		{Name: "primary", Priority: 100, Provider: "openai", Endpoint: "https://primary.example/v1", APIKeys: []string{"llm-a"}, Model: "qwen3.5-flash-plus"},
+		{Name: "backup", Priority: 50, Provider: "openai", Endpoint: "https://backup.example/v1", APIKeys: []string{"llm-b"}, Model: "qwen3.5-base"},
+	}
+	prompts := matchingPromptSource{folders: map[string]string{
+		"qwen3.5-flash-plus": "qwen-flash",
+		"qwen3.5-base":       "qwen-base",
+	}}
+
+	if got := selectProcessorPromptModel(cfg, prompts); got != "" {
+		t.Fatalf("processor prompt model = %q, want empty string for default prompt fallback", got)
+	}
+}
+
+// TestBuildRerankerUsesMultiRouteWrapper verifies runtime composition upgrades explicit rerank.routes into the ordered multi-route wrapper while leaving the use-case level top_n configuration untouched.
+// TestBuildRerankerUsesMultiRouteWrapper 用于验证当显式声明 rerank.routes 时，运行时装配会升级为有序多路由包装器，同时保持用例层的 top_n 配置不变。
+func TestBuildRerankerUsesMultiRouteWrapper(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Routes = []config.RerankRouteConfig{
+		newRerankRouteForTest("dashscope", "https://rerank-primary.example/v1", []string{"rerank-a"}, "model-a", 5*time.Second),
+		newRerankRouteForTest("dashscope", "https://rerank-backup.example/v1", []string{"rerank-b"}, "model-b", 6*time.Second),
+	}
+
+	client, err := buildReranker(cfg)
+	if err != nil {
+		t.Fatalf("build reranker with provider routes: %v", err)
+	}
+	if _, ok := client.(*ai_key_failover.RerankMultiRouteClient); !ok {
+		t.Fatalf("expected multi-route rerank wrapper, got %T", client)
+	}
+}
+
 // TestBuildAdaptersAllowTrimmedProviderAliases verifies runtime adapter construction stays aligned with config validation when provider aliases contain surrounding whitespace.
 // TestBuildAdaptersAllowTrimmedProviderAliases 用于验证当 provider 别名带有首尾空白时，运行时适配器构建仍与配置校验口径保持一致。
 func TestBuildAdaptersAllowTrimmedProviderAliases(t *testing.T) {
-	cfg := config.DefaultLocal()
-	cfg.LLM.Provider = " openai "
-	cfg.LLM.Endpoint = "https://example.com/v1"
-	cfg.LLM.APIKey = "test-key"
-	cfg.LLM.Model = "test-llm"
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		newLLMRouteForTest(" openai ", "https://example.com/v1", []string{"test-key"}, "test-llm"),
+	}
 	cfg.Embedding.Provider = " openai "
 	cfg.Embedding.Endpoint = "https://example.com/v1"
-	cfg.Embedding.APIKey = "test-key"
+	cfg.Embedding.APIKeys = []string{"test-key"}
 	cfg.Embedding.Model = "test-embedding"
 	cfg.Embedding.Dimension = 1024
 	cfg.Rerank.Enabled = true
-	cfg.Rerank.Provider = " dashscope "
-	cfg.Rerank.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
-	cfg.Rerank.APIKey = "test-key"
-	cfg.Rerank.Model = "qwen3-vl-rerank"
+	cfg.Rerank.Routes = []config.RerankRouteConfig{
+		newRerankRouteForTest(
+			" dashscope ",
+			"https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+			[]string{"test-key"},
+			"qwen3-vl-rerank",
+			8*time.Second,
+		),
+	}
 	cfg.Vector.Provider = " lancedb "
 	cfg.Relational.Provider = " sqlite "
 	cfg.SQLite.Address = "127.0.0.1:19501"
 	cfg.LanceDB.Address = "127.0.0.1:19301"
 
+	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("config validation should accept trimmed provider aliases: %v", err)
 	}

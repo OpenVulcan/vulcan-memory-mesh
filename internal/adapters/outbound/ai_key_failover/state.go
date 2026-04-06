@@ -187,7 +187,7 @@ func (s *selector) candidateNodeIndexes(now time.Time, cost requestCost) ([]int,
 	}
 	if !s.enabled {
 		if !s.nodeHasCandidateKeyLocked(0, cost, now) {
-			return nil, fmt.Errorf("no healthy %s api keys available", s.serviceName)
+			return nil, newExhaustedCandidatesError(fmt.Sprintf("no healthy %s api keys available", s.serviceName))
 		}
 		return []int{0}, nil
 	}
@@ -199,7 +199,7 @@ func (s *selector) candidateNodeIndexes(now time.Time, cost requestCost) ([]int,
 		eligible = append(eligible, idx)
 	}
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("no %s routing nodes available within configured rpm/tpm/rpd budgets", s.serviceName)
+		return nil, newExhaustedCandidatesError(fmt.Sprintf("no %s routing nodes available within configured rpm/tpm/rpd budgets", s.serviceName))
 	}
 	if s.policy != "round_robin" {
 		return eligible, nil
@@ -227,7 +227,7 @@ func (s *selector) candidateKeyIndexes(nodeIndex int, now time.Time, cost reques
 	}
 	eligible := s.eligibleKeyIndexesLocked(nodeIndex, cost, now)
 	if len(eligible) == 0 {
-		return nil, fmt.Errorf("no healthy %s api keys available in %s", s.serviceName, node.name)
+		return nil, newExhaustedCandidatesError(fmt.Sprintf("no healthy %s api keys available in %s", s.serviceName, node.name))
 	}
 	if s.policy != "round_robin" {
 		return eligible, nil

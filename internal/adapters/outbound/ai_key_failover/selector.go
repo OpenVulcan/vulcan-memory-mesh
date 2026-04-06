@@ -65,7 +65,7 @@ func executeWithFailover[T any](
 	if lastSwitchableErr != nil {
 		return zero, lastSwitchableErr
 	}
-	return zero, fmt.Errorf("no healthy %s routing candidates available", selector.serviceName)
+	return zero, newExhaustedCandidatesError(fmt.Sprintf("no healthy %s routing candidates available", selector.serviceName))
 }
 
 // shouldRefundReservedBudget reports whether one classified failure should release the local pre-reserved key budget so later requests are not penalized.

@@ -5,6 +5,7 @@ package ai_key_failover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/url"
 	"strings"
@@ -444,18 +445,261 @@ func TestClassifyDashScopeErrorUsesRetryAfterHeader(t *testing.T) {
 	}
 }
 
+// TestLLMMultiRouteClientGenerateSwitchesRouteOnExhaustion verifies route-level failover can continue to the next provider/model route after the current route reports that its internal key pool has no healthy candidates left.
+// TestLLMMultiRouteClientGenerateSwitchesRouteOnExhaustion 用于验证当当前路由报告其内部 Key 池已无健康候选时，路由级容灾会继续切换到下一个 provider/model 路由。
+func TestLLMMultiRouteClientGenerateSwitchesRouteOnExhaustion(t *testing.T) {
+	primary := &stubLLMClient{err: newExhaustedCandidatesError("no healthy llm routing candidates available")}
+	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
+	client := &LLMMultiRouteClient{
+		routes: []llmMultiRouteEntry{
+			{name: "primary", priority: 20, model: "model-a", client: primary, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "backup", priority: 10, model: "model-b", client: backup, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+		},
+	}
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate with multi-route failover: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("llm multi-route response = %q", resp.Content)
+	}
+	if primary.calls != 1 || backup.calls != 1 {
+		t.Fatalf("unexpected llm multi-route call counts: primary=%d backup=%d", primary.calls, backup.calls)
+	}
+	if primary.lastRequest.Model != "model-a" || backup.lastRequest.Model != "model-b" {
+		t.Fatalf("unexpected routed llm models: primary=%q backup=%q", primary.lastRequest.Model, backup.lastRequest.Model)
+	}
+}
+
+// TestLLMMultiRouteClientGeneratePrefersHigherPriority verifies the route chooser prefers the highest-priority available route even when a lower-priority route appears earlier in declaration order.
+// TestLLMMultiRouteClientGeneratePrefersHigherPriority 用于验证即使低优先级路由写在前面，路由选择器仍会优先命中当前可用的最高优先级路由。
+func TestLLMMultiRouteClientGeneratePrefersHigherPriority(t *testing.T) {
+	low := &stubLLMClient{response: appports.LLMResponse{Content: "low"}}
+	high := &stubLLMClient{response: appports.LLMResponse{Content: "high"}}
+	client, err := NewLLMMultiRouteClient([]LLMRouteOptions{
+		{Name: "low", Priority: 10, Provider: "openai", Endpoint: "https://low.example/v1", Model: "model-a", APIKeys: []string{"key-low"}},
+		{Name: "high", Priority: 100, Provider: "openai", Endpoint: "https://high.example/v1", Model: "model-b", APIKeys: []string{"key-high"}},
+	})
+	if err != nil {
+		t.Fatalf("new llm multi-route client: %v", err)
+	}
+	client.routes[0].client = high
+	client.routes[1].client = low
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate with llm route priority: %v", err)
+	}
+	if resp.Content != "high" {
+		t.Fatalf("priority llm response = %q", resp.Content)
+	}
+	if high.calls != 1 || low.calls != 0 {
+		t.Fatalf("unexpected llm priority call counts: high=%d low=%d", high.calls, low.calls)
+	}
+}
+
+// TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSamePriority verifies routes with the same priority still keep their original declaration order so scheduling stays deterministic.
+// TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSamePriority 用于验证当多个路由优先级相同时，系统仍保持原始声明顺序，确保调度结果稳定可预期。
+func TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSamePriority(t *testing.T) {
+	first := &stubLLMClient{response: appports.LLMResponse{Content: "first"}}
+	second := &stubLLMClient{response: appports.LLMResponse{Content: "second"}}
+	client := &LLMMultiRouteClient{
+		routes: []llmMultiRouteEntry{
+			{name: "first", priority: 50, model: "model-a", client: first, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "second", priority: 50, model: "model-b", client: second, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+		},
+	}
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate with equal-priority llm routes: %v", err)
+	}
+	if resp.Content != "first" {
+		t.Fatalf("equal-priority llm response = %q", resp.Content)
+	}
+	if first.calls != 1 || second.calls != 0 {
+		t.Fatalf("unexpected equal-priority llm call counts: first=%d second=%d", first.calls, second.calls)
+	}
+}
+
+// TestLLMMultiRouteClientGenerateFiltersByRequestedModel verifies route-level failover only touches routes whose configured model exactly matches the caller's pinned model.
+// TestLLMMultiRouteClientGenerateFiltersByRequestedModel 用于验证当调用方显式固定模型时，路由级容灾只会访问那些配置模型完全匹配的路由。
+func TestLLMMultiRouteClientGenerateFiltersByRequestedModel(t *testing.T) {
+	primary := &stubLLMClient{response: appports.LLMResponse{Content: "wrong-route"}}
+	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
+	client := &LLMMultiRouteClient{
+		routes: []llmMultiRouteEntry{
+			{name: "primary", model: "model-a", client: primary, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "backup", model: "model-b", client: backup, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+		},
+	}
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{Model: "model-b", SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate with pinned llm route model: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("pinned llm response = %q", resp.Content)
+	}
+	if primary.calls != 0 || backup.calls != 1 {
+		t.Fatalf("unexpected llm pinned-route call counts: primary=%d backup=%d", primary.calls, backup.calls)
+	}
+}
+
+// TestLLMMultiRouteClientGenerateContinuesAfterRouteLocalInvalidRequest verifies one route-local 400 still falls through to the next route because heterogeneous providers or models may reject different payload contracts.
+// TestLLMMultiRouteClientGenerateContinuesAfterRouteLocalInvalidRequest 用于验证当首条路由返回路由级 400 时，系统仍会继续尝试下一条路由，因为异构 provider 或 model 可能接受不同的请求契约。
+func TestLLMMultiRouteClientGenerateContinuesAfterRouteLocalInvalidRequest(t *testing.T) {
+	primary := &stubLLMClient{err: newOpenAIAPIError(http.StatusBadRequest, "invalid request")}
+	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
+	client := &LLMMultiRouteClient{
+		routes: []llmMultiRouteEntry{
+			{name: "primary", model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
+				return classifyOpenAIError(err, Options{}, now)
+			}},
+			{name: "backup", model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
+				return classifyOpenAIError(err, Options{}, now)
+			}},
+		},
+	}
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate after route-local invalid request: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("route-local invalid-request llm response = %q", resp.Content)
+	}
+	if primary.calls != 1 || backup.calls != 1 {
+		t.Fatalf("unexpected invalid-request multi-route calls: primary=%d backup=%d", primary.calls, backup.calls)
+	}
+}
+
+// TestLLMMultiRouteClientGenerateContinuesAfterWrappedRouteTimeout verifies one route-local provider timeout still falls through to the next route when the outer request context itself remains healthy.
+// TestLLMMultiRouteClientGenerateContinuesAfterWrappedRouteTimeout 用于验证当外层请求上下文仍然健康时，单条 route 内部 provider 超时仍会继续切换到下一条 route。
+func TestLLMMultiRouteClientGenerateContinuesAfterWrappedRouteTimeout(t *testing.T) {
+	primary := &stubLLMClient{err: fmt.Errorf("call primary route: %w", context.DeadlineExceeded)}
+	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
+	client := &LLMMultiRouteClient{
+		routes: []llmMultiRouteEntry{
+			{name: "primary", model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
+				return classifyOpenAIError(err, Options{}, now)
+			}},
+			{name: "backup", model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
+				return classifyOpenAIError(err, Options{}, now)
+			}},
+		},
+	}
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate after wrapped route timeout: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("wrapped-timeout llm response = %q", resp.Content)
+	}
+	if primary.calls != 1 || backup.calls != 1 {
+		t.Fatalf("unexpected wrapped-timeout multi-route calls: primary=%d backup=%d", primary.calls, backup.calls)
+	}
+}
+
+// TestRerankMultiRouteClientRerankSwitchesRouteOnQuota verifies rerank route failover can move to the next provider/model route after the current route reports a switch-worthy quota failure.
+// TestRerankMultiRouteClientRerankSwitchesRouteOnQuota 用于验证当当前 rerank 路由报告值得切换的额度失败时，路由级容灾会切到下一个 provider/model 路由。
+func TestRerankMultiRouteClientRerankSwitchesRouteOnQuota(t *testing.T) {
+	primary := &stubRerankerClient{err: &dashscope_rerank.APIError{StatusCode: http.StatusTooManyRequests, Body: "insufficient_quota"}}
+	backup := &stubRerankerClient{results: []appports.RerankerResult{{ID: "doc-1", Score: 0.9}}}
+	client := &RerankMultiRouteClient{
+		routes: []rerankMultiRouteEntry{
+			{name: "primary", priority: 20, client: primary, classify: func(err error, now time.Time) failureDecision {
+				return classifyDashScopeError(err, Options{QuotaCooldown: 5 * time.Minute}, now)
+			}},
+			{name: "backup", priority: 10, client: backup, classify: func(err error, now time.Time) failureDecision {
+				return classifyDashScopeError(err, Options{QuotaCooldown: 5 * time.Minute}, now)
+			}},
+		},
+	}
+
+	results, err := client.Rerank(context.Background(), "query", []appports.RerankerDocument{{ID: "doc-1", Text: "text"}}, 1)
+	if err != nil {
+		t.Fatalf("rerank with multi-route failover: %v", err)
+	}
+	if got, want := len(results), 1; got != want {
+		t.Fatalf("rerank result count = %d, want %d", got, want)
+	}
+	if primary.calls != 1 || backup.calls != 1 {
+		t.Fatalf("unexpected rerank multi-route call counts: primary=%d backup=%d", primary.calls, backup.calls)
+	}
+}
+
+// TestRerankMultiRouteClientRerankContinuesAfterRouteLocalInvalidRequest verifies one rerank route-local 400 still falls through to the next route because heterogeneous rerank routes may accept different request contracts.
+// TestRerankMultiRouteClientRerankContinuesAfterRouteLocalInvalidRequest 用于验证当首条 rerank 路由返回路由级 400 时，系统仍会继续尝试下一条路由，因为异构 rerank 路由可能接受不同的请求契约。
+func TestRerankMultiRouteClientRerankContinuesAfterRouteLocalInvalidRequest(t *testing.T) {
+	primary := &stubRerankerClient{err: &dashscope_rerank.APIError{StatusCode: http.StatusBadRequest, Body: "invalid request"}}
+	backup := &stubRerankerClient{results: []appports.RerankerResult{{ID: "doc-1", Score: 0.9}}}
+	client := &RerankMultiRouteClient{
+		routes: []rerankMultiRouteEntry{
+			{name: "primary", client: primary, classify: func(err error, now time.Time) failureDecision {
+				return classifyDashScopeError(err, Options{}, now)
+			}},
+			{name: "backup", client: backup, classify: func(err error, now time.Time) failureDecision {
+				return classifyDashScopeError(err, Options{}, now)
+			}},
+		},
+	}
+
+	results, err := client.Rerank(context.Background(), "query", []appports.RerankerDocument{{ID: "doc-1", Text: "text"}}, 1)
+	if err != nil {
+		t.Fatalf("rerank after route-local invalid request: %v", err)
+	}
+	if got, want := len(results), 1; got != want || results[0].ID != "doc-1" {
+		t.Fatalf("unexpected route-local invalid-request rerank results: %#v", results)
+	}
+	if primary.calls != 1 || backup.calls != 1 {
+		t.Fatalf("unexpected rerank invalid-request multi-route calls: primary=%d backup=%d", primary.calls, backup.calls)
+	}
+}
+
+// TestRerankMultiRouteClientRerankPrefersHigherPriority verifies rerank scheduling prefers the highest-priority available route even when that route is declared after a lower-priority candidate.
+// TestRerankMultiRouteClientRerankPrefersHigherPriority 用于验证即使高优先级 rerank 路由写在低优先级候选后面，调度仍会优先命中更高优先级的可用路由。
+func TestRerankMultiRouteClientRerankPrefersHigherPriority(t *testing.T) {
+	low := &stubRerankerClient{results: []appports.RerankerResult{{ID: "low", Score: 0.1}}}
+	high := &stubRerankerClient{results: []appports.RerankerResult{{ID: "high", Score: 0.9}}}
+	client, err := NewRerankMultiRouteClient([]RerankRouteOptions{
+		{Name: "low", Priority: 10, Provider: "dashscope", Endpoint: "https://low.example/v1", Model: "model-low", Timeout: 5 * time.Second, APIKeys: []string{"key-low"}},
+		{Name: "high", Priority: 100, Provider: "dashscope", Endpoint: "https://high.example/v1", Model: "model-high", Timeout: 5 * time.Second, APIKeys: []string{"key-high"}},
+	})
+	if err != nil {
+		t.Fatalf("new rerank multi-route client: %v", err)
+	}
+	client.routes[0].client = high
+	client.routes[1].client = low
+
+	results, err := client.Rerank(context.Background(), "query", []appports.RerankerDocument{{ID: "doc-1", Text: "text"}}, 1)
+	if err != nil {
+		t.Fatalf("rerank with route priority: %v", err)
+	}
+	if got, want := len(results), 1; got != want || results[0].ID != "high" {
+		t.Fatalf("unexpected rerank priority results: %#v", results)
+	}
+	if high.calls != 1 || low.calls != 0 {
+		t.Fatalf("unexpected rerank priority call counts: high=%d low=%d", high.calls, low.calls)
+	}
+}
+
 // stubLLMClient records one canned LLM response or error for a specific API key in failover tests.
 // stubLLMClient 用于在容灾测试中按指定 API Key 记录一条预置的 LLM 响应或错误。
 type stubLLMClient struct {
-	response appports.LLMResponse
-	err      error
-	calls    int
+	response    appports.LLMResponse
+	err         error
+	calls       int
+	lastRequest appports.LLMRequest
 }
 
 // Generate returns the canned response or error while incrementing the call counter.
 // Generate 用于在递增调用计数的同时返回预置响应或错误。
-func (s *stubLLMClient) Generate(context.Context, appports.LLMRequest) (appports.LLMResponse, error) {
+func (s *stubLLMClient) Generate(_ context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
 	s.calls++
+	s.lastRequest = req
 	if s.err != nil {
 		return appports.LLMResponse{}, s.err
 	}

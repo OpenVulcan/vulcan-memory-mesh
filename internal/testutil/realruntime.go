@@ -104,10 +104,13 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(cfg.LLM.Endpoint) == "" || strings.TrimSpace(cfg.LLM.APIKey) == "" || strings.TrimSpace(cfg.LLM.Model) == "" {
+	llmRoute, ok := cfg.LLM.PrimaryRoute()
+	llmAPIKey, hasLLMAPIKey := firstRoutingAPIKey(llmRoute.APIKeys, llmRoute.Nodes)
+	if !ok || strings.TrimSpace(llmRoute.Endpoint) == "" || !hasLLMAPIKey || strings.TrimSpace(llmRoute.Model) == "" {
 		return nil, fmt.Errorf("real llm config is incomplete in %s", configPath)
 	}
-	if strings.TrimSpace(cfg.Embedding.Endpoint) == "" || strings.TrimSpace(cfg.Embedding.APIKey) == "" || strings.TrimSpace(cfg.Embedding.Model) == "" {
+	embeddingAPIKey, hasEmbeddingAPIKey := firstRoutingAPIKey(cfg.Embedding.APIKeys, cfg.Embedding.RoutingNodes())
+	if strings.TrimSpace(cfg.Embedding.Endpoint) == "" || !hasEmbeddingAPIKey || strings.TrimSpace(cfg.Embedding.Model) == "" {
 		return nil, fmt.Errorf("real embedding config is incomplete in %s", configPath)
 	}
 
@@ -118,9 +121,27 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 		ConfigPath: configPath,
 		Config:     cfg,
 		Prompts:    prompts,
-		LLM:        openai_native.NewLLMClient(cfg.LLM.Endpoint, cfg.LLM.APIKey, cfg.LLM.Model, cfg.LLM.Organization, cfg.LLM.Project, cfg.LLM.Params, cfg.LLM.ModelParams),
-		Embedding:  openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, cfg.Embedding.APIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams),
+		LLM:        openai_native.NewLLMClient(llmRoute.Endpoint, llmAPIKey, llmRoute.Model, llmRoute.Organization, llmRoute.Project, llmRoute.Params, llmRoute.ModelParams),
+		Embedding:  openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, embeddingAPIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams),
 	}, nil
+}
+
+// firstRoutingAPIKey returns the first usable API key from either one top-level key pool or one normalized node list so fixtures accept every supported key declaration shape.
+// firstRoutingAPIKey 用于从顶层 Key 池或已归一化的节点列表中返回第一个可用 API Key，确保测试基座接受所有受支持的 Key 声明形态。
+func firstRoutingAPIKey(apiKeys []string, nodes []config.AIRoutingNodeConfig) (string, bool) {
+	for _, apiKey := range apiKeys {
+		if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+			return trimmed, true
+		}
+	}
+	for _, node := range nodes {
+		for _, apiKey := range node.APIKeys {
+			if trimmed := strings.TrimSpace(apiKey); trimmed != "" {
+				return trimmed, true
+			}
+		}
+	}
+	return "", false
 }
 
 // findRepoRoot walks upward until it finds the repository root that contains both go.mod and output/configs/local.json.
