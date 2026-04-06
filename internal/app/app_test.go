@@ -563,6 +563,34 @@ func TestBuildAdaptersAllowTrimmedProviderAliases(t *testing.T) {
 	}
 }
 
+// TestBuildGoogleAIStudioAdapters verifies runtime composition accepts the native Google AI Studio provider for both LLM routes and embedding while keeping endpoint optional.
+// TestBuildGoogleAIStudioAdapters 用于验证运行时装配支持原生 Google AI Studio provider，并允许在 LLM 路由与 embedding 中省略 endpoint。
+func TestBuildGoogleAIStudioAdapters(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		{
+			Provider: "google_ai_studio",
+			APIKeys:  []string{"google-llm-key"},
+			Model:    "gemini-2.5-flash",
+		},
+	}
+	cfg.Embedding.Provider = "google_ai_studio"
+	cfg.Embedding.APIKeys = []string{"google-embed-key"}
+	cfg.Embedding.Model = "gemini-embedding-001"
+	cfg.Embedding.Dimension = 1024
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config validation should accept google ai studio: %v", err)
+	}
+	if _, err := buildLLM(cfg); err != nil {
+		t.Fatalf("build google ai studio llm: %v", err)
+	}
+	if _, err := buildEmbedding(cfg); err != nil {
+		t.Fatalf("build google ai studio embedding: %v", err)
+	}
+}
+
 // TestApplicationRunRejectsNilReceiver verifies exported startup fails with one deterministic error instead of panicking when callers invoke it on a nil application pointer.
 // TestApplicationRunRejectsNilReceiver 用于验证调用方在空应用指针上触发启动时，会收到确定性错误而不是直接 panic。
 func TestApplicationRunRejectsNilReceiver(t *testing.T) {

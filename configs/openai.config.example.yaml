@@ -12,6 +12,8 @@
 #   机密信息应继续保存在环境变量中，不建议直接把占位符替换为明文。
 # - Read base.yaml first if you need the full baseline meaning of each field.
 #   如果需要理解每个字段的完整底座语义，请先阅读 base.yaml。
+# - The runtime also supports google_ai_studio for LLM and embedding, but this file intentionally demonstrates the OpenAI-compatible path only.
+#   运行时同时支持 google_ai_studio 作为 LLM 和 embedding provider，但本文件刻意只展示 OpenAI-compatible 路径。
 
 grpc:
   # Example local listen address used by the OpenAI-compatible deployment template.
@@ -97,10 +99,14 @@ llm:
       # - openai_native：会映射到同一适配器的兼容别名。
       # - openai_go: accepted alias mapped to the same adapter.
       # - openai_go：会映射到同一适配器的兼容别名。
+      # - google_ai_studio: native Google AI Studio / Gemini API adapter built on google.golang.org/genai.
+      # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini API 原生适配器。
       provider: "openai"
 
       # Base endpoint placeholder for the chat/completions-compatible API.
       # chat/completions-compatible API 的接口根地址占位符。
+      # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
+      # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
       endpoint: "${OPENAI_BASE_URL}"
 
       # API key pool placeholder.
@@ -115,6 +121,8 @@ llm:
       # Active LLM model placeholder.
       # 当前 LLM 模型名占位符。
       model: "${OPENAI_MODEL}"
+      # These two fields are ignored when provider=google_ai_studio.
+      # 当 provider=google_ai_studio 时，这两个字段会被忽略。
       organization: "${OPENAI_ORGANIZATION}"
       project: "${OPENAI_PROJECT}"
 
@@ -157,7 +165,11 @@ embedding:
   # - openai_native：会映射到同一适配器的兼容别名。
   # - openai_go: accepted alias mapped to the same adapter.
   # - openai_go：会映射到同一适配器的兼容别名。
+  # - google_ai_studio: native Google AI Studio / Gemini embedding adapter built on google.golang.org/genai.
+  # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini 原生向量适配器。
   provider: "openai"
+  # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
+  # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
   endpoint: "${OPENAI_EMBEDDING_URL}"
   api_keys:
     - "${OPENAI_API_KEY}"
@@ -168,7 +180,11 @@ embedding:
 
   # Embedding dimension must match the backing vector store schema.
   # Embedding 维度必须与底层向量存储 schema 一致。
+  # When provider=google_ai_studio, this value is sent as Gemini output_dimensionality and should match a dimension supported by the selected model.
+  # 当 provider=google_ai_studio 时，该值会作为 Gemini 的 output_dimensionality 发送，并应与所选模型支持的维度保持一致。
   dimension: 1024
+  # These two fields are ignored when provider=google_ai_studio.
+  # 当 provider=google_ai_studio 时，这两个字段会被忽略。
   organization: "${OPENAI_ORGANIZATION}"
   project: "${OPENAI_PROJECT}"
   params: {}

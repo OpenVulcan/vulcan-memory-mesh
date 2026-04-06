@@ -181,6 +181,27 @@ func TestConfigValidateAcceptsExplicitRoutesAndEmbeddingKeys(t *testing.T) {
 	}
 }
 
+// TestConfigValidateAcceptsGoogleAIStudioProviders verifies the native Google AI Studio provider is accepted for LLM routes and embedding, and that its LLM endpoint may be omitted.
+// TestConfigValidateAcceptsGoogleAIStudioProviders 用于验证原生 Google AI Studio provider 可用于 LLM 路由与 embedding，并且其 LLM endpoint 可以省略。
+func TestConfigValidateAcceptsGoogleAIStudioProviders(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.Routes = []LLMRouteConfig{{
+		Provider: "google_ai_studio",
+		APIKeys:  []string{"google-llm-key"},
+		Model:    "gemini-2.5-flash",
+	}}
+	cfg.Embedding.Provider = "google_ai_studio"
+	cfg.Embedding.Endpoint = ""
+	cfg.Embedding.APIKeys = []string{"google-embed-key"}
+	cfg.Embedding.Model = "gemini-embedding-001"
+	cfg.Embedding.Dimension = 1024
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config with google ai studio: %v", err)
+	}
+}
+
 // TestConfigValidateRejectsMissingLLMRoutes verifies runtime validation no longer accepts llm top-level single-route fallbacks.
 // TestConfigValidateRejectsMissingLLMRoutes 用于验证运行时校验不再接受 llm 顶层单路由回退写法。
 func TestConfigValidateRejectsMissingLLMRoutes(t *testing.T) {

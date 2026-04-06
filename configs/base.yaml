@@ -246,7 +246,7 @@ llm:
       priority: 0
 
       # OpenAI-compatible provider identifier for this route.
-      # 当前路由使用的 OpenAI-compatible provider 标识。
+      # 当前路由使用的 provider 标识。
       # Allowed values:
       # 支持取值：
       # - openai: preferred canonical label for the current OpenAI-compatible adapter.
@@ -255,10 +255,16 @@ llm:
       # - openai_native：会映射到同一适配器的兼容别名。
       # - openai_go: accepted alias mapped to the same adapter.
       # - openai_go：会映射到同一适配器的兼容别名。
+      # - google_ai_studio: native Google AI Studio / Gemini API adapter built on google.golang.org/genai.
+      # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini API 原生适配器。
       provider: "openai"
 
       # Base endpoint for the current route.
       # 当前路由的接口根地址。
+      # For openai/openai_native/openai_go this should usually be set explicitly.
+      # 对 openai/openai_native/openai_go 来说，通常应显式填写该地址。
+      # For google_ai_studio this field is optional; leaving it empty uses the SDK default Gemini API base URL.
+      # 对 google_ai_studio 来说该字段是可选的；留空时将使用 SDK 默认的 Gemini API 基础地址。
       endpoint: ""
 
       # API key pool for this route.
@@ -287,10 +293,14 @@ llm:
 
       # Optional organization identifier for OpenAI-compatible providers.
       # OpenAI-compatible provider 的可选 organization 标识。
+      # google_ai_studio currently ignores this field.
+      # google_ai_studio 当前会忽略该字段。
       organization: ""
 
       # Optional project identifier for OpenAI-compatible providers.
       # OpenAI-compatible provider 的可选 project 标识。
+      # google_ai_studio currently ignores this field.
+      # google_ai_studio 当前会忽略该字段。
       project: ""
 
       # Route-level extra request parameters.
@@ -347,10 +357,14 @@ embedding:
   # - openai_native：会映射到同一适配器的兼容别名。
   # - openai_go: accepted alias mapped to the same adapter.
   # - openai_go：会映射到同一适配器的兼容别名。
+  # - google_ai_studio: native Google AI Studio / Gemini embedding adapter built on google.golang.org/genai.
+  # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini 原生向量适配器。
   provider: "openai"
 
   # Base endpoint for embedding requests.
   # Embedding 请求的接口根地址。
+  # For google_ai_studio this field is optional; leaving it empty uses the SDK default Gemini API base URL.
+  # 对 google_ai_studio 来说该字段是可选的；留空时将使用 SDK 默认的 Gemini API 基础地址。
   endpoint: ""
 
   # API key pool for embedding requests.
@@ -379,14 +393,22 @@ embedding:
 
   # Embedding vector dimension.
   # Embedding 向量维度。
+  # OpenAI-compatible providers use this as the requested vector dimension.
+  # OpenAI-compatible provider 会把它作为请求的目标向量维度。
+  # google_ai_studio maps this to Gemini output_dimensionality, so choose a model that supports the configured dimension.
+  # google_ai_studio 会把它映射为 Gemini 的 output_dimensionality，因此需要选择支持该维度的模型。
   dimension: 1024
 
   # Optional organization identifier.
   # 可选的 organization 标识。
+  # google_ai_studio currently ignores this field.
+  # google_ai_studio 当前会忽略该字段。
   organization: ""
 
   # Optional project identifier.
   # 可选的 project 标识。
+  # google_ai_studio currently ignores this field.
+  # google_ai_studio 当前会忽略该字段。
   project: ""
 
   # Embedding-level extra request parameters.

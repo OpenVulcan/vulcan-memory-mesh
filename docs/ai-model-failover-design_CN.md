@@ -7,6 +7,7 @@
 - `llm`
   - 只允许 `llm.routes[]`
   - 支持多 provider / 多 endpoint / 多 model / 多 route
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
   - route 之间按 `priority` 做有序容灾
 - `rerank`
   - 只允许 `rerank.routes[]`
@@ -16,6 +17,7 @@
   - 不允许 `routes`
   - 只允许固定 `provider + endpoint + model + dimension`
   - 只支持多 key 与 `nodes` 吞吐配置
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
   - 不支持跨 provider / 跨 model / 跨维度容灾
 
 这意味着：

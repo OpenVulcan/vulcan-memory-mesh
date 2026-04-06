@@ -5,6 +5,7 @@ package ai_key_failover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
+	"google.golang.org/genai"
 )
 
 // errorClass labels the normalized failure class used by the in-memory key failover state machine.
@@ -105,6 +107,66 @@ func classifyOpenAIError(err error, options Options, now time.Time) failureDecis
 	return failureDecision{Class: errorClassUnknown}
 }
 
+// classifyGoogleAIStudioError maps one Google AI Studio native SDK error into the same key-failover decision contract used by the OpenAI-compatible adapters.
+// classifyGoogleAIStudioError 用于把单次 Google AI Studio 原生 SDK 错误映射成与 OpenAI-compatible 适配器一致的 key-failover 决策契约。
+func classifyGoogleAIStudioError(err error, options Options, now time.Time) failureDecision {
+	if err == nil {
+		return failureDecision{Class: errorClassNone}
+	}
+	if isNetworkError(err) {
+		return failureDecision{Class: errorClassPublicFault}
+	}
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) {
+		return failureDecision{Class: errorClassUnknown}
+	}
+	body := strings.ToLower(strings.TrimSpace(apiErr.Message + " " + apiErr.Status + " " + fmt.Sprintf("%v", apiErr.Details)))
+	switch apiErr.Code {
+	case http.StatusBadRequest:
+		if shouldSwitchKeyOnGoogleAIStudioCredentialFailure(body) {
+			return failureDecision{
+				Class:     errorClassAuth,
+				SwitchKey: true,
+				Cooldown:  options.AuthCooldown,
+			}
+		}
+		return failureDecision{Class: errorClassInvalidRequest}
+	case http.StatusUnauthorized:
+		return failureDecision{
+			Class:     errorClassAuth,
+			SwitchKey: true,
+			Cooldown:  options.AuthCooldown,
+		}
+	case http.StatusForbidden:
+		if shouldSwitchKeyOnGoogleAIStudioCredentialFailure(body) {
+			return failureDecision{
+				Class:     errorClassAuth,
+				SwitchKey: true,
+				Cooldown:  options.AuthCooldown,
+			}
+		}
+		return failureDecision{Class: errorClassPublicFault}
+	case http.StatusTooManyRequests:
+		if containsAny(body, "insufficient_quota", "quota", "billing", "resource_exhausted", "exhausted", "budget") {
+			return failureDecision{
+				Class:     errorClassQuota,
+				SwitchKey: true,
+				Cooldown:  options.QuotaCooldown,
+			}
+		}
+		return failureDecision{
+			Class:     errorClassRateLimit,
+			SwitchKey: true,
+			Cooldown:  options.RateLimitCooldown,
+		}
+	default:
+		if apiErr.Code == http.StatusRequestTimeout || apiErr.Code == http.StatusConflict || apiErr.Code >= http.StatusInternalServerError {
+			return failureDecision{Class: errorClassPublicFault}
+		}
+	}
+	return failureDecision{Class: errorClassUnknown}
+}
+
 // shouldSwitchKeyOnOpenAIForbidden only returns true for 403 payloads that explicitly point to one bad or revoked credential instead of one shared permission problem.
 // shouldSwitchKeyOnOpenAIForbidden 仅在 403 载荷明确指向单个坏掉或被吊销的凭据时返回 true，而不会把共享权限问题误判为切 Key 场景。
 func shouldSwitchKeyOnOpenAIForbidden(body string) bool {
@@ -115,6 +177,26 @@ func shouldSwitchKeyOnOpenAIForbidden(body string) bool {
 		"incorrect_api_key",
 		"incorrect api key",
 		"bad api key",
+		"api key is disabled",
+		"key disabled",
+		"revoked api key",
+		"api key has been revoked",
+	)
+}
+
+// shouldSwitchKeyOnGoogleAIStudioCredentialFailure only returns true when a Gemini error payload explicitly points to one malformed, revoked, or otherwise key-scoped credential failure.
+// shouldSwitchKeyOnGoogleAIStudioCredentialFailure 仅在 Gemini 错误载荷明确指向单个格式错误、已吊销或其他 Key 级凭据失效时返回 true，避免把共享权限问题误判为切 Key 场景。
+func shouldSwitchKeyOnGoogleAIStudioCredentialFailure(body string) bool {
+	return containsAny(
+		body,
+		"api_key_invalid",
+		"api key invalid",
+		"api key not valid",
+		"invalid api key",
+		"bad api key",
+		"malformed api key",
+		"credential is malformed",
+		"invalid authentication credentials",
 		"api key is disabled",
 		"key disabled",
 		"revoked api key",

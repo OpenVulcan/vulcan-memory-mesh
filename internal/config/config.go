@@ -1149,10 +1149,10 @@ func validateLLMRouteConfigs(routes []LLMRouteConfig) error {
 		if strings.TrimSpace(route.Provider) == "" {
 			return fmt.Errorf("%s.provider is required", label)
 		}
-		if !isOpenAIProvider(route.Provider) {
-			return fmt.Errorf("%s.provider must use one openai-compatible provider", label)
+		if !isSupportedAIProvider(route.Provider) {
+			return fmt.Errorf("%s.provider must be one of openai, openai_native, openai_go, or google_ai_studio", label)
 		}
-		if strings.TrimSpace(route.Endpoint) == "" {
+		if providerRequiresEndpoint(route.Provider) && strings.TrimSpace(route.Endpoint) == "" {
 			return fmt.Errorf("%s.endpoint is required", label)
 		}
 		if strings.TrimSpace(route.Model) == "" {
@@ -1697,8 +1697,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Embedding.Provider) == "" {
 		return errors.New("embedding.provider is required")
 	}
-	if !isOpenAIProvider(c.Embedding.Provider) {
-		return errors.New("embedding.provider must use one openai-compatible provider")
+	if !isSupportedAIProvider(c.Embedding.Provider) {
+		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, or google_ai_studio")
 	}
 	if normalizeStorageModeValue(c.Storage.Mode) == "split" {
 		if strings.TrimSpace(c.LanceDB.Address) == "" {
@@ -1774,7 +1774,7 @@ func (c Config) Validate() error {
 	if err := validateLLMRouteConfigs(c.LLM.Routes); err != nil {
 		return err
 	}
-	if strings.TrimSpace(c.Embedding.Endpoint) == "" {
+	if providerRequiresEndpoint(c.Embedding.Provider) && strings.TrimSpace(c.Embedding.Endpoint) == "" {
 		return errors.New("embedding.endpoint is required")
 	}
 	embeddingNodes := c.Embedding.RoutingNodes()
@@ -2059,6 +2059,29 @@ func isOpenAIProvider(provider string) bool {
 	default:
 		return false
 	}
+}
+
+// isGoogleAIStudioProvider reports whether one provider alias resolves to the native Google AI Studio adapter.
+// isGoogleAIStudioProvider 用于判断某个 provider 别名是否会落到原生 Google AI Studio 适配器。
+func isGoogleAIStudioProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "google_ai_studio":
+		return true
+	default:
+		return false
+	}
+}
+
+// isSupportedAIProvider reports whether one provider alias resolves to any currently supported LLM/embedding adapter.
+// isSupportedAIProvider 用于判断某个 provider 别名是否会落到当前支持的任一 LLM/embedding 适配器。
+func isSupportedAIProvider(provider string) bool {
+	return isOpenAIProvider(provider) || isGoogleAIStudioProvider(provider)
+}
+
+// providerRequiresEndpoint reports whether the provider expects callers to supply an explicit endpoint instead of relying on the SDK default service root.
+// providerRequiresEndpoint 用于判断某个 provider 是否要求调用方显式提供 endpoint，而不是依赖 SDK 默认服务根地址。
+func providerRequiresEndpoint(provider string) bool {
+	return !isGoogleAIStudioProvider(provider)
 }
 
 // validatePayloadEncryptionKey checks the optional protected-log key format so startup can fail fast instead of silently dropping encrypted payload logging.

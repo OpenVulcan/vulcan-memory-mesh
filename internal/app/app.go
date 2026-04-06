@@ -566,43 +566,35 @@ func adaptLLMForProcessorRoutes(cfg config.Config, client appports.LLMClient) ap
 // buildOneLLMRouteClient materializes one concrete fixed-model LLM route that will handle provider-specific key failover inside its own key pool.
 // buildOneLLMRouteClient 用于实例化一条具体的固定模型 LLM 路由，让它在自己的 Key 池内部处理 provider 专属的 Key 容灾。
 func buildOneLLMRouteClient(route config.LLMRouteConfig, routeIndex int) (appports.LLMClient, error) {
-	switch normalizeProviderAlias(route.Provider) {
-	case "openai", "openai_native", "openai_go":
-		return ai_key_failover.NewLLMClient(
-			route.Endpoint,
-			route.Model,
-			route.Organization,
-			route.Project,
-			route.APIKeys,
-			route.Params,
-			route.ModelParams,
-			buildKeyFailoverOptions(buildRouteName("llm", routeIndex, route.Name), route.Nodes, route.KeyFailover),
-		)
-	default:
-		return nil, fmt.Errorf("unsupported llm provider: %s", route.Provider)
-	}
+	return ai_key_failover.NewProviderLLMClient(
+		route.Provider,
+		route.Endpoint,
+		route.Model,
+		route.Organization,
+		route.Project,
+		route.APIKeys,
+		route.Params,
+		route.ModelParams,
+		buildKeyFailoverOptions(buildRouteName("llm", routeIndex, route.Name), route.Nodes, route.KeyFailover),
+	)
 }
 
 // buildEmbedding selects the configured real embedding adapter for recall and semantic filtering.
 // buildEmbedding 用于为召回和语义过滤选择当前配置的真实 embedding 适配器。
 func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 	cfg.Normalize()
-	switch normalizeProviderAlias(cfg.Embedding.Provider) {
-	case "openai", "openai_native", "openai_go":
-		return ai_key_failover.NewEmbeddingClient(
-			cfg.Embedding.Endpoint,
-			cfg.Embedding.Model,
-			cfg.Embedding.Dimension,
-			cfg.Embedding.Organization,
-			cfg.Embedding.Project,
-			cfg.Embedding.APIKeys,
-			cfg.Embedding.Params,
-			cfg.Embedding.ModelParams,
-			buildKeyFailoverOptions("embedding", cfg.Embedding.RoutingNodes(), cfg.Embedding.KeyFailover),
-		)
-	default:
-		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
-	}
+	return ai_key_failover.NewProviderEmbeddingClient(
+		cfg.Embedding.Provider,
+		cfg.Embedding.Endpoint,
+		cfg.Embedding.Model,
+		cfg.Embedding.Dimension,
+		cfg.Embedding.Organization,
+		cfg.Embedding.Project,
+		cfg.Embedding.APIKeys,
+		cfg.Embedding.Params,
+		cfg.Embedding.ModelParams,
+		buildKeyFailoverOptions("embedding", cfg.Embedding.RoutingNodes(), cfg.Embedding.KeyFailover),
+	)
 }
 
 // buildReranker selects the optional second-stage rerank backend used to reorder first-stage vector recall hits.

@@ -700,6 +700,7 @@ AI 容灾边界当前统一为：
 - `llm`
   - 只支持 `llm.routes[]`
   - 支持多 provider / 多 model / 多 route 的有序容灾
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
   - `llm.routes[]` 示例现已包含 `rpm / tpm / rpd`
   - route 之间按 `priority` 切换，route 内部再做 `nodes + key_failover`
 - `rerank`
@@ -710,6 +711,7 @@ AI 容灾边界当前统一为：
 - `embedding`
   - 不支持 `routes`
   - 只支持固定 `provider + endpoint + model + dimension` 下的多 key 与 `nodes + key_failover`
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
   - `embedding` 示例现已包含顶层 `rpm / tpm / rpd`
   - `nodes` 只负责吞吐分档，不允许跨模型或跨 provider 混用向量空间
 

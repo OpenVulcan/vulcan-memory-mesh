@@ -68,8 +68,8 @@ llm:
       # 高于默认值的主路由优先级。
       priority: 100
 
-      # OpenAI-compatible provider used by this route.
-      # 当前路由使用的 OpenAI-compatible provider。
+      # Provider used by this route.
+      # 当前路由使用的 provider。
       # Allowed values:
       # 支持取值：
       # - openai: preferred canonical label for the current OpenAI-compatible adapter.
@@ -78,10 +78,14 @@ llm:
       # - openai_native：会映射到同一适配器的兼容别名。
       # - openai_go: accepted alias mapped to the same adapter.
       # - openai_go：会映射到同一适配器的兼容别名。
+      # - google_ai_studio: native Google AI Studio / Gemini API adapter built on google.golang.org/genai.
+      # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini API 原生适配器。
       provider: "openai"
 
       # Gateway endpoint supplied through environment variables so different environments can reuse the same file.
       # 通过环境变量注入的网关地址，便于不同环境复用同一份文件。
+      # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
+      # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
       endpoint: "${OPENAI_BASE_URL}"
 
       # API key pool for the primary route.
@@ -101,6 +105,8 @@ llm:
 
       # Optional OpenAI-compatible identity headers.
       # 可选的 OpenAI-compatible 身份头字段。
+      # These two fields are ignored when provider=google_ai_studio.
+      # 当 provider=google_ai_studio 时，这两个字段会被忽略。
       organization: "${OPENAI_ORGANIZATION}"
       project: "${OPENAI_PROJECT}"
 
@@ -132,8 +138,8 @@ llm:
         probe_after_cooldown: true
 
 embedding:
-  # Embedding requests still use one OpenAI-compatible provider definition.
-  # Embedding 请求仍然使用单一的 OpenAI-compatible provider 定义。
+  # Embedding requests use one fixed provider definition.
+  # Embedding 请求使用单一固定 provider 定义。
   # Allowed values:
   # 支持取值：
   # - openai: preferred canonical label for the current OpenAI-compatible adapter.
@@ -142,10 +148,14 @@ embedding:
   # - openai_native：会映射到同一适配器的兼容别名。
   # - openai_go: accepted alias mapped to the same adapter.
   # - openai_go：会映射到同一适配器的兼容别名。
+  # - google_ai_studio: native Google AI Studio / Gemini embedding adapter built on google.golang.org/genai.
+  # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini 原生向量适配器。
   provider: "openai"
 
   # Embedding endpoint supplied through environment variables.
   # 通过环境变量注入的 Embedding 接口地址。
+  # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
+  # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
   endpoint: "${OPENAI_EMBEDDING_URL}"
 
   # Embedding API key pool.
@@ -159,9 +169,13 @@ embedding:
 
   # Embedding model and dimension used by this deployment.
   # 当前部署使用的 Embedding 模型与维度。
+  # For google_ai_studio, dimension is sent as Gemini output_dimensionality and must stay aligned with the vector-store schema.
+  # 对 google_ai_studio 来说，dimension 会作为 Gemini 的 output_dimensionality 发送，并且必须继续与向量库存储 schema 对齐。
   model: "${OPENAI_EMBEDDING_MODEL}"
   dimension: 1024
 
+  # These two fields are ignored when provider=google_ai_studio.
+  # 当 provider=google_ai_studio 时，这两个字段会被忽略。
   organization: "${OPENAI_ORGANIZATION}"
   project: "${OPENAI_PROJECT}"
 

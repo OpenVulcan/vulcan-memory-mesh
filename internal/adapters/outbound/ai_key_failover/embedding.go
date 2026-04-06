@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -25,6 +24,7 @@ type EmbeddingClient struct {
 	params       map[string]any
 	modelParams  map[string]map[string]any
 	factory      func(string) appports.EmbeddingClient
+	classify     func(error, time.Time) failureDecision
 	clients      map[string]appports.EmbeddingClient
 	mu           sync.Mutex
 	options      Options
@@ -33,6 +33,12 @@ type EmbeddingClient struct {
 // NewEmbeddingClient creates one fixed-model embedding client that can rotate across multiple API keys of the same upstream configuration.
 // NewEmbeddingClient 用于创建一个固定模型 embedding 客户端，让它能在同一上游配置的多个 API Key 之间轮换。
 func NewEmbeddingClient(endpoint, model string, dimension int, organization, project string, apiKeys []string, params map[string]any, modelParams map[string]map[string]any, options Options) (*EmbeddingClient, error) {
+	return NewProviderEmbeddingClient("openai", endpoint, model, dimension, organization, project, apiKeys, params, modelParams, options)
+}
+
+// NewProviderEmbeddingClient creates one provider-aware fixed-model embedding client so the same key-failover shell can serve OpenAI-compatible and Google AI Studio native backends.
+// NewProviderEmbeddingClient 用于创建一个 provider 感知的固定模型 embedding 客户端，让同一套 key-failover 外壳可以同时服务 OpenAI-compatible 与 Google AI Studio 原生后端。
+func NewProviderEmbeddingClient(provider, endpoint, model string, dimension int, organization, project string, apiKeys []string, params map[string]any, modelParams map[string]map[string]any, options Options) (*EmbeddingClient, error) {
 	options.ServiceName = "embedding"
 	if len(options.Nodes) == 0 {
 		options.APIKeys = append([]string(nil), apiKeys...)
@@ -53,8 +59,9 @@ func NewEmbeddingClient(endpoint, model string, dimension int, organization, pro
 		clients:      make(map[string]appports.EmbeddingClient, len(apiKeys)),
 		options:      options,
 	}
-	client.factory = func(apiKey string) appports.EmbeddingClient {
-		return openai_native.NewEmbeddingClient(client.endpoint, apiKey, client.model, client.dimension, client.organization, client.project, client.params, client.modelParams)
+	client.factory, client.classify, err = newEmbeddingProviderFactory(provider, client.endpoint, client.model, client.dimension, client.organization, client.project, client.params, client.modelParams, client.options)
+	if err != nil {
+		return nil, err
 	}
 	return client, nil
 }
@@ -77,7 +84,10 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	return executeWithFailover(ctx, c.selector, cost, func(ctx context.Context, apiKey string) (appports.EmbeddingResponse, error) {
 		return c.clientForKey(apiKey).Embed(ctx, req)
 	}, func(err error, now time.Time) failureDecision {
-		return classifyOpenAIError(err, c.options, now)
+		if c.classify == nil {
+			return failureDecision{Class: errorClassUnknown}
+		}
+		return c.classify(err, now)
 	}, nil)
 }
 

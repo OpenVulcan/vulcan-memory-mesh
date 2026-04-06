@@ -135,25 +135,23 @@ func (c *LLMMultiRouteClient) candidateRouteIndexes(requestedModel string) ([]in
 // buildLLMMultiRouteEntry compiles one LLM route into the existing fixed-model key failover client and returns the provider-specific error classifier used for route switching.
 // buildLLMMultiRouteEntry 用于把单条 LLM 路由编译成现有固定模型 Key 容灾客户端，并返回路由切换所需的 provider 专属错误分类器。
 func buildLLMMultiRouteEntry(route LLMRouteOptions) (appports.LLMClient, func(error, time.Time) failureDecision, error) {
-	switch strings.ToLower(strings.TrimSpace(route.Provider)) {
-	case "openai", "openai_native", "openai_go":
-		client, err := NewLLMClient(
-			route.Endpoint,
-			route.Model,
-			route.Organization,
-			route.Project,
-			route.APIKeys,
-			route.Params,
-			route.ModelParams,
-			route.Options,
-		)
-		if err != nil {
-			return nil, nil, err
-		}
-		return client, func(err error, now time.Time) failureDecision {
-			return classifyOpenAIError(err, route.Options, now)
-		}, nil
-	default:
-		return nil, nil, fmt.Errorf("unsupported llm provider: %s", route.Provider)
+	client, err := NewProviderLLMClient(
+		route.Provider,
+		route.Endpoint,
+		route.Model,
+		route.Organization,
+		route.Project,
+		route.APIKeys,
+		route.Params,
+		route.ModelParams,
+		route.Options,
+	)
+	if err != nil {
+		return nil, nil, err
 	}
+	_, classifier, err := newLLMProviderFactory(route.Provider, route.Endpoint, route.Model, route.Organization, route.Project, route.Params, route.ModelParams, route.Options)
+	if err != nil {
+		return nil, nil, err
+	}
+	return client, classifier, nil
 }

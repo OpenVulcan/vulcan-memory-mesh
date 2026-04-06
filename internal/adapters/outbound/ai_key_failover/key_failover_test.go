@@ -15,6 +15,7 @@ import (
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
+	"google.golang.org/genai"
 )
 
 // TestLLMClientGenerateSwitchesKeyOnRateLimit verifies LLM failover skips to the next key when the current key is rate limited.
@@ -136,6 +137,102 @@ func TestLLMClientGenerateSwitchesKeyOnKeyScopedForbidden(t *testing.T) {
 	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
 	if err != nil {
 		t.Fatalf("generate with key-scoped forbidden failover: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("llm response content = %q", resp.Content)
+	}
+	if fakes["key-a"].calls != 1 || fakes["key-b"].calls != 1 {
+		t.Fatalf("unexpected call counts: key-a=%d key-b=%d", fakes["key-a"].calls, fakes["key-b"].calls)
+	}
+}
+
+// TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnInvalidKeyBadRequest verifies Gemini bad-request payloads that explicitly describe one invalid API key still rotate to the next credential.
+// TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnInvalidKeyBadRequest 用于验证当 Gemini 的 400 载荷明确说明当前 API Key 无效时，容灾仍会切换到下一把凭据。
+func TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnInvalidKeyBadRequest(t *testing.T) {
+	client, err := NewProviderLLMClient("google_ai_studio", "", "fixed-model", "", "", []string{"key-a", "key-b"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new google ai studio llm failover client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {err: newGoogleAIStudioAPIError(http.StatusBadRequest, "API key not valid. Please pass a valid API key.", "INVALID_ARGUMENT", map[string]any{"reason": "API_KEY_INVALID"})},
+		"key-b": {response: appports.LLMResponse{Content: "ok"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate with google invalid-key bad-request failover: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("llm response content = %q", resp.Content)
+	}
+	if fakes["key-a"].calls != 1 || fakes["key-b"].calls != 1 {
+		t.Fatalf("unexpected call counts: key-a=%d key-b=%d", fakes["key-a"].calls, fakes["key-b"].calls)
+	}
+}
+
+// TestGoogleAIStudioLLMClientGenerateStopsOnSharedForbidden verifies Gemini shared permission failures surface immediately instead of quarantining every key in the pool.
+// TestGoogleAIStudioLLMClientGenerateStopsOnSharedForbidden 用于验证 Gemini 的共享权限失败会被直接返回，而不是把整池 Key 都错误打入冷却。
+func TestGoogleAIStudioLLMClientGenerateStopsOnSharedForbidden(t *testing.T) {
+	client, err := NewProviderLLMClient("google_ai_studio", "", "fixed-model", "", "", []string{"key-a", "key-b"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new google ai studio llm failover client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {err: newGoogleAIStudioAPIError(http.StatusForbidden, "Permission denied on resource project because the model is not enabled.", "PERMISSION_DENIED", map[string]any{"reason": "MODEL_ACCESS_DENIED"})},
+		"key-b": {response: appports.LLMResponse{Content: "should-not-run"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	_, err = client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err == nil {
+		t.Fatal("expected shared forbidden permission error")
+	}
+	if fakes["key-a"].calls != 1 {
+		t.Fatalf("key-a calls = %d", fakes["key-a"].calls)
+	}
+	if fakes["key-b"].calls != 0 {
+		t.Fatalf("expected key-b to stay unused, got %d calls", fakes["key-b"].calls)
+	}
+}
+
+// TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnKeyScopedForbidden verifies Gemini forbidden payloads that explicitly describe one invalid credential still rotate to the next key.
+// TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnKeyScopedForbidden 用于验证当 Gemini 的 403 载荷明确指向单个无效凭据时，容灾仍会切换到下一把 Key。
+func TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnKeyScopedForbidden(t *testing.T) {
+	client, err := NewProviderLLMClient("google_ai_studio", "", "fixed-model", "", "", []string{"key-a", "key-b"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new google ai studio llm failover client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {err: newGoogleAIStudioAPIError(http.StatusForbidden, "Request had invalid authentication credentials.", "PERMISSION_DENIED", map[string]any{"reason": "API_KEY_INVALID"})},
+		"key-b": {response: appports.LLMResponse{Content: "ok"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate with google key-scoped forbidden failover: %v", err)
 	}
 	if resp.Content != "ok" {
 		t.Fatalf("llm response content = %q", resp.Content)
@@ -603,6 +700,34 @@ func TestLLMMultiRouteClientGenerateContinuesAfterWrappedRouteTimeout(t *testing
 	}
 }
 
+// TestLLMMultiRouteClientGenerateContinuesAfterGoogleRouteRateLimit verifies Google AI Studio route-local 429 errors are considered switch-worthy so the next route can continue serving traffic.
+// TestLLMMultiRouteClientGenerateContinuesAfterGoogleRouteRateLimit 用于验证 Google AI Studio 路由本地的 429 错误会被视为可切换故障，从而允许下一条路由继续提供服务。
+func TestLLMMultiRouteClientGenerateContinuesAfterGoogleRouteRateLimit(t *testing.T) {
+	primary := &stubLLMClient{err: genai.APIError{Code: http.StatusTooManyRequests, Message: "rate limit exceeded", Status: "RESOURCE_EXHAUSTED"}}
+	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
+	client := &LLMMultiRouteClient{
+		routes: []llmMultiRouteEntry{
+			{name: "primary-google", model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
+				return classifyGoogleAIStudioError(err, Options{RateLimitCooldown: 5 * time.Minute}, now)
+			}},
+			{name: "backup-openai", model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
+				return classifyOpenAIError(err, Options{}, now)
+			}},
+		},
+	}
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate after google route-local rate limit: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("google route-local rate-limit llm response = %q", resp.Content)
+	}
+	if primary.calls != 1 || backup.calls != 1 {
+		t.Fatalf("unexpected google rate-limit multi-route calls: primary=%d backup=%d", primary.calls, backup.calls)
+	}
+}
+
 // TestRerankMultiRouteClientRerankSwitchesRouteOnQuota verifies rerank route failover can move to the next provider/model route after the current route reports a switch-worthy quota failure.
 // TestRerankMultiRouteClientRerankSwitchesRouteOnQuota 用于验证当当前 rerank 路由报告值得切换的额度失败时，路由级容灾会切到下一个 provider/model 路由。
 func TestRerankMultiRouteClientRerankSwitchesRouteOnQuota(t *testing.T) {
@@ -732,5 +857,16 @@ func newOpenAIAPIError(status int, message string) error {
 		Message:    message,
 		Request:    &http.Request{Method: http.MethodPost, URL: &url.URL{Scheme: "https", Host: "example.com", Path: "/v1/chat/completions"}},
 		Response:   &http.Response{StatusCode: status, Header: make(http.Header)},
+	}
+}
+
+// newGoogleAIStudioAPIError builds one minimal Google AI Studio SDK error for failover classification tests.
+// newGoogleAIStudioAPIError 用于为容灾分类测试构造一条最小可用的 Google AI Studio SDK 错误。
+func newGoogleAIStudioAPIError(status int, message, statusText string, details ...map[string]any) error {
+	return genai.APIError{
+		Code:    status,
+		Message: message,
+		Status:  statusText,
+		Details: append([]map[string]any(nil), details...),
 	}
 }
