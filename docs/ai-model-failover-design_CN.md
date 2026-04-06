@@ -2,12 +2,12 @@
 
 ## 1. 设计结论
 
-基于当前仓库的检索链路特性，本项目的 AI 容灾方案应当**收敛为单服务配置下的多 API Key 容灾**，而不是多 provider / 多 model 容灾。
+基于当前仓库的检索链路特性，本项目的 AI 容灾方案应当**收敛为单服务配置下的固定模型节点轮询 + 节点内多 API Key 容灾**，而不是多 provider / 多 model 容灾。
 
 明确结论如下：
 
 1. `llm`、`embedding`、`rerank` 三类能力都保持**单一 provider、单一 endpoint、单一 model**。
-2. 容灾只发生在 **API Key** 层面。
+2. 容灾只发生在 **固定模型节点** 和 **节点内 API Key** 层面。
 3. `embedding` 链路严禁为容灾目的切换到另一套 embedding 模型。
 4. `向量维度相同` 只是必要条件，不是充分条件；即使维度一致，不同 embedding 模型仍可能处于完全不同的语义空间。
 5. 混用不同 embedding 模型生成的向量，会直接破坏：
@@ -25,8 +25,10 @@
 
 本设计只保留：
 
-- 同一模型配置下的多 key 轮换
-- 同一模型配置下的 key 暂停 / 恢复
+- 同一模型配置下的节点轮询
+- 同一节点内的多 key 轮换
+- 同一节点内的 key 暂停 / 恢复
+- 节点下每个 key 自己的 RPM / TPM / RPD 预判断
 - 重启后清空运行态
 
 ## 2. 为什么必须收窄到 Key 级容灾
@@ -241,13 +243,15 @@
 
 ## 6.1 设计原则
 
-保留现有单服务配置结构，只扩展 key 池能力，不引入 route。
+保留现有单服务配置结构，但引入**固定模型节点**概念；节点不是跨 provider / 跨 model route，而是同一模型下的配额组。
 
 推荐思路：
 
 - 原有 `api_key` 保留兼容
-- 新增 `api_keys`
-- 新增 `key_failover`
+- 原有 `api_keys` 保留兼容
+- 新增 `rpm / tpm / rpd`
+- 新增 `nodes`
+- 保留 `key_failover`
 
 ## 6.2 推荐结构
 
@@ -259,10 +263,24 @@
     "provider": "openai",
     "endpoint": "${OPENAI_BASE_URL}",
     "model": "${OPENAI_MODEL}",
-    "api_key": "${OPENAI_API_KEY}",
-    "api_keys": [
-      "${OPENAI_KEY_1}",
-      "${OPENAI_KEY_2}"
+    "nodes": [
+      {
+        "name": "free-tier-a",
+        "api_keys": [
+          "${OPENAI_KEY_1}",
+          "${OPENAI_KEY_2}"
+        ],
+        "rpm": 3,
+        "tpm": 40000,
+        "rpd": 200
+      },
+      {
+        "name": "free-tier-b",
+        "api_key": "${OPENAI_KEY_3}",
+        "rpm": 2,
+        "tpm": 20000,
+        "rpd": 100
+      }
     ],
     "organization": "${OPENAI_ORGANIZATION}",
     "project": "${OPENAI_PROJECT}",
@@ -281,28 +299,31 @@
 }
 ```
 
-`embedding` 与 `rerank` 结构同理，只是不再声明任何 `routes`。
+`embedding` 与 `rerank` 结构同理；节点都必须保持同一组固定的 `provider + endpoint + model`，其中 `embedding` 还必须保持同一 `dimension`。节点上声明的 `rpm / tpm / rpd` 表示该节点内每个 key 各自独享的额度；如果不同 key 档位不同，应拆成多个节点。
 
-## 6.3 `api_key` 与 `api_keys` 兼容规则
+## 6.3 `api_key` / `api_keys` / `nodes` 兼容规则
 
 建议归一化规则如下：
 
-1. 如果 `api_keys` 非空，优先使用 `api_keys`
-2. 否则读取 `api_key`
-3. `api_key` 允许是：
+1. 如果显式声明 `nodes`，优先使用 `nodes`
+2. 否则读取顶层 `api_keys`
+3. 再否则读取顶层 `api_key`
+4. `api_key` 允许是：
    - 单 key
    - 逗号分隔
    - 分号分隔
    - 换行分隔
-4. 归一化后：
+5. 归一化后：
    - 去空白
    - 去空串
    - 去重
+6. 当未声明 `nodes` 时，顶层 `api_key / api_keys + rpm / tpm / rpd` 会被折叠为一个默认节点
 
 推荐约定：
 
-- 文件配置优先写 `api_keys`
+- 文件配置优先写 `nodes`
 - 环境变量可以写成分隔字符串
+- 同平台但额度不同的免费 key，建议拆成多个节点，而不是塞进同一个节点
 
 ## 6.4 `key_failover` 建议字段
 
@@ -331,7 +352,9 @@
 - `provider` 必填
 - `endpoint` 必填
 - `model` 必填
-- `api_keys` 归一化后至少 1 个
+- `nodes` 归一化后至少 1 个
+- 每个节点都必须至少包含 1 个 key
+- 每个节点的 `rpm / tpm / rpd` 必须 `>= 0`
 
 ### `embedding`
 
@@ -339,7 +362,9 @@
 - `endpoint` 必填
 - `model` 必填
 - `dimension` 必填
-- `api_keys` 归一化后至少 1 个
+- `nodes` 归一化后至少 1 个
+- 每个节点都必须至少包含 1 个 key
+- 每个节点的 `rpm / tpm / rpd` 必须 `>= 0`
 - 不允许出现任何多模型切换配置
 
 ### `rerank`
@@ -348,14 +373,16 @@
   - `provider`
   - `endpoint`
   - `model`
-  - `api_keys`
+  - `nodes`
   均必须有效
+- 每个节点都必须至少包含 1 个 key
+- 每个节点的 `rpm / tpm / rpd` 必须 `>= 0`
 
 ## 7. 运行时结构设计
 
 ## 7.1 整体思路
 
-运行时仍然只装配一套服务配置，但该配置下面挂多个 key。
+运行时仍然只装配一套服务配置，但该配置下面挂多个固定模型节点；每个节点内部再挂多个 key。
 
 建议新增 key 级包装器：
 
@@ -371,25 +398,33 @@
 
 对下则维护：
 
-- 当前可用 key 列表
-- 每个 key 的运行时状态
+- 当前可用节点列表
+- 每个节点内各 key 自己的 RPM / TPM / RPD 运行态计数
+- 每个节点内部各 key 的运行时状态
 - key 对应的底层客户端缓存
 
 ## 7.2 运行时状态
 
-建议只维护 `keyState`：
+建议维护两层状态：
 
-- `disabledUntil`
-- `lastErrorClass`
-- `consecutiveFailures`
-- `lastUsedAt`
+- `keyBudgetState`
+  - `minuteBucket`
+  - `minuteRequests`
+  - `minuteTokens`
+  - `dayBucket`
+  - `dayRequests`
+- `keyState`
+  - `disabledUntil`
+  - `lastErrorClass`
+  - `consecutiveFailures`
+  - `lastUsedAt`
 
 不再维护：
 
-- `routeState`
+- `providerState`
 - `modelState`
 
-因为本设计不允许 route / model 切换。
+因为本设计不允许 provider / model 切换。
 
 ## 7.3 状态生命周期
 

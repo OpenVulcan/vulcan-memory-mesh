@@ -165,6 +165,10 @@ type LLMConfig struct {
 	Endpoint     string                    `json:"endpoint,omitempty"`
 	APIKey       string                    `json:"api_key,omitempty"`
 	APIKeys      []string                  `json:"api_keys,omitempty"`
+	RPM          int                       `json:"rpm,omitempty"`
+	TPM          int                       `json:"tpm,omitempty"`
+	RPD          int                       `json:"rpd,omitempty"`
+	Nodes        []AIRoutingNodeConfig     `json:"nodes,omitempty"`
 	Model        string                    `json:"model,omitempty"`
 	Organization string                    `json:"organization,omitempty"`
 	Project      string                    `json:"project,omitempty"`
@@ -180,6 +184,10 @@ type EmbeddingConfig struct {
 	Endpoint     string                    `json:"endpoint,omitempty"`
 	APIKey       string                    `json:"api_key,omitempty"`
 	APIKeys      []string                  `json:"api_keys,omitempty"`
+	RPM          int                       `json:"rpm,omitempty"`
+	TPM          int                       `json:"tpm,omitempty"`
+	RPD          int                       `json:"rpd,omitempty"`
+	Nodes        []AIRoutingNodeConfig     `json:"nodes,omitempty"`
 	Model        string                    `json:"model,omitempty"`
 	Dimension    int                       `json:"dimension,omitempty"`
 	Organization string                    `json:"organization,omitempty"`
@@ -192,15 +200,19 @@ type EmbeddingConfig struct {
 // RerankConfig holds the optional second-stage rerank settings used to reorder vector recall hits.
 // RerankConfig 用于保存可选的第二阶段重排序配置，让系统在向量召回后重新排序候选。
 type RerankConfig struct {
-	Enabled     bool              `json:"enabled"`
-	Provider    string            `json:"provider,omitempty"`
-	Endpoint    string            `json:"endpoint,omitempty"`
-	APIKey      string            `json:"api_key,omitempty"`
-	APIKeys     []string          `json:"api_keys,omitempty"`
-	Model       string            `json:"model,omitempty"`
-	TopN        int               `json:"top_n,omitempty"`
-	Timeout     Duration          `json:"timeout,omitempty"`
-	KeyFailover KeyFailoverConfig `json:"key_failover,omitempty"`
+	Enabled     bool                  `json:"enabled"`
+	Provider    string                `json:"provider,omitempty"`
+	Endpoint    string                `json:"endpoint,omitempty"`
+	APIKey      string                `json:"api_key,omitempty"`
+	APIKeys     []string              `json:"api_keys,omitempty"`
+	RPM         int                   `json:"rpm,omitempty"`
+	TPM         int                   `json:"tpm,omitempty"`
+	RPD         int                   `json:"rpd,omitempty"`
+	Nodes       []AIRoutingNodeConfig `json:"nodes,omitempty"`
+	Model       string                `json:"model,omitempty"`
+	TopN        int                   `json:"top_n,omitempty"`
+	Timeout     Duration              `json:"timeout,omitempty"`
+	KeyFailover KeyFailoverConfig     `json:"key_failover,omitempty"`
 }
 
 // KeyFailoverConfig keeps the in-memory API-key rotation policy for one fixed provider/endpoint/model tuple.
@@ -213,6 +225,17 @@ type KeyFailoverConfig struct {
 	QuotaCooldown      Duration `json:"quota_cooldown,omitempty"`
 	AuthCooldown       Duration `json:"auth_cooldown,omitempty"`
 	ProbeAfterCooldown bool     `json:"probe_after_cooldown"`
+}
+
+// AIRoutingNodeConfig describes one fixed-model routing node that may own multiple API keys while assigning the same per-key RPM/TPM/RPD limits to each member.
+// AIRoutingNodeConfig 用于描述一个固定模型轮询节点：它可以拥有多个 API Key，并给每个成员分配同一组独立的 RPM/TPM/RPD 限额。
+type AIRoutingNodeConfig struct {
+	Name    string   `json:"name,omitempty"`
+	APIKey  string   `json:"api_key,omitempty"`
+	APIKeys []string `json:"api_keys,omitempty"`
+	RPM     int      `json:"rpm,omitempty"`
+	TPM     int      `json:"tpm,omitempty"`
+	RPD     int      `json:"rpd,omitempty"`
 }
 
 // VectorConfig selects the vector backend used by recall and long-term memory indexing.
@@ -424,6 +447,7 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 type aiKeyFieldPresence struct {
 	HasAPIKey  bool
 	HasAPIKeys bool
+	HasNodes   bool
 }
 
 // applyLayeredAIKeyOverrideReset clears stale lower-priority key fields before one higher-priority config layer is unmarshaled.
@@ -436,13 +460,13 @@ func applyLayeredAIKeyOverrideReset(cfg *Config, body []byte) error {
 	if err := json.Unmarshal(body, &root); err != nil {
 		return err
 	}
-	if err := resetAIKeyFieldPair(root["llm"], &cfg.LLM.APIKey, &cfg.LLM.APIKeys); err != nil {
+	if err := resetAIKeyFieldPair(root["llm"], &cfg.LLM.APIKey, &cfg.LLM.APIKeys, &cfg.LLM.Nodes); err != nil {
 		return fmt.Errorf("parse llm key fields: %w", err)
 	}
-	if err := resetAIKeyFieldPair(root["embedding"], &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys); err != nil {
+	if err := resetAIKeyFieldPair(root["embedding"], &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes); err != nil {
 		return fmt.Errorf("parse embedding key fields: %w", err)
 	}
-	if err := resetAIKeyFieldPair(root["rerank"], &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys); err != nil {
+	if err := resetAIKeyFieldPair(root["rerank"], &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys, &cfg.Rerank.Nodes); err != nil {
 		return fmt.Errorf("parse rerank key fields: %w", err)
 	}
 	return nil
@@ -450,10 +474,23 @@ func applyLayeredAIKeyOverrideReset(cfg *Config, body []byte) error {
 
 // resetAIKeyFieldPair keeps layered config precedence stable by clearing the opposite field only when the current layer chooses exactly one key shape.
 // resetAIKeyFieldPair 用于在当前配置层只选择一种 key 写法时清空另一种写法，从而保持分层配置覆盖优先级稳定。
-func resetAIKeyFieldPair(sectionBody []byte, single *string, many *[]string) error {
+func resetAIKeyFieldPair(sectionBody []byte, single *string, many *[]string, nodes *[]AIRoutingNodeConfig) error {
 	presence, err := detectAIKeyFieldPresence(sectionBody)
 	if err != nil {
 		return err
+	}
+	switch {
+	case presence.HasNodes && !presence.HasAPIKey && !presence.HasAPIKeys:
+		if single != nil {
+			*single = ""
+		}
+		if many != nil {
+			*many = nil
+		}
+	case (presence.HasAPIKey || presence.HasAPIKeys) && !presence.HasNodes:
+		if nodes != nil {
+			*nodes = nil
+		}
 	}
 	switch {
 	case presence.HasAPIKey && !presence.HasAPIKeys:
@@ -480,9 +517,11 @@ func detectAIKeyFieldPresence(sectionBody []byte) (aiKeyFieldPresence, error) {
 	}
 	_, hasAPIKey := fields["api_key"]
 	_, hasAPIKeys := fields["api_keys"]
+	_, hasNodes := fields["nodes"]
 	return aiKeyFieldPresence{
 		HasAPIKey:  hasAPIKey,
 		HasAPIKeys: hasAPIKeys,
+		HasNodes:   hasNodes,
 	}, nil
 }
 
@@ -592,6 +631,24 @@ func defaultKeyFailoverConfig() KeyFailoverConfig {
 	}
 }
 
+// RoutingNodes returns the normalized LLM routing nodes, synthesizing one legacy single-node view when only api_key/api_keys are configured.
+// RoutingNodes 用于返回归一化后的 LLM 轮询节点；当只配置 api_key/api_keys 时，会合成一个兼容旧配置的默认节点视图。
+func (c LLMConfig) RoutingNodes() []AIRoutingNodeConfig {
+	return normalizeAIRoutingNodes(c.APIKey, c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
+}
+
+// RoutingNodes returns the normalized embedding routing nodes, synthesizing one legacy single-node view when only api_key/api_keys are configured.
+// RoutingNodes 用于返回归一化后的 embedding 轮询节点；当只配置 api_key/api_keys 时，会合成一个兼容旧配置的默认节点视图。
+func (c EmbeddingConfig) RoutingNodes() []AIRoutingNodeConfig {
+	return normalizeAIRoutingNodes(c.APIKey, c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
+}
+
+// RoutingNodes returns the normalized rerank routing nodes, synthesizing one legacy single-node view when only api_key/api_keys are configured.
+// RoutingNodes 用于返回归一化后的 rerank 轮询节点；当只配置 api_key/api_keys 时，会合成一个兼容旧配置的默认节点视图。
+func (c RerankConfig) RoutingNodes() []AIRoutingNodeConfig {
+	return normalizeAIRoutingNodes(c.APIKey, c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
+}
+
 // normalizeKeyFailoverPolicyValue canonicalizes the in-memory API-key rotation policy so config defaults, env overrides, and runtime wiring all compare one stable token.
 // normalizeKeyFailoverPolicyValue 用于规范化内存态 API Key 轮换策略，让默认值、环境变量覆盖和运行时装配始终比较同一份稳定 token。
 func normalizeKeyFailoverPolicyValue(policy string) string {
@@ -647,6 +704,76 @@ func normalizeAPIKeys(single string, many []string) []string {
 		normalized = append(normalized, value)
 	}
 	return normalized
+}
+
+// normalizeAIRoutingNodes canonicalizes routing-node declarations while preserving the legacy top-level api_key/api_keys contract as one synthesized default node.
+// normalizeAIRoutingNodes 用于规范化轮询节点声明，并在仍使用旧版顶层 api_key/api_keys 时合成一个默认节点以保持兼容。
+func normalizeAIRoutingNodes(single string, many []string, rpm, tpm, rpd int, nodes []AIRoutingNodeConfig) []AIRoutingNodeConfig {
+	if len(nodes) == 0 {
+		apiKeys := normalizeAPIKeys(single, many)
+		if len(apiKeys) == 0 {
+			return nil
+		}
+		return []AIRoutingNodeConfig{{
+			APIKey:  apiKeys[0],
+			APIKeys: apiKeys,
+			RPM:     rpm,
+			TPM:     tpm,
+			RPD:     rpd,
+		}}
+	}
+	normalized := make([]AIRoutingNodeConfig, 0, len(nodes))
+	for _, node := range nodes {
+		current := AIRoutingNodeConfig{
+			Name:    strings.TrimSpace(node.Name),
+			APIKeys: normalizeAPIKeys(node.APIKey, node.APIKeys),
+			RPM:     node.RPM,
+			TPM:     node.TPM,
+			RPD:     node.RPD,
+		}
+		if len(current.APIKeys) > 0 {
+			current.APIKey = current.APIKeys[0]
+		}
+		normalized = append(normalized, current)
+	}
+	return normalized
+}
+
+// normalizeAIRoutingNodeFields trims routing-node strings in place so later validation and runtime wiring see stable values even before full normalization runs.
+// normalizeAIRoutingNodeFields 用于原地裁剪轮询节点里的字符串字段，让后续校验和运行时装配在完整归一化前也能看到稳定值。
+func normalizeAIRoutingNodeFields(nodes []AIRoutingNodeConfig) []AIRoutingNodeConfig {
+	if len(nodes) == 0 {
+		return nil
+	}
+	normalized := make([]AIRoutingNodeConfig, 0, len(nodes))
+	for _, node := range nodes {
+		node.Name = strings.TrimSpace(node.Name)
+		node.APIKey = strings.TrimSpace(node.APIKey)
+		node.APIKeys = trimStringSlice(node.APIKeys)
+		normalized = append(normalized, node)
+	}
+	return normalized
+}
+
+// validateAIRoutingNodes verifies that each routing node exposes at least one key and only non-negative budget limits.
+// validateAIRoutingNodes 用于校验每个轮询节点都至少暴露一个 Key，并且预算限制必须是非负数。
+func validateAIRoutingNodes(serviceName string, nodes []AIRoutingNodeConfig) error {
+	for idx, node := range nodes {
+		label := fmt.Sprintf("%s.nodes[%d]", serviceName, idx)
+		if len(node.APIKeys) == 0 {
+			return fmt.Errorf("%s.api_key or %s.api_keys is required", label, label)
+		}
+		if node.RPM < 0 {
+			return fmt.Errorf("%s.rpm must be >= 0", label)
+		}
+		if node.TPM < 0 {
+			return fmt.Errorf("%s.tpm must be >= 0", label)
+		}
+		if node.RPD < 0 {
+			return fmt.Errorf("%s.rpd must be >= 0", label)
+		}
+	}
+	return nil
 }
 
 // normalizeKeyFailoverConfig fills safe in-memory cooldown defaults for one fixed-model API-key pool.
@@ -922,6 +1049,7 @@ func (c *Config) Normalize() {
 	if len(c.LLM.APIKeys) > 0 {
 		c.LLM.APIKey = c.LLM.APIKeys[0]
 	}
+	c.LLM.Nodes = normalizeAIRoutingNodes(c.LLM.APIKey, c.LLM.APIKeys, c.LLM.RPM, c.LLM.TPM, c.LLM.RPD, c.LLM.Nodes)
 	normalizeKeyFailoverConfig(&c.LLM.KeyFailover)
 	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
 		c.Embedding.Dimension = 1024
@@ -930,6 +1058,7 @@ func (c *Config) Normalize() {
 	if len(c.Embedding.APIKeys) > 0 {
 		c.Embedding.APIKey = c.Embedding.APIKeys[0]
 	}
+	c.Embedding.Nodes = normalizeAIRoutingNodes(c.Embedding.APIKey, c.Embedding.APIKeys, c.Embedding.RPM, c.Embedding.TPM, c.Embedding.RPD, c.Embedding.Nodes)
 	normalizeKeyFailoverConfig(&c.Embedding.KeyFailover)
 	if strings.TrimSpace(c.Rerank.Provider) == "" {
 		c.Rerank.Provider = "dashscope"
@@ -950,6 +1079,7 @@ func (c *Config) Normalize() {
 	if len(c.Rerank.APIKeys) > 0 {
 		c.Rerank.APIKey = c.Rerank.APIKeys[0]
 	}
+	c.Rerank.Nodes = normalizeAIRoutingNodes(c.Rerank.APIKey, c.Rerank.APIKeys, c.Rerank.RPM, c.Rerank.TPM, c.Rerank.RPD, c.Rerank.Nodes)
 	normalizeKeyFailoverConfig(&c.Rerank.KeyFailover)
 	if strings.TrimSpace(c.Logging.Level) == "" {
 		c.Logging.Level = "info"
@@ -1057,6 +1187,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.LLM.Endpoint = strings.TrimSpace(c.LLM.Endpoint)
 	c.LLM.APIKey = strings.TrimSpace(c.LLM.APIKey)
 	c.LLM.APIKeys = trimStringSlice(c.LLM.APIKeys)
+	c.LLM.Nodes = normalizeAIRoutingNodeFields(c.LLM.Nodes)
 	c.LLM.Model = strings.TrimSpace(c.LLM.Model)
 	c.LLM.Organization = strings.TrimSpace(c.LLM.Organization)
 	c.LLM.Project = strings.TrimSpace(c.LLM.Project)
@@ -1065,6 +1196,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Embedding.Endpoint = strings.TrimSpace(c.Embedding.Endpoint)
 	c.Embedding.APIKey = strings.TrimSpace(c.Embedding.APIKey)
 	c.Embedding.APIKeys = trimStringSlice(c.Embedding.APIKeys)
+	c.Embedding.Nodes = normalizeAIRoutingNodeFields(c.Embedding.Nodes)
 	c.Embedding.Model = strings.TrimSpace(c.Embedding.Model)
 	c.Embedding.Organization = strings.TrimSpace(c.Embedding.Organization)
 	c.Embedding.Project = strings.TrimSpace(c.Embedding.Project)
@@ -1073,6 +1205,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Rerank.Endpoint = strings.TrimSpace(c.Rerank.Endpoint)
 	c.Rerank.APIKey = strings.TrimSpace(c.Rerank.APIKey)
 	c.Rerank.APIKeys = trimStringSlice(c.Rerank.APIKeys)
+	c.Rerank.Nodes = normalizeAIRoutingNodeFields(c.Rerank.Nodes)
 	c.Rerank.Model = strings.TrimSpace(c.Rerank.Model)
 	c.Rerank.KeyFailover.Policy = strings.TrimSpace(c.Rerank.KeyFailover.Policy)
 	c.Vector.Provider = strings.TrimSpace(c.Vector.Provider)
@@ -1247,8 +1380,12 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.LLM.Endpoint) == "" {
 		return errors.New("llm.endpoint is required")
 	}
-	if len(normalizeAPIKeys(c.LLM.APIKey, c.LLM.APIKeys)) == 0 {
+	llmNodes := c.LLM.RoutingNodes()
+	if len(llmNodes) == 0 {
 		return errors.New("llm.api_key or llm.api_keys is required")
+	}
+	if err := validateAIRoutingNodes("llm", llmNodes); err != nil {
+		return err
 	}
 	if strings.TrimSpace(c.LLM.Model) == "" {
 		return errors.New("llm.model is required")
@@ -1256,8 +1393,12 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Embedding.Endpoint) == "" {
 		return errors.New("embedding.endpoint is required")
 	}
-	if len(normalizeAPIKeys(c.Embedding.APIKey, c.Embedding.APIKeys)) == 0 {
+	embeddingNodes := c.Embedding.RoutingNodes()
+	if len(embeddingNodes) == 0 {
 		return errors.New("embedding.api_key or embedding.api_keys is required")
+	}
+	if err := validateAIRoutingNodes("embedding", embeddingNodes); err != nil {
+		return err
 	}
 	if strings.TrimSpace(c.Embedding.Model) == "" {
 		return errors.New("embedding.model is required")
@@ -1277,8 +1418,12 @@ func (c Config) Validate() error {
 		if strings.TrimSpace(c.Rerank.Model) == "" {
 			return errors.New("rerank.model is required when rerank is enabled")
 		}
-		if len(normalizeAPIKeys(c.Rerank.APIKey, c.Rerank.APIKeys)) == 0 {
+		rerankNodes := c.Rerank.RoutingNodes()
+		if len(rerankNodes) == 0 {
 			return errors.New("rerank.api_key or rerank.api_keys is required when rerank is enabled")
+		}
+		if err := validateAIRoutingNodes("rerank", rerankNodes); err != nil {
+			return err
 		}
 		if c.Rerank.TopN <= 0 {
 			return errors.New("rerank.top_n must be > 0 when rerank is enabled")
@@ -1341,19 +1486,25 @@ func applyEnvOverrides(cfg *Config) {
 			*target = v
 		}
 	}
-	setSingleKey := func(k string, target *string, pool *[]string) {
+	setSingleKey := func(k string, target *string, pool *[]string, nodes *[]AIRoutingNodeConfig) {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			*target = v
 			if pool != nil {
 				*pool = nil
 			}
+			if nodes != nil {
+				*nodes = nil
+			}
 		}
 	}
-	setStringSlice := func(k string, target *[]string, legacy *string) {
+	setStringSlice := func(k string, target *[]string, legacy *string, nodes *[]AIRoutingNodeConfig) {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			*target = splitConfigAPIKeys(v)
 			if legacy != nil {
 				*legacy = ""
+			}
+			if nodes != nil {
+				*nodes = nil
 			}
 		}
 	}
@@ -1433,8 +1584,11 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_POSTGRES_MIGRATION_BATCH_SIZE", &cfg.Postgres.MigrationBatchSize)
 	setString("VMM_LLM_PROVIDER", &cfg.LLM.Provider)
 	setString("VMM_LLM_ENDPOINT", &cfg.LLM.Endpoint)
-	setSingleKey("VMM_LLM_API_KEY", &cfg.LLM.APIKey, &cfg.LLM.APIKeys)
-	setStringSlice("VMM_LLM_API_KEYS", &cfg.LLM.APIKeys, &cfg.LLM.APIKey)
+	setSingleKey("VMM_LLM_API_KEY", &cfg.LLM.APIKey, &cfg.LLM.APIKeys, &cfg.LLM.Nodes)
+	setStringSlice("VMM_LLM_API_KEYS", &cfg.LLM.APIKeys, &cfg.LLM.APIKey, &cfg.LLM.Nodes)
+	setInt("VMM_LLM_RPM", &cfg.LLM.RPM)
+	setInt("VMM_LLM_TPM", &cfg.LLM.TPM)
+	setInt("VMM_LLM_RPD", &cfg.LLM.RPD)
 	setString("VMM_LLM_MODEL", &cfg.LLM.Model)
 	setString("VMM_LLM_ORGANIZATION", &cfg.LLM.Organization)
 	setString("VMM_LLM_PROJECT", &cfg.LLM.Project)
@@ -1447,8 +1601,11 @@ func applyEnvOverrides(cfg *Config) {
 	setBool("VMM_LLM_KEY_FAILOVER_PROBE_AFTER_COOLDOWN", &cfg.LLM.KeyFailover.ProbeAfterCooldown)
 	setString("VMM_EMBED_PROVIDER", &cfg.Embedding.Provider)
 	setString("VMM_EMBED_ENDPOINT", &cfg.Embedding.Endpoint)
-	setSingleKey("VMM_EMBED_API_KEY", &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys)
-	setStringSlice("VMM_EMBED_API_KEYS", &cfg.Embedding.APIKeys, &cfg.Embedding.APIKey)
+	setSingleKey("VMM_EMBED_API_KEY", &cfg.Embedding.APIKey, &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes)
+	setStringSlice("VMM_EMBED_API_KEYS", &cfg.Embedding.APIKeys, &cfg.Embedding.APIKey, &cfg.Embedding.Nodes)
+	setInt("VMM_EMBED_RPM", &cfg.Embedding.RPM)
+	setInt("VMM_EMBED_TPM", &cfg.Embedding.TPM)
+	setInt("VMM_EMBED_RPD", &cfg.Embedding.RPD)
 	setString("VMM_EMBED_MODEL", &cfg.Embedding.Model)
 	setInt("VMM_EMBED_DIMENSION", &cfg.Embedding.Dimension)
 	setString("VMM_EMBED_ORGANIZATION", &cfg.Embedding.Organization)
@@ -1463,8 +1620,11 @@ func applyEnvOverrides(cfg *Config) {
 	setBool("VMM_RERANK_ENABLED", &cfg.Rerank.Enabled)
 	setString("VMM_RERANK_PROVIDER", &cfg.Rerank.Provider)
 	setString("VMM_RERANK_ENDPOINT", &cfg.Rerank.Endpoint)
-	setSingleKey("VMM_RERANK_API_KEY", &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys)
-	setStringSlice("VMM_RERANK_API_KEYS", &cfg.Rerank.APIKeys, &cfg.Rerank.APIKey)
+	setSingleKey("VMM_RERANK_API_KEY", &cfg.Rerank.APIKey, &cfg.Rerank.APIKeys, &cfg.Rerank.Nodes)
+	setStringSlice("VMM_RERANK_API_KEYS", &cfg.Rerank.APIKeys, &cfg.Rerank.APIKey, &cfg.Rerank.Nodes)
+	setInt("VMM_RERANK_RPM", &cfg.Rerank.RPM)
+	setInt("VMM_RERANK_TPM", &cfg.Rerank.TPM)
+	setInt("VMM_RERANK_RPD", &cfg.Rerank.RPD)
 	setString("VMM_RERANK_MODEL", &cfg.Rerank.Model)
 	setInt("VMM_RERANK_TOP_N", &cfg.Rerank.TopN)
 	setDuration("VMM_RERANK_TIMEOUT", &cfg.Rerank.Timeout)

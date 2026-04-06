@@ -449,7 +449,7 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 			cfg.LLM.APIKeys,
 			cfg.LLM.Params,
 			cfg.LLM.ModelParams,
-			buildKeyFailoverOptions("llm", cfg.LLM.APIKeys, cfg.LLM.KeyFailover),
+			buildKeyFailoverOptions("llm", cfg.LLM.RoutingNodes(), cfg.LLM.KeyFailover),
 		)
 	default:
 		return nil, fmt.Errorf("unsupported llm provider: %s", cfg.LLM.Provider)
@@ -471,7 +471,7 @@ func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 			cfg.Embedding.APIKeys,
 			cfg.Embedding.Params,
 			cfg.Embedding.ModelParams,
-			buildKeyFailoverOptions("embedding", cfg.Embedding.APIKeys, cfg.Embedding.KeyFailover),
+			buildKeyFailoverOptions("embedding", cfg.Embedding.RoutingNodes(), cfg.Embedding.KeyFailover),
 		)
 	default:
 		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
@@ -492,7 +492,7 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 			cfg.Rerank.Model,
 			cfg.Rerank.Timeout.Duration,
 			cfg.Rerank.APIKeys,
-			buildKeyFailoverOptions("rerank", cfg.Rerank.APIKeys, cfg.Rerank.KeyFailover),
+			buildKeyFailoverOptions("rerank", cfg.Rerank.RoutingNodes(), cfg.Rerank.KeyFailover),
 		)
 	default:
 		return nil, fmt.Errorf("unsupported rerank provider: %s", cfg.Rerank.Provider)
@@ -501,12 +501,29 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 
 // buildKeyFailoverOptions converts one normalized runtime config into the fixed-model API-key failover options consumed by outbound wrappers.
 // buildKeyFailoverOptions 用于把一份已归一化的运行时配置转换为出站包装器消费的固定模型 API Key 容灾参数。
-func buildKeyFailoverOptions(serviceName string, apiKeys []string, cfg config.KeyFailoverConfig) ai_key_failover.Options {
+func buildKeyFailoverOptions(serviceName string, nodes []config.AIRoutingNodeConfig, cfg config.KeyFailoverConfig) ai_key_failover.Options {
+	routingNodes := make([]ai_key_failover.NodeOptions, 0, len(nodes))
+	totalCandidates := 0
+	for idx, node := range nodes {
+		name := strings.TrimSpace(node.Name)
+		if name == "" {
+			name = fmt.Sprintf("%s-node-%d", serviceName, idx+1)
+		}
+		apiKeys := append([]string(nil), node.APIKeys...)
+		totalCandidates += len(apiKeys)
+		routingNodes = append(routingNodes, ai_key_failover.NodeOptions{
+			Name:    name,
+			APIKeys: apiKeys,
+			RPM:     node.RPM,
+			TPM:     node.TPM,
+			RPD:     node.RPD,
+		})
+	}
 	return ai_key_failover.Options{
 		ServiceName:        serviceName,
-		Enabled:            cfg.Enabled && len(apiKeys) > 1,
+		Enabled:            cfg.Enabled && totalCandidates > 1,
 		Policy:             strings.TrimSpace(cfg.Policy),
-		APIKeys:            append([]string(nil), apiKeys...),
+		Nodes:              routingNodes,
 		RespectRetryAfter:  cfg.RespectRetryAfter,
 		RateLimitCooldown:  cfg.RateLimitCooldown.Duration,
 		QuotaCooldown:      cfg.QuotaCooldown.Duration,

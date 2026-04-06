@@ -1132,6 +1132,64 @@ func TestConfigNormalizeExpandsAPIKeyPools(t *testing.T) {
 	}
 }
 
+// TestConfigNormalizeSynthesizesRoutingNodes verifies legacy top-level key pools and quota knobs are folded into one default routing node.
+// TestConfigNormalizeSynthesizesRoutingNodes 用于验证旧版顶层 key 池与配额配置会被折叠成一个默认轮询节点。
+func TestConfigNormalizeSynthesizesRoutingNodes(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.APIKeys = []string{"llm-a", "llm-b"}
+	cfg.LLM.APIKey = ""
+	cfg.LLM.RPM = 7
+	cfg.LLM.TPM = 700
+	cfg.LLM.RPD = 70
+
+	cfg.Normalize()
+
+	nodes := cfg.LLM.RoutingNodes()
+	if got, want := len(nodes), 1; got != want {
+		t.Fatalf("llm routing node count = %d, want %d (%#v)", got, want, nodes)
+	}
+	if got, want := len(nodes[0].APIKeys), 2; got != want {
+		t.Fatalf("llm routing node api key count = %d, want %d (%#v)", got, want, nodes[0].APIKeys)
+	}
+	if nodes[0].RPM != 7 || nodes[0].TPM != 700 || nodes[0].RPD != 70 {
+		t.Fatalf("llm routing node limits = %#v", nodes[0])
+	}
+}
+
+// TestConfigValidateAcceptsExplicitRoutingNodes verifies AI configs can omit top-level api_key/api_keys when explicit routing nodes are supplied.
+// TestConfigValidateAcceptsExplicitRoutingNodes 用于验证当显式提供轮询节点时，AI 配置可以不再填写顶层 api_key/api_keys。
+func TestConfigValidateAcceptsExplicitRoutingNodes(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.APIKey = ""
+	cfg.LLM.APIKeys = nil
+	cfg.LLM.Nodes = []AIRoutingNodeConfig{
+		{Name: "primary", APIKeys: []string{"llm-a", "llm-b"}, RPM: 3, TPM: 300, RPD: 30},
+		{Name: "backup", APIKey: "llm-c", RPM: 1},
+	}
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config with explicit llm routing nodes: %v", err)
+	}
+	if got, want := len(cfg.LLM.RoutingNodes()), 2; got != want {
+		t.Fatalf("llm routing node count = %d, want %d", got, want)
+	}
+}
+
+// TestConfigValidateRejectsRoutingNodeWithoutKeys verifies each routing node must still expose at least one usable key after normalization.
+// TestConfigValidateRejectsRoutingNodeWithoutKeys 用于验证每个轮询节点在归一化后都必须至少暴露一个可用 Key。
+func TestConfigValidateRejectsRoutingNodeWithoutKeys(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Embedding.APIKey = ""
+	cfg.Embedding.APIKeys = nil
+	cfg.Embedding.Nodes = []AIRoutingNodeConfig{{Name: "broken-node", RPM: 2}}
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "embedding.nodes[0].api_key or embedding.nodes[0].api_keys is required" {
+		t.Fatalf("unexpected embedding node validate error: %v", err)
+	}
+}
+
 // TestConfigValidateRejectsMissingNormalizedKeyPools verifies validation rejects AI configs that end up without any usable key after normalization.
 // TestConfigValidateRejectsMissingNormalizedKeyPools 用于验证当归一化后没有任何可用 Key 时，配置校验会拒绝对应的 AI 配置。
 func TestConfigValidateRejectsMissingNormalizedKeyPools(t *testing.T) {
@@ -1194,8 +1252,11 @@ func TestApplyEnvOverridesSetsAIKeyPools(t *testing.T) {
 func TestApplyEnvOverridesSingleAPIKeysReplacePools(t *testing.T) {
 	cfg := newValidConfigForTest()
 	cfg.LLM.APIKeys = []string{"llm-old-a", "llm-old-b"}
+	cfg.LLM.Nodes = []AIRoutingNodeConfig{{Name: "stale-llm-node", APIKeys: []string{"llm-node-a", "llm-node-b"}, RPM: 2}}
 	cfg.Embedding.APIKeys = []string{"embed-old-a", "embed-old-b"}
+	cfg.Embedding.Nodes = []AIRoutingNodeConfig{{Name: "stale-embed-node", APIKeys: []string{"embed-node-a", "embed-node-b"}, TPM: 200}}
 	cfg.Rerank.APIKeys = []string{"rerank-old-a", "rerank-old-b"}
+	cfg.Rerank.Nodes = []AIRoutingNodeConfig{{Name: "stale-rerank-node", APIKeys: []string{"rerank-node-a", "rerank-node-b"}, RPD: 20}}
 
 	t.Setenv("VMM_LLM_API_KEY", "llm-single")
 	t.Setenv("VMM_EMBED_API_KEY", "embed-single")
@@ -1207,11 +1268,20 @@ func TestApplyEnvOverridesSingleAPIKeysReplacePools(t *testing.T) {
 	if got, want := len(cfg.LLM.APIKeys), 1; got != want || cfg.LLM.APIKeys[0] != "llm-single" {
 		t.Fatalf("llm api key pool = %#v", cfg.LLM.APIKeys)
 	}
+	if got, want := len(cfg.LLM.RoutingNodes()), 1; got != want || cfg.LLM.RoutingNodes()[0].APIKeys[0] != "llm-single" {
+		t.Fatalf("llm routing nodes = %#v", cfg.LLM.RoutingNodes())
+	}
 	if got, want := len(cfg.Embedding.APIKeys), 1; got != want || cfg.Embedding.APIKeys[0] != "embed-single" {
 		t.Fatalf("embedding api key pool = %#v", cfg.Embedding.APIKeys)
 	}
+	if got, want := len(cfg.Embedding.RoutingNodes()), 1; got != want || cfg.Embedding.RoutingNodes()[0].APIKeys[0] != "embed-single" {
+		t.Fatalf("embedding routing nodes = %#v", cfg.Embedding.RoutingNodes())
+	}
 	if got, want := len(cfg.Rerank.APIKeys), 1; got != want || cfg.Rerank.APIKeys[0] != "rerank-single" {
 		t.Fatalf("rerank api key pool = %#v", cfg.Rerank.APIKeys)
+	}
+	if got, want := len(cfg.Rerank.RoutingNodes()), 1; got != want || cfg.Rerank.RoutingNodes()[0].APIKeys[0] != "rerank-single" {
+		t.Fatalf("rerank routing nodes = %#v", cfg.Rerank.RoutingNodes())
 	}
 }
 

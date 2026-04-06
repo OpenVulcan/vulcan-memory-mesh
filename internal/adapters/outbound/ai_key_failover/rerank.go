@@ -30,7 +30,9 @@ type RerankerClient struct {
 // NewRerankerClient 用于创建一个固定模型 rerank 客户端，让它能在同一上游配置的多个 API Key 之间轮换。
 func NewRerankerClient(endpoint, model string, timeout time.Duration, apiKeys []string, options Options) (*RerankerClient, error) {
 	options.ServiceName = "rerank"
-	options.APIKeys = append([]string(nil), apiKeys...)
+	if len(options.Nodes) == 0 {
+		options.APIKeys = append([]string(nil), apiKeys...)
+	}
 	selector, err := newSelector(options)
 	if err != nil {
 		return nil, err
@@ -55,11 +57,12 @@ func (c *RerankerClient) Rerank(ctx context.Context, query string, docs []apppor
 	if c == nil || c.selector == nil {
 		return nil, fmt.Errorf("rerank key failover client is nil")
 	}
-	return executeWithFailover(ctx, c.selector, func(ctx context.Context, apiKey string) ([]appports.RerankerResult, error) {
+	cost := estimateRerankRequestCost(query, docs)
+	return executeWithFailover(ctx, c.selector, cost, func(ctx context.Context, apiKey string) ([]appports.RerankerResult, error) {
 		return c.clientForKey(apiKey).Rerank(ctx, query, docs, topN)
 	}, func(err error, now time.Time) failureDecision {
 		return classifyDashScopeError(err, c.options, now)
-	})
+	}, nil)
 }
 
 // clientForKey returns the cached concrete rerank adapter for one API key or builds it on first use.

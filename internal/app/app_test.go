@@ -218,6 +218,28 @@ func TestBuildLLMUsesKeyFailoverWrapperForMultipleKeys(t *testing.T) {
 	}
 }
 
+// TestBuildLLMUsesRoutingNodes verifies runtime composition can bootstrap the fixed-model wrapper from explicit routing nodes even when the legacy top-level key fields are empty.
+// TestBuildLLMUsesRoutingNodes 用于验证即使旧版顶层 key 字段为空，运行时装配也能从显式轮询节点启动固定模型包装器。
+func TestBuildLLMUsesRoutingNodes(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Endpoint = "https://example.com/v1"
+	cfg.LLM.APIKey = ""
+	cfg.LLM.APIKeys = nil
+	cfg.LLM.Nodes = []config.AIRoutingNodeConfig{
+		{Name: "primary", APIKeys: []string{"key-a"}, RPM: 1},
+		{Name: "backup", APIKeys: []string{"key-b"}, RPM: 2},
+	}
+	cfg.LLM.Model = "test-llm"
+
+	client, err := buildLLM(cfg)
+	if err != nil {
+		t.Fatalf("build llm with routing nodes: %v", err)
+	}
+	if _, ok := client.(*ai_key_failover.LLMClient); !ok {
+		t.Fatalf("expected key failover llm wrapper, got %T", client)
+	}
+}
+
 // TestBuildAdaptersAllowTrimmedProviderAliases verifies runtime adapter construction stays aligned with config validation when provider aliases contain surrounding whitespace.
 // TestBuildAdaptersAllowTrimmedProviderAliases 用于验证当 provider 别名带有首尾空白时，运行时适配器构建仍与配置校验口径保持一致。
 func TestBuildAdaptersAllowTrimmedProviderAliases(t *testing.T) {

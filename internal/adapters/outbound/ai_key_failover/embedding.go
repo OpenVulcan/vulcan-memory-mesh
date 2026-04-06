@@ -34,7 +34,9 @@ type EmbeddingClient struct {
 // NewEmbeddingClient 用于创建一个固定模型 embedding 客户端，让它能在同一上游配置的多个 API Key 之间轮换。
 func NewEmbeddingClient(endpoint, model string, dimension int, organization, project string, apiKeys []string, params map[string]any, modelParams map[string]map[string]any, options Options) (*EmbeddingClient, error) {
 	options.ServiceName = "embedding"
-	options.APIKeys = append([]string(nil), apiKeys...)
+	if len(options.Nodes) == 0 {
+		options.APIKeys = append([]string(nil), apiKeys...)
+	}
 	selector, err := newSelector(options)
 	if err != nil {
 		return nil, err
@@ -71,11 +73,12 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	}
 	req.Model = c.model
 	req.Dimension = c.dimension
-	return executeWithFailover(ctx, c.selector, func(ctx context.Context, apiKey string) (appports.EmbeddingResponse, error) {
+	cost := estimateEmbeddingRequestCost(req.Texts)
+	return executeWithFailover(ctx, c.selector, cost, func(ctx context.Context, apiKey string) (appports.EmbeddingResponse, error) {
 		return c.clientForKey(apiKey).Embed(ctx, req)
 	}, func(err error, now time.Time) failureDecision {
 		return classifyOpenAIError(err, c.options, now)
-	})
+	}, nil)
 }
 
 // clientForKey returns the cached concrete embedding adapter for one API key or builds it on first use.

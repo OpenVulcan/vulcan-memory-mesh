@@ -7,6 +7,7 @@ import (
 	"errors"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,6 +229,198 @@ func TestLLMClientGenerateRoundRobinRotatesHealthyKeys(t *testing.T) {
 	}
 	if first.Content == second.Content {
 		t.Fatalf("expected round-robin distribution, got first=%q second=%q", first.Content, second.Content)
+	}
+}
+
+// TestLLMClientGenerateSkipsQuotaExhaustedNodeByRPM verifies node-level RPM prechecks switch to the next routing node before the provider returns a hard limit.
+// TestLLMClientGenerateSkipsQuotaExhaustedNodeByRPM 用于验证节点级 RPM 预检查会在 provider 返回硬限前先切到下一个轮询节点。
+func TestLLMClientGenerateSkipsQuotaExhaustedNodeByRPM(t *testing.T) {
+	client, err := NewLLMClient("https://example.com/v1", "fixed-model", "", "", nil, nil, nil, Options{
+		Enabled: true,
+		Policy:  "ordered_failover",
+		Nodes: []NodeOptions{
+			{Name: "primary", APIKeys: []string{"key-a"}, RPM: 1},
+			{Name: "backup", APIKeys: []string{"key-b"}, RPM: 5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new llm node failover client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {response: appports.LLMResponse{Content: "from-a"}},
+		"key-b": {response: appports.LLMResponse{Content: "from-b"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	first, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: "first"})
+	if err != nil {
+		t.Fatalf("first generate: %v", err)
+	}
+	second, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: "second"})
+	if err != nil {
+		t.Fatalf("second generate: %v", err)
+	}
+	if first.Content != "from-a" {
+		t.Fatalf("first response = %q", first.Content)
+	}
+	if second.Content != "from-b" {
+		t.Fatalf("second response = %q", second.Content)
+	}
+	if fakes["key-a"].calls != 1 || fakes["key-b"].calls != 1 {
+		t.Fatalf("unexpected call counts: key-a=%d key-b=%d", fakes["key-a"].calls, fakes["key-b"].calls)
+	}
+}
+
+// TestLLMClientGenerateKeepsPerKeyRPMInsideOneNode verifies multiple keys inside one node each keep their own RPM budget instead of consuming one shared cap.
+// TestLLMClientGenerateKeepsPerKeyRPMInsideOneNode 用于验证同一节点内的多个 Key 会各自保留独立的 RPM 预算，而不是消耗一份共享上限。
+func TestLLMClientGenerateKeepsPerKeyRPMInsideOneNode(t *testing.T) {
+	client, err := NewLLMClient("https://example.com/v1", "fixed-model", "", "", nil, nil, nil, Options{
+		Enabled: true,
+		Policy:  "ordered_failover",
+		Nodes: []NodeOptions{
+			{Name: "tier-a", APIKeys: []string{"key-a1", "key-a2"}, RPM: 1},
+			{Name: "backup-node", APIKeys: []string{"key-b"}, RPM: 5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new llm per-key budget client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a1": {response: appports.LLMResponse{Content: "from-a1"}},
+		"key-a2": {response: appports.LLMResponse{Content: "from-a2"}},
+		"key-b":  {response: appports.LLMResponse{Content: "from-b"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	first, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: "first"})
+	if err != nil {
+		t.Fatalf("first generate: %v", err)
+	}
+	second, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: "second"})
+	if err != nil {
+		t.Fatalf("second generate: %v", err)
+	}
+	third, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: "third"})
+	if err != nil {
+		t.Fatalf("third generate: %v", err)
+	}
+	if first.Content != "from-a1" {
+		t.Fatalf("first response = %q", first.Content)
+	}
+	if second.Content != "from-a2" {
+		t.Fatalf("second response = %q", second.Content)
+	}
+	if third.Content != "from-b" {
+		t.Fatalf("third response = %q", third.Content)
+	}
+	if fakes["key-a1"].calls != 1 || fakes["key-a2"].calls != 1 || fakes["key-b"].calls != 1 {
+		t.Fatalf("unexpected call counts: key-a1=%d key-a2=%d key-b=%d", fakes["key-a1"].calls, fakes["key-a2"].calls, fakes["key-b"].calls)
+	}
+}
+
+// TestLLMClientGenerateRefundsAuthFailureBudget verifies one invalid key releases its own reserved RPM budget so later retries are not distorted by a deterministic auth failure.
+// TestLLMClientGenerateRefundsAuthFailureBudget 用于验证单个无效 Key 会释放自己预留的 RPM 预算，避免确定性鉴权失败扭曲后续重试。
+func TestLLMClientGenerateRefundsAuthFailureBudget(t *testing.T) {
+	client, err := NewLLMClient("https://example.com/v1", "fixed-model", "", "", nil, nil, nil, Options{
+		Enabled: true,
+		Policy:  "ordered_failover",
+		Nodes: []NodeOptions{
+			{Name: "shared-node", APIKeys: []string{"key-a1", "key-a2"}, RPM: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new llm auth-refund client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a1": {err: newOpenAIAPIError(http.StatusForbidden, "invalid api key provided")},
+		"key-a2": {response: appports.LLMResponse{Content: "from-a2"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: "hello"})
+	if err != nil {
+		t.Fatalf("generate with auth budget refund: %v", err)
+	}
+	if resp.Content != "from-a2" {
+		t.Fatalf("response content = %q", resp.Content)
+	}
+	if fakes["key-a1"].calls != 1 || fakes["key-a2"].calls != 1 {
+		t.Fatalf("unexpected call counts: key-a1=%d key-a2=%d", fakes["key-a1"].calls, fakes["key-a2"].calls)
+	}
+}
+
+// TestLLMClientGenerateUsesFallbackUsageEstimate verifies missing provider usage is reconciled as 1.3x input tokens so TPM guards still accumulate pressure.
+// TestLLMClientGenerateUsesFallbackUsageEstimate 用于验证当 provider 缺失 usage 时，系统会按输入 token 的 1.3 倍回填预算，确保 TPM 守卫仍能持续累计压力。
+func TestLLMClientGenerateUsesFallbackUsageEstimate(t *testing.T) {
+	longPrompt := strings.Repeat("hello world ", 24)
+	inputTokens := estimateTextTokens(longPrompt)
+	client, err := NewLLMClient("https://example.com/v1", "fixed-model", "", "", nil, nil, nil, Options{
+		Enabled: true,
+		Policy:  "ordered_failover",
+		Nodes: []NodeOptions{
+			{Name: "missing-usage", APIKeys: []string{"key-a"}, TPM: (inputTokens * 22) / 10},
+			{Name: "backup", APIKeys: []string{"key-b"}, TPM: inputTokens * 10},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new llm missing-usage client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {response: appports.LLMResponse{Content: "from-a"}},
+		"key-b": {response: appports.LLMResponse{Content: "from-b"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	first, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: longPrompt})
+	if err != nil {
+		t.Fatalf("first generate with fallback usage: %v", err)
+	}
+	second, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: longPrompt})
+	if err != nil {
+		t.Fatalf("second generate with fallback usage: %v", err)
+	}
+	if first.Content != "from-a" {
+		t.Fatalf("first response = %q", first.Content)
+	}
+	if second.Content != "from-b" {
+		t.Fatalf("second response = %q", second.Content)
+	}
+	if fakes["key-a"].calls != 1 || fakes["key-b"].calls != 1 {
+		t.Fatalf("unexpected fallback usage call counts: key-a=%d key-b=%d", fakes["key-a"].calls, fakes["key-b"].calls)
+	}
+}
+
+// TestLLMClientGenerateSkipsNodeByTPMPrecheck verifies one oversized request can bypass a low-TPM node before any network call is attempted.
+// TestLLMClientGenerateSkipsNodeByTPMPrecheck 用于验证当单次请求预计超出节点 TPM 时，系统会在发起网络调用前直接绕过低 TPM 节点。
+func TestLLMClientGenerateSkipsNodeByTPMPrecheck(t *testing.T) {
+	longPrompt := strings.Repeat("hello world ", 24)
+	estimatedTokens := estimateTextTokens(longPrompt)
+	client, err := NewLLMClient("https://example.com/v1", "fixed-model", "", "", nil, nil, nil, Options{
+		Enabled: true,
+		Policy:  "ordered_failover",
+		Nodes: []NodeOptions{
+			{Name: "small-tpm", APIKeys: []string{"key-a"}, TPM: estimatedTokens - 1},
+			{Name: "large-tpm", APIKeys: []string{"key-b"}, TPM: estimatedTokens + 50},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new llm tpm client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {response: appports.LLMResponse{Content: "from-a"}},
+		"key-b": {response: appports.LLMResponse{Content: "from-b"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: longPrompt})
+	if err != nil {
+		t.Fatalf("generate with tpm precheck: %v", err)
+	}
+	if resp.Content != "from-b" {
+		t.Fatalf("response content = %q", resp.Content)
+	}
+	if fakes["key-a"].calls != 0 {
+		t.Fatalf("expected low-tpm node to be skipped before dialing, got %d calls", fakes["key-a"].calls)
 	}
 }
 

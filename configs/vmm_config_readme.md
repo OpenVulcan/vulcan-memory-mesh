@@ -348,6 +348,31 @@
   - 运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
   - 不会以容灾名义切 provider 或切 model
 
+### `llm.rpm / llm.tpm / llm.rpd`
+
+- 作用：旧兼容写法下默认节点的请求/Token/日请求上限
+- 默认值：`0`
+- 说明：
+  - `0` 代表不限制
+  - 仅当未显式声明 `llm.nodes` 时生效
+  - 运行时会在真正发请求前基于默认节点内每个 key 的该配额做本地预判断
+
+### `llm.nodes`
+
+- 作用：显式声明 LLM 轮询节点
+- 默认值：空数组
+- 说明：
+  - 每个节点仍保持同一组固定的 `provider + endpoint + model`
+  - 每个节点可配置：
+    - `name`
+    - `api_key` / `api_keys`
+    - `rpm`
+    - `tpm`
+    - `rpd`
+  - 同一节点下多个 key 会各自独享这一组 `rpm / tpm / rpd`
+  - 如果同平台存在不同免费额度，建议拆成两个节点，而不是混成一个 key 池
+  - 显式声明 `nodes` 后，运行时优先按节点表工作
+
 ### `llm.model`
 
 - 作用：默认 LLM 模型名
@@ -422,6 +447,30 @@
   - 推荐优先使用该字段声明多个 key
   - 运行时只会在固定 `provider + endpoint + model + dimension` 下做 key 级轮换
   - 不允许以容灾名义混用不同 embedding 模型
+
+### `embedding.rpm / embedding.tpm / embedding.rpd`
+
+- 作用：旧兼容写法下默认 embedding 节点的请求/Token/日请求上限
+- 默认值：`0`
+- 说明：
+  - `0` 代表不限制
+  - 仅当未显式声明 `embedding.nodes` 时生效
+  - 运行时会在真正发请求前基于默认节点内每个 key 的该配额做本地预判断
+
+### `embedding.nodes`
+
+- 作用：显式声明 embedding 轮询节点
+- 默认值：空数组
+- 说明：
+  - 每个节点都必须保持同一组固定的 `provider + endpoint + model + dimension`
+  - 每个节点可配置：
+    - `name`
+    - `api_key` / `api_keys`
+    - `rpm`
+    - `tpm`
+    - `rpd`
+  - 同一节点下多个 key 会各自独享这一组 `rpm / tpm / rpd`
+  - 不允许借由节点机制混用不同 embedding 模型或不同维度
 
 ### `embedding.model`
 
@@ -505,6 +554,30 @@
   - 推荐优先使用该字段声明多个 key
   - 运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
   - 所有 key 都失败时，会按 `rerank=false` 的效果退回首轮排序，并记录 warning
+
+### `rerank.rpm / rerank.tpm / rerank.rpd`
+
+- 作用：旧兼容写法下默认 rerank 节点的请求/Token/日请求上限
+- 默认值：`0`
+- 说明：
+  - `0` 代表不限制
+  - 仅当未显式声明 `rerank.nodes` 时生效
+  - 运行时会在真正发请求前基于默认节点内每个 key 的该配额做本地预判断
+
+### `rerank.nodes`
+
+- 作用：显式声明 rerank 轮询节点
+- 默认值：空数组
+- 说明：
+  - 每个节点仍保持同一组固定的 `provider + endpoint + model`
+  - 每个节点可配置：
+    - `name`
+    - `api_key` / `api_keys`
+    - `rpm`
+    - `tpm`
+    - `rpd`
+  - 同一节点下多个 key 会各自独享这一组 `rpm / tpm / rpd`
+  - 所有节点都不可用时，检索链会按 `rerank=false` 语义降级，并记录 warning
 
 ### `rerank.model`
 

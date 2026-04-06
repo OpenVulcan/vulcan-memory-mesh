@@ -33,7 +33,9 @@ type LLMClient struct {
 // NewLLMClient 用于创建一个固定模型 LLM 客户端，让它能在同一上游配置的多个 API Key 之间轮换。
 func NewLLMClient(endpoint, model, organization, project string, apiKeys []string, params map[string]any, modelParams map[string]map[string]any, options Options) (*LLMClient, error) {
 	options.ServiceName = "llm"
-	options.APIKeys = append([]string(nil), apiKeys...)
+	if len(options.Nodes) == 0 {
+		options.APIKeys = append([]string(nil), apiKeys...)
+	}
 	selector, err := newSelector(options)
 	if err != nil {
 		return nil, err
@@ -65,10 +67,15 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 		return appports.LLMResponse{}, fmt.Errorf("llm key failover requires fixed model %q, got %q", c.model, model)
 	}
 	req.Model = c.model
-	return executeWithFailover(ctx, c.selector, func(ctx context.Context, apiKey string) (appports.LLMResponse, error) {
+	mergedHints := mergeHintMaps(c.params, c.modelParams[c.model], req.ProviderHints)
+	inputTokens := estimateTextTokens(req.SystemPrompt, req.UserPrompt)
+	cost := estimateLLMRequestCost(req.SystemPrompt, req.UserPrompt, mergedHints)
+	return executeWithFailover(ctx, c.selector, cost, func(ctx context.Context, apiKey string) (appports.LLMResponse, error) {
 		return c.clientForKey(apiKey).Generate(ctx, req)
 	}, func(err error, now time.Time) failureDecision {
 		return classifyOpenAIError(err, c.options, now)
+	}, func(resp appports.LLMResponse) requestCost {
+		return llmActualUsageCost(resp, inputTokens)
 	})
 }
 
@@ -83,4 +90,30 @@ func (c *LLMClient) clientForKey(apiKey string) appports.LLMClient {
 	client := c.factory(apiKey)
 	c.clients[apiKey] = client
 	return client
+}
+
+// mergeHintMaps copies adapter defaults, model-specific overrides, and request overrides into one flat hint map for cost estimation.
+// mergeHintMaps 用于把适配器默认值、模型级覆盖和请求级覆盖合并成一份扁平 hint 表，供成本估算复用。
+func mergeHintMaps(base, modelDefaults, request map[string]any) map[string]any {
+	merged := cloneHintMap(base)
+	for key, value := range modelDefaults {
+		merged[key] = value
+	}
+	for key, value := range request {
+		merged[key] = value
+	}
+	return merged
+}
+
+// cloneHintMap copies one flat hint map so request estimation never mutates runtime adapter defaults.
+// cloneHintMap 用于复制一份扁平 hint 表，避免请求估算过程修改运行时适配器默认值。
+func cloneHintMap(input map[string]any) map[string]any {
+	if len(input) == 0 {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(input))
+	for key, value := range input {
+		cloned[key] = value
+	}
+	return cloned
 }

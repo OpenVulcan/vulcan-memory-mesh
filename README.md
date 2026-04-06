@@ -651,6 +651,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `rerank.enabled=true` 时必须显式配置；不会回退复用 `llm.api_key`
 - `api_keys`
   - 推荐使用独立的 rerank key 池；运行时只会在固定 `provider + endpoint + model` 下做 key 级轮换
+- `nodes`
+  - 可显式声明固定模型 rerank 节点；每个节点可配置独立的 `api_key / api_keys + rpm / tpm / rpd`，该额度配置表示节点下每个 key 各自独享的额度
 - `model`
   - 当前默认 `qwen3-vl-rerank`
 - `top_n`
