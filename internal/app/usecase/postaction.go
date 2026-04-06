@@ -100,6 +100,7 @@ type PostActionUseCase struct {
 	candidateReviewer       PostActionCandidateReviewer
 	analysisCfg             PostActionAnalysisConfig
 	logger                  *logx.Logger
+	piiScrubber             PIIScrubber
 	queueCtx                context.Context
 	queueCancel             context.CancelFunc
 	queueWG                 sync.WaitGroup
@@ -172,6 +173,15 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	return uc
 }
 
+// ConfigurePIIScrubber injects the shared PII scrubber used to redact canonical post-action payloads, raw replay payloads, and analyzer-facing context before the workflow touches storage or LLM-backed stages.
+// ConfigurePIIScrubber 用于注入共享 PII 脱敏器，让 post-action 在访问存储或进入 LLM 阶段前，先对标准载荷、raw 重放载荷以及分析器上下文完成脱敏。
+func (u *PostActionUseCase) ConfigurePIIScrubber(scrubber PIIScrubber) {
+	if u == nil {
+		return
+	}
+	u.piiScrubber = scrubber
+}
+
 // Execute persists one cleaned turn into the resolved session, enqueues background extraction, and returns immediately without blocking on LLM work.
 // Execute 用于把清洗后的单条 turn 持久化到已解析的 session 中、把后台提炼工作入队，并在不等待 LLM 完成的情况下立即返回。
 func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) (PostActionResult, error) {
@@ -187,6 +197,7 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 	if err := validatePostAction(cmd); err != nil {
 		return PostActionResult{}, err
 	}
+	cmd = scrubPostActionCommandPII(u.piiScrubber, cmd)
 	traceID := trace.IDFromContext(ctx)
 
 	// Skip the noise gate for timeline-driven flows because the middle messages already indicate one interrupted or branching conversation.

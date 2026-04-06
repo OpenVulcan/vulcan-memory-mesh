@@ -38,7 +38,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 ## PII 规则开发与验证
 
-当前仓库保留一套独立的 PII 规则引擎和测试器，主要用于规则研发、误杀排查和离线验证：
+当前仓库保留一套独立的 PII 规则引擎和测试器，主要用于规则研发、误杀排查和离线验证；同一套规则也会在主运行时的 `precheck` / `postaction` / `WriteMemories` 首环节执行请求级脱敏：
 
 - 规则实现位于 `internal/platform/pii`
 - 独立测试入口位于 `cmd/vmm-pii-tester`

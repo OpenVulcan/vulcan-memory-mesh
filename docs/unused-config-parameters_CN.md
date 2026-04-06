@@ -40,7 +40,6 @@
 
 | 参数 | 当前状态 | 当前唯一用途 | 备注 |
 | --- | --- | --- | --- |
-| `pii.default_language` | 仅配置桥接或启动校验使用 | 在 `Normalize()` 中，当 `noise.default_language` 为空时，回填给 `noise.default_language` | 主运行时不直接读取它 |
 | `post_action.input_mode` | 仅配置桥接或启动校验使用 | 只在配置加载阶段做默认值归一化和合法值校验 | `compat` / `strict` 当前没有运行时差异 |
 | `pre_check.intent_timeout` | 主运行时已消费 | 第一层 `extract_intent` 的内部超时预算 | 仍会在启动时与 `grpc.request_timeout.pre_check` 做大小关系校验 |
 | `pre_check.top_k` | 主运行时已消费 | 控制每个 pre-check 检索语句的向量召回数量 | 直接进入实时 pre-check 工作流 |
@@ -61,11 +60,10 @@
 
 ## 当前结论
 
-按 2026-04-05 的主线状态看，最需要后续统一决策的一组参数是：
+按 2026-04-06 的主线状态看，最需要后续统一决策的一组参数是：
 
 - `post_action.input_mode`
-- `pii.default_language`
 
 其中：
 
-- `pre_check.*` 和 `memory_pipeline.*` 已进入主运行时，不再属于“未接入”参数
+- `pre_check.*`、`memory_pipeline.*` 与 `pii.default_language` 已进入主运行时，不再属于“未接入”参数

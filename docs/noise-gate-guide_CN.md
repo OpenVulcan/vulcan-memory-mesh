@@ -59,12 +59,14 @@
 4. 文本清洗
 5. 清洗后日志记录
 6. 后台 `PostActionUseCase`
-7. **NoiseGate**
-8. 关系库存写入（默认 `split` 模式为 SQLite；`combined` 模式为 PostgreSQL）
+7. PII 脱敏
+8. **NoiseGate**
+9. 关系库存写入（默认 `split` 模式为 SQLite；`combined` 模式为 PostgreSQL）
 
 也就是说：
 
 - 它发生在文本已经清洗之后
+- 发生在 PII 脱敏之后
 - 发生在真正写入 `vmm_turn_records` 之前
 
 ## 当前触发规则

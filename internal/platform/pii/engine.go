@@ -556,10 +556,10 @@ func validateReplacementTemplate(replacement string, numSubexp int) error {
 	return nil
 }
 
-// logEvaluation writes one privacy-safe evaluator log entry without leaking the original matched text.
-// logEvaluation 用于写入一条隐私安全的求值日志，避免泄露原始匹配文本。
+// logEvaluation prints one privacy-safe evaluator line only in explicit debug mode so runtime production logs stay quiet while the standalone tester still shows per-match diagnostics.
+// logEvaluation 用于仅在显式调试模式下输出隐私安全的求值信息，确保生产运行时日志保持安静，同时独立调试器仍可看到逐命中诊断信息。
 func (e *Engine) logEvaluation(rule string, result bool, reason reasonCode, matchText string) {
-	if e == nil || e.logger == nil {
+	if e == nil || !e.DebugMode {
 		return
 	}
 	hash := sha256.Sum256([]byte(matchText))
@@ -567,11 +567,9 @@ func (e *Engine) logEvaluation(rule string, result bool, reason reasonCode, matc
 	if len(hashText) > 12 {
 		hashText = hashText[:12]
 	}
-	e.logger.Info("[PII-EVAL]",
-		"rule", rule,
-		"result", result,
-		"match_len", len(matchText),
-		"match_hash", hashText,
-		"reason", string(reason),
-	)
+	out := e.debugOutput
+	if out == nil {
+		out = os.Stdout
+	}
+	fmt.Fprintf(out, "[PII-EVAL] rule=%s result=%t match_len=%d match_hash=%s reason=%s\n", rule, result, len(matchText), hashText, string(reason))
 }

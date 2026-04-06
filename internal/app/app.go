@@ -25,6 +25,7 @@ import (
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/logic/processor"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/pii"
 	"github.com/openvulcan/vmm/internal/platform/xid"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/reflection"
@@ -57,6 +58,22 @@ type promptFolderMatcher interface {
 // routeFailoverAwareLLMClient 用于在保留提示词侧模型路由的同时，于多路由模式清空请求级模型固定值，确保处理器调用仍能在不同模型名的 llm.routes 之间扩散容灾。
 type routeFailoverAwareLLMClient struct {
 	upstream appports.LLMClient
+}
+
+// runtimePIIScrubber adapts the shared PII engine into the narrow use-case interface so pre-check and post-action can redact text without depending on engine-specific language-routing details.
+// runtimePIIScrubber 用于把共享 PII 引擎适配成用例层需要的最小接口，让 pre-check 与 post-action 可以执行脱敏，而不直接依赖引擎的语言路由细节。
+type runtimePIIScrubber struct {
+	engine          *pii.Engine
+	defaultLanguage string
+}
+
+// Scrub redacts one text fragment with the configured default runtime language so live request paths reuse the same ruleset as the standalone PII tester.
+// Scrub 用于使用运行时配置好的默认语言对单段文本执行脱敏，让实时请求链路复用与独立 PII 测试器相同的一套规则。
+func (s runtimePIIScrubber) Scrub(text string) string {
+	if s.engine == nil {
+		return text
+	}
+	return s.engine.Scrub(text, s.defaultLanguage)
 }
 
 // Generate forwards one processor-originated LLM request after dropping the fixed model field that would otherwise block heterogeneous route failover.
@@ -225,6 +242,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
+	piiScrubber, err := buildPIIScrubber(cfg, layout, logger)
+	if err != nil {
+		return nil, err
+	}
 
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
@@ -233,6 +254,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	processorLLM := adaptLLMForProcessorRoutes(cfg, llm)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(processorLLM, prompts, llmPromptModel), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
+	memory.ConfigurePIIScrubber(piiScrubber)
 	scratchpad := usecase.NewScratchpadUseCase(scratchpadStore)
 	chatCompact := usecase.NewChatCompactUseCase(chatCompactStore)
 	candidateReviewer := processor.NewPostActionCandidateReviewer(processorLLM, prompts, llmPromptModel)
@@ -264,6 +286,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		},
 		logger,
 	)
+	pre.ConfigurePIIScrubber(piiScrubber)
 	post := usecase.NewPostActionUseCase(
 		noiseGate,
 		relational,
@@ -284,6 +307,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		},
 		logger,
 	)
+	post.ConfigurePIIScrubber(piiScrubber)
 	// Retention uses the same shared history-turn knob currently consumed by both PreCheck and PostAction, so the configured hot window is that shared base plus the extra keep turns.
 	// 当前运行时里 PreCheck 与 PostAction 共用同一组历史轮数配置，因此 retention 的热窗口等于这组共享基线再加额外保留轮数。
 	retentionTurnHotWindowSize := cfg.PostAction.SessionAnalysisHistoryTurns + cfg.Retention.TurnKeepExtraTurns
@@ -763,4 +787,17 @@ func buildNoiseGate(cfg config.Config, layout config.PromptLayout, embedding app
 		Dimension:         cfg.Embedding.Dimension,
 		Cache:             cache,
 	})
+}
+
+// buildPIIScrubber builds the shared runtime PII scrubber used by pre-check and post-action so both entry chains reuse the packaged system rules and user override bundle roots.
+// buildPIIScrubber 用于构建 pre-check 与 post-action 共用的运行时 PII 脱敏器，让两条入口链路复用打包后的系统规则目录和用户覆盖规则目录。
+func buildPIIScrubber(cfg config.Config, layout config.PromptLayout, logger *logx.Logger) (usecase.PIIScrubber, error) {
+	engine, err := pii.NewEngineWithLogger(layout.SystemPIIRulesDir(), layout.UserPIIRulesDir(), cfg.PII.DefaultLanguage, logger)
+	if err != nil {
+		return nil, err
+	}
+	return runtimePIIScrubber{
+		engine:          engine,
+		defaultLanguage: cfg.PII.DefaultLanguage,
+	}, nil
 }

@@ -188,6 +188,7 @@ pii:
 
 - `pii.default_language`
   - fallback language when the caller does not provide one or the requested language bundle is unavailable
+  - the live runtime now also uses it as the default scrub language at the first `precheck` / `postaction` / `WriteMemories` stage
 
 Configuration override order:
 
@@ -526,12 +527,6 @@ Also verify:
 
 Production logs do not print raw secrets.
 
-The runtime logs only safe metadata such as:
+The production runtime no longer emits per-match PII evaluation logs by default, and it does not print raw sensitive text.
 
-- `rule`
-- `result`
-- `match_len`
-- `match_hash`
-- `reason`
-
-If you need raw match and capture-group visibility, use `vmm-pii-tester` instead of production logs.
+If you need match-by-match visibility, raw matches, or capture groups, use `vmm-pii-tester` or explicit debug mode instead of production logs.

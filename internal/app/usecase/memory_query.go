@@ -254,6 +254,7 @@ type MemoryUseCase struct {
 	rerankTopN                 int
 	vector                     appports.VectorStore
 	logger                     *logx.Logger
+	piiScrubber                PIIScrubber
 }
 
 // directMemoryWriteApplier is the optional store fast path that atomically inserts one direct-write memory row and retires any replaced old rows in the same SQL transaction.
@@ -287,6 +288,15 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		vector:                     vector,
 		logger:                     logger,
 	}
+}
+
+// ConfigurePIIScrubber injects the shared PII scrubber used to redact direct-write memory payloads before the write flow performs dedupe, embedding, and durable persistence.
+// ConfigurePIIScrubber 用于注入共享 PII 脱敏器，让主动写记忆在进入去重、embedding 与长期持久化流程前先完成脱敏。
+func (u *MemoryUseCase) ConfigurePIIScrubber(scrubber PIIScrubber) {
+	if u == nil {
+		return
+	}
+	u.piiScrubber = scrubber
 }
 
 // ConfigureHybrid attaches the lexical-recall and RRF knobs used by the mixed retrieval pipeline.
@@ -661,6 +671,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 	if u.vector == nil {
 		return WriteMemoriesResult{}, fmt.Errorf("vector store is nil")
 	}
+	cmd.Items = scrubWriteMemoryItemsPII(u.piiScrubber, cmd.Items)
 	if err := validateWriteMemoriesCommand(cmd); err != nil {
 		return WriteMemoriesResult{}, err
 	}

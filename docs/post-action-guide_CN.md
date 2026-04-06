@@ -28,10 +28,11 @@
 
 1. 先校验 `session_id / user_id / project_id`
 2. 记录原始日志
-3. 清洗待存储文本
+3. 对待存储文本执行结构性清洗
 4. 记录清洗后日志
-5. 先把脱水后的 turn 记录稳定写入当前启用的关系库存储
-6. 把后续 LLM 分析转交给 session 队列，并立即返回 `accepted=true`
+5. 在 `PostActionUseCase` 入口执行一次 PII 脱敏
+6. 先把脱敏后的 turn 脱水记录稳定写入当前启用的关系库存储
+7. 把后续 LLM 分析转交给 session 队列，并复用已脱敏的持久化数据继续推进，最后立即返回 `accepted=true`
 
 ## 请求结构
 
@@ -411,11 +412,12 @@ message PostActionTimelineItem {
 
 ## 清洗行为
 
-当前 `PostAction` 在入库前会执行面向长期存储的文本清洗。
+当前 `PostAction` 在入库前会先执行面向长期存储的文本清洗，并在用例入口执行一次 PII 脱敏；后续队列、分析与评审阶段复用这份已经脱敏的持久化文本，不再重复执行同链路脱敏。
 
 主要目标是：
 
 - 去掉对长期记忆没有价值、但会污染 token 预算或语义的噪声
+- 在继续进入噪声门、写库和后续 LLM 单轮分析前，先把请求中的敏感信息替换成脱敏占位符
 - 保留尽量稳定、可追溯的纯文本内容
 
 当前会处理的内容包括：
@@ -435,11 +437,12 @@ message PostActionTimelineItem {
 具体位置：
 
 1. 请求先通过传输层校验
-2. 文本先完成清洗
+2. 文本先完成结构性清洗
 3. 后台进入 `PostActionUseCase`
-4. 当 `timeline == 0` 时：
+4. 在 `PostActionUseCase` 入口执行一次 PII 脱敏
+5. 当 `timeline == 0` 时：
    - 才执行一次简单单轮噪声过滤
-5. 当 `timeline > 0` 时：
+6. 当 `timeline > 0` 时：
    - 直接跳过噪声门
 
 原因：

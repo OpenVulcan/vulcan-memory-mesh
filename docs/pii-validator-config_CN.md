@@ -189,6 +189,7 @@ pii:
 
 - `pii.default_language`
   - 当调用方未显式指定语言，或目标语言规则不存在时的回退语言
+  - 当前主运行时里，`precheck` / `postaction` / `WriteMemories` 首环节也会默认使用它来执行请求级 PII 脱敏
 
 配置覆盖顺序：
 
@@ -525,14 +526,6 @@ engine, err := pii.NewEngineWithRules("adhoc", logger, rules)
 
 ## 安全日志与生产行为
 
-生产环境日志不会输出明文敏感信息。
+生产运行时默认不会输出 PII 逐命中求值日志，也不会输出明文敏感信息。
 
-运行时只记录安全摘要字段，例如：
-
-- `rule`
-- `result`
-- `match_len`
-- `match_hash`
-- `reason`
-
-如果你需要看明文命中和捕获组，请使用 `vmm-pii-tester`，不要依赖生产日志。
+如果你需要看命中细节、明文匹配和捕获组，请使用 `vmm-pii-tester` 或显式调试模式，不要依赖生产日志。

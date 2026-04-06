@@ -208,6 +208,52 @@ func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	}
 }
 
+// TestPostActionExecuteScrubsPIIBeforeNoiseGateAndPersistence verifies post-action redacts the incoming turn before the noise gate inspects it and before the canonical turn is written into durable storage.
+// TestPostActionExecuteScrubsPIIBeforeNoiseGateAndPersistence 用于验证 post-action 会在噪声门检查之前、以及标准 turn 写入长期存储之前，先完成当前请求的 PII 脱敏。
+func TestPostActionExecuteScrubsPIIBeforeNoiseGateAndPersistence(t *testing.T) {
+	filter := &stubNoiseTurnFilter{
+		filtered: []logicdomain.NormalizedTurn{{
+			TurnIndex:      1,
+			UserMessage:    "[PHONE]",
+			AssistantReply: "[PHONE]",
+		}},
+	}
+	store := &testRelationalStore{}
+	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc.ConfigurePIIScrubber(stubPIIScrubber{
+		replacements: map[string]string{
+			"13800138000": "[PHONE]",
+		},
+	})
+
+	result, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-pii",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent:         "用户电话是 13800138000",
+		AssistantContent:    "收到，联系电话 13800138000",
+		RawUserContent:      "raw 用户电话 13800138000",
+		RawAssistantContent: "raw 联系电话 13800138000",
+	})
+	if err != nil {
+		t.Fatalf("execute post-action: %v", err)
+	}
+	if !result.Accepted {
+		t.Fatalf("expected accepted post-action result, got %#v", result)
+	}
+	if len(filter.seen) != 1 || strings.Contains(filter.seen[0].UserMessage, "13800138000") || strings.Contains(filter.seen[0].AssistantReply, "13800138000") {
+		t.Fatalf("expected noise gate to see scrubbed text, got %#v", filter.seen)
+	}
+	if strings.Contains(store.turn.UserContent, "13800138000") || strings.Contains(store.turn.AssistantContent, "13800138000") {
+		t.Fatalf("expected persisted turn to stay scrubbed, got %#v", store.turn)
+	}
+}
+
 // TestPostActionUseCaseSkipsNoiseGateForTimeline verifies timeline-driven payloads still bypass the single-round noise gate and persist one canonical turn row before async processing begins.
 // TestPostActionUseCaseSkipsNoiseGateForTimeline 用于验证带 timeline 的载荷仍会跳过单轮噪声门，并在异步处理开始前先持久化成一条标准 turn 记录。
 func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
@@ -301,6 +347,66 @@ func TestPostActionUseCaseQueuesAcceptedTurnWithoutBlocking(t *testing.T) {
 	}
 	if store.analysisTurn.ID != 0 {
 		t.Fatalf("expected no inline analysis write-back, got %+v", store.analysisTurn)
+	}
+}
+
+// TestBuildTurnAnalysisInputReusesScrubbedStoredData verifies post-action reuses already scrubbed turn/history/memory text from durable storage and does not trigger one extra masking pass before analyzer input assembly.
+// TestBuildTurnAnalysisInputReusesScrubbedStoredData 用于验证 post-action 会复用库里已经脱敏的 turn、历史与记忆文本，并且在组装分析器输入时不再额外触发一次脱敏。
+func TestBuildTurnAnalysisInputReusesScrubbedStoredData(t *testing.T) {
+	store := &testRelationalStore{
+		historyTurns: []logicdomain.SessionTurnRecord{
+			{ID: 10, Details: "历史里记录的电话是 [PHONE]。"},
+		},
+		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
+			{ID: 20, TurnID: 10, Abstract: "联系人电话 [PHONE]", Details: "请联系 [PHONE]"},
+		},
+		recentDirectWrites: []logicdomain.TurnAnalysisDirectWrite{
+			{MemoryID: 30, ScopeLevel: "project", Abstract: "最近直写电话 [PHONE]", Details: "工具记下了 [PHONE]", CreatedTimestamp: 123},
+		},
+	}
+	uc := newPostActionUseCase(nil, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{HistoryTurns: 4, MaxInputTokens: 200}, nil, false)
+	scrubber := &countingPIIScrubber{}
+	uc.ConfigurePIIScrubber(scrubber)
+
+	input, _, err := uc.buildTurnAnalysisInput(
+		context.Background(),
+		logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-pii-analysis",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		logicdomain.PersistedTurnRecord{
+			ID:               91,
+			SessionID:        41,
+			ProjectID:        9,
+			CreatedAt:        time.Now().UTC(),
+			DehydratedBudget: 12,
+		},
+		logicdomain.TurnRecord{
+			UserContent:      "当前用户电话是 [PHONE]",
+			AssistantContent: "助手复述 [PHONE]",
+		},
+	)
+	if err != nil {
+		t.Fatalf("build turn analysis input: %v", err)
+	}
+	if scrubber.calls != 0 {
+		t.Fatalf("expected no extra scrub calls during analyzer input assembly, got %d", scrubber.calls)
+	}
+	if strings.Contains(input.TargetTurn.RawTurn, "13800138000") || !strings.Contains(input.TargetTurn.RawTurn, "[PHONE]") {
+		t.Fatalf("expected target turn payload to reuse scrubbed text, got %q", input.TargetTurn.RawTurn)
+	}
+	if len(input.ReferenceTurns) != 1 || strings.Contains(input.ReferenceTurns[0].Details, "13800138000") || !strings.Contains(input.ReferenceTurns[0].Details, "[PHONE]") {
+		t.Fatalf("expected reference turns to reuse scrubbed text, got %#v", input.ReferenceTurns)
+	}
+	if len(input.ActiveMemoryNodes) != 1 || strings.Contains(input.ActiveMemoryNodes[0].Abstract, "13800138000") || strings.Contains(input.ActiveMemoryNodes[0].Details, "13800138000") {
+		t.Fatalf("expected active memory anchors to reuse scrubbed text, got %#v", input.ActiveMemoryNodes)
+	}
+	if len(input.RecentGRPCMemoryWrites) != 1 || strings.Contains(input.RecentGRPCMemoryWrites[0].Abstract, "13800138000") || strings.Contains(input.RecentGRPCMemoryWrites[0].Details, "13800138000") {
+		t.Fatalf("expected recent direct writes to reuse scrubbed text, got %#v", input.RecentGRPCMemoryWrites)
 	}
 }
 

@@ -124,13 +124,14 @@ type PreCheckConfig struct {
 // PreCheckUseCase executes the live pre-check workflow on top of resolved session scope, recent turn windows, unified memory recall, and lifecycle write-back.
 // PreCheckUseCase 用于在已解析 session 范围、最近 turn 窗口、统一记忆召回和生命周期回写之上执行实时 pre-check 工作流。
 type PreCheckUseCase struct {
-	memories  PreCheckMemorySearcher
-	store     PreCheckStore
-	intent    PreCheckIntentExtractor
-	reviewer  PreCheckMemoryReviewer
-	assembler PreCheckContextAssembler
-	config    PreCheckConfig
-	logger    *logx.Logger
+	memories    PreCheckMemorySearcher
+	store       PreCheckStore
+	intent      PreCheckIntentExtractor
+	reviewer    PreCheckMemoryReviewer
+	assembler   PreCheckContextAssembler
+	config      PreCheckConfig
+	logger      *logx.Logger
+	piiScrubber PIIScrubber
 }
 
 // NewPreCheckUseCase creates a PreCheckUseCase instance.
@@ -166,6 +167,15 @@ func NewPreCheckUseCase(memories PreCheckMemorySearcher, store PreCheckStore, in
 	}
 }
 
+// ConfigurePIIScrubber injects the shared PII scrubber used to redact current requests, recalled history, and reviewer-facing memory candidates before pre-check sends them deeper into LLM-backed stages.
+// ConfigurePIIScrubber 用于注入共享 PII 脱敏器，让 pre-check 在把当前请求、召回历史和 reviewer 可见记忆候选继续送入 LLM 阶段前先完成脱敏。
+func (u *PreCheckUseCase) ConfigurePIIScrubber(scrubber PIIScrubber) {
+	if u == nil {
+		return
+	}
+	u.piiScrubber = scrubber
+}
+
 // Execute validates the resolved scope, runs the turn-centric two-stage memory flow, and returns only adopted memory context instead of mixing in the separate profile bundle.
 // Execute 用于校验已解析范围、执行基于 turn 的两层记忆流程，并且只返回被采纳的记忆上下文，不再混入独立画像 bundle。
 func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (PreCheckResult, error) {
@@ -175,6 +185,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if err := validatePreCheck(cmd); err != nil {
 		return PreCheckResult{}, err
 	}
+	cmd.UserContent = scrubPIIText(u.piiScrubber, cmd.UserContent)
 	traceID := trace.IDFromContext(ctx)
 	degraded := false
 
@@ -186,6 +197,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		u.logPreCheckWarn("pre-check recent turns degraded", traceID, cmd.Session, cmd.UserContent, err)
 		recentTurns = nil
 	} else {
+		recentTurns = scrubPreCheckTurnContextsPII(u.piiScrubber, recentTurns)
 		u.logPreCheckStage("pre-check recent turns prepared", traceID, cmd.Session, []any{
 			"recent_turn_count", len(recentTurns),
 			"history_turn_limit", u.config.HistoryTurns,
@@ -423,6 +435,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		return nil, err
 	}
 	rawGroups, rawHitCount := buildPreCheckRawRecallLogs(result.Results)
+	rawGroups = scrubPreCheckRawRecallGroupLogsPII(u.piiScrubber, rawGroups)
 	merged := make(map[uint64]logicdomain.PreCheckMemoryCandidate)
 	firstSeenOrder := make(map[uint64]int)
 	nextSeenOrder := 0
@@ -435,7 +448,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				continue
 			}
 			candidateScore := normalizePreCheckReviewScore(hit.Score, hit.Origin, hitIdx+1, len(group.Hits))
-			logHit := summarizePreCheckThresholdHitForLog(hit, candidateScore)
+			logHit := scrubPreCheckThresholdHitLogPII(u.piiScrubber, summarizePreCheckThresholdHitForLog(hit, candidateScore))
 			bestRawHit = choosePreferredPreCheckThresholdHit(bestRawHit, logHit)
 			if candidateScore < u.config.MinSimilarityScore {
 				belowThresholdCount++
@@ -459,6 +472,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				MatchedContextRebuttalCount: hit.MatchedContextRebuttalCount,
 				MatchedContextScoreDelta:    hit.MatchedContextScoreDelta,
 			}
+			candidate = scrubPreCheckMemoryCandidatesPII(u.piiScrubber, []logicdomain.PreCheckMemoryCandidate{candidate})[0]
 			if candidate.Abstract == "" && candidate.Details == "" {
 				continue
 			}

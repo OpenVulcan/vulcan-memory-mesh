@@ -1765,6 +1765,71 @@ func TestMemoryUseCaseWriteDeduplicatesSameRequestDuplicates(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseWriteScrubsPIIBeforeEmbeddingAndPersistence verifies direct-write memories are redacted before the write flow computes embeddings and persists durable rows, so later post-action recall never reintroduces raw PII from this entry path.
+// TestMemoryUseCaseWriteScrubsPIIBeforeEmbeddingAndPersistence 用于验证主动写记忆会在进入 embedding 与长期持久化前先完成脱敏，避免后续 post-action 从这条入口重新读回明文 PII。
+func TestMemoryUseCaseWriteScrubsPIIBeforeEmbeddingAndPersistence(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigurePIIScrubber(stubPIIScrubber{
+		replacements: map[string]string{
+			"13800138000":       "[PHONE]",
+			"alice@example.com": "[EMAIL]",
+		},
+	})
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  52,
+			SessionKey: "sess-direct-pii",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "联系人电话 13800138000",
+			Details:    "联系邮箱 alice@example.com，电话 13800138000",
+			Category:   logicdomain.MemoryNodeCategoryProjectContext,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Ref.ID == 0 {
+		t.Fatalf("expected one persisted result, got %+v", result.Items)
+	}
+	if len(store.directWriteApplyCalls) != 1 {
+		t.Fatalf("expected one direct-write apply call, got %+v", store.directWriteApplyCalls)
+	}
+	call := store.directWriteApplyCalls[0]
+	if strings.Contains(call.Record.Abstract, "13800138000") || !strings.Contains(call.Record.Abstract, "[PHONE]") {
+		t.Fatalf("expected persisted abstract to be scrubbed, got %+v", call.Record)
+	}
+	if strings.Contains(call.Record.Details, "13800138000") || strings.Contains(call.Record.Details, "alice@example.com") {
+		t.Fatalf("expected persisted details to be scrubbed, got %+v", call.Record)
+	}
+	if !strings.Contains(call.Record.Details, "[PHONE]") || !strings.Contains(call.Record.Details, "[EMAIL]") {
+		t.Fatalf("expected scrubbed placeholders to remain in details, got %+v", call.Record)
+	}
+	if len(embedding.requests) != 1 || len(embedding.requests[0].Texts) != 1 {
+		t.Fatalf("expected one embedding request, got %+v", embedding.requests)
+	}
+	if strings.Contains(embedding.requests[0].Texts[0], "13800138000") || strings.Contains(embedding.requests[0].Texts[0], "alice@example.com") {
+		t.Fatalf("expected embedding text to be scrubbed, got %+v", embedding.requests[0])
+	}
+}
+
 // TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFails verifies direct-write success still persists a retry job when deleting superseded vectors fails after the relational transaction commits.
 // TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFails 用于验证当关系事务已提交、但删除 superseded 向量失败时，direct-write 成功路径仍会持久化一个重试任务。
 func TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFails(t *testing.T) {

@@ -399,9 +399,9 @@ func TestEngineMobileRuleDoesNotMaskInsideLongDigitStrings(t *testing.T) {
 	}
 }
 
-// TestEngineLogsSafeHashOnly verifies the TestEngineLogsSafeHashOnly behavior.
-// TestEngineLogsSafeHashOnly 用于验证 TestEngineLogsSafeHashOnly 行为。
-func TestEngineLogsSafeHashOnly(t *testing.T) {
+// TestEngineKeepsRuntimeLoggerSilentWhenDebugModeOff verifies normal runtime scrubbing no longer emits per-match evaluator logs through the shared application logger.
+// TestEngineKeepsRuntimeLoggerSilentWhenDebugModeOff 用于验证普通运行时脱敏在未开启调试模式时，不再通过共享应用日志器输出逐命中求值日志。
+func TestEngineKeepsRuntimeLoggerSilentWhenDebugModeOff(t *testing.T) {
 	root := t.TempDir()
 	systemRulesDir := filepath.Join(root, "system", "pii_rules")
 	writeRuleFile(t, filepath.Join(systemRulesDir, "zh-CN.json"), `{
@@ -422,19 +422,13 @@ func TestEngineLogsSafeHashOnly(t *testing.T) {
 	_ = engine.Scrub(original, "zh-CN")
 
 	logText := logBuf.String()
-	if !strings.Contains(logText, "[PII-EVAL]") {
-		t.Fatalf("expected pii evaluator log, got %q", logText)
-	}
-	if strings.Contains(logText, "13800138000") {
-		t.Fatalf("log leaked original match text: %q", logText)
-	}
-	if !strings.Contains(logText, "match_hash") {
-		t.Fatalf("expected match hash in log, got %q", logText)
+	if strings.Contains(logText, "[PII-EVAL]") {
+		t.Fatalf("expected runtime logger to stay silent for pii evaluation, got %q", logText)
 	}
 }
 
-// TestEngineDebugModePrintsVerboseTrace verifies that debug mode prints raw match and capture groups only when explicitly enabled.
-// TestEngineDebugModePrintsVerboseTrace 用于验证调试模式仅在显式开启时才打印原始匹配和捕获组轨迹。
+// TestEngineDebugModePrintsVerboseTrace verifies that debug mode prints raw match, capture groups, and the safe evaluator line only when explicitly enabled.
+// TestEngineDebugModePrintsVerboseTrace 用于验证调试模式仅在显式开启时才打印原始匹配、捕获组以及安全求值信息。
 func TestEngineDebugModePrintsVerboseTrace(t *testing.T) {
 	root := t.TempDir()
 	systemRulesDir := filepath.Join(root, "system", "pii_rules")
@@ -474,6 +468,9 @@ func TestEngineDebugModePrintsVerboseTrace(t *testing.T) {
 	}
 	if !strings.Contains(trace, "VM Evaluated: TRUE") {
 		t.Fatalf("missing vm result in debug trace: %q", trace)
+	}
+	if !strings.Contains(trace, "[PII-EVAL]") || !strings.Contains(trace, "match_hash=") {
+		t.Fatalf("missing safe evaluator line in debug trace: %q", trace)
 	}
 }
 
