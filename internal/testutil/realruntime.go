@@ -1,5 +1,5 @@
-// realruntime.go provides one shared real-model test fixture backed by output/configs and the configured .env file.
-// realruntime.go 用于提供一套共享的真实模型测试基座，直接复用 output/configs 和已配置的 .env。
+// realruntime.go provides one shared real-model test fixture backed by output/configs and the configured .env file chain.
+// realruntime.go 用于提供一套共享的真实模型测试基座，直接复用 output/configs 及其对应的 .env 配置链。
 package testutil
 
 import (
@@ -79,28 +79,31 @@ func RequireLiveModelAccess(tb testing.TB) *RealRuntimeFixture {
 	return fixture
 }
 
-// loadRealRuntimeFixture loads the packaged local runtime config and constructs the real OpenAI-compatible clients used by tests.
-// loadRealRuntimeFixture 用于加载打包后的本地运行时配置，并构建测试使用的真实 OpenAI 兼容客户端。
+// loadRealRuntimeFixture loads the same effective runtime layout used by the local binary and constructs the real OpenAI-compatible clients used by tests.
+// loadRealRuntimeFixture 用于加载与本地二进制一致的实际运行时布局，并构建测试使用的真实 OpenAI 兼容客户端。
 func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 	// Discover the repository root first so tests remain stable no matter which package directory go test starts from.
-	// 先定位仓库根目录，保证无论 go test 从哪个包目录启动都能稳定找到标准输出目录。
+	// 先定位仓库根目录，保证无论 go test 从哪个包目录启动都能稳定找到配置目录。
 	repoRoot, err := findRepoRoot()
 	if err != nil {
 		return nil, err
 	}
-	configPath := filepath.Join(repoRoot, "output", "configs", "local.json")
-	if _, err := os.Stat(configPath); err != nil {
-		return nil, fmt.Errorf("missing packaged runtime config: %w", err)
-	}
-
-	// Reuse the real packaged config chain so tests hit the same endpoint, model, and prompt files as the local runtime.
-	// 复用真实打包配置链，让测试和本地运行时使用同一套 endpoint、model 与提示词文件。
-	cfg, err := config.Load(configPath, config.DefaultLocal())
+	layout, err := resolveRealRuntimeLayout(repoRoot)
 	if err != nil {
 		return nil, err
 	}
-	systemDir := filepath.Join(repoRoot, "output", "configs")
-	prompts, err := config.NewPromptManager(systemDir, systemDir)
+	configPath := layout.AppConfigPath
+	if strings.TrimSpace(configPath) == "" {
+		configPath = layout.BaseConfigPath
+	}
+
+	// Reuse the resolved config chain so tests hit the same endpoint, model, and prompt files as the local runtime.
+	// 复用解析出的配置链，让测试和本地运行时使用同一套 endpoint、model 与提示词文件。
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
+	if err != nil {
+		return nil, err
+	}
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, cfg.Prompts.Routes)
 	if err != nil {
 		return nil, err
 	}
@@ -126,6 +129,16 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 	}, nil
 }
 
+// resolveRealRuntimeLayout mirrors the runtime startup layout resolution so live-model tests follow the same packaged-versus-workspace and user-override search order as the local binary.
+// resolveRealRuntimeLayout 用于镜像运行时启动时的布局解析逻辑，确保真实模型测试遵循与本地二进制一致的打包/工作区及用户覆盖搜索顺序。
+func resolveRealRuntimeLayout(repoRoot string) (config.PromptLayout, error) {
+	executablePath := filepath.Join(repoRoot, "cmd", "vmm-local")
+	if fileExists(filepath.Join(repoRoot, "output", "configs", "base.yaml")) {
+		executablePath = filepath.Join(repoRoot, "output", "bin", "vmm-local.exe")
+	}
+	return config.ResolvePromptLayout(executablePath, filepath.Join(repoRoot, "cmd", "vmm-local"), "", "config")
+}
+
 // firstRoutingAPIKey returns the first usable API key from either one top-level key pool or one normalized node list so fixtures accept every supported key declaration shape.
 // firstRoutingAPIKey 用于从顶层 Key 池或已归一化的节点列表中返回第一个可用 API Key，确保测试基座接受所有受支持的 Key 声明形态。
 func firstRoutingAPIKey(apiKeys []string, nodes []config.AIRoutingNodeConfig) (string, bool) {
@@ -144,8 +157,8 @@ func firstRoutingAPIKey(apiKeys []string, nodes []config.AIRoutingNodeConfig) (s
 	return "", false
 }
 
-// findRepoRoot walks upward until it finds the repository root that contains both go.mod and output/configs/local.json.
-// findRepoRoot 用于逐级向上查找同时包含 go.mod 和 output/configs/local.json 的仓库根目录。
+// findRepoRoot walks upward until it finds the repository root that contains go.mod plus either packaged or workspace base YAML configuration roots.
+// findRepoRoot 用于逐级向上查找同时包含 go.mod 以及打包态或工作区 base YAML 配置根的仓库根目录。
 func findRepoRoot() (string, error) {
 	start, err := os.Getwd()
 	if err != nil {
@@ -156,7 +169,9 @@ func findRepoRoot() (string, error) {
 		return "", fmt.Errorf("abs working dir: %w", err)
 	}
 	for dir := start; ; dir = filepath.Dir(dir) {
-		if fileExists(filepath.Join(dir, "go.mod")) && fileExists(filepath.Join(dir, "output", "configs", "local.json")) {
+		hasPackagedConfig := fileExists(filepath.Join(dir, "output", "configs", "base.yaml"))
+		hasWorkspaceConfig := fileExists(filepath.Join(dir, "configs", "base.yaml"))
+		if fileExists(filepath.Join(dir, "go.mod")) && (hasPackagedConfig || hasWorkspaceConfig) {
 			return dir, nil
 		}
 		parent := filepath.Dir(dir)

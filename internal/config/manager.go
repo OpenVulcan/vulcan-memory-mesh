@@ -28,34 +28,21 @@ type routeMatcher struct {
 	folder string
 }
 
-// NewPromptManager creates a PromptManager instance.
-// NewPromptManager 用于创建 PromptManager 实例。
-func NewPromptManager(systemDir, userDir string) (*PromptManager, error) {
-	// Validate the required system prompt base before merging any routes.
-	// 在合并任何路由之前，先校验系统级默认提示词底座。
+// NewPromptManager creates a PromptManager instance from the already-merged prompt route config.
+// NewPromptManager 用于基于已完成合并的提示词路由配置创建 PromptManager 实例。
+func NewPromptManager(systemDir, userDir string, routes RouteMap) (*PromptManager, error) {
+	// Validate the required system prompt base before validating any route targets.
+	// 在校验任何路由目标之前，先校验系统级默认提示词底座。
 	validation := &ValidationErrors{}
 	validateSystemDefault(systemDir, validation)
 
-	// Load system routes first and then overlay user-defined prompt routes.
-	// 先加载系统路由，再叠加用户定义的提示词路由。
-	systemRoutesPath := filepath.Join(systemDir, "prompts-routes.json")
-	userRoutesPath := filepath.Join(userDir, "prompts-routes.json")
-
-	systemRoutes, err := loadRoutes(systemRoutesPath)
-	if err != nil {
-		return nil, err
-	}
-	userRoutes, err := loadRoutes(userRoutesPath)
-	if err != nil {
-		return nil, err
-	}
-
-	// Merge and validate the final route table before the manager becomes usable.
-	// 在管理器可用之前，对最终路由表进行合并和完整性校验。
-	mergedRoutes := mergeRoutes(systemRoutes, userRoutes)
+	// Normalize and validate the final route table before the manager becomes usable.
+	// 在管理器可用之前，对最终路由表进行规范化和完整性校验。
+	mergedRoutes := normalizeRouteMap(routes)
 	if len(mergedRoutes) == 0 {
 		mergedRoutes["*"] = "default"
 	}
+	validateRouteMapEntries(mergedRoutes, validation)
 	if folder := strings.TrimSpace(mergedRoutes["*"]); folder != "" && folder != "default" {
 		validation.Add(`route "*" must point to "default", got %q`, folder)
 	}

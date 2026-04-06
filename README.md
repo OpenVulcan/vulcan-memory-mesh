@@ -510,6 +510,17 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 `-config` 表示“覆盖根目录”，不是单个配置文件路径。
 
+当前主配置加载顺序是：
+
+- `output/configs/base.yaml`
+- `output/configs/config.yaml`
+- `~/.vmm/config.yaml` 或 `-config` 指向目录下的 `config.yaml`
+
+说明：
+
+- `base.yaml` 只随项目或打包产物分发，不放到用户目录。
+- 用户目录只负责提供覆盖层 `config.yaml`。
+
 ### 调试清库
 
 需要调试时，可以继续通过 `make` 调主程序，但把清理目标通过 `--debug-clean` 传给二进制：

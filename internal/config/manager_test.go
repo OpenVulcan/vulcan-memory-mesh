@@ -17,7 +17,7 @@ func TestNewPromptManagerFailsWhenSystemDefaultIsIncomplete(t *testing.T) {
 
 	writeScene(t, filepath.Join(systemDir, "prompts", "default"), "extract_intent.md", "ok")
 
-	_, err := NewPromptManager(systemDir, userDir)
+	_, err := NewPromptManager(systemDir, userDir, RouteMap{"*": "default"})
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -33,12 +33,12 @@ func TestNewPromptManagerFailsWhenSystemRouteFolderIsIncomplete(t *testing.T) {
 	userDir := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default"), "default")
 	writeScene(t, filepath.Join(systemDir, "prompts", "qwen-fast"), "extract_intent.md", "only one")
-	writeRoutes(t, filepath.Join(systemDir, "prompts-routes.json"), RouteMap{
+	routes := RouteMap{
 		"qwen-fast*": "qwen-fast",
 		"*":          "default",
-	})
+	}
 
-	_, err := NewPromptManager(systemDir, userDir)
+	_, err := NewPromptManager(systemDir, userDir, routes)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -54,14 +54,14 @@ func TestNewPromptManagerFailsWhenUserOverrideFolderIsIncomplete(t *testing.T) {
 	userDir := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default"), "default")
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "qwen-fast"), "system-fast")
-	writeRoutes(t, filepath.Join(systemDir, "prompts-routes.json"), RouteMap{
+	routes := RouteMap{
 		"qwen-fast*": "qwen-fast",
 		"*":          "default",
-	})
+	}
 
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-fast"), "extract_intent.md", "user-only")
 
-	_, err := NewPromptManager(systemDir, userDir)
+	_, err := NewPromptManager(systemDir, userDir, routes)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
@@ -77,16 +77,57 @@ func TestNewPromptManagerFailsWhenWildcardRouteDoesNotPointToDefault(t *testing.
 	userDir := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default"), "default")
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "custom"), "custom")
-	writeRoutes(t, filepath.Join(systemDir, "prompts-routes.json"), RouteMap{
+	routes := RouteMap{
 		"*": "custom",
-	})
+	}
 
-	_, err := NewPromptManager(systemDir, userDir)
+	_, err := NewPromptManager(systemDir, userDir, routes)
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
 	if !strings.Contains(err.Error(), `route "*" must point to "default"`) {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestNewPromptManagerFailsWhenRouteEntryIsBlank verifies direct prompt-manager construction still rejects malformed route keys or folders instead of silently normalizing them away.
+// TestNewPromptManagerFailsWhenRouteEntryIsBlank 用于验证直接构造提示词管理器时，仍会拒绝非法的空路由键或空目录，而不是静默归一化后忽略。
+func TestNewPromptManagerFailsWhenRouteEntryIsBlank(t *testing.T) {
+	systemDir := t.TempDir()
+	userDir := t.TempDir()
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default"), "default")
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "custom"), "custom")
+
+	cases := []struct {
+		name   string
+		routes RouteMap
+		want   string
+	}{
+		{
+			name: "empty-key",
+			routes: RouteMap{
+				"":  "custom",
+				"*": "default",
+			},
+			want: "prompts.routes contains empty model key",
+		},
+		{
+			name: "empty-folder",
+			routes: RouteMap{
+				"qwen*": "",
+				"*":     "default",
+			},
+			want: `prompts.routes["qwen*"] must not be empty`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewPromptManager(systemDir, userDir, tc.routes)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
@@ -99,11 +140,11 @@ func TestPromptManagerUsesLongestPrefixAndUserPriority(t *testing.T) {
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default"), "system-default")
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "qwen-base"), "system-base")
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "qwen-flash"), "system-flash")
-	writeRoutes(t, filepath.Join(systemDir, "prompts-routes.json"), RouteMap{
+	routes := RouteMap{
 		"qwen*":          "qwen-base",
 		"qwen3.5-flash*": "qwen-flash",
 		"*":              "default",
-	})
+	}
 
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "extract_intent.md", "user flash extract")
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "assemble_context.md", "user flash assemble")
@@ -113,7 +154,7 @@ func TestPromptManagerUsesLongestPrefixAndUserPriority(t *testing.T) {
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "review_postaction_candidates.md", "user flash review post-action candidates")
 	writeScene(t, filepath.Join(userDir, "prompts", "qwen-flash"), "review_profile_instruction.md", "user flash review profile instruction")
 
-	manager, err := NewPromptManager(systemDir, userDir)
+	manager, err := NewPromptManager(systemDir, userDir, routes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -145,9 +186,9 @@ func TestPromptManagerUsesLongestPrefixAndUserPriority(t *testing.T) {
 	}
 }
 
-// TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome verifies the TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome behavior.
-// TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome 用于验证 TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome 行为。
-func TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome(t *testing.T) {
+// TestPromptManagerLoadsUserPromptOverridesFromDefaultHome verifies the TestPromptManagerLoadsUserPromptOverridesFromDefaultHome behavior.
+// TestPromptManagerLoadsUserPromptOverridesFromDefaultHome 用于验证 TestPromptManagerLoadsUserPromptOverridesFromDefaultHome 行为。
+func TestPromptManagerLoadsUserPromptOverridesFromDefaultHome(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
@@ -155,17 +196,15 @@ func TestPromptManagerLoadsRoutesAndPromptsFromDefaultHome(t *testing.T) {
 	systemDir := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default"), "system-default")
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "custom-user"), "system-custom")
-	writeRoutes(t, filepath.Join(systemDir, "prompts-routes.json"), RouteMap{
-		"*": "default",
-	})
+	routes := RouteMap{
+		"gpt-4.1*": "custom-user",
+		"*":        "default",
+	}
 
 	userDir := filepath.Join(home, ".vmm")
 	writeRequiredScenes(t, filepath.Join(userDir, "prompts", "custom-user"), "user-custom")
-	writeRoutes(t, filepath.Join(userDir, "prompts-routes.json"), RouteMap{
-		"gpt-4.1*": "custom-user",
-	})
 
-	manager, err := NewPromptManager(systemDir, userDir)
+	manager, err := NewPromptManager(systemDir, userDir, routes)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,28 +235,6 @@ func writeScene(t *testing.T, dir, name, body string) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o644); err != nil {
-		t.Fatal(err)
-	}
-}
-
-// writeRoutes executes the writeRoutes logic.
-// writeRoutes 用于执行 writeRoutes 逻辑。
-func writeRoutes(t *testing.T, path string, routes RouteMap) {
-	t.Helper()
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	body := "{\n"
-	first := true
-	for key, folder := range routes {
-		if !first {
-			body += ",\n"
-		}
-		first = false
-		body += `  "` + key + `": "` + folder + `"`
-	}
-	body += "\n}\n"
-	if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }

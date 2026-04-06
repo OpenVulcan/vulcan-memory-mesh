@@ -3,7 +3,6 @@
 package config
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -28,6 +27,7 @@ var RequiredScenes = []string{
 // PromptLayout 用于保存解析后的系统/用户提示词根目录以及最终配置链。
 type PromptLayout struct {
 	SystemDir          string
+	BaseConfigPath     string
 	UserDir            string
 	SystemConfigPath   string
 	OverrideConfigPath string
@@ -70,8 +70,8 @@ func (l PromptLayout) UserPIIRulesDir() string {
 	return filepath.Join(l.UserDir, "pii_rules")
 }
 
-// RouteMap maps model prefixes to prompt folders after route files are loaded from disk.
-// RouteMap 用于表示从磁盘路由文件加载后的“模型前缀到提示词目录”映射。
+// RouteMap maps model prefixes to prompt folders after prompt-route config is loaded from the main config tree.
+// RouteMap 用于表示从主配置树加载后的“模型前缀到提示词目录”映射。
 type RouteMap map[string]string
 
 // ValidationErrors aggregates prompt-layout validation failures before startup aborts.
@@ -118,17 +118,22 @@ func ResolvePromptLayout(executablePath, cwd, configArg, mode string) (PromptLay
 		return PromptLayout{}, err
 	}
 
-	// Build the final config chain with the system layer first and override layer last.
-	// 构建最终配置链，保证系统层在前、覆盖层在后。
-	systemConfigPath := filepath.Join(systemDir, defaultAppConfigName(mode))
+	// Build the final config chain with project base first, packaged config second, and user override last.
+	// 构建最终配置链，保证项目 base 在前、项目 config 在中、用户覆盖层在后。
+	baseConfigPath := filepath.Join(systemDir, defaultBaseConfigName(mode))
+	systemConfigPath := resolveBundledConfigPath(systemDir, defaultAppConfigName(mode))
 	overrideConfigPath := resolveOverrideConfigPath(userDir, explicitConfigPath, mode)
 	appConfigPath := systemConfigPath
+	if strings.TrimSpace(appConfigPath) == "" {
+		appConfigPath = baseConfigPath
+	}
 	if strings.TrimSpace(overrideConfigPath) != "" {
 		appConfigPath = overrideConfigPath
 	}
 
 	return PromptLayout{
 		SystemDir:          systemDir,
+		BaseConfigPath:     baseConfigPath,
 		UserDir:            userDir,
 		SystemConfigPath:   systemConfigPath,
 		OverrideConfigPath: overrideConfigPath,
@@ -139,7 +144,7 @@ func ResolvePromptLayout(executablePath, cwd, configArg, mode string) (PromptLay
 // ConfigPaths executes the ConfigPaths logic.
 // ConfigPaths 用于执行 ConfigPaths 逻辑。
 func (l PromptLayout) ConfigPaths() []string {
-	paths := make([]string, 0, 2)
+	paths := make([]string, 0, 3)
 	addPath := func(path string) {
 		if strings.TrimSpace(path) == "" {
 			return
@@ -152,6 +157,7 @@ func (l PromptLayout) ConfigPaths() []string {
 		}
 		paths = append(paths, cleaned)
 	}
+	addPath(l.BaseConfigPath)
 	addPath(l.SystemConfigPath)
 	addPath(l.OverrideConfigPath)
 	return paths
@@ -220,8 +226,8 @@ func resolveUserDir(cwd, configArg string) (string, string, error) {
 		// 将目录参数直接视为用户覆盖根目录。
 		return path, "", nil
 	case statErr == nil && !info.IsDir():
-		// Treat a file argument as both the override file and the user override root's local.json.
-		// 将文件参数同时视为覆盖文件，以及对应覆盖根目录中的 local.json。
+		// Treat a file argument as both the override file and the user override root's config.yaml.
+		// 将文件参数同时视为覆盖文件，以及对应覆盖根目录中的 config.yaml。
 		return userDirWithConfig(path), path, nil
 	case errors.Is(statErr, os.ErrNotExist) && configLooksLikeFile(path):
 		// Preserve legacy file-style arguments even before the file is created.
@@ -308,11 +314,32 @@ func looksLikeGoRunExecutable(path string) bool {
 	return strings.Contains(slashPath, "/go-build")
 }
 
+// defaultBaseConfigName returns the immutable project-owned base config file name.
+// defaultBaseConfigName 用于返回仅由项目目录持有的基础配置文件名。
+func defaultBaseConfigName(mode string) string {
+	_ = mode
+	return "base.yaml"
+}
+
 // defaultAppConfigName executes the defaultAppConfigName logic.
 // defaultAppConfigName 用于执行 defaultAppConfigName 逻辑。
 func defaultAppConfigName(mode string) string {
 	_ = mode
-	return "local.json"
+	return "config.yaml"
+}
+
+// resolveBundledConfigPath returns the packaged project-level config path only when the file actually exists.
+// resolveBundledConfigPath 用于仅在文件真实存在时返回打包后的项目级 config 路径。
+func resolveBundledConfigPath(systemDir, name string) string {
+	if strings.TrimSpace(systemDir) == "" || strings.TrimSpace(name) == "" {
+		return ""
+	}
+	candidate := filepath.Join(systemDir, name)
+	info, err := os.Stat(candidate)
+	if err != nil || info.IsDir() {
+		return ""
+	}
+	return candidate
 }
 
 // resolveOverrideConfigPath resolves the target value.
@@ -327,8 +354,8 @@ func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string 
 		return ""
 	}
 
-	// Otherwise look for the conventional local.json inside the resolved user directory.
-	// 否则在解析出的用户目录下查找约定的 local.json。
+	// Otherwise look for the conventional config.yaml inside the resolved user directory.
+	// 否则在解析出的用户目录下查找约定的 config.yaml。
 	candidate := filepath.Join(userDir, defaultAppConfigName(mode))
 	info, err := os.Stat(candidate)
 	if err != nil || info.IsDir() {
@@ -340,52 +367,45 @@ func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string 
 // hasSystemPromptBase reports whether the condition is true.
 // hasSystemPromptBase 用于返回条件是否成立。
 func hasSystemPromptBase(systemDir string) bool {
-	return len(missingScenes(filepath.Join(systemDir, "prompts", "default"))) == 0
+	if len(missingScenes(filepath.Join(systemDir, "prompts", "default"))) != 0 {
+		return false
+	}
+	info, err := os.Stat(filepath.Join(systemDir, defaultBaseConfigName("config")))
+	return err == nil && !info.IsDir()
 }
 
-// loadRoutes loads related data.
-// loadRoutes 用于加载相关数据。
-func loadRoutes(path string) (RouteMap, error) {
-	body, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return RouteMap{}, nil
-		}
-		return nil, fmt.Errorf("read routes %q: %w", path, err)
+// normalizeRouteMap trims prompt-route keys and folders while preserving enough information for later validation.
+// normalizeRouteMap 用于裁剪提示词路由的键和值，同时保留后续校验所需的信息，避免在归一化阶段静默吞掉非法项。
+func normalizeRouteMap(routes RouteMap) RouteMap {
+	if len(routes) == 0 {
+		return RouteMap{}
 	}
-
-	routes := RouteMap{}
-	if err := json.Unmarshal(body, &routes); err != nil {
-		return nil, fmt.Errorf("parse routes %q: %w", path, err)
-	}
-
 	cleaned := RouteMap{}
 	for rawKey, rawFolder := range routes {
-		key := strings.TrimSpace(rawKey)
-		folder := strings.TrimSpace(rawFolder)
-		if key == "" {
-			return nil, fmt.Errorf("routes %q contains empty model key", path)
-		}
-		if folder == "" {
-			return nil, fmt.Errorf("routes %q contains empty folder for key %q", path, key)
-		}
-		cleaned[key] = folder
+		cleaned[strings.TrimSpace(rawKey)] = strings.TrimSpace(rawFolder)
 	}
-
-	return cleaned, nil
+	return cleaned
 }
 
-// mergeRoutes executes the mergeRoutes logic.
-// mergeRoutes 用于执行 mergeRoutes 逻辑。
-func mergeRoutes(systemRoutes, userRoutes RouteMap) RouteMap {
-	merged := RouteMap{}
-	for key, folder := range systemRoutes {
-		merged[key] = folder
+// validateRouteMapEntries records malformed prompt-route entries so startup fails explicitly instead of silently falling back to default prompts.
+// validateRouteMapEntries 用于记录非法提示词路由项，确保启动阶段显式失败，而不是静默回退到默认提示词。
+func validateRouteMapEntries(routes RouteMap, validation *ValidationErrors) {
+	if validation == nil || len(routes) == 0 {
+		return
 	}
-	for key, folder := range userRoutes {
-		merged[key] = folder
+	keys := make([]string, 0, len(routes))
+	for key := range routes {
+		keys = append(keys, key)
 	}
-	return merged
+	sort.Strings(keys)
+	for _, key := range keys {
+		switch {
+		case key == "":
+			validation.Add("prompts.routes contains empty model key")
+		case routes[key] == "":
+			validation.Add(`prompts.routes[%q] must not be empty`, key)
+		}
+	}
 }
 
 // uniqueRouteFolders executes the uniqueRouteFolders logic.

@@ -4,10 +4,10 @@
 
 说明原则：
 
-- 以当前代码中的真实配置结构为准，来源是 [config.go](D:/projects/VulcanMemoryMesh/internal/config/config.go)
-- 默认值以 `DefaultLocal()` 为基准
-- 示例配置以 [local.json](D:/projects/VulcanMemoryMesh/configs/local.json) 和 [openai.local.example.json](D:/projects/VulcanMemoryMesh/configs/openai.local.example.json) 为参考
-- 环境变量覆盖以 [configs/.env.example](D:/projects/VulcanMemoryMesh/configs/.env.example) 为参考
+- 以当前代码中的真实配置结构为准，来源是 [config.go](../internal/config/config.go)
+- 默认值以 [base.yaml](./base.yaml) 与 `DefaultBase()` 为基准
+- 示例配置以 [base.yaml](./base.yaml)、[config.yaml](./config.yaml) 和 [openai.config.example.yaml](./openai.config.example.yaml) 为参考
+- 环境变量覆盖以 [.env.example](./.env.example) 为参考
 
 ## 1. 根节点总览
 
@@ -17,6 +17,7 @@
 - `logging`
 - `pii`
 - `noise`
+- `prompts`
 - `storage`
 - `sqlite`
 - `lancedb`
@@ -774,17 +775,19 @@
 
 当前配置来源优先级可以简单理解为：
 
-1. 代码默认值
-2. `configs/*.json`
-3. 环境变量覆盖
+1. 代码兜底默认值
+2. `configs/base.yaml`
+3. `configs/config.yaml` 或 `~/.vmm/config.yaml`
+4. 环境变量覆盖
 
-如果同一个字段同时出现在 JSON 和环境变量里，环境变量优先。
+如果同一个字段同时出现在 YAML 和环境变量里，环境变量优先。
 
 ## 19. 推荐做法
 
 ### 本地开发
 
-- 用 `configs/local.json` 作为主配置
+- 以 `configs/base.yaml` 作为基础模板
+- 用 `configs/config.yaml` 承接项目运行时覆盖
 - 敏感信息通过 `.env` 或本地环境变量注入
 - 调试时再临时开启：
   - `logging.debug_rpc_payloads=true`
@@ -819,7 +822,8 @@
 
 ## 20. 参考文件
 
-- [local.json](D:/projects/VulcanMemoryMesh/configs/local.json)
-- [openai.local.example.json](D:/projects/VulcanMemoryMesh/configs/openai.local.example.json)
-- [.env.example](D:/projects/VulcanMemoryMesh/configs/.env.example)
-- [config.go](D:/projects/VulcanMemoryMesh/internal/config/config.go)
+- [base.yaml](./base.yaml)
+- [config.yaml](./config.yaml)
+- [openai.config.example.yaml](./openai.config.example.yaml)
+- [.env.example](./.env.example)
+- [config.go](../internal/config/config.go)

@@ -212,19 +212,17 @@
 
 当前相关配置位于：
 
-- [configs/local.json](../configs/local.json)
+- [configs/base.yaml](../configs/base.yaml)
+- [configs/config.yaml](../configs/config.yaml)
 
 示例：
 
-```json
-{
-  "noise": {
-    "enabled": true,
-    "default_language": "zh-CN",
-    "semantic_enabled": true,
-    "semantic_threshold": 0.88
-  }
-}
+```yaml
+noise:
+  enabled: true
+  default_language: "zh-CN"
+  semantic_enabled: true
+  semantic_threshold: 0.88
 ```
 
 字段说明：

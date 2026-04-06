@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/joho/godotenv"
+	"gopkg.in/yaml.v3"
 )
 
 // Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
@@ -58,6 +59,7 @@ type Config struct {
 	Logging            LoggingConfig        `json:"logging"`
 	PII                PIIConfig            `json:"pii"`
 	Noise              NoiseConfig          `json:"noise"`
+	Prompts            PromptConfig         `json:"prompts,omitempty"`
 	Storage            StorageConfig        `json:"storage"`
 	SQLite             SQLiteConfig         `json:"sqlite"`
 	LanceDB            LanceDBConfig        `json:"lancedb"`
@@ -72,6 +74,12 @@ type Config struct {
 	MemoryPipeline     MemoryPipelineConfig `json:"memory_pipeline"`
 	Retention          RetentionConfig      `json:"retention"`
 	MemoryReplaceScope string               `json:"memory_replace_scope,omitempty"`
+}
+
+// PromptConfig keeps prompt-model routing rules inside the main config tree so the prompt bundle and route table evolve together.
+// PromptConfig 用于把提示词模型路由规则纳入主配置树，避免提示词包与路由表分离漂移。
+type PromptConfig struct {
+	Routes RouteMap `json:"routes,omitempty"`
 }
 
 // GRPCConfig holds listener and timeout settings for the inbound gRPC server.
@@ -316,9 +324,9 @@ type MemoryPipelineConfig struct {
 	WeibullCrossSessionBoost float64  `json:"weibull_cross_session_boost,omitempty"`
 }
 
-// DefaultLocal executes the DefaultLocal logic.
-// DefaultLocal 用于执行 DefaultLocal 逻辑。
-func DefaultLocal() Config {
+// DefaultBase returns the baked-in fallback defaults that mirror the shipped base.yaml template.
+// DefaultBase 用于返回与随仓库分发的 base.yaml 对齐的内建兜底默认值。
+func DefaultBase() Config {
 	return Config{
 		GRPC: GRPCConfig{
 			ListenAddr:             ":8080",
@@ -329,6 +337,13 @@ func DefaultLocal() Config {
 		Logging: LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, ProtectPayloads: false},
 		PII:     PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:   NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
+		Prompts: PromptConfig{
+			Routes: RouteMap{
+				"qwen3.5-flash": "qwen3.5-flash",
+				"qwen3.5*":      "qwen3.5-base",
+				"*":             "default",
+			},
+		},
 		Storage: StorageConfig{Mode: "split", CombinedProvider: "postgres"},
 		SQLite:  SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
 		LanceDB: LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
@@ -414,6 +429,12 @@ func DefaultLocal() Config {
 	}
 }
 
+// DefaultLocal preserves the legacy helper name while delegating to the new base-config fallback defaults.
+// DefaultLocal 用于保留旧的辅助函数名，并委托给新的 base 配置兜底默认值。
+func DefaultLocal() Config {
+	return DefaultBase()
+}
+
 // Load loads related data.
 // Load 用于加载相关数据。
 func Load(path string, fallback Config) (Config, error) {
@@ -439,7 +460,10 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 			return Config{}, fmt.Errorf("read config: %w", err)
 		}
 		expandedBody := os.ExpandEnv(string(body))
-		expandedBytes := []byte(expandedBody)
+		expandedBytes, err := decodeConfigLayer(path, []byte(expandedBody))
+		if err != nil {
+			return Config{}, fmt.Errorf("parse config: %w", err)
+		}
 		if err := applyLayeredAIKeyOverrideReset(&cfg, expandedBytes); err != nil {
 			return Config{}, fmt.Errorf("parse config: %w", err)
 		}
@@ -459,6 +483,74 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 		return Config{}, err
 	}
 	return cfg, nil
+}
+
+// decodeConfigLayer converts one JSON or YAML config layer into JSON bytes so the rest of the loader can keep one validation and merge path.
+// decodeConfigLayer 用于把单层 JSON 或 YAML 配置统一转换成 JSON 字节，让后续校验与合并逻辑共用同一条路径。
+func decodeConfigLayer(path string, body []byte) ([]byte, error) {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
+	case ".yaml", ".yml":
+		return convertYAMLToJSON(body)
+	default:
+		return body, nil
+	}
+}
+
+// convertYAMLToJSON decodes one YAML document and re-encodes it as JSON so json.RawMessage-based layered validation continues to work.
+// convertYAMLToJSON 用于把一份 YAML 文档解码后重新编码成 JSON，以便继续复用基于 json.RawMessage 的分层校验逻辑。
+func convertYAMLToJSON(body []byte) ([]byte, error) {
+	var raw any
+	if err := yaml.Unmarshal(body, &raw); err != nil {
+		return nil, err
+	}
+	normalized, err := normalizeYAMLValue(raw)
+	if err != nil {
+		return nil, err
+	}
+	return json.Marshal(normalized)
+}
+
+// normalizeYAMLValue recursively rewrites YAML decoder output into JSON-compatible maps and lists with string keys only.
+// normalizeYAMLValue 用于递归把 YAML 解码结果改写成只包含字符串键的 JSON 兼容 map/list 结构。
+func normalizeYAMLValue(value any) (any, error) {
+	switch typed := value.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			normalized, err := normalizeYAMLValue(child)
+			if err != nil {
+				return nil, err
+			}
+			out[key] = normalized
+		}
+		return out, nil
+	case map[any]any:
+		out := make(map[string]any, len(typed))
+		for key, child := range typed {
+			keyString, ok := key.(string)
+			if !ok {
+				return nil, fmt.Errorf("yaml object key %v is not a string", key)
+			}
+			normalized, err := normalizeYAMLValue(child)
+			if err != nil {
+				return nil, err
+			}
+			out[keyString] = normalized
+		}
+		return out, nil
+	case []any:
+		out := make([]any, 0, len(typed))
+		for _, child := range typed {
+			normalized, err := normalizeYAMLValue(child)
+			if err != nil {
+				return nil, err
+			}
+			out = append(out, normalized)
+		}
+		return out, nil
+	default:
+		return value, nil
+	}
 }
 
 // aiKeyFieldPresence tracks whether one config layer explicitly mentions api_keys or nodes so layered embedding overrides can clear stale lower-priority shapes before unmarshal.
@@ -1377,6 +1469,10 @@ func (c *Config) Normalize() {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(0.75)
 		}
 	}
+	c.Prompts.Routes = normalizeRouteMap(c.Prompts.Routes)
+	if len(c.Prompts.Routes) == 0 {
+		c.Prompts.Routes = normalizeRouteMap(DefaultBase().Prompts.Routes)
+	}
 	c.LLM.Routes = normalizeLLMRouteConfigs(c.LLM.Routes)
 	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
 		c.Embedding.Dimension = 1024
@@ -1478,6 +1574,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Logging.PayloadEncryptionKey = strings.TrimSpace(c.Logging.PayloadEncryptionKey)
 	c.PII.DefaultLanguage = strings.TrimSpace(c.PII.DefaultLanguage)
 	c.Noise.DefaultLanguage = strings.TrimSpace(c.Noise.DefaultLanguage)
+	c.Prompts.Routes = normalizeRouteMap(c.Prompts.Routes)
 	c.Storage.Mode = strings.TrimSpace(c.Storage.Mode)
 	c.Storage.CombinedProvider = strings.TrimSpace(c.Storage.CombinedProvider)
 	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
@@ -1591,6 +1688,11 @@ func (c Config) Validate() error {
 	}
 	if c.Noise.SemanticThreshold < 0 || c.Noise.SemanticThreshold > 1 {
 		return errors.New("noise.semantic_threshold must be in [0,1]")
+	}
+	promptValidation := &ValidationErrors{}
+	validateRouteMapEntries(c.Prompts.Routes, promptValidation)
+	if promptValidation.HasAny() {
+		return promptValidation
 	}
 	if strings.TrimSpace(c.Embedding.Provider) == "" {
 		return errors.New("embedding.provider is required")

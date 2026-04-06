@@ -3,6 +3,8 @@
 package testutil
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/openvulcan/vmm/internal/config"
@@ -49,5 +51,106 @@ func TestFirstRoutingAPIKeyAcceptsSupportedKeyShapes(t *testing.T) {
 				t.Fatalf("firstRoutingAPIKey() = (%q, %v), want (%q, %v)", got, ok, tc.want, tc.ok)
 			}
 		})
+	}
+}
+
+// TestFindRepoRootAcceptsBaseOnlyPackagedConfig verifies repository-root detection no longer requires a packaged config.yaml when the runtime is expected to pick up user overrides from ~/.vmm.
+// TestFindRepoRootAcceptsBaseOnlyPackagedConfig 用于验证仓库根目录探测不再强制要求打包态 config.yaml，确保运行时可从 ~/.vmm 读取用户覆盖配置。
+func TestFindRepoRootAcceptsBaseOnlyPackagedConfig(t *testing.T) {
+	repoRoot := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(repoRoot, "output", "configs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(repoRoot, "internal", "logic"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "go.mod"), []byte("module example.com/test\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(repoRoot, "output", "configs", "base.yaml"), []byte("grpc: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	previousWD, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chdir(filepath.Join(repoRoot, "internal", "logic")); err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		_ = os.Chdir(previousWD)
+	}()
+
+	got, err := findRepoRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got != repoRoot {
+		t.Fatalf("repo root = %q, want %q", got, repoRoot)
+	}
+}
+
+// TestResolveRealRuntimeLayoutSupportsBaseOnlyPackagedConfigAndHomeOverride verifies the live-runtime fixture follows the same base-plus-home-override search order as the real binary.
+// TestResolveRealRuntimeLayoutSupportsBaseOnlyPackagedConfigAndHomeOverride 用于验证真实运行时测试夹具遵循与正式二进制一致的“打包 base + 用户目录 override”搜索顺序。
+func TestResolveRealRuntimeLayoutSupportsBaseOnlyPackagedConfigAndHomeOverride(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+
+	repoRoot := t.TempDir()
+	systemDir := filepath.Join(repoRoot, "output", "configs")
+	writePromptBundleForRealRuntimeTest(t, filepath.Join(systemDir, "prompts", "default"), "packaged-default")
+	writeConfigStubForRealRuntimeTest(t, filepath.Join(systemDir, "base.yaml"))
+	userConfigPath := filepath.Join(home, ".vmm", "config.yaml")
+	writeConfigStubForRealRuntimeTest(t, userConfigPath)
+
+	layout, err := resolveRealRuntimeLayout(repoRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := layout.SystemDir, systemDir; got != want {
+		t.Fatalf("system dir = %q, want %q", got, want)
+	}
+	if got, want := layout.UserDir, filepath.Join(home, ".vmm"); got != want {
+		t.Fatalf("user dir = %q, want %q", got, want)
+	}
+	if got, want := layout.BaseConfigPath, filepath.Join(systemDir, "base.yaml"); got != want {
+		t.Fatalf("base config = %q, want %q", got, want)
+	}
+	if got := layout.SystemConfigPath; got != "" {
+		t.Fatalf("system config path = %q, want empty", got)
+	}
+	if got, want := layout.OverrideConfigPath, userConfigPath; got != want {
+		t.Fatalf("override config path = %q, want %q", got, want)
+	}
+	if got, want := layout.ConfigPaths(), []string{filepath.Join(systemDir, "base.yaml"), userConfigPath}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("config paths = %#v, want %#v", got, want)
+	}
+}
+
+// writePromptBundleForRealRuntimeTest writes one complete default prompt bundle so layout resolution can validate packaged configs in isolation.
+// writePromptBundleForRealRuntimeTest 用于写入一套完整的默认提示词包，确保布局解析测试可以独立校验打包态配置目录。
+func writePromptBundleForRealRuntimeTest(t *testing.T, dir string, prefix string) {
+	t.Helper()
+	for _, scene := range config.RequiredScenes {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, scene), []byte(prefix+":"+scene), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// writeConfigStubForRealRuntimeTest writes one minimal YAML config file so layout tests can focus on path resolution instead of full runtime config shape.
+// writeConfigStubForRealRuntimeTest 用于写入最小 YAML 配置文件，让布局测试聚焦于路径解析，而不是完整运行时配置结构。
+func writeConfigStubForRealRuntimeTest(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("grpc: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }

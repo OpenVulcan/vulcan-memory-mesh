@@ -27,14 +27,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "获取工作目录失败: %v\n", err)
 		os.Exit(1)
 	}
-	cfgPath := flag.String("config", "", "user config dir (~/.vmm by default); legacy json config file path is still supported")
+	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config file path is also supported")
 	debugClean := flag.String("debug-clean", "", "debug-only gateway cleanup target: sqlite, lancedb, postgres, or all")
 	debugMigrate := flag.String("debug-migrate", "", "debug-only storage migration target: split-to-combined")
 	flag.Parse()
 
 	// Build the prompt/config layout before any application dependency is created.
 	// 在创建任何应用依赖之前先构建提示词与配置布局。
-	layout, err := config.ResolvePromptLayout(exePath, wd, *cfgPath, "local")
+	layout, err := config.ResolvePromptLayout(exePath, wd, *cfgPath, "config")
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve prompt layout: %v\n", err)
 		os.Exit(1)
@@ -47,7 +47,7 @@ func main() {
 
 	// Load the merged configuration layers before deciding whether to run the full server or one debug-only cleanup path.
 	// 先加载合并后的配置层，再决定是启动完整服务还是进入调试专用清理路径。
-	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultLocal())
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
@@ -73,7 +73,7 @@ func main() {
 
 	// Load prompt assets only for the normal runtime path because debug-clean exits after talking to storage gateways.
 	// 仅在正常运行路径加载提示词资产，因为 debug-clean / debug-migrate 会在访问存储网关后直接退出。
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir)
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, cfg.Prompts.Routes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)

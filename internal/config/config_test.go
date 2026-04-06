@@ -316,29 +316,52 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	configBody := `{
-		"grpc":{"listen_addr":"127.0.0.1:8080","request_timeout":{"workspace":"15s","pre_check":"8s","post_action":"8s"},"shutdown_timeout":"10s"},
-		"sqlite":{"address":"127.0.0.1:19501","timeout":"5s"},
-		"lancedb":{"address":"127.0.0.1:19301","timeout":"5s","table_name":"vmm_memory_vectors","vector_column":"vector"},
-		"llm":{
-			"routes":[
-				{
-					"provider":"openai",
-					"endpoint":"https://api.openai.com/v1",
-					"api_keys":["${` + apiKey + `}"],
-					"model":"${` + modelKey + `}",
-					"params":{"reasoning_effort":"low"},
-					"model_params":{"${` + modelKey + `}":{"enable_thinking":false}}
-				}
-			]
-		},
-		"embedding":{"provider":"openai","endpoint":"https://api.openai.com/v1","api_keys":["${` + apiKey + `}"],"model":"text-embedding-3-large","dimension":1024},
-		"vector":{"provider":"lancedb"},
-		"relational":{"provider":"sqlite"},
-		"pre_check":{"intent_timeout":"5s","top_k":5},
-		"memory_pipeline":{"max_search_keywords":5,"min_similarity_score":0.75}
-	}`
-	configPath := filepath.Join(configDir, "local.json")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+  request_timeout:
+    workspace: "15s"
+    pre_check: "8s"
+    post_action: "8s"
+  shutdown_timeout: "10s"
+sqlite:
+  address: "127.0.0.1:19501"
+  timeout: "5s"
+lancedb:
+  address: "127.0.0.1:19301"
+  timeout: "5s"
+  table_name: "vmm_memory_vectors"
+  vector_column: "vector"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys:
+        - "${` + apiKey + `}"
+      model: "${` + modelKey + `}"
+      params:
+        reasoning_effort: "low"
+      model_params:
+        "${` + modelKey + `}":
+          enable_thinking: false
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys:
+    - "${` + apiKey + `}"
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+`
+	configPath := filepath.Join(configDir, "config.yaml")
 	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -357,6 +380,116 @@ func TestLoadExpandsModelSpecificProviderParams(t *testing.T) {
 	modelParams, ok := route.ModelParams["qwen3.5-flash"]
 	if !ok || modelParams["enable_thinking"] != false {
 		t.Fatalf("expected model params for qwen3.5-flash, got %#v", route.ModelParams)
+	}
+}
+
+// TestLoadPathsMergesPromptRoutesFromLayeredYAML verifies base/config YAML layers keep prompt-route map merging semantics when user overrides add extra model prefixes.
+// TestLoadPathsMergesPromptRoutesFromLayeredYAML 用于验证 base/config YAML 分层加载仍会保留提示词路由 map 的合并语义，让高优先级覆盖可追加新的模型前缀。
+func TestLoadPathsMergesPromptRoutesFromLayeredYAML(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	rootDir := t.TempDir()
+	basePath := filepath.Join(rootDir, "base.yaml")
+	overridePath := filepath.Join(rootDir, "config.yaml")
+
+	baseBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+prompts:
+  routes:
+    "qwen*": "qwen-base"
+    "*": "default"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["base-key"]
+      model: "base-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+`
+	overrideBody := `prompts:
+  routes:
+    "gpt-4.1*": "gpt-4.1-folder"
+`
+	if err := os.WriteFile(basePath, []byte(baseBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(overridePath, []byte(overrideBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadPaths([]string{basePath, overridePath}, Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := cfg.Prompts.Routes["qwen*"], "qwen-base"; got != want {
+		t.Fatalf("base prompt route = %q, want %q", got, want)
+	}
+	if got, want := cfg.Prompts.Routes["gpt-4.1*"], "gpt-4.1-folder"; got != want {
+		t.Fatalf("override prompt route = %q, want %q", got, want)
+	}
+	if got, want := cfg.Prompts.Routes["*"], "default"; got != want {
+		t.Fatalf("wildcard prompt route = %q, want %q", got, want)
+	}
+}
+
+// TestLoadPathsRejectsPromptRoutesWithEmptyEntries verifies prompt-route entries that collapse to empty keys or folders after trimming or env expansion still fail fast instead of being ignored.
+// TestLoadPathsRejectsPromptRoutesWithEmptyEntries 用于验证提示词路由项在裁剪或环境变量展开后若退化为空键或空目录，加载流程仍会快速失败，而不是被静默忽略。
+func TestLoadPathsRejectsPromptRoutesWithEmptyEntries(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	restoreEnv(t, "TEST_EMPTY_PROMPT_ROUTE_KEY")
+	restoreEnv(t, "TEST_EMPTY_PROMPT_ROUTE_FOLDER")
+	t.Setenv("TEST_EMPTY_PROMPT_ROUTE_KEY", "   ")
+	t.Setenv("TEST_EMPTY_PROMPT_ROUTE_FOLDER", "   ")
+
+	rootDir := t.TempDir()
+	cases := []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "empty-key",
+			body: `prompts:
+  routes:
+    "${TEST_EMPTY_PROMPT_ROUTE_KEY}": "custom-folder"
+`,
+			want: "prompts.routes contains empty model key",
+		},
+		{
+			name: "empty-folder",
+			body: `prompts:
+  routes:
+    "qwen*": "${TEST_EMPTY_PROMPT_ROUTE_FOLDER}"
+`,
+			want: `prompts.routes["qwen*"] must not be empty`,
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			configPath := filepath.Join(rootDir, tc.name+".yaml")
+			if err := os.WriteFile(configPath, []byte(tc.body), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			_, err := LoadPaths([]string{configPath}, DefaultLocal())
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("unexpected prompt-route validation error: %v", err)
+			}
+		})
 	}
 }
 

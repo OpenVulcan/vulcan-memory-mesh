@@ -114,12 +114,12 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 		filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"),
 		filepath.Join(root, "cmd", "vmm-local"),
 		"",
-		"local",
+		"config",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir)
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, config.RouteMap{"*": "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -171,21 +171,21 @@ func TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs(t *testing.T) {
 // TestNewLocalCreatesRuntimeLogFile verifies application composition eagerly creates the day/hour log file under the resolved runtime log root so startup fails early on invalid paths instead of silently dropping logs later.
 // TestNewLocalCreatesRuntimeLogFile 用于验证应用装配会在解析出的运行时日志根目录下立即创建按天/小时的日志文件，让路径异常在启动阶段就暴露出来，而不是之后静默丢日志。
 func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
-	wd, err := filepath.Abs(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	root := filepath.Clean(filepath.Join(wd, "..", ".."))
+	root := t.TempDir()
+	writePromptBundleForAppTest(t, filepath.Join(root, "output", "configs", "prompts", "default"), "packaged-default")
+	writeConfigStubForAppTest(t, filepath.Join(root, "output", "configs", "base.yaml"))
+	writeConfigStubForAppTest(t, filepath.Join(root, "output", "configs", "config.yaml"))
+	writeRuleStubsForAppTest(t, filepath.Join(root, "output", "configs"))
 	layout, err := config.ResolvePromptLayout(
 		filepath.Join(root, "output", "bin", "vmm-local.exe"),
 		filepath.Join(root, "cmd", "vmm-local"),
 		"",
-		"local",
+		"config",
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir)
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, config.RouteMap{"*": "default"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -218,6 +218,93 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Fatalf("expected at least one hourly log file in %s", dayDir)
+	}
+}
+
+// writePromptBundleForAppTest creates one complete prompt bundle for runtime composition tests that need an isolated packaged config layout.
+// writePromptBundleForAppTest 用于为需要隔离打包配置布局的运行时装配测试创建一套完整提示词包。
+func writePromptBundleForAppTest(t *testing.T, dir string, prefix string) {
+	t.Helper()
+	for _, scene := range []string{
+		"extract_intent.md",
+		"assemble_context.md",
+		"analyze_turn.md",
+		"summarize_entry.md",
+		"merge_profile.md",
+		"review_postaction_candidates.md",
+		"review_profile_instruction.md",
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, scene), []byte(prefix+":"+scene), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// writeConfigStubForAppTest writes one minimal YAML config file so layout resolution can exercise packaged-path behavior without depending on repository build artifacts.
+// writeConfigStubForAppTest 用于写入最小 YAML 配置文件，让布局解析测试能够验证打包路径行为，而不依赖仓库现成构建产物。
+func writeConfigStubForAppTest(t *testing.T, path string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("grpc: {}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// writeRuleStubsForAppTest writes one minimal noise/pii rule set so isolated packaged-layout tests can boot the local app without relying on repository assets.
+// writeRuleStubsForAppTest 用于写入最小 noise/pii 规则集，让隔离打包布局测试能够启动本地应用，而不依赖仓库现成资源。
+func writeRuleStubsForAppTest(t *testing.T, configRoot string) {
+	t.Helper()
+	noiseDir := filepath.Join(configRoot, "noise_rules")
+	if err := os.MkdirAll(noiseDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noiseDir, "common.json"), []byte(`{
+  "language": "common",
+  "version": "1.0.0",
+  "categories": [
+    {
+      "name": "stub-common",
+      "targets": ["user"],
+      "threshold": 0.9,
+      "patterns": ["^stub$"],
+      "phrases": ["stub"]
+    }
+  ]
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(noiseDir, "zh-CN.json"), []byte(`{
+  "language": "zh-CN",
+  "version": "1.0.0",
+  "categories": [
+    {
+      "name": "stub-zh",
+      "targets": ["assistant"],
+      "threshold": 0.9,
+      "patterns": ["^stub$"],
+      "phrases": ["stub"]
+    }
+  ]
+}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	piiDir := filepath.Join(configRoot, "pii_rules")
+	if err := os.MkdirAll(piiDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(piiDir, "zh-CN.json"), []byte(`{
+  "language": "zh-CN",
+  "version": "1.0.0",
+  "rules": [],
+  "excludes": []
+}`), 0o644); err != nil {
+		t.Fatal(err)
 	}
 }
 
