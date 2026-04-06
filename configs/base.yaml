@@ -1,162 +1,688 @@
+# VMM base configuration file.
+# VMM 基础配置文件。
+#
+# This file is the project-owned baseline layer distributed with the repository and packaged output.
+# 本文件是随仓库与打包产物一起分发的项目基础配置层。
+#
+# Load order:
+# 加载顺序：
+# 1. Built-in fallback defaults in code.
+#    代码中的内建兜底默认值。
+# 2. configs/base.yaml.
+#    项目内的 configs/base.yaml。
+# 3. configs/config.yaml or ~/.vmm/config.yaml.
+#    项目内的 configs/config.yaml 或用户目录下的 ~/.vmm/config.yaml。
+# 4. Environment variables.
+#    环境变量。
+#
+# Usage guidance:
+# 使用建议：
+# - Keep this file stable and treat it as the default baseline for the whole project.
+#   建议将本文件保持稳定，作为整个项目的默认配置底座。
+# - Put deployment-specific or user-specific changes into config.yaml instead of editing base.yaml repeatedly.
+#   部署差异或用户差异应写入 config.yaml，而不是频繁直接修改 base.yaml。
+# - noise_rules and pii_rules still use their own directory-based loading flow instead of being embedded here.
+#   noise_rules 与 pii_rules 仍然使用各自独立的目录加载流程，不内嵌到本文件中。
+
 grpc:
+  # gRPC listen address for the runtime service.
+  # 运行时 gRPC 服务的监听地址。
   listen_addr: ":8080"
+
+  # Maximum inbound message size allowed by one gRPC request, in bytes.
+  # 单次 gRPC 请求允许接收的最大消息大小，单位为字节。
   max_receive_message_bytes: 1048576
+
   request_timeout:
+    # Total timeout budget for workspace-management style RPCs.
+    # 管理类 RPC 的总超时预算。
     workspace: "15s"
+
+    # Total timeout budget for the PreCheck RPC and it should stay larger than pre_check.intent_timeout.
+    # PreCheck RPC 的总超时预算，并且必须大于 pre_check.intent_timeout。
     pre_check: "8s"
+
+    # Total timeout budget for the PostAction RPC.
+    # PostAction RPC 的总超时预算。
     post_action: "8s"
+
+  # Graceful shutdown budget for the gRPC server and dependent components.
+  # 应用关闭时留给 gRPC 服务与依赖组件的优雅收尾时间。
   shutdown_timeout: "10s"
+
 logging:
+  # Runtime log level.
+  # 运行时日志级别。
+  # Allowed values:
+  # 支持取值：
+  # - debug: print verbose diagnostics for local debugging.
+  # - debug：输出详细诊断日志，适合本地排障。
+  # - info: balanced default level for normal runtime operation.
+  # - info：默认平衡级别，适合常规运行。
+  # - warn or warning: keep warnings and errors only, and warning is accepted as an alias.
+  # - warn 或 warning：仅保留警告与错误日志，并且 warning 会作为 warn 的别名被接受。
+  # - error: keep only error logs.
+  # - error：仅保留错误日志。
   level: "info"
+
+  # Runtime log format.
+  # 运行时日志格式。
+  # Allowed values:
+  # 支持取值：
+  # - text: human-readable logs for local development and direct terminal inspection.
+  # - text：适合本地开发和终端直接阅读的人类可读日志格式。
+  # - json: structured logs for collectors, pipelines, and machine parsing.
+  # - json：适合日志采集、流水线处理和机器解析的结构化日志格式。
   format: "text"
+
+  # Whether to print verbose plaintext RPC payloads for debugging.
+  # 是否输出用于调试的明文 RPC 载荷。
   debug_rpc_payloads: false
+
+  # Whether to write protected payload snapshots instead of plaintext payloads.
+  # 是否在不输出明文时改为写入受保护的载荷快照。
   protect_payloads: false
+
+  # Encryption key used when protected payload logging is enabled.
+  # 开启受保护载荷日志时使用的加密密钥。
   payload_encryption_key: ""
+
 pii:
+  # Default language folder used when loading PII rules.
+  # 加载 PII 规则时使用的默认语言目录。
   default_language: "zh-CN"
+
 noise:
+  # Whether write-time noise filtering is enabled before persistence.
+  # 在写入持久层前是否启用噪声过滤。
   enabled: true
+
+  # Default language folder used when loading noise rules.
+  # 加载噪声规则时使用的默认语言目录。
   default_language: "zh-CN"
+
+  # Whether semantic noise gating is enabled in addition to regex rules.
+  # 是否在正则规则之外额外启用语义噪声门。
   semantic_enabled: true
+
+  # Threshold used by semantic noise detection, where higher values are more conservative.
+  # 语义噪声判定阈值，值越高代表判断越保守。
   semantic_threshold: 0.88
+
 prompts:
+  # Prompt route table that maps model patterns to prompt bundle folders under prompts/.
+  # 提示词路由表，用于把模型匹配规则映射到 prompts/ 下的提示词目录。
   routes:
+    # Exact route for qwen3.5-flash.
+    # qwen3.5-flash 的精确匹配路由。
     "qwen3.5-flash": "qwen3.5-flash"
+
+    # Prefix wildcard route for the remaining qwen3.5 family.
+    # qwen3.5 系列其余模型的前缀通配路由。
     "qwen3.5*": "qwen3.5-base"
+
+    # Fallback route that should normally always exist.
+    # 建议始终保留的默认兜底路由。
     "*": "default"
+
 storage:
+  # Storage topology for the runtime.
+  # 运行时的存储拓扑模式。
+  # Allowed values:
+  # 支持取值：
+  # - split: relational storage uses sqlite and vector storage uses lancedb.
+  # - split：关系存储使用 sqlite，向量存储使用 lancedb。
+  # - combined: relational and vector capabilities both use the unified PostgreSQL combined store.
+  # - combined：关系与向量能力统一走 PostgreSQL 组合库存储。
   mode: "split"
+
+  # Backend provider used when storage.mode is combined.
+  # 当 storage.mode=combined 时启用的底座提供方。
+  # Currently supported values:
+  # 当前支持取值：
+  # - postgres: use the built-in PostgreSQL combined-store implementation.
+  # - postgres：使用内置的 PostgreSQL 组合库存储实现。
   combined_provider: "postgres"
+
 sqlite:
+  # gRPC endpoint for the SQLite relational storage service.
+  # SQLite 关系存储服务的 gRPC 地址。
   address: "127.0.0.1:19501"
+
+  # Timeout budget for SQLite gateway calls.
+  # SQLite 网关调用的超时预算。
   timeout: "5s"
+
 lancedb:
+  # gRPC endpoint for the LanceDB vector storage service.
+  # LanceDB 向量存储服务的 gRPC 地址。
   address: "127.0.0.1:19301"
+
+  # Timeout budget for LanceDB gateway calls.
+  # LanceDB 网关调用的超时预算。
   timeout: "5s"
+
+  # Base vector table name before the embedding dimension suffix is appended.
+  # 向量表基础名称，运行时会自动追加 embedding 维度后缀。
   table_name: "vmm_memory_vectors"
+
+  # Column name used to store vectors.
+  # 存储向量的列名。
   vector_column: "vector"
+
 postgres:
+  # Connection string for the combined PostgreSQL storage backend.
+  # PostgreSQL 组合存储后端的连接串。
   dsn: ""
+
+  # Business schema used by VMM inside PostgreSQL.
+  # VMM 在 PostgreSQL 中使用的业务 schema。
   schema: "public"
+
+  # Search dialect used by the PostgreSQL combined store.
+  # PostgreSQL 组合库存储使用的搜索方言。
+  # Allowed values:
+  # 支持取值：
+  # - paradedb: use ParadeDB-oriented lexical search capabilities for the combined store path.
+  # - paradedb：在组合库存储链路中使用 ParadeDB 风格的词法检索能力。
+  # - standard: use the standard PostgreSQL + pg_trgm style fallback implementation.
+  # - standard：使用标准 PostgreSQL 加 pg_trgm 风格的兜底实现。
   flavor: "paradedb"
+
+  # Timeout budget for queries and writes executed against PostgreSQL.
+  # PostgreSQL 查询与写入的超时预算。
   query_timeout: "5s"
+
+  # Timeout budget for establishing PostgreSQL connections.
+  # 建立 PostgreSQL 连接时的超时预算。
   connect_timeout: "5s"
+
+  # Maximum number of open connections in the pool.
+  # 连接池允许打开的最大连接数。
   max_open_conns: 10
+
+  # Minimum number of idle connections the pool tries to keep.
+  # 连接池尽量保持的最小空闲连接数。
   min_idle_conns: 1
+
+  # Whether runtime startup may create required extensions automatically.
+  # 是否允许运行时自动创建所需扩展。
   auto_create_extensions: false
+
+  # Whether BM25 indexes are created concurrently under the paradedb flavor.
+  # 在 paradedb 方言下是否以并发方式创建 BM25 索引。
   bm25_index_concurrently: true
+
+  # Name of the BM25 index used for memory nodes under the paradedb flavor.
+  # paradedb 方言下 memory node 使用的 BM25 索引名称。
   bm25_index_name: "vmm_memory_nodes_bm25_idx"
+
+  # Similarity threshold used by the standard trigram fallback flavor.
+  # standard trigram 兜底方言使用的相似度阈值。
   trgm_similarity_threshold: 0.2
+
+  # Vector index list count for PostgreSQL-based vector search.
+  # PostgreSQL 向量索引使用的 list 数。
   vector_lists: 100
+
+  # Probe count used during PostgreSQL vector retrieval.
+  # PostgreSQL 向量检索阶段使用的 probe 数。
   vector_probes: 10
+
+  # Batch size used by split-to-combined migration tooling.
+  # split-to-combined 迁移工具使用的批次大小。
   migration_batch_size: 500
+
 llm:
+  # Ordered LLM route table.
+  # LLM 路由表。
   routes:
-    - name: ""
+    - # Human-readable route name for logs and diagnostics.
+      # 便于日志与排障定位的人类可读路由名。
+      name: ""
+
+      # Route priority where larger values are preferred first.
+      # 路由优先级，数值越大越优先。
       priority: 0
+
+      # OpenAI-compatible provider identifier for this route.
+      # 当前路由使用的 OpenAI-compatible provider 标识。
+      # Allowed values:
+      # 支持取值：
+      # - openai: preferred canonical label for the current OpenAI-compatible adapter.
+      # - openai：当前 OpenAI-compatible 适配器的推荐规范名称。
+      # - openai_native: accepted alias mapped to the same adapter.
+      # - openai_native：会映射到同一适配器的兼容别名。
+      # - openai_go: accepted alias mapped to the same adapter.
+      # - openai_go：会映射到同一适配器的兼容别名。
       provider: "openai"
+
+      # Base endpoint for the current route.
+      # 当前路由的接口根地址。
       endpoint: ""
+
+      # API key pool for this route.
+      # 当前路由的 API Key 池。
       api_keys: []
+
+      # Per-minute request quota for the implicit default node.
+      # 隐式默认节点的每分钟请求额度。
       rpm: 0
+
+      # Per-minute token quota for the implicit default node.
+      # 隐式默认节点的每分钟 token 额度。
       tpm: 0
+
+      # Per-day request quota for the implicit default node.
+      # 隐式默认节点的每日请求额度。
       rpd: 0
+
+      # Explicit throughput nodes under the same provider, endpoint, and model.
+      # 位于同一 provider、endpoint 与 model 下的显式吞吐节点。
       nodes: []
+
+      # Model name used by the route.
+      # 当前路由使用的模型名。
       model: "gpt-4.1-mini"
+
+      # Optional organization identifier for OpenAI-compatible providers.
+      # OpenAI-compatible provider 的可选 organization 标识。
       organization: ""
+
+      # Optional project identifier for OpenAI-compatible providers.
+      # OpenAI-compatible provider 的可选 project 标识。
       project: ""
+
+      # Route-level extra request parameters.
+      # 路由级附加请求参数。
       params: {}
+
+      # Model-specific parameter map keyed by model name.
+      # 以模型名为 key 的模型级参数映射。
       model_params: {}
+
       key_failover:
+        # Whether key-level failover is enabled inside this route.
+        # 是否在当前路由内部启用 key 级容灾。
         enabled: true
+
+        # Failover policy used inside the route.
+        # 当前路由内部使用的容灾策略。
+        # Allowed values:
+        # 支持取值：
+        # - ordered_failover: keep using the current key order until one key cools down or fails, then move to the next healthy key.
+        # - ordered_failover：按既定顺序优先使用当前 key，只有当某个 key 失败或进入冷却时才切到下一个健康 key。
+        # - round_robin: rotate the eligible keys in turn so load is spread more evenly.
+        # - round_robin：按轮询顺序轮流使用可用 key，让负载分布更均匀。
         policy: "ordered_failover"
+
+        # Whether provider Retry-After hints should be respected.
+        # 是否尊重 provider 返回的 Retry-After 提示。
         respect_retry_after: true
+
+        # Cooldown applied after rate-limit failures.
+        # 触发限流后应用的冷却时间。
         rate_limit_cooldown: "5m"
+
+        # Cooldown applied after quota exhaustion.
+        # 配额耗尽后应用的冷却时间。
         quota_cooldown: "10m"
+
+        # Cooldown applied after authentication failures.
+        # 认证失败后应用的冷却时间。
         auth_cooldown: "12h"
+
+        # Whether to probe keys again after cooldown expires.
+        # 冷却结束后是否再次探测 key 状态。
         probe_after_cooldown: true
+
 embedding:
+  # Provider identifier for the embedding service.
+  # Embedding 服务的 provider 标识。
+  # Allowed values:
+  # 支持取值：
+  # - openai: preferred canonical label for the current OpenAI-compatible adapter.
+  # - openai：当前 OpenAI-compatible 适配器的推荐规范名称。
+  # - openai_native: accepted alias mapped to the same adapter.
+  # - openai_native：会映射到同一适配器的兼容别名。
+  # - openai_go: accepted alias mapped to the same adapter.
+  # - openai_go：会映射到同一适配器的兼容别名。
   provider: "openai"
+
+  # Base endpoint for embedding requests.
+  # Embedding 请求的接口根地址。
   endpoint: ""
+
+  # API key pool for embedding requests.
+  # Embedding 请求使用的 API Key 池。
   api_keys: []
+
+  # Per-minute request quota for the implicit default embedding node.
+  # 隐式默认 embedding 节点的每分钟请求额度。
   rpm: 0
+
+  # Per-minute token quota for the implicit default embedding node.
+  # 隐式默认 embedding 节点的每分钟 token 额度。
   tpm: 0
+
+  # Per-day request quota for the implicit default embedding node.
+  # 隐式默认 embedding 节点的每日请求额度。
   rpd: 0
+
+  # Explicit embedding throughput nodes under one fixed provider, model, and dimension.
+  # 位于同一 provider、model 与 dimension 下的显式 embedding 吞吐节点。
   nodes: []
+
+  # Embedding model name.
+  # Embedding 模型名。
   model: "text-embedding-3-large"
+
+  # Embedding vector dimension.
+  # Embedding 向量维度。
   dimension: 1024
+
+  # Optional organization identifier.
+  # 可选的 organization 标识。
   organization: ""
+
+  # Optional project identifier.
+  # 可选的 project 标识。
   project: ""
+
+  # Embedding-level extra request parameters.
+  # Embedding 级附加请求参数。
   params: {}
+
+  # Model-specific embedding parameter map.
+  # Embedding 的模型级参数映射。
   model_params: {}
+
   key_failover:
+    # Whether key-level failover is enabled for embedding requests.
+    # 是否为 embedding 请求启用 key 级容灾。
     enabled: true
+    # Allowed values:
+    # 支持取值：
+    # - ordered_failover: keep using the current key order until one key cools down or fails, then move to the next healthy key.
+    # - ordered_failover：按既定顺序优先使用当前 key，只有当某个 key 失败或进入冷却时才切到下一个健康 key。
+    # - round_robin: rotate the eligible keys in turn so load is spread more evenly.
+    # - round_robin：按轮询顺序轮流使用可用 key，让负载分布更均匀。
     policy: "ordered_failover"
     respect_retry_after: true
     rate_limit_cooldown: "5m"
     quota_cooldown: "10m"
     auth_cooldown: "12h"
     probe_after_cooldown: true
+
 rerank:
+  # Whether reranking is enabled.
+  # 是否启用 rerank 重排序。
   enabled: false
+
+  # Number of candidates passed into reranking.
+  # 送入 rerank 的候选数量。
   top_n: 8
+
+  # Ordered rerank route table.
+  # Rerank 路由表。
   routes:
-    - name: ""
+    - # Human-readable route name for logs and diagnostics.
+      # 便于日志与排障定位的人类可读路由名。
+      name: ""
+
+      # Route priority where larger values are preferred first.
+      # 路由优先级，数值越大越优先。
       priority: 0
+
+      # Provider identifier for the rerank route.
+      # 当前 rerank 路由使用的 provider 标识。
+      # Currently supported values:
+      # 当前支持取值：
+      # - dashscope: built-in rerank provider used by the current implementation.
+      # - dashscope：当前实现内置支持的 rerank provider。
       provider: "dashscope"
+
+      # Endpoint for rerank requests.
+      # rerank 请求使用的接口地址。
       endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+
+      # API key pool for this rerank route.
+      # 当前 rerank 路由的 API Key 池。
       api_keys: []
+
+      # Per-minute request quota for the implicit default rerank node.
+      # 隐式默认 rerank 节点的每分钟请求额度。
       rpm: 0
+
+      # Per-minute token quota for the implicit default rerank node.
+      # 隐式默认 rerank 节点的每分钟 token 额度。
       tpm: 0
+
+      # Per-day request quota for the implicit default rerank node.
+      # 隐式默认 rerank 节点的每日请求额度。
       rpd: 0
+
+      # Explicit throughput nodes inside the current rerank route.
+      # 当前 rerank 路由内部的显式吞吐节点。
       nodes: []
+
+      # Rerank model name.
+      # rerank 模型名。
       model: "qwen3-vl-rerank"
+
+      # HTTP timeout budget for the current rerank route.
+      # 当前 rerank 路由的 HTTP 超时预算。
       timeout: "8s"
+
       key_failover:
+        # Whether key-level failover is enabled for this rerank route.
+        # 是否为当前 rerank 路由启用 key 级容灾。
         enabled: true
+        # Allowed values:
+        # 支持取值：
+        # - ordered_failover: keep using the current key order until one key cools down or fails, then move to the next healthy key.
+        # - ordered_failover：按既定顺序优先使用当前 key，只有当某个 key 失败或进入冷却时才切到下一个健康 key。
+        # - round_robin: rotate the eligible keys in turn so load is spread more evenly.
+        # - round_robin：按轮询顺序轮流使用可用 key，让负载分布更均匀。
         policy: "ordered_failover"
         respect_retry_after: true
         rate_limit_cooldown: "5m"
         quota_cooldown: "10m"
         auth_cooldown: "12h"
         probe_after_cooldown: true
+
 vector:
+  # Vector backend provider used in split storage mode.
+  # split 存储模式下使用的向量后端提供方。
+  # Currently supported values:
+  # 当前支持取值：
+  # - lancedb: use LanceDB as the split-mode vector backend.
+  # - lancedb：在 split 模式下使用 LanceDB 作为向量后端。
   provider: "lancedb"
+
 relational:
+  # Relational backend provider used in split storage mode.
+  # split 存储模式下使用的关系存储后端提供方。
+  # Currently supported values:
+  # 当前支持取值：
+  # - sqlite: use the SQLite gRPC service as the split-mode relational backend.
+  # - sqlite：在 split 模式下使用 SQLite gRPC 服务作为关系存储后端。
   provider: "sqlite"
+
 post_action:
+  # Input contract mode for PostAction.
+  # PostAction 的输入契约模式。
+  # Allowed values:
+  # 支持取值：
+  # - compat: default compatibility token kept for historical configuration continuity.
+  # - compat：为保持历史配置连续性而保留的默认兼容模式标识。
+  # - strict: stricter contract token validated at startup; the current runtime still has no separate execution branch for it.
+  # - strict：启动阶段会校验的更严格契约标识，但当前运行时代码尚未为它提供单独执行分支。
   input_mode: "compat"
+
+  # Turn-count threshold for triggering session-level analysis.
+  # 触发 session 级分析的轮次阈值。
   session_analysis_turn_threshold: 2
+
+  # Token-count threshold for triggering session-level analysis.
+  # 触发 session 级分析的 token 阈值。
   session_analysis_token_threshold: 12000
+
+  # Idle duration after which session-level analysis may run.
+  # 空闲多久后允许触发 session 级分析。
   session_analysis_idle_timeout: "15m"
+
+  # Number of recent turns included in session-level analysis.
+  # session 级分析纳入的最近历史轮次数。
   session_analysis_history_turns: 3
+
+  # Maximum token budget for one session analysis input.
+  # 单次 session 分析输入允许使用的最大 token 预算。
   session_analysis_max_input_tokens: 6000
+
 pre_check:
+  # Internal LLM timeout used by the first-stage PreCheck intent extraction.
+  # PreCheck 第一阶段意图提取使用的内部 LLM 超时。
   intent_timeout: "5s"
+
+  # Maximum number of candidates returned per pre-check query.
+  # 每条 pre-check 检索语句返回的最大候选数。
   top_k: 5
+
+  # Recall scope used by PreCheck memory retrieval.
+  # PreCheck 记忆召回使用的检索范围。
+  # Allowed values:
+  # 支持取值：
+  # - team: recall durable memories across the current team.
+  # - team：在当前 team 范围内召回长期记忆。
+  # - space: recall durable memories across the current space, including related projects inside that space.
+  # - space：在当前 space 范围内召回长期记忆，包括该空间下相关项目。
+  # - project: recall durable memories only inside the current project.
+  # - project：只在当前 project 范围内召回长期记忆。
   search_scope: "space"
+
+  # Legacy bridge field used only when memory_pipeline.min_similarity_score is absent.
+  # 仅在 memory_pipeline.min_similarity_score 缺失时才使用的旧桥接字段。
   similarity_threshold: 0
+
 memory_pipeline:
+  # Maximum number of generated search keywords or search statements.
+  # 可生成的最大搜索关键词或检索句数量。
   max_search_keywords: 5
+
+  # Minimum similarity score required before a candidate enters the second-stage review.
+  # 候选进入第二阶段评审前要求达到的最小相似度。
   min_similarity_score: 0.75
+
+  # Whether hybrid retrieval is enabled.
+  # 是否启用混合检索。
   hybrid_enabled: true
+
+  # Whether lexical retrieval pre-tokenizes text before writing to SQLite FTS5.
+  # 是否在写入 SQLite FTS5 前对 lexical 检索文本进行预分词。
   lexical_pre_tokenize: true
+
+  # Candidate count kept by the lexical retrieval stage.
+  # lexical 检索阶段保留的候选数。
   lexical_top_k: 8
+
+  # RRF fusion parameter.
+  # RRF 融合参数。
   rrf_k: 60
+
+  # Whether MMR diversity control is enabled.
+  # 是否启用 MMR 多样性控制。
   mmr_enabled: true
+
+  # MMR lambda weight.
+  # MMR 的 lambda 权重。
   mmr_lambda: 0.75
+
+  # Whether read-time Weibull decay is enabled.
+  # 是否启用读时 Weibull 衰减。
   weibull_enabled: true
+
+  # Weibull shape parameter.
+  # Weibull 形状参数。
   weibull_shape: 1.35
+
+  # Weibull time scale in hours.
+  # Weibull 时间尺度，单位为小时。
   weibull_scale_hours: 2160
+
+  # Minimum allowed decay multiplier.
+  # 衰减乘子的最小下限。
   weibull_min_multiplier: 0.4
+
+  # Weight of reinforcement count in decay-speed adjustment.
+  # 强化次数在衰减速度调整中的权重。
   weibull_reinforce_weight: 0.18
+
+  # Weight of cross-session adoption in decay-speed adjustment.
+  # 跨 session 采纳在衰减速度调整中的权重。
   weibull_cross_session_boost: 0.12
+
 retention:
+  # Whether the cold-data retention and recycle flow is enabled.
+  # 是否启用冷数据保留与回收流程。
   enabled: true
+
+  # Scan interval for the recycle process.
+  # 回收扫描流程的扫描周期。
   recycle_scan_interval: "30m"
+
+  # Extra turn count kept in the hot window before recycle decisions.
+  # 在回收判断前于热窗口中额外保留的轮次数。
   turn_keep_extra_turns: 5
+
+  # Idle duration after which a session may enter recycle evaluation.
+  # session 空闲多久后可进入回收评估。
   session_idle_recycle_after: "360h"
+
+  # Retention duration for trash records.
+  # 回收站记录的保留时长。
   trash_retention: "720h"
+
+  # Minimum priority considered protected during recycle.
+  # 在回收阶段被视为受保护的最低优先级。
+  # Allowed values:
+  # 支持取值：
+  # - P0: protect only the highest-priority hard rules or high-risk facts.
+  # - P0：只保护最高优先级的硬规则或高风险事实。
+  # - P1: protect P0 and P1 memories, which is the default balance.
+  # - P1：保护 P0 与 P1 记忆，这是默认平衡方案。
+  # - P2: protect P0, P1, and P2 shared memories, which is the widest protection range.
+  # - P2：保护 P0、P1 与 P2 共享记忆，是最宽的保护范围。
   protect_priority_floor: "P1"
+
+  # Minimum memory level considered protected during recycle.
+  # 在回收阶段被视为受保护的最低记忆级别。
+  # Allowed values:
+  # 支持取值：
+  # - session: protect session, phase, stable, and persistent memories.
+  # - session：保护 session、phase、stable 与 persistent 全部层级记忆。
+  # - phase: protect phase, stable, and persistent memories.
+  # - phase：保护 phase、stable 与 persistent 层级记忆。
+  # - stable: protect stable and persistent memories, which is the default balance.
+  # - stable：保护 stable 与 persistent 层级记忆，这是默认平衡方案。
+  # - persistent: protect only the most durable persistent memories.
+  # - persistent：只保护最持久的 persistent 层级记忆。
   protect_memory_level_floor: "stable"
+
+  # Whether protected shared memories should be skipped during recycle.
+  # 回收阶段是否跳过受保护的共享记忆。
   skip_protected_shared_memories: true
+
+# Scope used when superseding older memories during PostAction and WriteMemories.
+# PostAction 与 WriteMemories 在替代旧记忆时使用的作用域范围。
+# Allowed values:
+# 支持取值：
+# - session: only allow new facts to supersede older memories inside the current session.
+# - session：只允许新事实替代当前 session 内的旧记忆。
+# - team: allow one stable rule to supersede older copies across the whole team.
+# - team：允许稳定规则在整个 team 范围内替代较旧副本。
+# - space: allow shared facts to supersede older copies across the current space.
+# - space：允许共享事实在当前 space 范围内替代较旧副本。
+# - project: allow cross-session supersede decisions inside the current project, which is the default behavior.
+# - project：允许在当前 project 内跨 session 替代旧记忆，这是默认行为。
 memory_replace_scope: "project"
