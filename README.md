@@ -684,7 +684,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 `rerank` 下当前新增的是“向量召回后的第二阶段重排序”参数：
 
 - `enabled`
-  - 是否启用 DashScope rerank；关闭时检索链保持当前首轮召回 / 融合排序结果
+  - 是否启用 rerank 第二阶段重排序；关闭时检索链保持当前首轮召回 / 融合排序结果
 - `top_n`
   - 每个 query group 最多送多少条首轮向量命中进入 rerank
 - `routes`
@@ -692,7 +692,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 每条 route 必须自包含 `provider + endpoint + model + api_keys/nodes + timeout`
   - 如果不拆 `nodes`，可以直接在 route 上配置 `rpm / tpm / rpd`
   - route 间按 `priority` 做有序容灾，route 内部继续执行 `nodes + key_failover`
-  - 当前内置 provider 仍只有 `dashscope`
+  - 当前内置 provider 包含 `dashscope / siliconflow`
   - route 全部失败时，检索链会按 `rerank=false` 语义降级回首轮排序
 
 AI 容灾边界当前统一为：

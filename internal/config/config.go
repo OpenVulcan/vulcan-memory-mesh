@@ -18,6 +18,24 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// defaultDashScopeRerankEndpoint keeps the built-in DashScope rerank URL aligned across baked defaults, normalization, and docs.
+	// defaultDashScopeRerankEndpoint 用于在内建默认值、归一化和文档之间保持 DashScope rerank 地址一致。
+	defaultDashScopeRerankEndpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+
+	// defaultDashScopeRerankModel keeps the built-in DashScope rerank model aligned across baked defaults, normalization, and docs.
+	// defaultDashScopeRerankModel 用于在内建默认值、归一化和文档之间保持 DashScope rerank 模型一致。
+	defaultDashScopeRerankModel = "qwen3-vl-rerank"
+
+	// defaultSiliconFlowRerankEndpoint keeps the built-in SiliconFlow rerank URL aligned across normalization and examples when callers pick the SiliconFlow provider.
+	// defaultSiliconFlowRerankEndpoint 用于在调用方选择 SiliconFlow provider 时，让归一化和示例共享同一套内建 SiliconFlow rerank 地址。
+	defaultSiliconFlowRerankEndpoint = "https://api.siliconflow.cn/v1/rerank"
+
+	// defaultSiliconFlowRerankModel keeps the built-in SiliconFlow rerank model aligned with the official provider example used by this repository.
+	// defaultSiliconFlowRerankModel 用于保持仓库内建的 SiliconFlow rerank 模型与当前采用的官方示例一致。
+	defaultSiliconFlowRerankModel = "BAAI/bge-reranker-v2-m3"
+)
+
 // Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
 // Duration 用于包装 time.Duration，让配置文件既能接受时长字符串，也能接受毫秒数。
 type Duration struct{ time.Duration }
@@ -380,8 +398,8 @@ func DefaultBase() Config {
 			TopN:    8,
 			Routes: []RerankRouteConfig{{
 				Provider:    "dashscope",
-				Endpoint:    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
-				Model:       "qwen3-vl-rerank",
+				Endpoint:    defaultDashScopeRerankEndpoint,
+				Model:       defaultDashScopeRerankModel,
 				Timeout:     Duration{8 * time.Second},
 				KeyFailover: defaultKeyFailoverConfig(),
 			}},
@@ -1025,19 +1043,16 @@ func normalizeLLMRouteConfig(route LLMRouteConfig) LLMRouteConfig {
 // normalizeRerankRouteConfig 用于裁剪单条 rerank 路由，规范化其 API Key 池，把旧版 key 池折叠成轮询节点，并为该路由补齐安全的 key-failover 默认值。
 func normalizeRerankRouteConfig(route RerankRouteConfig) RerankRouteConfig {
 	route.Name = strings.TrimSpace(route.Name)
-	route.Provider = strings.TrimSpace(route.Provider)
-	if route.Provider == "" {
-		route.Provider = "dashscope"
-	}
+	route.Provider = normalizeRerankProviderValue(route.Provider)
 	route.Endpoint = strings.TrimSpace(route.Endpoint)
 	if route.Endpoint == "" {
-		route.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+		route.Endpoint = rerankProviderDefaultEndpoint(route.Provider)
 	}
 	route.APIKeys = trimStringSlice(route.APIKeys)
 	route.Nodes = normalizeAIRoutingNodeFields(route.Nodes)
 	route.Model = strings.TrimSpace(route.Model)
 	if route.Model == "" {
-		route.Model = "qwen3-vl-rerank"
+		route.Model = rerankProviderDefaultModel(route.Provider)
 	}
 	if route.Timeout.Duration <= 0 {
 		route.Timeout = Duration{8 * time.Second}
@@ -1176,10 +1191,10 @@ func validateRerankRouteConfigs(routes []RerankRouteConfig) error {
 	}
 	for idx, route := range routes {
 		label := fmt.Sprintf("rerank.routes[%d]", idx)
-		switch strings.ToLower(strings.TrimSpace(route.Provider)) {
-		case "dashscope":
+		switch normalizeRerankProviderValue(route.Provider) {
+		case "dashscope", "siliconflow":
 		default:
-			return fmt.Errorf("%s.provider must be dashscope", label)
+			return fmt.Errorf("%s.provider must be one of dashscope, siliconflow", label)
 		}
 		if strings.TrimSpace(route.Endpoint) == "" {
 			return fmt.Errorf("%s.endpoint is required", label)
@@ -1198,6 +1213,41 @@ func validateRerankRouteConfigs(routes []RerankRouteConfig) error {
 		}
 	}
 	return nil
+}
+
+// normalizeRerankProviderValue canonicalizes rerank provider aliases so config defaults, validation, and runtime wiring all compare one stable token.
+// normalizeRerankProviderValue 用于规范化 rerank provider 别名，让配置默认值、校验和运行时装配始终比较同一份稳定 token。
+func normalizeRerankProviderValue(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "dashscope":
+		return "dashscope"
+	case "siliconflow":
+		return "siliconflow"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+// rerankProviderDefaultEndpoint returns the provider-specific rerank endpoint used when one explicit route omits an override.
+// rerankProviderDefaultEndpoint 用于返回 provider 专属的 rerank 默认地址，在显式路由未覆盖 endpoint 时补齐。
+func rerankProviderDefaultEndpoint(provider string) string {
+	switch normalizeRerankProviderValue(provider) {
+	case "siliconflow":
+		return defaultSiliconFlowRerankEndpoint
+	default:
+		return defaultDashScopeRerankEndpoint
+	}
+}
+
+// rerankProviderDefaultModel returns the provider-specific rerank model used when one explicit route omits an override.
+// rerankProviderDefaultModel 用于返回 provider 专属的 rerank 默认模型，在显式路由未覆盖 model 时补齐。
+func rerankProviderDefaultModel(provider string) string {
+	switch normalizeRerankProviderValue(provider) {
+	case "siliconflow":
+		return defaultSiliconFlowRerankModel
+	default:
+		return defaultDashScopeRerankModel
+	}
 }
 
 // normalizeKeyFailoverConfig fills safe in-memory cooldown defaults for one fixed-model API-key pool.

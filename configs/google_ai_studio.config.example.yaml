@@ -133,8 +133,8 @@ embedding:
     probe_after_cooldown: true
 
 rerank:
-  # Rerank remains independent from Google AI Studio in the current implementation.
-  # 当前实现中的 rerank 仍与 Google AI Studio 独立。
+  # Rerank remains independent from Google AI Studio and can be wired through dedicated routes such as DashScope or SiliconFlow.
+  # 当前实现中的 rerank 仍与 Google AI Studio 独立，可通过 DashScope 或 SiliconFlow 等独立路由接入。
   enabled: false
   top_n: 8
 

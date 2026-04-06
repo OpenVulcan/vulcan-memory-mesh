@@ -515,6 +515,33 @@ func TestBuildRerankerUsesMultiRouteWrapper(t *testing.T) {
 	}
 }
 
+// TestBuildRerankerSupportsSiliconFlowProvider verifies runtime composition accepts SiliconFlow rerank routes and can materialize the provider-specific adapter with provider defaults intact.
+// TestBuildRerankerSupportsSiliconFlowProvider 用于验证运行时装配接受 SiliconFlow rerank 路由，并能在保留 provider 默认值的前提下实例化对应适配器。
+func TestBuildRerankerSupportsSiliconFlowProvider(t *testing.T) {
+	cfg := newRuntimeConfigForTest()
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Routes = []config.RerankRouteConfig{{
+		Provider: "siliconflow",
+		APIKeys:  []string{"silicon-key"},
+	}}
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config validation should accept siliconflow rerank: %v", err)
+	}
+	if route := cfg.Rerank.ProviderRoutes()[0]; route.Endpoint != "https://api.siliconflow.cn/v1/rerank" || route.Model != "BAAI/bge-reranker-v2-m3" {
+		t.Fatalf("normalized siliconflow rerank route = %#v", route)
+	}
+
+	client, err := buildReranker(cfg)
+	if err != nil {
+		t.Fatalf("build siliconflow reranker: %v", err)
+	}
+	if _, ok := client.(*ai_key_failover.RerankerClient); !ok {
+		t.Fatalf("expected fixed-route siliconflow reranker wrapper, got %T", client)
+	}
+}
+
 // TestBuildAdaptersAllowTrimmedProviderAliases verifies runtime adapter construction stays aligned with config validation when provider aliases contain surrounding whitespace.
 // TestBuildAdaptersAllowTrimmedProviderAliases 用于验证当 provider 别名带有首尾空白时，运行时适配器构建仍与配置校验口径保持一致。
 func TestBuildAdaptersAllowTrimmedProviderAliases(t *testing.T) {

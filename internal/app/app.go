@@ -630,18 +630,14 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 // buildOneRerankRouteClient materializes one concrete fixed-model rerank route that will handle provider-specific key failover inside its own key pool.
 // buildOneRerankRouteClient 用于实例化一条具体的固定模型 rerank 路由，让它在自己的 Key 池内部处理 provider 专属的 Key 容灾。
 func buildOneRerankRouteClient(route config.RerankRouteConfig, routeIndex int) (appports.RerankerClient, error) {
-	switch normalizeProviderAlias(route.Provider) {
-	case "dashscope":
-		return ai_key_failover.NewRerankerClient(
-			route.Endpoint,
-			route.Model,
-			route.Timeout.Duration,
-			route.APIKeys,
-			buildKeyFailoverOptions(buildRouteName("rerank", routeIndex, route.Name), route.Nodes, route.KeyFailover),
-		)
-	default:
-		return nil, fmt.Errorf("unsupported rerank provider: %s", route.Provider)
-	}
+	return ai_key_failover.NewProviderRerankerClient(
+		route.Provider,
+		route.Endpoint,
+		route.Model,
+		route.Timeout.Duration,
+		route.APIKeys,
+		buildKeyFailoverOptions(buildRouteName("rerank", routeIndex, route.Name), route.Nodes, route.KeyFailover),
+	)
 }
 
 // buildRouteName returns one stable route label so route-level failover logs and selector error messages can point back to the configured route order.

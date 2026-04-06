@@ -72,14 +72,40 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.Rerank.TopN != 8 {
 		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
 	}
-	if got, want := cfg.Rerank.Routes[0].Endpoint, "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"; got != want {
+	if got, want := cfg.Rerank.Routes[0].Endpoint, defaultDashScopeRerankEndpoint; got != want {
 		t.Fatalf("rerank default endpoint = %q, want %q", got, want)
 	}
-	if got, want := cfg.Rerank.Routes[0].Model, "qwen3-vl-rerank"; got != want {
+	if got, want := cfg.Rerank.Routes[0].Model, defaultDashScopeRerankModel; got != want {
 		t.Fatalf("rerank default model = %q, want %q", got, want)
 	}
 	if got, want := cfg.Rerank.Routes[0].Timeout.Duration, 8*time.Second; got != want {
 		t.Fatalf("rerank default timeout = %v, want %v", got, want)
+	}
+}
+
+// TestConfigNormalizeAppliesSiliconFlowRerankDefaults verifies SiliconFlow routes receive provider-specific endpoint/model defaults instead of inheriting DashScope-specific values.
+// TestConfigNormalizeAppliesSiliconFlowRerankDefaults 用于验证 SiliconFlow 路由会拿到 provider 专属的 endpoint/model 默认值，而不是继承 DashScope 专属默认值。
+func TestConfigNormalizeAppliesSiliconFlowRerankDefaults(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Rerank.Routes = []RerankRouteConfig{{
+		Provider: " siliconflow ",
+		APIKeys:  []string{"silicon-key"},
+	}}
+
+	cfg.Normalize()
+
+	route := cfg.Rerank.Routes[0]
+	if got, want := route.Provider, "siliconflow"; got != want {
+		t.Fatalf("rerank provider = %q, want %q", got, want)
+	}
+	if got, want := route.Endpoint, defaultSiliconFlowRerankEndpoint; got != want {
+		t.Fatalf("rerank endpoint = %q, want %q", got, want)
+	}
+	if got, want := route.Model, defaultSiliconFlowRerankModel; got != want {
+		t.Fatalf("rerank model = %q, want %q", got, want)
+	}
+	if got, want := route.Timeout.Duration, 8*time.Second; got != want {
+		t.Fatalf("rerank timeout = %v, want %v", got, want)
 	}
 }
 
@@ -178,6 +204,24 @@ func TestConfigValidateAcceptsExplicitRoutesAndEmbeddingKeys(t *testing.T) {
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate config with explicit routes: %v", err)
+	}
+}
+
+// TestConfigValidateAcceptsSiliconFlowRerankRoute verifies rerank route validation accepts the SiliconFlow provider alongside the existing DashScope provider.
+// TestConfigValidateAcceptsSiliconFlowRerankRoute 用于验证 rerank 路由校验在现有 DashScope 之外，也接受 SiliconFlow provider。
+func TestConfigValidateAcceptsSiliconFlowRerankRoute(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Rerank.Routes = []RerankRouteConfig{{
+		Provider: "siliconflow",
+		Endpoint: defaultSiliconFlowRerankEndpoint,
+		APIKeys:  []string{"silicon-key"},
+		Model:    defaultSiliconFlowRerankModel,
+		Timeout:  Duration{8 * time.Second},
+	}}
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate siliconflow rerank route: %v", err)
 	}
 }
 
@@ -627,9 +671,9 @@ func newValidConfigForTest() Config {
 	cfg.Rerank.Enabled = true
 	cfg.Rerank.Routes = []RerankRouteConfig{{
 		Provider: "dashscope",
-		Endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
+		Endpoint: defaultDashScopeRerankEndpoint,
 		APIKeys:  []string{"rerank-key"},
-		Model:    "qwen3-vl-rerank",
+		Model:    defaultDashScopeRerankModel,
 		Timeout:  Duration{8 * time.Second},
 	}}
 	cfg.SQLite.Address = "127.0.0.1:19501"

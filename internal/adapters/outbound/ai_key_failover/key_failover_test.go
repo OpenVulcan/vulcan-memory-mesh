@@ -14,6 +14,7 @@ import (
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/siliconflow_rerank"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"google.golang.org/genai"
 )
@@ -297,6 +298,38 @@ func TestRerankerClientRerankSwitchesKeyOnQuota(t *testing.T) {
 	}
 }
 
+// TestProviderRerankerClientRerankSwitchesKeyOnSiliconFlowQuota verifies the provider-aware rerank wrapper uses SiliconFlow-specific classification so key failover still rotates on quota failures.
+// TestProviderRerankerClientRerankSwitchesKeyOnSiliconFlowQuota 用于验证 provider 感知的 rerank 包装器会使用 SiliconFlow 专属分类逻辑，确保额度故障时仍能正常切 Key。
+func TestProviderRerankerClientRerankSwitchesKeyOnSiliconFlowQuota(t *testing.T) {
+	client, err := NewProviderRerankerClient("siliconflow", "https://api.siliconflow.cn/v1/rerank", "BAAI/bge-reranker-v2-m3", 8*time.Second, []string{"key-a", "key-b"}, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new siliconflow rerank failover client: %v", err)
+	}
+	fakes := map[string]*stubRerankerClient{
+		"key-a": {err: &siliconflow_rerank.APIError{StatusCode: http.StatusTooManyRequests, Body: `{"message":"insufficient balance"}`}},
+		"key-b": {results: []appports.RerankerResult{{ID: "1", Score: 0.9}}},
+	}
+	client.factory = func(apiKey string) appports.RerankerClient { return fakes[apiKey] }
+
+	results, err := client.Rerank(context.Background(), "query", []appports.RerankerDocument{{ID: "1", Text: "doc"}}, 1)
+	if err != nil {
+		t.Fatalf("siliconflow rerank with failover: %v", err)
+	}
+	if len(results) != 1 || results[0].ID != "1" {
+		t.Fatalf("unexpected siliconflow rerank results: %#v", results)
+	}
+	if fakes["key-a"].calls != 1 || fakes["key-b"].calls != 1 {
+		t.Fatalf("unexpected siliconflow rerank call counts: key-a=%d key-b=%d", fakes["key-a"].calls, fakes["key-b"].calls)
+	}
+}
+
 // TestLLMClientGenerateRoundRobinRotatesHealthyKeys verifies healthy keys are distributed in round-robin mode without waiting for failures.
 // TestLLMClientGenerateRoundRobinRotatesHealthyKeys 用于验证在 round-robin 模式下，健康 Key 会在无故障时正常轮转分配。
 func TestLLMClientGenerateRoundRobinRotatesHealthyKeys(t *testing.T) {
@@ -539,6 +572,26 @@ func TestClassifyDashScopeErrorUsesRetryAfterHeader(t *testing.T) {
 	}
 	if decision.Cooldown != 1200*time.Millisecond {
 		t.Fatalf("dashscope retry-after cooldown = %v", decision.Cooldown)
+	}
+}
+
+// TestClassifySiliconFlowErrorUsesRetryAfterHeader verifies SiliconFlow rerank failover can honor provider Retry-After hints when the adapter preserves response headers.
+// TestClassifySiliconFlowErrorUsesRetryAfterHeader 用于验证当适配器保留响应头时，SiliconFlow rerank 容灾可以尊重 provider 返回的 Retry-After 提示。
+func TestClassifySiliconFlowErrorUsesRetryAfterHeader(t *testing.T) {
+	now := time.Date(2026, 4, 6, 12, 0, 0, 0, time.UTC)
+	decision := classifySiliconFlowError(&siliconflow_rerank.APIError{
+		StatusCode: http.StatusTooManyRequests,
+		Headers:    http.Header{"Retry-After": []string{"3"}},
+		Body:       "rate limit exceeded",
+	}, Options{
+		RespectRetryAfter: true,
+		RateLimitCooldown: 5 * time.Minute,
+	}, now)
+	if !decision.SwitchKey {
+		t.Fatal("expected siliconflow rate limit to switch key")
+	}
+	if decision.Cooldown != 3*time.Second {
+		t.Fatalf("siliconflow retry-after cooldown = %v", decision.Cooldown)
 	}
 }
 

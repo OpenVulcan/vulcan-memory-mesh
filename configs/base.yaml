@@ -462,6 +462,8 @@ rerank:
       # 当前支持取值：
       # - dashscope: built-in rerank provider used by the current implementation.
       # - dashscope：当前实现内置支持的 rerank provider。
+      # - siliconflow: built-in rerank provider using SiliconFlow's official /v1/rerank API.
+      # - siliconflow：当前实现内置支持的硅基流动 rerank provider，走官方 /v1/rerank 接口。
       provider: "dashscope"
 
       # Endpoint for rerank requests.

@@ -6,7 +6,6 @@ import (
 	"context"
 	"fmt"
 	"sort"
-	"strings"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -95,16 +94,13 @@ func (c *RerankMultiRouteClient) Rerank(ctx context.Context, query string, docs 
 // buildRerankMultiRouteEntry compiles one rerank route into the existing fixed-model key failover client and returns the provider-specific error classifier used for route switching.
 // buildRerankMultiRouteEntry 用于把单条 rerank 路由编译成现有固定模型 Key 容灾客户端，并返回路由切换所需的 provider 专属错误分类器。
 func buildRerankMultiRouteEntry(route RerankRouteOptions) (appports.RerankerClient, func(error, time.Time) failureDecision, error) {
-	switch strings.ToLower(strings.TrimSpace(route.Provider)) {
-	case "dashscope":
-		client, err := NewRerankerClient(route.Endpoint, route.Model, route.Timeout, route.APIKeys, route.Options)
-		if err != nil {
-			return nil, nil, err
-		}
-		return client, func(err error, now time.Time) failureDecision {
-			return classifyDashScopeError(err, route.Options, now)
-		}, nil
-	default:
-		return nil, nil, fmt.Errorf("unsupported rerank provider: %s", route.Provider)
+	hooks, err := buildRerankProviderHooks(route.Provider, route.Options)
+	if err != nil {
+		return nil, nil, err
 	}
+	client, err := NewProviderRerankerClient(route.Provider, route.Endpoint, route.Model, route.Timeout, route.APIKeys, route.Options)
+	if err != nil {
+		return nil, nil, err
+	}
+	return client, hooks.classify, nil
 }

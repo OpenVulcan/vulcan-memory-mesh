@@ -11,7 +11,7 @@
   - route 之间按 `priority` 做有序容灾
 - `rerank`
   - 只允许 `rerank.routes[]`
-  - 当前内置 provider 仍只有 `dashscope`
+  - 当前内置 provider 包含 `dashscope / siliconflow`
   - route 之间按 `priority` 做有序容灾
 - `embedding`
   - 不允许 `routes`
@@ -178,6 +178,15 @@
             "rpm": 60
           }
         ]
+      },
+      {
+        "name": "siliconflow-fallback",
+        "priority": 10,
+        "provider": "siliconflow",
+        "endpoint": "https://api.siliconflow.cn/v1/rerank",
+        "model": "BAAI/bge-reranker-v2-m3",
+        "timeout": "8s",
+        "api_keys": ["key-d"]
       }
     ]
   }
@@ -187,7 +196,7 @@
 说明：
 
 - `top_n` 始终留在顶层
-- route 级 provider 现在必须是 `dashscope`
+- route 级 provider 当前支持 `dashscope / siliconflow`
 - 所有 route 都失败时，检索链会按 `rerank=false` 语义降级
 
 ## 6. `embedding` 配置契约
