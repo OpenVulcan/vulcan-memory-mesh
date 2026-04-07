@@ -31,7 +31,7 @@ func (s *Store) importManagedSnapshot(ctx context.Context, snapshot storagemigra
 	if s == nil || s.pool == nil {
 		return storagemigrate.Report{}, fmt.Errorf("postgres store is not initialized")
 	}
-	callCtx, cancel := s.bootstrapContext(ctx)
+	callCtx, cancel := s.maintenanceWriteContext(ctx)
 	defer cancel()
 
 	tx, err := s.pool.Begin(callCtx)

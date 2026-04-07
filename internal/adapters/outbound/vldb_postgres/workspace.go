@@ -135,6 +135,24 @@ func (s *Store) ListProjects(ctx context.Context) ([]logicdomain.ProjectRecord, 
 	if s == nil || s.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
+	return s.listProjectsWithQueryerAndContextBuilder(ctx, s.pool, s.queryContext)
+}
+
+// ListProjectsForMaintenance returns the same durable project list as the online admin path but wraps the enumeration in the dedicated maintenance read timeout so one-shot rebuild/export tools can scan larger workspaces safely.
+// ListProjectsForMaintenance 用于返回与在线管理路径相同的长期项目列表，但会套用专用维护读取超时，让一次性重建/导出工具可以安全扫描更大的工作区。
+func (s *Store) ListProjectsForMaintenance(ctx context.Context) ([]logicdomain.ProjectRecord, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("postgres store is not initialized")
+	}
+	return s.listProjectsWithQueryerAndContextBuilder(ctx, s.pool, s.maintenanceReadContext)
+}
+
+// listProjectsWithQueryerAndContextBuilder centralizes project enumeration so online callers keep the normal query timeout while maintenance callers can explicitly opt into the longer maintenance read budget.
+// listProjectsWithQueryerAndContextBuilder 用于集中承载项目枚举逻辑，让在线调用方继续使用常规查询超时，而维护调用方可以显式切到更长的维护读预算。
+func (s *Store) listProjectsWithQueryerAndContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc)) ([]logicdomain.ProjectRecord, error) {
+	if s == nil || q == nil {
+		return nil, fmt.Errorf("postgres store is not initialized")
+	}
 	sqlText := fmt.Sprintf(`
 SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
 FROM %s AS p
@@ -142,9 +160,12 @@ JOIN %s AS t ON t.id = p.team_id
 JOIN %s AS sp ON sp.id = p.space_id
 ORDER BY t.name ASC, sp.name ASC, p.name ASC
 `, s.projectsTable(), s.teamsTable(), s.spacesTable())
-	callCtx, cancel := s.queryContext(ctx)
+	if buildContext == nil {
+		buildContext = s.queryContext
+	}
+	callCtx, cancel := buildContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Query(callCtx, strings.TrimSpace(sqlText))
+	rows, err := q.Query(callCtx, strings.TrimSpace(sqlText))
 	if err != nil {
 		return nil, fmt.Errorf("list postgres projects: %w", err)
 	}

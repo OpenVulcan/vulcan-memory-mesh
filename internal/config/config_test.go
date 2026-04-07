@@ -31,6 +31,8 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
+	cfg.MaintenanceTool.Postgres.ReadTimeout = Duration{}
+	cfg.MaintenanceTool.Postgres.WriteTimeout = Duration{}
 	cfg.Rerank.TopN = 0
 	cfg.Rerank.Routes[0].Timeout = Duration{}
 	cfg.Rerank.Routes[0].Endpoint = ""
@@ -71,6 +73,12 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if cfg.Rerank.TopN != 8 {
 		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
+	}
+	if got, want := cfg.MaintenanceTool.Postgres.ReadTimeout.Duration, 30*time.Second; got != want {
+		t.Fatalf("maintenance tool postgres read timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.MaintenanceTool.Postgres.WriteTimeout.Duration, 10*time.Minute; got != want {
+		t.Fatalf("maintenance tool postgres write timeout = %v, want %v", got, want)
 	}
 	if got, want := cfg.Rerank.Routes[0].Endpoint, defaultDashScopeRerankEndpoint; got != want {
 		t.Fatalf("rerank default endpoint = %q, want %q", got, want)
@@ -181,19 +189,54 @@ func TestConfigNormalizeSynthesizesRouteNodesFromAPIKeys(t *testing.T) {
 	}
 }
 
-// TestConfigPrimaryModelUsesHighestPriorityRoute verifies helper accessors expose the highest-priority route model for prompt assembly and diagnostics.
-// TestConfigPrimaryModelUsesHighestPriorityRoute 用于验证辅助访问器会暴露最高优先级路由的模型名称，供提示词装配与诊断逻辑使用。
-func TestConfigPrimaryModelUsesHighestPriorityRoute(t *testing.T) {
+// TestConfigPrimaryModelForSelectionUsesPerSceneWeights verifies different business tiers can resolve different primary models from the same route table.
+// TestConfigPrimaryModelForSelectionUsesPerSceneWeights 用于验证不同业务层级可以在同一份路由表上解析出不同的主模型。
+func TestConfigPrimaryModelForSelectionUsesPerSceneWeights(t *testing.T) {
 	cfg := newValidConfigForTest()
 	cfg.LLM.Routes = []LLMRouteConfig{
-		{Provider: "openai", Endpoint: "https://low.example/v1", APIKeys: []string{"low-key"}, Model: "low", Priority: 10},
-		{Provider: "openai", Endpoint: "https://high.example/v1", APIKeys: []string{"high-key"}, Model: "high", Priority: 100},
+		{
+			Provider: "openai",
+			Endpoint: "https://precheck.example/v1",
+			APIKeys:  []string{"precheck-key"},
+			Model:    "precheck-model",
+			Weights:  LLMRouteWeightConfig{PreCheckL1: intPtr(180), PostActionL2: intPtr(40)},
+		},
+		{
+			Provider: "openai",
+			Endpoint: "https://postaction.example/v1",
+			APIKeys:  []string{"postaction-key"},
+			Model:    "postaction-model",
+			Weights:  LLMRouteWeightConfig{PreCheckL1: intPtr(60), PostActionL2: intPtr(220)},
+		},
 	}
 
 	cfg.Normalize()
 
-	if got, want := cfg.LLM.PrimaryModel(), "high"; got != want {
-		t.Fatalf("primary model = %q, want %q", got, want)
+	if got, want := cfg.LLM.PrimaryModelForSelection("precheck_l1"), "precheck-model"; got != want {
+		t.Fatalf("precheck_l1 primary model = %q, want %q", got, want)
+	}
+	if got, want := cfg.LLM.PrimaryModelForSelection("postaction_l2"), "postaction-model"; got != want {
+		t.Fatalf("postaction_l2 primary model = %q, want %q", got, want)
+	}
+}
+
+// TestLLMRouteResolvedWeightsDefaultTo100 verifies unspecified per-scene weights always fall back to 100, while explicit overrides replace only their own slots.
+// TestLLMRouteResolvedWeightsDefaultTo100 用于验证未声明的分场景权重始终回落到 100，而显式覆盖只替换自己的槽位。
+func TestLLMRouteResolvedWeightsDefaultTo100(t *testing.T) {
+	route := LLMRouteConfig{}
+	weights := route.ResolvedWeights()
+	if weights.PreCheckL1 != 100 || weights.PreCheckL2 != 100 || weights.PostActionL1 != 100 || weights.PostActionL2 != 100 || weights.Reserve != 100 {
+		t.Fatalf("default resolved llm route weights = %#v", weights)
+	}
+
+	route = LLMRouteConfig{
+		Weights: LLMRouteWeightConfig{
+			PostActionL2: intPtr(160),
+		},
+	}
+	weights = route.ResolvedWeights()
+	if weights.PreCheckL1 != 100 || weights.PreCheckL2 != 100 || weights.PostActionL1 != 100 || weights.PostActionL2 != 160 || weights.Reserve != 100 {
+		t.Fatalf("resolved llm route weights = %#v", weights)
 	}
 }
 
@@ -254,6 +297,17 @@ func TestConfigValidateRejectsMissingLLMRoutes(t *testing.T) {
 	cfg.Normalize()
 	if err := cfg.Validate(); err == nil || err.Error() != "llm.routes must contain at least one route" {
 		t.Fatalf("unexpected llm route validate error: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsNegativeLLMRouteWeight verifies malformed negative per-scene LLM weights are rejected during startup validation.
+// TestConfigValidateRejectsNegativeLLMRouteWeight 用于验证格式错误的负数分场景 LLM 权重会在启动校验阶段被拒绝。
+func TestConfigValidateRejectsNegativeLLMRouteWeight(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.Routes[0].Weights.PostActionL1 = intPtr(-1)
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "llm.routes[0].weights.postaction_l1 must be >= 0" {
+		t.Fatalf("unexpected llm route weight validate error: %v", err)
 	}
 }
 
@@ -323,9 +377,9 @@ func TestLoadPathsRejectsRemovedTopLevelRerankFields(t *testing.T) {
 	}
 }
 
-// TestLoadPathsRejectsRemovedSingularAPIKeyFields verifies removed singular api_key fields are rejected for embedding, routes, and nodes.
-// TestLoadPathsRejectsRemovedSingularAPIKeyFields 用于验证 embedding、routes 与 nodes 中已移除的单值 api_key 字段都会被拒绝。
-func TestLoadPathsRejectsRemovedSingularAPIKeyFields(t *testing.T) {
+// TestLoadPathsRejectsRemovedRouteCompatibilityFields verifies removed compatibility fields are rejected for embedding, llm routes, and nested route nodes.
+// TestLoadPathsRejectsRemovedRouteCompatibilityFields 用于验证 embedding、llm route 与嵌套路由节点中的已移除兼容字段都会被拒绝。
+func TestLoadPathsRejectsRemovedRouteCompatibilityFields(t *testing.T) {
 	clearRemovedAIEnvVars(t)
 	rootDir := t.TempDir()
 
@@ -345,6 +399,11 @@ func TestLoadPathsRejectsRemovedSingularAPIKeyFields(t *testing.T) {
 			want: "llm.routes[0].api_key has been removed",
 		},
 		{
+			name: "llm-route-priority",
+			body: `{"llm":{"routes":[{"provider":"openai","endpoint":"https://example.com/v1","api_keys":["key-a"],"model":"model-a","priority":100}]}}`,
+			want: "llm.routes[0].priority has been removed",
+		},
+		{
 			name: "rerank-node",
 			body: `{"rerank":{"enabled":true,"routes":[{"provider":"dashscope","endpoint":"https://rerank.example/v1","model":"rerank-a","timeout":"5s","nodes":[{"api_key":"legacy-key"}]}]}}`,
 			want: "rerank.routes[0].nodes[0].api_key has been removed",
@@ -359,7 +418,7 @@ func TestLoadPathsRejectsRemovedSingularAPIKeyFields(t *testing.T) {
 			}
 			_, err := LoadPaths([]string{configPath}, DefaultLocal())
 			if err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("unexpected removed api_key error: %v", err)
+				t.Fatalf("unexpected removed route compatibility error: %v", err)
 			}
 		})
 	}
@@ -593,6 +652,27 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	}
 }
 
+// TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts verifies maintenance-tool timeout env overrides stay isolated from the regular postgres runtime node while still reaching the combined-store wiring path.
+// TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts 用于验证维护工具超时环境变量覆盖会写入独立 maintenance_tool 节点，而不会污染常规 postgres 运行时节点。
+func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_MAINTENANCE_TOOL_POSTGRES_READ_TIMEOUT", "45s")
+	t.Setenv("VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT", "12m")
+
+	applyEnvOverrides(&cfg)
+	cfg.Normalize()
+
+	if got, want := cfg.MaintenanceTool.Postgres.ReadTimeout.Duration, 45*time.Second; got != want {
+		t.Fatalf("maintenance tool postgres read timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.MaintenanceTool.Postgres.WriteTimeout.Duration, 12*time.Minute; got != want {
+		t.Fatalf("maintenance tool postgres write timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.Postgres.QueryTimeout.Duration, 5*time.Second; got != want {
+		t.Fatalf("postgres query timeout = %v, want %v", got, want)
+	}
+}
+
 // restoreEnv clears one environment variable for the test duration and then restores the prior value.
 // restoreEnv 用于在测试期间清空某个环境变量，并在结束后恢复原值。
 func restoreEnv(t *testing.T, key string) {
@@ -679,4 +759,10 @@ func newValidConfigForTest() Config {
 	cfg.SQLite.Address = "127.0.0.1:19501"
 	cfg.LanceDB.Address = "127.0.0.1:19301"
 	return cfg
+}
+
+// intPtr returns one stable pointer to the provided integer so config tests can express explicit zero/positive/negative route weights.
+// intPtr 用于返回指向目标整数的稳定指针，让配置测试可以表达显式的零值、正值或负值路由权重。
+func intPtr(value int) *int {
+	return &value
 }

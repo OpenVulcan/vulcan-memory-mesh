@@ -452,6 +452,24 @@ func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]lo
 	if s == nil || s.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
+	return s.listProjectMemoriesWithQueryerAndContextBuilder(ctx, s.pool, s.queryContext, projectID)
+}
+
+// ListProjectMemoriesForMaintenance returns the same active project memories as the online admin path but wraps the scan in the dedicated maintenance read timeout so one-shot rebuild/export tools can read large projects safely.
+// ListProjectMemoriesForMaintenance 用于返回与在线管理路径相同的 active 项目记忆，但会套用专用维护读取超时，让一次性重建/导出工具可以安全扫描大项目。
+func (s *Store) ListProjectMemoriesForMaintenance(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("postgres store is not initialized")
+	}
+	return s.listProjectMemoriesWithQueryerAndContextBuilder(ctx, s.pool, s.maintenanceReadContext, projectID)
+}
+
+// listProjectMemoriesWithQueryerAndContextBuilder centralizes project-memory enumeration so online callers keep the normal query timeout while maintenance callers can explicitly opt into the longer maintenance budget.
+// listProjectMemoriesWithQueryerAndContextBuilder 用于集中承载项目记忆枚举逻辑，让在线调用方继续使用常规查询超时，而维护调用方可以显式切到更长的维护预算。
+func (s *Store) listProjectMemoriesWithQueryerAndContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	if s == nil || q == nil {
+		return nil, fmt.Errorf("postgres store is not initialized")
+	}
 	sqlText := fmt.Sprintf(`
 SELECT %s
 FROM %s AS m
@@ -459,7 +477,7 @@ WHERE m.project_id = $1
   AND %s
 ORDER BY m.created_at ASC, m.id ASC
 `, memoryNodeSelectColumns("m"), s.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
-	rows, err := s.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), int64(projectID))
+	rows, err := s.queryMemoryNodesWithContextBuilder(ctx, q, buildContext, strings.TrimSpace(sqlText), int64(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("list postgres project memories: %w", err)
 	}
@@ -488,6 +506,59 @@ ORDER BY m.created_at ASC, m.id ASC
 	return out, nil
 }
 
+// ReplaceMemoryVectors rewrites one durable-memory batch's inline embedding column so combined PostgreSQL mode can fully rebuild vectors without replaying business writes.
+// ReplaceMemoryVectors 用于重写一批长期记忆行的内联 embedding 列，让组合 PostgreSQL 模式可以在不重放业务写入的前提下完整重建向量。
+func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error {
+	if s == nil || s.pool == nil {
+		return fmt.Errorf("postgres store is not initialized")
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	tx, err := s.pool.Begin(callCtx)
+	if err != nil {
+		return fmt.Errorf("begin postgres vector rebuild tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+
+	sqlText := buildReplaceMemoryVectorSQL(s.memoryNodesTable())
+	for idx, record := range records {
+		vectorID := strings.TrimSpace(record.ID)
+		if vectorID == "" {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].id", idx), Message: "is required"}
+		}
+		if len(record.Vector) != s.cfg.EmbeddingDimension {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].vector", idx), Message: fmt.Sprintf("must contain exactly %d dimensions", s.cfg.EmbeddingDimension)}
+		}
+		tag, execErr := tx.Exec(callCtx, sqlText, encodePGVectorLiteral(record.Vector), vectorID)
+		if execErr != nil {
+			return fmt.Errorf("replace postgres memory vector %s: %w", vectorID, execErr)
+		}
+		if tag.RowsAffected() != 1 {
+			return fmt.Errorf("replace postgres memory vector %s affected %d rows", vectorID, tag.RowsAffected())
+		}
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return fmt.Errorf("commit postgres vector rebuild tx: %w", err)
+	}
+	return nil
+}
+
+// buildReplaceMemoryVectorSQL returns the narrow maintenance UPDATE used to rewrite one combined-store memory row's inline embedding payload by stable vector_id.
+// buildReplaceMemoryVectorSQL 用于返回狭窄维护 UPDATE 语句，让组合库存储按稳定的 vector_id 重写单条记忆行的内联 embedding 载荷。
+func buildReplaceMemoryVectorSQL(table string) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+UPDATE %s
+SET embedding = $1::vector
+WHERE vector_id = $2
+`, table))
+}
+
 // queryMemoryNodes executes one PostgreSQL memory query and decodes the rows into scan structs shared by multiple memory-facing methods.
 // queryMemoryNodes 用于执行 PostgreSQL 记忆查询，并把结果解码为多个记忆方法共享的扫描结构。
 func (s *Store) queryMemoryNodes(ctx context.Context, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
@@ -497,7 +568,16 @@ func (s *Store) queryMemoryNodes(ctx context.Context, sqlText string, args ...an
 // queryMemoryNodesWithQueryer executes one PostgreSQL memory query against either the pool or a transaction so lifecycle updates can safely read locked rows.
 // queryMemoryNodesWithQueryer 用于在连接池或事务上执行 PostgreSQL 记忆查询，让生命周期更新可以安全读取已加锁的行。
 func (s *Store) queryMemoryNodesWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
-	callCtx, cancel := s.queryContext(ctx)
+	return s.queryMemoryNodesWithContextBuilder(ctx, q, s.queryContext, sqlText, args...)
+}
+
+// queryMemoryNodesWithContextBuilder executes one PostgreSQL memory query against either the pool or a transaction while letting callers choose the timeout policy that wraps the SQL work.
+// queryMemoryNodesWithContextBuilder 用于在连接池或事务上执行 PostgreSQL 记忆查询，并允许调用方选择包裹该 SQL 工作的超时策略。
+func (s *Store) queryMemoryNodesWithContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), sqlText string, args ...any) ([]memoryNodeScanRow, error) {
+	if buildContext == nil {
+		buildContext = s.queryContext
+	}
+	callCtx, cancel := buildContext(ctx)
 	defer cancel()
 	rows, err := q.Query(callCtx, sqlText, args...)
 	if err != nil {

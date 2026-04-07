@@ -98,6 +98,36 @@ type MemoryStore interface {
 	CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error)
 }
 
+// MemoryVectorRebuildStore is the narrow maintenance port used by one-shot rebuild tools to rewrite durable stored vectors in place without replaying the whole business write pipeline.
+// MemoryVectorRebuildStore 用于给一次性重建工具提供狭窄维护端口，使其能原地重写长期存储中的向量，而无需重放完整业务写入链路。
+type MemoryVectorRebuildStore interface {
+	ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error
+}
+
+// MemoryVectorResetStore is the split-mode maintenance port used to clear durable vector payloads before SQLite and the detached vector store restart from the same empty baseline.
+// MemoryVectorResetStore 用于描述 split 模式下的维护端口：在 SQLite 与独立向量库从同一个空基线重新启动前，先清空 durable 向量载荷。
+type MemoryVectorResetStore interface {
+	ClearMemoryVectors(ctx context.Context, vectorIDs []string) error
+}
+
+// MemoryVectorDimensionMigrationStore is the narrow maintenance port used when a model switch changes embedding dimensions and combined durable storage must atomically rebuild its vector columns together with the refreshed active payload.
+// MemoryVectorDimensionMigrationStore 用于描述模型切换导致 embedding 维度变化时的狭窄维护端口，让组合 durable 存储能把向量列重建与 active 载荷回填放进同一原子维护动作。
+type MemoryVectorDimensionMigrationStore interface {
+	RebuildMemoryVectorDimensions(ctx context.Context, records []logicdomain.MemoryRecord) error
+}
+
+// MaintenanceProjectMemoryLister is the narrow maintenance port used by one-shot rebuild/export flows to enumerate project memories with maintenance-specific timeout policy instead of the normal online request budget.
+// MaintenanceProjectMemoryLister 用于描述一次性重建/导出流程使用的狭窄维护端口，让项目记忆枚举改走维护专用超时策略，而不是普通在线请求预算。
+type MaintenanceProjectMemoryLister interface {
+	ListProjectMemoriesForMaintenance(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error)
+}
+
+// MaintenanceProjectLister is the narrow maintenance port used by one-shot rebuild/export flows to enumerate project rows with maintenance-specific timeout policy instead of the normal online request budget.
+// MaintenanceProjectLister 用于描述一次性重建/导出流程使用的狭窄维护端口，让项目列表枚举改走维护专用超时策略，而不是普通在线请求预算。
+type MaintenanceProjectLister interface {
+	ListProjectsForMaintenance(ctx context.Context) ([]logicdomain.ProjectRecord, error)
+}
+
 // ScratchpadStore is the isolated relational port used by the deterministic working-memory chain to validate scope coordinates, guard plan locks, and persist scratchpad key/value nodes without touching the main memory/session flow.
 // ScratchpadStore 用于给确定性工作记忆链路提供隔离的关系端口，让它在不触碰主记忆/主 session 流程的前提下校验范围坐标、守护计划锁并持久化 scratchpad key/value 节点。
 type ScratchpadStore interface {

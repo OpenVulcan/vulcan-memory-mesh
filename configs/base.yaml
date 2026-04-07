@@ -233,6 +233,16 @@ postgres:
   # split-to-combined 迁移工具使用的批次大小。
   migration_batch_size: 500
 
+maintenance_tool:
+  postgres:
+    # Timeout budget used by one-shot maintenance reads such as project-memory exports and vector-rebuild fact scans.
+    # 项目记忆导出、向量重建事实扫描等一次性维护读取使用的超时预算。
+    read_timeout: "30s"
+
+    # Timeout budget used by destructive PostgreSQL maintenance transactions such as vector-dimension rebuilds and managed snapshot imports.
+    # 向量维度重建、托管快照导入等 PostgreSQL 破坏性维护事务使用的超时预算。
+    write_timeout: "10m"
+
 llm:
   # Ordered LLM route table.
   # LLM 路由表。
@@ -241,9 +251,30 @@ llm:
       # 便于日志与排障定位的人类可读路由名。
       name: ""
 
-      # Route priority where larger values are preferred first.
-      # 路由优先级，数值越大越优先。
-      priority: 0
+      # Per-scene route weights used by the shared LLM router.
+      # 共享 LLM 路由器使用的分场景路由权重。
+      # Omitted slots default to 100.
+      # 未声明的槽位默认回退到 100。
+      weights:
+        # Weight used by PreCheck stage-one intent extraction.
+        # PreCheck 第一层意图提取使用的权重。
+        precheck_l1: 100
+
+        # Weight used by PreCheck stage-two memory review.
+        # PreCheck 第二层记忆评审使用的权重。
+        precheck_l2: 100
+
+        # Weight used by PostAction stage-one turn analysis.
+        # PostAction 第一层逐轮分析使用的权重。
+        postaction_l1: 100
+
+        # Weight used by PostAction stage-two candidate review.
+        # PostAction 第二层候选评审使用的权重。
+        postaction_l2: 100
+
+        # Reserved slot for non-mainline or future LLM chains.
+        # 为非主链路或未来 LLM 链路保留的槽位。
+        reserve: 100
 
       # OpenAI-compatible provider identifier for this route.
       # 当前路由使用的 provider 标识。

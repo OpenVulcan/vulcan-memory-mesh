@@ -53,10 +53,11 @@ func (m *ProfileMerger) Merge(ctx context.Context, snapshot logicdomain.ProfileT
 		return logicdomain.TurnProfileMergeResult{}, nil
 	}
 	resp, err := m.llm.Generate(ctx, logicports.LLMRequest{
-		Model:          m.model,
-		SystemPrompt:   prompt,
-		UserPrompt:     requestBody,
-		ResponseFormat: logicports.LLMResponseFormatJSON,
+		Model:               m.model,
+		SystemPrompt:        prompt,
+		UserPrompt:          requestBody,
+		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelReserve,
 	})
 	if err != nil {
 		return logicdomain.TurnProfileMergeResult{}, err

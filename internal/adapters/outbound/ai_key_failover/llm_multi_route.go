@@ -15,27 +15,54 @@ import (
 // LLMRouteOptions describes one concrete LLM route, including its provider/model identity and the fixed-model key failover options owned by that route alone.
 // LLMRouteOptions 用于描述一条具体的 LLM 路由，包括它自己的 provider/model 身份，以及仅属于该路由的固定模型 Key 容灾参数。
 type LLMRouteOptions struct {
-	Name         string
-	Priority     int
-	Provider     string
-	Endpoint     string
-	Model        string
-	Organization string
-	Project      string
-	APIKeys      []string
-	Params       map[string]any
-	ModelParams  map[string]map[string]any
-	Options      Options
+	Name             string
+	SelectionWeights LLMRouteSelectionWeights
+	Provider         string
+	Endpoint         string
+	Model            string
+	Organization     string
+	Project          string
+	APIKeys          []string
+	Params           map[string]any
+	ModelParams      map[string]map[string]any
+	Options          Options
+}
+
+// LLMRouteSelectionWeights keeps the fully materialized per-scene weights used to order one shared LLM route across different business chains.
+// LLMRouteSelectionWeights 用于保存一条共享 LLM 路由在不同业务链路下排序时使用的完整分场景权重。
+type LLMRouteSelectionWeights struct {
+	PreCheckL1   int
+	PreCheckL2   int
+	PostActionL1 int
+	PostActionL2 int
+	Reserve      int
+}
+
+// WeightFor returns the concrete route weight for the requested business call tier and falls back to the reserve slot for unknown callers.
+// WeightFor 用于返回目标业务调用层级对应的具体路由权重；若调用方未知，则回退到 reserve 槽位。
+func (w LLMRouteSelectionWeights) WeightFor(level appports.LLMRouteSelectionLevel) int {
+	switch level {
+	case appports.LLMRouteSelectionLevelPreCheckL1:
+		return w.PreCheckL1
+	case appports.LLMRouteSelectionLevelPreCheckL2:
+		return w.PreCheckL2
+	case appports.LLMRouteSelectionLevelPostActionL1:
+		return w.PostActionL1
+	case appports.LLMRouteSelectionLevelPostActionL2:
+		return w.PostActionL2
+	default:
+		return w.Reserve
+	}
 }
 
 // llmMultiRouteEntry stores one compiled LLM route so the outer wrapper can iterate providers/models without rebuilding fixed-model key pools on every request.
 // llmMultiRouteEntry 用于保存一条编译完成的 LLM 路由，让外层包装器在遍历 provider/model 时无需为每次请求重复构建固定模型 Key 池。
 type llmMultiRouteEntry struct {
-	name     string
-	priority int
-	model    string
-	client   appports.LLMClient
-	classify func(error, time.Time) failureDecision
+	name             string
+	selectionWeights LLMRouteSelectionWeights
+	model            string
+	client           appports.LLMClient
+	classify         func(error, time.Time) failureDecision
 }
 
 // LLMMultiRouteClient executes ordered multi-route failover for LLM requests and delegates each route's internal retries to the existing fixed-model key failover client.
@@ -58,16 +85,13 @@ func NewLLMMultiRouteClient(routes []LLMRouteOptions) (*LLMMultiRouteClient, err
 			return nil, fmt.Errorf("build llm route %q: %w", name, err)
 		}
 		built = append(built, llmMultiRouteEntry{
-			name:     name,
-			priority: route.Priority,
-			model:    strings.TrimSpace(route.Model),
-			client:   client,
-			classify: classifier,
+			name:             name,
+			selectionWeights: route.SelectionWeights,
+			model:            strings.TrimSpace(route.Model),
+			client:           client,
+			classify:         classifier,
 		})
 	}
-	sort.SliceStable(built, func(i, j int) bool {
-		return built[i].priority > built[j].priority
-	})
 	return &LLMMultiRouteClient{routes: built}, nil
 }
 
@@ -78,7 +102,7 @@ func (c *LLMMultiRouteClient) Generate(ctx context.Context, req appports.LLMRequ
 	if c == nil || len(c.routes) == 0 {
 		return zero, fmt.Errorf("llm multi-route client is nil")
 	}
-	candidateIndexes, err := c.candidateRouteIndexes(strings.TrimSpace(req.Model))
+	candidateIndexes, err := c.candidateRouteIndexes(strings.TrimSpace(req.Model), req.RouteSelectionLevel)
 	if err != nil {
 		return zero, err
 	}
@@ -107,28 +131,26 @@ func (c *LLMMultiRouteClient) Generate(ctx context.Context, req appports.LLMRequ
 	return zero, fmt.Errorf("no llm routes available for current request")
 }
 
-// candidateRouteIndexes filters the ordered route list by exact model match when the caller pins one model, while preserving declaration order for failover.
-// candidateRouteIndexes 用于在调用方显式固定某个模型时按精确匹配过滤有序路由列表，并继续保持声明顺序作为容灾顺序。
-func (c *LLMMultiRouteClient) candidateRouteIndexes(requestedModel string) ([]int, error) {
+// candidateRouteIndexes filters routes by exact model match when needed and then reorders the remaining candidates by the requested business-call weight.
+// candidateRouteIndexes 用于在必要时先按精确模型匹配过滤路由，再按目标业务调用层级对应的权重重排剩余候选。
+func (c *LLMMultiRouteClient) candidateRouteIndexes(requestedModel string, selectionLevel appports.LLMRouteSelectionLevel) ([]int, error) {
 	if len(c.routes) == 0 {
 		return nil, fmt.Errorf("llm multi-route client has no routes")
 	}
-	if requestedModel == "" {
-		indexes := make([]int, 0, len(c.routes))
-		for idx := range c.routes {
-			indexes = append(indexes, idx)
-		}
-		return indexes, nil
-	}
 	indexes := make([]int, 0, len(c.routes))
 	for idx, route := range c.routes {
-		if route.model == requestedModel {
+		if requestedModel == "" || route.model == requestedModel {
 			indexes = append(indexes, idx)
 		}
 	}
-	if len(indexes) == 0 {
+	if len(indexes) == 0 && requestedModel != "" {
 		return nil, fmt.Errorf("no llm route configured for model %q", requestedModel)
 	}
+	sort.SliceStable(indexes, func(i, j int) bool {
+		left := c.routes[indexes[i]].selectionWeights.WeightFor(selectionLevel)
+		right := c.routes[indexes[j]].selectionWeights.WeightFor(selectionLevel)
+		return left > right
+	})
 	return indexes, nil
 }
 

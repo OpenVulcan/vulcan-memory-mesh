@@ -64,9 +64,14 @@ llm:
       # 用于日志、failover 跟踪与排障的稳定路由名。
       name: "primary-openai"
 
-      # Higher-than-default priority for the primary route.
-      # 高于默认值的主路由优先级。
-      priority: 100
+      # Per-scene route weights for the primary model.
+      # 主路由模型的分场景权重。
+      weights:
+        precheck_l1: 100
+        precheck_l2: 100
+        postaction_l1: 100
+        postaction_l2: 100
+        reserve: 100
 
       # Provider used by this route.
       # 当前路由使用的 provider。

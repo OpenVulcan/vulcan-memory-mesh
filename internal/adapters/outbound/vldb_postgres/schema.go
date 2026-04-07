@@ -384,13 +384,19 @@ func (s *Store) ensureCommonIndexes(ctx context.Context) error {
 // ensureVectorIndex creates the shared pgvector ANN index used by both flavors for first-stage semantic recall.
 // ensureVectorIndex 用于创建两种方言共享的 pgvector ANN 索引，服务首阶段语义召回。
 func (s *Store) ensureVectorIndex(ctx context.Context) error {
-	statement := fmt.Sprintf(`
-CREATE INDEX IF NOT EXISTS %s ON %s USING ivfflat (embedding vector_cosine_ops) WITH (lists = %d)
-`, quoteIdentifier("idx_vmm_memory_nodes_embedding_ivfflat"), s.memoryNodesTable(), s.cfg.VectorLists)
+	statement := buildMemoryVectorIndexSQL(s.memoryNodesTable(), s.cfg.VectorLists)
 	if _, err := s.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
 		return fmt.Errorf("create postgres vector index: %w", err)
 	}
 	return nil
+}
+
+// buildMemoryVectorIndexSQL renders the shared ANN index DDL so startup bootstrap and maintenance rebuilds always recreate the same pgvector index definition.
+// buildMemoryVectorIndexSQL 用于渲染共享 ANN 索引 DDL，确保启动期初始化与维护期重建始终复用同一份 pgvector 索引定义。
+func buildMemoryVectorIndexSQL(memoryTable string, lists int) string {
+	return fmt.Sprintf(`
+CREATE INDEX IF NOT EXISTS %s ON %s USING ivfflat (embedding vector_cosine_ops) WITH (lists = %d)
+`, quoteIdentifier("idx_vmm_memory_nodes_embedding_ivfflat"), memoryTable, lists)
 }
 
 // ensureDebugSeedWorkspace inserts the deterministic default user/team/space/project rows expected by local debugging flows.

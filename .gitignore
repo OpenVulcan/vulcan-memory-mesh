@@ -8,3 +8,5 @@ output/
 configs/.env
 .env
 .opencode
+.gomodcache
+.gocache

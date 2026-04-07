@@ -39,6 +39,18 @@ type Store struct {
 // NewStore dials the LanceDB gateway and ensures the configured vector table exists before serving traffic.
 // NewStore 用于连接 LanceDB 网关，并在开始提供服务前确保配置指定的向量表已经存在。
 func NewStore(address string, timeout time.Duration, tableName, vectorColumn string, dimension int) (*Store, error) {
+	return newStore(address, timeout, tableName, vectorColumn, dimension, true)
+}
+
+// NewStoreWithoutInit dials the LanceDB gateway without eagerly creating the configured table so maintenance flows can decide exactly when the current-dimension table should first appear.
+// NewStoreWithoutInit 用于连接 LanceDB 网关但不提前创建目标表，让维护流程可以精确控制“当前维度表首次出现”的时机。
+func NewStoreWithoutInit(address string, timeout time.Duration, tableName, vectorColumn string, dimension int) (*Store, error) {
+	return newStore(address, timeout, tableName, vectorColumn, dimension, false)
+}
+
+// newStore centralizes LanceDB gateway dialing while letting callers choose whether table initialization should happen eagerly during construction.
+// newStore 用于集中承载 LanceDB 网关连接逻辑，并允许调用方决定是否在构造阶段立即初始化目标表。
+func newStore(address string, timeout time.Duration, tableName, vectorColumn string, dimension int, ensureTable bool) (*Store, error) {
 	// Validate the minimum table configuration first so startup errors stay easy to interpret.
 	// 先校验最小表配置，保证启动错误保持易于理解。
 	if strings.TrimSpace(address) == "" {
@@ -79,9 +91,11 @@ func NewStore(address string, timeout time.Duration, tableName, vectorColumn str
 		vectorColumn: strings.TrimSpace(vectorColumn),
 		dimension:    dimension,
 	}
-	if err := store.init(context.Background()); err != nil {
-		_ = conn.Close()
-		return nil, err
+	if ensureTable {
+		if err := store.init(context.Background()); err != nil {
+			_ = conn.Close()
+			return nil, err
+		}
 	}
 	return store, nil
 }

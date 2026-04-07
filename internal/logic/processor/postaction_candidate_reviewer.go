@@ -45,10 +45,11 @@ func (r *PostActionCandidateReviewer) Review(ctx context.Context, input logicdom
 		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("load review_postaction_candidates prompt: %w", err)
 	}
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
-		Model:          r.model,
-		SystemPrompt:   prompt,
-		UserPrompt:     requestBody,
-		ResponseFormat: logicports.LLMResponseFormatJSON,
+		Model:               r.model,
+		SystemPrompt:        prompt,
+		UserPrompt:          requestBody,
+		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPostActionL2,
 	})
 	if err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, err

@@ -480,6 +480,84 @@ func TestLLMClientGenerateRefundsAuthFailureBudget(t *testing.T) {
 	}
 }
 
+// TestSelectorCandidateNodeIndexesMarksBudgetExhaustion verifies selector prechecks keep budget-only exhaustion distinct so callers can wait for the next quota window instead of treating the pool as permanently dead.
+// TestSelectorCandidateNodeIndexesMarksBudgetExhaustion 用于验证选择器预检查会把“仅预算耗尽”的场景单独标记出来，避免调用方把可恢复的 Key 池误判成永久失效。
+func TestSelectorCandidateNodeIndexesMarksBudgetExhaustion(t *testing.T) {
+	selector, err := newSelector(Options{
+		ServiceName: "embedding",
+		Enabled:     true,
+		Nodes: []NodeOptions{
+			{Name: "primary", APIKeys: []string{"key-a"}, RPM: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new selector: %v", err)
+	}
+	now := time.Date(2026, 4, 7, 12, 0, 0, 0, time.UTC)
+	if !selector.reserveKeyBudget(0, 0, requestCost{Requests: 1}, now) {
+		t.Fatal("expected first request budget reservation to succeed")
+	}
+
+	_, err = selector.candidateNodeIndexes(now, requestCost{Requests: 1})
+	if !IsBudgetExhaustedCandidatesError(err) {
+		t.Fatalf("expected budget exhaustion, got %v", err)
+	}
+}
+
+// TestSelectorCandidateKeyIndexesMarksBudgetExhaustion verifies one node-level key pool still reports budget exhaustion after every healthy key in that node has spent its own fixed-window quota.
+// TestSelectorCandidateKeyIndexesMarksBudgetExhaustion 用于验证当同一节点内所有健康 Key 都已经花完各自固定窗口预算时，节点内 Key 选择仍会报告预算耗尽而不是永久不可用。
+func TestSelectorCandidateKeyIndexesMarksBudgetExhaustion(t *testing.T) {
+	selector, err := newSelector(Options{
+		ServiceName: "embedding",
+		Enabled:     true,
+		Nodes: []NodeOptions{
+			{Name: "primary", APIKeys: []string{"key-a1", "key-a2"}, RPM: 1},
+			{Name: "backup", APIKeys: []string{"key-b"}, RPM: 5},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new selector: %v", err)
+	}
+	now := time.Date(2026, 4, 7, 12, 30, 0, 0, time.UTC)
+	if !selector.reserveKeyBudget(0, 0, requestCost{Requests: 1}, now) {
+		t.Fatal("expected first node key-a1 reservation to succeed")
+	}
+	if !selector.reserveKeyBudget(0, 1, requestCost{Requests: 1}, now) {
+		t.Fatal("expected first node key-a2 reservation to succeed")
+	}
+
+	_, err = selector.candidateKeyIndexes(0, now, requestCost{Requests: 1})
+	if !IsBudgetExhaustedCandidatesError(err) {
+		t.Fatalf("expected node-local budget exhaustion, got %v", err)
+	}
+}
+
+// TestSelectorCandidateNodeIndexesKeepsUnavailableExhaustion verifies selector prechecks still surface the generic exhaustion marker when every key is genuinely unhealthy instead of temporarily quota-blocked.
+// TestSelectorCandidateNodeIndexesKeepsUnavailableExhaustion 用于验证当所有 Key 都是真正不健康而不是暂时受配额限制时，选择器仍会返回普通耗尽错误而不会误标成预算等待。
+func TestSelectorCandidateNodeIndexesKeepsUnavailableExhaustion(t *testing.T) {
+	selector, err := newSelector(Options{
+		ServiceName:        "embedding",
+		Enabled:            true,
+		ProbeAfterCooldown: false,
+		Nodes: []NodeOptions{
+			{Name: "primary", APIKeys: []string{"key-a"}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("new selector: %v", err)
+	}
+	now := time.Date(2026, 4, 7, 13, 0, 0, 0, time.UTC)
+	selector.markFailure(0, 0, errorClassAuth, now.Add(time.Hour), now)
+
+	_, err = selector.candidateNodeIndexes(now, requestCost{Requests: 1})
+	if !IsExhaustedCandidatesError(err) {
+		t.Fatalf("expected generic exhaustion error, got %v", err)
+	}
+	if IsBudgetExhaustedCandidatesError(err) {
+		t.Fatalf("expected unavailable exhaustion instead of budget exhaustion, got %v", err)
+	}
+}
+
 // TestLLMClientGenerateUsesFallbackUsageEstimate verifies missing provider usage is reconciled as 1.3x input tokens so TPM guards still accumulate pressure.
 // TestLLMClientGenerateUsesFallbackUsageEstimate 用于验证当 provider 缺失 usage 时，系统会按输入 token 的 1.3 倍回填预算，确保 TPM 守卫仍能持续累计压力。
 func TestLLMClientGenerateUsesFallbackUsageEstimate(t *testing.T) {
@@ -602,8 +680,8 @@ func TestLLMMultiRouteClientGenerateSwitchesRouteOnExhaustion(t *testing.T) {
 	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
 	client := &LLMMultiRouteClient{
 		routes: []llmMultiRouteEntry{
-			{name: "primary", priority: 20, model: "model-a", client: primary, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
-			{name: "backup", priority: 10, model: "model-b", client: backup, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "primary", selectionWeights: llmSelectionWeightsForTest(20), model: "model-a", client: primary, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "backup", selectionWeights: llmSelectionWeightsForTest(10), model: "model-b", client: backup, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
 		},
 	}
 
@@ -622,54 +700,109 @@ func TestLLMMultiRouteClientGenerateSwitchesRouteOnExhaustion(t *testing.T) {
 	}
 }
 
-// TestLLMMultiRouteClientGeneratePrefersHigherPriority verifies the route chooser prefers the highest-priority available route even when a lower-priority route appears earlier in declaration order.
-// TestLLMMultiRouteClientGeneratePrefersHigherPriority 用于验证即使低优先级路由写在前面，路由选择器仍会优先命中当前可用的最高优先级路由。
-func TestLLMMultiRouteClientGeneratePrefersHigherPriority(t *testing.T) {
+// TestLLMMultiRouteClientGeneratePrefersHigherWeight verifies the default reserve-slot ordering still prefers the highest-weight route even when a lower-weight route appears earlier in declaration order.
+// TestLLMMultiRouteClientGeneratePrefersHigherWeight 用于验证默认 reserve 槽位排序仍会优先命中更高权重的路由，即使低权重路由写在前面。
+func TestLLMMultiRouteClientGeneratePrefersHigherWeight(t *testing.T) {
 	low := &stubLLMClient{response: appports.LLMResponse{Content: "low"}}
 	high := &stubLLMClient{response: appports.LLMResponse{Content: "high"}}
 	client, err := NewLLMMultiRouteClient([]LLMRouteOptions{
-		{Name: "low", Priority: 10, Provider: "openai", Endpoint: "https://low.example/v1", Model: "model-a", APIKeys: []string{"key-low"}},
-		{Name: "high", Priority: 100, Provider: "openai", Endpoint: "https://high.example/v1", Model: "model-b", APIKeys: []string{"key-high"}},
+		{Name: "low", SelectionWeights: llmSelectionWeightsForTest(10), Provider: "openai", Endpoint: "https://low.example/v1", Model: "model-a", APIKeys: []string{"key-low"}},
+		{Name: "high", SelectionWeights: llmSelectionWeightsForTest(100), Provider: "openai", Endpoint: "https://high.example/v1", Model: "model-b", APIKeys: []string{"key-high"}},
 	})
 	if err != nil {
 		t.Fatalf("new llm multi-route client: %v", err)
 	}
-	client.routes[0].client = high
-	client.routes[1].client = low
+	client.routes[0].client = low
+	client.routes[1].client = high
 
 	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
 	if err != nil {
-		t.Fatalf("generate with llm route priority: %v", err)
+		t.Fatalf("generate with llm route weight: %v", err)
 	}
 	if resp.Content != "high" {
-		t.Fatalf("priority llm response = %q", resp.Content)
+		t.Fatalf("weight-ranked llm response = %q", resp.Content)
 	}
 	if high.calls != 1 || low.calls != 0 {
-		t.Fatalf("unexpected llm priority call counts: high=%d low=%d", high.calls, low.calls)
+		t.Fatalf("unexpected llm weight call counts: high=%d low=%d", high.calls, low.calls)
 	}
 }
 
-// TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSamePriority verifies routes with the same priority still keep their original declaration order so scheduling stays deterministic.
-// TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSamePriority 用于验证当多个路由优先级相同时，系统仍保持原始声明顺序，确保调度结果稳定可预期。
-func TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSamePriority(t *testing.T) {
+// TestLLMMultiRouteClientGenerateUsesPerSceneWeights verifies one shared route table can choose different routes for different business call tiers.
+// TestLLMMultiRouteClientGenerateUsesPerSceneWeights 用于验证同一份共享路由表可以针对不同业务调用层级选择不同的 route。
+func TestLLMMultiRouteClientGenerateUsesPerSceneWeights(t *testing.T) {
+	precheck := &stubLLMClient{response: appports.LLMResponse{Content: "precheck"}}
+	postaction := &stubLLMClient{response: appports.LLMResponse{Content: "postaction"}}
+	client := &LLMMultiRouteClient{
+		routes: []llmMultiRouteEntry{
+			{
+				name:             "precheck",
+				selectionWeights: LLMRouteSelectionWeights{PreCheckL1: 200, PostActionL1: 50, Reserve: 100},
+				model:            "model-precheck",
+				client:           precheck,
+				classify:         func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} },
+			},
+			{
+				name:             "postaction",
+				selectionWeights: LLMRouteSelectionWeights{PreCheckL1: 60, PostActionL1: 220, Reserve: 100},
+				model:            "model-postaction",
+				client:           postaction,
+				classify:         func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} },
+			},
+		},
+	}
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{
+		SystemPrompt:        "system",
+		UserPrompt:          "user",
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPreCheckL1,
+	})
+	if err != nil {
+		t.Fatalf("generate with precheck_l1 weights: %v", err)
+	}
+	if resp.Content != "precheck" {
+		t.Fatalf("precheck_l1 llm response = %q", resp.Content)
+	}
+	if precheck.calls != 1 || postaction.calls != 0 {
+		t.Fatalf("unexpected precheck_l1 llm call counts: precheck=%d postaction=%d", precheck.calls, postaction.calls)
+	}
+
+	resp, err = client.Generate(context.Background(), appports.LLMRequest{
+		SystemPrompt:        "system",
+		UserPrompt:          "user",
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPostActionL1,
+	})
+	if err != nil {
+		t.Fatalf("generate with postaction_l1 weights: %v", err)
+	}
+	if resp.Content != "postaction" {
+		t.Fatalf("postaction_l1 llm response = %q", resp.Content)
+	}
+	if precheck.calls != 1 || postaction.calls != 1 {
+		t.Fatalf("unexpected postaction_l1 llm call counts: precheck=%d postaction=%d", precheck.calls, postaction.calls)
+	}
+}
+
+// TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSameWeight verifies routes with the same reserve-slot weight still keep their original declaration order so scheduling stays deterministic.
+// TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSameWeight 用于验证当多个路由的 reserve 槽位权重相同时，系统仍保持原始声明顺序，确保调度结果稳定可预期。
+func TestLLMMultiRouteClientGeneratePreservesDeclarationOrderWithinSameWeight(t *testing.T) {
 	first := &stubLLMClient{response: appports.LLMResponse{Content: "first"}}
 	second := &stubLLMClient{response: appports.LLMResponse{Content: "second"}}
 	client := &LLMMultiRouteClient{
 		routes: []llmMultiRouteEntry{
-			{name: "first", priority: 50, model: "model-a", client: first, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
-			{name: "second", priority: 50, model: "model-b", client: second, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "first", selectionWeights: llmSelectionWeightsForTest(50), model: "model-a", client: first, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "second", selectionWeights: llmSelectionWeightsForTest(50), model: "model-b", client: second, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
 		},
 	}
 
 	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
 	if err != nil {
-		t.Fatalf("generate with equal-priority llm routes: %v", err)
+		t.Fatalf("generate with equal-weight llm routes: %v", err)
 	}
 	if resp.Content != "first" {
-		t.Fatalf("equal-priority llm response = %q", resp.Content)
+		t.Fatalf("equal-weight llm response = %q", resp.Content)
 	}
 	if first.calls != 1 || second.calls != 0 {
-		t.Fatalf("unexpected equal-priority llm call counts: first=%d second=%d", first.calls, second.calls)
+		t.Fatalf("unexpected equal-weight llm call counts: first=%d second=%d", first.calls, second.calls)
 	}
 }
 
@@ -680,8 +813,8 @@ func TestLLMMultiRouteClientGenerateFiltersByRequestedModel(t *testing.T) {
 	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
 	client := &LLMMultiRouteClient{
 		routes: []llmMultiRouteEntry{
-			{name: "primary", model: "model-a", client: primary, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
-			{name: "backup", model: "model-b", client: backup, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "primary", selectionWeights: llmSelectionWeightsForTest(100), model: "model-a", client: primary, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
+			{name: "backup", selectionWeights: llmSelectionWeightsForTest(100), model: "model-b", client: backup, classify: func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} }},
 		},
 	}
 
@@ -704,10 +837,10 @@ func TestLLMMultiRouteClientGenerateContinuesAfterRouteLocalInvalidRequest(t *te
 	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
 	client := &LLMMultiRouteClient{
 		routes: []llmMultiRouteEntry{
-			{name: "primary", model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
+			{name: "primary", selectionWeights: llmSelectionWeightsForTest(100), model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
 				return classifyOpenAIError(err, Options{}, now)
 			}},
-			{name: "backup", model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
+			{name: "backup", selectionWeights: llmSelectionWeightsForTest(90), model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
 				return classifyOpenAIError(err, Options{}, now)
 			}},
 		},
@@ -732,10 +865,10 @@ func TestLLMMultiRouteClientGenerateContinuesAfterWrappedRouteTimeout(t *testing
 	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
 	client := &LLMMultiRouteClient{
 		routes: []llmMultiRouteEntry{
-			{name: "primary", model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
+			{name: "primary", selectionWeights: llmSelectionWeightsForTest(100), model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
 				return classifyOpenAIError(err, Options{}, now)
 			}},
-			{name: "backup", model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
+			{name: "backup", selectionWeights: llmSelectionWeightsForTest(90), model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
 				return classifyOpenAIError(err, Options{}, now)
 			}},
 		},
@@ -760,10 +893,10 @@ func TestLLMMultiRouteClientGenerateContinuesAfterGoogleRouteRateLimit(t *testin
 	backup := &stubLLMClient{response: appports.LLMResponse{Content: "ok"}}
 	client := &LLMMultiRouteClient{
 		routes: []llmMultiRouteEntry{
-			{name: "primary-google", model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
+			{name: "primary-google", selectionWeights: llmSelectionWeightsForTest(100), model: "model-a", client: primary, classify: func(err error, now time.Time) failureDecision {
 				return classifyGoogleAIStudioError(err, Options{RateLimitCooldown: 5 * time.Minute}, now)
 			}},
-			{name: "backup-openai", model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
+			{name: "backup-openai", selectionWeights: llmSelectionWeightsForTest(90), model: "model-b", client: backup, classify: func(err error, now time.Time) failureDecision {
 				return classifyOpenAIError(err, Options{}, now)
 			}},
 		},
@@ -900,6 +1033,18 @@ func (s *stubRerankerClient) Rerank(context.Context, string, []appports.Reranker
 		return nil, s.err
 	}
 	return append([]appports.RerankerResult(nil), s.results...), nil
+}
+
+// llmSelectionWeightsForTest mirrors one legacy shared route weight into all five LLM selection slots so compatibility-focused tests stay concise.
+// llmSelectionWeightsForTest 用于把一份旧版共享路由权重镜像到 5 个 LLM 选择槽位，让兼容性测试保持简洁。
+func llmSelectionWeightsForTest(weight int) LLMRouteSelectionWeights {
+	return LLMRouteSelectionWeights{
+		PreCheckL1:   weight,
+		PreCheckL2:   weight,
+		PostActionL1: weight,
+		PostActionL2: weight,
+		Reserve:      weight,
+	}
 }
 
 // newOpenAIAPIError builds one minimal OpenAI-compatible API error for failover classification tests.

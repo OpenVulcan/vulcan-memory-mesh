@@ -90,7 +90,14 @@ llm:
     - # Stable route name for logs and failover tracking.
       # 用于日志与 failover 跟踪的稳定路由名。
       name: "primary-openai"
-      priority: 100
+      # Per-scene route weights. Omitted slots default to 100.
+      # 分场景路由权重。未声明的槽位默认都是 100。
+      weights:
+        precheck_l1: 100
+        precheck_l2: 100
+        postaction_l1: 100
+        postaction_l2: 100
+        reserve: 100
       # Allowed values:
       # 支持取值：
       # - openai: preferred canonical label for the current OpenAI-compatible adapter.
