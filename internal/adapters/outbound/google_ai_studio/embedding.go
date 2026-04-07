@@ -36,8 +36,8 @@ func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, params ma
 // Embed executes one provider-neutral embedding request against Google AI Studio and returns one float32 vector per non-empty text input.
 // Embed 用于把一次 provider 无关的 embedding 请求发送到 Google AI Studio，并为每条非空文本返回一个 float32 向量。
 func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
-	// Sanitize the input batch first so blank texts never turn into provider-side invalid requests or misleading vector counts.
-	// 先清洗输入批次，避免空文本变成 provider 侧非法请求或产生误导性的向量数量。
+	// Sanitize the input batch first so blank texts never turn into provider-side invalid requests while batching and fallback policies stay centralized in the outer embedding controller.
+	// 先清洗输入批次，避免空文本变成 provider 侧非法请求，同时把拆批与回退策略继续统一收敛在外层 embedding 控制器中。
 	if c == nil || c.client == nil {
 		return appports.EmbeddingResponse{}, fmt.Errorf("google ai studio embedding client is nil")
 	}

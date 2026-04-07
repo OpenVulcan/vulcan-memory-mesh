@@ -246,7 +246,7 @@ func TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnKeyScopedForbidden(t *testi
 // TestEmbeddingClientEmbedRejectsDifferentModelOrDimension verifies the fixed-model embedding wrapper rejects cross-model or cross-dimension requests before any key rotation starts.
 // TestEmbeddingClientEmbedRejectsDifferentModelOrDimension 用于验证固定模型 embedding 包装器会在 Key 轮换开始前拒绝跨模型或跨维度请求。
 func TestEmbeddingClientEmbedRejectsDifferentModelOrDimension(t *testing.T) {
-	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, "", "", []string{"key-a"}, nil, nil, Options{
+	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 10, 0, "", "", []string{"key-a"}, nil, nil, Options{
 		Enabled:            true,
 		Policy:             "ordered_failover",
 		RateLimitCooldown:  5 * time.Minute,
@@ -263,6 +263,108 @@ func TestEmbeddingClientEmbedRejectsDifferentModelOrDimension(t *testing.T) {
 	}
 	if _, err := client.Embed(context.Background(), appports.EmbeddingRequest{Dimension: 1536, Texts: []string{"hello"}}); err == nil {
 		t.Fatal("expected fixed-dimension rejection")
+	}
+}
+
+// TestEmbeddingClientEmbedSplitsOversizedBatch verifies the failover wrapper splits one logical embedding request into configured sub-batches so higher-level callers no longer need to duplicate provider batch logic.
+// TestEmbeddingClientEmbedSplitsOversizedBatch 用于验证 failover 包装器会按配置把一次逻辑 embedding 请求拆成多个子批次，让上层调用方无需重复维护 provider 拆批逻辑。
+func TestEmbeddingClientEmbedSplitsOversizedBatch(t *testing.T) {
+	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 2, 0, "", "", []string{"key-a"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new embedding failover client: %v", err)
+	}
+	stub := &stubEmbeddingClient{
+		responses: []appports.EmbeddingResponse{
+			{Vectors: [][]float32{{1}, {2}}},
+			{Vectors: [][]float32{{3}}},
+		},
+	}
+	client.factory = func(apiKey string) appports.EmbeddingClient { return stub }
+
+	resp, err := client.Embed(context.Background(), appports.EmbeddingRequest{Texts: []string{"one", "two", "three"}})
+	if err != nil {
+		t.Fatalf("embed with split batches: %v", err)
+	}
+	if got, want := len(stub.requests), 2; got != want {
+		t.Fatalf("embedding chunk count = %d, want %d (%#v)", got, want, stub.requests)
+	}
+	if got, want := len(stub.requests[0]), 2; got != want {
+		t.Fatalf("first embedding chunk size = %d, want %d", got, want)
+	}
+	if got, want := len(stub.requests[1]), 1; got != want {
+		t.Fatalf("second embedding chunk size = %d, want %d", got, want)
+	}
+	if got, want := len(resp.Vectors), 3; got != want {
+		t.Fatalf("embedding result vectors = %d, want %d", got, want)
+	}
+}
+
+// TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText verifies the embedding controller can recursively isolate the single oversized text inside one logical batch and retry only that text with a shortened payload.
+// TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText 用于验证 embedding 控制器能够在一整个逻辑批次里递归定位出唯一超长文本，并仅对该条缩短后重试。
+func TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText(t *testing.T) {
+	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 4, 0, "", "", []string{"key-a"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new embedding failover client: %v", err)
+	}
+	tooLongText := strings.Repeat("too long payload ", 80)
+	normalizedLongText := strings.TrimSpace(tooLongText)
+	stub := &stubEmbeddingClient{
+		handle: func(req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+			switch len(req.Texts) {
+			case 2:
+				return appports.EmbeddingResponse{}, newOpenAIAPIError(http.StatusBadRequest, "maximum context length exceeded")
+			case 1:
+				text := req.Texts[0]
+				switch {
+				case text == "short note":
+					return appports.EmbeddingResponse{Vectors: [][]float32{{1, 1}}}, nil
+				case strings.Contains(text, embeddingRetryTruncationMarker):
+					return appports.EmbeddingResponse{Vectors: [][]float32{{2, 2}}}, nil
+				default:
+					return appports.EmbeddingResponse{}, newOpenAIAPIError(http.StatusBadRequest, "maximum context length exceeded")
+				}
+			default:
+				return appports.EmbeddingResponse{}, fmt.Errorf("unexpected request shape: %#v", req.Texts)
+			}
+		},
+	}
+	client.factory = func(apiKey string) appports.EmbeddingClient { return stub }
+
+	resp, err := client.Embed(context.Background(), appports.EmbeddingRequest{Texts: []string{"short note", tooLongText}})
+	if err != nil {
+		t.Fatalf("embed with provider length fallback: %v", err)
+	}
+	if got, want := len(resp.Vectors), 2; got != want {
+		t.Fatalf("vector count = %d, want %d", got, want)
+	}
+	if got := len(stub.requests); got != 4 {
+		t.Fatalf("request count = %d, want 4 (%#v)", got, stub.requests)
+	}
+	if got := stub.requests[0]; len(got) != 2 {
+		t.Fatalf("first request should keep the full logical batch, got %#v", got)
+	}
+	if got := stub.requests[1]; len(got) != 1 || got[0] != "short note" {
+		t.Fatalf("second request should isolate the healthy short text, got %#v", got)
+	}
+	if got := stub.requests[2]; len(got) != 1 || got[0] != normalizedLongText {
+		t.Fatalf("third request should isolate the original long text, got %#v", got)
+	}
+	if got := stub.requests[3]; len(got) != 1 || !strings.Contains(got[0], embeddingRetryTruncationMarker) {
+		t.Fatalf("fourth request should retry the long text with truncation marker, got %#v", got)
 	}
 }
 
@@ -1033,6 +1135,33 @@ func (s *stubRerankerClient) Rerank(context.Context, string, []appports.Reranker
 		return nil, s.err
 	}
 	return append([]appports.RerankerResult(nil), s.results...), nil
+}
+
+// stubEmbeddingClient records each embedding batch while replaying preloaded responses so wrapper tests can assert chunking without a live provider.
+// stubEmbeddingClient 用于记录每个 embedding 子批次并回放预置响应，让包装器测试无需真实 provider 也能断言拆批行为。
+type stubEmbeddingClient struct {
+	responses []appports.EmbeddingResponse
+	handle    func(appports.EmbeddingRequest) (appports.EmbeddingResponse, error)
+	err       error
+	calls     int
+	requests  [][]string
+}
+
+// Embed replays one queued embedding response and records the effective text batch.
+// Embed 用于回放一个预置 embedding 响应，并记录实际收到的文本批次。
+func (s *stubEmbeddingClient) Embed(_ context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+	s.calls++
+	s.requests = append(s.requests, append([]string(nil), req.Texts...))
+	if s.handle != nil {
+		return s.handle(req)
+	}
+	if s.err != nil {
+		return appports.EmbeddingResponse{}, s.err
+	}
+	if s.calls > len(s.responses) {
+		return appports.EmbeddingResponse{}, nil
+	}
+	return s.responses[s.calls-1], nil
 }
 
 // llmSelectionWeightsForTest mirrors one legacy shared route weight into all five LLM selection slots so compatibility-focused tests stay concise.

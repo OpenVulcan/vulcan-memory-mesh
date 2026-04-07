@@ -36,8 +36,8 @@ func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, organizat
 // Embed executes the Embed logic.
 // Embed 用于执行 Embed 逻辑。
 func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
-	// Sanitize the input batch and apply adapter-level request guards first.
-	// 先清洗输入批次，并应用适配器级别的请求防线。
+	// Sanitize the input batch first so the raw SDK request only carries the concrete non-empty texts chosen by the caller or by the outer embedding controller.
+	// 先清洗输入批次，确保真正送进 SDK 请求的只是不为空的实际文本，并把拆批/回退策略继续留给外层 embedding 控制器。
 	if c == nil || c.client == nil || c.client.sdkClient == nil {
 		return appports.EmbeddingResponse{}, fmt.Errorf("openai native client is nil")
 	}
@@ -49,9 +49,6 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	}
 	if len(texts) == 0 {
 		return appports.EmbeddingResponse{Vectors: [][]float32{}}, nil
-	}
-	if len(texts) > 10 {
-		return appports.EmbeddingResponse{}, fmt.Errorf("exceeds max batch size 10")
 	}
 	model := strings.TrimSpace(req.Model)
 	if model == "" {

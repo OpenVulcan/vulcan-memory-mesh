@@ -13,20 +13,6 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
-// TestEmbeddingClientRejectsTooManyTexts verifies the TestEmbeddingClientRejectsTooManyTexts behavior.
-// TestEmbeddingClientRejectsTooManyTexts 用于验证 TestEmbeddingClientRejectsTooManyTexts 行为。
-func TestEmbeddingClientRejectsTooManyTexts(t *testing.T) {
-	client := NewEmbeddingClient("http://example.com", "key", "text-embedding-3-large", 1024, "", "", nil, nil)
-	texts := make([]string, 11)
-	for i := range texts {
-		texts[i] = "x"
-	}
-	_, err := client.Embed(context.Background(), appports.EmbeddingRequest{Texts: texts})
-	if err == nil || err.Error() != "exceeds max batch size 10" {
-		t.Fatalf("unexpected error: %v", err)
-	}
-}
-
 // TestEmbeddingClientPassesDimension verifies the TestEmbeddingClientPassesDimension behavior.
 // TestEmbeddingClientPassesDimension 用于验证 TestEmbeddingClientPassesDimension 行为。
 func TestEmbeddingClientPassesDimension(t *testing.T) {

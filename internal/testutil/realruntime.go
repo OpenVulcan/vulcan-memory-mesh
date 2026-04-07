@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
@@ -112,9 +113,26 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 	if !ok || strings.TrimSpace(llmRoute.Endpoint) == "" || !hasLLMAPIKey || strings.TrimSpace(llmRoute.Model) == "" {
 		return nil, fmt.Errorf("real llm config is incomplete in %s", configPath)
 	}
-	embeddingAPIKey, hasEmbeddingAPIKey := firstRoutingAPIKey(cfg.Embedding.APIKeys, cfg.Embedding.RoutingNodes())
+	_, hasEmbeddingAPIKey := firstRoutingAPIKey(cfg.Embedding.APIKeys, cfg.Embedding.RoutingNodes())
 	if strings.TrimSpace(cfg.Embedding.Endpoint) == "" || !hasEmbeddingAPIKey || strings.TrimSpace(cfg.Embedding.Model) == "" {
 		return nil, fmt.Errorf("real embedding config is incomplete in %s", configPath)
+	}
+	embedding, err := ai_key_failover.NewProviderEmbeddingClient(
+		cfg.Embedding.Provider,
+		cfg.Embedding.Endpoint,
+		cfg.Embedding.Model,
+		cfg.Embedding.Dimension,
+		cfg.Embedding.MaxBatchSize,
+		cfg.Embedding.MaxInputTokensPerText,
+		cfg.Embedding.Organization,
+		cfg.Embedding.Project,
+		cfg.Embedding.APIKeys,
+		cfg.Embedding.Params,
+		cfg.Embedding.ModelParams,
+		buildRealRuntimeEmbeddingFailoverOptions(cfg),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build real embedding failover client: %w", err)
 	}
 
 	// Construct the real OpenAI-compatible clients once and share them across the process to avoid repeated setup noise.
@@ -125,8 +143,42 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 		Config:     cfg,
 		Prompts:    prompts,
 		LLM:        openai_native.NewLLMClient(llmRoute.Endpoint, llmAPIKey, llmRoute.Model, llmRoute.Organization, llmRoute.Project, llmRoute.Params, llmRoute.ModelParams),
-		Embedding:  openai_native.NewEmbeddingClient(cfg.Embedding.Endpoint, embeddingAPIKey, cfg.Embedding.Model, cfg.Embedding.Dimension, cfg.Embedding.Organization, cfg.Embedding.Project, cfg.Embedding.Params, cfg.Embedding.ModelParams),
+		Embedding:  embedding,
 	}, nil
+}
+
+// buildRealRuntimeEmbeddingFailoverOptions mirrors the runtime embedding routing configuration so integration-style tests exercise the same batching and key-failover shell as the local binary.
+// buildRealRuntimeEmbeddingFailoverOptions 用于镜像运行时的 embedding 路由配置，确保集成测试走与本地二进制相同的拆批和 Key 容灾外壳。
+func buildRealRuntimeEmbeddingFailoverOptions(cfg config.Config) ai_key_failover.Options {
+	nodes := cfg.Embedding.RoutingNodes()
+	routingNodes := make([]ai_key_failover.NodeOptions, 0, len(nodes))
+	totalCandidates := 0
+	for idx, node := range nodes {
+		name := strings.TrimSpace(node.Name)
+		if name == "" {
+			name = fmt.Sprintf("embedding-node-%d", idx+1)
+		}
+		apiKeys := append([]string(nil), node.APIKeys...)
+		totalCandidates += len(apiKeys)
+		routingNodes = append(routingNodes, ai_key_failover.NodeOptions{
+			Name:    name,
+			APIKeys: apiKeys,
+			RPM:     node.RPM,
+			TPM:     node.TPM,
+			RPD:     node.RPD,
+		})
+	}
+	return ai_key_failover.Options{
+		ServiceName:        "embedding",
+		Enabled:            cfg.Embedding.KeyFailover.Enabled && totalCandidates > 1,
+		Policy:             strings.TrimSpace(cfg.Embedding.KeyFailover.Policy),
+		Nodes:              routingNodes,
+		RespectRetryAfter:  cfg.Embedding.KeyFailover.RespectRetryAfter,
+		RateLimitCooldown:  cfg.Embedding.KeyFailover.RateLimitCooldown.Duration,
+		QuotaCooldown:      cfg.Embedding.KeyFailover.QuotaCooldown.Duration,
+		AuthCooldown:       cfg.Embedding.KeyFailover.AuthCooldown.Duration,
+		ProbeAfterCooldown: cfg.Embedding.KeyFailover.ProbeAfterCooldown,
+	}
 }
 
 // resolveRealRuntimeLayout mirrors the runtime startup layout resolution so live-model tests follow the same packaged-versus-workspace and user-override search order as the local binary.

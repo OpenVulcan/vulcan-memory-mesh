@@ -33,6 +33,7 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.MemoryPipeline.MinSimilarityScore = nil
 	cfg.MaintenanceTool.Postgres.ReadTimeout = Duration{}
 	cfg.MaintenanceTool.Postgres.WriteTimeout = Duration{}
+	cfg.Embedding.MaxBatchSize = 0
 	cfg.Rerank.TopN = 0
 	cfg.Rerank.Routes[0].Timeout = Duration{}
 	cfg.Rerank.Routes[0].Endpoint = ""
@@ -79,6 +80,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if got, want := cfg.MaintenanceTool.Postgres.WriteTimeout.Duration, 10*time.Minute; got != want {
 		t.Fatalf("maintenance tool postgres write timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.Embedding.MaxBatchSize, defaultEmbeddingMaxBatchSize; got != want {
+		t.Fatalf("embedding max batch size = %d, want %d", got, want)
 	}
 	if got, want := cfg.Rerank.Routes[0].Endpoint, defaultDashScopeRerankEndpoint; got != want {
 		t.Fatalf("rerank default endpoint = %q, want %q", got, want)
@@ -286,6 +290,24 @@ func TestConfigValidateAcceptsGoogleAIStudioProviders(t *testing.T) {
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate config with google ai studio: %v", err)
+	}
+}
+
+// TestConfigValidateRejectsInvalidEmbeddingBatchConstraints verifies embedding batching limits reject non-positive batch widths and negative per-text token caps.
+// TestConfigValidateRejectsInvalidEmbeddingBatchConstraints 用于验证 embedding 拆批限制会拒绝非正批宽以及负数的单条 token 上限。
+func TestConfigValidateRejectsInvalidEmbeddingBatchConstraints(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Embedding.MaxBatchSize = -1
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "embedding.max_batch_size must be > 0" {
+		t.Fatalf("unexpected embedding max batch size validate error: %v", err)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.Embedding.MaxInputTokensPerText = -1
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "embedding.max_input_tokens_per_text must be >= 0" {
+		t.Fatalf("unexpected embedding max input tokens validate error: %v", err)
 	}
 }
 
@@ -636,6 +658,8 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	t.Setenv("VMM_EMBED_RPM", "7")
 	t.Setenv("VMM_EMBED_TPM", "700")
 	t.Setenv("VMM_EMBED_RPD", "70")
+	t.Setenv("VMM_EMBED_MAX_BATCH_SIZE", "12")
+	t.Setenv("VMM_EMBED_MAX_INPUT_TOKENS_PER_TEXT", "2048")
 
 	applyEnvOverrides(&cfg)
 	cfg.Normalize()
@@ -649,6 +673,12 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	}
 	if nodes[0].RPM != 7 || nodes[0].TPM != 700 || nodes[0].RPD != 70 {
 		t.Fatalf("embedding node limits = %#v", nodes[0])
+	}
+	if got, want := cfg.Embedding.MaxBatchSize, 12; got != want {
+		t.Fatalf("embedding max batch size = %d, want %d", got, want)
+	}
+	if got, want := cfg.Embedding.MaxInputTokensPerText, 2048; got != want {
+		t.Fatalf("embedding max input tokens per text = %d, want %d", got, want)
 	}
 }
 

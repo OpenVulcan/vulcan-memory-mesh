@@ -16,13 +16,13 @@ import (
 )
 
 const (
-	// vectorRebuildEmbeddingBatchSize keeps one rebuild request aligned with the provider-safe embedding batch size already used by the online write path.
-	// vectorRebuildEmbeddingBatchSize 用于让重建请求保持与在线写入路径一致的 provider 安全 embedding 批大小。
-	vectorRebuildEmbeddingBatchSize = 10
-
 	// vectorRebuildBudgetRetryDelay keeps the maintenance loop patient when every configured key is only temporarily blocked by the current RPM/TPM/RPD budget window.
 	// vectorRebuildBudgetRetryDelay 用于在所有已配置 Key 只是暂时被 RPM/TPM/RPD 预算窗口卡住时，让维护流程保持耐心等待。
 	vectorRebuildBudgetRetryDelay = 30 * time.Second
+
+	// vectorRebuildWriteBatchSize keeps split-mode durable/vector refill writes bounded without coupling storage write chunking to the embedding model's API batch contract.
+	// vectorRebuildWriteBatchSize 用于让 split 模式的 durable/向量回填写入保持有界，同时避免把存储写入分批错误绑死到 embedding 模型的 API 批契约上。
+	vectorRebuildWriteBatchSize = 10
 )
 
 // vectorRebuildResetter is the narrow vector-store capability needed by split-mode rebuilds that must recreate the sidecar LanceDB table from the durable SQL source.
@@ -191,8 +191,8 @@ func applySplitVectorRebuildRecords(ctx context.Context, mode string, durable ap
 	logger.Info("vector rebuild refill phase starting", "mode", mode, "memory_count", len(rebuiltRecords))
 	durableRowsUpdated := 0
 	vectorRowsRebuilt := 0
-	for start := 0; start < len(rebuiltRecords); start += vectorRebuildEmbeddingBatchSize {
-		end := start + vectorRebuildEmbeddingBatchSize
+	for start := 0; start < len(rebuiltRecords); start += vectorRebuildWriteBatchSize {
+		end := start + vectorRebuildWriteBatchSize
 		if end > len(rebuiltRecords) {
 			end = len(rebuiltRecords)
 		}
@@ -292,22 +292,14 @@ func loadVectorRebuildRecords(ctx context.Context, workspace appports.WorkspaceS
 // materializeVectorRebuildRecords prepares one fully rebuilt in-memory durable snapshot before combined PostgreSQL mode starts its atomic schema swap, so later maintenance writes never expose half-finished live vectors.
 // materializeVectorRebuildRecords 用于在组合 PostgreSQL 模式开始原子 schema 交换前，先准备好一份完整的内存态 durable 重建快照，避免后续维护写入暴露“只重建了一半”的线上向量。
 func materializeVectorRebuildRecords(ctx context.Context, embedding appports.EmbeddingClient, records []logicdomain.MemoryRecord, expectedDimension int, logger *logx.Logger) ([]logicdomain.MemoryRecord, error) {
-	rebuilt := make([]logicdomain.MemoryRecord, 0, len(records))
-	for start := 0; start < len(records); start += vectorRebuildEmbeddingBatchSize {
-		end := start + vectorRebuildEmbeddingBatchSize
-		if end > len(records) {
-			end = len(records)
-		}
-		vectors, err := embedVectorRebuildBatch(ctx, embedding, records[start:end], logger)
-		if err != nil {
-			return nil, fmt.Errorf("embed rebuild batch %d-%d: %w", start, end, err)
-		}
-		if err := validateVectorRebuildDimensions(vectors, expectedDimension); err != nil {
-			return nil, fmt.Errorf("validate rebuild batch %d-%d dimensions: %w", start, end, err)
-		}
-		rebuilt = append(rebuilt, cloneVectorRebuildBatch(records[start:end], vectors)...)
+	vectors, err := embedVectorRebuildBatch(ctx, embedding, records, logger)
+	if err != nil {
+		return nil, err
 	}
-	return rebuilt, nil
+	if err := validateVectorRebuildDimensions(vectors, expectedDimension); err != nil {
+		return nil, err
+	}
+	return cloneVectorRebuildBatch(records, vectors), nil
 }
 
 // embedVectorRebuildBatch embeds one durable-memory batch and patiently waits when every configured key is only temporarily blocked by runtime budgets.

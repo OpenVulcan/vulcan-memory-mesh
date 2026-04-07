@@ -731,8 +731,8 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		return nil, fmt.Errorf("vector store is nil")
 	}
 
-	// Embed the memory-node abstracts in batches so provider batch limits do not break post-action extraction on larger outputs.
-	// 按批次对记忆节点摘要做向量化，避免较大的提炼结果触发 provider 的 batch 限制。
+	// Submit the full logical memory-node batch and let the embedding controller decide how it should be split or retried.
+	// 直接提交完整的逻辑记忆节点批次，并把具体拆批与重试策略统一交给 embedding 控制器处理。
 	texts := make([]string, 0, len(analysis.MemoryNodes))
 	for idx, node := range analysis.MemoryNodes {
 		text := strings.TrimSpace(node.Abstract)
@@ -938,8 +938,8 @@ func trimHistoryTurnsByBudget(turns []logicdomain.SessionTurnRecord, remainingBu
 	return selected
 }
 
-// embedPostActionTexts runs embedding requests in provider-safe batches and returns vectors in the same order as the input texts.
-// embedPostActionTexts 用于按 provider 安全批次执行 embedding，并按输入文本顺序返回向量。
+// embedPostActionTexts submits one full logical embedding request and keeps only the shared nil/empty/result-count handling in the use-case layer.
+// embedPostActionTexts 用于提交一次完整的逻辑 embedding 请求，并在用例层仅保留共享的 nil/空输入/结果读取处理。
 func embedPostActionTexts(ctx context.Context, client appports.EmbeddingClient, texts []string) ([][]float32, error) {
 	if client == nil {
 		return nil, fmt.Errorf("embedding client is nil")
@@ -947,19 +947,11 @@ func embedPostActionTexts(ctx context.Context, client appports.EmbeddingClient, 
 	if len(texts) == 0 {
 		return [][]float32{}, nil
 	}
-	vectors := make([][]float32, 0, len(texts))
-	for start := 0; start < len(texts); start += 10 {
-		end := start + 10
-		if end > len(texts) {
-			end = len(texts)
-		}
-		resp, err := client.Embed(ctx, appports.EmbeddingRequest{Texts: texts[start:end]})
-		if err != nil {
-			return nil, err
-		}
-		vectors = append(vectors, resp.Vectors...)
+	resp, err := client.Embed(ctx, appports.EmbeddingRequest{Texts: texts})
+	if err != nil {
+		return nil, err
 	}
-	return vectors, nil
+	return resp.Vectors, nil
 }
 
 // buildPostActionMemoryFilter derives the flattened hierarchy scope stored on vector rows for post-action memory nodes.

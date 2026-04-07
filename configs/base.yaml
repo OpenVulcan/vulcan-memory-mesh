@@ -430,6 +430,16 @@ embedding:
   # google_ai_studio 会把它映射为 Gemini 的 output_dimensionality，因此需要选择支持该维度的模型。
   dimension: 1024
 
+  # Maximum number of texts allowed in one embedding batch request.
+  # 单次 embedding 批请求允许携带的最大文本条数。
+  max_batch_size: 10
+
+  # Target estimated token budget used when one upstream provider rejects a single text as too long and the controller retries with truncation.
+  # 当上游 provider 因单条文本过长而拒绝请求时，控制器会用这个估算 token 预算作为截断重试目标。
+  # Set to 0 to let retries derive one fallback budget from the original text after the upstream provider has already confirmed it is too large.
+  # 设为 0 表示在上游已经确认文本过长后，再由控制器基于原始文本推导回退预算。
+  max_input_tokens_per_text: 0
+
   # Optional organization identifier.
   # 可选的 organization 标识。
   # google_ai_studio currently ignores this field.

@@ -402,3 +402,73 @@ func parseStatusCodeFromText(message string) int {
 	}
 	return status
 }
+
+// isEmbeddingInputTooLargeError reports whether one provider failure indicates the current embedding payload is too large and should be retried with smaller chunks or one truncated single text.
+// isEmbeddingInputTooLargeError 用于判断某次 provider 失败是否说明当前 embedding 载荷过大，从而触发更小子批次或单条截断重试。
+func isEmbeddingInputTooLargeError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if isOpenAIEmbeddingInputTooLargeError(err) || isGoogleAIStudioEmbeddingInputTooLargeError(err) {
+		return true
+	}
+	return containsAny(strings.ToLower(strings.TrimSpace(err.Error())),
+		"maximum context length",
+		"context_length_exceeded",
+		"too many tokens",
+		"input is too long",
+		"input too long",
+		"maximum input length",
+		"max input tokens",
+		"token count exceeds",
+		"request payload size exceeds",
+		"prompt too long",
+		"content too large",
+		"please reduce the length",
+		"please reduce the size",
+	)
+}
+
+// isOpenAIEmbeddingInputTooLargeError checks OpenAI-compatible 400 responses for the common “payload too long” markers used by embedding and other input-bound endpoints.
+// isOpenAIEmbeddingInputTooLargeError 用于检查 OpenAI-compatible 的 400 响应里是否带有常见的“载荷过长”标记，这些标记同样适用于 embedding 等受输入长度约束的端点。
+func isOpenAIEmbeddingInputTooLargeError(err error) bool {
+	var apiErr *openai.Error
+	if !errors.As(err, &apiErr) || apiErr == nil || apiErr.StatusCode != http.StatusBadRequest {
+		return false
+	}
+	body := strings.ToLower(strings.TrimSpace(apiErr.Message + " " + apiErr.Code + " " + apiErr.Type + " " + apiErr.RawJSON()))
+	return containsAny(body,
+		"maximum context length",
+		"context_length_exceeded",
+		"too many tokens",
+		"input is too long",
+		"input too long",
+		"maximum input length",
+		"max input tokens",
+		"token count exceeds",
+		"please reduce the length",
+		"please reduce the size",
+	)
+}
+
+// isGoogleAIStudioEmbeddingInputTooLargeError checks Gemini-native bad-request payloads for the length markers that indicate the current embedding request must be shrunk before retrying.
+// isGoogleAIStudioEmbeddingInputTooLargeError 用于检查 Gemini 原生 bad-request 载荷里的长度标记，判断当前 embedding 请求是否必须缩小后再重试。
+func isGoogleAIStudioEmbeddingInputTooLargeError(err error) bool {
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) || apiErr.Code != http.StatusBadRequest {
+		return false
+	}
+	body := strings.ToLower(strings.TrimSpace(apiErr.Message + " " + apiErr.Status + " " + fmt.Sprintf("%v", apiErr.Details)))
+	return containsAny(body,
+		"too many tokens",
+		"input is too long",
+		"input too long",
+		"maximum input length",
+		"token count exceeds",
+		"request payload size exceeds",
+		"prompt too long",
+		"content too large",
+		"please reduce the length",
+		"please reduce the size",
+	)
+}

@@ -39,6 +39,10 @@ const (
 	// defaultLLMRouteSelectionWeight 用于在调用方省略新的分场景权重时，为每个 LLM 路由槽位提供稳定默认值。
 	defaultLLMRouteSelectionWeight = 100
 
+	// defaultEmbeddingMaxBatchSize keeps the historical provider-safe embedding batch width while still allowing deployments to raise or lower it explicitly per model.
+	// defaultEmbeddingMaxBatchSize 用于保持历史上 provider 安全的 embedding 批宽默认值，同时允许部署按模型显式调高或调低。
+	defaultEmbeddingMaxBatchSize = 10
+
 	// defaultMaintenanceToolPostgresReadTimeout keeps one-shot maintenance fact scans bounded while still allowing full-project durable exports to run longer than online requests by default.
 	// defaultMaintenanceToolPostgresReadTimeout 用于为一次性维护事实扫描提供默认上限，让整项目 durable 导出默认可以长于在线请求，但仍保持有界。
 	defaultMaintenanceToolPostgresReadTimeout = 30 * time.Second
@@ -219,20 +223,22 @@ type LLMConfig struct {
 // EmbeddingConfig holds the single-provider, single-model embedding configuration while still allowing multiple API keys and node-level throughput budgets.
 // EmbeddingConfig 用于保存单 provider、单模型的 embedding 配置，同时保留多 API Key 与节点级吞吐预算能力。
 type EmbeddingConfig struct {
-	Provider     string                    `json:"provider"`
-	Endpoint     string                    `json:"endpoint,omitempty"`
-	APIKeys      []string                  `json:"api_keys,omitempty"`
-	RPM          int                       `json:"rpm,omitempty"`
-	TPM          int                       `json:"tpm,omitempty"`
-	RPD          int                       `json:"rpd,omitempty"`
-	Nodes        []AIRoutingNodeConfig     `json:"nodes,omitempty"`
-	Model        string                    `json:"model,omitempty"`
-	Dimension    int                       `json:"dimension,omitempty"`
-	Organization string                    `json:"organization,omitempty"`
-	Project      string                    `json:"project,omitempty"`
-	Params       map[string]any            `json:"params,omitempty"`
-	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
-	KeyFailover  KeyFailoverConfig         `json:"key_failover,omitempty"`
+	Provider              string                    `json:"provider"`
+	Endpoint              string                    `json:"endpoint,omitempty"`
+	APIKeys               []string                  `json:"api_keys,omitempty"`
+	RPM                   int                       `json:"rpm,omitempty"`
+	TPM                   int                       `json:"tpm,omitempty"`
+	RPD                   int                       `json:"rpd,omitempty"`
+	Nodes                 []AIRoutingNodeConfig     `json:"nodes,omitempty"`
+	Model                 string                    `json:"model,omitempty"`
+	Dimension             int                       `json:"dimension,omitempty"`
+	MaxBatchSize          int                       `json:"max_batch_size,omitempty"`
+	MaxInputTokensPerText int                       `json:"max_input_tokens_per_text,omitempty"`
+	Organization          string                    `json:"organization,omitempty"`
+	Project               string                    `json:"project,omitempty"`
+	Params                map[string]any            `json:"params,omitempty"`
+	ModelParams           map[string]map[string]any `json:"model_params,omitempty"`
+	KeyFailover           KeyFailoverConfig         `json:"key_failover,omitempty"`
 }
 
 // RerankConfig holds the optional multi-route rerank configuration used to reorder vector recall hits.
@@ -440,10 +446,12 @@ func DefaultBase() Config {
 			}},
 		},
 		Embedding: EmbeddingConfig{
-			Provider:    "openai",
-			Model:       "text-embedding-3-large",
-			Dimension:   1024,
-			KeyFailover: defaultKeyFailoverConfig(),
+			Provider:              "openai",
+			Model:                 "text-embedding-3-large",
+			Dimension:             1024,
+			MaxBatchSize:          defaultEmbeddingMaxBatchSize,
+			MaxInputTokensPerText: 0,
+			KeyFailover:           defaultKeyFailoverConfig(),
 		},
 		Rerank: RerankConfig{
 			Enabled: false,
@@ -952,6 +960,15 @@ func defaultKeyFailoverConfig() KeyFailoverConfig {
 // RoutingNodes 用于返回归一化后的 embedding 轮询节点；当未显式声明 nodes 时，会把顶层 api_keys 折叠成一个默认节点。
 func (c EmbeddingConfig) RoutingNodes() []AIRoutingNodeConfig {
 	return normalizeAIRoutingNodes(c.APIKeys, c.RPM, c.TPM, c.RPD, c.Nodes)
+}
+
+// ResolvedMaxBatchSize returns the effective embedding batch size after defaulting so runtime batching code can stay aligned with config normalization.
+// ResolvedMaxBatchSize 用于返回补齐默认值后的 embedding 批大小，让运行时批处理逻辑与配置归一化保持一致。
+func (c EmbeddingConfig) ResolvedMaxBatchSize() int {
+	if c.MaxBatchSize > 0 {
+		return c.MaxBatchSize
+	}
+	return defaultEmbeddingMaxBatchSize
 }
 
 // ProviderRoutes returns the normalized explicit LLM route list.
@@ -1683,6 +1700,9 @@ func (c *Config) Normalize() {
 	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
 		c.Embedding.Dimension = 1024
 	}
+	if c.Embedding.MaxBatchSize == 0 {
+		c.Embedding.MaxBatchSize = defaultEmbeddingMaxBatchSize
+	}
 	c.Embedding.APIKeys = normalizeAPIKeys(c.Embedding.APIKeys)
 	c.Embedding.Nodes = normalizeAIRoutingNodes(c.Embedding.APIKeys, c.Embedding.RPM, c.Embedding.TPM, c.Embedding.RPD, c.Embedding.Nodes)
 	normalizeKeyFailoverConfig(&c.Embedding.KeyFailover)
@@ -2008,6 +2028,12 @@ func (c Config) Validate() error {
 	if c.Embedding.Dimension <= 0 {
 		return errors.New("embedding.dimension must be > 0")
 	}
+	if c.Embedding.MaxBatchSize <= 0 {
+		return errors.New("embedding.max_batch_size must be > 0")
+	}
+	if c.Embedding.MaxInputTokensPerText < 0 {
+		return errors.New("embedding.max_input_tokens_per_text must be >= 0")
+	}
 	if c.Rerank.Enabled {
 		if len(c.Rerank.Routes) == 0 {
 			return errors.New("rerank.routes must contain at least one route when rerank is enabled")
@@ -2210,6 +2236,8 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_EMBED_RPD", &cfg.Embedding.RPD)
 	setString("VMM_EMBED_MODEL", &cfg.Embedding.Model)
 	setInt("VMM_EMBED_DIMENSION", &cfg.Embedding.Dimension)
+	setInt("VMM_EMBED_MAX_BATCH_SIZE", &cfg.Embedding.MaxBatchSize)
+	setInt("VMM_EMBED_MAX_INPUT_TOKENS_PER_TEXT", &cfg.Embedding.MaxInputTokensPerText)
 	setString("VMM_EMBED_ORGANIZATION", &cfg.Embedding.Organization)
 	setString("VMM_EMBED_PROJECT", &cfg.Embedding.Project)
 	setBool("VMM_EMBED_KEY_FAILOVER_ENABLED", &cfg.Embedding.KeyFailover.Enabled)
