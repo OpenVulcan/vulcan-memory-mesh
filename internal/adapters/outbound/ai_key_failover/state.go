@@ -186,20 +186,32 @@ func (s *selector) candidateNodeIndexes(now time.Time, cost requestCost) ([]int,
 		return nil, fmt.Errorf("%s routing node list is empty", s.serviceName)
 	}
 	if !s.enabled {
-		if !s.nodeHasCandidateKeyLocked(0, cost, now) {
+		reason := s.nodeExhaustionReasonLocked(0, cost, now)
+		if reason != "" {
+			if reason == exhaustedCandidatesReasonBudget {
+				return nil, newBudgetExhaustedCandidatesError(fmt.Sprintf("no %s api keys available within configured rpm/tpm/rpd budgets", s.serviceName))
+			}
 			return nil, newExhaustedCandidatesError(fmt.Sprintf("no healthy %s api keys available", s.serviceName))
 		}
 		return []int{0}, nil
 	}
 	eligible := make([]int, 0, len(s.nodes))
+	sawBudgetBlockedNode := false
 	for idx := range s.nodes {
-		if !s.nodeHasCandidateKeyLocked(idx, cost, now) {
+		reason := s.nodeExhaustionReasonLocked(idx, cost, now)
+		if reason != "" {
+			if reason == exhaustedCandidatesReasonBudget {
+				sawBudgetBlockedNode = true
+			}
 			continue
 		}
 		eligible = append(eligible, idx)
 	}
 	if len(eligible) == 0 {
-		return nil, newExhaustedCandidatesError(fmt.Sprintf("no %s routing nodes available within configured rpm/tpm/rpd budgets", s.serviceName))
+		if sawBudgetBlockedNode {
+			return nil, newBudgetExhaustedCandidatesError(fmt.Sprintf("no %s routing nodes available within configured rpm/tpm/rpd budgets", s.serviceName))
+		}
+		return nil, newExhaustedCandidatesError(fmt.Sprintf("no healthy %s routing nodes available", s.serviceName))
 	}
 	if s.policy != "round_robin" {
 		return eligible, nil
@@ -225,8 +237,11 @@ func (s *selector) candidateKeyIndexes(nodeIndex int, now time.Time, cost reques
 	if !s.enabled {
 		return []int{0}, nil
 	}
-	eligible := s.eligibleKeyIndexesLocked(nodeIndex, cost, now)
+	eligible, sawBudgetBlocked := s.eligibleKeyIndexesLocked(nodeIndex, cost, now)
 	if len(eligible) == 0 {
+		if sawBudgetBlocked {
+			return nil, newBudgetExhaustedCandidatesError(fmt.Sprintf("no %s api keys available in %s within configured rpm/tpm/rpd budgets", s.serviceName, node.name))
+		}
 		return nil, newExhaustedCandidatesError(fmt.Sprintf("no healthy %s api keys available in %s", s.serviceName, node.name))
 	}
 	if s.policy != "round_robin" {
@@ -379,24 +394,39 @@ func (s *selector) refundKeyBudget(nodeIndex, keyIndex int, reserved requestCost
 	}
 }
 
-// eligibleKeyIndexesLocked returns every currently usable key index while the selector mutex is already held.
-// eligibleKeyIndexesLocked 用于在选择器互斥锁已持有时返回全部当前可用的 Key 下标。
-func (s *selector) eligibleKeyIndexesLocked(nodeIndex int, cost requestCost, now time.Time) []int {
+// eligibleKeyIndexesLocked returns every currently usable key index together with a marker that tells callers whether any healthy key was skipped only because its local budget window is still closed.
+// eligibleKeyIndexesLocked 用于在选择器互斥锁已持有时返回全部当前可用的 Key 下标，并额外告知调用方是否存在“仅因本地预算窗口未恢复而被跳过”的健康 Key。
+func (s *selector) eligibleKeyIndexesLocked(nodeIndex int, cost requestCost, now time.Time) ([]int, bool) {
 	if nodeIndex < 0 || nodeIndex >= len(s.nodes) {
-		return nil
+		return nil, false
 	}
-	node := s.nodes[nodeIndex]
+	node := &s.nodes[nodeIndex]
 	eligible := make([]int, 0, len(node.states))
+	sawBudgetBlocked := false
 	for idx, state := range node.states {
 		if !s.isKeyHealthyLocked(state, now) {
 			continue
 		}
-		if !s.canReserveKeyBudgetLocked(&node, idx, cost, now) {
+		if !s.canReserveKeyBudgetLocked(node, idx, cost, now) {
+			sawBudgetBlocked = true
 			continue
 		}
 		eligible = append(eligible, idx)
 	}
-	return eligible
+	return eligible, sawBudgetBlocked
+}
+
+// nodeExhaustionReasonLocked summarizes why one routing node cannot currently produce an eligible key while the selector mutex is already held.
+// nodeExhaustionReasonLocked 用于在选择器互斥锁已持有时，总结某个路由节点当前无法产出可用 Key 的原因。
+func (s *selector) nodeExhaustionReasonLocked(nodeIndex int, cost requestCost, now time.Time) exhaustedCandidatesReason {
+	eligible, sawBudgetBlocked := s.eligibleKeyIndexesLocked(nodeIndex, cost, now)
+	if len(eligible) > 0 {
+		return ""
+	}
+	if sawBudgetBlocked {
+		return exhaustedCandidatesReasonBudget
+	}
+	return exhaustedCandidatesReasonUnavailable
 }
 
 // isKeyHealthyLocked reports whether one key can currently participate in routing based on its cooldown state.
@@ -411,7 +441,8 @@ func (s *selector) isKeyHealthyLocked(state keyState, now time.Time) bool {
 // nodeHasCandidateKeyLocked reports whether one node still has at least one healthy key whose own budget can accept the request.
 // nodeHasCandidateKeyLocked 用于判断某个节点是否仍有至少一个健康且自身预算足以承接请求的 Key。
 func (s *selector) nodeHasCandidateKeyLocked(nodeIndex int, cost requestCost, now time.Time) bool {
-	return len(s.eligibleKeyIndexesLocked(nodeIndex, cost, now)) > 0
+	eligible, _ := s.eligibleKeyIndexesLocked(nodeIndex, cost, now)
+	return len(eligible) > 0
 }
 
 // canReserveKeyBudgetLocked checks one key's private limits without mutating counters while the selector mutex is already held.

@@ -44,10 +44,11 @@ func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalys
 	}
 	prompt = renderTurnAnalysisSystemPrompt(prompt, input)
 	resp, err := a.llm.Generate(ctx, logicports.LLMRequest{
-		Model:          a.model,
-		SystemPrompt:   prompt,
-		UserPrompt:     requestBody,
-		ResponseFormat: logicports.LLMResponseFormatJSON,
+		Model:               a.model,
+		SystemPrompt:        prompt,
+		UserPrompt:          requestBody,
+		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPostActionL1,
 	})
 	if err != nil {
 		return logicdomain.TurnAnalysis{}, err

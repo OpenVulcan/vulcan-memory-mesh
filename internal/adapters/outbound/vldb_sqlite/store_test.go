@@ -236,6 +236,109 @@ func TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch(t *testing.T) {
 	}
 }
 
+// TestStoreReplaceMemoryVectorsUsesExecuteBatch verifies durable vector rebuilds rewrite SQLite vector_json through one homogeneous ExecuteBatch call instead of one row per RPC.
+// TestStoreReplaceMemoryVectorsUsesExecuteBatch 用于验证 durable 向量重建会通过一次同构 ExecuteBatch 重写 SQLite vector_json，而不是退化成逐行 RPC。
+func TestStoreReplaceMemoryVectorsUsesExecuteBatch(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	execCalls := 0
+	batchCalls := 0
+	var capturedBatch *sqlitev1.ExecuteBatchRequest
+	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		execCalls++
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+	fake.executeBatchFunc = func(_ context.Context, req *sqlitev1.ExecuteBatchRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteBatchResponse, error) {
+		batchCalls++
+		capturedBatch = req
+		return &sqlitev1.ExecuteBatchResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
+	}
+
+	err := store.ReplaceMemoryVectors(context.Background(), []logicdomain.MemoryRecord{
+		{ID: "vec-1", Vector: []float32{1, 2, 3}},
+		{ID: "vec-2", Vector: []float32{4, 5, 6}},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceMemoryVectors returned error: %v", err)
+	}
+	if execCalls != 0 {
+		t.Fatalf("expected no ExecuteScript calls, got %d", execCalls)
+	}
+	if batchCalls != 1 {
+		t.Fatalf("expected one ExecuteBatch call, got %d", batchCalls)
+	}
+	if capturedBatch == nil {
+		t.Fatal("expected ExecuteBatch request to be captured")
+	}
+	if !strings.Contains(capturedBatch.GetSql(), "UPDATE vmm_memory_nodes") || !strings.Contains(capturedBatch.GetSql(), "SET vector_json = ?") {
+		t.Fatalf("expected vector rebuild update sql, got %q", capturedBatch.GetSql())
+	}
+	if len(capturedBatch.GetItems()) != 2 {
+		t.Fatalf("expected two ExecuteBatch items, got %d", len(capturedBatch.GetItems()))
+	}
+	first := capturedBatch.GetItems()[0].GetParams()
+	if len(first) != 2 {
+		t.Fatalf("expected two typed params in first batch item, got %d", len(first))
+	}
+	vectorValue, ok := first[0].Kind.(*sqlitev1.SqliteValue_StringValue)
+	if !ok || vectorValue.StringValue != "[1,2,3]" {
+		t.Fatalf("expected vector json string param, got %#v", first[0].Kind)
+	}
+	idValue, ok := first[1].Kind.(*sqlitev1.SqliteValue_StringValue)
+	if !ok || idValue.StringValue != "vec-1" {
+		t.Fatalf("expected vector id string param, got %#v", first[1].Kind)
+	}
+}
+
+// TestStoreClearMemoryVectorsUsesExecuteBatch verifies split-mode reset phases clear SQLite vector_json back to the empty baseline through one homogeneous ExecuteBatch call.
+// TestStoreClearMemoryVectorsUsesExecuteBatch 用于验证 split 模式重置阶段会通过一次同构 ExecuteBatch 把 SQLite vector_json 清回空基线。
+func TestStoreClearMemoryVectorsUsesExecuteBatch(t *testing.T) {
+	fake := &fakeSqliteClient{}
+	store := &Store{client: fake, timeout: time.Second}
+
+	execCalls := 0
+	batchCalls := 0
+	var capturedBatch *sqlitev1.ExecuteBatchRequest
+	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+		execCalls++
+		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	}
+	fake.executeBatchFunc = func(_ context.Context, req *sqlitev1.ExecuteBatchRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteBatchResponse, error) {
+		batchCalls++
+		capturedBatch = req
+		return &sqlitev1.ExecuteBatchResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
+	}
+
+	err := store.ClearMemoryVectors(context.Background(), []string{"vec-1", "vec-2"})
+	if err != nil {
+		t.Fatalf("ClearMemoryVectors returned error: %v", err)
+	}
+	if execCalls != 0 {
+		t.Fatalf("expected no ExecuteScript calls, got %d", execCalls)
+	}
+	if batchCalls != 1 {
+		t.Fatalf("expected one ExecuteBatch call, got %d", batchCalls)
+	}
+	if capturedBatch == nil {
+		t.Fatal("expected ExecuteBatch request to be captured")
+	}
+	if !strings.Contains(capturedBatch.GetSql(), "SET vector_json = '[]'") {
+		t.Fatalf("expected vector reset sql, got %q", capturedBatch.GetSql())
+	}
+	if len(capturedBatch.GetItems()) != 2 {
+		t.Fatalf("expected two ExecuteBatch items, got %d", len(capturedBatch.GetItems()))
+	}
+	first := capturedBatch.GetItems()[0].GetParams()
+	if len(first) != 1 {
+		t.Fatalf("expected one typed param in first batch item, got %d", len(first))
+	}
+	idValue, ok := first[0].Kind.(*sqlitev1.SqliteValue_StringValue)
+	if !ok || idValue.StringValue != "vec-1" {
+		t.Fatalf("expected vector id string param, got %#v", first[0].Kind)
+	}
+}
+
 // TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton verifies the reusable version framework can read old sqlite-only version rows before the new component table has been populated.
 // TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton 用于验证在新版组件表尚未填充前，可复用版本框架仍能回退读取旧版 sqlite 单例版本行。
 func TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton(t *testing.T) {

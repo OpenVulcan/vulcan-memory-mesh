@@ -16,6 +16,26 @@ Param(
 
 $ErrorActionPreference = "Stop"
 
+# Re-enter through PowerShell 7 when available so helper scripts keep the same UTF-8 parsing behavior across launch shells.
+if ($PSVersionTable.PSEdition -ne "Core") {
+    $PwshCommand = Get-Command pwsh -CommandType Application -ErrorAction SilentlyContinue
+    if ($null -ne $PwshCommand) {
+        $ReentryArgs = New-Object System.Collections.Generic.List[string]
+        $ReentryArgs.Add("-NoLogo")
+        $ReentryArgs.Add("-NoProfile")
+        $ReentryArgs.Add("-ExecutionPolicy")
+        $ReentryArgs.Add("Bypass")
+        $ReentryArgs.Add("-File")
+        $ReentryArgs.Add($MyInvocation.MyCommand.Definition)
+        $ReentryArgs.Add([string]$Target)
+        foreach ($ForwardArg in $ForwardArgs) {
+            $ReentryArgs.Add($ForwardArg)
+        }
+        & $PwshCommand.Source @($ReentryArgs.ToArray())
+        exit $LASTEXITCODE
+    }
+}
+
 # 1. 定位脚本目录
 $PSScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $VmmScript = Join-Path (Join-Path $PSScriptDir "scripts") "vmm.ps1"

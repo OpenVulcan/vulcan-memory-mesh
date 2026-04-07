@@ -45,7 +45,13 @@ func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCh
 	if err != nil {
 		return logicdomain.IntentResult{}, fmt.Errorf("load extract_intent prompt: %w", err)
 	}
-	resp, err := e.llm.Generate(ctx, logicports.LLMRequest{Model: e.model, SystemPrompt: prompt, UserPrompt: renderIntentUserPrompt(turns, current, e.maxKws), ResponseFormat: logicports.LLMResponseFormatJSON})
+	resp, err := e.llm.Generate(ctx, logicports.LLMRequest{
+		Model:               e.model,
+		SystemPrompt:        prompt,
+		UserPrompt:          renderIntentUserPrompt(turns, current, e.maxKws),
+		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPreCheckL1,
+	})
 	if err != nil {
 		return logicdomain.IntentResult{}, err
 	}

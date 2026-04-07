@@ -44,10 +44,11 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 		return logicdomain.ManualProfileInstructionReview{}, err
 	}
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
-		Model:          r.model,
-		SystemPrompt:   prompt,
-		UserPrompt:     requestBody,
-		ResponseFormat: logicports.LLMResponseFormatJSON,
+		Model:               r.model,
+		SystemPrompt:        prompt,
+		UserPrompt:          requestBody,
+		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelReserve,
 	})
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err

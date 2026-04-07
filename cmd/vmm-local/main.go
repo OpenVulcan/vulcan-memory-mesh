@@ -28,8 +28,6 @@ func main() {
 		os.Exit(1)
 	}
 	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config file path is also supported")
-	debugClean := flag.String("debug-clean", "", "debug-only gateway cleanup target: sqlite, lancedb, postgres, or all")
-	debugMigrate := flag.String("debug-migrate", "", "debug-only storage migration target: split-to-combined")
 	flag.Parse()
 
 	// Build the prompt/config layout before any application dependency is created.
@@ -45,34 +43,16 @@ func main() {
 		fmt.Printf("[vmm-boot] ConfigChain[%d]: %s\n", idx, path)
 	}
 
-	// Load the merged configuration layers before deciding whether to run the full server or one debug-only cleanup path.
-	// 先加载合并后的配置层，再决定是启动完整服务还是进入调试专用清理路径。
+	// Load the merged configuration layers before composing the normal runtime.
+	// 先加载合并后的配置层，再装配正常运行时。
 	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "load config: %v\n", err)
 		os.Exit(1)
 	}
-	if *debugClean != "" && *debugMigrate != "" {
-		fmt.Fprintln(os.Stderr, "debug clean and debug migrate cannot run together")
-		os.Exit(1)
-	}
-	if *debugClean != "" {
-		if err := runDebugClean(context.Background(), cfg, *debugClean); err != nil {
-			fmt.Fprintf(os.Stderr, "debug clean: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
-	if *debugMigrate != "" {
-		if err := runDebugMigrate(context.Background(), cfg, *debugMigrate); err != nil {
-			fmt.Fprintf(os.Stderr, "debug migrate: %v\n", err)
-			os.Exit(1)
-		}
-		return
-	}
 
-	// Load prompt assets only for the normal runtime path because debug-clean exits after talking to storage gateways.
-	// 仅在正常运行路径加载提示词资产，因为 debug-clean / debug-migrate 会在访问存储网关后直接退出。
+	// Load prompt assets only for the normal runtime path because one-shot maintenance actions now live in the standalone vmm-migrate binary.
+	// 仅在正常运行路径加载提示词资产，因为一次性维护动作已经迁移到独立的 vmm-migrate 二进制。
 	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, cfg.Prompts.Routes)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)

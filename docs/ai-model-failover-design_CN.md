@@ -7,20 +7,24 @@
 - `llm`
   - 只允许 `llm.routes[]`
   - 支持多 provider / 多 endpoint / 多 model / 多 route
-  - route 之间按 `priority` 做有序容灾
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
+  - route 之间按“当前调用层级对应的 weight”做有序容灾
+  - `weights.*` 未声明时默认回退到 `100`
 - `rerank`
   - 只允许 `rerank.routes[]`
-  - 当前内置 provider 仍只有 `dashscope`
+  - 当前内置 provider 包含 `dashscope / siliconflow`
   - route 之间按 `priority` 做有序容灾
 - `embedding`
   - 不允许 `routes`
   - 只允许固定 `provider + endpoint + model + dimension`
   - 只支持多 key 与 `nodes` 吞吐配置
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
   - 不支持跨 provider / 跨 model / 跨维度容灾
 
 这意味着：
 
 - 不再支持 `llm.provider / llm.endpoint / llm.model / llm.api_keys` 这类顶层单路由写法
+- 不再支持 `llm.routes[].priority`
 - 不再支持 `rerank.provider / rerank.endpoint / rerank.model / rerank.api_keys` 这类顶层单路由写法
 - 不再支持任何位置的单值 `api_key`
 - 不再支持用环境变量去覆盖顶层 LLM / rerank 单路由字段
@@ -81,7 +85,7 @@
 可选字段：
 
 - `name`
-- `priority`
+- `weights`
 - `organization`
 - `project`
 - `params`
@@ -96,10 +100,16 @@
     "routes": [
       {
         "name": "qwen-primary",
-        "priority": 100,
         "provider": "openai",
         "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1",
         "model": "qwen3-32b",
+        "weights": {
+          "precheck_l1": 120,
+          "precheck_l2": 100,
+          "postaction_l1": 80,
+          "postaction_l2": 160,
+          "reserve": 100
+        },
         "nodes": [
           {
             "name": "free-tier",
@@ -116,11 +126,17 @@
       },
       {
         "name": "openai-backup",
-        "priority": 50,
         "provider": "openai",
         "endpoint": "https://api.openai.com/v1",
         "api_keys": ["key-c"],
-        "model": "gpt-4.1-mini"
+        "model": "gpt-4.1-mini",
+        "weights": {
+          "precheck_l1": 80,
+          "precheck_l2": 100,
+          "postaction_l1": 140,
+          "postaction_l2": 90,
+          "reserve": 100
+        }
       }
     ]
   }
@@ -129,11 +145,12 @@
 
 运行时顺序：
 
-1. 先按 `priority` 从高到低排序
-2. 同优先级保持声明顺序
-3. 先尝试第一条 route
-4. 当前 route 失败后，再切下一条 route
-5. route 内部再按 `nodes + key_failover` 处理节点与 key
+1. 先读取当前调用层级，例如 `precheck_l1 / precheck_l2 / postaction_l1 / postaction_l2`
+2. 按该层级对应的 `weights.*` 从高到低排序
+3. 同权重保持声明顺序
+4. 先尝试第一条 route
+5. 当前 route 失败后，再切下一条 route
+6. route 内部再按 `nodes + key_failover` 处理节点与 key
 
 ## 5. `rerank` 配置契约
 
@@ -176,6 +193,15 @@
             "rpm": 60
           }
         ]
+      },
+      {
+        "name": "siliconflow-fallback",
+        "priority": 10,
+        "provider": "siliconflow",
+        "endpoint": "https://api.siliconflow.cn/v1/rerank",
+        "model": "BAAI/bge-reranker-v2-m3",
+        "timeout": "8s",
+        "api_keys": ["key-d"]
       }
     ]
   }
@@ -185,7 +211,7 @@
 说明：
 
 - `top_n` 始终留在顶层
-- route 级 provider 现在必须是 `dashscope`
+- route 级 provider 当前支持 `dashscope / siliconflow`
 - 所有 route 都失败时，检索链会按 `rerank=false` 语义降级
 
 ## 6. `embedding` 配置契约

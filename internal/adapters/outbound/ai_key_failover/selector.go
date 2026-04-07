@@ -28,9 +28,13 @@ func executeWithFailover[T any](
 		return zero, err
 	}
 	var lastSwitchableErr error
+	var lastExhaustionErr error
 	for _, nodeIndex := range nodeIndexes {
 		keyIndexes, keyErr := selector.candidateKeyIndexes(nodeIndex, time.Now().UTC(), cost)
 		if keyErr != nil {
+			if isExhaustedCandidatesError(keyErr) {
+				lastExhaustionErr = keyErr
+			}
 			continue
 		}
 		for _, keyIndex := range keyIndexes {
@@ -64,6 +68,9 @@ func executeWithFailover[T any](
 	}
 	if lastSwitchableErr != nil {
 		return zero, lastSwitchableErr
+	}
+	if lastExhaustionErr != nil {
+		return zero, lastExhaustionErr
 	}
 	return zero, newExhaustedCandidatesError(fmt.Sprintf("no healthy %s routing candidates available", selector.serviceName))
 }

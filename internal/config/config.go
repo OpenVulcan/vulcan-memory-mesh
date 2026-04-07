@@ -18,6 +18,36 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+const (
+	// defaultDashScopeRerankEndpoint keeps the built-in DashScope rerank URL aligned across baked defaults, normalization, and docs.
+	// defaultDashScopeRerankEndpoint 用于在内建默认值、归一化和文档之间保持 DashScope rerank 地址一致。
+	defaultDashScopeRerankEndpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+
+	// defaultDashScopeRerankModel keeps the built-in DashScope rerank model aligned across baked defaults, normalization, and docs.
+	// defaultDashScopeRerankModel 用于在内建默认值、归一化和文档之间保持 DashScope rerank 模型一致。
+	defaultDashScopeRerankModel = "qwen3-vl-rerank"
+
+	// defaultSiliconFlowRerankEndpoint keeps the built-in SiliconFlow rerank URL aligned across normalization and examples when callers pick the SiliconFlow provider.
+	// defaultSiliconFlowRerankEndpoint 用于在调用方选择 SiliconFlow provider 时，让归一化和示例共享同一套内建 SiliconFlow rerank 地址。
+	defaultSiliconFlowRerankEndpoint = "https://api.siliconflow.cn/v1/rerank"
+
+	// defaultSiliconFlowRerankModel keeps the built-in SiliconFlow rerank model aligned with the official provider example used by this repository.
+	// defaultSiliconFlowRerankModel 用于保持仓库内建的 SiliconFlow rerank 模型与当前采用的官方示例一致。
+	defaultSiliconFlowRerankModel = "BAAI/bge-reranker-v2-m3"
+
+	// defaultLLMRouteSelectionWeight keeps every LLM route slot stable when callers omit the new per-scene weights.
+	// defaultLLMRouteSelectionWeight 用于在调用方省略新的分场景权重时，为每个 LLM 路由槽位提供稳定默认值。
+	defaultLLMRouteSelectionWeight = 100
+
+	// defaultMaintenanceToolPostgresReadTimeout keeps one-shot maintenance fact scans bounded while still allowing full-project durable exports to run longer than online requests by default.
+	// defaultMaintenanceToolPostgresReadTimeout 用于为一次性维护事实扫描提供默认上限，让整项目 durable 导出默认可以长于在线请求，但仍保持有界。
+	defaultMaintenanceToolPostgresReadTimeout = 30 * time.Second
+
+	// defaultMaintenanceToolPostgresWriteTimeout keeps destructive PostgreSQL maintenance transactions alive long enough to replay active rows and rebuild indexes under larger datasets.
+	// defaultMaintenanceToolPostgresWriteTimeout 用于为 PostgreSQL 破坏性维护事务提供更长默认预算，支撑大数据量场景下的 active 行回填与索引重建。
+	defaultMaintenanceToolPostgresWriteTimeout = 10 * time.Minute
+)
+
 // Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
 // Duration 用于包装 time.Duration，让配置文件既能接受时长字符串，也能接受毫秒数。
 type Duration struct{ time.Duration }
@@ -55,25 +85,26 @@ func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()
 // Config is the root runtime configuration loaded before the local application starts.
 // Config 用于表示本地应用启动前加载的根配置对象。
 type Config struct {
-	GRPC               GRPCConfig           `json:"grpc"`
-	Logging            LoggingConfig        `json:"logging"`
-	PII                PIIConfig            `json:"pii"`
-	Noise              NoiseConfig          `json:"noise"`
-	Prompts            PromptConfig         `json:"prompts,omitempty"`
-	Storage            StorageConfig        `json:"storage"`
-	SQLite             SQLiteConfig         `json:"sqlite"`
-	LanceDB            LanceDBConfig        `json:"lancedb"`
-	Postgres           PostgresConfig       `json:"postgres"`
-	LLM                LLMConfig            `json:"llm"`
-	Embedding          EmbeddingConfig      `json:"embedding"`
-	Rerank             RerankConfig         `json:"rerank"`
-	Vector             VectorConfig         `json:"vector"`
-	Relational         RelationalConfig     `json:"relational"`
-	PostAction         PostActionConfig     `json:"post_action"`
-	PreCheck           PreCheckConfig       `json:"pre_check"`
-	MemoryPipeline     MemoryPipelineConfig `json:"memory_pipeline"`
-	Retention          RetentionConfig      `json:"retention"`
-	MemoryReplaceScope string               `json:"memory_replace_scope,omitempty"`
+	GRPC               GRPCConfig            `json:"grpc"`
+	Logging            LoggingConfig         `json:"logging"`
+	PII                PIIConfig             `json:"pii"`
+	Noise              NoiseConfig           `json:"noise"`
+	Prompts            PromptConfig          `json:"prompts,omitempty"`
+	Storage            StorageConfig         `json:"storage"`
+	SQLite             SQLiteConfig          `json:"sqlite"`
+	LanceDB            LanceDBConfig         `json:"lancedb"`
+	Postgres           PostgresConfig        `json:"postgres"`
+	MaintenanceTool    MaintenanceToolConfig `json:"maintenance_tool"`
+	LLM                LLMConfig             `json:"llm"`
+	Embedding          EmbeddingConfig       `json:"embedding"`
+	Rerank             RerankConfig          `json:"rerank"`
+	Vector             VectorConfig          `json:"vector"`
+	Relational         RelationalConfig      `json:"relational"`
+	PostAction         PostActionConfig      `json:"post_action"`
+	PreCheck           PreCheckConfig        `json:"pre_check"`
+	MemoryPipeline     MemoryPipelineConfig  `json:"memory_pipeline"`
+	Retention          RetentionConfig       `json:"retention"`
+	MemoryReplaceScope string                `json:"memory_replace_scope,omitempty"`
 }
 
 // PromptConfig keeps prompt-model routing rules inside the main config tree so the prompt bundle and route table evolve together.
@@ -166,6 +197,19 @@ type PostgresConfig struct {
 	MigrationBatchSize      int      `json:"migration_batch_size"`
 }
 
+// MaintenanceToolConfig groups one-shot admin/maintenance command settings so offline rebuild budgets do not leak into normal online runtime nodes.
+// MaintenanceToolConfig 用于收拢一次性管理/维护命令的配置，让离线重建预算不会混入正常在线运行时节点。
+type MaintenanceToolConfig struct {
+	Postgres MaintenanceToolPostgresConfig `json:"postgres"`
+}
+
+// MaintenanceToolPostgresConfig keeps PostgreSQL-only maintenance timeouts for offline rebuild, migration, and durable export flows.
+// MaintenanceToolPostgresConfig 用于保存 PostgreSQL 专属的维护超时，服务离线重建、迁移和 durable 导出链路。
+type MaintenanceToolPostgresConfig struct {
+	ReadTimeout  Duration `json:"read_timeout"`
+	WriteTimeout Duration `json:"write_timeout"`
+}
+
 // LLMConfig holds the explicit multi-route LLM configuration used by intent extraction and other generation tasks.
 // LLMConfig 用于保存意图提取等生成任务使用的显式多路由 LLM 配置。
 type LLMConfig struct {
@@ -221,11 +265,31 @@ type AIRoutingNodeConfig struct {
 	RPD     int      `json:"rpd,omitempty"`
 }
 
+// LLMRouteWeightConfig keeps the per-scene scheduling weights for one LLM route, which is now the only runtime ordering source for shared LLM route selection.
+// LLMRouteWeightConfig 用于保存单条 LLM 路由按场景拆分后的调度权重；它现在也是共享 LLM 路由选择时唯一生效的运行时排序来源。
+type LLMRouteWeightConfig struct {
+	PreCheckL1   *int `json:"precheck_l1,omitempty"`
+	PreCheckL2   *int `json:"precheck_l2,omitempty"`
+	PostActionL1 *int `json:"postaction_l1,omitempty"`
+	PostActionL2 *int `json:"postaction_l2,omitempty"`
+	Reserve      *int `json:"reserve,omitempty"`
+}
+
+// LLMRouteResolvedWeights keeps one fully materialized five-slot weight view so runtime callers do not need to repeat default-value merging on every selection.
+// LLMRouteResolvedWeights 用于保存一份已经补齐默认值的五槽位权重视图，让运行时调用方无需在每次选路时重复做默认值合并。
+type LLMRouteResolvedWeights struct {
+	PreCheckL1   int
+	PreCheckL2   int
+	PostActionL1 int
+	PostActionL2 int
+	Reserve      int
+}
+
 // LLMRouteConfig describes one concrete LLM route that owns its provider, endpoint, model, key pool, and node budget policy.
 // LLMRouteConfig 用于描述一条具体的 LLM 路由：它自包含 provider、endpoint、model、Key 池与节点预算策略。
 type LLMRouteConfig struct {
 	Name         string                    `json:"name,omitempty"`
-	Priority     int                       `json:"priority,omitempty"`
+	Weights      LLMRouteWeightConfig      `json:"weights,omitempty"`
 	Provider     string                    `json:"provider,omitempty"`
 	Endpoint     string                    `json:"endpoint,omitempty"`
 	APIKeys      []string                  `json:"api_keys,omitempty"`
@@ -362,6 +426,12 @@ func DefaultBase() Config {
 			VectorProbes:            10,
 			MigrationBatchSize:      500,
 		},
+		MaintenanceTool: MaintenanceToolConfig{
+			Postgres: MaintenanceToolPostgresConfig{
+				ReadTimeout:  Duration{defaultMaintenanceToolPostgresReadTimeout},
+				WriteTimeout: Duration{defaultMaintenanceToolPostgresWriteTimeout},
+			},
+		},
 		LLM: LLMConfig{
 			Routes: []LLMRouteConfig{{
 				Provider:    "openai",
@@ -380,8 +450,8 @@ func DefaultBase() Config {
 			TopN:    8,
 			Routes: []RerankRouteConfig{{
 				Provider:    "dashscope",
-				Endpoint:    "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank",
-				Model:       "qwen3-vl-rerank",
+				Endpoint:    defaultDashScopeRerankEndpoint,
+				Model:       defaultDashScopeRerankModel,
 				Timeout:     Duration{8 * time.Second},
 				KeyFailover: defaultKeyFailoverConfig(),
 			}},
@@ -635,8 +705,8 @@ func rejectRemovedAIConfigModes(root map[string]json.RawMessage) error {
 	return nil
 }
 
-// rejectRemovedLLMConfigFields rejects top-level legacy single-route LLM fields and the removed singular api_key shape inside routes or nodes.
-// rejectRemovedLLMConfigFields 用于拒绝顶层 legacy 单路由 LLM 字段，以及 routes 或 nodes 中已移除的单值 api_key 写法。
+// rejectRemovedLLMConfigFields rejects top-level legacy single-route LLM fields plus removed route-level compatibility fields such as api_key and priority.
+// rejectRemovedLLMConfigFields 用于拒绝顶层 legacy 单路由 LLM 字段，以及 route 内已移除的 api_key、priority 等兼容字段。
 func rejectRemovedLLMConfigFields(sectionBody []byte) error {
 	if len(sectionBody) == 0 {
 		return nil
@@ -650,8 +720,32 @@ func rejectRemovedLLMConfigFields(sectionBody []byte) error {
 			return fmt.Errorf("llm.%s has been removed; please move llm runtime settings into llm.routes[*]", field)
 		}
 	}
-	if err := rejectRemovedAPIKeyInRoutes("llm.routes", fields["routes"]); err != nil {
+	if err := rejectRemovedLLMRouteFields(fields["routes"]); err != nil {
 		return err
+	}
+	return nil
+}
+
+// rejectRemovedLLMRouteFields rejects removed llm-route fields so route-only configs cannot silently keep dead compatibility branches.
+// rejectRemovedLLMRouteFields 用于拒绝 llm route 内部已移除的字段，避免 route-only 配置静默保留失效的兼容分支。
+func rejectRemovedLLMRouteFields(routesBody []byte) error {
+	if len(routesBody) == 0 {
+		return nil
+	}
+	var routes []map[string]json.RawMessage
+	if err := json.Unmarshal(routesBody, &routes); err != nil {
+		return err
+	}
+	for idx, route := range routes {
+		if _, ok := route["api_key"]; ok {
+			return fmt.Errorf("llm.routes[%d].api_key has been removed; please use llm.routes[%d].api_keys", idx, idx)
+		}
+		if _, ok := route["priority"]; ok {
+			return fmt.Errorf("llm.routes[%d].priority has been removed; please use llm.routes[%d].weights.*", idx, idx)
+		}
+		if err := rejectRemovedAPIKeyInNodes(fmt.Sprintf("llm.routes[%d].nodes", idx), route["nodes"]); err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -866,16 +960,28 @@ func (c LLMConfig) ProviderRoutes() []LLMRouteConfig {
 	return normalizeLLMRouteConfigs(c.Routes)
 }
 
-// PrimaryRoute returns the route that should represent the default runtime model identity for LLM-side prompt assembly and diagnostics.
-// PrimaryRoute 用于返回应该代表默认运行时模型身份的 LLM 路由，供提示词装配与诊断逻辑使用。
+// PrimaryRoute returns the default-route view used when callers do not request one explicit business selection level.
+// PrimaryRoute 用于返回未显式指定业务选择层级时采用的默认路由视图。
 func (c LLMConfig) PrimaryRoute() (LLMRouteConfig, bool) {
-	return primaryLLMRoute(c.ProviderRoutes())
+	return c.PrimaryRouteForSelection("")
 }
 
-// PrimaryModel returns the primary LLM model chosen from the highest-priority declared route.
-// PrimaryModel 用于返回从最高优先级声明路由中选出的主 LLM 模型名称。
+// PrimaryRouteForSelection returns the highest-weight LLM route for one business call tier while preserving declaration order for ties.
+// PrimaryRouteForSelection 用于返回某个业务调用层级下权重最高的 LLM 路由；若权重相同，则保持声明顺序。
+func (c LLMConfig) PrimaryRouteForSelection(selectionLevel string) (LLMRouteConfig, bool) {
+	return primaryLLMRouteForSelection(c.ProviderRoutes(), selectionLevel)
+}
+
+// PrimaryModel returns the default primary LLM model chosen from the reserve-weight route view.
+// PrimaryModel 用于返回基于 reserve 权重视图选出的默认主 LLM 模型名称。
 func (c LLMConfig) PrimaryModel() string {
-	route, ok := c.PrimaryRoute()
+	return c.PrimaryModelForSelection("")
+}
+
+// PrimaryModelForSelection returns the route model chosen for one business call tier after applying per-scene route weights.
+// PrimaryModelForSelection 用于在应用分场景路由权重后，返回某个业务调用层级选中的路由模型。
+func (c LLMConfig) PrimaryModelForSelection(selectionLevel string) string {
+	route, ok := c.PrimaryRouteForSelection(selectionLevel)
 	if !ok {
 		return ""
 	}
@@ -888,19 +994,60 @@ func (c RerankConfig) ProviderRoutes() []RerankRouteConfig {
 	return normalizeRerankRouteConfigs(c.Routes)
 }
 
-// primaryLLMRoute returns the highest-priority LLM route while preserving declaration order for equal priorities.
-// primaryLLMRoute 用于返回最高优先级的 LLM 路由；若优先级相同，则保持声明顺序。
-func primaryLLMRoute(routes []LLMRouteConfig) (LLMRouteConfig, bool) {
+// primaryLLMRouteForSelection returns the highest-weight LLM route for one business call tier while preserving declaration order for ties.
+// primaryLLMRouteForSelection 用于返回某个业务调用层级下权重最高的 LLM 路由；若权重相同，则保持声明顺序。
+func primaryLLMRouteForSelection(routes []LLMRouteConfig, selectionLevel string) (LLMRouteConfig, bool) {
 	if len(routes) == 0 {
 		return LLMRouteConfig{}, false
 	}
 	best := routes[0]
+	bestWeight := best.SelectionWeight(selectionLevel)
 	for _, route := range routes[1:] {
-		if route.Priority > best.Priority {
+		if weight := route.SelectionWeight(selectionLevel); weight > bestWeight {
 			best = route
+			bestWeight = weight
 		}
 	}
 	return best, true
+}
+
+// ResolvedWeights expands one LLM route's optional per-scene overrides into a full five-slot weight table backed by the shared default weight.
+// ResolvedWeights 用于把单条 LLM 路由的可选分场景覆盖项展开成完整的五槽位权重表；未声明槽位统一回退到共享默认权重。
+func (c LLMRouteConfig) ResolvedWeights() LLMRouteResolvedWeights {
+	return LLMRouteResolvedWeights{
+		PreCheckL1:   resolveLLMRouteWeight(c.Weights.PreCheckL1, defaultLLMRouteSelectionWeight),
+		PreCheckL2:   resolveLLMRouteWeight(c.Weights.PreCheckL2, defaultLLMRouteSelectionWeight),
+		PostActionL1: resolveLLMRouteWeight(c.Weights.PostActionL1, defaultLLMRouteSelectionWeight),
+		PostActionL2: resolveLLMRouteWeight(c.Weights.PostActionL2, defaultLLMRouteSelectionWeight),
+		Reserve:      resolveLLMRouteWeight(c.Weights.Reserve, defaultLLMRouteSelectionWeight),
+	}
+}
+
+// SelectionWeight returns the concrete weight that one business call tier should use when ordering LLM routes.
+// SelectionWeight 用于返回某个业务调用层级在排序 LLM 路由时应采用的具体权重。
+func (c LLMRouteConfig) SelectionWeight(selectionLevel string) int {
+	weights := c.ResolvedWeights()
+	switch strings.ToLower(strings.TrimSpace(selectionLevel)) {
+	case "precheck_l1":
+		return weights.PreCheckL1
+	case "precheck_l2":
+		return weights.PreCheckL2
+	case "postaction_l1":
+		return weights.PostActionL1
+	case "postaction_l2":
+		return weights.PostActionL2
+	default:
+		return weights.Reserve
+	}
+}
+
+// resolveLLMRouteWeight prefers one explicit per-scene override and otherwise falls back to the shared default weight source.
+// resolveLLMRouteWeight 用于优先采用显式分场景覆盖值；如果缺失，则回退到共享默认权重来源。
+func resolveLLMRouteWeight(value *int, fallback int) int {
+	if value == nil {
+		return fallback
+	}
+	return *value
 }
 
 // normalizeKeyFailoverPolicyValue canonicalizes the in-memory API-key rotation policy so config defaults, env overrides, and runtime wiring all compare one stable token.
@@ -1025,19 +1172,16 @@ func normalizeLLMRouteConfig(route LLMRouteConfig) LLMRouteConfig {
 // normalizeRerankRouteConfig 用于裁剪单条 rerank 路由，规范化其 API Key 池，把旧版 key 池折叠成轮询节点，并为该路由补齐安全的 key-failover 默认值。
 func normalizeRerankRouteConfig(route RerankRouteConfig) RerankRouteConfig {
 	route.Name = strings.TrimSpace(route.Name)
-	route.Provider = strings.TrimSpace(route.Provider)
-	if route.Provider == "" {
-		route.Provider = "dashscope"
-	}
+	route.Provider = normalizeRerankProviderValue(route.Provider)
 	route.Endpoint = strings.TrimSpace(route.Endpoint)
 	if route.Endpoint == "" {
-		route.Endpoint = "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
+		route.Endpoint = rerankProviderDefaultEndpoint(route.Provider)
 	}
 	route.APIKeys = trimStringSlice(route.APIKeys)
 	route.Nodes = normalizeAIRoutingNodeFields(route.Nodes)
 	route.Model = strings.TrimSpace(route.Model)
 	if route.Model == "" {
-		route.Model = "qwen3-vl-rerank"
+		route.Model = rerankProviderDefaultModel(route.Provider)
 	}
 	if route.Timeout.Duration <= 0 {
 		route.Timeout = Duration{8 * time.Second}
@@ -1149,10 +1293,10 @@ func validateLLMRouteConfigs(routes []LLMRouteConfig) error {
 		if strings.TrimSpace(route.Provider) == "" {
 			return fmt.Errorf("%s.provider is required", label)
 		}
-		if !isOpenAIProvider(route.Provider) {
-			return fmt.Errorf("%s.provider must use one openai-compatible provider", label)
+		if !isSupportedAIProvider(route.Provider) {
+			return fmt.Errorf("%s.provider must be one of openai, openai_native, openai_go, or google_ai_studio", label)
 		}
-		if strings.TrimSpace(route.Endpoint) == "" {
+		if providerRequiresEndpoint(route.Provider) && strings.TrimSpace(route.Endpoint) == "" {
 			return fmt.Errorf("%s.endpoint is required", label)
 		}
 		if strings.TrimSpace(route.Model) == "" {
@@ -1164,6 +1308,30 @@ func validateLLMRouteConfigs(routes []LLMRouteConfig) error {
 		if err := validateAIRoutingNodes(label, route.Nodes); err != nil {
 			return err
 		}
+		if err := validateLLMRouteWeightConfig(label, route.Weights); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateLLMRouteWeightConfig rejects negative per-scene route weights so runtime ordering never has to reason about malformed slots.
+// validateLLMRouteWeightConfig 用于拒绝负数的分场景路由权重，避免运行时排序阶段处理格式错误的槽位。
+func validateLLMRouteWeightConfig(label string, weights LLMRouteWeightConfig) error {
+	if weights.PreCheckL1 != nil && *weights.PreCheckL1 < 0 {
+		return fmt.Errorf("%s.weights.precheck_l1 must be >= 0", label)
+	}
+	if weights.PreCheckL2 != nil && *weights.PreCheckL2 < 0 {
+		return fmt.Errorf("%s.weights.precheck_l2 must be >= 0", label)
+	}
+	if weights.PostActionL1 != nil && *weights.PostActionL1 < 0 {
+		return fmt.Errorf("%s.weights.postaction_l1 must be >= 0", label)
+	}
+	if weights.PostActionL2 != nil && *weights.PostActionL2 < 0 {
+		return fmt.Errorf("%s.weights.postaction_l2 must be >= 0", label)
+	}
+	if weights.Reserve != nil && *weights.Reserve < 0 {
+		return fmt.Errorf("%s.weights.reserve must be >= 0", label)
 	}
 	return nil
 }
@@ -1176,16 +1344,19 @@ func validateRerankRouteConfigs(routes []RerankRouteConfig) error {
 	}
 	for idx, route := range routes {
 		label := fmt.Sprintf("rerank.routes[%d]", idx)
-		switch strings.ToLower(strings.TrimSpace(route.Provider)) {
-		case "dashscope":
+		switch normalizeRerankProviderValue(route.Provider) {
+		case "dashscope", "siliconflow":
 		default:
-			return fmt.Errorf("%s.provider must be dashscope", label)
+			return fmt.Errorf("%s.provider must be one of dashscope, siliconflow", label)
 		}
 		if strings.TrimSpace(route.Endpoint) == "" {
 			return fmt.Errorf("%s.endpoint is required", label)
 		}
 		if strings.TrimSpace(route.Model) == "" {
 			return fmt.Errorf("%s.model is required", label)
+		}
+		if route.Priority < 0 {
+			return fmt.Errorf("%s.priority must be >= 0", label)
 		}
 		if len(route.Nodes) == 0 {
 			return fmt.Errorf("%s.api_keys or %s.nodes is required", label, label)
@@ -1198,6 +1369,41 @@ func validateRerankRouteConfigs(routes []RerankRouteConfig) error {
 		}
 	}
 	return nil
+}
+
+// normalizeRerankProviderValue canonicalizes rerank provider aliases so config defaults, validation, and runtime wiring all compare one stable token.
+// normalizeRerankProviderValue 用于规范化 rerank provider 别名，让配置默认值、校验和运行时装配始终比较同一份稳定 token。
+func normalizeRerankProviderValue(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "", "dashscope":
+		return "dashscope"
+	case "siliconflow":
+		return "siliconflow"
+	default:
+		return strings.ToLower(strings.TrimSpace(provider))
+	}
+}
+
+// rerankProviderDefaultEndpoint returns the provider-specific rerank endpoint used when one explicit route omits an override.
+// rerankProviderDefaultEndpoint 用于返回 provider 专属的 rerank 默认地址，在显式路由未覆盖 endpoint 时补齐。
+func rerankProviderDefaultEndpoint(provider string) string {
+	switch normalizeRerankProviderValue(provider) {
+	case "siliconflow":
+		return defaultSiliconFlowRerankEndpoint
+	default:
+		return defaultDashScopeRerankEndpoint
+	}
+}
+
+// rerankProviderDefaultModel returns the provider-specific rerank model used when one explicit route omits an override.
+// rerankProviderDefaultModel 用于返回 provider 专属的 rerank 默认模型，在显式路由未覆盖 model 时补齐。
+func rerankProviderDefaultModel(provider string) string {
+	switch normalizeRerankProviderValue(provider) {
+	case "siliconflow":
+		return defaultSiliconFlowRerankModel
+	default:
+		return defaultDashScopeRerankModel
+	}
 }
 
 // normalizeKeyFailoverConfig fills safe in-memory cooldown defaults for one fixed-model API-key pool.
@@ -1550,6 +1756,12 @@ func (c *Config) Normalize() {
 	if c.Postgres.MigrationBatchSize <= 0 {
 		c.Postgres.MigrationBatchSize = 500
 	}
+	if c.MaintenanceTool.Postgres.ReadTimeout.Duration <= 0 {
+		c.MaintenanceTool.Postgres.ReadTimeout = Duration{defaultMaintenanceToolPostgresReadTimeout}
+	}
+	if c.MaintenanceTool.Postgres.WriteTimeout.Duration <= 0 {
+		c.MaintenanceTool.Postgres.WriteTimeout = Duration{defaultMaintenanceToolPostgresWriteTimeout}
+	}
 	if strings.TrimSpace(c.Vector.Provider) == "" {
 		c.Vector.Provider = "lancedb"
 	}
@@ -1697,8 +1909,8 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Embedding.Provider) == "" {
 		return errors.New("embedding.provider is required")
 	}
-	if !isOpenAIProvider(c.Embedding.Provider) {
-		return errors.New("embedding.provider must use one openai-compatible provider")
+	if !isSupportedAIProvider(c.Embedding.Provider) {
+		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, or google_ai_studio")
 	}
 	if normalizeStorageModeValue(c.Storage.Mode) == "split" {
 		if strings.TrimSpace(c.LanceDB.Address) == "" {
@@ -1767,6 +1979,12 @@ func (c Config) Validate() error {
 		if c.Postgres.MigrationBatchSize <= 0 {
 			return errors.New("postgres.migration_batch_size must be > 0 when storage.mode=combined")
 		}
+		if c.MaintenanceTool.Postgres.ReadTimeout.Duration <= 0 {
+			return errors.New("maintenance_tool.postgres.read_timeout must be > 0 when storage.mode=combined")
+		}
+		if c.MaintenanceTool.Postgres.WriteTimeout.Duration <= 0 {
+			return errors.New("maintenance_tool.postgres.write_timeout must be > 0 when storage.mode=combined")
+		}
 	}
 	if len(c.LLM.Routes) == 0 {
 		return errors.New("llm.routes must contain at least one route")
@@ -1774,7 +1992,7 @@ func (c Config) Validate() error {
 	if err := validateLLMRouteConfigs(c.LLM.Routes); err != nil {
 		return err
 	}
-	if strings.TrimSpace(c.Embedding.Endpoint) == "" {
+	if providerRequiresEndpoint(c.Embedding.Provider) && strings.TrimSpace(c.Embedding.Endpoint) == "" {
 		return errors.New("embedding.endpoint is required")
 	}
 	embeddingNodes := c.Embedding.RoutingNodes()
@@ -1982,6 +2200,8 @@ func applyEnvOverrides(cfg *Config) {
 	setInt("VMM_POSTGRES_VECTOR_LISTS", &cfg.Postgres.VectorLists)
 	setInt("VMM_POSTGRES_VECTOR_PROBES", &cfg.Postgres.VectorProbes)
 	setInt("VMM_POSTGRES_MIGRATION_BATCH_SIZE", &cfg.Postgres.MigrationBatchSize)
+	setDuration("VMM_MAINTENANCE_TOOL_POSTGRES_READ_TIMEOUT", &cfg.MaintenanceTool.Postgres.ReadTimeout)
+	setDuration("VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT", &cfg.MaintenanceTool.Postgres.WriteTimeout)
 	setString("VMM_EMBED_PROVIDER", &cfg.Embedding.Provider)
 	setString("VMM_EMBED_ENDPOINT", &cfg.Embedding.Endpoint)
 	setStringSlice("VMM_EMBED_API_KEYS", &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes)
@@ -2059,6 +2279,29 @@ func isOpenAIProvider(provider string) bool {
 	default:
 		return false
 	}
+}
+
+// isGoogleAIStudioProvider reports whether one provider alias resolves to the native Google AI Studio adapter.
+// isGoogleAIStudioProvider 用于判断某个 provider 别名是否会落到原生 Google AI Studio 适配器。
+func isGoogleAIStudioProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "google_ai_studio":
+		return true
+	default:
+		return false
+	}
+}
+
+// isSupportedAIProvider reports whether one provider alias resolves to any currently supported LLM/embedding adapter.
+// isSupportedAIProvider 用于判断某个 provider 别名是否会落到当前支持的任一 LLM/embedding 适配器。
+func isSupportedAIProvider(provider string) bool {
+	return isOpenAIProvider(provider) || isGoogleAIStudioProvider(provider)
+}
+
+// providerRequiresEndpoint reports whether the provider expects callers to supply an explicit endpoint instead of relying on the SDK default service root.
+// providerRequiresEndpoint 用于判断某个 provider 是否要求调用方显式提供 endpoint，而不是依赖 SDK 默认服务根地址。
+func providerRequiresEndpoint(provider string) bool {
+	return !isGoogleAIStudioProvider(provider)
 }
 
 // validatePayloadEncryptionKey checks the optional protected-log key format so startup can fail fast instead of silently dropping encrypted payload logging.

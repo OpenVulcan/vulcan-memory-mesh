@@ -86,40 +86,40 @@ func (c routeFailoverAwareLLMClient) Generate(ctx context.Context, req appports.
 	return c.upstream.Generate(ctx, req)
 }
 
-// selectProcessorPromptModel chooses the model token that processors should use for prompt lookup so multi-route failover only keeps model-specific prompts when every route still resolves to the same prompt folder.
-// selectProcessorPromptModel 用于选择处理器做提示词查找时应使用的模型标识；只有当所有路由仍指向同一提示词目录时，才继续保留模型专属 prompt。
-func selectProcessorPromptModel(cfg config.Config, prompts appports.PromptSource) string {
+// selectProcessorPromptModel chooses the model token that one business call tier should use for prompt lookup so multi-route failover only keeps model-specific prompts when every eligible route still resolves to the same prompt folder.
+// selectProcessorPromptModel 用于为某个业务调用层级选择提示词查找所用的模型标识；只有当该层级下所有可参与路由仍指向同一提示词目录时，才继续保留模型专属 prompt。
+func selectProcessorPromptModel(cfg config.Config, prompts appports.PromptSource, selectionLevel appports.LLMRouteSelectionLevel) string {
 	routes := cfg.LLM.ProviderRoutes()
 	if len(routes) == 0 {
 		return ""
 	}
-	primaryModel := cfg.LLM.PrimaryModel()
+	primaryModel := cfg.LLM.PrimaryModelForSelection(string(selectionLevel))
 	if len(routes) == 1 {
 		return primaryModel
 	}
-	if allLLMRoutesSharePromptFolder(routes, prompts) {
+	if allLLMRoutesSharePromptFolder(routes, prompts, primaryModel) {
 		return primaryModel
 	}
 	return ""
 }
 
-// allLLMRoutesSharePromptFolder reports whether every configured LLM route maps to the same prompt folder, which is the only case where one shared processor prompt model stays safe during route failover.
-// allLLMRoutesSharePromptFolder 用于判断所有已配置的 LLM 路由是否都映射到同一提示词目录；只有这种情况下，处理器在路由切换时继续共用一个 prompt 才是安全的。
-func allLLMRoutesSharePromptFolder(routes []config.LLMRouteConfig, prompts appports.PromptSource) bool {
+// allLLMRoutesSharePromptFolder reports whether every configured LLM route maps to the same prompt folder as the selected primary model.
+// allLLMRoutesSharePromptFolder 用于判断所有已配置的 LLM 路由是否都映射到与已选主模型相同的提示词目录。
+func allLLMRoutesSharePromptFolder(routes []config.LLMRouteConfig, prompts appports.PromptSource, primaryModel string) bool {
 	if len(routes) <= 1 {
 		return true
 	}
 	if matcher, ok := prompts.(promptFolderMatcher); ok && matcher != nil {
-		baseFolder := matcher.MatchFolder(routes[0].Model)
-		for _, route := range routes[1:] {
+		baseFolder := matcher.MatchFolder(primaryModel)
+		for _, route := range routes {
 			if matcher.MatchFolder(route.Model) != baseFolder {
 				return false
 			}
 		}
 		return true
 	}
-	baseModel := strings.TrimSpace(routes[0].Model)
-	for _, route := range routes[1:] {
+	baseModel := strings.TrimSpace(primaryModel)
+	for _, route := range routes {
 		if strings.TrimSpace(route.Model) != baseModel {
 			return false
 		}
@@ -250,14 +250,18 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
-	llmPromptModel := selectProcessorPromptModel(cfg, prompts)
+	reservePromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelReserve)
+	preCheckL1PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL1)
+	preCheckL2PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL2)
+	postActionL1PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL1)
+	postActionL2PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL2)
 	processorLLM := adaptLLMForProcessorRoutes(cfg, llm)
-	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(processorLLM, prompts, llmPromptModel), logger)
+	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(processorLLM, prompts, reservePromptModel), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
 	memory.ConfigurePIIScrubber(piiScrubber)
 	scratchpad := usecase.NewScratchpadUseCase(scratchpadStore)
 	chatCompact := usecase.NewChatCompactUseCase(chatCompactStore)
-	candidateReviewer := processor.NewPostActionCandidateReviewer(processorLLM, prompts, llmPromptModel)
+	candidateReviewer := processor.NewPostActionCandidateReviewer(processorLLM, prompts, postActionL2PromptModel)
 	memory.ConfigureHybrid(cfg.MemoryPipeline.HybridEnabled, cfg.MemoryPipeline.LexicalTopK, cfg.MemoryPipeline.RRFK)
 	memory.ConfigureMMR(cfg.MemoryPipeline.MMREnabled, cfg.MemoryPipeline.MMRLambda)
 	memory.ConfigureDecay(
@@ -273,9 +277,9 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	pre := usecase.NewPreCheckUseCase(
 		memory,
 		relational,
-		processor.NewIntentExtractor(processorLLM, prompts, llmPromptModel, cfg.MemoryPipeline.MaxSearchKeywords),
-		processor.NewPreCheckMemoryReviewer(processorLLM, prompts, llmPromptModel),
-		processor.NewContextAssembler(prompts, llmPromptModel),
+		processor.NewIntentExtractor(processorLLM, prompts, preCheckL1PromptModel, cfg.MemoryPipeline.MaxSearchKeywords),
+		processor.NewPreCheckMemoryReviewer(processorLLM, prompts, preCheckL2PromptModel),
+		processor.NewContextAssembler(prompts, preCheckL2PromptModel),
 		usecase.PreCheckConfig{
 			IntentTimeout:      cfg.PreCheck.IntentTimeout.Duration,
 			TopK:               cfg.PreCheck.TopK,
@@ -292,7 +296,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		relational,
 		embedding,
 		vector,
-		processor.NewTurnAnalyzer(processorLLM, prompts, llmPromptModel),
+		processor.NewTurnAnalyzer(processorLLM, prompts, postActionL1PromptModel),
 		memory,
 		candidateReviewer,
 		usecase.PostActionAnalysisConfig{
@@ -537,9 +541,16 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 	}
 	routeOptions := make([]ai_key_failover.LLMRouteOptions, 0, len(routes))
 	for idx, route := range routes {
+		resolvedWeights := route.ResolvedWeights()
 		routeOptions = append(routeOptions, ai_key_failover.LLMRouteOptions{
-			Name:         buildRouteName("llm", idx, route.Name),
-			Priority:     route.Priority,
+			Name: buildRouteName("llm", idx, route.Name),
+			SelectionWeights: ai_key_failover.LLMRouteSelectionWeights{
+				PreCheckL1:   resolvedWeights.PreCheckL1,
+				PreCheckL2:   resolvedWeights.PreCheckL2,
+				PostActionL1: resolvedWeights.PostActionL1,
+				PostActionL2: resolvedWeights.PostActionL2,
+				Reserve:      resolvedWeights.Reserve,
+			},
 			Provider:     route.Provider,
 			Endpoint:     route.Endpoint,
 			Model:        route.Model,
@@ -566,43 +577,35 @@ func adaptLLMForProcessorRoutes(cfg config.Config, client appports.LLMClient) ap
 // buildOneLLMRouteClient materializes one concrete fixed-model LLM route that will handle provider-specific key failover inside its own key pool.
 // buildOneLLMRouteClient 用于实例化一条具体的固定模型 LLM 路由，让它在自己的 Key 池内部处理 provider 专属的 Key 容灾。
 func buildOneLLMRouteClient(route config.LLMRouteConfig, routeIndex int) (appports.LLMClient, error) {
-	switch normalizeProviderAlias(route.Provider) {
-	case "openai", "openai_native", "openai_go":
-		return ai_key_failover.NewLLMClient(
-			route.Endpoint,
-			route.Model,
-			route.Organization,
-			route.Project,
-			route.APIKeys,
-			route.Params,
-			route.ModelParams,
-			buildKeyFailoverOptions(buildRouteName("llm", routeIndex, route.Name), route.Nodes, route.KeyFailover),
-		)
-	default:
-		return nil, fmt.Errorf("unsupported llm provider: %s", route.Provider)
-	}
+	return ai_key_failover.NewProviderLLMClient(
+		route.Provider,
+		route.Endpoint,
+		route.Model,
+		route.Organization,
+		route.Project,
+		route.APIKeys,
+		route.Params,
+		route.ModelParams,
+		buildKeyFailoverOptions(buildRouteName("llm", routeIndex, route.Name), route.Nodes, route.KeyFailover),
+	)
 }
 
 // buildEmbedding selects the configured real embedding adapter for recall and semantic filtering.
 // buildEmbedding 用于为召回和语义过滤选择当前配置的真实 embedding 适配器。
 func buildEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
 	cfg.Normalize()
-	switch normalizeProviderAlias(cfg.Embedding.Provider) {
-	case "openai", "openai_native", "openai_go":
-		return ai_key_failover.NewEmbeddingClient(
-			cfg.Embedding.Endpoint,
-			cfg.Embedding.Model,
-			cfg.Embedding.Dimension,
-			cfg.Embedding.Organization,
-			cfg.Embedding.Project,
-			cfg.Embedding.APIKeys,
-			cfg.Embedding.Params,
-			cfg.Embedding.ModelParams,
-			buildKeyFailoverOptions("embedding", cfg.Embedding.RoutingNodes(), cfg.Embedding.KeyFailover),
-		)
-	default:
-		return nil, fmt.Errorf("unsupported embedding provider: %s", cfg.Embedding.Provider)
-	}
+	return ai_key_failover.NewProviderEmbeddingClient(
+		cfg.Embedding.Provider,
+		cfg.Embedding.Endpoint,
+		cfg.Embedding.Model,
+		cfg.Embedding.Dimension,
+		cfg.Embedding.Organization,
+		cfg.Embedding.Project,
+		cfg.Embedding.APIKeys,
+		cfg.Embedding.Params,
+		cfg.Embedding.ModelParams,
+		buildKeyFailoverOptions("embedding", cfg.Embedding.RoutingNodes(), cfg.Embedding.KeyFailover),
+	)
 }
 
 // buildReranker selects the optional second-stage rerank backend used to reorder first-stage vector recall hits.
@@ -638,18 +641,14 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 // buildOneRerankRouteClient materializes one concrete fixed-model rerank route that will handle provider-specific key failover inside its own key pool.
 // buildOneRerankRouteClient 用于实例化一条具体的固定模型 rerank 路由，让它在自己的 Key 池内部处理 provider 专属的 Key 容灾。
 func buildOneRerankRouteClient(route config.RerankRouteConfig, routeIndex int) (appports.RerankerClient, error) {
-	switch normalizeProviderAlias(route.Provider) {
-	case "dashscope":
-		return ai_key_failover.NewRerankerClient(
-			route.Endpoint,
-			route.Model,
-			route.Timeout.Duration,
-			route.APIKeys,
-			buildKeyFailoverOptions(buildRouteName("rerank", routeIndex, route.Name), route.Nodes, route.KeyFailover),
-		)
-	default:
-		return nil, fmt.Errorf("unsupported rerank provider: %s", route.Provider)
-	}
+	return ai_key_failover.NewProviderRerankerClient(
+		route.Provider,
+		route.Endpoint,
+		route.Model,
+		route.Timeout.Duration,
+		route.APIKeys,
+		buildKeyFailoverOptions(buildRouteName("rerank", routeIndex, route.Name), route.Nodes, route.KeyFailover),
+	)
 }
 
 // buildRouteName returns one stable route label so route-level failover logs and selector error messages can point back to the configured route order.
@@ -735,6 +734,8 @@ func buildCombinedStore(cfg config.Config) (*vldb_postgres.Store, error) {
 		Schema:                  cfg.Postgres.Schema,
 		Flavor:                  cfg.Postgres.Flavor,
 		QueryTimeout:            cfg.Postgres.QueryTimeout.Duration,
+		MaintenanceReadTimeout:  cfg.MaintenanceTool.Postgres.ReadTimeout.Duration,
+		MaintenanceWriteTimeout: cfg.MaintenanceTool.Postgres.WriteTimeout.Duration,
 		ConnectTimeout:          cfg.Postgres.ConnectTimeout.Duration,
 		MaxOpenConns:            cfg.Postgres.MaxOpenConns,
 		MinIdleConns:            cfg.Postgres.MinIdleConns,

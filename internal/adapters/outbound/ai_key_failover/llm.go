@@ -9,7 +9,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -24,6 +23,7 @@ type LLMClient struct {
 	params       map[string]any
 	modelParams  map[string]map[string]any
 	factory      func(string) appports.LLMClient
+	classify     func(error, time.Time) failureDecision
 	clients      map[string]appports.LLMClient
 	mu           sync.Mutex
 	options      Options
@@ -32,6 +32,12 @@ type LLMClient struct {
 // NewLLMClient creates one fixed-model LLM client that can rotate across multiple API keys of the same upstream configuration.
 // NewLLMClient 用于创建一个固定模型 LLM 客户端，让它能在同一上游配置的多个 API Key 之间轮换。
 func NewLLMClient(endpoint, model, organization, project string, apiKeys []string, params map[string]any, modelParams map[string]map[string]any, options Options) (*LLMClient, error) {
+	return NewProviderLLMClient("openai", endpoint, model, organization, project, apiKeys, params, modelParams, options)
+}
+
+// NewProviderLLMClient creates one provider-aware fixed-model LLM client so the same key-failover shell can serve OpenAI-compatible and Google AI Studio native routes.
+// NewProviderLLMClient 用于创建一个 provider 感知的固定模型 LLM 客户端，让同一套 key-failover 外壳可以同时服务 OpenAI-compatible 与 Google AI Studio 原生路由。
+func NewProviderLLMClient(provider, endpoint, model, organization, project string, apiKeys []string, params map[string]any, modelParams map[string]map[string]any, options Options) (*LLMClient, error) {
 	options.ServiceName = "llm"
 	if len(options.Nodes) == 0 {
 		options.APIKeys = append([]string(nil), apiKeys...)
@@ -51,8 +57,9 @@ func NewLLMClient(endpoint, model, organization, project string, apiKeys []strin
 		clients:      make(map[string]appports.LLMClient, len(apiKeys)),
 		options:      options,
 	}
-	client.factory = func(apiKey string) appports.LLMClient {
-		return openai_native.NewLLMClient(client.endpoint, apiKey, client.model, client.organization, client.project, client.params, client.modelParams)
+	client.factory, client.classify, err = newLLMProviderFactory(provider, client.endpoint, client.model, client.organization, client.project, client.params, client.modelParams, client.options)
+	if err != nil {
+		return nil, err
 	}
 	return client, nil
 }
@@ -73,7 +80,10 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	return executeWithFailover(ctx, c.selector, cost, func(ctx context.Context, apiKey string) (appports.LLMResponse, error) {
 		return c.clientForKey(apiKey).Generate(ctx, req)
 	}, func(err error, now time.Time) failureDecision {
-		return classifyOpenAIError(err, c.options, now)
+		if c.classify == nil {
+			return failureDecision{Class: errorClassUnknown}
+		}
+		return c.classify(err, now)
 	}, func(resp appports.LLMResponse) requestCost {
 		return llmActualUsageCost(resp, inputTokens)
 	})

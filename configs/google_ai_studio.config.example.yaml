@@ -1,0 +1,156 @@
+# Google AI Studio native example override configuration file.
+# Google AI Studio 原生示例覆盖配置文件。
+#
+# This file demonstrates the native Gemini API path built on google.golang.org/genai.
+# 本文件演示基于 google.golang.org/genai 的原生 Gemini API 接入路径。
+#
+# Typical usage:
+# 典型用法：
+# - Copy selected entries into config.yaml or another environment-specific override file.
+#   按需将其中的条目复制到 config.yaml 或其他环境专用覆盖文件中。
+# - Keep secrets in environment variables instead of replacing placeholders with plaintext values.
+#   机密信息应继续保存在环境变量中，不建议直接把占位符替换为明文。
+# - Read base.yaml first if you need the full baseline meaning of each field.
+#   如果需要理解每个字段的完整底座语义，请先阅读 base.yaml。
+
+grpc:
+  # Example local listen address used by the Google AI Studio deployment template.
+  # Google AI Studio 部署模板示例中使用的本地监听地址。
+  listen_addr: "127.0.0.1:17625"
+
+logging:
+  # Example log level for a practical deployment template.
+  # 实际部署模板示例中使用的日志级别。
+  level: "info"
+
+  # Example log format.
+  # 示例日志格式。
+  format: "text"
+
+storage:
+  # This example keeps split storage mode so relational and vector services stay separated.
+  # 本示例保持 split 存储模式，使关系与向量服务继续分离。
+  mode: "split"
+
+sqlite:
+  # SQLite service endpoint placeholder for split relational storage.
+  # split 关系存储使用的 SQLite 服务地址占位符。
+  address: "${VMM_SQLITE_ADDRESS}"
+
+lancedb:
+  # LanceDB service endpoint placeholder for split vector storage.
+  # split 向量存储使用的 LanceDB 服务地址占位符。
+  address: "${VMM_LANCEDB_ADDRESS}"
+
+postgres:
+  # PostgreSQL connection placeholder kept for deployments that may later switch to combined mode.
+  # 为未来可能切换 combined 模式的部署保留的 PostgreSQL 连接占位符。
+  dsn: "${VMM_POSTGRES_DSN}"
+
+llm:
+  # Example LLM route configured for the native Gemini API.
+  # 针对原生 Gemini API 配置的示例 LLM 路由。
+  routes:
+    - # Stable route name for logs and failover tracking.
+      # 用于日志与 failover 跟踪的稳定路由名。
+      name: "primary-google-ai-studio"
+      # Per-scene route weights. Omitted slots default to 100.
+      # 分场景路由权重。未声明的槽位默认都是 100。
+      weights:
+        precheck_l1: 100
+        precheck_l2: 100
+        postaction_l1: 100
+        postaction_l2: 100
+        reserve: 100
+      provider: "google_ai_studio"
+
+      # Optional custom Gemini API base URL.
+      # 可选的自定义 Gemini API 根地址。
+      # Leave this empty in normal AI Studio usage.
+      # 普通 AI Studio 接入场景下建议保持为空。
+      endpoint: ""
+
+      # API key pool placeholder.
+      # API Key 池占位符。
+      api_keys:
+        - "${GOOGLE_API_KEY}"
+
+      rpm: 0
+      tpm: 0
+      rpd: 0
+
+      # Active Gemini model placeholder.
+      # 当前 Gemini 模型名占位符。
+      model: "${GOOGLE_LLM_MODEL}"
+
+      # Route-level extra parameters accepted by Gemini GenerateContentConfig.
+      # Gemini GenerateContentConfig 接受的路由级附加参数。
+      params:
+        temperature: 0.2
+
+      model_params: {}
+
+      key_failover:
+        # Example key-level failover policy for the Gemini route.
+        # Gemini 路由的 key 级容灾策略示例。
+        enabled: true
+        policy: "ordered_failover"
+        respect_retry_after: true
+        rate_limit_cooldown: "5m"
+        quota_cooldown: "10m"
+        auth_cooldown: "12h"
+        probe_after_cooldown: true
+
+embedding:
+  # Example embedding configuration targeting the native Gemini embedding API.
+  # 指向原生 Gemini embedding API 的 Embedding 配置示例。
+  provider: "google_ai_studio"
+
+  # Optional custom Gemini API base URL.
+  # 可选的自定义 Gemini API 根地址。
+  endpoint: ""
+
+  api_keys:
+    - "${GOOGLE_API_KEY}"
+
+  rpm: 0
+  tpm: 0
+  rpd: 0
+
+  # Embedding model placeholder.
+  # Embedding 模型占位符。
+  model: "${GOOGLE_EMBEDDING_MODEL}"
+
+  # The configured dimension is sent as Gemini output_dimensionality and must match the vector-store schema.
+  # 配置的 dimension 会作为 Gemini output_dimensionality 发送，并且必须与向量存储 schema 保持一致。
+  dimension: 1024
+
+  params: {}
+  model_params: {}
+
+  key_failover:
+    # Example key-level failover policy for Gemini embedding requests.
+    # Gemini embedding 请求的 key 级容灾策略示例。
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+
+rerank:
+  # Rerank remains independent from Google AI Studio and can be wired through dedicated routes such as DashScope or SiliconFlow.
+  # 当前实现中的 rerank 仍与 Google AI Studio 独立，可通过 DashScope 或 SiliconFlow 等独立路由接入。
+  enabled: false
+  top_n: 8
+
+vector:
+  # Placeholder vector backend, mainly relevant when storage.mode stays split.
+  # 向量后端占位，主要在 storage.mode 保持 split 时生效。
+  provider: "${VMM_VECTOR_PROVIDER}"
+
+relational:
+  # Placeholder relational backend, mainly relevant when storage.mode stays split.
+  # 关系后端占位，主要在 storage.mode 保持 split 时生效。
+  provider: "${VMM_RELATIONAL_PROVIDER}"

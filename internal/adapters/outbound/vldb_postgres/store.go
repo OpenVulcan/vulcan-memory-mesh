@@ -15,6 +15,14 @@ const (
 	// defaultSchemaVersionComponent stores the shared PostgreSQL combined-store schema version under one stable component key.
 	// defaultSchemaVersionComponent 用于把 PostgreSQL 组合库的共享 schema 版本固定到稳定的组件键名下。
 	defaultSchemaVersionComponent = "postgres_combined"
+
+	// defaultMaintenanceReadTimeout keeps direct programmatic store construction aligned with the shipped maintenance-tool defaults when callers omit dedicated maintenance read budgets.
+	// defaultMaintenanceReadTimeout 用于在调用方省略专用维护读取预算时，让代码内直接构造 store 的行为仍与随仓库分发的维护工具默认值保持一致。
+	defaultMaintenanceReadTimeout = 30 * time.Second
+
+	// defaultMaintenanceWriteTimeout keeps direct programmatic store construction aligned with the shipped maintenance-tool defaults for destructive maintenance transactions.
+	// defaultMaintenanceWriteTimeout 用于在调用方省略破坏性维护事务预算时，让代码内直接构造 store 的行为仍与仓库分发的维护工具默认值保持一致。
+	defaultMaintenanceWriteTimeout = 10 * time.Minute
 )
 
 // Config stores the runtime connection and dialect options required by the PostgreSQL combined-store adapter.
@@ -24,6 +32,8 @@ type Config struct {
 	Schema                  string
 	Flavor                  string
 	QueryTimeout            time.Duration
+	MaintenanceReadTimeout  time.Duration
+	MaintenanceWriteTimeout time.Duration
 	ConnectTimeout          time.Duration
 	MaxOpenConns            int
 	MinIdleConns            int
@@ -186,6 +196,12 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.QueryTimeout <= 0 {
 		cfg.QueryTimeout = 5 * time.Second
+	}
+	if cfg.MaintenanceReadTimeout <= 0 {
+		cfg.MaintenanceReadTimeout = defaultMaintenanceReadTimeout
+	}
+	if cfg.MaintenanceWriteTimeout <= 0 {
+		cfg.MaintenanceWriteTimeout = defaultMaintenanceWriteTimeout
 	}
 	if cfg.ConnectTimeout <= 0 {
 		cfg.ConnectTimeout = 5 * time.Second

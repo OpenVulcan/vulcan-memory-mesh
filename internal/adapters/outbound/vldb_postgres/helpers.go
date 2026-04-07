@@ -176,6 +176,26 @@ func (s *Store) bootstrapContext(ctx context.Context) (context.Context, context.
 	return context.WithTimeout(ctx, timeout)
 }
 
+// maintenanceReadContext derives a maintenance-oriented read timeout so project-memory exports and vector-rebuild fact scans can run longer than ordinary online requests without becoming unbounded.
+// maintenanceReadContext 用于派生面向维护读取的超时，让项目记忆导出和向量重建事实扫描可以长于普通在线请求，但又不会变成无界等待。
+func (s *Store) maintenanceReadContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := s.cfg.MaintenanceReadTimeout
+	if timeout <= 0 {
+		timeout = defaultMaintenanceReadTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// maintenanceWriteContext derives a maintenance-oriented long-transaction timeout so destructive rebuild/import workflows do not inherit startup or request budgets that are too small for large datasets.
+// maintenanceWriteContext 用于派生面向维护长事务的超时，让破坏性重建/导入流程不会继承对大数据集来说过小的启动期或请求期预算。
+func (s *Store) maintenanceWriteContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := s.cfg.MaintenanceWriteTimeout
+	if timeout <= 0 {
+		timeout = defaultMaintenanceWriteTimeout
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
 // normalizeUint64List removes zero values and duplicates while keeping a deterministic ascending order for SQL IN/ANY queries.
 // normalizeUint64List 用于移除零值和重复项，并保持确定性的升序，供 SQL IN/ANY 查询复用。
 func normalizeUint64List(values []uint64) []uint64 {

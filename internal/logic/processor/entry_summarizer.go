@@ -31,7 +31,13 @@ func (s *EntrySummarizer) Summarize(ctx context.Context, transcript string) (str
 	if err != nil {
 		return "", fmt.Errorf("load summarize_entry prompt: %w", err)
 	}
-	resp, err := s.llm.Generate(ctx, logicports.LLMRequest{Model: s.model, SystemPrompt: prompt, UserPrompt: strings.TrimSpace(transcript), ResponseFormat: logicports.LLMResponseFormatJSON})
+	resp, err := s.llm.Generate(ctx, logicports.LLMRequest{
+		Model:               s.model,
+		SystemPrompt:        prompt,
+		UserPrompt:          strings.TrimSpace(transcript),
+		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelReserve,
+	})
 	if err != nil {
 		return "", err
 	}

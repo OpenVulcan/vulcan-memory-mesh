@@ -49,6 +49,12 @@ func newLLMRouteForTest(provider string, endpoint string, apiKeys []string, mode
 	}
 }
 
+// intPtrForAppTest returns one stable integer pointer so runtime composition tests can express explicit per-scene route weights.
+// intPtrForAppTest 用于返回稳定的整数指针，让运行时装配测试可以表达显式的分场景路由权重。
+func intPtrForAppTest(value int) *int {
+	return &value
+}
+
 // newRerankRouteForTest builds one explicit rerank route fixture so tests never rely on removed top-level rerank fields.
 // newRerankRouteForTest 用于构造一条显式 rerank 路由测试夹具，避免测试再依赖已移除的顶层 rerank 字段。
 func newRerankRouteForTest(provider string, endpoint string, apiKeys []string, model string, timeout time.Duration) config.RerankRouteConfig {
@@ -430,14 +436,18 @@ func TestAdaptLLMForProcessorRoutesClearsPinnedModel(t *testing.T) {
 
 	client := adaptLLMForProcessorRoutes(cfg, upstream)
 	if _, err := client.Generate(context.Background(), appports.LLMRequest{
-		Model:        "model-a",
-		SystemPrompt: "system",
-		UserPrompt:   "user",
+		Model:               "model-a",
+		SystemPrompt:        "system",
+		UserPrompt:          "user",
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPreCheckL1,
 	}); err != nil {
 		t.Fatalf("generate through processor adapter: %v", err)
 	}
 	if upstream.lastRequest.Model != "" {
 		t.Fatalf("expected multi-route processor client to clear request model, got %q", upstream.lastRequest.Model)
+	}
+	if upstream.lastRequest.RouteSelectionLevel != appports.LLMRouteSelectionLevelPreCheckL1 {
+		t.Fatalf("expected processor adapter to preserve route selection level, got %q", upstream.lastRequest.RouteSelectionLevel)
 	}
 }
 
@@ -449,14 +459,18 @@ func TestAdaptLLMForProcessorRoutesPreservesPinnedModelForSingleRoute(t *testing
 
 	client := adaptLLMForProcessorRoutes(cfg, upstream)
 	if _, err := client.Generate(context.Background(), appports.LLMRequest{
-		Model:        "test-llm",
-		SystemPrompt: "system",
-		UserPrompt:   "user",
+		Model:               "test-llm",
+		SystemPrompt:        "system",
+		UserPrompt:          "user",
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPostActionL2,
 	}); err != nil {
 		t.Fatalf("generate through single-route processor adapter: %v", err)
 	}
 	if upstream.lastRequest.Model != "test-llm" {
 		t.Fatalf("expected single-route processor client to preserve request model, got %q", upstream.lastRequest.Model)
+	}
+	if upstream.lastRequest.RouteSelectionLevel != appports.LLMRouteSelectionLevelPostActionL2 {
+		t.Fatalf("expected single-route processor client to preserve route selection level, got %q", upstream.lastRequest.RouteSelectionLevel)
 	}
 }
 
@@ -465,15 +479,29 @@ func TestAdaptLLMForProcessorRoutesPreservesPinnedModelForSingleRoute(t *testing
 func TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder(t *testing.T) {
 	cfg := newRuntimeConfigForTest()
 	cfg.LLM.Routes = []config.LLMRouteConfig{
-		{Name: "primary", Priority: 100, Provider: "openai", Endpoint: "https://primary.example/v1", APIKeys: []string{"llm-a"}, Model: "qwen3.5-flash-plus"},
-		{Name: "backup", Priority: 50, Provider: "openai", Endpoint: "https://backup.example/v1", APIKeys: []string{"llm-b"}, Model: "qwen3.5-flash"},
+		{
+			Name:     "primary",
+			Provider: "openai",
+			Endpoint: "https://primary.example/v1",
+			APIKeys:  []string{"llm-a"},
+			Model:    "qwen3.5-flash-plus",
+			Weights:  config.LLMRouteWeightConfig{PreCheckL1: intPtrForAppTest(180)},
+		},
+		{
+			Name:     "backup",
+			Provider: "openai",
+			Endpoint: "https://backup.example/v1",
+			APIKeys:  []string{"llm-b"},
+			Model:    "qwen3.5-flash",
+			Weights:  config.LLMRouteWeightConfig{PreCheckL1: intPtrForAppTest(120)},
+		},
 	}
 	prompts := matchingPromptSource{folders: map[string]string{
 		"qwen3.5-flash-plus": "qwen-flash",
 		"qwen3.5-flash":      "qwen-flash",
 	}}
 
-	if got, want := selectProcessorPromptModel(cfg, prompts), "qwen3.5-flash-plus"; got != want {
+	if got, want := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL1), "qwen3.5-flash-plus"; got != want {
 		t.Fatalf("processor prompt model = %q, want %q", got, want)
 	}
 }
@@ -483,16 +511,71 @@ func TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder(
 func TestSelectProcessorPromptModelFallsBackToDefaultForMixedPromptFolders(t *testing.T) {
 	cfg := newRuntimeConfigForTest()
 	cfg.LLM.Routes = []config.LLMRouteConfig{
-		{Name: "primary", Priority: 100, Provider: "openai", Endpoint: "https://primary.example/v1", APIKeys: []string{"llm-a"}, Model: "qwen3.5-flash-plus"},
-		{Name: "backup", Priority: 50, Provider: "openai", Endpoint: "https://backup.example/v1", APIKeys: []string{"llm-b"}, Model: "qwen3.5-base"},
+		{
+			Name:     "primary",
+			Provider: "openai",
+			Endpoint: "https://primary.example/v1",
+			APIKeys:  []string{"llm-a"},
+			Model:    "qwen3.5-flash-plus",
+			Weights:  config.LLMRouteWeightConfig{PostActionL2: intPtrForAppTest(180)},
+		},
+		{
+			Name:     "backup",
+			Provider: "openai",
+			Endpoint: "https://backup.example/v1",
+			APIKeys:  []string{"llm-b"},
+			Model:    "qwen3.5-base",
+			Weights:  config.LLMRouteWeightConfig{PostActionL2: intPtrForAppTest(120)},
+		},
 	}
 	prompts := matchingPromptSource{folders: map[string]string{
 		"qwen3.5-flash-plus": "qwen-flash",
 		"qwen3.5-base":       "qwen-base",
 	}}
 
-	if got := selectProcessorPromptModel(cfg, prompts); got != "" {
+	if got := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL2); got != "" {
 		t.Fatalf("processor prompt model = %q, want empty string for default prompt fallback", got)
+	}
+}
+
+// TestSelectProcessorPromptModelUsesSelectionLevelWeights verifies different business tiers can resolve different prompt-anchor models from the same route table.
+// TestSelectProcessorPromptModelUsesSelectionLevelWeights 用于验证不同业务层级可以从同一份路由表里解析出不同的提示词锚定模型。
+func TestSelectProcessorPromptModelUsesSelectionLevelWeights(t *testing.T) {
+	cfg := newRuntimeConfigForTest()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		{
+			Name:     "precheck",
+			Provider: "openai",
+			Endpoint: "https://precheck.example/v1",
+			APIKeys:  []string{"llm-a"},
+			Model:    "qwen3.5-flash",
+			Weights: config.LLMRouteWeightConfig{
+				PreCheckL1:   intPtrForAppTest(200),
+				PostActionL1: intPtrForAppTest(40),
+			},
+		},
+		{
+			Name:     "postaction",
+			Provider: "openai",
+			Endpoint: "https://postaction.example/v1",
+			APIKeys:  []string{"llm-b"},
+			Model:    "qwen3.5-base",
+			Weights: config.LLMRouteWeightConfig{
+				PreCheckL1:   intPtrForAppTest(50),
+				PostActionL1: intPtrForAppTest(220),
+			},
+		},
+	}
+	prompts := matchingPromptSource{folders: map[string]string{
+		"qwen3.5-flash": "shared",
+		"qwen3.5-base":  "shared",
+	}}
+
+	if got, want := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL1), "qwen3.5-flash"; got != want {
+		t.Fatalf("precheck prompt model = %q, want %q", got, want)
+	}
+	if got, want := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL1), "qwen3.5-base"; got != want {
+		t.Fatalf("postaction prompt model = %q, want %q", got, want)
 	}
 }
 
@@ -512,6 +595,33 @@ func TestBuildRerankerUsesMultiRouteWrapper(t *testing.T) {
 	}
 	if _, ok := client.(*ai_key_failover.RerankMultiRouteClient); !ok {
 		t.Fatalf("expected multi-route rerank wrapper, got %T", client)
+	}
+}
+
+// TestBuildRerankerSupportsSiliconFlowProvider verifies runtime composition accepts SiliconFlow rerank routes and can materialize the provider-specific adapter with provider defaults intact.
+// TestBuildRerankerSupportsSiliconFlowProvider 用于验证运行时装配接受 SiliconFlow rerank 路由，并能在保留 provider 默认值的前提下实例化对应适配器。
+func TestBuildRerankerSupportsSiliconFlowProvider(t *testing.T) {
+	cfg := newRuntimeConfigForTest()
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Routes = []config.RerankRouteConfig{{
+		Provider: "siliconflow",
+		APIKeys:  []string{"silicon-key"},
+	}}
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config validation should accept siliconflow rerank: %v", err)
+	}
+	if route := cfg.Rerank.ProviderRoutes()[0]; route.Endpoint != "https://api.siliconflow.cn/v1/rerank" || route.Model != "BAAI/bge-reranker-v2-m3" {
+		t.Fatalf("normalized siliconflow rerank route = %#v", route)
+	}
+
+	client, err := buildReranker(cfg)
+	if err != nil {
+		t.Fatalf("build siliconflow reranker: %v", err)
+	}
+	if _, ok := client.(*ai_key_failover.RerankerClient); !ok {
+		t.Fatalf("expected fixed-route siliconflow reranker wrapper, got %T", client)
 	}
 }
 
@@ -560,6 +670,34 @@ func TestBuildAdaptersAllowTrimmedProviderAliases(t *testing.T) {
 	}
 	if _, err := buildRelational(cfg); err != nil {
 		t.Fatalf("build relational with trimmed provider alias: %v", err)
+	}
+}
+
+// TestBuildGoogleAIStudioAdapters verifies runtime composition accepts the native Google AI Studio provider for both LLM routes and embedding while keeping endpoint optional.
+// TestBuildGoogleAIStudioAdapters 用于验证运行时装配支持原生 Google AI Studio provider，并允许在 LLM 路由与 embedding 中省略 endpoint。
+func TestBuildGoogleAIStudioAdapters(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		{
+			Provider: "google_ai_studio",
+			APIKeys:  []string{"google-llm-key"},
+			Model:    "gemini-2.5-flash",
+		},
+	}
+	cfg.Embedding.Provider = "google_ai_studio"
+	cfg.Embedding.APIKeys = []string{"google-embed-key"}
+	cfg.Embedding.Model = "gemini-embedding-001"
+	cfg.Embedding.Dimension = 1024
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config validation should accept google ai studio: %v", err)
+	}
+	if _, err := buildLLM(cfg); err != nil {
+		t.Fatalf("build google ai studio llm: %v", err)
+	}
+	if _, err := buildEmbedding(cfg); err != nil {
+		t.Fatalf("build google ai studio embedding: %v", err)
 	}
 }
 

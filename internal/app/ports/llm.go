@@ -15,6 +15,20 @@ const (
 	LLMResponseFormatJSON = logicports.LLMResponseFormatJSON
 )
 
+// LLMRouteSelectionLevel describes the business call tier carried through the application-facing LLM contract.
+// LLMRouteSelectionLevel 用于描述应用层 LLM 契约里携带的业务调用层级。
+type LLMRouteSelectionLevel = logicports.LLMRouteSelectionLevel
+
+// Constants enumerate the supported business-facing LLM route selection levels.
+// Constants 用于枚举面向业务语义的 LLM 路由选择层级。
+const (
+	LLMRouteSelectionLevelPreCheckL1   = logicports.LLMRouteSelectionLevelPreCheckL1
+	LLMRouteSelectionLevelPreCheckL2   = logicports.LLMRouteSelectionLevelPreCheckL2
+	LLMRouteSelectionLevelPostActionL1 = logicports.LLMRouteSelectionLevelPostActionL1
+	LLMRouteSelectionLevelPostActionL2 = logicports.LLMRouteSelectionLevelPostActionL2
+	LLMRouteSelectionLevelReserve      = logicports.LLMRouteSelectionLevelReserve
+)
+
 // LLMRequest carries the provider-neutral generation payload built by processors and use cases.
 // LLMRequest 用于承载处理器和用例层构建的 provider 无关生成请求。
 type LLMRequest = logicports.LLMRequest

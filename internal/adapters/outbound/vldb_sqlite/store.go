@@ -2743,6 +2743,12 @@ ORDER BY t.name ASC, sp.name ASC, p.name ASC
 	return out, nil
 }
 
+// ListProjectsForMaintenance reuses the normal SQLite project listing because SQLite workspace enumeration already runs under the same bounded gateway timeout used by maintenance commands.
+// ListProjectsForMaintenance 用于让维护命令复用常规 SQLite 项目列表读取，因为 SQLite 的项目枚举本就运行在同一套有界网关超时之下。
+func (s *Store) ListProjectsForMaintenance(ctx context.Context) ([]logicdomain.ProjectRecord, error) {
+	return s.ListProjects(ctx)
+}
+
 // ResolveProjectRef resolves either a numeric project id or a canonical Team/Space/Project path.
 // ResolveProjectRef 用于解析数字 project id，或标准的 Team/Space/Project 路径。
 func (s *Store) ResolveProjectRef(ctx context.Context, projectRef string) (logicdomain.ProjectRecord, error) {
@@ -2828,6 +2834,81 @@ ORDER BY created_timestamp ASC, id ASC
 		})
 	}
 	return out, nil
+}
+
+// ListProjectMemoriesForMaintenance reuses the normal SQLite project-memory scan for maintenance commands because SQLite already executes the durable read under the same bounded gateway timeout.
+// ListProjectMemoriesForMaintenance 用于让维护命令复用常规 SQLite 项目记忆扫描，因为 SQLite durable 读取本就走同一套有界网关超时。
+func (s *Store) ListProjectMemoriesForMaintenance(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	return s.ListProjectMemories(ctx, projectID)
+}
+
+// ReplaceMemoryVectors rewrites the durable SQLite vector_json payload for one active-memory batch so split-mode rebuild tools can keep SQLite and LanceDB strictly synchronized after a model change.
+// ReplaceMemoryVectors 用于重写一批长期记忆在 SQLite 中保存的 vector_json，让分离模式重建工具在模型切换后保持 SQLite 与 LanceDB 严格同步。
+func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("sqlite store is not initialized")
+	}
+	if len(records) == 0 {
+		return nil
+	}
+
+	// Keep the durable vector rewrite under the shared write lock so one maintenance rebuild cannot interleave with ordinary memory mutations.
+	// 把 durable 向量重写放进共享写锁内，避免维护重建和普通记忆写入彼此交叉。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	items := make([][]any, 0, len(records))
+	for idx, record := range records {
+		vectorID := strings.TrimSpace(record.ID)
+		if vectorID == "" {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].id", idx), Message: "is required"}
+		}
+		if len(record.Vector) == 0 {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].vector", idx), Message: "must contain at least one dimension"}
+		}
+		items = append(items, []any{encodeFloat32Slice(record.Vector), vectorID})
+	}
+	if err := s.execBatch(ctx, `
+UPDATE vmm_memory_nodes
+SET vector_json = ?
+WHERE vector_id = ?
+`, items); err != nil {
+		return fmt.Errorf("replace sqlite memory vectors: %w", err)
+	}
+	return nil
+}
+
+// ClearMemoryVectors clears one active durable batch's SQLite vector_json payload back to the empty baseline before split-mode maintenance rebuilds repopulate both SQLite and LanceDB from scratch.
+// ClearMemoryVectors 用于把一批 active durable 记忆的 SQLite vector_json 清回空基线，再由 split 模式维护重建从零开始同时回填 SQLite 与 LanceDB。
+func (s *Store) ClearMemoryVectors(ctx context.Context, vectorIDs []string) error {
+	if s == nil || s.client == nil {
+		return fmt.Errorf("sqlite store is not initialized")
+	}
+	if len(vectorIDs) == 0 {
+		return nil
+	}
+
+	// Keep the destructive reset under the shared write lock so no foreground writer can observe or reintroduce stale vectors between the reset and the later rebuild batches.
+	// 把破坏性的向量清空动作放进共享写锁内，避免前台写入在清空与后续重建批次之间观察到或重新引入陈旧向量。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	items := make([][]any, 0, len(vectorIDs))
+	for idx, vectorID := range vectorIDs {
+		cleanedVectorID := strings.TrimSpace(vectorID)
+		if cleanedVectorID == "" {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("vector_ids[%d]", idx), Message: "is required"}
+		}
+		items = append(items, []any{cleanedVectorID})
+	}
+	if err := s.execBatch(ctx, `
+UPDATE vmm_memory_nodes
+SET vector_json = '[]'
+WHERE vector_id = ?
+`, items); err != nil {
+		return fmt.Errorf("clear sqlite memory vectors: %w", err)
+	}
+	return nil
 }
 
 // EnsureProjectPath resolves or creates a Team/Space/Project path according to the confirm flag rules required by the admin RPCs.

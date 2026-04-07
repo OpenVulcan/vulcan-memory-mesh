@@ -5,6 +5,7 @@ package ai_key_failover
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
 	"net/http"
 	"net/url"
@@ -14,6 +15,8 @@ import (
 
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/siliconflow_rerank"
+	"google.golang.org/genai"
 )
 
 // errorClass labels the normalized failure class used by the in-memory key failover state machine.
@@ -105,6 +108,66 @@ func classifyOpenAIError(err error, options Options, now time.Time) failureDecis
 	return failureDecision{Class: errorClassUnknown}
 }
 
+// classifyGoogleAIStudioError maps one Google AI Studio native SDK error into the same key-failover decision contract used by the OpenAI-compatible adapters.
+// classifyGoogleAIStudioError 用于把单次 Google AI Studio 原生 SDK 错误映射成与 OpenAI-compatible 适配器一致的 key-failover 决策契约。
+func classifyGoogleAIStudioError(err error, options Options, now time.Time) failureDecision {
+	if err == nil {
+		return failureDecision{Class: errorClassNone}
+	}
+	if isNetworkError(err) {
+		return failureDecision{Class: errorClassPublicFault}
+	}
+	var apiErr genai.APIError
+	if !errors.As(err, &apiErr) {
+		return failureDecision{Class: errorClassUnknown}
+	}
+	body := strings.ToLower(strings.TrimSpace(apiErr.Message + " " + apiErr.Status + " " + fmt.Sprintf("%v", apiErr.Details)))
+	switch apiErr.Code {
+	case http.StatusBadRequest:
+		if shouldSwitchKeyOnGoogleAIStudioCredentialFailure(body) {
+			return failureDecision{
+				Class:     errorClassAuth,
+				SwitchKey: true,
+				Cooldown:  options.AuthCooldown,
+			}
+		}
+		return failureDecision{Class: errorClassInvalidRequest}
+	case http.StatusUnauthorized:
+		return failureDecision{
+			Class:     errorClassAuth,
+			SwitchKey: true,
+			Cooldown:  options.AuthCooldown,
+		}
+	case http.StatusForbidden:
+		if shouldSwitchKeyOnGoogleAIStudioCredentialFailure(body) {
+			return failureDecision{
+				Class:     errorClassAuth,
+				SwitchKey: true,
+				Cooldown:  options.AuthCooldown,
+			}
+		}
+		return failureDecision{Class: errorClassPublicFault}
+	case http.StatusTooManyRequests:
+		if containsAny(body, "insufficient_quota", "quota", "billing", "resource_exhausted", "exhausted", "budget") {
+			return failureDecision{
+				Class:     errorClassQuota,
+				SwitchKey: true,
+				Cooldown:  options.QuotaCooldown,
+			}
+		}
+		return failureDecision{
+			Class:     errorClassRateLimit,
+			SwitchKey: true,
+			Cooldown:  options.RateLimitCooldown,
+		}
+	default:
+		if apiErr.Code == http.StatusRequestTimeout || apiErr.Code == http.StatusConflict || apiErr.Code >= http.StatusInternalServerError {
+			return failureDecision{Class: errorClassPublicFault}
+		}
+	}
+	return failureDecision{Class: errorClassUnknown}
+}
+
 // shouldSwitchKeyOnOpenAIForbidden only returns true for 403 payloads that explicitly point to one bad or revoked credential instead of one shared permission problem.
 // shouldSwitchKeyOnOpenAIForbidden 仅在 403 载荷明确指向单个坏掉或被吊销的凭据时返回 true，而不会把共享权限问题误判为切 Key 场景。
 func shouldSwitchKeyOnOpenAIForbidden(body string) bool {
@@ -115,6 +178,26 @@ func shouldSwitchKeyOnOpenAIForbidden(body string) bool {
 		"incorrect_api_key",
 		"incorrect api key",
 		"bad api key",
+		"api key is disabled",
+		"key disabled",
+		"revoked api key",
+		"api key has been revoked",
+	)
+}
+
+// shouldSwitchKeyOnGoogleAIStudioCredentialFailure only returns true when a Gemini error payload explicitly points to one malformed, revoked, or otherwise key-scoped credential failure.
+// shouldSwitchKeyOnGoogleAIStudioCredentialFailure 仅在 Gemini 错误载荷明确指向单个格式错误、已吊销或其他 Key 级凭据失效时返回 true，避免把共享权限问题误判为切 Key 场景。
+func shouldSwitchKeyOnGoogleAIStudioCredentialFailure(body string) bool {
+	return containsAny(
+		body,
+		"api_key_invalid",
+		"api key invalid",
+		"api key not valid",
+		"invalid api key",
+		"bad api key",
+		"malformed api key",
+		"credential is malformed",
+		"invalid authentication credentials",
 		"api key is disabled",
 		"key disabled",
 		"revoked api key",
@@ -133,66 +216,25 @@ func classifyDashScopeError(err error, options Options, now time.Time) failureDe
 	}
 	var apiErr *dashscope_rerank.APIError
 	if errors.As(err, &apiErr) {
-		message := strings.ToLower(strings.TrimSpace(apiErr.Error() + " " + apiErr.Body))
-		switch apiErr.StatusCode {
-		case http.StatusBadRequest:
-			return failureDecision{Class: errorClassInvalidRequest}
-		case http.StatusUnauthorized, http.StatusForbidden:
-			return failureDecision{
-				Class:     errorClassAuth,
-				SwitchKey: true,
-				Cooldown:  chooseCooldownFromHeader(apiErr.Headers, now, options.RespectRetryAfter, options.AuthCooldown),
-			}
-		case http.StatusTooManyRequests:
-			if containsAny(message, "insufficient_quota", "quota", "balance", "insufficient balance", "insufficient_balance") {
-				return failureDecision{
-					Class:     errorClassQuota,
-					SwitchKey: true,
-					Cooldown:  chooseCooldownFromHeader(apiErr.Headers, now, options.RespectRetryAfter, options.QuotaCooldown),
-				}
-			}
-			return failureDecision{
-				Class:     errorClassRateLimit,
-				SwitchKey: true,
-				Cooldown:  chooseCooldownFromHeader(apiErr.Headers, now, options.RespectRetryAfter, options.RateLimitCooldown),
-			}
-		default:
-			if apiErr.StatusCode == http.StatusRequestTimeout || apiErr.StatusCode == http.StatusConflict || apiErr.StatusCode >= http.StatusInternalServerError {
-				return failureDecision{Class: errorClassPublicFault}
-			}
-		}
-		return failureDecision{Class: errorClassUnknown}
+		return classifyStructuredRerankAPIError(apiErr.StatusCode, apiErr.Headers, apiErr.Error()+" "+apiErr.Body, options, now)
 	}
-	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	status := parseStatusCodeFromText(message)
-	switch status {
-	case http.StatusBadRequest:
-		return failureDecision{Class: errorClassInvalidRequest}
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return failureDecision{
-			Class:     errorClassAuth,
-			SwitchKey: true,
-			Cooldown:  options.AuthCooldown,
-		}
-	case http.StatusTooManyRequests:
-		if containsAny(message, "insufficient_quota", "quota", "balance", "insufficient balance", "insufficient_balance") {
-			return failureDecision{
-				Class:     errorClassQuota,
-				SwitchKey: true,
-				Cooldown:  options.QuotaCooldown,
-			}
-		}
-		return failureDecision{
-			Class:     errorClassRateLimit,
-			SwitchKey: true,
-			Cooldown:  options.RateLimitCooldown,
-		}
-	default:
-		if status == http.StatusRequestTimeout || status == http.StatusConflict || status >= http.StatusInternalServerError {
-			return failureDecision{Class: errorClassPublicFault}
-		}
+	return classifyTextRerankAPIError(err, options)
+}
+
+// classifySiliconFlowError maps one SiliconFlow rerank error into the same key-failover decision contract used by the other outbound adapters.
+// classifySiliconFlowError 用于把单次 SiliconFlow rerank 错误映射成与其他出站适配器一致的 Key 容灾决策契约。
+func classifySiliconFlowError(err error, options Options, now time.Time) failureDecision {
+	if err == nil {
+		return failureDecision{Class: errorClassNone}
 	}
-	return failureDecision{Class: errorClassUnknown}
+	if isNetworkError(err) {
+		return failureDecision{Class: errorClassPublicFault}
+	}
+	var apiErr *siliconflow_rerank.APIError
+	if errors.As(err, &apiErr) {
+		return classifyStructuredRerankAPIError(apiErr.StatusCode, apiErr.Headers, apiErr.Error()+" "+apiErr.Body, options, now)
+	}
+	return classifyTextRerankAPIError(err, options)
 }
 
 // chooseCooldown prefers provider Retry-After hints when enabled and otherwise falls back to one static configured duration.
@@ -236,6 +278,75 @@ func retryAfterDuration(header http.Header, now time.Time) (time.Duration, bool)
 		}
 	}
 	return 0, false
+}
+
+// classifyStructuredRerankAPIError converts one structured rerank HTTP failure into the shared key-failover decision contract so heterogeneous providers still honor the same cooldown semantics.
+// classifyStructuredRerankAPIError 用于把结构化的 rerank HTTP 失败转换成统一的 Key 容灾决策，让异构 provider 仍遵循同一套冷却语义。
+func classifyStructuredRerankAPIError(statusCode int, headers http.Header, message string, options Options, now time.Time) failureDecision {
+	lowered := strings.ToLower(strings.TrimSpace(message))
+	switch statusCode {
+	case http.StatusBadRequest:
+		return failureDecision{Class: errorClassInvalidRequest}
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return failureDecision{
+			Class:     errorClassAuth,
+			SwitchKey: true,
+			Cooldown:  chooseCooldownFromHeader(headers, now, options.RespectRetryAfter, options.AuthCooldown),
+		}
+	case http.StatusTooManyRequests:
+		if containsAny(lowered, "insufficient_quota", "quota", "balance", "insufficient balance", "insufficient_balance") {
+			return failureDecision{
+				Class:     errorClassQuota,
+				SwitchKey: true,
+				Cooldown:  chooseCooldownFromHeader(headers, now, options.RespectRetryAfter, options.QuotaCooldown),
+			}
+		}
+		return failureDecision{
+			Class:     errorClassRateLimit,
+			SwitchKey: true,
+			Cooldown:  chooseCooldownFromHeader(headers, now, options.RespectRetryAfter, options.RateLimitCooldown),
+		}
+	default:
+		if statusCode == http.StatusRequestTimeout || statusCode == http.StatusConflict || statusCode >= http.StatusInternalServerError {
+			return failureDecision{Class: errorClassPublicFault}
+		}
+	}
+	return failureDecision{Class: errorClassUnknown}
+}
+
+// classifyTextRerankAPIError falls back to parsing status hints from one plain rerank error string when the adapter could not preserve a structured API error.
+// classifyTextRerankAPIError 用于在适配器无法保留结构化 API 错误时，从普通 rerank 错误字符串里回退解析状态码提示。
+func classifyTextRerankAPIError(err error, options Options) failureDecision {
+	message := strings.ToLower(strings.TrimSpace(err.Error()))
+	status := parseStatusCodeFromText(message)
+	switch status {
+	case http.StatusBadRequest:
+		return failureDecision{Class: errorClassInvalidRequest}
+	case http.StatusUnauthorized, http.StatusForbidden:
+		return failureDecision{
+			Class:     errorClassAuth,
+			SwitchKey: true,
+			Cooldown:  options.AuthCooldown,
+		}
+	case http.StatusTooManyRequests:
+		if containsAny(message, "insufficient_quota", "quota", "balance", "insufficient balance", "insufficient_balance") {
+			return failureDecision{
+				Class:     errorClassQuota,
+				SwitchKey: true,
+				Cooldown:  options.QuotaCooldown,
+			}
+		}
+		return failureDecision{
+			Class:     errorClassRateLimit,
+			SwitchKey: true,
+			Cooldown:  options.RateLimitCooldown,
+		}
+	default:
+		if status == http.StatusRequestTimeout || status == http.StatusConflict || status >= http.StatusInternalServerError {
+			return failureDecision{Class: errorClassPublicFault}
+		}
+	}
+	return failureDecision{Class: errorClassUnknown}
 }
 
 // containsAny reports whether the lowercase haystack includes any lowercase marker.

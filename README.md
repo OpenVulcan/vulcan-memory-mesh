@@ -533,6 +533,12 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 .\output\bin\vmm-local.exe
 ```
 
+标准构建会产出以下可执行文件：
+
+- `output/bin/vmm-local.exe`：正常 gRPC 运行时
+- `output/bin/vmm-migrate.exe`：一次性维护工具
+- `output/bin/vmm-pii-tester.exe`：PII 规则测试器
+
 ### 用户覆盖目录
 
 ```powershell
@@ -552,37 +558,56 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `base.yaml` 只随项目或打包产物分发，不放到用户目录。
 - 用户目录只负责提供覆盖层 `config.yaml`。
 
-### 调试清库
+### 维护工具
 
-需要调试时，可以继续通过 `make` 调主程序，但把清理目标通过 `--debug-clean` 传给二进制：
+一次性维护动作已经从 `vmm-local` 剥离到独立工具 `vmm-migrate`。维护命令执行完成后会立即退出，不会启动 VMM gRPC 服务。
+
+#### 清库
 
 ```powershell
-.\make.bat run --debug-clean sqlite
-.\make.bat run --debug-clean lancedb
-.\make.bat run --debug-clean postgres
-.\make.bat run --debug-clean all
+.\output\bin\vmm-migrate.exe -clean sqlite
+.\output\bin\vmm-migrate.exe -clean lancedb
+.\output\bin\vmm-migrate.exe -clean postgres
+.\output\bin\vmm-migrate.exe -clean all
 ```
 
 说明：
 
-- `make` 只负责透传参数，不在脚本里直接做数据库清理
-- `vmm-local --debug-clean ...` 会只连接对应的 SQLite / LanceDB / PostgreSQL 存储后端
-- 清理完成后立即退出，不会启动 VMM gRPC 服务
+- `-clean` 会只连接目标后端并执行受管数据清理
+- `split` 模式下可以分别清理 SQLite 和 LanceDB
+- `combined` 模式下可以单独清理 PostgreSQL 受管 schema
 
-### 调试迁移
+#### 存储迁移
 
-当需要把历史 split 模式的 SQLite 事实库迁移到 PostgreSQL 组合库时，可以通过调试迁移命令执行一次性回放：
+当需要把历史 `split` 模式的 SQLite 事实库迁移到 PostgreSQL 组合库时，可以执行：
 
 ```powershell
-.\make.bat run --debug-migrate split-to-combined
+.\output\bin\vmm-migrate.exe -migrate split-to-combined
 ```
 
 说明：
 
 - 迁移源固定为 SQLite，不依赖 LanceDB
-- 迁移过程中会在 Go 内存中解析 `vector_json`，然后直接写入 PostgreSQL 的原生 `embedding` 向量列
+- 迁移过程中会在 Go 内存中解析 `vector_json`，然后直接写入 PostgreSQL 原生 `embedding` 向量列
 - 迁移目标使用 `postgres.*` 配置，不要求当前 `storage.mode` 已经切到 `combined`
-- 迁移完成后立即退出，不会启动 VMM gRPC 服务
+
+#### 向量重建
+
+当切换新的 embedding 模型，尤其是向量维度发生变化时，可以执行：
+
+```powershell
+.\output\bin\vmm-migrate.exe -vector-rebuild
+```
+
+说明：
+
+- 执行前必须先停止 `vmm-local` / gRPC 运行时服务；如果 `grpc.listen_addr` 仍被占用，命令会直接拒绝执行，并在整个重建期间继续占住该监听地址
+- 执行前必须手工输入 `Y` 明确确认；未确认会立即退出
+- 只会处理 `active` 且未过期的长期记忆，不会重建失活数据，也不会对垃圾箱数据做语义重建
+- `split` 模式会先清空 SQLite 中的 durable 向量并重建 LanceDB 表，再按当前模型重新生成 active 向量并同步回填两边
+- `combined` 模式会先重建 PostgreSQL `embedding` 列的向量维度，再为当前有效记忆重新生成向量
+- 重建时直接复用当前配置里的 embedding 路由与预算；如果所有 Key 都因为预算耗尽暂时不可用，会自动等待 30 秒后继续
+- 该命令的目标是“维度迁移型重建”，默认围绕模型切换后的向量维度变化执行
 
 ## 配置说明
 
@@ -684,7 +709,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 `rerank` 下当前新增的是“向量召回后的第二阶段重排序”参数：
 
 - `enabled`
-  - 是否启用 DashScope rerank；关闭时检索链保持当前首轮召回 / 融合排序结果
+  - 是否启用 rerank 第二阶段重排序；关闭时检索链保持当前首轮召回 / 融合排序结果
 - `top_n`
   - 每个 query group 最多送多少条首轮向量命中进入 rerank
 - `routes`
@@ -692,7 +717,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 每条 route 必须自包含 `provider + endpoint + model + api_keys/nodes + timeout`
   - 如果不拆 `nodes`，可以直接在 route 上配置 `rpm / tpm / rpd`
   - route 间按 `priority` 做有序容灾，route 内部继续执行 `nodes + key_failover`
-  - 当前内置 provider 仍只有 `dashscope`
+  - 当前内置 provider 包含 `dashscope / siliconflow`
   - route 全部失败时，检索链会按 `rerank=false` 语义降级回首轮排序
 
 AI 容灾边界当前统一为：
@@ -700,8 +725,12 @@ AI 容灾边界当前统一为：
 - `llm`
   - 只支持 `llm.routes[]`
   - 支持多 provider / 多 model / 多 route 的有序容灾
-  - `llm.routes[]` 示例现已包含 `rpm / tpm / rpd`
-  - route 之间按 `priority` 切换，route 内部再做 `nodes + key_failover`
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
+  - 不再支持 `llm.routes[].priority`
+  - `llm.routes[]` 示例现已包含 `rpm / tpm / rpd / weights`
+  - `llm.routes[].weights` 目前包含 `precheck_l1 / precheck_l2 / postaction_l1 / postaction_l2 / reserve`
+  - 未声明的 `weights.*` 默认都是 `100`
+  - LLM route 会按“当前调用层级对应的 weight”排序；route 内部再做 `nodes + key_failover`
 - `rerank`
   - 只支持 `rerank.routes[]`
   - 顶层只保留 `enabled / top_n / routes`
@@ -710,6 +739,7 @@ AI 容灾边界当前统一为：
 - `embedding`
   - 不支持 `routes`
   - 只支持固定 `provider + endpoint + model + dimension` 下的多 key 与 `nodes + key_failover`
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
   - `embedding` 示例现已包含顶层 `rpm / tpm / rpd`
   - `nodes` 只负责吞吐分档，不允许跨模型或跨 provider 混用向量空间
 

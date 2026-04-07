@@ -43,10 +43,11 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("load review_precheck_memory prompt: %w", err)
 	}
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
-		Model:          r.model,
-		SystemPrompt:   prompt,
-		UserPrompt:     requestBody,
-		ResponseFormat: logicports.LLMResponseFormatJSON,
+		Model:               r.model,
+		SystemPrompt:        prompt,
+		UserPrompt:          requestBody,
+		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPreCheckL2,
 	})
 	if err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, err
