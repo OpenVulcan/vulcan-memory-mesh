@@ -231,6 +231,9 @@ func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
 		if err != nil {
 			return fmt.Errorf("embed noise category %s: %w", category.Name, err)
 		}
+		if err := resp.ValidateStrict(len(category.Phrases)); err != nil {
+			return fmt.Errorf("embed noise category %s: %w", category.Name, err)
+		}
 		category.Vectors = make([][]float32, 0, len(resp.Vectors))
 		for _, vector := range resp.Vectors {
 			category.Vectors = append(category.Vectors, normalizeFloat32Vector(vector))
@@ -364,6 +367,10 @@ func (g *NoiseGate) evaluateSemantic(ctx context.Context, turn logicdomain.Norma
 		},
 	})
 	if err != nil {
+		g.logger.Warn("noise gate semantic runtime degraded", "err", err)
+		return NoiseDecision{Allow: true, ReasonCode: NoiseReasonSemanticUnavailable}
+	}
+	if err := resp.ValidateStrict(len(queries)); err != nil {
 		g.logger.Warn("noise gate semantic runtime degraded", "err", err)
 		return NoiseDecision{Allow: true, ReasonCode: NoiseReasonSemanticUnavailable}
 	}

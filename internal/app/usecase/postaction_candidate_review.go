@@ -76,7 +76,7 @@ func applyPostActionAdmissionFilter(analysis *logicdomain.TurnAnalysis, stats *p
 		filteredMemory = append(filteredMemory, node)
 	}
 	analysis.MemoryNodes = filteredMemory
-	reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter(analysis, memoryDropped)
+	reconcilePostActionSupersededMemoryIDsAfterMemoryFilter(analysis, memoryDropped)
 
 	// Filter profile candidates with the same admission rule so only durable, user-confirmed, or otherwise allowed evidence reaches later profile review.
 	// 按同样的准入规则过滤画像候选，确保只有持久、被用户确认或其他允许的证据会进入后续画像评审。
@@ -158,7 +158,7 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 	}
 
 	originalMemoryNodes := append([]logicdomain.MemoryNodeCandidate(nil), analysis.MemoryNodes...)
-	keptMemoryNodes, reviewDroppedCount, err := applyPostActionMemoryReviewResult(originalMemoryNodes, reviewed.Memory)
+	keptMemoryNodes, reviewDroppedCount, err := applyPostActionMemoryReviewResult(originalMemoryNodes, reviewed.Memory, memoryCandidates)
 	if err != nil {
 		return err
 	}
@@ -327,9 +327,9 @@ func validatePostActionDroppedDedupeMemoryID(scene string, candidateIndex int, s
 	return dedupeMemoryID, nil
 }
 
-// reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter keeps analyzer-origin supersede ids aligned with the surviving memory candidates so first-pass drops cannot retire unrelated old memories later.
-// reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter 用于让分析器产生的 supersede id 与首轮过滤后仍存活的记忆候选保持一致，避免首轮丢弃的候选在后续误退役无关旧记忆。
-func reconcilePostActionAnalyzerSupersededMemoryIDsAfterMemoryFilter(analysis *logicdomain.TurnAnalysis, memoryDropped bool) {
+// reconcilePostActionSupersededMemoryIDsAfterMemoryFilter keeps the top-level supersede id set aligned with the surviving memory candidates so later persistence never retires old memories that no accepted node still replaces.
+// reconcilePostActionSupersededMemoryIDsAfterMemoryFilter 用于让顶层 supersede id 集合与仍然存活的记忆候选保持一致，避免后续持久化误退役已经不再被任何接纳节点替代的旧记忆。
+func reconcilePostActionSupersededMemoryIDsAfterMemoryFilter(analysis *logicdomain.TurnAnalysis, memoryDropped bool) {
 	if analysis == nil {
 		return
 	}
@@ -524,14 +524,17 @@ func buildPostActionSimilarMemoryCandidates(hits []MemoryQueryHit, minSimilarity
 	return out
 }
 
-// applyPostActionMemoryReviewResult keeps only accepted memory candidates in original order and returns how many nodes the reviewer dropped during dedupe review.
-// applyPostActionMemoryReviewResult 用于按原始顺序保留被接纳的记忆候选，并返回 reviewer 在去重评审阶段额外丢弃了多少节点。
-func applyPostActionMemoryReviewResult(nodes []logicdomain.MemoryNodeCandidate, section *logicdomain.PostActionMemoryReviewSection) ([]logicdomain.MemoryNodeCandidate, int, error) {
+// applyPostActionMemoryReviewResult keeps only accepted memory candidates in original order and merges reviewer-approved supersede ids back onto each surviving node so later persistence can safely re-derive the final retirement set after any additional filtering.
+// applyPostActionMemoryReviewResult 用于按原始顺序保留被接纳的记忆候选，并把 reviewer 批准的 supersede id 回填到存活节点上，确保后续若还有额外过滤，持久化阶段仍能安全重建最终退役集合。
+func applyPostActionMemoryReviewResult(nodes []logicdomain.MemoryNodeCandidate, section *logicdomain.PostActionMemoryReviewSection, candidates []logicdomain.PostActionMemoryReviewCandidate) ([]logicdomain.MemoryNodeCandidate, int, error) {
 	if len(nodes) == 0 {
 		return nil, 0, nil
 	}
 	if section == nil {
 		return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "missing memory review result"}
+	}
+	if len(candidates) != len(nodes) {
+		return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "memory candidate count does not match nodes"}
 	}
 	accepted := make(map[int]struct{}, len(section.AcceptedCandidateIndexes))
 	for _, idx := range section.AcceptedCandidateIndexes {
@@ -540,14 +543,69 @@ func applyPostActionMemoryReviewResult(nodes []logicdomain.MemoryNodeCandidate, 
 		}
 		accepted[idx] = struct{}{}
 	}
+	acceptedByIndex := make(map[int]logicdomain.PostActionAcceptedMemoryCandidate, len(section.AcceptedCandidates))
+	for _, acceptedCandidate := range section.AcceptedCandidates {
+		if acceptedCandidate.CandidateIndex < 0 || acceptedCandidate.CandidateIndex >= len(nodes) {
+			return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory accepted candidate %d is out of range", acceptedCandidate.CandidateIndex)}
+		}
+		acceptedByIndex[acceptedCandidate.CandidateIndex] = acceptedCandidate
+	}
 	kept := make([]logicdomain.MemoryNodeCandidate, 0, len(section.AcceptedCandidateIndexes))
 	for idx, node := range nodes {
 		if _, ok := accepted[idx]; !ok {
 			continue
 		}
+		if acceptedCandidate, ok := acceptedByIndex[idx]; ok {
+			supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
+				"review_postaction_candidates",
+				acceptedCandidate.CandidateIndex,
+				candidates[idx].SimilarMemories,
+				acceptedCandidate.SupersedeMemoryIDs,
+			)
+			if err != nil {
+				return nil, 0, err
+			}
+			if len(supersedeMemoryIDs) > 0 {
+				node.SupersedeMemoryIDs = mergePostActionCandidateSupersedeMemoryIDs(node.SupersedeMemoryIDs, supersedeMemoryIDs)
+			}
+		}
 		kept = append(kept, node)
 	}
 	return kept, len(nodes) - len(kept), nil
+}
+
+// mergePostActionCandidateSupersedeMemoryIDs merges the candidate-local supersede ids with any reviewer-approved replacements and keeps the result stable and deduplicated for later persistence.
+// mergePostActionCandidateSupersedeMemoryIDs 用于合并候选自带的 supersede id 与 reviewer 批准的替代目标，并保持结果稳定去重，供后续持久化直接复用。
+func mergePostActionCandidateSupersedeMemoryIDs(existing, extra []uint64) []uint64 {
+	if len(existing) == 0 && len(extra) == 0 {
+		return nil
+	}
+	merged := make(map[uint64]struct{}, len(existing)+len(extra))
+	out := make([]uint64, 0, len(existing)+len(extra))
+	for _, memoryID := range existing {
+		if memoryID == 0 {
+			continue
+		}
+		if _, ok := merged[memoryID]; ok {
+			continue
+		}
+		merged[memoryID] = struct{}{}
+		out = append(out, memoryID)
+	}
+	for _, memoryID := range extra {
+		if memoryID == 0 {
+			continue
+		}
+		if _, ok := merged[memoryID]; ok {
+			continue
+		}
+		merged[memoryID] = struct{}{}
+		out = append(out, memoryID)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return out[i] < out[j]
+	})
+	return out
 }
 
 // clonePostActionProfileNodes deep-copies the post-review profile node slice so persistence can keep the full status set while active-only views remain free to filter separately.

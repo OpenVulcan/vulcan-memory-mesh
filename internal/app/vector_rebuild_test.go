@@ -66,6 +66,50 @@ func TestRunVectorRebuildWithPortsSplitRebuildsDurableAndSidecar(t *testing.T) {
 	}
 }
 
+// TestRunVectorRebuildWithPortsUsesMaintenanceBatchSizeDuringMaterialization verifies the rebuild materialization phase obeys the dedicated maintenance batch size instead of coupling its peak memory window to the embedding provider batch size.
+// TestRunVectorRebuildWithPortsUsesMaintenanceBatchSizeDuringMaterialization 用于验证重建准备阶段会遵守独立的维护批次大小，而不是把峰值内存窗口绑定到 embedding provider 的批次大小。
+func TestRunVectorRebuildWithPortsUsesMaintenanceBatchSizeDuringMaterialization(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.Embedding.Dimension = 2
+	cfg.MaintenanceTool.VectorRebuildBatchSize = 2
+	initialRecords := []logicdomain.MemoryRecord{
+		{ID: "vec-a", Text: "memory a", Vector: []float32{10, 10}},
+		{ID: "vec-b", Text: "memory b", Vector: []float32{20, 20}},
+		{ID: "vec-c", Text: "memory c", Vector: []float32{30, 30}},
+	}
+	workspace := &stubMaintenanceWorkspace{
+		projects: []logicdomain.ProjectRecord{{ID: 18}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{
+			18: initialRecords,
+		},
+	}
+	durable := newStubVectorDurableStore(initialRecords)
+	embedding := &stubVectorEmbeddingClient{
+		responses: []appports.EmbeddingResponse{
+			{Vectors: [][]float32{{1, 1}, {2, 2}}},
+			{Vectors: [][]float32{{3, 3}}},
+		},
+	}
+	vector := newStubMaintenanceVectorStore(initialRecords)
+
+	report, err := runVectorRebuildWithPorts(context.Background(), cfg, embedding, workspace, durable, vector, nil)
+	if err != nil {
+		t.Fatalf("runVectorRebuildWithPorts returned error: %v", err)
+	}
+	if report.VectorRowsRebuilt != 3 || report.DurableRowsUpdated != 3 {
+		t.Fatalf("unexpected report: %+v", report)
+	}
+	if got := len(embedding.requests); got != 2 {
+		t.Fatalf("embedding request count = %d, want 2", got)
+	}
+	if got := embedding.requests[0].Texts; len(got) != 2 || got[0] != "memory a" || got[1] != "memory b" {
+		t.Fatalf("first rebuild materialization batch = %#v, want [memory a memory b]", got)
+	}
+	if got := embedding.requests[1].Texts; len(got) != 1 || got[0] != "memory c" {
+		t.Fatalf("second rebuild materialization batch = %#v, want [memory c]", got)
+	}
+}
+
 // TestRunVectorRebuildWithPortsSplitStopsBeforeResetOnEmbeddingFailure verifies split mode now materializes rebuilt vectors before the destructive reset starts, so embedding failures leave the original durable and sidecar snapshots untouched.
 // TestRunVectorRebuildWithPortsSplitStopsBeforeResetOnEmbeddingFailure 用于验证 split 模式现在会在破坏性 reset 前先准备好新向量，因此 embedding 失败不会动到原始 durable 与 sidecar 快照。
 func TestRunVectorRebuildWithPortsSplitStopsBeforeResetOnEmbeddingFailure(t *testing.T) {
@@ -590,14 +634,17 @@ func (s *stubVectorDurableStore) RebuildMemoryVectorDimensions(_ context.Context
 // stubVectorEmbeddingClient 用于按批次回放确定性的 embedding 响应。
 type stubVectorEmbeddingClient struct {
 	responses []appports.EmbeddingResponse
+	requests  []appports.EmbeddingRequest
 	calls     int
 	err       error
 }
 
 // Embed returns the next queued response.
 // Embed 用于返回下一个预置响应。
-func (s *stubVectorEmbeddingClient) Embed(_ context.Context, _ appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+func (s *stubVectorEmbeddingClient) Embed(_ context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
 	s.calls++
+	req.Texts = append([]string(nil), req.Texts...)
+	s.requests = append(s.requests, req)
 	if s.err != nil {
 		return appports.EmbeddingResponse{}, s.err
 	}

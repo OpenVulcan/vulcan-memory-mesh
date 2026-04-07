@@ -228,7 +228,6 @@
 - `model`
 - `dimension`
 - `max_batch_size`
-- `max_input_tokens_per_text`
 - `organization`
 - `project`
 - `params`
@@ -245,7 +244,6 @@
     "model": "text-embedding-3-large",
     "dimension": 1024,
     "max_batch_size": 10,
-    "max_input_tokens_per_text": 0,
     "nodes": [
       {
         "name": "primary",
@@ -271,7 +269,7 @@
 - 如果未声明 `nodes`，则顶层 `api_keys + rpm/tpm/rpd` 会折叠成一个默认节点
 - `nodes` 只表示吞吐分档
 - `max_batch_size` 用于描述单次 embedding 请求允许携带的最大文本数
-- `max_input_tokens_per_text` 用于在 provider 因单条文本过长而拒绝时，为截断重试提供目标估算 token 预算；`0` 表示由控制器在收到长度错误后自行推导回退预算
+- 当前不再维护本地 `max_input_tokens_per_text` 截断预算；单条输入是否过长以 provider 返回为准，控制器只负责拆批、隔离超长条目，并由上层调用点决定是严格失败还是丢弃该条
 - 不允许借由 `nodes` 或多个 key 混入不同 embedding 模型
 
 ## 7. `nodes` 的语义

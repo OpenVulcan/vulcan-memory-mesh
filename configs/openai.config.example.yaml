@@ -191,7 +191,6 @@ embedding:
   # 当 provider=google_ai_studio 时，该值会作为 Gemini 的 output_dimensionality 发送，并应与所选模型支持的维度保持一致。
   dimension: 1024
   max_batch_size: 10
-  max_input_tokens_per_text: 0
   # These two fields are ignored when provider=google_ai_studio.
   # 当 provider=google_ai_studio 时，这两个字段会被忽略。
   organization: "${OPENAI_ORGANIZATION}"

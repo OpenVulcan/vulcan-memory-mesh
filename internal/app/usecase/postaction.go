@@ -731,8 +731,8 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		return nil, fmt.Errorf("vector store is nil")
 	}
 
-	// Submit the full logical memory-node batch and let the embedding controller decide how it should be split or retried.
-	// 直接提交完整的逻辑记忆节点批次，并把具体拆批与重试策略统一交给 embedding 控制器处理。
+	// Submit the full logical memory-node batch and let the embedding controller isolate only the invalid single texts instead of forcing the use-case layer to reimplement provider batching details.
+	// 直接提交完整的逻辑记忆节点批次，并让 embedding 控制器只隔离那些确实无效的单条文本，而不是让用例层重新实现 provider 拆批细节。
 	texts := make([]string, 0, len(analysis.MemoryNodes))
 	for idx, node := range analysis.MemoryNodes {
 		text := strings.TrimSpace(node.Abstract)
@@ -741,17 +741,30 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		}
 		texts = append(texts, text)
 	}
-	vectors, err := embedPostActionTexts(ctx, u.embedding, texts)
+	vectorResults, dropped, err := embedPostActionTexts(ctx, u.embedding, texts)
 	if err != nil {
 		return nil, err
 	}
-	if len(vectors) != len(analysis.MemoryNodes) {
-		return nil, fmt.Errorf("embedding result count mismatch: got %d want %d", len(vectors), len(analysis.MemoryNodes))
+	if len(dropped) > 0 && u.logger != nil {
+		indexes := make([]int, 0, len(dropped))
+		reasons := make([]string, 0, len(dropped))
+		for _, item := range dropped {
+			indexes = append(indexes, item.Index)
+			reasons = append(reasons, item.Reason)
+		}
+		u.logger.Warn(
+			"post-action dropped invalid memory nodes during embedding",
+			"session_key", session.SessionKey,
+			"session_id", session.SessionID,
+			"turn_id", turn.ID,
+			"dropped_indexes", indexes,
+			"dropped_reasons", reasons,
+		)
 	}
 
 	// Upsert LanceDB rows first so SQLite only flips extracted_status after the corresponding vectors already exist.
 	// 先 upsert LanceDB 行，确保 SQLite 只有在对应向量已存在时才会把 extracted_status 置为完成。
-	insertedIDs := make([]string, 0, len(analysis.MemoryNodes))
+	insertedIDs := make([]string, 0, len(vectorResults))
 	rollbackInsertedVectors := func() {
 		if len(insertedIDs) == 0 || u.vector == nil {
 			return
@@ -767,24 +780,31 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 			)
 		}
 	}
-	for idx := range analysis.MemoryNodes {
+	keptNodes := make([]logicdomain.MemoryNodeCandidate, 0, len(vectorResults))
+	memoryDropped := false
+	for _, item := range vectorResults {
+		if item.Index < 0 || item.Index >= len(analysis.MemoryNodes) {
+			rollbackInsertedVectors()
+			return nil, fmt.Errorf("post-action embedding result index %d out of range", item.Index)
+		}
+		node := analysis.MemoryNodes[item.Index]
 		vectorID, err := generatePostActionUUID()
 		if err != nil {
 			rollbackInsertedVectors()
 			return nil, err
 		}
-		analysis.MemoryNodes[idx].VectorID = vectorID
-		analysis.MemoryNodes[idx].Vector = append([]float32(nil), vectors[idx]...)
+		node.VectorID = vectorID
+		node.Vector = append([]float32(nil), item.Vector...)
 		record := logicdomain.MemoryRecord{
 			ID:           vectorID,
-			Text:         strings.TrimSpace(analysis.MemoryNodes[idx].Abstract),
-			Vector:       vectors[idx],
+			Text:         strings.TrimSpace(node.Abstract),
+			Vector:       append([]float32(nil), item.Vector...),
 			Filter:       buildPostActionMemoryFilter(session),
 			SourceTurnID: turn.ID,
 			Metadata: map[string]string{
 				"turn_id":  strconv.FormatUint(turn.ID, 10),
-				"category": strconv.Itoa(analysis.MemoryNodes[idx].Category),
-				"details":  strings.TrimSpace(analysis.MemoryNodes[idx].Details),
+				"category": strconv.Itoa(node.Category),
+				"details":  strings.TrimSpace(node.Details),
 			},
 			CreatedAt: choosePostActionCreatedAt(turn),
 		}
@@ -793,7 +813,13 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 			return nil, err
 		}
 		insertedIDs = append(insertedIDs, vectorID)
+		keptNodes = append(keptNodes, node)
 	}
+	if len(keptNodes) != len(analysis.MemoryNodes) {
+		memoryDropped = true
+	}
+	analysis.MemoryNodes = keptNodes
+	reconcilePostActionSupersededMemoryIDsAfterMemoryFilter(analysis, memoryDropped)
 	return insertedIDs, nil
 }
 
@@ -938,20 +964,27 @@ func trimHistoryTurnsByBudget(turns []logicdomain.SessionTurnRecord, remainingBu
 	return selected
 }
 
-// embedPostActionTexts submits one full logical embedding request and keeps only the shared nil/empty/result-count handling in the use-case layer.
-// embedPostActionTexts 用于提交一次完整的逻辑 embedding 请求，并在用例层仅保留共享的 nil/空输入/结果读取处理。
-func embedPostActionTexts(ctx context.Context, client appports.EmbeddingClient, texts []string) ([][]float32, error) {
+// embedPostActionTexts submits one full logical embedding request and returns both successful vectors and intentionally dropped invalid inputs so post-action can skip only the bad memory-node candidates.
+// embedPostActionTexts 用于提交一次完整的逻辑 embedding 请求，并同时返回成功向量与被主动丢弃的无效输入，让 post-action 只跳过坏掉的记忆节点候选。
+func embedPostActionTexts(ctx context.Context, client appports.EmbeddingClient, texts []string) ([]appports.EmbeddingVectorResult, []appports.EmbeddingDroppedInput, error) {
 	if client == nil {
-		return nil, fmt.Errorf("embedding client is nil")
+		return nil, nil, fmt.Errorf("embedding client is nil")
 	}
 	if len(texts) == 0 {
-		return [][]float32{}, nil
+		return []appports.EmbeddingVectorResult{}, []appports.EmbeddingDroppedInput{}, nil
 	}
-	resp, err := client.Embed(ctx, appports.EmbeddingRequest{Texts: texts})
+	resp, err := client.Embed(ctx, appports.EmbeddingRequest{
+		Texts:                    texts,
+		AllowPartialInvalidTexts: true,
+	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	return resp.Vectors, nil
+	items, err := resp.IndexedVectors(len(texts))
+	if err != nil {
+		return nil, nil, err
+	}
+	return items, append([]appports.EmbeddingDroppedInput(nil), resp.Dropped...), nil
 }
 
 // buildPostActionMemoryFilter derives the flattened hierarchy scope stored on vector rows for post-action memory nodes.

@@ -125,7 +125,6 @@ embedding:
   # 配置的 dimension 会作为 Gemini output_dimensionality 发送，并且必须与向量存储 schema 保持一致。
   dimension: 1024
   max_batch_size: 10
-  max_input_tokens_per_text: 0
 
   params: {}
   model_params: {}

@@ -403,8 +403,8 @@ func parseStatusCodeFromText(message string) int {
 	return status
 }
 
-// isEmbeddingInputTooLargeError reports whether one provider failure indicates the current embedding payload is too large and should be retried with smaller chunks or one truncated single text.
-// isEmbeddingInputTooLargeError 用于判断某次 provider 失败是否说明当前 embedding 载荷过大，从而触发更小子批次或单条截断重试。
+// isEmbeddingInputTooLargeError reports whether one provider failure indicates the current embedding payload is too large and should be retried with smaller chunks or one isolated single text.
+// isEmbeddingInputTooLargeError 用于判断某次 provider 失败是否说明当前 embedding 载荷过大，从而触发更小子批次或单条隔离重试。
 func isEmbeddingInputTooLargeError(err error) bool {
 	if err == nil {
 		return false

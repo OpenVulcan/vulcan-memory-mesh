@@ -234,6 +234,10 @@ postgres:
   migration_batch_size: 500
 
 maintenance_tool:
+  # Logical batch size used while materializing vector-rebuild snapshots before destructive maintenance rewrites begin.
+  # 向量重建在进入破坏性维护写入前，用于准备内存快照的逻辑批次大小。
+  vector_rebuild_batch_size: 10
+
   postgres:
     # Timeout budget used by one-shot maintenance reads such as project-memory exports and vector-rebuild fact scans.
     # 项目记忆导出、向量重建事实扫描等一次性维护读取使用的超时预算。
@@ -433,12 +437,6 @@ embedding:
   # Maximum number of texts allowed in one embedding batch request.
   # 单次 embedding 批请求允许携带的最大文本条数。
   max_batch_size: 10
-
-  # Target estimated token budget used when one upstream provider rejects a single text as too long and the controller retries with truncation.
-  # 当上游 provider 因单条文本过长而拒绝请求时，控制器会用这个估算 token 预算作为截断重试目标。
-  # Set to 0 to let retries derive one fallback budget from the original text after the upstream provider has already confirmed it is too large.
-  # 设为 0 表示在上游已经确认文本过长后，再由控制器基于原始文本推导回退预算。
-  max_input_tokens_per_text: 0
 
   # Optional organization identifier.
   # 可选的 organization 标识。

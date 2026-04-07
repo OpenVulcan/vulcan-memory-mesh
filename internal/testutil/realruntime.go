@@ -123,7 +123,6 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 		cfg.Embedding.Model,
 		cfg.Embedding.Dimension,
 		cfg.Embedding.MaxBatchSize,
-		cfg.Embedding.MaxInputTokensPerText,
 		cfg.Embedding.Organization,
 		cfg.Embedding.Project,
 		cfg.Embedding.APIKeys,

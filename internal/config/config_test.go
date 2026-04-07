@@ -33,6 +33,7 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.MemoryPipeline.MinSimilarityScore = nil
 	cfg.MaintenanceTool.Postgres.ReadTimeout = Duration{}
 	cfg.MaintenanceTool.Postgres.WriteTimeout = Duration{}
+	cfg.MaintenanceTool.VectorRebuildBatchSize = 0
 	cfg.Embedding.MaxBatchSize = 0
 	cfg.Rerank.TopN = 0
 	cfg.Rerank.Routes[0].Timeout = Duration{}
@@ -80,6 +81,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if got, want := cfg.MaintenanceTool.Postgres.WriteTimeout.Duration, 10*time.Minute; got != want {
 		t.Fatalf("maintenance tool postgres write timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.MaintenanceTool.VectorRebuildBatchSize, defaultMaintenanceToolVectorRebuildBatchSize; got != want {
+		t.Fatalf("maintenance tool vector rebuild batch size = %d, want %d", got, want)
 	}
 	if got, want := cfg.Embedding.MaxBatchSize, defaultEmbeddingMaxBatchSize; got != want {
 		t.Fatalf("embedding max batch size = %d, want %d", got, want)
@@ -293,8 +297,8 @@ func TestConfigValidateAcceptsGoogleAIStudioProviders(t *testing.T) {
 	}
 }
 
-// TestConfigValidateRejectsInvalidEmbeddingBatchConstraints verifies embedding batching limits reject non-positive batch widths and negative per-text token caps.
-// TestConfigValidateRejectsInvalidEmbeddingBatchConstraints 用于验证 embedding 拆批限制会拒绝非正批宽以及负数的单条 token 上限。
+// TestConfigValidateRejectsInvalidEmbeddingBatchConstraints verifies embedding batching limits reject non-positive batch widths.
+// TestConfigValidateRejectsInvalidEmbeddingBatchConstraints 用于验证 embedding 拆批限制会拒绝非正批宽。
 func TestConfigValidateRejectsInvalidEmbeddingBatchConstraints(t *testing.T) {
 	cfg := newValidConfigForTest()
 	cfg.Embedding.MaxBatchSize = -1
@@ -304,10 +308,10 @@ func TestConfigValidateRejectsInvalidEmbeddingBatchConstraints(t *testing.T) {
 	}
 
 	cfg = newValidConfigForTest()
-	cfg.Embedding.MaxInputTokensPerText = -1
+	cfg.MaintenanceTool.VectorRebuildBatchSize = -1
 	cfg.Normalize()
-	if err := cfg.Validate(); err == nil || err.Error() != "embedding.max_input_tokens_per_text must be >= 0" {
-		t.Fatalf("unexpected embedding max input tokens validate error: %v", err)
+	if err := cfg.Validate(); err == nil || err.Error() != "maintenance_tool.vector_rebuild_batch_size must be > 0" {
+		t.Fatalf("unexpected maintenance tool vector rebuild batch size validate error: %v", err)
 	}
 }
 
@@ -659,7 +663,6 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	t.Setenv("VMM_EMBED_TPM", "700")
 	t.Setenv("VMM_EMBED_RPD", "70")
 	t.Setenv("VMM_EMBED_MAX_BATCH_SIZE", "12")
-	t.Setenv("VMM_EMBED_MAX_INPUT_TOKENS_PER_TEXT", "2048")
 
 	applyEnvOverrides(&cfg)
 	cfg.Normalize()
@@ -677,9 +680,6 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	if got, want := cfg.Embedding.MaxBatchSize, 12; got != want {
 		t.Fatalf("embedding max batch size = %d, want %d", got, want)
 	}
-	if got, want := cfg.Embedding.MaxInputTokensPerText, 2048; got != want {
-		t.Fatalf("embedding max input tokens per text = %d, want %d", got, want)
-	}
 }
 
 // TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts verifies maintenance-tool timeout env overrides stay isolated from the regular postgres runtime node while still reaching the combined-store wiring path.
@@ -688,6 +688,7 @@ func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts(t *testing.T) {
 	cfg := newValidConfigForTest()
 	t.Setenv("VMM_MAINTENANCE_TOOL_POSTGRES_READ_TIMEOUT", "45s")
 	t.Setenv("VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT", "12m")
+	t.Setenv("VMM_MAINTENANCE_TOOL_VECTOR_REBUILD_BATCH_SIZE", "24")
 
 	applyEnvOverrides(&cfg)
 	cfg.Normalize()
@@ -697,6 +698,9 @@ func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts(t *testing.T) {
 	}
 	if got, want := cfg.MaintenanceTool.Postgres.WriteTimeout.Duration, 12*time.Minute; got != want {
 		t.Fatalf("maintenance tool postgres write timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.MaintenanceTool.VectorRebuildBatchSize, 24; got != want {
+		t.Fatalf("maintenance tool vector rebuild batch size = %d, want %d", got, want)
 	}
 	if got, want := cfg.Postgres.QueryTimeout.Duration, 5*time.Second; got != want {
 		t.Fatalf("postgres query timeout = %v, want %v", got, want)

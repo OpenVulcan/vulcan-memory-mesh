@@ -313,6 +313,9 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	if len(analysis.MemoryNodes) != 1 {
 		t.Fatalf("expected memory node to survive unified review, got %+v", analysis.MemoryNodes)
 	}
+	if len(analysis.MemoryNodes[0].SupersedeMemoryIDs) != 1 || analysis.MemoryNodes[0].SupersedeMemoryIDs[0] != 501 {
+		t.Fatalf("expected accepted memory node to retain reviewer-approved supersede id, got %+v", analysis.MemoryNodes[0].SupersedeMemoryIDs)
+	}
 	if len(analysis.SupersededMemoryIDs) != 1 || analysis.SupersededMemoryIDs[0] != 501 {
 		t.Fatalf("expected unified reviewer supersede ids to merge into analysis, got %+v", analysis.SupersededMemoryIDs)
 	}

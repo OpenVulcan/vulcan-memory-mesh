@@ -459,8 +459,8 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	if err != nil {
 		return MemoryQueryResult{}, err
 	}
-	if len(embedResp.Vectors) != len(uniqueItems) {
-		return MemoryQueryResult{}, fmt.Errorf("embedding result count mismatch: got %d want %d", len(embedResp.Vectors), len(uniqueItems))
+	if err := embedResp.ValidateStrict(len(uniqueItems)); err != nil {
+		return MemoryQueryResult{}, err
 	}
 
 	// Keep vector recall inside the resolved project hierarchy and enrich the returned vector rows with relational memory refs.
@@ -1023,15 +1023,15 @@ func (u *MemoryUseCase) prepareDirectWriteCreateVectors(ctx context.Context, ses
 	if len(createTexts) == 0 {
 		return out, nil
 	}
-	vectors, err := embedPostActionTexts(ctx, u.embedding, createTexts)
+	resp, err := u.embedding.Embed(ctx, appports.EmbeddingRequest{Texts: createTexts})
 	if err != nil {
 		return nil, err
 	}
-	if len(vectors) != len(createIndexes) {
-		return nil, fmt.Errorf("embedding result count mismatch: got %d want %d", len(vectors), len(createIndexes))
+	if err := resp.ValidateStrict(len(createTexts)); err != nil {
+		return nil, err
 	}
 	for idx, pendingIndex := range createIndexes {
-		out[pendingIndex] = append([]float32(nil), vectors[idx]...)
+		out[pendingIndex] = append([]float32(nil), resp.Vectors[idx]...)
 	}
 	return out, nil
 }

@@ -50,6 +50,10 @@ const (
 	// defaultMaintenanceToolPostgresWriteTimeout keeps destructive PostgreSQL maintenance transactions alive long enough to replay active rows and rebuild indexes under larger datasets.
 	// defaultMaintenanceToolPostgresWriteTimeout 用于为 PostgreSQL 破坏性维护事务提供更长默认预算，支撑大数据量场景下的 active 行回填与索引重建。
 	defaultMaintenanceToolPostgresWriteTimeout = 10 * time.Minute
+
+	// defaultMaintenanceToolVectorRebuildBatchSize keeps vector rebuild materialization bounded without coupling offline maintenance memory usage to the provider-facing embedding batch contract.
+	// defaultMaintenanceToolVectorRebuildBatchSize 用于给向量重建的 materialize 阶段提供有界批次，避免离线维护的内存占用被 provider 侧 embedding 批契约直接绑死。
+	defaultMaintenanceToolVectorRebuildBatchSize = 10
 )
 
 // Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
@@ -204,7 +208,8 @@ type PostgresConfig struct {
 // MaintenanceToolConfig groups one-shot admin/maintenance command settings so offline rebuild budgets do not leak into normal online runtime nodes.
 // MaintenanceToolConfig 用于收拢一次性管理/维护命令的配置，让离线重建预算不会混入正常在线运行时节点。
 type MaintenanceToolConfig struct {
-	Postgres MaintenanceToolPostgresConfig `json:"postgres"`
+	Postgres               MaintenanceToolPostgresConfig `json:"postgres"`
+	VectorRebuildBatchSize int                          `json:"vector_rebuild_batch_size,omitempty"`
 }
 
 // MaintenanceToolPostgresConfig keeps PostgreSQL-only maintenance timeouts for offline rebuild, migration, and durable export flows.
@@ -223,22 +228,21 @@ type LLMConfig struct {
 // EmbeddingConfig holds the single-provider, single-model embedding configuration while still allowing multiple API keys and node-level throughput budgets.
 // EmbeddingConfig 用于保存单 provider、单模型的 embedding 配置，同时保留多 API Key 与节点级吞吐预算能力。
 type EmbeddingConfig struct {
-	Provider              string                    `json:"provider"`
-	Endpoint              string                    `json:"endpoint,omitempty"`
-	APIKeys               []string                  `json:"api_keys,omitempty"`
-	RPM                   int                       `json:"rpm,omitempty"`
-	TPM                   int                       `json:"tpm,omitempty"`
-	RPD                   int                       `json:"rpd,omitempty"`
-	Nodes                 []AIRoutingNodeConfig     `json:"nodes,omitempty"`
-	Model                 string                    `json:"model,omitempty"`
-	Dimension             int                       `json:"dimension,omitempty"`
-	MaxBatchSize          int                       `json:"max_batch_size,omitempty"`
-	MaxInputTokensPerText int                       `json:"max_input_tokens_per_text,omitempty"`
-	Organization          string                    `json:"organization,omitempty"`
-	Project               string                    `json:"project,omitempty"`
-	Params                map[string]any            `json:"params,omitempty"`
-	ModelParams           map[string]map[string]any `json:"model_params,omitempty"`
-	KeyFailover           KeyFailoverConfig         `json:"key_failover,omitempty"`
+	Provider     string                    `json:"provider"`
+	Endpoint     string                    `json:"endpoint,omitempty"`
+	APIKeys      []string                  `json:"api_keys,omitempty"`
+	RPM          int                       `json:"rpm,omitempty"`
+	TPM          int                       `json:"tpm,omitempty"`
+	RPD          int                       `json:"rpd,omitempty"`
+	Nodes        []AIRoutingNodeConfig     `json:"nodes,omitempty"`
+	Model        string                    `json:"model,omitempty"`
+	Dimension    int                       `json:"dimension,omitempty"`
+	MaxBatchSize int                       `json:"max_batch_size,omitempty"`
+	Organization string                    `json:"organization,omitempty"`
+	Project      string                    `json:"project,omitempty"`
+	Params       map[string]any            `json:"params,omitempty"`
+	ModelParams  map[string]map[string]any `json:"model_params,omitempty"`
+	KeyFailover  KeyFailoverConfig         `json:"key_failover,omitempty"`
 }
 
 // RerankConfig holds the optional multi-route rerank configuration used to reorder vector recall hits.
@@ -437,6 +441,7 @@ func DefaultBase() Config {
 				ReadTimeout:  Duration{defaultMaintenanceToolPostgresReadTimeout},
 				WriteTimeout: Duration{defaultMaintenanceToolPostgresWriteTimeout},
 			},
+			VectorRebuildBatchSize: defaultMaintenanceToolVectorRebuildBatchSize,
 		},
 		LLM: LLMConfig{
 			Routes: []LLMRouteConfig{{
@@ -446,12 +451,11 @@ func DefaultBase() Config {
 			}},
 		},
 		Embedding: EmbeddingConfig{
-			Provider:              "openai",
-			Model:                 "text-embedding-3-large",
-			Dimension:             1024,
-			MaxBatchSize:          defaultEmbeddingMaxBatchSize,
-			MaxInputTokensPerText: 0,
-			KeyFailover:           defaultKeyFailoverConfig(),
+			Provider:     "openai",
+			Model:        "text-embedding-3-large",
+			Dimension:    1024,
+			MaxBatchSize: defaultEmbeddingMaxBatchSize,
+			KeyFailover:  defaultKeyFailoverConfig(),
 		},
 		Rerank: RerankConfig{
 			Enabled: false,
@@ -1703,6 +1707,9 @@ func (c *Config) Normalize() {
 	if c.Embedding.MaxBatchSize == 0 {
 		c.Embedding.MaxBatchSize = defaultEmbeddingMaxBatchSize
 	}
+	if c.MaintenanceTool.VectorRebuildBatchSize == 0 {
+		c.MaintenanceTool.VectorRebuildBatchSize = defaultMaintenanceToolVectorRebuildBatchSize
+	}
 	c.Embedding.APIKeys = normalizeAPIKeys(c.Embedding.APIKeys)
 	c.Embedding.Nodes = normalizeAIRoutingNodes(c.Embedding.APIKeys, c.Embedding.RPM, c.Embedding.TPM, c.Embedding.RPD, c.Embedding.Nodes)
 	normalizeKeyFailoverConfig(&c.Embedding.KeyFailover)
@@ -2031,8 +2038,8 @@ func (c Config) Validate() error {
 	if c.Embedding.MaxBatchSize <= 0 {
 		return errors.New("embedding.max_batch_size must be > 0")
 	}
-	if c.Embedding.MaxInputTokensPerText < 0 {
-		return errors.New("embedding.max_input_tokens_per_text must be >= 0")
+	if c.MaintenanceTool.VectorRebuildBatchSize <= 0 {
+		return errors.New("maintenance_tool.vector_rebuild_batch_size must be > 0")
 	}
 	if c.Rerank.Enabled {
 		if len(c.Rerank.Routes) == 0 {
@@ -2237,8 +2244,8 @@ func applyEnvOverrides(cfg *Config) {
 	setString("VMM_EMBED_MODEL", &cfg.Embedding.Model)
 	setInt("VMM_EMBED_DIMENSION", &cfg.Embedding.Dimension)
 	setInt("VMM_EMBED_MAX_BATCH_SIZE", &cfg.Embedding.MaxBatchSize)
-	setInt("VMM_EMBED_MAX_INPUT_TOKENS_PER_TEXT", &cfg.Embedding.MaxInputTokensPerText)
 	setString("VMM_EMBED_ORGANIZATION", &cfg.Embedding.Organization)
+	setInt("VMM_MAINTENANCE_TOOL_VECTOR_REBUILD_BATCH_SIZE", &cfg.MaintenanceTool.VectorRebuildBatchSize)
 	setString("VMM_EMBED_PROJECT", &cfg.Embedding.Project)
 	setBool("VMM_EMBED_KEY_FAILOVER_ENABLED", &cfg.Embedding.KeyFailover.Enabled)
 	setString("VMM_EMBED_KEY_FAILOVER_POLICY", &cfg.Embedding.KeyFailover.Policy)

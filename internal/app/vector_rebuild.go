@@ -111,7 +111,7 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 
 		// Materialize every rebuilt vector first so combined mode can keep the old live embeddings untouched until the final PostgreSQL schema swap is ready to commit atomically.
 		// 先把全部重建后的向量载荷准备好，确保组合模式在最终 PostgreSQL schema 交换准备原子提交前，不会提前触碰线上仍在使用的旧 embedding。
-		rebuiltRecords, err := materializeVectorRebuildRecords(ctx, embedding, records, cfg.Embedding.Dimension, logger)
+		rebuiltRecords, err := materializeVectorRebuildRecords(ctx, embedding, records, cfg.Embedding.Dimension, cfg.MaintenanceTool.VectorRebuildBatchSize, logger)
 		if err != nil {
 			return report, err
 		}
@@ -151,7 +151,7 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 	// Materialize the target vectors before any destructive split reset starts so model-switch failures never leave the current-dimension sidecar empty just because embedding or validation failed midway.
 	// 在任何破坏性的 split reset 开始前，先把目标向量全部准备好，避免模型切换时仅因 embedding 或维度校验中途失败，就把当前维度 sidecar 留成空表。
 	logger.Info("vector rebuild materialization phase starting", "mode", report.Mode, "project_count", report.ProjectCount, "memory_count", report.MemoryCount)
-	rebuiltRecords, err := materializeVectorRebuildRecords(ctx, embedding, records, cfg.Embedding.Dimension, logger)
+	rebuiltRecords, err := materializeVectorRebuildRecords(ctx, embedding, records, cfg.Embedding.Dimension, cfg.MaintenanceTool.VectorRebuildBatchSize, logger)
 	if err != nil {
 		return report, err
 	}
@@ -289,17 +289,28 @@ func loadVectorRebuildRecords(ctx context.Context, workspace appports.WorkspaceS
 	return projects, records, nil
 }
 
-// materializeVectorRebuildRecords prepares one fully rebuilt in-memory durable snapshot before combined PostgreSQL mode starts its atomic schema swap, so later maintenance writes never expose half-finished live vectors.
-// materializeVectorRebuildRecords 用于在组合 PostgreSQL 模式开始原子 schema 交换前，先准备好一份完整的内存态 durable 重建快照，避免后续维护写入暴露“只重建了一半”的线上向量。
-func materializeVectorRebuildRecords(ctx context.Context, embedding appports.EmbeddingClient, records []logicdomain.MemoryRecord, expectedDimension int, logger *logx.Logger) ([]logicdomain.MemoryRecord, error) {
-	vectors, err := embedVectorRebuildBatch(ctx, embedding, records, logger)
-	if err != nil {
-		return nil, err
+// materializeVectorRebuildRecords prepares one fully rebuilt in-memory durable snapshot in bounded batches before combined PostgreSQL mode starts its atomic schema swap, so later maintenance writes never expose half-finished live vectors or unbounded temporary vector payloads.
+// materializeVectorRebuildRecords 用于在组合 PostgreSQL 模式开始原子 schema 交换前，以有界批次准备完整的内存态 durable 重建快照，既避免后续维护写入暴露“只重建了一半”的线上向量，也避免临时向量载荷无限膨胀。
+func materializeVectorRebuildRecords(ctx context.Context, embedding appports.EmbeddingClient, records []logicdomain.MemoryRecord, expectedDimension, batchSize int, logger *logx.Logger) ([]logicdomain.MemoryRecord, error) {
+	if batchSize <= 0 {
+		batchSize = len(records)
 	}
-	if err := validateVectorRebuildDimensions(vectors, expectedDimension); err != nil {
-		return nil, err
+	rebuilt := make([]logicdomain.MemoryRecord, 0, len(records))
+	for start := 0; start < len(records); start += batchSize {
+		end := start + batchSize
+		if end > len(records) {
+			end = len(records)
+		}
+		vectors, err := embedVectorRebuildBatch(ctx, embedding, records[start:end], logger)
+		if err != nil {
+			return nil, fmt.Errorf("embed rebuild batch %d-%d: %w", start, end, err)
+		}
+		if err := validateVectorRebuildDimensions(vectors, expectedDimension); err != nil {
+			return nil, fmt.Errorf("validate rebuild batch %d-%d dimensions: %w", start, end, err)
+		}
+		rebuilt = append(rebuilt, cloneVectorRebuildBatch(records[start:end], vectors)...)
 	}
-	return cloneVectorRebuildBatch(records, vectors), nil
+	return rebuilt, nil
 }
 
 // embedVectorRebuildBatch embeds one durable-memory batch and patiently waits when every configured key is only temporarily blocked by runtime budgets.
@@ -316,8 +327,8 @@ func embedVectorRebuildBatch(ctx context.Context, client appports.EmbeddingClien
 	for {
 		resp, err := client.Embed(ctx, appports.EmbeddingRequest{Texts: texts})
 		if err == nil {
-			if len(resp.Vectors) != len(texts) {
-				return nil, fmt.Errorf("embedding result count mismatch: got %d want %d", len(resp.Vectors), len(texts))
+			if err := resp.ValidateStrict(len(texts)); err != nil {
+				return nil, err
 			}
 			return resp.Vectors, nil
 		}

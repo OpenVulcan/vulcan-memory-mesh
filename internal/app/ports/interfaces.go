@@ -24,6 +24,14 @@ type EmbeddingRequest = logicports.EmbeddingRequest
 // EmbeddingResponse 用于返回当前 embedding 后端生成的向量结果。
 type EmbeddingResponse = logicports.EmbeddingResponse
 
+// EmbeddingVectorResult binds one returned vector to the source text index it belongs to inside the caller's effective request batch.
+// EmbeddingVectorResult 用于把一条返回向量与其在调用方有效请求批次中的原始文本下标绑定起来。
+type EmbeddingVectorResult = logicports.EmbeddingVectorResult
+
+// EmbeddingDroppedInput records one source text that was intentionally dropped after the provider confirmed it was invalid for embedding.
+// EmbeddingDroppedInput 用于记录一条在 provider 已确认其不适合做 embedding 后被主动丢弃的源文本。
+type EmbeddingDroppedInput = logicports.EmbeddingDroppedInput
+
 // RerankerDocument carries one candidate document sent into an external rerank backend after the first-stage recall finishes.
 // RerankerDocument 用于承载首轮召回完成后送入外部重排序后端的一条候选文档。
 type RerankerDocument struct {

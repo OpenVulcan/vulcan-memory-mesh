@@ -246,7 +246,7 @@ func TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnKeyScopedForbidden(t *testi
 // TestEmbeddingClientEmbedRejectsDifferentModelOrDimension verifies the fixed-model embedding wrapper rejects cross-model or cross-dimension requests before any key rotation starts.
 // TestEmbeddingClientEmbedRejectsDifferentModelOrDimension 用于验证固定模型 embedding 包装器会在 Key 轮换开始前拒绝跨模型或跨维度请求。
 func TestEmbeddingClientEmbedRejectsDifferentModelOrDimension(t *testing.T) {
-	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 10, 0, "", "", []string{"key-a"}, nil, nil, Options{
+	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 10, "", "", []string{"key-a"}, nil, nil, Options{
 		Enabled:            true,
 		Policy:             "ordered_failover",
 		RateLimitCooldown:  5 * time.Minute,
@@ -269,7 +269,7 @@ func TestEmbeddingClientEmbedRejectsDifferentModelOrDimension(t *testing.T) {
 // TestEmbeddingClientEmbedSplitsOversizedBatch verifies the failover wrapper splits one logical embedding request into configured sub-batches so higher-level callers no longer need to duplicate provider batch logic.
 // TestEmbeddingClientEmbedSplitsOversizedBatch 用于验证 failover 包装器会按配置把一次逻辑 embedding 请求拆成多个子批次，让上层调用方无需重复维护 provider 拆批逻辑。
 func TestEmbeddingClientEmbedSplitsOversizedBatch(t *testing.T) {
-	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 2, 0, "", "", []string{"key-a"}, nil, nil, Options{
+	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 2, "", "", []string{"key-a"}, nil, nil, Options{
 		Enabled:            true,
 		Policy:             "ordered_failover",
 		RateLimitCooldown:  5 * time.Minute,
@@ -306,10 +306,10 @@ func TestEmbeddingClientEmbedSplitsOversizedBatch(t *testing.T) {
 	}
 }
 
-// TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText verifies the embedding controller can recursively isolate the single oversized text inside one logical batch and retry only that text with a shortened payload.
-// TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText 用于验证 embedding 控制器能够在一整个逻辑批次里递归定位出唯一超长文本，并仅对该条缩短后重试。
-func TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText(t *testing.T) {
-	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 4, 0, "", "", []string{"key-a"}, nil, nil, Options{
+// TestEmbeddingClientEmbedStrictlyRejectsProviderRejectedSingleText verifies strict callers still receive one error once the controller isolates the oversized single text.
+// TestEmbeddingClientEmbedStrictlyRejectsProviderRejectedSingleText 用于验证严格调用方在控制器定位出超长单条文本后，仍会收到整次调用失败错误。
+func TestEmbeddingClientEmbedStrictlyRejectsProviderRejectedSingleText(t *testing.T) {
+	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 4, "", "", []string{"key-a"}, nil, nil, Options{
 		Enabled:            true,
 		Policy:             "ordered_failover",
 		RateLimitCooldown:  5 * time.Minute,
@@ -321,7 +321,6 @@ func TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText(t *testing
 		t.Fatalf("new embedding failover client: %v", err)
 	}
 	tooLongText := strings.Repeat("too long payload ", 80)
-	normalizedLongText := strings.TrimSpace(tooLongText)
 	stub := &stubEmbeddingClient{
 		handle: func(req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
 			switch len(req.Texts) {
@@ -332,8 +331,6 @@ func TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText(t *testing
 				switch {
 				case text == "short note":
 					return appports.EmbeddingResponse{Vectors: [][]float32{{1, 1}}}, nil
-				case strings.Contains(text, embeddingRetryTruncationMarker):
-					return appports.EmbeddingResponse{Vectors: [][]float32{{2, 2}}}, nil
 				default:
 					return appports.EmbeddingResponse{}, newOpenAIAPIError(http.StatusBadRequest, "maximum context length exceeded")
 				}
@@ -344,15 +341,11 @@ func TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText(t *testing
 	}
 	client.factory = func(apiKey string) appports.EmbeddingClient { return stub }
 
-	resp, err := client.Embed(context.Background(), appports.EmbeddingRequest{Texts: []string{"short note", tooLongText}})
-	if err != nil {
-		t.Fatalf("embed with provider length fallback: %v", err)
+	if _, err := client.Embed(context.Background(), appports.EmbeddingRequest{Texts: []string{"short note", tooLongText}}); err == nil {
+		t.Fatal("expected strict embedding failure after isolating oversized text")
 	}
-	if got, want := len(resp.Vectors), 2; got != want {
-		t.Fatalf("vector count = %d, want %d", got, want)
-	}
-	if got := len(stub.requests); got != 4 {
-		t.Fatalf("request count = %d, want 4 (%#v)", got, stub.requests)
+	if got := len(stub.requests); got != 3 {
+		t.Fatalf("request count = %d, want 3 (%#v)", got, stub.requests)
 	}
 	if got := stub.requests[0]; len(got) != 2 {
 		t.Fatalf("first request should keep the full logical batch, got %#v", got)
@@ -360,11 +353,61 @@ func TestEmbeddingClientEmbedIsolatesAndTruncatesProviderRejectedText(t *testing
 	if got := stub.requests[1]; len(got) != 1 || got[0] != "short note" {
 		t.Fatalf("second request should isolate the healthy short text, got %#v", got)
 	}
-	if got := stub.requests[2]; len(got) != 1 || got[0] != normalizedLongText {
+	if got := stub.requests[2]; len(got) != 1 || got[0] != strings.TrimSpace(tooLongText) {
 		t.Fatalf("third request should isolate the original long text, got %#v", got)
 	}
-	if got := stub.requests[3]; len(got) != 1 || !strings.Contains(got[0], embeddingRetryTruncationMarker) {
-		t.Fatalf("fourth request should retry the long text with truncation marker, got %#v", got)
+}
+
+// TestEmbeddingClientEmbedDropsProviderRejectedSingleTextWhenAllowed verifies best-effort callers can keep the healthy vectors while dropping the isolated oversized text.
+// TestEmbeddingClientEmbedDropsProviderRejectedSingleTextWhenAllowed 用于验证 best-effort 调用方可以在隔离出超长单条文本后保留健康向量，并丢弃该异常条目。
+func TestEmbeddingClientEmbedDropsProviderRejectedSingleTextWhenAllowed(t *testing.T) {
+	client, err := NewEmbeddingClient("https://example.com/v1", "fixed-embed", 1024, 4, "", "", []string{"key-a"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new embedding failover client: %v", err)
+	}
+	tooLongText := strings.Repeat("too long payload ", 80)
+	stub := &stubEmbeddingClient{
+		handle: func(req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+			switch len(req.Texts) {
+			case 2:
+				return appports.EmbeddingResponse{}, newOpenAIAPIError(http.StatusBadRequest, "maximum context length exceeded")
+			case 1:
+				if req.Texts[0] == "short note" {
+					return appports.EmbeddingResponse{Vectors: [][]float32{{1, 1}}}, nil
+				}
+				return appports.EmbeddingResponse{}, newOpenAIAPIError(http.StatusBadRequest, "maximum context length exceeded")
+			default:
+				return appports.EmbeddingResponse{}, fmt.Errorf("unexpected request shape: %#v", req.Texts)
+			}
+		},
+	}
+	client.factory = func(apiKey string) appports.EmbeddingClient { return stub }
+
+	resp, err := client.Embed(context.Background(), appports.EmbeddingRequest{
+		Texts:                    []string{"short note", tooLongText},
+		AllowPartialInvalidTexts: true,
+	})
+	if err != nil {
+		t.Fatalf("embed with provider best-effort drop: %v", err)
+	}
+	if got, want := len(resp.Vectors), 1; got != want {
+		t.Fatalf("vector count = %d, want %d", got, want)
+	}
+	if got, want := len(resp.ResultIndices), 1; got != want || resp.ResultIndices[0] != 0 {
+		t.Fatalf("result indices = %+v, want [0]", resp.ResultIndices)
+	}
+	if got, want := len(resp.Dropped), 1; got != want {
+		t.Fatalf("dropped count = %d, want %d", got, want)
+	}
+	if resp.Dropped[0].Index != 1 || resp.Dropped[0].Reason != embeddingDropReasonInputTooLarge {
+		t.Fatalf("unexpected dropped item: %+v", resp.Dropped[0])
 	}
 }
 

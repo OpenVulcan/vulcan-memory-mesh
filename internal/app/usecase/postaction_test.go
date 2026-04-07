@@ -175,6 +175,213 @@ func TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation(
 	}
 }
 
+// TestPostActionApplyImmediateTurnAnalysisDropsInvalidEmbeddedMemoryNode verifies post-action keeps the healthy memory-node vectors while dropping only the provider-rejected single item before durable persistence.
+// TestPostActionApplyImmediateTurnAnalysisDropsInvalidEmbeddedMemoryNode 用于验证 post-action 会在长期持久化前保留健康记忆节点向量，并只丢弃 provider 明确拒绝的单条异常输入。
+func TestPostActionApplyImmediateTurnAnalysisDropsInvalidEmbeddedMemoryNode(t *testing.T) {
+	store := &testRelationalStore{}
+	vector := &stubVectorStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{
+			Vectors:       [][]float32{{0.1, 0.2, 0.3}},
+			ResultIndices: []int{0},
+			Dropped: []appports.EmbeddingDroppedInput{{
+				Index:  1,
+				Text:   "第二条会被丢弃的记忆摘要",
+				Reason: "input_too_large",
+			}},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        92,
+		Details:       "保留第一条，丢弃第二条。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{
+				Abstract:       "第一条保留的记忆摘要",
+				Details:        "第一条保留的记忆详情",
+				Category:       logicdomain.MemoryNodeCategoryProjectContext,
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
+			{
+				Abstract:       "第二条会被丢弃的记忆摘要",
+				Details:        "第二条会被丢弃的记忆详情",
+				Category:       logicdomain.MemoryNodeCategoryProjectContext,
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			},
+		},
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	session := logicdomain.SessionRef{SessionID: 42, SessionKey: "sess-drop-invalid-memory", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
+	turn := logicdomain.PersistedTurnRecord{ID: 92, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), session, turn, logicdomain.TurnRecord{
+		UserContent:      "请记住这两条，但第二条异常。",
+		AssistantContent: "收到。",
+	})
+	if err != nil {
+		t.Fatalf("applyImmediateTurnAnalysis returned error: %v", err)
+	}
+	if got := len(embedding.requests); got != 1 {
+		t.Fatalf("embedding request count = %d, want 1", got)
+	}
+	if !embedding.requests[0].AllowPartialInvalidTexts {
+		t.Fatal("expected post-action embedding request to allow partial invalid texts")
+	}
+	if got := len(vector.upserts); got != 1 {
+		t.Fatalf("vector upsert count = %d, want 1", got)
+	}
+	if vector.upserts[0].Text != "第一条保留的记忆摘要" {
+		t.Fatalf("unexpected kept vector text: %+v", vector.upserts[0])
+	}
+	if got := len(store.analysis.MemoryNodes); got != 1 {
+		t.Fatalf("persisted memory node count = %d, want 1", got)
+	}
+	if store.analysis.MemoryNodes[0].Abstract != "第一条保留的记忆摘要" {
+		t.Fatalf("unexpected persisted kept memory node: %+v", store.analysis.MemoryNodes[0])
+	}
+}
+
+// TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMemoryNode verifies post-action removes supersede ids contributed only by dropped memory nodes so partial embedding success cannot retire unrelated old memories.
+// TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMemoryNode 用于验证当部分 memory node 在 embedding 阶段被丢弃时，post-action 会同步清理仅由被丢弃节点贡献的 supersede id，避免误退役无关旧记忆。
+func TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMemoryNode(t *testing.T) {
+	store := &testRelationalStore{
+		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
+			{
+				ID:         701,
+				TurnID:     73,
+				VectorID:   "memory-701",
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
+				Abstract:   "待替代的旧记忆摘要一",
+				Details:    "待替代的旧记忆详情一",
+				NodeStatus: logicdomain.MemoryNodeStatusActive,
+			},
+			{
+				ID:         702,
+				TurnID:     74,
+				VectorID:   "memory-702",
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
+				Abstract:   "待替代的旧记忆摘要二",
+				Details:    "待替代的旧记忆详情二",
+				NodeStatus: logicdomain.MemoryNodeStatusActive,
+			},
+		},
+	}
+	vector := &stubVectorStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{
+			Vectors:       [][]float32{{0.1, 0.2, 0.3}},
+			ResultIndices: []int{0},
+			Dropped: []appports.EmbeddingDroppedInput{{
+				Index:  1,
+				Text:   "第二条会被丢弃的记忆摘要",
+				Reason: "input_too_large",
+			}},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:              93,
+		Details:             "只保留第一条替代关系。",
+		SupersededMemoryIDs: []uint64{701, 702},
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{
+			{
+				Abstract:           "第一条保留的记忆摘要",
+				Details:            "第一条保留的记忆详情",
+				Category:           logicdomain.MemoryNodeCategoryProjectContext,
+				EvidenceSource:     logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:          logicdomain.TurnAnalysisAdmissionKeep,
+				SupersedeMemoryIDs: []uint64{701},
+			},
+			{
+				Abstract:           "第二条会被丢弃的记忆摘要",
+				Details:            "第二条会被丢弃的记忆详情",
+				Category:           logicdomain.MemoryNodeCategoryProjectContext,
+				EvidenceSource:     logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:          logicdomain.TurnAnalysisAdmissionKeep,
+				SupersedeMemoryIDs: []uint64{702},
+			},
+		},
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	session := logicdomain.SessionRef{SessionID: 43, SessionKey: "sess-reconcile-supersede-after-drop", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
+	turn := logicdomain.PersistedTurnRecord{ID: 93, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), session, turn, logicdomain.TurnRecord{
+		UserContent:      "请保留第一条，并且第二条有异常。",
+		AssistantContent: "收到。",
+	})
+	if err != nil {
+		t.Fatalf("applyImmediateTurnAnalysis returned error: %v", err)
+	}
+	if got := store.analysis.SupersededMemoryIDs; len(got) != 1 || got[0] != 701 {
+		t.Fatalf("persisted superseded memory ids = %+v, want [701]", got)
+	}
+}
+
+// TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes verifies post-action accepts a best-effort embedding response that contains only dropped items, so a single invalid memory node no longer aborts the whole turn.
+// TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes 用于验证当 embedding best-effort 响应只包含 dropped 条目时，post-action 仍会接受该结果，不再因为单条无效记忆节点而中断整轮处理。
+func TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes(t *testing.T) {
+	store := &testRelationalStore{
+		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
+			{
+				ID:         801,
+				TurnID:     81,
+				VectorID:   "memory-801",
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
+				Abstract:   "唯一一条待替代旧记忆摘要",
+				Details:    "唯一一条待替代旧记忆详情",
+				NodeStatus: logicdomain.MemoryNodeStatusActive,
+			},
+		},
+	}
+	vector := &stubVectorStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{
+			Dropped: []appports.EmbeddingDroppedInput{{
+				Index:  0,
+				Text:   "唯一一条会被丢弃的记忆摘要",
+				Reason: "input_too_large",
+			}},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:              94,
+		Details:             "该轮只有一条异常记忆候选。",
+		SupersededMemoryIDs: []uint64{801},
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Abstract:           "唯一一条会被丢弃的记忆摘要",
+			Details:            "唯一一条会被丢弃的记忆详情",
+			Category:           logicdomain.MemoryNodeCategoryProjectContext,
+			EvidenceSource:     logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:          logicdomain.TurnAnalysisAdmissionKeep,
+			SupersedeMemoryIDs: []uint64{801},
+		}},
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	session := logicdomain.SessionRef{SessionID: 44, SessionKey: "sess-all-dropped-invalid-memory", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
+	turn := logicdomain.PersistedTurnRecord{ID: 94, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), session, turn, logicdomain.TurnRecord{
+		UserContent:      "这条提炼结果异常。",
+		AssistantContent: "收到。",
+	})
+	if err != nil {
+		t.Fatalf("applyImmediateTurnAnalysis returned error: %v", err)
+	}
+	if got := len(vector.upserts); got != 0 {
+		t.Fatalf("vector upsert count = %d, want 0", got)
+	}
+	if got := len(store.analysis.MemoryNodes); got != 0 {
+		t.Fatalf("persisted memory node count = %d, want 0", got)
+	}
+	if got := len(store.analysis.SupersededMemoryIDs); got != 0 {
+		t.Fatalf("persisted superseded memory ids = %+v, want none", store.analysis.SupersededMemoryIDs)
+	}
+}
+
 // TestPostActionUseCaseDropsSingleRoundNoise verifies simple user-assistant pairs can still be rejected by the noise gate before relational persistence.
 // TestPostActionUseCaseDropsSingleRoundNoise 用于验证简单的单轮 user-assistant 问答仍然会在关系持久化前被噪声门拒绝。
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
