@@ -890,6 +890,70 @@ func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
 	}
 }
 
+// TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure verifies queued analyze_turn JSON decode failures emit both the configured model label and the verbatim raw model output needed to debug malformed responses.
+// TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure 用于验证排队 analyze_turn 的 JSON 解码失败会同时输出当前模型标识和原样模型返回体，方便定位畸形响应。
+func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                92,
+				SessionID:         92,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"我弟弟牙齿什么情况","timeline":[],"assistant":"我来分析一下"}`,
+				DehydratedBudget:  10,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 4, 8, 1, 0, 0, 0, time.UTC),
+				UpdatedAt:         time.Date(2026, 4, 8, 1, 0, 1, 0, time.UTC),
+			},
+		},
+	}
+	rawOutput := strings.Join([]string{
+		"```json",
+		"{\"turn_id\":92,",
+		"\"details\":\"牙齿问题\"",
+	}, "\n")
+	analyzer := &stubPostActionTurnAnalyzer{
+		err: logicdomain.InvalidLLMOutputError{
+			Scene:   "analyze_turn",
+			Message: "json decode failed",
+			Raw:     rawOutput,
+		},
+		model: "Qwen/Qwen3-32B",
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
+		HistoryTurns:   3,
+		MaxInputTokens: 200,
+	}, logger, false)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{
+		SessionID:  92,
+		SessionKey: "sess-json-decode",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, "test")
+
+	logs := logBuf.String()
+	if analyzer.calls != 1 {
+		t.Fatalf("expected queued turn analyzer to run once, got %d", analyzer.calls)
+	}
+	if !strings.Contains(logs, "post-action queued turn analysis failed") {
+		t.Fatalf("expected queued turn analysis failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
+		t.Fatalf("expected model field in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
+		t.Fatalf("expected raw analyze_turn output in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "invalid llm output for analyze_turn: json decode failed") {
+		t.Fatalf("expected invalid llm output error summary in failure log, got %s", logs)
+	}
+}
+
 // TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails verifies freshly inserted vectors are deleted again when async turn write-back fails.
 // TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails 用于验证异步 turn 回写失败时，刚插入的向量会被立即回滚删除。
 func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *testing.T) {
@@ -1342,6 +1406,7 @@ type stubPostActionTurnAnalyzer struct {
 	input  logicdomain.TurnAnalysisInput
 	result logicdomain.TurnAnalysis
 	err    error
+	model  string
 }
 
 // Analyze captures the structured single-turn input so tests can assert the new synchronous post-action request shape.
@@ -1358,6 +1423,15 @@ func (s *stubPostActionTurnAnalyzer) Analyze(_ context.Context, input logicdomai
 		return logicdomain.TurnAnalysis{}, s.err
 	}
 	return s.result, nil
+}
+
+// AnalyzeModel returns the configured stub model label so queued failure-log tests can verify the runtime logs which analyze_turn model produced malformed output.
+// AnalyzeModel 用于返回桩对象配置的模型标识，方便排队失败日志测试验证运行时会记录是哪个 analyze_turn 模型产出了畸形输出。
+func (s *stubPostActionTurnAnalyzer) AnalyzeModel() string {
+	if s == nil {
+		return ""
+	}
+	return s.model
 }
 
 // stubEmbeddingClient records embedding requests and returns one canned response so post-action tests can verify vector persistence without a real model backend.

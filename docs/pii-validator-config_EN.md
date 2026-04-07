@@ -195,7 +195,7 @@ Configuration override order:
 1. system `configs/base.yaml`
 2. system `configs/config.yaml`
 3. user `~/.vmm/config.yaml` or the directory/file passed via `-config`
-4. `.env` and process environment variables
+4. `.env` and process environment variables only when a config value explicitly uses a `${ENV_NAME}` placeholder
 
 ## What the Rule System Can Do
 

@@ -40,11 +40,11 @@ grpc:
 
     # Total timeout budget for the PreCheck RPC and it should stay larger than pre_check.intent_timeout.
     # PreCheck RPC 的总超时预算，并且必须大于 pre_check.intent_timeout。
-    pre_check: "8s"
+    pre_check: "15s"
 
     # Total timeout budget for the PostAction RPC.
     # PostAction RPC 的总超时预算。
-    post_action: "8s"
+    post_action: "20s"
 
   # Graceful shutdown budget for the gRPC server and dependent components.
   # 应用关闭时留给 gRPC 服务与依赖组件的优雅收尾时间。
@@ -606,7 +606,7 @@ post_action:
 pre_check:
   # Internal LLM timeout used by the first-stage PreCheck intent extraction.
   # PreCheck 第一阶段意图提取使用的内部 LLM 超时。
-  intent_timeout: "5s"
+  intent_timeout: "10s"
 
   # Maximum number of candidates returned per pre-check query.
   # 每条 pre-check 检索语句返回的最大候选数。

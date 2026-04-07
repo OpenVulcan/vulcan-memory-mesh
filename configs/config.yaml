@@ -19,6 +19,51 @@
 #    先阅读 base.yaml，理解完整默认语义。
 # 2. Read this file for project-local overrides.
 #    再阅读本文件，理解项目本地覆盖项。
+x-llm-siliconflow: &llm_siliconflow
+  weights:
+    precheck_l1: 100
+    precheck_l2: 100
+    postaction_l1: 100
+    postaction_l2: 100
+    reserve: 100
+  provider: "openai"
+  endpoint: "${SILICONFLOW_BASE_URL}"
+  api_keys:
+    - "${SILICONFLOW_API_KEY}"
+  rpm: 1000
+  tpm: 50000
+  rpd: 0
+  params:
+    enable_thinking: false
+    stream: false
+    #response_format: { type: "json_object" }
+  key_failover:
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+    
+x-rerank-siliconflow: &rerank_siliconflow
+  priority: 100
+  provider: "siliconflow"
+  endpoint: "${SILICONFLOW_RERANK_URL}"
+  api_keys:
+    - "${SILICONFLOW_API_KEY}"
+  rpm: 2000
+  tpm: 500000
+  rpd: 0
+  timeout: "8s"
+  key_failover:
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
 
 grpc:
   # Listen address used by the local runtime in this project setup.
@@ -60,87 +105,86 @@ llm:
   # Project-local LLM route overrides.
   # 项目本地使用的 LLM 路由覆盖。
   routes:
-    - # Stable route name for logs, failover tracing, and diagnostics.
-      # 用于日志、failover 跟踪与排障的稳定路由名。
-      name: "primary-openai"
-
-      # Per-scene route weights for the primary model.
-      # 主路由模型的分场景权重。
+    - <<: *llm_siliconflow
+      name: "GLM41V-9B"
+      model: "THUDM/GLM-4.1V-9B-Thinking"
       weights:
-        precheck_l1: 100
-        precheck_l2: 100
-        postaction_l1: 100
+        precheck_l1: 150
+        precheck_l2: 110
+        postaction_l1: 130
         postaction_l2: 100
         reserve: 100
+        
+    - <<: *llm_siliconflow
+      name: "DSR1QWEN-7B"
+      model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+      weights:
+        precheck_l1: 140
+        precheck_l2: 120
+        postaction_l1: 120
+        postaction_l2: 110
+        reserve: 100
+        
+    - <<: *llm_siliconflow
+      name: "DSR1QWEN-8B"
+      model: "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+      weights:
+        precheck_l1: 145
+        precheck_l2: 125
+        postaction_l1: 125
+        postaction_l2: 115
+        reserve: 100
+        
+    - <<: *llm_siliconflow
+      name: "QWN25-7B"
+      model: "Qwen/Qwen2.5-7B-Instruct"
+      weights:
+        precheck_l1: 110
+        precheck_l2: 145
+        postaction_l1: 100
+        postaction_l2: 135
+        reserve: 100
+        
+    - <<: *llm_siliconflow
+      name: "QWN3-8B"
+      model: "Qwen/Qwen3-8B"
+      weights:
+        precheck_l1: 110
+        precheck_l2: 150
+        postaction_l1: 100
+        postaction_l2: 140
+        reserve: 100
+        
+    - <<: *llm_siliconflow
+      name: "HYMT-7B"
+      model: "tencent/Hunyuan-MT-7B"
+      tpm: 80000
+      weights:
+        precheck_l1: 80
+        precheck_l2: 100
+        postaction_l1: 90
+        postaction_l2: 180
+        reserve: 100
+        
+    - <<: *llm_siliconflow
+      name: "GLM4-9B"
+      model: "THUDM/GLM-4-9B-0414"
+      weights:
+        precheck_l1: 100
+        precheck_l2: 130
+        postaction_l1: 100
+        postaction_l2: 120
+        reserve: 100
 
-      # Provider used by this route.
-      # 当前路由使用的 provider。
-      # Allowed values:
-      # 支持取值：
-      # - openai: preferred canonical label for the current OpenAI-compatible adapter.
-      # - openai：当前 OpenAI-compatible 适配器的推荐规范名称。
-      # - openai_native: accepted alias mapped to the same adapter.
-      # - openai_native：会映射到同一适配器的兼容别名。
-      # - openai_go: accepted alias mapped to the same adapter.
-      # - openai_go：会映射到同一适配器的兼容别名。
-      # - google_ai_studio: native Google AI Studio / Gemini API adapter built on google.golang.org/genai.
-      # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini API 原生适配器。
-      provider: "openai"
-
-      # Gateway endpoint supplied through environment variables so different environments can reuse the same file.
-      # 通过环境变量注入的网关地址，便于不同环境复用同一份文件。
-      # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
-      # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
-      endpoint: "${OPENAI_BASE_URL}"
-
-      # API key pool for the primary route.
-      # 主路由使用的 API Key 池。
-      api_keys:
-        - "${OPENAI_API_KEY}"
-
-      # Leaving quotas at zero means this file does not impose an artificial config-side cap.
-      # 保持额度为 0 表示不在配置层额外施加人工限额。
-      rpm: 0
-      tpm: 0
-      rpd: 0
-
-      # Model name controlled by environment variables.
-      # 通过环境变量控制的模型名。
-      model: "${OPENAI_MODEL}"
-
-      # Optional OpenAI-compatible identity headers.
-      # 可选的 OpenAI-compatible 身份头字段。
-      # These two fields are ignored when provider=google_ai_studio.
-      # 当 provider=google_ai_studio 时，这两个字段会被忽略。
-      organization: "${OPENAI_ORGANIZATION}"
-      project: "${OPENAI_PROJECT}"
-
-      # Route-level extra parameters.
-      # 路由级附加参数。
-      params: {}
-
-      # Model-specific parameter overrides keyed by the active model name.
-      # 以当前模型名为 key 的模型级参数覆盖。
-      model_params:
-        "${OPENAI_MODEL}":
-          enable_thinking: false
-
-      key_failover:
-        # Key-level failover configuration inside the current route.
-        # 当前路由内部的 key 级容灾配置。
-        enabled: true
-        # Allowed values:
-        # 支持取值：
-        # - ordered_failover: keep using the current key order until one key cools down or fails, then move to the next healthy key.
-        # - ordered_failover：按既定顺序优先使用当前 key，只有当某个 key 失败或进入冷却时才切到下一个健康 key。
-        # - round_robin: rotate the eligible keys in turn so load is spread more evenly.
-        # - round_robin：按轮询顺序轮流使用可用 key，让负载分布更均匀。
-        policy: "ordered_failover"
-        respect_retry_after: true
-        rate_limit_cooldown: "5m"
-        quota_cooldown: "10m"
-        auth_cooldown: "12h"
-        probe_after_cooldown: true
+    - <<: *llm_siliconflow
+      name: "GLMZ1-9B"
+      model: "THUDM/GLM-Z1-9B-0414"
+      weights:
+        precheck_l1: 95
+        precheck_l2: 125
+        postaction_l1: 95
+        postaction_l2: 115
+        reserve: 100
 
 embedding:
   # Embedding requests use one fixed provider definition.
@@ -161,29 +205,29 @@ embedding:
   # 通过环境变量注入的 Embedding 接口地址。
   # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
   # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
-  endpoint: "${OPENAI_EMBEDDING_URL}"
+  endpoint: "${SILICONFLOW_BASE_URL}"
 
   # Embedding API key pool.
   # Embedding 使用的 API Key 池。
   api_keys:
-    - "${OPENAI_API_KEY}"
+    - "${SILICONFLOW_API_KEY}"
 
-  rpm: 0
-  tpm: 0
+  rpm: 2000
+  tpm: 500000
   rpd: 0
 
   # Embedding model and dimension used by this deployment.
   # 当前部署使用的 Embedding 模型与维度。
   # For google_ai_studio, dimension is sent as Gemini output_dimensionality and must stay aligned with the vector-store schema.
   # 对 google_ai_studio 来说，dimension 会作为 Gemini 的 output_dimensionality 发送，并且必须继续与向量库存储 schema 对齐。
-  model: "${OPENAI_EMBEDDING_MODEL}"
+  model: "BAAI/bge-m3"
   dimension: 1024
-  max_batch_size: 10
+  max_batch_size: 32
 
   # These two fields are ignored when provider=google_ai_studio.
   # 当 provider=google_ai_studio 时，这两个字段会被忽略。
-  organization: "${OPENAI_ORGANIZATION}"
-  project: "${OPENAI_PROJECT}"
+  organization: ""
+  project: ""
 
   params: {}
   model_params: {}
@@ -208,58 +252,24 @@ embedding:
 rerank:
   # Reranking stays disabled by default in this project-local override.
   # 在当前项目覆盖里，rerank 默认保持关闭。
-  enabled: true
+  enabled: false
 
   # Candidate count that would enter reranking once rerank is enabled.
   # 一旦启用 rerank 时会送入的候选数量。
   top_n: 8
 
   routes:
-    - # Stable route name for rerank diagnostics.
-      # 用于 rerank 排障的稳定路由名。
-      name: "dashscope-primary"
+    - <<: *rerank_siliconflow
+      name: "BGEV2M3"
+      model: "BAAI/bge-reranker-v2-m3"
       priority: 100
-      # Currently supported values:
-      # 当前支持取值：
-      # - dashscope: built-in rerank provider used by the current implementation.
-      # - dashscope：当前实现内置支持的 rerank provider。
-      # - siliconflow: built-in rerank provider using SiliconFlow's official /v1/rerank API.
-      # - siliconflow：当前实现内置支持的硅基流动 rerank provider，走官方 /v1/rerank 接口。
-      provider: "dashscope"
 
-      # Environment-controlled rerank endpoint.
-      # 通过环境变量控制的 rerank 接口地址。
-      endpoint: "${OPENAI_RERANK_URL}"
-
-      api_keys:
-        - "${OPENAI_API_KEY}"
-
-      rpm: 0
-      tpm: 0
-      rpd: 0
-
-      # Environment-controlled rerank model.
-      # 通过环境变量控制的 rerank 模型名。
-      model: "${OPENAI_RERANK_MODEL}"
-      timeout: "8s"
-
-      key_failover:
-        # Key-level failover configuration for the rerank route.
-        # rerank 路由内部的 key 级容灾配置。
-        enabled: true
-        # Allowed values:
-        # 支持取值：
-        # - ordered_failover: keep using the current key order until one key cools down or fails, then move to the next healthy key.
-        # - ordered_failover：按既定顺序优先使用当前 key，只有当某个 key 失败或进入冷却时才切到下一个健康 key。
-        # - round_robin: rotate the eligible keys in turn so load is spread more evenly.
-        # - round_robin：按轮询顺序轮流使用可用 key，让负载分布更均匀。
-        policy: "ordered_failover"
-        respect_retry_after: true
-        rate_limit_cooldown: "5m"
-        quota_cooldown: "10m"
-        auth_cooldown: "12h"
-        probe_after_cooldown: true
-
+    - <<: *rerank_siliconflow
+      name: "BCEV1"
+      model: "netease-youdao/bce-reranker-base_v1"
+      priority: 90
+      
+      
 vector:
   # Placeholder vector backend provider, mainly relevant when switching back to split mode.
   # 向量后端提供方占位，主要在切回 split 模式时生效。
@@ -268,3 +278,9 @@ vector:
   # - lancedb: use LanceDB as the split-mode vector backend.
   # - lancedb：在 split 模式下使用 LanceDB 作为向量后端。
   provider: "${VMM_VECTOR_PROVIDER}"
+
+
+maintenance_tool:
+  # Logical batch size used while materializing vector-rebuild snapshots before destructive maintenance rewrites begin.
+  # 向量重建在进入破坏性维护写入前，用于准备内存快照的逻辑批次大小。
+  vector_rebuild_batch_size: 32

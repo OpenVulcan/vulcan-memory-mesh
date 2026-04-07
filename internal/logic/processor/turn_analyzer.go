@@ -26,6 +26,15 @@ func NewTurnAnalyzer(llm logicports.LLMClient, prompts logicports.PromptSource, 
 	return &TurnAnalyzer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
+// AnalyzeModel returns the configured analyze_turn model label so callers can annotate malformed-output logs with the exact model selection.
+// AnalyzeModel 用于返回当前配置的 analyze_turn 模型标识，方便调用方在畸形输出日志里标注本次使用的模型。
+func (a *TurnAnalyzer) AnalyzeModel() string {
+	if a == nil {
+		return ""
+	}
+	return strings.TrimSpace(a.model)
+}
+
 // Analyze runs one structured LLM extraction over one reference-aware single-turn analysis input.
 // Analyze 用于针对一份参考感知型单轮分析输入执行一次结构化 LLM 提炼。
 func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error) {

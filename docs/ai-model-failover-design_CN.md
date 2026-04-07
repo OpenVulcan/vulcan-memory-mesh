@@ -327,7 +327,7 @@
 - 所有 `VMM_RERANK_KEY_FAILOVER_*` route 顶层覆盖
 - `VMM_EMBED_API_KEY`
 
-当前仍保留的 AI 相关环境变量只有：
+当前仍保留的 AI 相关环境变量入口只有在配置文件显式写出 `${ENV_NAME}` 占位符时才会生效：
 
 - `embedding` 的固定模型字段覆盖
 - `embedding` 的 key failover 覆盖

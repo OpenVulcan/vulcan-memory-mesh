@@ -196,7 +196,7 @@ pii:
 1. 系统层 `configs/base.yaml`
 2. 系统层 `configs/config.yaml`
 3. 用户层 `~/.vmm/config.yaml` 或 `-config` 指向的目录 / 文件
-4. `.env` 与进程环境变量
+4. 当配置值显式写成 `${ENV_NAME}` 时，对应的 `.env` 与进程环境变量参与展开
 
 ## 规则系统当前能做什么
 

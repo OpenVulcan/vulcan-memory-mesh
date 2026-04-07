@@ -4,6 +4,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -308,11 +309,40 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 		}
 		if err := u.applyImmediateTurnAnalysis(workerCtx, session, persistedTurn, rawTurn); err != nil {
 			if u.logger != nil {
-				u.logger.Error("post-action queued turn analysis failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
+				fields := []any{
+					"session_key", session.SessionKey,
+					"session_id", session.SessionID,
+					"turn_id", pendingTurn.ID,
+					"source", source,
+				}
+				fields = u.appendQueuedTurnAnalysisFailureLogFields(fields, err)
+				u.logger.Error("post-action queued turn analysis failed", fields...)
 			}
 			return
 		}
 	}
+}
+
+// appendQueuedTurnAnalysisFailureLogFields enriches queued analyze_turn failures with the configured model and, for JSON decode failures, the verbatim model output needed for operator debugging.
+// appendQueuedTurnAnalysisFailureLogFields 用于为排队 analyze_turn 失败补充日志字段：默认带上当前模型；若是 JSON 解码失败，则追加排障所需的模型原始输出。
+func (u *PostActionUseCase) appendQueuedTurnAnalysisFailureLogFields(fields []any, err error) []any {
+	// Always surface the configured model so operators can correlate malformed outputs with one concrete route/model combination.
+	// 始终输出当前配置模型，便于运维把畸形响应快速关联到具体的路由/模型组合。
+	if u != nil && u.turnAnalyzer != nil {
+		if model := strings.TrimSpace(u.turnAnalyzer.AnalyzeModel()); model != "" {
+			fields = append(fields, "model", model)
+		}
+	}
+
+	// Only dump the raw provider body for analyze_turn JSON decode failures, because that class of issue cannot be diagnosed from the summary error text alone.
+	// 只有 analyze_turn 的 JSON 解码失败才追加原始 provider 响应，因为这类问题仅靠摘要错误文本无法定位实际返回体。
+	var invalid logicdomain.InvalidLLMOutputError
+	if errors.As(err, &invalid) && invalid.Scene == "analyze_turn" && invalid.Message == "json decode failed" {
+		if raw := strings.TrimSpace(invalid.Raw); raw != "" {
+			fields = append(fields, "llm_raw_output", invalid.Raw)
+		}
+	}
+	return append(fields, "err", err)
 }
 
 // queueMaintenanceBackoffActive reports whether the periodic maintenance ticker should temporarily stand down after a fatal storage-side deadlock symptom.

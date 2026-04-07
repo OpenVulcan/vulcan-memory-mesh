@@ -123,7 +123,9 @@
 - `grpc.request_timeout.pre_check`
 - `grpc.request_timeout.post_action`
 
-环境变量：
+如需通过环境变量注入这些超时值，请先在配置文件中显式写成 `${...}` 占位符；未显式引用时，环境变量不会直接覆盖字面量配置。
+
+可注入的环境变量：
 
 - `VMM_GRPC_WORKSPACE_TIMEOUT`
 - `VMM_GRPC_PRE_CHECK_TIMEOUT`

@@ -643,20 +643,23 @@ func TestLoadPathsRejectsPromptRoutesWithEmptyEntries(t *testing.T) {
 	}
 }
 
-// TestValidateRemovedAIEnvOverrides verifies removed AI env overrides now fail fast instead of silently reintroducing deleted single-route semantics.
-// TestValidateRemovedAIEnvOverrides 用于验证已移除的 AI 环境变量现在会快速失败，而不是静默重新引入被删除的单路由语义。
-func TestValidateRemovedAIEnvOverrides(t *testing.T) {
+// TestValidateRemovedAIEnvOverridesOnlyWhenReferenced verifies removed AI env overrides are only rejected after the config explicitly opts into the corresponding placeholder.
+// TestValidateRemovedAIEnvOverridesOnlyWhenReferenced 用于验证已移除的 AI 环境变量只会在配置显式引用对应占位符后才被拒绝。
+func TestValidateRemovedAIEnvOverridesOnlyWhenReferenced(t *testing.T) {
 	restoreEnv(t, "VMM_LLM_API_KEYS")
 	t.Setenv("VMM_LLM_API_KEYS", "legacy-key")
-	err := validateRemovedAIEnvOverrides()
+	if err := validateRemovedAIEnvOverrides(nil); err != nil {
+		t.Fatalf("expected unreferenced removed env override to be ignored, got %v", err)
+	}
+	err := validateRemovedAIEnvOverrides(map[string]struct{}{"VMM_LLM_API_KEYS": {}})
 	if err == nil || !strings.Contains(err.Error(), "VMM_LLM_API_KEYS has been removed") {
-		t.Fatalf("unexpected removed env error: %v", err)
+		t.Fatalf("unexpected removed env error after explicit reference: %v", err)
 	}
 }
 
-// TestApplyEnvOverridesSetsEmbeddingKeyPools verifies supported embedding env overrides still inject multi-key pools and shared node budgets.
-// TestApplyEnvOverridesSetsEmbeddingKeyPools 用于验证仍受支持的 embedding 环境变量覆盖会注入多 key 池与共享节点预算。
-func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
+// TestApplyEnvOverridesSetsEmbeddingKeyPoolsWhenReferenced verifies supported embedding env overrides still inject multi-key pools and shared node budgets after the config explicitly opts into that placeholder.
+// TestApplyEnvOverridesSetsEmbeddingKeyPoolsWhenReferenced 用于验证配置显式引用对应占位符后，embedding 环境变量覆盖仍会注入多 key 池与共享节点预算。
+func TestApplyEnvOverridesSetsEmbeddingKeyPoolsWhenReferenced(t *testing.T) {
 	cfg := newValidConfigForTest()
 	t.Setenv("VMM_EMBED_API_KEYS", "embed-a,embed-b")
 	t.Setenv("VMM_EMBED_RPM", "7")
@@ -664,7 +667,13 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	t.Setenv("VMM_EMBED_RPD", "70")
 	t.Setenv("VMM_EMBED_MAX_BATCH_SIZE", "12")
 
-	applyEnvOverrides(&cfg)
+	applyEnvOverrides(&cfg, map[string]struct{}{
+		"VMM_EMBED_API_KEYS":       {},
+		"VMM_EMBED_RPM":            {},
+		"VMM_EMBED_TPM":            {},
+		"VMM_EMBED_RPD":            {},
+		"VMM_EMBED_MAX_BATCH_SIZE": {},
+	})
 	cfg.Normalize()
 
 	if got, want := len(cfg.Embedding.APIKeys), 2; got != want {
@@ -682,15 +691,33 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPools(t *testing.T) {
 	}
 }
 
-// TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts verifies maintenance-tool timeout env overrides stay isolated from the regular postgres runtime node while still reaching the combined-store wiring path.
-// TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts 用于验证维护工具超时环境变量覆盖会写入独立 maintenance_tool 节点，而不会污染常规 postgres 运行时节点。
-func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts(t *testing.T) {
+// TestApplyEnvOverridesSkipsUnreferencedValues verifies plain YAML values no longer get silently replaced by supported env overrides when the config did not explicitly reference those placeholders.
+// TestApplyEnvOverridesSkipsUnreferencedValues 用于验证当配置未显式引用对应占位符时，字面量 YAML 值不会再被支持的环境变量覆盖静默替换。
+func TestApplyEnvOverridesSkipsUnreferencedValues(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.GRPC.RequestTimeout.PreCheck = Duration{15 * time.Second}
+	t.Setenv("VMM_GRPC_PRE_CHECK_TIMEOUT", "8s")
+
+	applyEnvOverrides(&cfg, nil)
+
+	if got, want := cfg.GRPC.RequestTimeout.PreCheck.Duration, 15*time.Second; got != want {
+		t.Fatalf("pre-check timeout = %v, want %v", got, want)
+	}
+}
+
+// TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeoutsWhenReferenced verifies maintenance-tool timeout env overrides stay isolated from the regular postgres runtime node after the config explicitly references those placeholders.
+// TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeoutsWhenReferenced 用于验证配置显式引用对应占位符后，维护工具超时环境变量覆盖会写入独立 maintenance_tool 节点，而不会污染常规 postgres 运行时节点。
+func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeoutsWhenReferenced(t *testing.T) {
 	cfg := newValidConfigForTest()
 	t.Setenv("VMM_MAINTENANCE_TOOL_POSTGRES_READ_TIMEOUT", "45s")
 	t.Setenv("VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT", "12m")
 	t.Setenv("VMM_MAINTENANCE_TOOL_VECTOR_REBUILD_BATCH_SIZE", "24")
 
-	applyEnvOverrides(&cfg)
+	applyEnvOverrides(&cfg, map[string]struct{}{
+		"VMM_MAINTENANCE_TOOL_POSTGRES_READ_TIMEOUT":     {},
+		"VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT":    {},
+		"VMM_MAINTENANCE_TOOL_VECTOR_REBUILD_BATCH_SIZE": {},
+	})
 	cfg.Normalize()
 
 	if got, want := cfg.MaintenanceTool.Postgres.ReadTimeout.Duration, 45*time.Second; got != want {
@@ -704,6 +731,129 @@ func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeouts(t *testing.T) {
 	}
 	if got, want := cfg.Postgres.QueryTimeout.Duration, 5*time.Second; got != want {
 		t.Fatalf("postgres query timeout = %v, want %v", got, want)
+	}
+}
+
+// TestLoadPathsIgnoresUnreferencedSupportedEnvOverrides verifies literal config values stay authoritative even when matching supported env override names exist in the surrounding .env files.
+// TestLoadPathsIgnoresUnreferencedSupportedEnvOverrides 用于验证即使周围 `.env` 文件存在同名支持环境变量，字面量配置值仍然保持权威，不会被静默覆盖。
+func TestLoadPathsIgnoresUnreferencedSupportedEnvOverrides(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	rootDir := t.TempDir()
+	configDir := filepath.Join(rootDir, "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	basePath := filepath.Join(configDir, "base.yaml")
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(filepath.Join(configDir, ".env"), []byte("VMM_GRPC_PRE_CHECK_TIMEOUT=8s\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+  request_timeout:
+    pre_check: "15s"
+pre_check:
+  intent_timeout: "10s"
+  top_k: 5
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["base-key"]
+      model: "base-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+`
+	if err := os.WriteFile(basePath, []byte(baseBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadPaths([]string{basePath, configPath}, Config{})
+	if err != nil {
+		t.Fatalf("expected literal config to ignore .env override, got %v", err)
+	}
+	if got, want := cfg.GRPC.RequestTimeout.PreCheck.Duration, 15*time.Second; got != want {
+		t.Fatalf("pre-check timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.PreCheck.IntentTimeout.Duration, 10*time.Second; got != want {
+		t.Fatalf("intent timeout = %v, want %v", got, want)
+	}
+}
+
+// TestLoadPathsExpandsExplicitEnvPlaceholdersFromDotEnv verifies .env values still participate when the config explicitly uses ${ENV} placeholders instead of literal values.
+// TestLoadPathsExpandsExplicitEnvPlaceholdersFromDotEnv 用于验证当配置显式使用 ${ENV} 占位符而不是字面量值时，`.env` 里的变量仍会正常参与展开。
+func TestLoadPathsExpandsExplicitEnvPlaceholdersFromDotEnv(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	rootDir := t.TempDir()
+	configDir := filepath.Join(rootDir, "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	basePath := filepath.Join(configDir, "base.yaml")
+	configPath := filepath.Join(configDir, "config.yaml")
+	if err := os.WriteFile(filepath.Join(configDir, ".env"), []byte(strings.Join([]string{
+		"VMM_GRPC_PRE_CHECK_TIMEOUT=15s",
+		"VMM_PRE_CHECK_INTENT_TIMEOUT=10s",
+	}, "\n")+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	baseBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+  request_timeout:
+    pre_check: "${VMM_GRPC_PRE_CHECK_TIMEOUT}"
+pre_check:
+  intent_timeout: "${VMM_PRE_CHECK_INTENT_TIMEOUT}"
+  top_k: 5
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["base-key"]
+      model: "base-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+`
+	if err := os.WriteFile(basePath, []byte(baseBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(configPath, []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadPaths([]string{basePath, configPath}, Config{})
+	if err != nil {
+		t.Fatalf("expected explicit env placeholder expansion to succeed, got %v", err)
+	}
+	if got, want := cfg.GRPC.RequestTimeout.PreCheck.Duration, 15*time.Second; got != want {
+		t.Fatalf("pre-check timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.PreCheck.IntentTimeout.Duration, 10*time.Second; got != want {
+		t.Fatalf("intent timeout = %v, want %v", got, want)
 	}
 }
 

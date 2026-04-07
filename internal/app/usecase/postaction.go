@@ -54,7 +54,12 @@ type PostActionExecutor interface {
 // PostActionTurnAnalyzer is the tiny port used by post-action background workers to analyze one persisted turn after it has been durably queued.
 // PostActionTurnAnalyzer 用于让 post-action 后台工作器在 turn 稳定落库并入队后，再对这一轮执行提炼分析。
 type PostActionTurnAnalyzer interface {
+	// Analyze runs one single-turn extraction against the persisted post-action turn input.
+	// Analyze 用于针对已持久化的 post-action 单轮输入执行一次提炼分析。
 	Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error)
+	// AnalyzeModel returns the configured analyze_turn model label so failure logs can identify which model produced malformed output.
+	// AnalyzeModel 用于返回当前 analyze_turn 使用的模型标识，便于失败日志定位是哪一个模型产出了畸形输出。
+	AnalyzeModel() string
 }
 
 // PostActionMemorySearcher is the narrow search port used by post-action duplicate review to recall existing durable memories inside the configured shared scope.

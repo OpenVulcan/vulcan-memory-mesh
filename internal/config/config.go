@@ -209,7 +209,7 @@ type PostgresConfig struct {
 // MaintenanceToolConfig 用于收拢一次性管理/维护命令的配置，让离线重建预算不会混入正常在线运行时节点。
 type MaintenanceToolConfig struct {
 	Postgres               MaintenanceToolPostgresConfig `json:"postgres"`
-	VectorRebuildBatchSize int                          `json:"vector_rebuild_batch_size,omitempty"`
+	VectorRebuildBatchSize int                           `json:"vector_rebuild_batch_size,omitempty"`
 }
 
 // MaintenanceToolPostgresConfig keeps PostgreSQL-only maintenance timeouts for offline rebuild, migration, and durable export flows.
@@ -530,17 +530,26 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	// 规范化配置路径并预加载分层的 .env 文件。
 	cfg := fallback
 	normalizedPaths := normalizeConfigPaths(paths)
-	if err := loadDotEnv(normalizedPaths); err != nil {
+	layerBodies := make(map[string][]byte, len(normalizedPaths))
+	referencedEnvKeys, err := collectReferencedEnvKeysFromConfigPaths(normalizedPaths)
+	if err != nil {
+		return Config{}, fmt.Errorf("parse config: %w", err)
+	}
+	for _, path := range normalizedPaths {
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			return Config{}, fmt.Errorf("read config: %w", readErr)
+		}
+		layerBodies[path] = body
+	}
+	if err := loadDotEnv(normalizedPaths, referencedEnvKeys); err != nil {
 		return Config{}, err
 	}
 
 	// Read configuration layers in order so later files override earlier ones.
 	// 按顺序读取配置层，让后面的文件覆盖前面的值。
 	for _, path := range normalizedPaths {
-		body, err := os.ReadFile(path)
-		if err != nil {
-			return Config{}, fmt.Errorf("read config: %w", err)
-		}
+		body := layerBodies[path]
 		expandedBody := os.ExpandEnv(string(body))
 		expandedBytes, err := decodeConfigLayer(path, []byte(expandedBody))
 		if err != nil {
@@ -556,10 +565,10 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 
 	// Apply environment overrides and then finalize normalization plus validation.
 	// 应用环境变量覆盖，然后完成归一化与校验。
-	if err := validateRemovedAIEnvOverrides(); err != nil {
+	if err := validateRemovedAIEnvOverrides(referencedEnvKeys); err != nil {
 		return Config{}, err
 	}
-	applyEnvOverrides(&cfg)
+	applyEnvOverrides(&cfg, referencedEnvKeys)
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err
@@ -879,9 +888,92 @@ func normalizeConfigPaths(paths []string) []string {
 	return normalized
 }
 
+// collectReferencedEnvKeysFromConfigPaths walks every raw config layer and records which ${ENV_NAME} placeholders were explicitly referenced in values.
+// collectReferencedEnvKeysFromConfigPaths 用于扫描所有原始配置层中的值，记录哪些 ${ENV_NAME} 占位符被显式引用。
+func collectReferencedEnvKeysFromConfigPaths(paths []string) (map[string]struct{}, error) {
+	referenced := map[string]struct{}{}
+	for _, path := range paths {
+		body, err := os.ReadFile(path)
+		if err != nil {
+			return nil, fmt.Errorf("read config: %w", err)
+		}
+		layerValue, err := decodeRawConfigLayer(path, body)
+		if err != nil {
+			return nil, err
+		}
+		collectEnvReferencesInValue(layerValue, referenced)
+	}
+	return referenced, nil
+}
+
+// decodeRawConfigLayer decodes one raw JSON/YAML config layer without environment expansion so placeholder discovery can inspect only real config values, not comments.
+// decodeRawConfigLayer 用于在不展开环境变量的前提下解码原始 JSON/YAML 配置层，让占位符发现逻辑只检查真实配置值而不是注释文本。
+func decodeRawConfigLayer(path string, body []byte) (any, error) {
+	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
+	case ".yaml", ".yml":
+		var raw any
+		if err := yaml.Unmarshal(body, &raw); err != nil {
+			return nil, err
+		}
+		return normalizeYAMLValue(raw)
+	default:
+		var raw any
+		if err := json.Unmarshal(body, &raw); err != nil {
+			return nil, err
+		}
+		return raw, nil
+	}
+}
+
+// collectEnvReferencesInValue recursively visits config values so only placeholders that appear in actual scalar content can opt a field into environment-backed loading.
+// collectEnvReferencesInValue 用于递归遍历配置值，让只有真实标量内容里出现的占位符才能把对应字段显式加入环境变量加载白名单。
+func collectEnvReferencesInValue(value any, referenced map[string]struct{}) {
+	switch typed := value.(type) {
+	case map[string]any:
+		for _, child := range typed {
+			collectEnvReferencesInValue(child, referenced)
+		}
+	case []any:
+		for _, child := range typed {
+			collectEnvReferencesInValue(child, referenced)
+		}
+	case string:
+		collectEnvReferencesInString(typed, referenced)
+	}
+}
+
+// collectEnvReferencesInString extracts ${ENV_NAME} markers from one string so environment participation becomes an explicit opt-in in config values.
+// collectEnvReferencesInString 用于从单个字符串中提取 ${ENV_NAME} 标记，使环境变量参与配置解析变成显式 opt-in 行为。
+func collectEnvReferencesInString(raw string, referenced map[string]struct{}) {
+	if referenced == nil || strings.TrimSpace(raw) == "" {
+		return
+	}
+	for idx := 0; idx < len(raw); idx++ {
+		if raw[idx] != '$' || idx+1 >= len(raw) || raw[idx+1] != '{' {
+			continue
+		}
+		start := idx + 2
+		end := start
+		for end < len(raw) && raw[end] != '}' {
+			end++
+		}
+		if end >= len(raw) {
+			return
+		}
+		key := strings.TrimSpace(raw[start:end])
+		if key != "" {
+			referenced[key] = struct{}{}
+		}
+		idx = end
+	}
+}
+
 // loadDotEnv loads related data.
 // loadDotEnv 用于加载相关数据。
-func loadDotEnv(configPaths []string) error {
+func loadDotEnv(configPaths []string, referencedEnvKeys map[string]struct{}) error {
+	if len(referencedEnvKeys) == 0 {
+		return nil
+	}
 	// Merge .env files according to the resolved config search order.
 	// 按解析后的配置搜索顺序合并 .env 文件。
 	mergedEnv := map[string]string{}
@@ -895,6 +987,9 @@ func loadDotEnv(configPaths []string) error {
 				return fmt.Errorf("load .env %q: %w", candidate, err)
 			}
 			for key, value := range envMap {
+				if _, ok := referencedEnvKeys[key]; !ok {
+					continue
+				}
 				mergedEnv[key] = value
 			}
 		}
@@ -2096,9 +2191,9 @@ func (c Config) Validate() error {
 	return nil
 }
 
-// validateRemovedAIEnvOverrides rejects deprecated AI environment variables so runtime startup no longer silently mixes removed single-route semantics into the new config contract.
-// validateRemovedAIEnvOverrides 用于拒绝已废弃的 AI 环境变量，避免运行时把已移除的单路由语义静默混入新的配置契约。
-func validateRemovedAIEnvOverrides() error {
+// validateRemovedAIEnvOverrides rejects deprecated AI environment variables only when the current config explicitly references those placeholders.
+// validateRemovedAIEnvOverrides 用于仅在当前配置显式引用对应占位符时，拒绝已废弃的 AI 环境变量，避免运行时把已移除的单路由语义静默混入新的配置契约。
+func validateRemovedAIEnvOverrides(referencedEnvKeys map[string]struct{}) error {
 	for _, key := range []string{
 		"VMM_LLM_PROVIDER",
 		"VMM_LLM_ENDPOINT",
@@ -2135,6 +2230,9 @@ func validateRemovedAIEnvOverrides() error {
 		"VMM_RERANK_KEY_FAILOVER_PROBE_AFTER_COOLDOWN",
 		"VMM_EMBED_API_KEY",
 	} {
+		if !envOverrideAllowed(referencedEnvKeys, key) {
+			continue
+		}
 		if strings.TrimSpace(os.Getenv(key)) != "" {
 			return fmt.Errorf("%s has been removed; please migrate AI runtime settings into config files", key)
 		}
@@ -2144,15 +2242,21 @@ func validateRemovedAIEnvOverrides() error {
 
 // applyEnvOverrides applies the supported target settings.
 // applyEnvOverrides 用于应用仍然受支持的目标设置。
-func applyEnvOverrides(cfg *Config) {
+func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 	// Reapply explicit process-level overrides after file-based expansion.
 	// 在文件占位符展开之后，再次应用进程级显式覆盖。
 	setString := func(k string, target *string) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			*target = v
 		}
 	}
 	setStringSlice := func(k string, target *[]string, nodes *[]AIRoutingNodeConfig) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			*target = splitConfigAPIKeys(v)
 			if nodes != nil {
@@ -2161,6 +2265,9 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	setInt := func(k string, target *int) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				*target = n
@@ -2168,6 +2275,9 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	setFloat := func(k string, target *float64) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.ParseFloat(v, 64); err == nil {
 				*target = n
@@ -2175,6 +2285,9 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	setOptionalFloat := func(k string, target **float64) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.ParseFloat(v, 64); err == nil {
 				*target = float64Ptr(n)
@@ -2182,6 +2295,9 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	setBool := func(k string, target *bool) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.ParseBool(v); err == nil {
 				*target = n
@@ -2189,6 +2305,9 @@ func applyEnvOverrides(cfg *Config) {
 		}
 	}
 	setDuration := func(k string, target *Duration) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := time.ParseDuration(v); err == nil {
 				target.Duration = n
@@ -2291,6 +2410,16 @@ func applyEnvOverrides(cfg *Config) {
 	setFloat("VMM_MEMORY_WEIBULL_MIN_MULTIPLIER", &cfg.MemoryPipeline.WeibullMinMultiplier)
 	setFloat("VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT", &cfg.MemoryPipeline.WeibullReinforceWeight)
 	setFloat("VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST", &cfg.MemoryPipeline.WeibullCrossSessionBoost)
+}
+
+// envOverrideAllowed reports whether one supported environment override key was explicitly referenced by the loaded config layers.
+// envOverrideAllowed 用于判断某个受支持的环境变量覆盖键是否被已加载的配置层显式引用。
+func envOverrideAllowed(referencedEnvKeys map[string]struct{}, key string) bool {
+	if len(referencedEnvKeys) == 0 {
+		return false
+	}
+	_, ok := referencedEnvKeys[key]
+	return ok
 }
 
 // StorageMode returns the normalized runtime storage mode used by composition and tests.
