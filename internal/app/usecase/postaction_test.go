@@ -1437,17 +1437,23 @@ func (s *stubPostActionTurnAnalyzer) AnalyzeModel() string {
 // stubEmbeddingClient records embedding requests and returns one canned response so post-action tests can verify vector persistence without a real model backend.
 // stubEmbeddingClient 用于记录 embedding 请求，并返回预设结果，让 post-action 测试在没有真实模型后端时也能验证向量持久化。
 type stubEmbeddingClient struct {
-	requests []appports.EmbeddingRequest
-	response appports.EmbeddingResponse
-	err      error
+	requests      []appports.EmbeddingRequest
+	response      appports.EmbeddingResponse
+	responseQueue []appports.EmbeddingResponse
+	err           error
 }
 
-// Embed captures the request order and replays the configured response or error.
-// Embed 用于记录请求顺序，并回放预设响应或错误。
+// Embed captures the request order and replays one queued response when configured, otherwise it falls back to the default canned response.
+// Embed 用于记录请求顺序；若配置了响应队列则按顺序回放，否则退回默认预设响应。
 func (s *stubEmbeddingClient) Embed(_ context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
 	s.requests = append(s.requests, req)
 	if s.err != nil {
 		return appports.EmbeddingResponse{}, s.err
+	}
+	if len(s.responseQueue) > 0 {
+		resp := s.responseQueue[0]
+		s.responseQueue = s.responseQueue[1:]
+		return resp, nil
 	}
 	return s.response, nil
 }

@@ -54,6 +54,14 @@ const (
 	// defaultMaintenanceToolVectorRebuildBatchSize keeps vector rebuild materialization bounded without coupling offline maintenance memory usage to the provider-facing embedding batch contract.
 	// defaultMaintenanceToolVectorRebuildBatchSize 用于给向量重建的 materialize 阶段提供有界批次，避免离线维护的内存占用被 provider 侧 embedding 批契约直接绑死。
 	defaultMaintenanceToolVectorRebuildBatchSize = 10
+
+	// defaultMemoryReplaceMinSimilarityScore keeps post-action/direct-write duplicate review broad enough to surface near-duplicate durable memories without inheriting the old hard-coded 0.90 clamp.
+	// defaultMemoryReplaceMinSimilarityScore 用于给 post-action/主动写记忆的重复评审提供较宽的默认召回阈值，避免继续继承旧的 0.90 硬钳制。
+	defaultMemoryReplaceMinSimilarityScore = 0.80
+
+	// defaultMemoryHardDedupeCosineThreshold keeps the new pre-review hard-dedupe gate conservative by only short-circuiting obviously equivalent vectors unless callers tune it explicitly.
+	// defaultMemoryHardDedupeCosineThreshold 用于让新的 reviewer 前硬排重默认保持保守，只在向量极其接近时才短路后续 LLM，除非调用方显式调参。
+	defaultMemoryHardDedupeCosineThreshold = 0.985
 )
 
 // Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
@@ -382,20 +390,22 @@ type PreCheckConfig struct {
 // MemoryPipelineConfig controls keyword fan-out, hybrid retrieval, read-time decay, and diversity filtering in the memory recall pipeline.
 // MemoryPipelineConfig 用于控制记忆召回流水线中的关键词扇出、混合检索、读时衰减和多样性过滤。
 type MemoryPipelineConfig struct {
-	MaxSearchKeywords        int      `json:"max_search_keywords"`
-	MinSimilarityScore       *float64 `json:"min_similarity_score,omitempty"`
-	HybridEnabled            bool     `json:"hybrid_enabled"`
-	LexicalPreTokenize       bool     `json:"lexical_pre_tokenize"`
-	LexicalTopK              int      `json:"lexical_top_k,omitempty"`
-	RRFK                     int      `json:"rrf_k,omitempty"`
-	MMREnabled               bool     `json:"mmr_enabled"`
-	MMRLambda                float64  `json:"mmr_lambda,omitempty"`
-	WeibullEnabled           bool     `json:"weibull_enabled"`
-	WeibullShape             float64  `json:"weibull_shape,omitempty"`
-	WeibullScaleHours        float64  `json:"weibull_scale_hours,omitempty"`
-	WeibullMinMultiplier     float64  `json:"weibull_min_multiplier,omitempty"`
-	WeibullReinforceWeight   float64  `json:"weibull_reinforce_weight,omitempty"`
-	WeibullCrossSessionBoost float64  `json:"weibull_cross_session_boost,omitempty"`
+	MaxSearchKeywords         int      `json:"max_search_keywords"`
+	MinSimilarityScore        *float64 `json:"min_similarity_score,omitempty"`
+	ReplaceMinSimilarityScore *float64 `json:"replace_min_similarity_score,omitempty"`
+	HardDedupeCosineThreshold *float64 `json:"hard_dedupe_cosine_threshold,omitempty"`
+	HybridEnabled             bool     `json:"hybrid_enabled"`
+	LexicalPreTokenize        bool     `json:"lexical_pre_tokenize"`
+	LexicalTopK               int      `json:"lexical_top_k,omitempty"`
+	RRFK                      int      `json:"rrf_k,omitempty"`
+	MMREnabled                bool     `json:"mmr_enabled"`
+	MMRLambda                 float64  `json:"mmr_lambda,omitempty"`
+	WeibullEnabled            bool     `json:"weibull_enabled"`
+	WeibullShape              float64  `json:"weibull_shape,omitempty"`
+	WeibullScaleHours         float64  `json:"weibull_scale_hours,omitempty"`
+	WeibullMinMultiplier      float64  `json:"weibull_min_multiplier,omitempty"`
+	WeibullReinforceWeight    float64  `json:"weibull_reinforce_weight,omitempty"`
+	WeibullCrossSessionBoost  float64  `json:"weibull_cross_session_boost,omitempty"`
 }
 
 // DefaultBase returns the baked-in fallback defaults that mirror the shipped base.yaml template.
@@ -482,20 +492,22 @@ func DefaultBase() Config {
 		},
 		PreCheck: PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5, SearchScope: "space"},
 		MemoryPipeline: MemoryPipelineConfig{
-			MaxSearchKeywords:        5,
-			MinSimilarityScore:       float64Ptr(0.75),
-			HybridEnabled:            true,
-			LexicalPreTokenize:       true,
-			LexicalTopK:              8,
-			RRFK:                     60,
-			MMREnabled:               true,
-			MMRLambda:                0.75,
-			WeibullEnabled:           true,
-			WeibullShape:             1.35,
-			WeibullScaleHours:        2160,
-			WeibullMinMultiplier:     0.4,
-			WeibullReinforceWeight:   0.18,
-			WeibullCrossSessionBoost: 0.12,
+			MaxSearchKeywords:         5,
+			MinSimilarityScore:        float64Ptr(0.75),
+			ReplaceMinSimilarityScore: float64Ptr(defaultMemoryReplaceMinSimilarityScore),
+			HardDedupeCosineThreshold: float64Ptr(defaultMemoryHardDedupeCosineThreshold),
+			HybridEnabled:             true,
+			LexicalPreTokenize:        true,
+			LexicalTopK:               8,
+			RRFK:                      60,
+			MMREnabled:                true,
+			MMRLambda:                 0.75,
+			WeibullEnabled:            true,
+			WeibullShape:              1.35,
+			WeibullScaleHours:         2160,
+			WeibullMinMultiplier:      0.4,
+			WeibullReinforceWeight:    0.18,
+			WeibullCrossSessionBoost:  0.12,
 		},
 		Retention: RetentionConfig{
 			Enabled:                     true,
@@ -1791,6 +1803,12 @@ func (c *Config) Normalize() {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(0.75)
 		}
 	}
+	if c.MemoryPipeline.ReplaceMinSimilarityScore == nil {
+		c.MemoryPipeline.ReplaceMinSimilarityScore = float64Ptr(defaultMemoryReplaceMinSimilarityScore)
+	}
+	if c.MemoryPipeline.HardDedupeCosineThreshold == nil {
+		c.MemoryPipeline.HardDedupeCosineThreshold = float64Ptr(defaultMemoryHardDedupeCosineThreshold)
+	}
 	c.Prompts.Routes = normalizeRouteMap(c.Prompts.Routes)
 	if len(c.Prompts.Routes) == 0 {
 		c.Prompts.Routes = normalizeRouteMap(DefaultBase().Prompts.Routes)
@@ -2019,6 +2037,18 @@ func (c Config) Validate() error {
 	}
 	if *c.MemoryPipeline.MinSimilarityScore < 0 || *c.MemoryPipeline.MinSimilarityScore > 1 {
 		return errors.New("memory_pipeline.min_similarity_score must be in [0,1]")
+	}
+	if c.MemoryPipeline.ReplaceMinSimilarityScore == nil {
+		return errors.New("memory_pipeline.replace_min_similarity_score must be set")
+	}
+	if *c.MemoryPipeline.ReplaceMinSimilarityScore < 0 || *c.MemoryPipeline.ReplaceMinSimilarityScore > 1 {
+		return errors.New("memory_pipeline.replace_min_similarity_score must be in [0,1]")
+	}
+	if c.MemoryPipeline.HardDedupeCosineThreshold == nil {
+		return errors.New("memory_pipeline.hard_dedupe_cosine_threshold must be set")
+	}
+	if *c.MemoryPipeline.HardDedupeCosineThreshold < 0 || *c.MemoryPipeline.HardDedupeCosineThreshold > 1 {
+		return errors.New("memory_pipeline.hard_dedupe_cosine_threshold must be in [0,1]")
 	}
 	if c.Noise.SemanticThreshold < 0 || c.Noise.SemanticThreshold > 1 {
 		return errors.New("noise.semantic_threshold must be in [0,1]")
@@ -2398,6 +2428,8 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 	setBool("VMM_RETENTION_SKIP_PROTECTED_SHARED_MEMORIES", &cfg.Retention.SkipProtectedSharedMemories)
 	setInt("VMM_MEMORY_MAX_SEARCH_KEYWORDS", &cfg.MemoryPipeline.MaxSearchKeywords)
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
+	setOptionalFloat("VMM_MEMORY_REPLACE_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.ReplaceMinSimilarityScore)
+	setOptionalFloat("VMM_MEMORY_HARD_DEDUPE_COSINE_THRESHOLD", &cfg.MemoryPipeline.HardDedupeCosineThreshold)
 	setBool("VMM_MEMORY_HYBRID_ENABLED", &cfg.MemoryPipeline.HybridEnabled)
 	setBool("VMM_MEMORY_LEXICAL_PRETOKENIZE", &cfg.MemoryPipeline.LexicalPreTokenize)
 	setInt("VMM_MEMORY_LEXICAL_TOP_K", &cfg.MemoryPipeline.LexicalTopK)

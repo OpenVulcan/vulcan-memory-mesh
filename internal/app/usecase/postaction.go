@@ -79,16 +79,17 @@ type PostActionCandidateReviewer interface {
 // PostActionAnalysisConfig 用于承载异步单轮提炼流水线的队列与历史窗口参数，
 // 并保留少量旧阈值字段以兼容既有配置解析。
 type PostActionAnalysisConfig struct {
-	TurnThreshold       int
-	TokenThreshold      int
-	IdleTimeout         time.Duration
-	HistoryTurns        int
-	MaxInputTokens      int
-	QueueScanInterval   time.Duration
-	DedupeSearchTopK    int
-	MemoryReplaceScope  string
-	DedupeSearchScope   string
-	DedupeMinSimilarity float64
+	TurnThreshold             int
+	TokenThreshold            int
+	IdleTimeout               time.Duration
+	HistoryTurns              int
+	MaxInputTokens            int
+	QueueScanInterval         time.Duration
+	DedupeSearchTopK          int
+	MemoryReplaceScope        string
+	DedupeSearchScope         string
+	DedupeMinSimilarity       float64
+	HardDedupeCosineThreshold float64
 }
 
 // PostActionUseCase stores one cleaned turn, queues asynchronous single-turn extraction work,
@@ -155,11 +156,11 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 		analysisCfg.MemoryReplaceScope = analysisCfg.DedupeSearchScope
 	}
 	analysisCfg.MemoryReplaceScope = normalizeMemoryReplaceScope(analysisCfg.MemoryReplaceScope)
-	if analysisCfg.DedupeMinSimilarity <= 0 || analysisCfg.DedupeMinSimilarity > 1 {
-		analysisCfg.DedupeMinSimilarity = 0.90
+	if analysisCfg.DedupeMinSimilarity < 0 || analysisCfg.DedupeMinSimilarity > 1 {
+		analysisCfg.DedupeMinSimilarity = 0.80
 	}
-	if analysisCfg.DedupeMinSimilarity < 0.90 {
-		analysisCfg.DedupeMinSimilarity = 0.90
+	if analysisCfg.HardDedupeCosineThreshold < 0 || analysisCfg.HardDedupeCosineThreshold > 1 {
+		analysisCfg.HardDedupeCosineThreshold = 0.985
 	}
 	uc := &PostActionUseCase{
 		noiseGate:         noiseGate,
@@ -426,6 +427,7 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		"compaction_rate", compaction.CompactionRate(),
 		"admission_drop_count", compaction.AdmissionDroppedCount,
 		"review_drop_count", compaction.ReviewDroppedCount,
+		"hard_dedupe_drop_count", compaction.HardDedupeDroppedCount,
 		"external_research_kept_count", compaction.ExternalResearchKeptCount,
 		"superseded_memory_count", len(analysis.SupersededMemoryIDs),
 		"user_profile_merged", analysis.UserProfileMerged,

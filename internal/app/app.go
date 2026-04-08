@@ -273,7 +273,13 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		cfg.MemoryPipeline.WeibullCrossSessionBoost,
 	)
 	memory.ConfigureRerank(reranker, cfg.Rerank.TopN)
-	memory.ConfigureMemoryReplace(candidateReviewer, cfg.PreCheck.TopK, cfg.MemoryReplaceScope, minSimilarityOrDefault(cfg))
+	memory.ConfigureMemoryReplace(
+		candidateReviewer,
+		cfg.PreCheck.TopK,
+		cfg.MemoryReplaceScope,
+		replaceMinSimilarityOrDefault(cfg),
+		hardDedupeCosineThresholdOrDefault(cfg),
+	)
 	pre := usecase.NewPreCheckUseCase(
 		memory,
 		relational,
@@ -300,14 +306,15 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		memory,
 		candidateReviewer,
 		usecase.PostActionAnalysisConfig{
-			TurnThreshold:       cfg.PostAction.SessionAnalysisTurnThreshold,
-			TokenThreshold:      cfg.PostAction.SessionAnalysisTokenThreshold,
-			IdleTimeout:         cfg.PostAction.SessionAnalysisIdleTimeout.Duration,
-			HistoryTurns:        cfg.PostAction.SessionAnalysisHistoryTurns,
-			MaxInputTokens:      cfg.PostAction.SessionAnalysisMaxInputTokens,
-			DedupeSearchTopK:    cfg.PreCheck.TopK,
-			MemoryReplaceScope:  cfg.MemoryReplaceScope,
-			DedupeMinSimilarity: minSimilarityOrDefault(cfg),
+			TurnThreshold:             cfg.PostAction.SessionAnalysisTurnThreshold,
+			TokenThreshold:            cfg.PostAction.SessionAnalysisTokenThreshold,
+			IdleTimeout:               cfg.PostAction.SessionAnalysisIdleTimeout.Duration,
+			HistoryTurns:              cfg.PostAction.SessionAnalysisHistoryTurns,
+			MaxInputTokens:            cfg.PostAction.SessionAnalysisMaxInputTokens,
+			DedupeSearchTopK:          cfg.PreCheck.TopK,
+			MemoryReplaceScope:        cfg.MemoryReplaceScope,
+			DedupeMinSimilarity:       replaceMinSimilarityOrDefault(cfg),
+			HardDedupeCosineThreshold: hardDedupeCosineThresholdOrDefault(cfg),
 		},
 		logger,
 	)
@@ -520,6 +527,24 @@ func minSimilarityOrDefault(cfg config.Config) float64 {
 		return *cfg.MemoryPipeline.MinSimilarityScore
 	}
 	return 0.75
+}
+
+// replaceMinSimilarityOrDefault keeps post-action/direct-write duplicate review aligned with the dedicated reviewer-entry similarity floor instead of the older hard-coded clamp.
+// replaceMinSimilarityOrDefault 用于让 post-action/主动写记忆重复评审与专用 reviewer 入口相似度下限保持一致，而不再依赖旧的硬编码钳制。
+func replaceMinSimilarityOrDefault(cfg config.Config) float64 {
+	if cfg.MemoryPipeline.ReplaceMinSimilarityScore != nil && *cfg.MemoryPipeline.ReplaceMinSimilarityScore >= 0 {
+		return *cfg.MemoryPipeline.ReplaceMinSimilarityScore
+	}
+	return 0.80
+}
+
+// hardDedupeCosineThresholdOrDefault keeps the pre-review vector hard-dedupe gate aligned with validated config while still allowing callers to disable it by setting 0.
+// hardDedupeCosineThresholdOrDefault 用于让 reviewer 前向量硬排重门槛与已校验配置保持一致，同时允许调用方通过设置 0 显式关闭。
+func hardDedupeCosineThresholdOrDefault(cfg config.Config) float64 {
+	if cfg.MemoryPipeline.HardDedupeCosineThreshold != nil && *cfg.MemoryPipeline.HardDedupeCosineThreshold >= 0 {
+		return *cfg.MemoryPipeline.HardDedupeCosineThreshold
+	}
+	return 0.985
 }
 
 // normalizeProviderAlias keeps runtime adapter selection aligned with config validation by trimming accidental surrounding whitespace before lower-casing provider aliases.

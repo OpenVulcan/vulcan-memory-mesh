@@ -1659,7 +1659,7 @@ func TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory(t *testing.T) {
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{
@@ -1688,6 +1688,231 @@ func TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory(t *testing.T) {
 	}
 	if len(store.directWriteApplyCalls) != 0 || len(store.createdDirectMemoryNodes) != 0 {
 		t.Fatalf("expected semantic dedupe to avoid persistence writes, got apply=%+v create=%+v", store.directWriteApplyCalls, store.createdDirectMemoryNodes)
+	}
+}
+
+// TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory verifies real-cosine hard dedupe can reuse an existing durable memory before reviewer execution, even when the highest-cosine hit is not ranked first.
+// TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory 用于验证真实 cosine 硬排重可以在 reviewer 执行前复用已有长期记忆；即使最高 cosine 命中不是排序第一也同样生效。
+func TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			VectorID:   "vec-901",
+		}},
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{
+				ID:         900,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "排序第一但向量不等价。",
+				Details:    "排序第一但向量不等价。",
+				VectorID:   "vec-900",
+				Vector:     []float32{1, 0},
+			},
+			{
+				ID:         901,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "当前项目阶段已经切换到 B。",
+				Details:    "当前项目阶段已经切换到 B。",
+				VectorID:   "vec-901",
+				Vector:     []float32{0, 1},
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0, 1}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{
+				ID:    "vec-900",
+				Text:  "排序第一但向量不等价。",
+				Score: 0.99,
+			},
+			{
+				ID:    "vec-901",
+				Text:  "当前项目阶段已经切换到 B。",
+				Score: 0.94,
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(nil, 5, memoryReplaceScopeProject, 0.80, 0.985)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-direct-hard-dedupe",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			Category:   logicdomain.MemoryNodeCategoryProjectContext,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || !result.Items[0].Deduped || result.Items[0].Ref.ID != 901 {
+		t.Fatalf("expected hard dedupe to reuse memory 901, got %+v", result.Items)
+	}
+	if len(vector.upserts) != 0 {
+		t.Fatalf("expected hard dedupe to skip new vector upsert, got %+v", vector.upserts)
+	}
+	if len(store.directWriteApplyCalls) != 0 || len(store.createdDirectMemoryNodes) != 0 {
+		t.Fatalf("expected hard dedupe to avoid persistence writes, got apply=%+v create=%+v", store.directWriteApplyCalls, store.createdDirectMemoryNodes)
+	}
+}
+
+// TestMemoryUseCaseWriteMixedHardDedupeAndReviewerBatch verifies one direct-write batch can simultaneously reuse a locally hard-deduped memory and persist a second reviewer-approved memory without tripping reviewer-only dedupe validation.
+// TestMemoryUseCaseWriteMixedHardDedupeAndReviewerBatch 用于验证单次 direct-write 批次可以同时复用本地 hard dedupe 命中的旧记忆，并持久化另一条 reviewer 接纳的新记忆，而不会误触 reviewer 专属 dedupe 校验。
+func TestMemoryUseCaseWriteMixedHardDedupeAndReviewerBatch(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		memoryRowsByID: []logicdomain.MemoryNodeRecord{{
+			ID:         901,
+			Status:     logicdomain.MemoryStatusActive,
+			SourceKind: logicdomain.MemorySourceKindTurnExtract,
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "当前项目阶段已经切换到 B。",
+			Details:    "当前项目阶段已经切换到 B。",
+			VectorID:   "vec-901",
+		}},
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{
+				ID:         900,
+				Status:     logicdomain.MemoryStatusActive,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "排序第一但向量不等价。",
+				Details:    "排序第一但向量不等价。",
+				VectorID:   "vec-900",
+				Vector:     []float32{1, 0},
+			},
+			{
+				ID:         901,
+				Status:     logicdomain.MemoryStatusActive,
+				SourceKind: logicdomain.MemorySourceKindTurnExtract,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "当前项目阶段已经切换到 B。",
+				Details:    "当前项目阶段已经切换到 B。",
+				VectorID:   "vec-901",
+				Vector:     []float32{0, 1},
+			},
+		},
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1002,
+				Status:     logicdomain.MemoryStatusActive,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "新增稳定工程约束：发布前必须跑 smoke test。",
+				Details:    "新增稳定工程约束：发布前必须跑 smoke test。",
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		responseQueue: []appports.EmbeddingResponse{
+			{Vectors: [][]float32{{0, 1}, {0.5, 0.5}}},
+			{Vectors: [][]float32{{0.3, 0.4, 0.5}}},
+		},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{
+				ID:    "vec-900",
+				Text:  "排序第一但向量不等价。",
+				Score: 0.79,
+			},
+			{
+				ID:    "vec-901",
+				Text:  "当前项目阶段已经切换到 B。",
+				Score: 0.78,
+			},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidates:       nil,
+				AcceptedCandidateIndexes: []int{0},
+				DroppedCandidateIndexes:  nil,
+				Reason:                   "第二条候选是新的稳定工程约束，应保留。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.80, 0.985)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  47,
+			SessionKey: "sess-direct-mixed-hard-dedupe",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{
+			{
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "当前项目阶段已经切换到 B。",
+				Details:    "当前项目阶段已经切换到 B。",
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
+			},
+			{
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "新增稳定工程约束：发布前必须跑 smoke test。",
+				Details:    "新增稳定工程约束：发布前必须跑 smoke test。",
+				Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if reviewer.calls != 1 {
+		t.Fatalf("expected exactly one reviewer call for the non-hard-deduped candidate, got %d", reviewer.calls)
+	}
+	if len(reviewer.inputs) != 1 || len(reviewer.inputs[0].MemoryCandidates) != 1 || reviewer.inputs[0].MemoryCandidates[0].Abstract != "新增稳定工程约束：发布前必须跑 smoke test。" {
+		t.Fatalf("expected reviewer to receive only the second candidate, got %+v", reviewer.inputs)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("expected two write results, got %+v", result.Items)
+	}
+	if !result.Items[0].Deduped || result.Items[0].Ref.ID != 901 {
+		t.Fatalf("expected first candidate to reuse memory 901, got %+v", result.Items[0])
+	}
+	if result.Items[1].Deduped || result.Items[1].Ref.ID != 1002 {
+		t.Fatalf("expected second candidate to create memory 1002, got %+v", result.Items[1])
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected only one fresh vector upsert for the reviewer-approved create path, got %+v", vector.upserts)
+	}
+	if len(store.directWriteApplyCalls) != 1 || len(store.directWriteApplyCalls[0].SupersededMemoryIDs) != 0 {
+		t.Fatalf("expected exactly one persistence call without supersedes for the second candidate, got %+v", store.directWriteApplyCalls)
 	}
 }
 
@@ -2249,7 +2474,7 @@ func TestMemoryUseCaseWriteDroppedCandidateWithoutExplicitDedupeTargetFallsBackT
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{
@@ -2332,7 +2557,7 @@ func TestMemoryUseCaseWriteAcceptedCandidateSupersedesOldMemory(t *testing.T) {
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{
@@ -2405,7 +2630,7 @@ func TestMemoryUseCaseWriteLegacyAcceptedIndexesStillPersist(t *testing.T) {
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{
@@ -2470,7 +2695,7 @@ func TestMemoryUseCaseWriteDroppedCandidateWithoutSimilarFallsBackToCreate(t *te
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{
@@ -2560,7 +2785,7 @@ func TestMemoryUseCaseWriteStaleSemanticDedupeTargetFallsBackToCreate(t *testing
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{

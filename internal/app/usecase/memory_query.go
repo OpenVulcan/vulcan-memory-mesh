@@ -124,9 +124,10 @@ type MemoryQueryHit struct {
 // MemoryQueryGroupResult returns the echoed normalized query together with the hit list produced for that query.
 // MemoryQueryGroupResult 用于返回原样回显的规范化查询，以及针对该查询生成的命中结果。
 type MemoryQueryGroupResult struct {
-	QueryIndex int
-	Query      string
-	Hits       []MemoryQueryHit
+	QueryIndex  int
+	Query       string
+	QueryVector []float32
+	Hits        []MemoryQueryHit
 }
 
 // MemoryQueryResult returns the resolved user/project targets plus all grouped recall results after fusion, rerank, and optional diversity control.
@@ -232,29 +233,31 @@ type hybridVectorSearchStore interface {
 // MemoryUseCase orchestrates grouped memory search, mixed detail lookup, and direct AI memory writes on top of profile-target resolution and unified relational memory rows.
 // MemoryUseCase 用于在画像目标解析和统一关系记忆行之上，编排分组记忆检索、混合详情查询以及 AI 主动写记忆流程。
 type MemoryUseCase struct {
-	profiles                   appports.ProfileStore
-	memories                   appports.MemoryStore
-	embedding                  appports.EmbeddingClient
-	candidateReviewer          PostActionCandidateReviewer
-	memoryReplaceScope         string
-	memoryReplaceTopK          int
-	memoryReplaceMinSimilarity float64
-	hybridEnabled              bool
-	lexicalTopK                int
-	rrfK                       int
-	mmrEnabled                 bool
-	mmrLambda                  float64
-	weibullEnabled             bool
-	weibullShape               float64
-	weibullScaleHours          float64
-	weibullMinMultiplier       float64
-	weibullReinforceWeight     float64
-	weibullCrossSessionBoost   float64
-	reranker                   appports.RerankerClient
-	rerankTopN                 int
-	vector                     appports.VectorStore
-	logger                     *logx.Logger
-	piiScrubber                PIIScrubber
+	profiles                               appports.ProfileStore
+	memories                               appports.MemoryStore
+	embedding                              appports.EmbeddingClient
+	candidateReviewer                      PostActionCandidateReviewer
+	memoryReplaceScope                     string
+	memoryReplaceTopK                      int
+	memoryReplaceMinSimilarity             float64
+	memoryReplaceHardDedupeCosineThreshold float64
+	memoryReplaceConfigured                bool
+	hybridEnabled                          bool
+	lexicalTopK                            int
+	rrfK                                   int
+	mmrEnabled                             bool
+	mmrLambda                              float64
+	weibullEnabled                         bool
+	weibullShape                           float64
+	weibullScaleHours                      float64
+	weibullMinMultiplier                   float64
+	weibullReinforceWeight                 float64
+	weibullCrossSessionBoost               float64
+	reranker                               appports.RerankerClient
+	rerankTopN                             int
+	vector                                 appports.VectorStore
+	logger                                 *logx.Logger
+	piiScrubber                            PIIScrubber
 }
 
 // directMemoryWriteApplier is the optional store fast path that atomically inserts one direct-write memory row and retires any replaced old rows in the same SQL transaction.
@@ -270,23 +273,25 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		logger = logx.Default()
 	}
 	return &MemoryUseCase{
-		profiles:                   profiles,
-		memories:                   memories,
-		embedding:                  embedding,
-		memoryReplaceScope:         memoryReplaceScopeProject,
-		memoryReplaceTopK:          defaultMemorySearchTopK,
-		memoryReplaceMinSimilarity: 0.90,
-		lexicalTopK:                defaultMemorySearchTopK,
-		rrfK:                       60,
-		mmrLambda:                  0.75,
-		weibullShape:               1.35,
-		weibullScaleHours:          2160,
-		weibullMinMultiplier:       0.4,
-		weibullReinforceWeight:     0.18,
-		weibullCrossSessionBoost:   0.12,
-		rerankTopN:                 defaultMemorySearchTopK,
-		vector:                     vector,
-		logger:                     logger,
+		profiles:                               profiles,
+		memories:                               memories,
+		embedding:                              embedding,
+		memoryReplaceScope:                     memoryReplaceScopeProject,
+		memoryReplaceTopK:                      defaultMemorySearchTopK,
+		memoryReplaceMinSimilarity:             0.80,
+		memoryReplaceHardDedupeCosineThreshold: 0.985,
+		memoryReplaceConfigured:                false,
+		lexicalTopK:                            defaultMemorySearchTopK,
+		rrfK:                                   60,
+		mmrLambda:                              0.75,
+		weibullShape:                           1.35,
+		weibullScaleHours:                      2160,
+		weibullMinMultiplier:                   0.4,
+		weibullReinforceWeight:                 0.18,
+		weibullCrossSessionBoost:               0.12,
+		rerankTopN:                             defaultMemorySearchTopK,
+		vector:                                 vector,
+		logger:                                 logger,
 	}
 }
 
@@ -379,10 +384,11 @@ func (u *MemoryUseCase) ConfigureRerank(reranker appports.RerankerClient, topN i
 
 // ConfigureMemoryReplace attaches the optional semantic replacement reviewer and its recall knobs so direct writes can converge with post-action memory replacement decisions.
 // ConfigureMemoryReplace 用于挂载可选的语义替代 reviewer 及其召回参数，让主动写记忆与 post-action 共享同一套更替决策语义。
-func (u *MemoryUseCase) ConfigureMemoryReplace(reviewer PostActionCandidateReviewer, topK int, scope string, minSimilarity float64) {
+func (u *MemoryUseCase) ConfigureMemoryReplace(reviewer PostActionCandidateReviewer, topK int, scope string, minSimilarity float64, hardDedupeCosineThreshold float64) {
 	if u == nil {
 		return
 	}
+	u.memoryReplaceConfigured = true
 	u.candidateReviewer = reviewer
 	if topK <= 0 {
 		topK = defaultMemorySearchTopK
@@ -392,13 +398,14 @@ func (u *MemoryUseCase) ConfigureMemoryReplace(reviewer PostActionCandidateRevie
 	}
 	u.memoryReplaceTopK = topK
 	u.memoryReplaceScope = normalizeMemoryReplaceScope(scope)
-	if minSimilarity <= 0 || minSimilarity > 1 {
-		minSimilarity = 0.90
-	}
-	if minSimilarity < 0.90 {
-		minSimilarity = 0.90
+	if minSimilarity < 0 || minSimilarity > 1 {
+		minSimilarity = 0.80
 	}
 	u.memoryReplaceMinSimilarity = minSimilarity
+	if hardDedupeCosineThreshold < 0 || hardDedupeCosineThreshold > 1 {
+		hardDedupeCosineThreshold = 0.985
+	}
+	u.memoryReplaceHardDedupeCosineThreshold = hardDedupeCosineThreshold
 }
 
 // Search resolves the concrete project/user scope, normalizes the simple query list, runs the configured retrieval stages, and returns enriched unified memory refs.
@@ -486,6 +493,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		candidatePoolK = normalizeMemoryCandidatePoolK(topK, lexicalTopK, rerankTopN, u.mmrEnabled)
 	}
 	cachedHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
+	cachedQueryVectors := make(map[string][]float32, len(uniqueItems))
 	for idx, item := range uniqueItems {
 		queryText := buildMemorySearchText(item)
 		hits, usedCombinedHybridSQL, err := u.searchMemoryFirstStage(ctx, item, embedResp.Vectors[idx], candidatePoolK, filter)
@@ -543,13 +551,15 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 			"top_final_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
 		})
 		cachedHits[uniqueKeys[idx]] = cloneMemoryQueryHits(trimSearchHits(mapped, topK))
+		cachedQueryVectors[uniqueKeys[idx]] = cloneFloat32Slice(embedResp.Vectors[idx])
 	}
 	results := make([]MemoryQueryGroupResult, 0, len(items))
 	for idx, item := range items {
 		results = append(results, MemoryQueryGroupResult{
-			QueryIndex: idx,
-			Query:      item.Query,
-			Hits:       cloneMemoryQueryHits(cachedHits[keys[idx]]),
+			QueryIndex:  idx,
+			Query:       item.Query,
+			QueryVector: cloneFloat32Slice(cachedQueryVectors[keys[idx]]),
+			Hits:        cloneMemoryQueryHits(cachedHits[keys[idx]]),
 		})
 	}
 	return MemoryQueryResult{
@@ -816,7 +826,15 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 	if len(pending) == 0 {
 		return nil, nil
 	}
-	if u == nil || u.candidateReviewer == nil {
+	if u == nil {
+		return buildDirectWriteFallbackDecisions(len(pending)), nil
+	}
+	// Only the app/runtime wiring should opt direct-write flows into shared semantic replacement; bare unit tests and lightweight callers keep the historical no-extra-search behavior until ConfigureMemoryReplace is invoked.
+	// 只有应用装配层显式启用后，主动写记忆才进入共享语义替代链路；裸构造的单测和轻量调用方在 ConfigureMemoryReplace 被调用前继续保持历史上的“无额外检索”行为。
+	if !u.memoryReplaceConfigured {
+		return buildDirectWriteFallbackDecisions(len(pending)), nil
+	}
+	if u.candidateReviewer == nil && u.memoryReplaceHardDedupeCosineThreshold <= 0 {
 		return buildDirectWriteFallbackDecisions(len(pending)), nil
 	}
 
@@ -832,7 +850,7 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
 		})
 	}
-	reviewCandidates, err := buildScopedMemoryReviewCandidates(
+	reviewBuild, err := buildScopedMemoryReviewCandidates(
 		ctx,
 		u,
 		session,
@@ -840,18 +858,34 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 		u.memoryReplaceTopK,
 		u.memoryReplaceScope,
 		u.memoryReplaceMinSimilarity,
+		u.memoryReplaceHardDedupeCosineThreshold,
 	)
 	if err != nil {
 		return nil, err
 	}
+	if u.candidateReviewer == nil {
+		return buildDirectWriteFallbackDecisionsWithHardDedupe(len(pending), reviewBuild.HardDropped), nil
+	}
+	reviewPartition := partitionMemoryReviewCandidatesForReviewer(reviewBuild.Candidates, reviewBuild.HardDropped)
+	if len(reviewPartition.ReviewerCandidates) == 0 {
+		return buildDirectWriteFallbackDecisionsWithHardDedupe(len(pending), reviewBuild.HardDropped), nil
+	}
 	reviewed, err := u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
 		UserInputKind:    logicdomain.TurnAnalysisUserInputStatement,
-		MemoryCandidates: reviewCandidates,
+		MemoryCandidates: reviewPartition.ReviewerCandidates,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return buildDirectWriteMemoryDecisions(reviewCandidates, reviewed.Memory)
+	remappedSection, err := remapPostActionMemoryReviewSectionToOriginal(reviewed.Memory, reviewPartition.ReviewerToOriginal)
+	if err != nil {
+		return nil, err
+	}
+	fullSection, err := mergePostActionMemoryReviewSectionWithHardDropped(len(reviewBuild.Candidates), remappedSection, reviewBuild.HardDropped)
+	if err != nil {
+		return nil, err
+	}
+	return buildDirectWriteMemoryDecisions(reviewBuild.Candidates, fullSection, reviewBuild.HardDropped)
 }
 
 // buildDirectWriteFallbackDecisions degrades pending direct writes into unconditional persistence when semantic replacement review is unavailable.
@@ -863,9 +897,22 @@ func buildDirectWriteFallbackDecisions(count int) []directWriteMemoryDecision {
 	return make([]directWriteMemoryDecision, count)
 }
 
-// buildDirectWriteMemoryDecisions converts the shared reviewer result into direct-write actions, while only reusing old memories for dropped candidates that explicitly name one trustworthy dedupe target.
-// buildDirectWriteMemoryDecisions 用于把共享 reviewer 结果转换成主动写入动作；只有当被丢弃候选显式指定可信 dedupe 目标时才会复用旧记忆，其余情况退化成新建以避免静默丢失。
-func buildDirectWriteMemoryDecisions(candidates []logicdomain.PostActionMemoryReviewCandidate, section *logicdomain.PostActionMemoryReviewSection) ([]directWriteMemoryDecision, error) {
+// buildDirectWriteFallbackDecisionsWithHardDedupe keeps direct-write fallback behavior conservative while still honoring any local hard-dedupe matches discovered before reviewer execution.
+// buildDirectWriteFallbackDecisionsWithHardDedupe 用于在 direct-write 走回退路径时保持保守新建策略，同时保留 reviewer 前本地硬排重已发现的 dedupe 命中。
+func buildDirectWriteFallbackDecisionsWithHardDedupe(count int, hardDropped map[int]logicdomain.PostActionDroppedMemoryCandidate) []directWriteMemoryDecision {
+	decisions := buildDirectWriteFallbackDecisions(count)
+	for idx, dropped := range hardDropped {
+		if idx < 0 || idx >= len(decisions) {
+			continue
+		}
+		decisions[idx] = directWriteMemoryDecision{DedupedExistingMemoryID: dropped.DedupeMemoryID}
+	}
+	return decisions
+}
+
+// buildDirectWriteMemoryDecisions converts the shared reviewer result into direct-write actions, while allowing locally proven hard-dedupe drops to bypass the reviewer-only visibility validation that exists solely for LLM-originated dedupe ids.
+// buildDirectWriteMemoryDecisions 用于把共享 reviewer 结果转换成主动写入动作；同时允许本地已证实的 hard dedupe 丢弃结果跳过 reviewer 专属的可见性校验，因为该校验只适用于 LLM 产出的 dedupe id。
+func buildDirectWriteMemoryDecisions(candidates []logicdomain.PostActionMemoryReviewCandidate, section *logicdomain.PostActionMemoryReviewSection, hardDropped map[int]logicdomain.PostActionDroppedMemoryCandidate) ([]directWriteMemoryDecision, error) {
 	if len(candidates) == 0 {
 		return nil, nil
 	}
@@ -894,6 +941,14 @@ func buildDirectWriteMemoryDecisions(candidates []logicdomain.PostActionMemoryRe
 	}
 	decisions := make([]directWriteMemoryDecision, len(candidates))
 	for idx, candidate := range candidates {
+		// Local hard-dedupe targets come from the full recalled hit set and real-cosine comparison rather than the reviewer-visible SimilarMemories subset,
+		// so they must not be rejected by the LLM-output validation that only exists to constrain reviewer-authored dedupe ids.
+		// 本地 hard dedupe 目标来自完整召回命中集与真实 cosine 比较，而不是 reviewer 可见的 SimilarMemories 子集，
+		// 因此不能再被只用于约束 reviewer 输出 dedupe id 的那层校验误伤。
+		if dropped, ok := hardDropped[idx]; ok {
+			decisions[idx] = directWriteMemoryDecision{DedupedExistingMemoryID: dropped.DedupeMemoryID}
+			continue
+		}
 		if accepted, ok := acceptedByIndex[idx]; ok {
 			supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
 				"review_postaction_candidates",
@@ -1307,6 +1362,15 @@ func cloneMemoryQueryHits(hits []MemoryQueryHit) []MemoryQueryHit {
 		cloned = append(cloned, copyHit)
 	}
 	return cloned
+}
+
+// cloneFloat32Slice copies one float32 vector so repeated query groups can safely reuse cached embeddings without sharing backing arrays across callers.
+// cloneFloat32Slice 用于复制一条 float32 向量，让重复 query group 可以安全复用缓存 embedding，而不会与调用方共享底层数组。
+func cloneFloat32Slice(values []float32) []float32 {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]float32(nil), values...)
 }
 
 // normalizeMemorySearchTopK applies the RPC defaults and caps so callers can omit top_k safely without creating oversized result sets.

@@ -20,7 +20,22 @@ type postActionCompactionStats struct {
 	FinalProfileNodes         int
 	AdmissionDroppedCount     int
 	ReviewDroppedCount        int
+	HardDedupeDroppedCount    int
 	ExternalResearchKeptCount int
+}
+
+// scopedMemoryReviewBuildResult stores the full reviewer-facing candidate list plus the candidates that were already proven to be duplicate enough to skip the LLM review.
+// scopedMemoryReviewBuildResult 用于保存完整的 reviewer 候选列表，以及那些已经被证明重复程度足够高、可以跳过 LLM 评审的候选。
+type scopedMemoryReviewBuildResult struct {
+	Candidates  []logicdomain.PostActionMemoryReviewCandidate
+	HardDropped map[int]logicdomain.PostActionDroppedMemoryCandidate
+}
+
+// partitionedMemoryReviewCandidates stores the dense reviewer subset together with its mapping back to the original candidate indexes after local hard-dedupe pruning.
+// partitionedMemoryReviewCandidates 用于保存本地硬排重裁剪后的稠密 reviewer 子集，以及它回映到原始候选索引的映射关系。
+type partitionedMemoryReviewCandidates struct {
+	ReviewerCandidates []logicdomain.PostActionMemoryReviewCandidate
+	ReviewerToOriginal []int
 }
 
 // newPostActionCompactionStats captures the raw analyzer candidate counts before any first-pass or reviewer-side filtering starts.
@@ -105,9 +120,6 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 		}
 		return nil
 	}
-	if u.candidateReviewer == nil {
-		return fmt.Errorf("post-action candidate reviewer is nil")
-	}
 	if len(analysis.MemoryNodes) > 0 && u.memorySearcher == nil {
 		return fmt.Errorf("post-action memory searcher is nil")
 	}
@@ -141,28 +153,47 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 		}
 	}
 
-	memoryCandidates, err := u.buildPostActionMemoryReviewCandidates(ctx, session, analysis.MemoryNodes)
+	memoryReviewBuild, err := u.buildPostActionMemoryReviewCandidates(ctx, session, analysis.MemoryNodes)
 	if err != nil {
 		return err
 	}
-	reviewed, err := u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
-		UserInputKind:     strings.TrimSpace(analysis.UserInputKind),
-		UserContent:       strings.TrimSpace(rawTurn.UserContent),
-		AssistantContent:  strings.TrimSpace(rawTurn.AssistantContent),
-		MemoryCandidates:  memoryCandidates,
-		ProfileTargets:    snapshot,
-		ProfileCandidates: stampedProfiles,
-	})
+	if stats != nil {
+		stats.HardDedupeDroppedCount += len(memoryReviewBuild.HardDropped)
+	}
+	memoryReviewPartition := partitionMemoryReviewCandidatesForReviewer(memoryReviewBuild.Candidates, memoryReviewBuild.HardDropped)
+	needReviewer := len(memoryReviewPartition.ReviewerCandidates) > 0 || len(stampedProfiles) > 0
+	reviewed := logicdomain.PostActionCandidateReviewResult{}
+	if needReviewer {
+		if u.candidateReviewer == nil {
+			return fmt.Errorf("post-action candidate reviewer is nil")
+		}
+		reviewed, err = u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
+			UserInputKind:     strings.TrimSpace(analysis.UserInputKind),
+			UserContent:       strings.TrimSpace(rawTurn.UserContent),
+			AssistantContent:  strings.TrimSpace(rawTurn.AssistantContent),
+			MemoryCandidates:  memoryReviewPartition.ReviewerCandidates,
+			ProfileTargets:    snapshot,
+			ProfileCandidates: stampedProfiles,
+		})
+		if err != nil {
+			return err
+		}
+	}
+	remappedMemorySection, err := remapPostActionMemoryReviewSectionToOriginal(reviewed.Memory, memoryReviewPartition.ReviewerToOriginal)
+	if err != nil {
+		return err
+	}
+	fullMemorySection, err := mergePostActionMemoryReviewSectionWithHardDropped(len(analysis.MemoryNodes), remappedMemorySection, memoryReviewBuild.HardDropped)
 	if err != nil {
 		return err
 	}
 
 	originalMemoryNodes := append([]logicdomain.MemoryNodeCandidate(nil), analysis.MemoryNodes...)
-	keptMemoryNodes, reviewDroppedCount, err := applyPostActionMemoryReviewResult(originalMemoryNodes, reviewed.Memory, memoryCandidates)
+	keptMemoryNodes, reviewDroppedCount, err := applyPostActionMemoryReviewResult(originalMemoryNodes, fullMemorySection, memoryReviewBuild.Candidates)
 	if err != nil {
 		return err
 	}
-	mergedSupersededMemoryIDs, err := mergePostActionSupersededMemoryIDs(analysis.SupersededMemoryIDs, reviewed.Memory, memoryCandidates, originalMemoryNodes)
+	mergedSupersededMemoryIDs, err := mergePostActionSupersededMemoryIDs(analysis.SupersededMemoryIDs, fullMemorySection, memoryReviewBuild.Candidates, originalMemoryNodes)
 	if err != nil {
 		return err
 	}
@@ -199,7 +230,7 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 
 // buildPostActionMemoryReviewCandidates recalls similar durable memories for each candidate inside the configured shared scope so the unified reviewer can judge semantic duplication.
 // buildPostActionMemoryReviewCandidates 用于在配置好的共享作用域里为每条候选召回相似长期记忆，让统一 reviewer 判断语义重复。
-func (u *PostActionUseCase) buildPostActionMemoryReviewCandidates(ctx context.Context, session logicdomain.SessionRef, nodes []logicdomain.MemoryNodeCandidate) ([]logicdomain.PostActionMemoryReviewCandidate, error) {
+func (u *PostActionUseCase) buildPostActionMemoryReviewCandidates(ctx context.Context, session logicdomain.SessionRef, nodes []logicdomain.MemoryNodeCandidate) (scopedMemoryReviewBuildResult, error) {
 	return buildScopedMemoryReviewCandidates(
 		ctx,
 		u.memorySearcher,
@@ -208,7 +239,164 @@ func (u *PostActionUseCase) buildPostActionMemoryReviewCandidates(ctx context.Co
 		u.analysisCfg.DedupeSearchTopK,
 		u.analysisCfg.MemoryReplaceScope,
 		u.analysisCfg.DedupeMinSimilarity,
+		u.analysisCfg.HardDedupeCosineThreshold,
 	)
+}
+
+// partitionMemoryReviewCandidatesForReviewer removes locally hard-deduped candidates from the LLM request and reindexes the remaining memory candidates into one dense 0..N-1 subset.
+// partitionMemoryReviewCandidatesForReviewer 用于把本地已硬排重的候选从 LLM 请求中移除，并将剩余记忆候选重新编号为稠密的 0..N-1 子集。
+func partitionMemoryReviewCandidatesForReviewer(candidates []logicdomain.PostActionMemoryReviewCandidate, hardDropped map[int]logicdomain.PostActionDroppedMemoryCandidate) partitionedMemoryReviewCandidates {
+	partition := partitionedMemoryReviewCandidates{
+		ReviewerCandidates: make([]logicdomain.PostActionMemoryReviewCandidate, 0, len(candidates)),
+		ReviewerToOriginal: make([]int, 0, len(candidates)),
+	}
+	for _, candidate := range candidates {
+		if _, ok := hardDropped[candidate.CandidateIndex]; ok {
+			continue
+		}
+		copyCandidate := candidate
+		copyCandidate.CandidateIndex = len(partition.ReviewerCandidates)
+		partition.ReviewerCandidates = append(partition.ReviewerCandidates, copyCandidate)
+		partition.ReviewerToOriginal = append(partition.ReviewerToOriginal, candidate.CandidateIndex)
+	}
+	return partition
+}
+
+// remapPostActionMemoryReviewSectionToOriginal restores reviewer decisions from the dense subset indexes back to the original candidate indexes after local hard-dedupe pruning.
+// remapPostActionMemoryReviewSectionToOriginal 用于在本地硬排重裁剪后，把 reviewer 对稠密子集索引的决策还原回原始候选索引。
+func remapPostActionMemoryReviewSectionToOriginal(section *logicdomain.PostActionMemoryReviewSection, reviewerToOriginal []int) (*logicdomain.PostActionMemoryReviewSection, error) {
+	if section == nil {
+		return nil, nil
+	}
+	remapIndex := func(reviewerIndex int) (int, error) {
+		if reviewerIndex < 0 || reviewerIndex >= len(reviewerToOriginal) {
+			return 0, logicdomain.InvalidLLMOutputError{
+				Scene:   "review_postaction_candidates",
+				Message: fmt.Sprintf("memory reviewer subset index %d is out of range", reviewerIndex),
+			}
+		}
+		return reviewerToOriginal[reviewerIndex], nil
+	}
+	remapped := &logicdomain.PostActionMemoryReviewSection{
+		Reason: strings.TrimSpace(section.Reason),
+	}
+	for _, idx := range section.AcceptedCandidateIndexes {
+		originalIndex, err := remapIndex(idx)
+		if err != nil {
+			return nil, err
+		}
+		remapped.AcceptedCandidateIndexes = append(remapped.AcceptedCandidateIndexes, originalIndex)
+	}
+	for _, idx := range section.DroppedCandidateIndexes {
+		originalIndex, err := remapIndex(idx)
+		if err != nil {
+			return nil, err
+		}
+		remapped.DroppedCandidateIndexes = append(remapped.DroppedCandidateIndexes, originalIndex)
+	}
+	for _, accepted := range section.AcceptedCandidates {
+		originalIndex, err := remapIndex(accepted.CandidateIndex)
+		if err != nil {
+			return nil, err
+		}
+		remapped.AcceptedCandidates = append(remapped.AcceptedCandidates, logicdomain.PostActionAcceptedMemoryCandidate{
+			CandidateIndex:     originalIndex,
+			SupersedeMemoryIDs: append([]uint64(nil), accepted.SupersedeMemoryIDs...),
+		})
+	}
+	for _, dropped := range section.DroppedCandidates {
+		originalIndex, err := remapIndex(dropped.CandidateIndex)
+		if err != nil {
+			return nil, err
+		}
+		remapped.DroppedCandidates = append(remapped.DroppedCandidates, logicdomain.PostActionDroppedMemoryCandidate{
+			CandidateIndex: originalIndex,
+			DedupeMemoryID: dropped.DedupeMemoryID,
+		})
+	}
+	sort.Ints(remapped.AcceptedCandidateIndexes)
+	sort.Ints(remapped.DroppedCandidateIndexes)
+	sort.Slice(remapped.AcceptedCandidates, func(i, j int) bool {
+		return remapped.AcceptedCandidates[i].CandidateIndex < remapped.AcceptedCandidates[j].CandidateIndex
+	})
+	sort.Slice(remapped.DroppedCandidates, func(i, j int) bool {
+		return remapped.DroppedCandidates[i].CandidateIndex < remapped.DroppedCandidates[j].CandidateIndex
+	})
+	return remapped, nil
+}
+
+// mergePostActionMemoryReviewSectionWithHardDropped merges reviewer output with local hard-dedupe drops and rebuilds one full-coverage section over the original candidate index space.
+// mergePostActionMemoryReviewSectionWithHardDropped 用于把 reviewer 输出与本地硬排重丢弃结果合并，并在原始候选索引空间上重建一份完整覆盖的评审结果。
+func mergePostActionMemoryReviewSectionWithHardDropped(totalCandidates int, reviewed *logicdomain.PostActionMemoryReviewSection, hardDropped map[int]logicdomain.PostActionDroppedMemoryCandidate) (*logicdomain.PostActionMemoryReviewSection, error) {
+	if totalCandidates == 0 {
+		return nil, nil
+	}
+	acceptedSet := make(map[int]struct{}, totalCandidates)
+	droppedSet := make(map[int]struct{}, totalCandidates)
+	acceptedByIndex := make(map[int]logicdomain.PostActionAcceptedMemoryCandidate, totalCandidates)
+	droppedByIndex := make(map[int]logicdomain.PostActionDroppedMemoryCandidate, totalCandidates)
+	reason := ""
+	if reviewed != nil {
+		reason = strings.TrimSpace(reviewed.Reason)
+		for _, idx := range reviewed.AcceptedCandidateIndexes {
+			acceptedSet[idx] = struct{}{}
+		}
+		for _, idx := range reviewed.DroppedCandidateIndexes {
+			droppedSet[idx] = struct{}{}
+		}
+		for _, accepted := range reviewed.AcceptedCandidates {
+			acceptedByIndex[accepted.CandidateIndex] = accepted
+			acceptedSet[accepted.CandidateIndex] = struct{}{}
+		}
+		for _, dropped := range reviewed.DroppedCandidates {
+			droppedByIndex[dropped.CandidateIndex] = dropped
+			droppedSet[dropped.CandidateIndex] = struct{}{}
+		}
+	}
+	for idx, dropped := range hardDropped {
+		if _, ok := acceptedSet[idx]; ok {
+			return nil, logicdomain.InvalidLLMOutputError{
+				Scene:   "review_postaction_candidates",
+				Message: fmt.Sprintf("memory candidate %d is both hard-dropped and accepted", idx),
+			}
+		}
+		droppedSet[idx] = struct{}{}
+		droppedByIndex[idx] = dropped
+	}
+	if len(acceptedSet)+len(droppedSet) != totalCandidates {
+		return nil, logicdomain.InvalidLLMOutputError{
+			Scene:   "review_postaction_candidates",
+			Message: fmt.Sprintf("memory review coverage mismatch after hard dedupe merge: accepted=%d dropped=%d total=%d", len(acceptedSet), len(droppedSet), totalCandidates),
+		}
+	}
+	out := &logicdomain.PostActionMemoryReviewSection{
+		AcceptedCandidates:       make([]logicdomain.PostActionAcceptedMemoryCandidate, 0, len(acceptedByIndex)),
+		DroppedCandidates:        make([]logicdomain.PostActionDroppedMemoryCandidate, 0, len(droppedByIndex)),
+		AcceptedCandidateIndexes: make([]int, 0, len(acceptedSet)),
+		DroppedCandidateIndexes:  make([]int, 0, len(droppedSet)),
+		Reason:                   reason,
+	}
+	for idx := range acceptedSet {
+		out.AcceptedCandidateIndexes = append(out.AcceptedCandidateIndexes, idx)
+		if accepted, ok := acceptedByIndex[idx]; ok {
+			out.AcceptedCandidates = append(out.AcceptedCandidates, accepted)
+		}
+	}
+	for idx := range droppedSet {
+		out.DroppedCandidateIndexes = append(out.DroppedCandidateIndexes, idx)
+		if dropped, ok := droppedByIndex[idx]; ok {
+			out.DroppedCandidates = append(out.DroppedCandidates, dropped)
+		}
+	}
+	sort.Ints(out.AcceptedCandidateIndexes)
+	sort.Ints(out.DroppedCandidateIndexes)
+	sort.Slice(out.AcceptedCandidates, func(i, j int) bool {
+		return out.AcceptedCandidates[i].CandidateIndex < out.AcceptedCandidates[j].CandidateIndex
+	})
+	sort.Slice(out.DroppedCandidates, func(i, j int) bool {
+		return out.DroppedCandidates[i].CandidateIndex < out.DroppedCandidates[j].CandidateIndex
+	})
+	return out, nil
 }
 
 // mergePostActionSupersededMemoryIDs merges analyzer-origin supersede ids with reviewer-approved cross-scope replacements while enforcing that the reviewer can only target the candidate-local similar-memory list it actually saw.
@@ -394,10 +582,13 @@ func buildFullPostActionCandidateIndexSet(count int) map[int]struct{} {
 
 // buildScopedMemoryReviewCandidates recalls similar durable memories for each new candidate inside the configured replacement scope and attaches them by QueryIndex so later reviewer decisions stay candidate-stable.
 // buildScopedMemoryReviewCandidates 用于在配置好的更替作用域内为每条新候选召回相似长期记忆，并按 QueryIndex 回贴，确保后续 reviewer 决策稳定绑定到正确候选。
-func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionMemorySearcher, session logicdomain.SessionRef, nodes []logicdomain.MemoryNodeCandidate, topK int, scope string, minSimilarity float64) ([]logicdomain.PostActionMemoryReviewCandidate, error) {
-	candidates := make([]logicdomain.PostActionMemoryReviewCandidate, 0, len(nodes))
+func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionMemorySearcher, session logicdomain.SessionRef, nodes []logicdomain.MemoryNodeCandidate, topK int, scope string, minSimilarity, hardDedupeCosineThreshold float64) (scopedMemoryReviewBuildResult, error) {
+	resultBundle := scopedMemoryReviewBuildResult{
+		Candidates:  make([]logicdomain.PostActionMemoryReviewCandidate, 0, len(nodes)),
+		HardDropped: make(map[int]logicdomain.PostActionDroppedMemoryCandidate, len(nodes)),
+	}
 	if len(nodes) == 0 {
-		return candidates, nil
+		return resultBundle, nil
 	}
 	queries := make([]string, 0, len(nodes))
 	queryCandidateIndexes := make([]int, 0, len(nodes))
@@ -413,7 +604,7 @@ func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionM
 		if candidate.Details == "" {
 			candidate.Details = candidate.Abstract
 		}
-		candidates = append(candidates, candidate)
+		resultBundle.Candidates = append(resultBundle.Candidates, candidate)
 		query := buildPostActionMemorySearchQuery(node)
 		if query == "" || searcher == nil {
 			continue
@@ -422,7 +613,7 @@ func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionM
 		queryCandidateIndexes = append(queryCandidateIndexes, idx)
 	}
 	if len(queries) == 0 || searcher == nil {
-		return candidates, nil
+		return resultBundle, nil
 	}
 	queryCmd := MemoryQueryCommand{
 		UserID:        session.UserID,
@@ -436,7 +627,7 @@ func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionM
 	}
 	result, err := searcher.Search(ctx, queryCmd)
 	if err != nil {
-		return nil, fmt.Errorf("search memory review candidates: %w", err)
+		return scopedMemoryReviewBuildResult{}, fmt.Errorf("search memory review candidates: %w", err)
 	}
 
 	// Bind each grouped result back to the candidate index carried through QueryIndex so future search optimizations cannot silently scramble similar-memory attachments.
@@ -446,12 +637,48 @@ func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionM
 			continue
 		}
 		candidateIndex := queryCandidateIndexes[group.QueryIndex]
-		if candidateIndex < 0 || candidateIndex >= len(candidates) {
+		if candidateIndex < 0 || candidateIndex >= len(resultBundle.Candidates) {
 			continue
 		}
-		candidates[candidateIndex].SimilarMemories = buildPostActionSimilarMemoryCandidates(group.Hits, minSimilarity)
+		resultBundle.Candidates[candidateIndex].SimilarMemories = buildPostActionSimilarMemoryCandidates(group.Hits, minSimilarity)
+		if hardDedupe, ok := detectHardDedupeMemoryCandidate(candidateIndex, group.QueryVector, group.Hits, hardDedupeCosineThreshold); ok {
+			resultBundle.HardDropped[candidateIndex] = hardDedupe
+		}
 	}
-	return candidates, nil
+	if len(resultBundle.HardDropped) == 0 {
+		resultBundle.HardDropped = nil
+	}
+	return resultBundle, nil
+}
+
+// detectHardDedupeMemoryCandidate scans the full recalled hit set with real cosine similarity and returns one explicit dedupe target when any durable hit crosses the configured hard-dedupe threshold.
+// detectHardDedupeMemoryCandidate 用于基于真实 cosine 扫描完整召回命中集合；只要某条长期记忆跨过配置好的硬排重阈值，就返回一个显式 dedupe 目标。
+func detectHardDedupeMemoryCandidate(candidateIndex int, queryVector []float32, hits []MemoryQueryHit, threshold float64) (logicdomain.PostActionDroppedMemoryCandidate, bool) {
+	if threshold <= 0 || len(queryVector) == 0 || len(hits) == 0 {
+		return logicdomain.PostActionDroppedMemoryCandidate{}, false
+	}
+	bestMemoryID := uint64(0)
+	bestCosine := threshold
+	for _, hit := range hits {
+		if hit.MemoryRef.Type != logicdomain.MemoryRefTypeMemory || hit.MemoryRef.ID == 0 || len(hit.Vector) == 0 {
+			continue
+		}
+		cosine := cosineSimilarityFloat32(queryVector, hit.Vector)
+		if cosine < threshold {
+			continue
+		}
+		if bestMemoryID == 0 || cosine > bestCosine || (cosine == bestCosine && hit.MemoryRef.ID < bestMemoryID) {
+			bestMemoryID = hit.MemoryRef.ID
+			bestCosine = cosine
+		}
+	}
+	if bestMemoryID == 0 {
+		return logicdomain.PostActionDroppedMemoryCandidate{}, false
+	}
+	return logicdomain.PostActionDroppedMemoryCandidate{
+		CandidateIndex: candidateIndex,
+		DedupeMemoryID: bestMemoryID,
+	}, true
 }
 
 // buildPostActionMemorySearchQuery composes one stable free-text recall query from the abstract plus any materially richer details so dedupe search reuses the same semantic surface the reviewer will later inspect.

@@ -119,9 +119,10 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredMemoryReplaceScope(t
 				},
 			}
 			uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
-				DedupeSearchTopK:    7,
-				MemoryReplaceScope:  tt.rawScope,
-				DedupeMinSimilarity: 0.90,
+				DedupeSearchTopK:          7,
+				MemoryReplaceScope:        tt.rawScope,
+				DedupeMinSimilarity:       0.90,
+				HardDedupeCosineThreshold: 0,
 			}, nil, false)
 			analysis := &logicdomain.TurnAnalysis{
 				UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
@@ -250,9 +251,10 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 		},
 	}
 	uc := newPostActionUseCase(nil, store, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
-		DedupeSearchTopK:    5,
-		MemoryReplaceScope:  memoryReplaceScopeTeam,
-		DedupeMinSimilarity: 0.90,
+		DedupeSearchTopK:          5,
+		MemoryReplaceScope:        memoryReplaceScopeTeam,
+		DedupeMinSimilarity:       0.90,
+		HardDedupeCosineThreshold: 0,
 	}, nil, false)
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputMixed,
@@ -430,9 +432,10 @@ func TestPostActionUseCaseReviewTurnCandidatesRejectsUnavailableSupersedeIDs(t *
 		},
 	}
 	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
-		DedupeSearchTopK:    5,
-		MemoryReplaceScope:  memoryReplaceScopeProject,
-		DedupeMinSimilarity: 0.90,
+		DedupeSearchTopK:          5,
+		MemoryReplaceScope:        memoryReplaceScopeProject,
+		DedupeMinSimilarity:       0.90,
+		HardDedupeCosineThreshold: 0,
 	}, nil, false)
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
@@ -677,7 +680,7 @@ func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
 		},
 	}
 
-	candidates, err := buildScopedMemoryReviewCandidates(context.Background(), searcher, logicdomain.SessionRef{
+	buildResult, err := buildScopedMemoryReviewCandidates(context.Background(), searcher, logicdomain.SessionRef{
 		SessionID: 61,
 		UserID:    7,
 		TeamID:    3,
@@ -698,10 +701,11 @@ func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
 			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
 			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
 		},
-	}, 5, memoryReplaceScopeProject, 0.90)
+	}, 5, memoryReplaceScopeProject, 0.90, 0)
 	if err != nil {
 		t.Fatalf("build scoped memory review candidates: %v", err)
 	}
+	candidates := buildResult.Candidates
 	if len(candidates) != 2 {
 		t.Fatalf("expected two candidates, got %+v", candidates)
 	}
@@ -710,6 +714,103 @@ func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
 	}
 	if len(candidates[1].SimilarMemories) != 1 || candidates[1].SimilarMemories[0].MemoryID != 802 {
 		t.Fatalf("expected query-index 1 result to attach to candidate 1, got %+v", candidates[1].SimilarMemories)
+	}
+}
+
+// TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer verifies real-cosine hard dedupe scans the full recalled hit set and can drop an obvious duplicate even when the highest-cosine hit is not the top-ranked item.
+// TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer 用于验证真实 cosine 硬排重会扫描完整召回命中集合；即使最高 cosine 命中不是排序第一，也能直接丢弃明显重复项。
+func TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer(t *testing.T) {
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{{
+				QueryIndex:  0,
+				Query:       "候选会与第二条旧记忆几乎完全重合",
+				QueryVector: []float32{0, 1},
+				Hits: []MemoryQueryHit{
+					{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 901},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 301},
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Category:       logicdomain.MemoryNodeCategoryProjectContext,
+						Score:          0.99,
+						Origin:         "vector_mmr",
+						Abstract:       "排序第一但向量并不等价",
+						DetailsPreview: "这条命中在最终排序里第一，但真实向量并不接近。",
+						Vector:         []float32{1, 0},
+					},
+					{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 902},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 302},
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Category:       logicdomain.MemoryNodeCategoryProjectContext,
+						Score:          0.94,
+						Origin:         "vector_mmr",
+						Abstract:       "真正重复的旧记忆",
+						DetailsPreview: "这条命中虽然不是 top1，但真实向量几乎完全一致。",
+						Vector:         []float32{0, 1},
+					},
+				},
+			}},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidateIndexes: []int{0},
+			},
+		},
+	}
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
+		DedupeSearchTopK:          5,
+		MemoryReplaceScope:        memoryReplaceScopeProject,
+		DedupeMinSimilarity:       0.80,
+		HardDedupeCosineThreshold: 0.985,
+	}, nil, false)
+	analysis := &logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			Abstract:       "候选会与第二条旧记忆几乎完全重合",
+			Details:        "候选会与第二条旧记忆几乎完全重合，应该在 reviewer 前就直接 dedupe。",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceAssistantToolDiscovered,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}
+	stats := postActionCompactionStats{}
+
+	err := uc.reviewTurnCandidates(context.Background(), logicdomain.SessionRef{
+		SessionID:  61,
+		SessionKey: "sess-hard-dedupe",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}, logicdomain.PersistedTurnRecord{
+		ID:        99,
+		SessionID: 61,
+		ProjectID: 9,
+		CreatedAt: time.Date(2026, 4, 8, 8, 0, 0, 0, time.UTC),
+	}, logicdomain.TurnRecord{
+		UserContent:      "把这条项目背景记下来",
+		AssistantContent: "我先尝试去重。",
+	}, analysis, &stats)
+	if err != nil {
+		t.Fatalf("review turn candidates: %v", err)
+	}
+	if reviewer.calls != 0 {
+		t.Fatalf("expected hard dedupe to skip reviewer, got %d calls", reviewer.calls)
+	}
+	if len(analysis.MemoryNodes) != 0 {
+		t.Fatalf("expected hard dedupe to drop duplicate memory node, got %+v", analysis.MemoryNodes)
+	}
+	if len(analysis.SupersededMemoryIDs) != 0 {
+		t.Fatalf("expected no supersede ids after full hard-dedupe drop, got %+v", analysis.SupersededMemoryIDs)
+	}
+	if stats.ReviewDroppedCount != 1 {
+		t.Fatalf("expected one review-stage drop from hard dedupe, got %+v", stats)
+	}
+	if stats.HardDedupeDroppedCount != 1 {
+		t.Fatalf("expected one hard-dedupe drop, got %+v", stats)
 	}
 }
 
@@ -748,6 +849,7 @@ func TestPostActionAnalysisLogIncludesCompactionMetrics(t *testing.T) {
 		FinalProfileNodes:         1,
 		AdmissionDroppedCount:     1,
 		ReviewDroppedCount:        1,
+		HardDedupeDroppedCount:    1,
 		ExternalResearchKeptCount: 1,
 	})
 
@@ -755,7 +857,7 @@ func TestPostActionAnalysisLogIncludesCompactionMetrics(t *testing.T) {
 	if !strings.Contains(logs, "post-action turn analysis result") {
 		t.Fatalf("expected analysis result log, got %s", logs)
 	}
-	for _, field := range []string{"raw_candidates", "final_stored_nodes", "compaction_rate", "admission_drop_count", "review_drop_count", "external_research_kept_count"} {
+	for _, field := range []string{"raw_candidates", "final_stored_nodes", "compaction_rate", "admission_drop_count", "review_drop_count", "hard_dedupe_drop_count", "external_research_kept_count"} {
 		if !strings.Contains(logs, field) {
 			t.Fatalf("expected %s in log output, got %s", field, logs)
 		}

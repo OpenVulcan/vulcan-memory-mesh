@@ -31,6 +31,8 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
+	cfg.MemoryPipeline.ReplaceMinSimilarityScore = nil
+	cfg.MemoryPipeline.HardDedupeCosineThreshold = nil
 	cfg.MaintenanceTool.Postgres.ReadTimeout = Duration{}
 	cfg.MaintenanceTool.Postgres.WriteTimeout = Duration{}
 	cfg.MaintenanceTool.VectorRebuildBatchSize = 0
@@ -73,6 +75,12 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity score = %#v", cfg.MemoryPipeline.MinSimilarityScore)
 	}
+	if cfg.MemoryPipeline.ReplaceMinSimilarityScore == nil || *cfg.MemoryPipeline.ReplaceMinSimilarityScore != defaultMemoryReplaceMinSimilarityScore {
+		t.Fatalf("replace min similarity score = %#v", cfg.MemoryPipeline.ReplaceMinSimilarityScore)
+	}
+	if cfg.MemoryPipeline.HardDedupeCosineThreshold == nil || *cfg.MemoryPipeline.HardDedupeCosineThreshold != defaultMemoryHardDedupeCosineThreshold {
+		t.Fatalf("hard dedupe cosine threshold = %#v", cfg.MemoryPipeline.HardDedupeCosineThreshold)
+	}
 	if cfg.Rerank.TopN != 8 {
 		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
 	}
@@ -96,6 +104,19 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if got, want := cfg.Rerank.Routes[0].Timeout.Duration, 8*time.Second; got != want {
 		t.Fatalf("rerank default timeout = %v, want %v", got, want)
+	}
+}
+
+// TestConfigNormalizePreservesExplicitZeroHardDedupeThreshold verifies callers can explicitly disable vector hard-dedupe without Normalize silently restoring the default threshold.
+// TestConfigNormalizePreservesExplicitZeroHardDedupeThreshold 用于验证调用方可以显式关闭向量硬排重，而不会在 Normalize 后被悄悄恢复成默认阈值。
+func TestConfigNormalizePreservesExplicitZeroHardDedupeThreshold(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.MemoryPipeline.HardDedupeCosineThreshold = float64Ptr(0)
+
+	cfg.Normalize()
+
+	if cfg.MemoryPipeline.HardDedupeCosineThreshold == nil || *cfg.MemoryPipeline.HardDedupeCosineThreshold != 0 {
+		t.Fatalf("hard dedupe cosine threshold = %#v", cfg.MemoryPipeline.HardDedupeCosineThreshold)
 	}
 }
 
