@@ -171,7 +171,7 @@ func resolveSystemDir(executablePath, cwd string) (string, error) {
 
 	for _, candidate := range candidates {
 		absCandidate, err := filepath.Abs(candidate)
-		if err == nil && hasSystemPromptBase(absCandidate) {
+		if err == nil && hasSystemConfigBase(absCandidate) {
 			return absCandidate, nil
 		}
 	}
@@ -193,7 +193,7 @@ func resolveSystemDir(executablePath, cwd string) (string, error) {
 	// 对 go run 调试场景，从当前工作区向上回溯直到找到有效的 configs 根目录。
 	for dir := start; dir != "" && dir != filepath.Dir(dir); dir = filepath.Dir(dir) {
 		candidate := filepath.Join(dir, "configs")
-		if hasSystemPromptBase(candidate) {
+		if hasSystemConfigBase(candidate) {
 			return candidate, nil
 		}
 	}
@@ -360,12 +360,9 @@ func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string 
 	return candidate
 }
 
-// hasSystemPromptBase reports whether the condition is true.
-// hasSystemPromptBase 用于返回条件是否成立。
-func hasSystemPromptBase(systemDir string) bool {
-	if len(missingScenes(filepath.Join(systemDir, "prompts", defaultPromptBundle))) != 0 {
-		return false
-	}
+// hasSystemConfigBase reports whether one directory is a usable system config root before prompt selection is loaded from config.
+// hasSystemConfigBase 用于在提示词选择尚未从配置加载前，判断一个目录是否可作为系统配置根目录。
+func hasSystemConfigBase(systemDir string) bool {
 	info, err := os.Stat(filepath.Join(systemDir, defaultBaseConfigName("config")))
 	return err == nil && !info.IsDir()
 }

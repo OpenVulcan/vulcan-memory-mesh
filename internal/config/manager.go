@@ -20,13 +20,9 @@ type PromptManager struct {
 // NewPromptManager creates a PromptManager instance from the selected prompt-bundle token.
 // NewPromptManager 用于基于选中的提示词包标识创建 PromptManager 实例。
 func NewPromptManager(systemDir, userDir, promptLanguage string) (*PromptManager, error) {
-	// Validate the built-in default prompt bundle first so every runtime keeps one safe fallback family available.
-	// 先校验内建默认提示词包，确保每个运行时都拥有一套安全可用的默认提示词族。
-	validation := &ValidationErrors{}
-	validateSystemPromptBundle(systemDir, defaultPromptBundle, validation)
-
 	// Resolve the runtime-selected prompt bundle and verify the active directory is complete before the manager becomes usable.
 	// 解析运行时选中的提示词包，并在管理器可用前校验当前生效目录完整无缺。
+	validation := &ValidationErrors{}
 	selectedFolder := normalizePromptBundleName(promptLanguage)
 	validateSelectedPromptBundle(systemDir, userDir, selectedFolder, validation)
 	if validation.HasAny() {
@@ -63,19 +59,6 @@ func (m *PromptManager) GetPrompt(scene, _ string) (string, error) {
 		return "", fmt.Errorf("read prompt folder=%q scene=%q: %w", m.selectedFolder, sceneFile, err)
 	}
 	return string(body), nil
-}
-
-// validateSystemPromptBundle validates one required built-in prompt bundle shipped with the system config root.
-// validateSystemPromptBundle 用于校验系统配置根目录中必须随包分发的一套内建提示词包。
-func validateSystemPromptBundle(systemDir, folder string, validation *ValidationErrors) {
-	dir := filepath.Join(systemDir, "prompts", folder)
-	missing := missingScenes(dir)
-	if len(missing) == 0 {
-		return
-	}
-	for _, scene := range missing {
-		validation.Add("system prompt bundle missing: %s", filepath.Join(dir, scene))
-	}
 }
 
 // validateSelectedPromptBundle validates the active prompt bundle chosen by config so startup fails when the selected user/system directory is missing or incomplete.

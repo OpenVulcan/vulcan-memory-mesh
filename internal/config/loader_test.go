@@ -73,6 +73,27 @@ func TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary(t *testing.T) {
 	}
 }
 
+// TestResolvePromptLayoutUsesOutputConfigsWithoutDefaultEnglish verifies layout resolution only requires the packaged config root and does not force a fixed prompt bundle before config loading.
+// TestResolvePromptLayoutUsesOutputConfigsWithoutDefaultEnglish 用于验证布局解析在配置加载前只要求打包配置根存在，不会强制某个固定提示词包。
+func TestResolvePromptLayoutUsesOutputConfigsWithoutDefaultEnglish(t *testing.T) {
+	root := t.TempDir()
+	writeRequiredScenes(t, filepath.Join(root, "output", "configs", "prompts", "custom-bundle"), "output-custom")
+	writeConfigStub(t, filepath.Join(root, "output", "configs", "base.yaml"))
+	writeConfigStub(t, filepath.Join(root, "output", "configs", "config.yaml"))
+
+	layout, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "", "config")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if got, want := layout.SystemDir, filepath.Join(root, "output", "configs"); got != want {
+		t.Fatalf("system dir = %q, want %q", got, want)
+	}
+	if got, want := layout.AppConfigPath, filepath.Join(root, "output", "configs", "config.yaml"); got != want {
+		t.Fatalf("app config = %q, want %q", got, want)
+	}
+}
+
 // TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun verifies the TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun behavior.
 // TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun 用于验证 TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun 行为。
 func TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun(t *testing.T) {

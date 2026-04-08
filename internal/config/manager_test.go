@@ -21,8 +21,29 @@ func TestNewPromptManagerFailsWhenSystemDefaultEnglishBundleIsIncomplete(t *test
 	if err == nil {
 		t.Fatal("expected validation error")
 	}
-	if !strings.Contains(err.Error(), "system prompt bundle missing") {
+	if !strings.Contains(err.Error(), "system prompt bundle") || !strings.Contains(err.Error(), "default_en") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestNewPromptManagerUsesSelectedCustomBundleWithoutDefaultEnglish verifies startup no longer requires default_en when config explicitly selects another complete prompt bundle.
+// TestNewPromptManagerUsesSelectedCustomBundleWithoutDefaultEnglish 用于验证当配置显式选择其他完整提示词包时，启动不再强制要求 default_en 存在。
+func TestNewPromptManagerUsesSelectedCustomBundleWithoutDefaultEnglish(t *testing.T) {
+	systemDir := t.TempDir()
+	userDir := t.TempDir()
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "custom-bundle"), "system-custom")
+
+	manager, err := NewPromptManager(systemDir, userDir, "custom-bundle")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	body, err := manager.GetPrompt("extract_intent", "ignored-model")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := body, "system-custom:extract_intent.md"; got != want {
+		t.Fatalf("prompt = %q, want %q", got, want)
 	}
 }
 
@@ -147,4 +168,3 @@ func writeScene(t *testing.T, dir, name, body string) {
 		t.Fatal(err)
 	}
 }
-
