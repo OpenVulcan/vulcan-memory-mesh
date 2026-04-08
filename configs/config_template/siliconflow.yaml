@@ -1,0 +1,348 @@
+# VMM project override configuration file.
+# VMM 项目覆盖配置文件。
+#
+# This file is the normal override layer on top of base.yaml.
+# 本文件是叠加在 base.yaml 之上的常规覆盖层。
+#
+# Usage guidance:
+# 使用建议：
+# - Keep only environment-specific or deployment-specific overrides here.
+#   这里只保留环境差异项或部署差异项。
+# - If one field already works through base.yaml, leave it out here instead of repeating it.
+#   如果某个字段沿用 base.yaml 默认值，就不要在这里重复声明。
+# - Credentials and external addresses should preferably come from environment variables.
+#   凭据和外部服务地址优先通过环境变量注入。
+#
+# Reading order:
+# 阅读顺序：
+# 1. Read base.yaml for complete baseline semantics.
+#    先阅读 base.yaml，理解完整默认语义。
+# 2. Read this file for project-local overrides.
+#    再阅读本文件，理解项目本地覆盖项。
+x-llm-siliconflow: &llm_siliconflow
+  weights:
+    precheck_l1: 100
+    precheck_l2: 100
+    postaction_l1: 100
+    postaction_l2: 100
+    reserve: 100
+  provider: "openai"
+  endpoint: "${SILICONFLOW_BASE_URL}"
+  api_keys:
+    - "${SILICONFLOW_API_KEY}"
+  rpm: 1000
+  tpm: 50000
+  rpd: 0
+  params:
+    enable_thinking: false
+    stream: false
+    #response_format: { type: "json_object" }
+  key_failover:
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+    
+x-rerank-siliconflow: &rerank_siliconflow
+  priority: 100
+  provider: "siliconflow"
+  endpoint: "${SILICONFLOW_RERANK_URL}"
+  api_keys:
+    - "${SILICONFLOW_API_KEY}"
+  rpm: 2000
+  tpm: 500000
+  rpd: 0
+  timeout: "8s"
+  key_failover:
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+
+grpc:
+  # Listen address used by the local runtime in this project setup.
+  # 本项目运行时在本地环境下使用的监听地址。
+  listen_addr: "127.0.0.1:17625"
+
+logging:
+  # Whether local debugging prints more verbose RPC payloads.
+  # 本地调试时是否输出更完整的 RPC 载荷。
+  debug_rpc_payloads: true
+
+  llm_output_enabled: true
+
+storage:
+  # This project overrides the topology to combined, which means relational and vector storage both go through PostgreSQL.
+  # 本项目将存储拓扑覆盖为 combined，表示关系与向量能力统一经由 PostgreSQL 组合库存储。
+  # Allowed values:
+  # 支持取值：
+  # - split: relational storage uses sqlite and vector storage uses lancedb.
+  # - split：关系存储使用 sqlite，向量存储使用 lancedb。
+  # - combined: relational and vector capabilities both use the unified PostgreSQL combined store.
+  # - combined：关系与向量能力统一走 PostgreSQL 组合库存储。
+  mode: "combined"
+
+sqlite:
+  # Placeholder endpoint kept for split-mode switching or local experiments.
+  # 为 split 模式切换或本地实验保留的占位地址。
+  address: "${VMM_SQLITE_ADDRESS}"
+
+lancedb:
+  # Placeholder endpoint kept for split-mode vector storage.
+  # 为 split 模式向量存储保留的占位地址。
+  address: "${VMM_LANCEDB_ADDRESS}"
+
+postgres:
+  # Main PostgreSQL connection string used by the combined storage mode.
+  # combined 存储模式实际使用的 PostgreSQL 主连接串。
+  dsn: "${VMM_POSTGRES_DSN}"
+
+llm:
+  # Project-local LLM route overrides.
+  # 项目本地使用的 LLM 路由覆盖。
+  routes:
+    # - <<: *llm_siliconflow
+    #   name: "deepseek-3.2"
+    #   model: "Pro/deepseek-ai/DeepSeek-V3.2"
+    #   rpm: 500
+    #   tpm: 2000000
+    #   weights:
+    #     precheck_l1: 110
+    #     precheck_l2: 150
+    #     postaction_l1: 140
+    #     postaction_l2: 110
+    #     reserve: 100
+    - <<: *llm_siliconflow
+      name: "MiniMaxM2.5"
+      model: "Pro/MiniMaxAI/MiniMax-M2.5"
+      rpm: 500
+      tpm: 2000000
+      weights:
+        precheck_l1: 110
+        precheck_l2: 150
+        postaction_l1: 140
+        postaction_l2: 110
+        reserve: 100
+
+    - <<: *llm_siliconflow
+      name: "qwen3.5-397b"
+      model: "Qwen/Qwen3.5-397B-A17B"
+      rpm: 500
+      tpm: 2000000
+      weights:
+        precheck_l1: 110
+        precheck_l2: 110
+        postaction_l1: 130
+        postaction_l2: 150
+        reserve: 100
+
+    - <<: *llm_siliconflow
+      name: "QWENCODER-30B"
+      model: "Qwen/Qwen3-Coder-30B-A3B-Instruct"
+      rpm: 1000
+      tpm: 40000
+      weights:
+        precheck_l1: 150
+        precheck_l2: 100
+        postaction_l1: 100
+        postaction_l2: 100
+        reserve: 100
+
+    # - <<: *llm_siliconflow
+    #   name: "GLM41V-9B"
+    #   model: "THUDM/GLM-4.1V-9B-Thinking"
+    #   weights:
+    #     precheck_l1: 150
+    #     precheck_l2: 110
+    #     postaction_l1: 130
+    #     postaction_l2: 100
+    #     reserve: 100
+        
+    # - <<: *llm_siliconflow
+    #   name: "DSR1QWEN-7B"
+    #   model: "deepseek-ai/DeepSeek-R1-Distill-Qwen-7B"
+    #   weights:
+    #     precheck_l1: 140
+    #     precheck_l2: 120
+    #     postaction_l1: 120
+    #     postaction_l2: 110
+    #     reserve: 100
+        
+    # - <<: *llm_siliconflow
+    #   name: "DSR1QWEN-8B"
+    #   model: "deepseek-ai/DeepSeek-R1-0528-Qwen3-8B"
+    #   weights:
+    #     precheck_l1: 145
+    #     precheck_l2: 125
+    #     postaction_l1: 125
+    #     postaction_l2: 115
+    #     reserve: 100
+        
+    # - <<: *llm_siliconflow
+    #   name: "QWN25-7B"
+    #   model: "Qwen/Qwen2.5-7B-Instruct"
+    #   weights:
+    #     precheck_l1: 110
+    #     precheck_l2: 145
+    #     postaction_l1: 100
+    #     postaction_l2: 135
+    #     reserve: 100
+        
+    # - <<: *llm_siliconflow
+    #   name: "QWN3-8B"
+    #   model: "Qwen/Qwen3-8B"
+    #   weights:
+    #     precheck_l1: 110
+    #     precheck_l2: 150
+    #     postaction_l1: 100
+    #     postaction_l2: 140
+    #     reserve: 100
+        
+    # - <<: *llm_siliconflow
+    #   name: "HYMT-7B"
+    #   model: "tencent/Hunyuan-MT-7B"
+    #   tpm: 80000
+    #   weights:
+    #     precheck_l1: 80
+    #     precheck_l2: 100
+    #     postaction_l1: 90
+    #     postaction_l2: 180
+    #     reserve: 100
+        
+    # - <<: *llm_siliconflow
+    #   name: "GLM4-9B"
+    #   model: "THUDM/GLM-4-9B-0414"
+    #   weights:
+    #     precheck_l1: 100
+    #     precheck_l2: 130
+    #     postaction_l1: 100
+    #     postaction_l2: 120
+    #     reserve: 100
+
+    # - <<: *llm_siliconflow
+    #   name: "GLMZ1-9B"
+    #   model: "THUDM/GLM-Z1-9B-0414"
+    #   weights:
+    #     precheck_l1: 95
+    #     precheck_l2: 125
+    #     postaction_l1: 95
+    #     postaction_l2: 115
+    #     reserve: 100
+
+embedding:
+  # Embedding requests use one fixed provider definition.
+  # Embedding 请求使用单一固定 provider 定义。
+  # Allowed values:
+  # 支持取值：
+  # - openai: preferred canonical label for the current OpenAI-compatible adapter.
+  # - openai：当前 OpenAI-compatible 适配器的推荐规范名称。
+  # - openai_native: accepted alias mapped to the same adapter.
+  # - openai_native：会映射到同一适配器的兼容别名。
+  # - openai_go: accepted alias mapped to the same adapter.
+  # - openai_go：会映射到同一适配器的兼容别名。
+  # - google_ai_studio: native Google AI Studio / Gemini embedding adapter built on google.golang.org/genai.
+  # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini 原生向量适配器。
+  provider: "openai"
+
+  # Embedding endpoint supplied through environment variables.
+  # 通过环境变量注入的 Embedding 接口地址。
+  # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
+  # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
+  endpoint: "${SILICONFLOW_BASE_URL}"
+
+  # Embedding API key pool.
+  # Embedding 使用的 API Key 池。
+  api_keys:
+    - "${SILICONFLOW_API_KEY}"
+
+  rpm: 2000
+  tpm: 1000000
+  rpd: 0
+
+  # Embedding model and dimension used by this deployment.
+  # 当前部署使用的 Embedding 模型与维度。
+  # For google_ai_studio, dimension is sent as Gemini output_dimensionality and must stay aligned with the vector-store schema.
+  # 对 google_ai_studio 来说，dimension 会作为 Gemini 的 output_dimensionality 发送，并且必须继续与向量库存储 schema 对齐。
+  model: "Pro/BAAI/bge-m3"
+  dimension: 1024
+  max_batch_size: 32
+
+  # These two fields are ignored when provider=google_ai_studio.
+  # 当 provider=google_ai_studio 时，这两个字段会被忽略。
+  organization: ""
+  project: ""
+
+  params: {}
+  model_params: {}
+
+  key_failover:
+    # Key-level failover configuration for embedding requests.
+    # Embedding 请求的 key 级容灾配置。
+    enabled: true
+    # Allowed values:
+    # 支持取值：
+    # - ordered_failover: keep using the current key order until one key cools down or fails, then move to the next healthy key.
+    # - ordered_failover：按既定顺序优先使用当前 key，只有当某个 key 失败或进入冷却时才切到下一个健康 key。
+    # - round_robin: rotate the eligible keys in turn so load is spread more evenly.
+    # - round_robin：按轮询顺序轮流使用可用 key，让负载分布更均匀。
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+
+rerank:
+  # Reranking stays disabled by default in this project-local override.
+  # 在当前项目覆盖里，rerank 默认保持关闭。
+  enabled: false
+
+  # Candidate count that would enter reranking once rerank is enabled.
+  # 一旦启用 rerank 时会送入的候选数量。
+  top_n: 8
+
+  routes:
+    - <<: *rerank_siliconflow
+      name: "BGEV2M3PRO"
+      model: "Pro/BAAI/bge-reranker-v2-m3"
+      priority: 100
+
+    - <<: *rerank_siliconflow
+      name: "BGEV2M3"
+      model: "BAAI/bge-reranker-v2-m3"
+      priority: 90
+      
+      
+vector:
+  # Placeholder vector backend provider, mainly relevant when switching back to split mode.
+  # 向量后端提供方占位，主要在切回 split 模式时生效。
+  # Currently supported values:
+  # 当前支持取值：
+  # - lancedb: use LanceDB as the split-mode vector backend.
+  # - lancedb：在 split 模式下使用 LanceDB 作为向量后端。
+  provider: "${VMM_VECTOR_PROVIDER}"
+
+
+maintenance_tool:
+  # Logical batch size used while materializing vector-rebuild snapshots before destructive maintenance rewrites begin.
+  # 向量重建在进入破坏性维护写入前，用于准备内存快照的逻辑批次大小。
+  vector_rebuild_batch_size: 32
+
+prompts:
+  # Prompt bundle selector used by the runtime.
+  # 运行时使用的提示词包选择器。
+  # Supported values:
+  # 支持取值：
+  # - default_en / en / english / default: use the built-in English prompt bundle, which is also the runtime default.
+  # - default_en / en / english / default：使用内建英文提示词包，这也是当前运行时默认值。
+  # - default_cn / zh / zh-cn / chinese / cn: use the built-in Chinese prompt bundle.
+  # - default_cn / zh / zh-cn / chinese / cn：使用内建中文提示词包。
+  # - custom folder name: directly select one prompt bundle directory under prompts/.
+  # - 自定义目录名：直接选择 prompts/ 下的某个提示词包目录。
+  prompt_language: "default_cn"
