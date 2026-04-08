@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
@@ -19,6 +18,7 @@ var RequiredScenes = []string{
 	"analyze_turn.md",
 	"summarize_entry.md",
 	"merge_profile.md",
+	"review_precheck_memory.md",
 	"review_postaction_candidates.md",
 	"review_profile_instruction.md",
 }
@@ -69,10 +69,6 @@ func (l PromptLayout) UserPIIRulesDir() string {
 	}
 	return filepath.Join(l.UserDir, "pii_rules")
 }
-
-// RouteMap maps model prefixes to prompt folders after prompt-route config is loaded from the main config tree.
-// RouteMap 用于表示从主配置树加载后的“模型前缀到提示词目录”映射。
-type RouteMap map[string]string
 
 // ValidationErrors aggregates prompt-layout validation failures before startup aborts.
 // ValidationErrors 用于聚合启动前的提示词布局校验失败项。
@@ -367,64 +363,11 @@ func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string 
 // hasSystemPromptBase reports whether the condition is true.
 // hasSystemPromptBase 用于返回条件是否成立。
 func hasSystemPromptBase(systemDir string) bool {
-	if len(missingScenes(filepath.Join(systemDir, "prompts", "default"))) != 0 {
+	if len(missingScenes(filepath.Join(systemDir, "prompts", defaultPromptBundle))) != 0 {
 		return false
 	}
 	info, err := os.Stat(filepath.Join(systemDir, defaultBaseConfigName("config")))
 	return err == nil && !info.IsDir()
-}
-
-// normalizeRouteMap trims prompt-route keys and folders while preserving enough information for later validation.
-// normalizeRouteMap 用于裁剪提示词路由的键和值，同时保留后续校验所需的信息，避免在归一化阶段静默吞掉非法项。
-func normalizeRouteMap(routes RouteMap) RouteMap {
-	if len(routes) == 0 {
-		return RouteMap{}
-	}
-	cleaned := RouteMap{}
-	for rawKey, rawFolder := range routes {
-		cleaned[strings.TrimSpace(rawKey)] = strings.TrimSpace(rawFolder)
-	}
-	return cleaned
-}
-
-// validateRouteMapEntries records malformed prompt-route entries so startup fails explicitly instead of silently falling back to default prompts.
-// validateRouteMapEntries 用于记录非法提示词路由项，确保启动阶段显式失败，而不是静默回退到默认提示词。
-func validateRouteMapEntries(routes RouteMap, validation *ValidationErrors) {
-	if validation == nil || len(routes) == 0 {
-		return
-	}
-	keys := make([]string, 0, len(routes))
-	for key := range routes {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	for _, key := range keys {
-		switch {
-		case key == "":
-			validation.Add("prompts.routes contains empty model key")
-		case routes[key] == "":
-			validation.Add(`prompts.routes[%q] must not be empty`, key)
-		}
-	}
-}
-
-// uniqueRouteFolders executes the uniqueRouteFolders logic.
-// uniqueRouteFolders 用于执行 uniqueRouteFolders 逻辑。
-func uniqueRouteFolders(routes RouteMap) []string {
-	folders := map[string]struct{}{}
-	for _, folder := range routes {
-		if strings.TrimSpace(folder) == "" {
-			continue
-		}
-		folders[folder] = struct{}{}
-	}
-
-	names := make([]string, 0, len(folders))
-	for folder := range folders {
-		names = append(names, folder)
-	}
-	sort.Strings(names)
-	return names
 }
 
 // missingScenes executes the missingScenes logic.

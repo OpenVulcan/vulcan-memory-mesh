@@ -1,5 +1,5 @@
-// config_test.go verifies the simplified AI config contract where LLM/rerank use explicit routes and embedding stays single-provider with multi-key failover.
-// config_test.go 用于验证收敛后的 AI 配置契约：LLM/rerank 只使用显式 routes，embedding 保持单 provider 且支持多 key 容灾。
+// config_test.go verifies the simplified runtime config contract where prompt selection is explicit, LLM/rerank use explicit routes, and embedding stays single-provider with multi-key failover.
+// config_test.go 用于验证收敛后的运行时配置契约：提示词选择显式配置，LLM/rerank 只使用显式 routes，embedding 保持单 provider 且支持多 key 容灾。
 package config
 
 import (
@@ -10,8 +10,8 @@ import (
 	"time"
 )
 
-// TestConfigNormalizeAppliesCurrentDefaults verifies Normalize still fills the current gRPC, storage, rerank, and route defaults expected by the local runtime.
-// TestConfigNormalizeAppliesCurrentDefaults 用于验证 Normalize 仍会补齐当前本地运行时所需的 gRPC、存储、rerank 与路由默认值。
+// TestConfigNormalizeAppliesCurrentDefaults verifies Normalize still fills the current gRPC, storage, rerank, and prompt-bundle defaults expected by the local runtime.
+// TestConfigNormalizeAppliesCurrentDefaults 用于验证 Normalize 仍会补齐当前本地运行时所需的 gRPC、存储、rerank 与提示词包默认值。
 func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg := newValidConfigForTest()
 	cfg.GRPC.MaxReceiveMessageBytes = 0
@@ -34,6 +34,7 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.MemoryPipeline.ReplaceMinSimilarityScore = nil
 	cfg.MemoryPipeline.HardDedupeCosineThreshold = nil
 	cfg.MemoryPipeline.HardDedupePoolTopK = 0
+	cfg.Prompts.PromptLanguage = ""
 	cfg.MaintenanceTool.Postgres.ReadTimeout = Duration{}
 	cfg.MaintenanceTool.Postgres.WriteTimeout = Duration{}
 	cfg.MaintenanceTool.VectorRebuildBatchSize = 0
@@ -73,6 +74,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.LanceDB.Address != "127.0.0.1:19301" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
 	}
+	if got, want := cfg.Prompts.PromptLanguage, defaultPromptBundle; got != want {
+		t.Fatalf("prompt language = %q, want %q", got, want)
+	}
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity score = %#v", cfg.MemoryPipeline.MinSimilarityScore)
 	}
@@ -108,6 +112,28 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if got, want := cfg.Rerank.Routes[0].Timeout.Duration, 8*time.Second; got != want {
 		t.Fatalf("rerank default timeout = %v, want %v", got, want)
+	}
+}
+
+// TestConfigNormalizeCanonicalizesPromptLanguageAliases verifies built-in prompt-language aliases normalize into the canonical bundle directory names while preserving custom bundle names.
+// TestConfigNormalizeCanonicalizesPromptLanguageAliases 用于验证内建提示词语言别名会归一成规范目录名，同时保留自定义提示词包名称。
+func TestConfigNormalizeCanonicalizesPromptLanguageAliases(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Prompts.PromptLanguage = " zh-CN "
+
+	cfg.Normalize()
+
+	if got, want := cfg.Prompts.PromptLanguage, defaultChinesePromptBundle; got != want {
+		t.Fatalf("normalized chinese prompt language = %q, want %q", got, want)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.Prompts.PromptLanguage = " custom-bundle "
+
+	cfg.Normalize()
+
+	if got, want := cfg.Prompts.PromptLanguage, "custom-bundle"; got != want {
+		t.Fatalf("normalized custom prompt language = %q, want %q", got, want)
 	}
 }
 
@@ -571,9 +597,9 @@ memory_pipeline:
 	}
 }
 
-// TestLoadPathsMergesPromptRoutesFromLayeredYAML verifies base/config YAML layers keep prompt-route map merging semantics when user overrides add extra model prefixes.
-// TestLoadPathsMergesPromptRoutesFromLayeredYAML 用于验证 base/config YAML 分层加载仍会保留提示词路由 map 的合并语义，让高优先级覆盖可追加新的模型前缀。
-func TestLoadPathsMergesPromptRoutesFromLayeredYAML(t *testing.T) {
+// TestLoadPathsOverridesPromptLanguageFromLayeredYAML verifies higher-priority config layers may replace the selected prompt bundle explicitly.
+// TestLoadPathsOverridesPromptLanguageFromLayeredYAML 用于验证高优先级配置层可以显式覆盖选中的提示词包。
+func TestLoadPathsOverridesPromptLanguageFromLayeredYAML(t *testing.T) {
 	clearRemovedAIEnvVars(t)
 	rootDir := t.TempDir()
 	basePath := filepath.Join(rootDir, "base.yaml")
@@ -582,9 +608,7 @@ func TestLoadPathsMergesPromptRoutesFromLayeredYAML(t *testing.T) {
 	baseBody := `grpc:
   listen_addr: "127.0.0.1:8080"
 prompts:
-  routes:
-    "qwen*": "qwen-base"
-    "*": "default"
+  prompt_language: "default_en"
 llm:
   routes:
     - provider: "openai"
@@ -609,8 +633,7 @@ memory_pipeline:
   min_similarity_score: 0.75
 `
 	overrideBody := `prompts:
-  routes:
-    "gpt-4.1*": "gpt-4.1-folder"
+  prompt_language: "default_cn"
 `
 	if err := os.WriteFile(basePath, []byte(baseBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -623,14 +646,8 @@ memory_pipeline:
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := cfg.Prompts.Routes["qwen*"], "qwen-base"; got != want {
-		t.Fatalf("base prompt route = %q, want %q", got, want)
-	}
-	if got, want := cfg.Prompts.Routes["gpt-4.1*"], "gpt-4.1-folder"; got != want {
-		t.Fatalf("override prompt route = %q, want %q", got, want)
-	}
-	if got, want := cfg.Prompts.Routes["*"], "default"; got != want {
-		t.Fatalf("wildcard prompt route = %q, want %q", got, want)
+	if got, want := cfg.Prompts.PromptLanguage, defaultChinesePromptBundle; got != want {
+		t.Fatalf("prompt language = %q, want %q", got, want)
 	}
 }
 
@@ -722,14 +739,10 @@ memory_pipeline:
 	}
 }
 
-// TestLoadPathsRejectsPromptRoutesWithEmptyEntries verifies prompt-route entries that collapse to empty keys or folders after trimming or env expansion still fail fast instead of being ignored.
-// TestLoadPathsRejectsPromptRoutesWithEmptyEntries 用于验证提示词路由项在裁剪或环境变量展开后若退化为空键或空目录，加载流程仍会快速失败，而不是被静默忽略。
-func TestLoadPathsRejectsPromptRoutesWithEmptyEntries(t *testing.T) {
+// TestLoadPathsRejectsRemovedPromptRoutes verifies the removed legacy prompt-route map now fails fast instead of being silently ignored.
+// TestLoadPathsRejectsRemovedPromptRoutes 用于验证已移除的旧版提示词路由映射现在会快速失败，而不是被静默忽略。
+func TestLoadPathsRejectsRemovedPromptRoutes(t *testing.T) {
 	clearRemovedAIEnvVars(t)
-	restoreEnv(t, "TEST_EMPTY_PROMPT_ROUTE_KEY")
-	restoreEnv(t, "TEST_EMPTY_PROMPT_ROUTE_FOLDER")
-	t.Setenv("TEST_EMPTY_PROMPT_ROUTE_KEY", "   ")
-	t.Setenv("TEST_EMPTY_PROMPT_ROUTE_FOLDER", "   ")
 
 	rootDir := t.TempDir()
 	cases := []struct {
@@ -738,20 +751,20 @@ func TestLoadPathsRejectsPromptRoutesWithEmptyEntries(t *testing.T) {
 		want string
 	}{
 		{
-			name: "empty-key",
+			name: "legacy-route-map",
 			body: `prompts:
   routes:
-    "${TEST_EMPTY_PROMPT_ROUTE_KEY}": "custom-folder"
+    "qwen*": "custom-folder"
 `,
-			want: "prompts.routes contains empty model key",
+			want: "prompts.routes has been removed",
 		},
 		{
-			name: "empty-folder",
+			name: "legacy-wildcard-route",
 			body: `prompts:
   routes:
-    "qwen*": "${TEST_EMPTY_PROMPT_ROUTE_FOLDER}"
+    "*": "default"
 `,
-			want: `prompts.routes["qwen*"] must not be empty`,
+			want: "prompts.routes has been removed",
 		},
 	}
 
@@ -828,6 +841,22 @@ func TestApplyEnvOverridesSkipsUnreferencedValues(t *testing.T) {
 
 	if got, want := cfg.GRPC.RequestTimeout.PreCheck.Duration, 15*time.Second; got != want {
 		t.Fatalf("pre-check timeout = %v, want %v", got, want)
+	}
+}
+
+// TestApplyEnvOverridesSetsPromptLanguageWhenReferenced verifies prompt-language env overrides only take effect after the config explicitly opts into that placeholder.
+// TestApplyEnvOverridesSetsPromptLanguageWhenReferenced 用于验证只有在配置显式引用对应占位符后，提示词语言环境变量覆盖才会生效。
+func TestApplyEnvOverridesSetsPromptLanguageWhenReferenced(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_PROMPTS_PROMPT_LANGUAGE", "zh-CN")
+
+	applyEnvOverrides(&cfg, map[string]struct{}{
+		"VMM_PROMPTS_PROMPT_LANGUAGE": {},
+	})
+	cfg.Normalize()
+
+	if got, want := cfg.Prompts.PromptLanguage, defaultChinesePromptBundle; got != want {
+		t.Fatalf("prompt language = %q, want %q", got, want)
 	}
 }
 

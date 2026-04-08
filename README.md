@@ -622,6 +622,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `logging.debug_rpc_payloads`
 - `logging.protect_payloads`
 - `logging.payload_encryption_key`
+- `prompts.prompt_language`
 - `storage.mode`
 - `storage.combined_provider`
 - `relational.provider`
@@ -641,6 +642,23 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `post_action.session_analysis_idle_timeout`
 - `post_action.session_analysis_history_turns`
 - `post_action.session_analysis_max_input_tokens`
+
+`prompts` 下当前提示词目录选择规则已经收敛为显式配置：
+
+- `prompt_language`
+  - 默认值：`default_en`
+  - 内建英文提示词目录：`configs/prompts/default_en`
+  - 内建中文提示词目录：`configs/prompts/default_cn`
+  - 支持别名：
+    - 英文：`default_en` / `default` / `en` / `english`
+    - 中文：`default_cn` / `zh` / `zh-cn` / `cn` / `chinese`
+  - 也可以直接填写 `configs/prompts/` 下的其他目录名，例如 `qwen3.5-base`
+- 服务端启动时会严格校验当前选中的提示词目录：
+  - 如果目录不存在，启动会直接失败
+  - 如果目录下缺少任一必需提示词文件，启动也会直接失败
+- 当前已经彻底取消“根据模型名称自动匹配提示词目录”的逻辑：
+  - 不再支持 `prompts.routes`
+  - 如果旧配置里仍保留 `prompts.routes`，加载阶段会直接报错
 
 `logging` 下当前与业务链 RPC 载荷调试相关的新增项：
 

@@ -17,7 +17,7 @@ func TestResolvePromptLayoutDefaultsToHomeVMM(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 
 	root := t.TempDir()
-	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "system-default")
+	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "system-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "configs", "config.yaml"))
 
@@ -56,7 +56,7 @@ func TestResolvePromptLayoutDefaultsToHomeVMM(t *testing.T) {
 // TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary 用于验证 TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary 行为。
 func TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary(t *testing.T) {
 	root := t.TempDir()
-	writeRequiredScenes(t, filepath.Join(root, "output", "configs", "prompts", "default"), "output-default")
+	writeRequiredScenes(t, filepath.Join(root, "output", "configs", "prompts", "default_en"), "output-default")
 	writeConfigStub(t, filepath.Join(root, "output", "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "output", "configs", "config.yaml"))
 
@@ -77,7 +77,7 @@ func TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary(t *testing.T) {
 // TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun 用于验证 TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun 行为。
 func TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun(t *testing.T) {
 	root := t.TempDir()
-	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "project-default")
+	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "project-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 
 	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), filepath.Join(root, "cmd", "vmm-local"), "", "config")
@@ -94,7 +94,7 @@ func TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun(t *testing.T) {
 // TestResolvePromptLayoutAcceptsExplicitUserDir 用于验证 TestResolvePromptLayoutAcceptsExplicitUserDir 行为。
 func TestResolvePromptLayoutAcceptsExplicitUserDir(t *testing.T) {
 	root := t.TempDir()
-	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "system-default")
+	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "system-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "configs", "config.yaml"))
 	userDir := filepath.Join(root, "custom-user")
@@ -124,11 +124,11 @@ func TestResolvePromptLayoutAcceptsExplicitUserDir(t *testing.T) {
 // TestResolvePromptLayoutSupportsExplicitConfigFilePath 用于验证 TestResolvePromptLayoutSupportsExplicitConfigFilePath 行为。
 func TestResolvePromptLayoutSupportsExplicitConfigFilePath(t *testing.T) {
 	root := t.TempDir()
-	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "system-default")
+	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "system-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "configs", "config.yaml"))
 	userBundleDir := filepath.Join(root, "bundle")
-	if err := os.MkdirAll(filepath.Join(userBundleDir, "prompts", "default"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(userBundleDir, "prompts", "default_en"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	configFile := filepath.Join(userBundleDir, "custom.override.yaml")
@@ -158,7 +158,7 @@ func TestResolvePromptLayoutUsesUserConfigYAMLAsOverrideWhenPresent(t *testing.T
 	t.Setenv("USERPROFILE", home)
 
 	root := t.TempDir()
-	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "system-default")
+	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "system-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "configs", "config.yaml"))
 	userConfigPath := filepath.Join(home, ".vmm", "config.yaml")
@@ -208,7 +208,7 @@ func TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound(t *testing.T) {
 // TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs 用于验证 TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs 行为。
 func TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs(t *testing.T) {
 	root := t.TempDir()
-	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default"), "project-default")
+	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "project-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 
 	_, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "", "config")

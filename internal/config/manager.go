@@ -6,78 +6,43 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
 	"strings"
 )
 
-// PromptManager resolves prompt folders and loads scene files for processors at runtime.
-// PromptManager 用于在运行时为处理器解析提示词目录并加载场景文件。
+// PromptManager resolves one preselected prompt bundle and loads scene files for processors at runtime.
+// PromptManager 用于在运行时解析一套预先选定的提示词包，并为处理器加载对应场景文件。
 type PromptManager struct {
-	systemDir     string
-	userDir       string
-	routes        RouteMap
-	matchers      []routeMatcher
-	defaultFolder string
+	systemDir      string
+	userDir        string
+	selectedFolder string
 }
 
-// routeMatcher stores one compiled prefix rule used during model-to-folder prompt routing.
-// routeMatcher 用于保存模型到提示词目录路由时使用的一条已编译前缀规则。
-type routeMatcher struct {
-	key    string
-	prefix string
-	folder string
-}
-
-// NewPromptManager creates a PromptManager instance from the already-merged prompt route config.
-// NewPromptManager 用于基于已完成合并的提示词路由配置创建 PromptManager 实例。
-func NewPromptManager(systemDir, userDir string, routes RouteMap) (*PromptManager, error) {
-	// Validate the required system prompt base before validating any route targets.
-	// 在校验任何路由目标之前，先校验系统级默认提示词底座。
+// NewPromptManager creates a PromptManager instance from the selected prompt-bundle token.
+// NewPromptManager 用于基于选中的提示词包标识创建 PromptManager 实例。
+func NewPromptManager(systemDir, userDir, promptLanguage string) (*PromptManager, error) {
+	// Validate the built-in default prompt bundle first so every runtime keeps one safe fallback family available.
+	// 先校验内建默认提示词包，确保每个运行时都拥有一套安全可用的默认提示词族。
 	validation := &ValidationErrors{}
-	validateSystemDefault(systemDir, validation)
+	validateSystemPromptBundle(systemDir, defaultPromptBundle, validation)
 
-	// Normalize and validate the final route table before the manager becomes usable.
-	// 在管理器可用之前，对最终路由表进行规范化和完整性校验。
-	mergedRoutes := normalizeRouteMap(routes)
-	if len(mergedRoutes) == 0 {
-		mergedRoutes["*"] = "default"
-	}
-	validateRouteMapEntries(mergedRoutes, validation)
-	if folder := strings.TrimSpace(mergedRoutes["*"]); folder != "" && folder != "default" {
-		validation.Add(`route "*" must point to "default", got %q`, folder)
-	}
-
-	validateRouteFolders(systemDir, userDir, mergedRoutes, validation)
+	// Resolve the runtime-selected prompt bundle and verify the active directory is complete before the manager becomes usable.
+	// 解析运行时选中的提示词包，并在管理器可用前校验当前生效目录完整无缺。
+	selectedFolder := normalizePromptBundleName(promptLanguage)
+	validateSelectedPromptBundle(systemDir, userDir, selectedFolder, validation)
 	if validation.HasAny() {
 		return nil, validation
 	}
 
 	return &PromptManager{
-		systemDir:     systemDir,
-		userDir:       userDir,
-		routes:        mergedRoutes,
-		matchers:      buildMatchers(mergedRoutes),
-		defaultFolder: "default",
+		systemDir:      systemDir,
+		userDir:        userDir,
+		selectedFolder: selectedFolder,
 	}, nil
-}
-
-// MatchFolder executes the MatchFolder logic.
-// MatchFolder 用于执行 MatchFolder 逻辑。
-func (m *PromptManager) MatchFolder(modelName string) string {
-	// Match the longest configured model prefix and fall back to the default folder.
-	// 匹配最长的模型前缀，并在未命中时回退到默认目录。
-	modelName = strings.TrimSpace(modelName)
-	for _, matcher := range m.matchers {
-		if strings.HasPrefix(modelName, matcher.prefix) {
-			return matcher.folder
-		}
-	}
-	return m.defaultFolder
 }
 
 // GetPrompt executes the GetPrompt logic.
 // GetPrompt 用于执行 GetPrompt 逻辑。
-func (m *PromptManager) GetPrompt(scene, modelName string) (string, error) {
+func (m *PromptManager) GetPrompt(scene, _ string) (string, error) {
 	// Normalize the requested scene name into an on-disk markdown filename.
 	// 将请求的场景名归一成磁盘上的 markdown 文件名。
 	sceneFile := scene
@@ -85,87 +50,55 @@ func (m *PromptManager) GetPrompt(scene, modelName string) (string, error) {
 		sceneFile += ".md"
 	}
 
-	// Prefer the user prompt tree and fall back to the system prompt tree.
-	// 优先读取用户提示词目录，未命中时再回退到系统目录。
-	folder := m.MatchFolder(modelName)
-	userPath := filepath.Join(m.userDir, "prompts", folder, sceneFile)
+	// Prefer the selected user prompt bundle when it exists, otherwise fall back to the selected system prompt bundle.
+	// 优先读取已选中的用户提示词包；若不存在，则回退到已选中的系统提示词包。
+	userPath := filepath.Join(m.userDir, "prompts", m.selectedFolder, sceneFile)
 	if body, err := os.ReadFile(userPath); err == nil {
 		return string(body), nil
 	}
 
-	systemPath := filepath.Join(m.systemDir, "prompts", folder, sceneFile)
+	systemPath := filepath.Join(m.systemDir, "prompts", m.selectedFolder, sceneFile)
 	body, err := os.ReadFile(systemPath)
 	if err != nil {
-		return "", fmt.Errorf("read prompt folder=%q scene=%q: %w", folder, sceneFile, err)
+		return "", fmt.Errorf("read prompt folder=%q scene=%q: %w", m.selectedFolder, sceneFile, err)
 	}
 	return string(body), nil
 }
 
-// validateSystemDefault validates the input value.
-// validateSystemDefault 用于校验输入值。
-func validateSystemDefault(systemDir string, validation *ValidationErrors) {
-	defaultDir := filepath.Join(systemDir, "prompts", "default")
-	missing := missingScenes(defaultDir)
+// validateSystemPromptBundle validates one required built-in prompt bundle shipped with the system config root.
+// validateSystemPromptBundle 用于校验系统配置根目录中必须随包分发的一套内建提示词包。
+func validateSystemPromptBundle(systemDir, folder string, validation *ValidationErrors) {
+	dir := filepath.Join(systemDir, "prompts", folder)
+	missing := missingScenes(dir)
 	if len(missing) == 0 {
 		return
 	}
 	for _, scene := range missing {
-		validation.Add("system default prompt missing: %s", filepath.Join(defaultDir, scene))
+		validation.Add("system prompt bundle missing: %s", filepath.Join(dir, scene))
 	}
 }
 
-// validateRouteFolders validates the input value.
-// validateRouteFolders 用于校验输入值。
-func validateRouteFolders(systemDir, userDir string, routes RouteMap, validation *ValidationErrors) {
-	// Enforce complete prompt bundles for every non-default route target.
-	// 对每个非 default 路由目标强制执行完整提示词闭环校验。
-	for _, folder := range uniqueRouteFolders(routes) {
-		if folder == "default" {
-			continue
-		}
-
-		userFolder := filepath.Join(userDir, "prompts", folder)
-		systemFolder := filepath.Join(systemDir, "prompts", folder)
-
-		if dirExists(userFolder) {
-			for _, scene := range missingScenes(userFolder) {
-				validation.Add("user prompt folder %q is incomplete, missing %s", userFolder, scene)
-			}
-			continue
-		}
-
-		for _, scene := range missingScenes(systemFolder) {
-			validation.Add("system prompt folder %q is incomplete, missing %s", systemFolder, scene)
-		}
+// validateSelectedPromptBundle validates the active prompt bundle chosen by config so startup fails when the selected user/system directory is missing or incomplete.
+// validateSelectedPromptBundle 用于校验配置选中的生效提示词包，确保启动时若用户/系统目录缺失或不完整会直接失败。
+func validateSelectedPromptBundle(systemDir, userDir, folder string, validation *ValidationErrors) {
+	if validation == nil {
+		return
 	}
-}
-
-// buildMatchers builds the target dependency.
-// buildMatchers 用于构建目标依赖。
-func buildMatchers(routes RouteMap) []routeMatcher {
-	// Convert route keys into sortable prefix matchers for runtime lookup.
-	// 将路由键转换成可排序的前缀匹配器，供运行时查找使用。
-	matchers := make([]routeMatcher, 0, len(routes))
-	for key, folder := range routes {
-		if key == "*" {
-			continue
-		}
-		prefix := strings.TrimSuffix(key, "*")
-		if prefix == "" {
-			continue
-		}
-		matchers = append(matchers, routeMatcher{
-			key:    key,
-			prefix: prefix,
-			folder: folder,
-		})
+	folder = strings.TrimSpace(folder)
+	if folder == "" {
+		validation.Add("prompts.prompt_language resolved to an empty prompt bundle")
+		return
 	}
 
-	sort.SliceStable(matchers, func(i, j int) bool {
-		if len(matchers[i].prefix) == len(matchers[j].prefix) {
-			return matchers[i].key < matchers[j].key
+	userFolder := filepath.Join(userDir, "prompts", folder)
+	systemFolder := filepath.Join(systemDir, "prompts", folder)
+	if dirExists(userFolder) {
+		for _, scene := range missingScenes(userFolder) {
+			validation.Add("user prompt bundle %q is incomplete, missing %s", userFolder, scene)
 		}
-		return len(matchers[i].prefix) > len(matchers[j].prefix)
-	})
-	return matchers
+		return
+	}
+	for _, scene := range missingScenes(systemFolder) {
+		validation.Add("system prompt bundle %q is incomplete, missing %s", systemFolder, scene)
+	}
 }

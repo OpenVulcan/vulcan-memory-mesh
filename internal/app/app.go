@@ -48,12 +48,6 @@ type storageDependencies struct {
 	ManageVectorSchema bool
 }
 
-// promptFolderMatcher exposes prompt-folder resolution so the composition root can detect whether multiple LLM routes still share one compatible prompt family.
-// promptFolderMatcher 用于暴露提示词目录解析能力，让组合根可以判断多条 LLM 路由是否仍共享同一套兼容的提示词族。
-type promptFolderMatcher interface {
-	MatchFolder(modelName string) string
-}
-
 // routeFailoverAwareLLMClient preserves prompt-side model routing while clearing request-level model pins in multi-route mode so processor calls can still fan out across heterogeneous llm.routes.
 // routeFailoverAwareLLMClient 用于在保留提示词侧模型路由的同时，于多路由模式清空请求级模型固定值，确保处理器调用仍能在不同模型名的 llm.routes 之间扩散容灾。
 type routeFailoverAwareLLMClient struct {
@@ -86,45 +80,10 @@ func (c routeFailoverAwareLLMClient) Generate(ctx context.Context, req appports.
 	return c.upstream.Generate(ctx, req)
 }
 
-// selectProcessorPromptModel chooses the model token that one business call tier should use for prompt lookup so multi-route failover only keeps model-specific prompts when every eligible route still resolves to the same prompt folder.
-// selectProcessorPromptModel 用于为某个业务调用层级选择提示词查找所用的模型标识；只有当该层级下所有可参与路由仍指向同一提示词目录时，才继续保留模型专属 prompt。
-func selectProcessorPromptModel(cfg config.Config, prompts appports.PromptSource, selectionLevel appports.LLMRouteSelectionLevel) string {
-	routes := cfg.LLM.ProviderRoutes()
-	if len(routes) == 0 {
-		return ""
-	}
-	primaryModel := cfg.LLM.PrimaryModelForSelection(string(selectionLevel))
-	if len(routes) == 1 {
-		return primaryModel
-	}
-	if allLLMRoutesSharePromptFolder(routes, prompts, primaryModel) {
-		return primaryModel
-	}
-	return ""
-}
-
-// allLLMRoutesSharePromptFolder reports whether every configured LLM route maps to the same prompt folder as the selected primary model.
-// allLLMRoutesSharePromptFolder 用于判断所有已配置的 LLM 路由是否都映射到与已选主模型相同的提示词目录。
-func allLLMRoutesSharePromptFolder(routes []config.LLMRouteConfig, prompts appports.PromptSource, primaryModel string) bool {
-	if len(routes) <= 1 {
-		return true
-	}
-	if matcher, ok := prompts.(promptFolderMatcher); ok && matcher != nil {
-		baseFolder := matcher.MatchFolder(primaryModel)
-		for _, route := range routes {
-			if matcher.MatchFolder(route.Model) != baseFolder {
-				return false
-			}
-		}
-		return true
-	}
-	baseModel := strings.TrimSpace(primaryModel)
-	for _, route := range routes {
-		if strings.TrimSpace(route.Model) != baseModel {
-			return false
-		}
-	}
-	return true
+// selectProcessorLLMModel chooses the primary model label for one business call tier without coupling prompt selection to model-specific prompt folders.
+// selectProcessorLLMModel 用于为某个业务调用层级选择主模型标识，同时避免再把提示词选择耦合到模型专属提示词目录。
+func selectProcessorLLMModel(cfg config.Config, selectionLevel appports.LLMRouteSelectionLevel) string {
+	return cfg.LLM.PrimaryModelForSelection(string(selectionLevel))
 }
 
 // NewLocal creates the local application instance.
@@ -250,11 +209,11 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	// Compose use cases on top of processors and outbound ports.
 	// 在处理器和出站端口之上装配用例层。
 	workspace := usecase.NewWorkspaceUseCase(workspaceStore, vector)
-	reservePromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelReserve)
-	preCheckL1PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL1)
-	preCheckL2PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL2)
-	postActionL1PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL1)
-	postActionL2PromptModel := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL2)
+	reservePromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelReserve)
+	preCheckL1PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPreCheckL1)
+	preCheckL2PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPreCheckL2)
+	postActionL1PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL1)
+	postActionL2PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL2)
 	processorLLM := adaptLLMForProcessorRoutes(cfg, llm)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(processorLLM, prompts, reservePromptModel), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)

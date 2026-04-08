@@ -85,25 +85,14 @@ func (c *recordingLLMClient) Generate(_ context.Context, req appports.LLMRequest
 	return c.response, nil
 }
 
-// matchingPromptSource supplies deterministic prompt-folder matches so composition tests can verify whether multi-route wiring keeps or drops model-specific prompt routing.
-// matchingPromptSource 用于提供可预测的提示词目录匹配结果，让装配测试可以验证多路由场景下是否保留或降级模型专属 prompt 路由。
-type matchingPromptSource struct {
-	folders map[string]string
-}
+// matchingPromptSource satisfies the prompt source contract for composition tests that only care about request wiring instead of real prompt-file contents.
+// matchingPromptSource 用于满足装配测试的提示词接口；这些测试只关心请求接线，而不关心真实提示词文件内容。
+type matchingPromptSource struct{}
 
-// GetPrompt satisfies the prompt source contract for composition tests that only care about folder selection.
-// GetPrompt 用于满足装配测试所需的提示词接口；这些测试只关心目录选择，不关心实际 prompt 内容。
+// GetPrompt returns one deterministic in-memory prompt body for composition tests.
+// GetPrompt 用于为装配测试返回一份稳定的内存提示词内容。
 func (s matchingPromptSource) GetPrompt(scene, modelName string) (string, error) {
 	return scene + ":" + modelName, nil
-}
-
-// MatchFolder returns the configured folder for one model and falls back to `default` when no explicit mapping exists.
-// MatchFolder 用于返回指定模型对应的目录；若未显式配置，则回退到 `default`。
-func (s matchingPromptSource) MatchFolder(modelName string) string {
-	if folder, ok := s.folders[modelName]; ok && strings.TrimSpace(folder) != "" {
-		return folder
-	}
-	return "default"
 }
 
 // TestNewLocalRegistersReflection verifies the local runtime exposes both the main VMM service and gRPC reflection.
@@ -125,7 +114,7 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, config.RouteMap{"*": "default"})
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -178,7 +167,7 @@ func TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs(t *testing.T) {
 // TestNewLocalCreatesRuntimeLogFile 用于验证应用装配会在解析出的运行时日志根目录下立即创建按天/小时的日志文件，让路径异常在启动阶段就暴露出来，而不是之后静默丢日志。
 func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 	root := t.TempDir()
-	writePromptBundleForAppTest(t, filepath.Join(root, "output", "configs", "prompts", "default"), "packaged-default")
+	writePromptBundleForAppTest(t, filepath.Join(root, "output", "configs", "prompts", "default_en"), "packaged-default")
 	writeConfigStubForAppTest(t, filepath.Join(root, "output", "configs", "base.yaml"))
 	writeConfigStubForAppTest(t, filepath.Join(root, "output", "configs", "config.yaml"))
 	writeRuleStubsForAppTest(t, filepath.Join(root, "output", "configs"))
@@ -191,7 +180,7 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, config.RouteMap{"*": "default"})
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,6 +226,7 @@ func writePromptBundleForAppTest(t *testing.T, dir string, prefix string) {
 		"analyze_turn.md",
 		"summarize_entry.md",
 		"merge_profile.md",
+		"review_precheck_memory.md",
 		"review_postaction_candidates.md",
 		"review_profile_instruction.md",
 	} {
@@ -474,73 +464,26 @@ func TestAdaptLLMForProcessorRoutesPreservesPinnedModelForSingleRoute(t *testing
 	}
 }
 
-// TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder verifies multi-route processor wiring can safely keep the primary model prompt when every route still resolves to the same prompt directory.
-// TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder 用于验证当多条路由最终仍指向同一提示词目录时，处理器可以继续安全复用主模型 prompt。
-func TestSelectProcessorPromptModelKeepsPrimaryModelWhenRoutesSharePromptFolder(t *testing.T) {
+// TestSelectProcessorLLMModelUsesPrimaryModelForSingleRoute verifies processor-side model selection still returns the concrete single-route model after prompt routing is decoupled from model names.
+// TestSelectProcessorLLMModelUsesPrimaryModelForSingleRoute 用于验证在提示词目录已与模型名解耦后，处理器侧模型选择在单路由场景下仍会返回明确的单路由模型。
+func TestSelectProcessorLLMModelUsesPrimaryModelForSingleRoute(t *testing.T) {
 	cfg := newRuntimeConfigForTest()
-	cfg.LLM.Routes = []config.LLMRouteConfig{
-		{
-			Name:     "primary",
-			Provider: "openai",
-			Endpoint: "https://primary.example/v1",
-			APIKeys:  []string{"llm-a"},
-			Model:    "qwen3.5-flash-plus",
-			Weights:  config.LLMRouteWeightConfig{PreCheckL1: intPtrForAppTest(180)},
-		},
-		{
-			Name:     "backup",
-			Provider: "openai",
-			Endpoint: "https://backup.example/v1",
-			APIKeys:  []string{"llm-b"},
-			Model:    "qwen3.5-flash",
-			Weights:  config.LLMRouteWeightConfig{PreCheckL1: intPtrForAppTest(120)},
-		},
-	}
-	prompts := matchingPromptSource{folders: map[string]string{
-		"qwen3.5-flash-plus": "qwen-flash",
-		"qwen3.5-flash":      "qwen-flash",
+	cfg.LLM.Routes = []config.LLMRouteConfig{{
+		Name:     "primary",
+		Provider: "openai",
+		Endpoint: "https://primary.example/v1",
+		APIKeys:  []string{"llm-a"},
+		Model:    "single-route-model",
 	}}
 
-	if got, want := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL1), "qwen3.5-flash-plus"; got != want {
-		t.Fatalf("processor prompt model = %q, want %q", got, want)
+	if got, want := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPreCheckL1), "single-route-model"; got != want {
+		t.Fatalf("processor llm model = %q, want %q", got, want)
 	}
 }
 
-// TestSelectProcessorPromptModelFallsBackToDefaultForMixedPromptFolders verifies heterogeneous multi-route models drop back to the default prompt family so backup routes do not inherit the primary model's dedicated prompt bundle.
-// TestSelectProcessorPromptModelFallsBackToDefaultForMixedPromptFolders 用于验证当多路由跨越不同提示词目录时，处理器会退回 default prompt，避免备用路由继承主模型的专属 prompt 包。
-func TestSelectProcessorPromptModelFallsBackToDefaultForMixedPromptFolders(t *testing.T) {
-	cfg := newRuntimeConfigForTest()
-	cfg.LLM.Routes = []config.LLMRouteConfig{
-		{
-			Name:     "primary",
-			Provider: "openai",
-			Endpoint: "https://primary.example/v1",
-			APIKeys:  []string{"llm-a"},
-			Model:    "qwen3.5-flash-plus",
-			Weights:  config.LLMRouteWeightConfig{PostActionL2: intPtrForAppTest(180)},
-		},
-		{
-			Name:     "backup",
-			Provider: "openai",
-			Endpoint: "https://backup.example/v1",
-			APIKeys:  []string{"llm-b"},
-			Model:    "qwen3.5-base",
-			Weights:  config.LLMRouteWeightConfig{PostActionL2: intPtrForAppTest(120)},
-		},
-	}
-	prompts := matchingPromptSource{folders: map[string]string{
-		"qwen3.5-flash-plus": "qwen-flash",
-		"qwen3.5-base":       "qwen-base",
-	}}
-
-	if got := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL2); got != "" {
-		t.Fatalf("processor prompt model = %q, want empty string for default prompt fallback", got)
-	}
-}
-
-// TestSelectProcessorPromptModelUsesSelectionLevelWeights verifies different business tiers can resolve different prompt-anchor models from the same route table.
-// TestSelectProcessorPromptModelUsesSelectionLevelWeights 用于验证不同业务层级可以从同一份路由表里解析出不同的提示词锚定模型。
-func TestSelectProcessorPromptModelUsesSelectionLevelWeights(t *testing.T) {
+// TestSelectProcessorLLMModelUsesSelectionLevelWeights verifies different business tiers can still resolve different primary models from one shared route table after prompt routing becomes explicit config state.
+// TestSelectProcessorLLMModelUsesSelectionLevelWeights 用于验证提示词路由改成显式配置后，不同业务层级仍能从同一份路由表解析出不同主模型。
+func TestSelectProcessorLLMModelUsesSelectionLevelWeights(t *testing.T) {
 	cfg := newRuntimeConfigForTest()
 	cfg.LLM.Routes = []config.LLMRouteConfig{
 		{
@@ -566,16 +509,12 @@ func TestSelectProcessorPromptModelUsesSelectionLevelWeights(t *testing.T) {
 			},
 		},
 	}
-	prompts := matchingPromptSource{folders: map[string]string{
-		"qwen3.5-flash": "shared",
-		"qwen3.5-base":  "shared",
-	}}
 
-	if got, want := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPreCheckL1), "qwen3.5-flash"; got != want {
-		t.Fatalf("precheck prompt model = %q, want %q", got, want)
+	if got, want := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPreCheckL1), "qwen3.5-flash"; got != want {
+		t.Fatalf("precheck llm model = %q, want %q", got, want)
 	}
-	if got, want := selectProcessorPromptModel(cfg, prompts, appports.LLMRouteSelectionLevelPostActionL1), "qwen3.5-base"; got != want {
-		t.Fatalf("postaction prompt model = %q, want %q", got, want)
+	if got, want := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL1), "qwen3.5-base"; got != want {
+		t.Fatalf("postaction llm model = %q, want %q", got, want)
 	}
 }
 

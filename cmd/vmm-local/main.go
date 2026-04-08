@@ -53,7 +53,7 @@ func main() {
 
 	// Load prompt assets only for the normal runtime path because one-shot maintenance actions now live in the standalone vmm-migrate binary.
 	// 仅在正常运行路径加载提示词资产，因为一次性维护动作已经迁移到独立的 vmm-migrate 二进制。
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, cfg.Prompts.Routes)
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, cfg.Prompts.PromptLanguage)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)

@@ -110,20 +110,17 @@ noise:
   semantic_threshold: 0.88
 
 prompts:
-  # Prompt route table that maps model patterns to prompt bundle folders under prompts/.
-  # 提示词路由表，用于把模型匹配规则映射到 prompts/ 下的提示词目录。
-  routes:
-    # Exact route for qwen3.5-flash.
-    # qwen3.5-flash 的精确匹配路由。
-    "qwen3.5-flash": "qwen3.5-flash"
-
-    # Prefix wildcard route for the remaining qwen3.5 family.
-    # qwen3.5 系列其余模型的前缀通配路由。
-    "qwen3.5*": "qwen3.5-base"
-
-    # Fallback route that should normally always exist.
-    # 建议始终保留的默认兜底路由。
-    "*": "default"
+  # Prompt bundle selector used by the runtime.
+  # 运行时使用的提示词包选择器。
+  # Supported values:
+  # 支持取值：
+  # - default_en / en / english / default: use the built-in English prompt bundle, which is also the runtime default.
+  # - default_en / en / english / default：使用内建英文提示词包，这也是当前运行时默认值。
+  # - default_cn / zh / zh-cn / chinese / cn: use the built-in Chinese prompt bundle.
+  # - default_cn / zh / zh-cn / chinese / cn：使用内建中文提示词包。
+  # - custom folder name: directly select one prompt bundle directory under prompts/.
+  # - 自定义目录名：直接选择 prompts/ 下的某个提示词包目录。
+  prompt_language: "default_en"
 
 storage:
   # Storage topology for the runtime.

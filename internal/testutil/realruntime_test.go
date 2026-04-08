@@ -100,7 +100,7 @@ func TestResolveRealRuntimeLayoutSupportsBaseOnlyPackagedConfigAndHomeOverride(t
 
 	repoRoot := t.TempDir()
 	systemDir := filepath.Join(repoRoot, "output", "configs")
-	writePromptBundleForRealRuntimeTest(t, filepath.Join(systemDir, "prompts", "default"), "packaged-default")
+	writePromptBundleForRealRuntimeTest(t, filepath.Join(systemDir, "prompts", "default_en"), "packaged-default")
 	writeConfigStubForRealRuntimeTest(t, filepath.Join(systemDir, "base.yaml"))
 	userConfigPath := filepath.Join(home, ".vmm", "config.yaml")
 	writeConfigStubForRealRuntimeTest(t, userConfigPath)

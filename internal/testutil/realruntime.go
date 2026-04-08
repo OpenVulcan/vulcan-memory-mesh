@@ -104,7 +104,7 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 	if err != nil {
 		return nil, err
 	}
-	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, cfg.Prompts.Routes)
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, cfg.Prompts.PromptLanguage)
 	if err != nil {
 		return nil, err
 	}

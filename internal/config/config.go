@@ -127,10 +127,10 @@ type Config struct {
 	MemoryReplaceScope string                `json:"memory_replace_scope,omitempty"`
 }
 
-// PromptConfig keeps prompt-model routing rules inside the main config tree so the prompt bundle and route table evolve together.
-// PromptConfig 用于把提示词模型路由规则纳入主配置树，避免提示词包与路由表分离漂移。
+// PromptConfig keeps the selected prompt bundle token inside the main config tree so runtime prompt behavior stays explicit and no longer depends on model-name routing.
+// PromptConfig 用于把选中的提示词包标识纳入主配置树，确保运行时提示词行为显式可控，不再依赖模型名路由。
 type PromptConfig struct {
-	Routes RouteMap `json:"routes,omitempty"`
+	PromptLanguage string `json:"prompt_language,omitempty"`
 }
 
 // GRPCConfig holds listener and timeout settings for the inbound gRPC server.
@@ -451,11 +451,7 @@ func DefaultBase() Config {
 		PII:     PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:   NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		Prompts: PromptConfig{
-			Routes: RouteMap{
-				"qwen3.5-flash": "qwen3.5-flash",
-				"qwen3.5*":      "qwen3.5-base",
-				"*":             "default",
-			},
+			PromptLanguage: defaultPromptBundle,
 		},
 		Storage: StorageConfig{Mode: "split", CombinedProvider: "postgres"},
 		SQLite:  SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
@@ -753,9 +749,12 @@ func detectAIKeyFieldPresence(sectionBody []byte) (aiKeyFieldPresence, error) {
 	}, nil
 }
 
-// rejectRemovedAIConfigModes blocks deprecated AI config shapes at load time so runtime code only needs to reason about the new route-only or multi-key-only contracts.
-// rejectRemovedAIConfigModes 用于在加载期阻断已废弃的 AI 配置形态，让运行时代码只需要处理新的 route-only 或 multi-key-only 契约。
+// rejectRemovedAIConfigModes blocks deprecated AI config shapes at load time so runtime code only needs to reason about the current prompt-bundle and explicit route contracts.
+// rejectRemovedAIConfigModes 用于在加载期阻断已废弃的 AI 配置形态，让运行时代码只需要处理当前的提示词包选择与显式路由契约。
 func rejectRemovedAIConfigModes(root map[string]json.RawMessage) error {
+	if err := rejectRemovedPromptConfigFields(root["prompts"]); err != nil {
+		return err
+	}
 	if err := rejectRemovedLLMConfigFields(root["llm"]); err != nil {
 		return err
 	}
@@ -764,6 +763,22 @@ func rejectRemovedAIConfigModes(root map[string]json.RawMessage) error {
 	}
 	if err := rejectRemovedRerankConfigFields(root["rerank"]); err != nil {
 		return err
+	}
+	return nil
+}
+
+// rejectRemovedPromptConfigFields rejects the removed prompts.routes map so startup fails fast instead of silently ignoring legacy model-to-folder routing config.
+// rejectRemovedPromptConfigFields 用于拒绝已移除的 prompts.routes 映射，避免启动时静默忽略旧的“模型到提示词目录”路由配置。
+func rejectRemovedPromptConfigFields(sectionBody []byte) error {
+	if len(sectionBody) == 0 {
+		return nil
+	}
+	fields, err := parseSectionFields(sectionBody)
+	if err != nil {
+		return err
+	}
+	if _, ok := fields["routes"]; ok {
+		return errors.New("prompts.routes has been removed; please use prompts.prompt_language to select one prompt bundle")
 	}
 	return nil
 }
@@ -1842,10 +1857,7 @@ func (c *Config) Normalize() {
 	if !c.MemoryPipeline.hardDedupePoolTopKSet && c.MemoryPipeline.HardDedupePoolTopK <= 0 {
 		c.MemoryPipeline.HardDedupePoolTopK = defaultMemoryHardDedupePoolTopK
 	}
-	c.Prompts.Routes = normalizeRouteMap(c.Prompts.Routes)
-	if len(c.Prompts.Routes) == 0 {
-		c.Prompts.Routes = normalizeRouteMap(DefaultBase().Prompts.Routes)
-	}
+	c.Prompts.PromptLanguage = normalizePromptBundleName(c.Prompts.PromptLanguage)
 	c.LLM.Routes = normalizeLLMRouteConfigs(c.LLM.Routes)
 	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
 		c.Embedding.Dimension = 1024
@@ -1959,7 +1971,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Logging.PayloadEncryptionKey = strings.TrimSpace(c.Logging.PayloadEncryptionKey)
 	c.PII.DefaultLanguage = strings.TrimSpace(c.PII.DefaultLanguage)
 	c.Noise.DefaultLanguage = strings.TrimSpace(c.Noise.DefaultLanguage)
-	c.Prompts.Routes = normalizeRouteMap(c.Prompts.Routes)
+	c.Prompts.PromptLanguage = normalizePromptBundleName(c.Prompts.PromptLanguage)
 	c.Storage.Mode = strings.TrimSpace(c.Storage.Mode)
 	c.Storage.CombinedProvider = strings.TrimSpace(c.Storage.CombinedProvider)
 	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
@@ -2089,10 +2101,8 @@ func (c Config) Validate() error {
 	if c.Noise.SemanticThreshold < 0 || c.Noise.SemanticThreshold > 1 {
 		return errors.New("noise.semantic_threshold must be in [0,1]")
 	}
-	promptValidation := &ValidationErrors{}
-	validateRouteMapEntries(c.Prompts.Routes, promptValidation)
-	if promptValidation.HasAny() {
-		return promptValidation
+	if strings.TrimSpace(c.Prompts.PromptLanguage) == "" {
+		return errors.New("prompts.prompt_language must not be empty")
 	}
 	if strings.TrimSpace(c.Embedding.Provider) == "" {
 		return errors.New("embedding.provider is required")
@@ -2396,6 +2406,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 	setString("VMM_NOISE_DEFAULT_LANGUAGE", &cfg.Noise.DefaultLanguage)
 	setBool("VMM_NOISE_SEMANTIC_ENABLED", &cfg.Noise.SemanticEnabled)
 	setFloat("VMM_NOISE_SEMANTIC_THRESHOLD", &cfg.Noise.SemanticThreshold)
+	setString("VMM_PROMPTS_PROMPT_LANGUAGE", &cfg.Prompts.PromptLanguage)
 	setString("VMM_STORAGE_MODE", &cfg.Storage.Mode)
 	setString("VMM_STORAGE_COMBINED_PROVIDER", &cfg.Storage.CombinedProvider)
 	setString("VMM_SQLITE_ADDRESS", &cfg.SQLite.Address)
