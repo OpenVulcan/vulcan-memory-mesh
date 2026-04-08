@@ -52,7 +52,7 @@ effective_keep_turns = post_action.session_analysis_history_turns + retention.tu
 含义如下：
 
 - `post_action.session_analysis_history_turns`
-  - 决定单轮 `analyze_turn` 回带多少条历史 `details`
+  - 决定单轮 `postaction_l1_main` 回带多少条历史 `details`
 - `retention.turn_keep_extra_turns`
   - 在上述分析窗口之外额外保留的热 `turn` 数量
 

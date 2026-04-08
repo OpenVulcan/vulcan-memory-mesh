@@ -83,8 +83,8 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if err != nil {
 		t.Fatalf("analyze turn: %v", err)
 	}
-	if prompts.scene != "analyze_turn" {
-		t.Fatalf("expected analyze_turn scene, got %q", prompts.scene)
+	if prompts.scene != "postaction_l1_main" {
+		t.Fatalf("expected postaction_l1_main scene, got %q", prompts.scene)
 	}
 	if llm.request.ResponseFormat != logicports.LLMResponseFormatJSON {
 		t.Fatalf("expected json response format, got %q", llm.request.ResponseFormat)
@@ -100,6 +100,9 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	}
 	if !strings.Contains(llm.request.SystemPrompt, "这些事实已经由工具链主动写入") {
 		t.Fatalf("expected direct-write exclusion rule in system prompt, got %s", llm.request.SystemPrompt)
+	}
+	if !strings.Contains(llm.request.SystemPrompt, "Unified Output Language Rule") {
+		t.Fatalf("expected shared language policy in system prompt, got %s", llm.request.SystemPrompt)
 	}
 	if analysis.UserInputKind != logicdomain.TurnAnalysisUserInputQuestion {
 		t.Fatalf("unexpected user input kind: %+v", analysis)
@@ -333,8 +336,8 @@ func TestTurnAnalyzerPropagatesModelFailure(t *testing.T) {
 	}
 }
 
-// TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata verifies the stricter analyze_turn contract rejects payloads that omit the new admission metadata fields.
-// TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata 用于验证更严格的 analyze_turn 契约会拒绝缺失新准入元数据字段的载荷。
+// TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata verifies the stricter postaction_l1_main contract rejects payloads that omit the new admission metadata fields.
+// TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata 用于验证更严格的 postaction_l1_main 契约会拒绝缺失新准入元数据字段的载荷。
 func TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata(t *testing.T) {
 	_, err := parseTurnAnalysisResponse(`{"turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"keep","details":"keep"}],"profile_nodes":[{"profile_type":1,"content":"项目事实"}],"superseded_memory_ids":[]}`)
 	if err == nil {

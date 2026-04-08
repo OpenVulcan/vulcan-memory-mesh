@@ -890,8 +890,8 @@ func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
 	}
 }
 
-// TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure verifies queued analyze_turn JSON decode failures emit both the configured model label and the verbatim raw model output needed to debug malformed responses.
-// TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure 用于验证排队 analyze_turn 的 JSON 解码失败会同时输出当前模型标识和原样模型返回体，方便定位畸形响应。
+// TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure verifies queued postaction_l1_main JSON decode failures emit both the configured model label and the verbatim raw model output needed to debug malformed responses.
+// TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure 用于验证排队 postaction_l1_main 的 JSON 解码失败会同时输出当前模型标识和原样模型返回体，方便定位畸形响应。
 func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
 	store := &testRelationalStore{
 		pendingTurns: []logicdomain.SessionTurnRecord{
@@ -914,7 +914,7 @@ func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
 	}, "\n")
 	analyzer := &stubPostActionTurnAnalyzer{
 		err: logicdomain.InvalidLLMOutputError{
-			Scene:   "analyze_turn",
+			Scene:   "postaction_l1_main",
 			Message: "json decode failed",
 			Raw:     rawOutput,
 		},
@@ -947,9 +947,9 @@ func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
 		t.Fatalf("expected model field in failure log, got %s", logs)
 	}
 	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
-		t.Fatalf("expected raw analyze_turn output in failure log, got %s", logs)
+		t.Fatalf("expected raw postaction_l1_main output in failure log, got %s", logs)
 	}
-	if !strings.Contains(logs, "invalid llm output for analyze_turn: json decode failed") {
+	if !strings.Contains(logs, "invalid llm output for postaction_l1_main: json decode failed") {
 		t.Fatalf("expected invalid llm output error summary in failure log, got %s", logs)
 	}
 }
@@ -1425,8 +1425,8 @@ func (s *stubPostActionTurnAnalyzer) Analyze(_ context.Context, input logicdomai
 	return s.result, nil
 }
 
-// AnalyzeModel returns the configured stub model label so queued failure-log tests can verify the runtime logs which analyze_turn model produced malformed output.
-// AnalyzeModel 用于返回桩对象配置的模型标识，方便排队失败日志测试验证运行时会记录是哪个 analyze_turn 模型产出了畸形输出。
+// AnalyzeModel returns the configured stub model label so queued failure-log tests can verify the runtime logs which post-action first-stage model produced malformed output.
+// AnalyzeModel 用于返回桩对象配置的模型标识，方便排队失败日志测试验证运行时会记录是哪个 post-action 第一层模型产出了畸形输出。
 func (s *stubPostActionTurnAnalyzer) AnalyzeModel() string {
 	if s == nil {
 		return ""

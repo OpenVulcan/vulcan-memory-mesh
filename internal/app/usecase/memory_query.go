@@ -980,7 +980,7 @@ func buildDirectWriteMemoryDecisions(candidates []logicdomain.PostActionMemoryRe
 		return nil, nil
 	}
 	if section == nil {
-		return nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "missing memory review result"}
+		return nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "missing memory review result"}
 	}
 	acceptedByIndex := make(map[int]logicdomain.PostActionAcceptedMemoryCandidate, len(section.AcceptedCandidates)+len(section.AcceptedCandidateIndexes))
 	for _, accepted := range section.AcceptedCandidates {
@@ -1014,7 +1014,7 @@ func buildDirectWriteMemoryDecisions(candidates []logicdomain.PostActionMemoryRe
 		}
 		if accepted, ok := acceptedByIndex[idx]; ok {
 			supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
-				"review_postaction_candidates",
+				"postaction_l2_main",
 				accepted.CandidateIndex,
 				candidate.SimilarMemories,
 				accepted.SupersedeMemoryIDs,
@@ -1027,7 +1027,7 @@ func buildDirectWriteMemoryDecisions(candidates []logicdomain.PostActionMemoryRe
 		}
 		if dropped, ok := droppedByIndex[idx]; ok {
 			dedupeMemoryID, err := validatePostActionDroppedDedupeMemoryID(
-				"review_postaction_candidates",
+				"postaction_l2_main",
 				dropped.CandidateIndex,
 				candidate.SimilarMemories,
 				dropped.DedupeMemoryID,

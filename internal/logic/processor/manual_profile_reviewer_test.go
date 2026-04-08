@@ -59,8 +59,11 @@ func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("review manual profile instruction: %v", err)
 	}
-	if prompts.scene != "review_profile_instruction" || prompts.modelName != "qwen-test" {
+	if prompts.scene != "profile_instruction_main" || prompts.modelName != "qwen-test" {
 		t.Fatalf("unexpected prompt lookup: %+v", prompts)
+	}
+	if !strings.Contains(llm.request.SystemPrompt, "Unified Output Language Rule") {
+		t.Fatalf("expected shared language policy in system prompt, got %s", llm.request.SystemPrompt)
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"target": "TEAM"`) {
 		t.Fatalf("expected TEAM target in request body, got %s", llm.request.UserPrompt)

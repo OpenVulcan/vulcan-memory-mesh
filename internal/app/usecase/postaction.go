@@ -57,8 +57,8 @@ type PostActionTurnAnalyzer interface {
 	// Analyze runs one single-turn extraction against the persisted post-action turn input.
 	// Analyze 用于针对已持久化的 post-action 单轮输入执行一次提炼分析。
 	Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error)
-	// AnalyzeModel returns the configured analyze_turn model label so failure logs can identify which model produced malformed output.
-	// AnalyzeModel 用于返回当前 analyze_turn 使用的模型标识，便于失败日志定位是哪一个模型产出了畸形输出。
+	// AnalyzeModel returns the configured post-action first-stage model label so failure logs can identify which model produced malformed output.
+	// AnalyzeModel 用于返回当前 post-action 第一层使用的模型标识，便于失败日志定位是哪一个模型产出了畸形输出。
 	AnalyzeModel() string
 }
 
@@ -679,10 +679,10 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 		return logicdomain.ValidationError{Field: "target_turn.turn_id", Message: "is required"}
 	}
 	if analysis.TurnID != input.TargetTurn.TurnID {
-		return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("unexpected turn_id %d", analysis.TurnID)}
+		return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("unexpected turn_id %d", analysis.TurnID)}
 	}
 	if !logicdomain.ValidTurnAnalysisUserInputKind(strings.TrimSpace(analysis.UserInputKind)) {
-		return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("unexpected user_input_kind %q", analysis.UserInputKind)}
+		return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("unexpected user_input_kind %q", analysis.UserInputKind)}
 	}
 	activeMemoryIDs := make(map[uint64]struct{}, len(input.ActiveMemoryNodes))
 	for _, node := range input.ActiveMemoryNodes {
@@ -690,36 +690,36 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 	}
 	for idx, node := range analysis.MemoryNodes {
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
-			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].evidence_source is invalid", idx)}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].evidence_source is invalid", idx)}
 		}
 		if !logicdomain.ValidTurnAnalysisAdmission(strings.TrimSpace(node.Admission)) {
-			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].admission is invalid", idx)}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].admission is invalid", idx)}
 		}
 		reason := strings.TrimSpace(node.AdmissionReason)
 		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
-			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].admission_reason is invalid", idx)}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].admission_reason is invalid", idx)}
 		}
 		for _, memoryID := range node.SupersedeMemoryIDs {
 			if _, ok := activeMemoryIDs[memoryID]; !ok {
-				return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("memory_nodes[%d].supersede_memory_ids contains unknown memory_id %d", idx, memoryID)}
+				return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].supersede_memory_ids contains unknown memory_id %d", idx, memoryID)}
 			}
 		}
 	}
 	for idx, node := range analysis.ProfileNodes {
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
-			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("profile_nodes[%d].evidence_source is invalid", idx)}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].evidence_source is invalid", idx)}
 		}
 		if !logicdomain.ValidTurnAnalysisAdmission(strings.TrimSpace(node.Admission)) {
-			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("profile_nodes[%d].admission is invalid", idx)}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].admission is invalid", idx)}
 		}
 		reason := strings.TrimSpace(node.AdmissionReason)
 		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
-			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("profile_nodes[%d].admission_reason is invalid", idx)}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].admission_reason is invalid", idx)}
 		}
 	}
 	for _, memoryID := range analysis.SupersededMemoryIDs {
 		if _, ok := activeMemoryIDs[memoryID]; !ok {
-			return logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("superseded_memory_ids contains unknown memory_id %d", memoryID)}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("superseded_memory_ids contains unknown memory_id %d", memoryID)}
 		}
 	}
 	return nil

@@ -285,7 +285,7 @@ LLM 不再返回最终画像全文，而是返回“节点处理指令”。
 - `ApplyProfileInstruction`
   - 不绑定 `turn_id`
   - 先写入 `vmm_profile_instructions`
-  - 再把 active 节点和显式指令交给 `review_profile_instruction`
+  - 再把 active 节点和显式指令交给 `profile_instruction_main`
   - 由后端持久化节点结果并重建 profile
 
 这意味着当前画像系统除了 `vmm_profile_nodes`，还多了一张来源表：
@@ -368,10 +368,10 @@ scope `profile` 正文不再长期保存 `P / L / W` 的说明头。
 
 当前 `PostAction` 主线里的画像链路已经是：
 
-1. `analyze_turn` 为当前 turn 产出 `profile_nodes[]`
+1. `postaction_l1_main` 为当前 turn 产出 `profile_nodes[]`
 2. 后端按 user/project 两侧收集本轮新画像候选
 3. 读取当前目标下仍然 `active` 且未过期的画像节点
-4. 把“活跃旧节点 + 新候选”连同同轮记忆候选一起送入统一的 `review_postaction_candidates`
+4. 把“活跃旧节点 + 新候选”连同同轮记忆候选一起送入统一的 `postaction_l2_main`
 5. LLM 返回：
    - 哪些候选应接纳
    - 哪些候选应无效

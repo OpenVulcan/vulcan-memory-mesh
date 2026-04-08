@@ -204,7 +204,7 @@ flowchart TD
 当前是实时两层流程：
 
 1. 读取最近 turn 热窗口
-2. 第一层 `extract_intent` 判断是否需要长期记忆，并生成多条检索语句
+2. 第一层 `precheck_l1_main` 判断是否需要长期记忆，并生成多条检索语句
 3. 统一检索链执行：
    - `vector`
    - `lexical`
@@ -213,7 +213,7 @@ flowchart TD
    - `Weibull`
    - `context-aware scoring`
    - `MMR`
-4. 第二层 `review_precheck_memory` 决定最终采纳项
+4. 第二层 `precheck_l2_main` 决定最终采纳项
 5. 仅对最终采纳的 memory 写回生命周期
 6. 只返回 `context_items[]`
    - `context_text` 已废弃，固定留空
@@ -232,8 +232,8 @@ flowchart TD
 1. 同步校验、清洗并稳定落一条 turn
 2. 同步把 session 入异步分析队列
 3. 立即返回 `accepted=true`
-4. 后台异步执行单轮 `analyze_turn`
-5. 若产生记忆和画像候选，再统一走 `review_postaction_candidates`
+4. 后台异步执行单轮 `postaction_l1_main`
+5. 若产生记忆和画像候选，再统一走 `postaction_l2_main`
 6. 最终写回：
    - turn `details`
    - `memory_nodes`

@@ -13,14 +13,11 @@ import (
 // RequiredScenes lists the prompt scene files that every valid prompt bundle must provide.
 // RequiredScenes 用于列出每个有效提示词包都必须提供的场景文件。
 var RequiredScenes = []string{
-	"extract_intent.md",
-	"assemble_context.md",
-	"analyze_turn.md",
-	"summarize_entry.md",
-	"merge_profile.md",
-	"review_precheck_memory.md",
-	"review_postaction_candidates.md",
-	"review_profile_instruction.md",
+	"precheck_l1_main.md",
+	"precheck_l2_main.md",
+	"postaction_l1_main.md",
+	"postaction_l2_main.md",
+	"profile_instruction_main.md",
 }
 
 // PromptLayout captures the resolved system/user prompt roots and the final configuration chain.

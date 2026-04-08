@@ -322,20 +322,20 @@ func (u *ProfileUseCase) materializeManualInstructionReview(target logicdomain.P
 	for idx, accepted := range review.AcceptedNodes {
 		content := strings.TrimSpace(accepted.NormalizedContent)
 		if content == "" {
-			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].normalized_content is required", idx)}
+			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].normalized_content is required", idx)}
 		}
 		priority, level, levelReason := enforceManualInstructionFloor(target.ProfileType, accepted.Priority, accepted.ProfileLevel, strings.TrimSpace(accepted.LevelReason), floorPriority, floorLevel)
 		supersedeIDs := make([]uint64, 0, len(accepted.SupersedeNodes))
 		statusReason := ""
 		for supIdx, decision := range accepted.SupersedeNodes {
 			if decision.NodeID == 0 {
-				return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id is required", idx, supIdx)}
+				return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id is required", idx, supIdx)}
 			}
 			if _, ok := activeByID[decision.NodeID]; !ok {
-				return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id %d was not present in active nodes", idx, supIdx, decision.NodeID)}
+				return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id %d was not present in active nodes", idx, supIdx, decision.NodeID)}
 			}
 			if _, exists := retiredSet[decision.NodeID]; exists {
-				return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID)}
+				return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID)}
 			}
 			retiredSet[decision.NodeID] = struct{}{}
 			supersedeIDs = append(supersedeIDs, decision.NodeID)
@@ -367,13 +367,13 @@ func (u *ProfileUseCase) materializeManualInstructionReview(target logicdomain.P
 
 	for idx, decision := range review.RetiredNodes {
 		if decision.NodeID == 0 {
-			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("retired_nodes[%d].node_id is required", idx)}
+			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("retired_nodes[%d].node_id is required", idx)}
 		}
 		if _, ok := activeByID[decision.NodeID]; !ok {
-			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("retired_nodes[%d].node_id %d was not present in active nodes", idx, decision.NodeID)}
+			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("retired_nodes[%d].node_id %d was not present in active nodes", idx, decision.NodeID)}
 		}
 		if _, exists := retiredSet[decision.NodeID]; exists {
-			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID)}
+			return nil, nil, "", logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID)}
 		}
 		retiredSet[decision.NodeID] = struct{}{}
 		retired = append(retired, logicdomain.ProfileRetireDecision{

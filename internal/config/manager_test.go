@@ -15,7 +15,7 @@ func TestNewPromptManagerFailsWhenSystemDefaultEnglishBundleIsIncomplete(t *test
 	systemDir := t.TempDir()
 	userDir := t.TempDir()
 
-	writeScene(t, filepath.Join(systemDir, "prompts", "default_en"), "extract_intent.md", "ok")
+	writeScene(t, filepath.Join(systemDir, "prompts", "default_en"), "precheck_l1_main.md", "ok")
 
 	_, err := NewPromptManager(systemDir, userDir, "")
 	if err == nil {
@@ -38,11 +38,11 @@ func TestNewPromptManagerUsesSelectedCustomBundleWithoutDefaultEnglish(t *testin
 		t.Fatal(err)
 	}
 
-	body, err := manager.GetPrompt("extract_intent", "ignored-model")
+	body, err := manager.GetPrompt("precheck_l1_main", "ignored-model")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := body, "system-custom:extract_intent.md"; got != want {
+	if got, want := body, "system-custom:precheck_l1_main.md"; got != want {
 		t.Fatalf("prompt = %q, want %q", got, want)
 	}
 }
@@ -53,7 +53,7 @@ func TestNewPromptManagerFailsWhenSelectedSystemBundleIsIncomplete(t *testing.T)
 	systemDir := t.TempDir()
 	userDir := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_en"), "default-en")
-	writeScene(t, filepath.Join(systemDir, "prompts", "custom-bundle"), "extract_intent.md", "only one")
+	writeScene(t, filepath.Join(systemDir, "prompts", "custom-bundle"), "precheck_l1_main.md", "only one")
 
 	_, err := NewPromptManager(systemDir, userDir, "custom-bundle")
 	if err == nil {
@@ -71,7 +71,7 @@ func TestNewPromptManagerFailsWhenSelectedUserBundleIsIncomplete(t *testing.T) {
 	userDir := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_en"), "default-en")
 	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_cn"), "default-cn")
-	writeScene(t, filepath.Join(userDir, "prompts", "default_cn"), "extract_intent.md", "user-only")
+	writeScene(t, filepath.Join(userDir, "prompts", "default_cn"), "precheck_l1_main.md", "user-only")
 
 	_, err := NewPromptManager(systemDir, userDir, "default_cn")
 	if err == nil {
@@ -94,11 +94,11 @@ func TestPromptManagerUsesDefaultEnglishBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body, err := manager.GetPrompt("extract_intent", "ignored-model")
+	body, err := manager.GetPrompt("precheck_l1_main", "ignored-model")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := body, "system-default-en:extract_intent.md"; got != want {
+	if got, want := body, "system-default-en:precheck_l1_main.md"; got != want {
 		t.Fatalf("prompt = %q, want %q", got, want)
 	}
 }
@@ -116,11 +116,11 @@ func TestPromptManagerNormalizesChineseAlias(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body, err := manager.GetPrompt("merge_profile", "ignored-model")
+	body, err := manager.GetPrompt("profile_instruction_main", "ignored-model")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := body, "system-default-cn:merge_profile.md"; got != want {
+	if got, want := body, "system-default-cn:profile_instruction_main.md"; got != want {
 		t.Fatalf("prompt = %q, want %q", got, want)
 	}
 }
@@ -139,11 +139,11 @@ func TestPromptManagerPrefersSelectedUserBundle(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	body, err := manager.GetPrompt("summarize_entry", "ignored-model")
+	body, err := manager.GetPrompt("postaction_l2_main", "ignored-model")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := body, "user-custom:summarize_entry.md"; got != want {
+	if got, want := body, "user-custom:postaction_l2_main.md"; got != want {
 		t.Fatalf("prompt = %q, want %q", got, want)
 	}
 }

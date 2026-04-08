@@ -12,8 +12,8 @@ import (
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
-// TurnAnalyzer drives prompt lookup, LLM invocation, and JSON parsing for the turn-analysis scene.
-// TurnAnalyzer 用于驱动逐轮分析场景的提示词读取、LLM 调用和 JSON 解析。
+// TurnAnalyzer drives prompt lookup, LLM invocation, and JSON parsing for the first-stage post-action main scene.
+// TurnAnalyzer 用于驱动 post-action 第一层主场景的提示词读取、LLM 调用和 JSON 解析。
 type TurnAnalyzer struct {
 	llm     logicports.LLMClient
 	prompts logicports.PromptSource
@@ -26,8 +26,8 @@ func NewTurnAnalyzer(llm logicports.LLMClient, prompts logicports.PromptSource, 
 	return &TurnAnalyzer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
-// AnalyzeModel returns the configured analyze_turn model label so callers can annotate malformed-output logs with the exact model selection.
-// AnalyzeModel 用于返回当前配置的 analyze_turn 模型标识，方便调用方在畸形输出日志里标注本次使用的模型。
+// AnalyzeModel returns the configured post-action first-stage model label so callers can annotate malformed-output logs with the exact model selection.
+// AnalyzeModel 用于返回当前配置的 post-action 第一层模型标识，方便调用方在畸形输出日志里标注本次使用的模型。
 func (a *TurnAnalyzer) AnalyzeModel() string {
 	if a == nil {
 		return ""
@@ -45,13 +45,14 @@ func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalys
 	}
 	requestBody, err := renderTurnAnalysisRequest(input)
 	if err != nil {
-		return logicdomain.TurnAnalysis{}, fmt.Errorf("render analyze_turn request: %w", err)
+		return logicdomain.TurnAnalysis{}, fmt.Errorf("render postaction_l1_main request: %w", err)
 	}
-	prompt, err := a.prompts.GetPrompt("analyze_turn", a.model)
+	prompt, err := a.prompts.GetPrompt("postaction_l1_main", a.model)
 	if err != nil {
-		return logicdomain.TurnAnalysis{}, fmt.Errorf("load analyze_turn prompt: %w", err)
+		return logicdomain.TurnAnalysis{}, fmt.Errorf("load postaction_l1_main prompt: %w", err)
 	}
 	prompt = renderTurnAnalysisSystemPrompt(prompt, input)
+	prompt = withMainPromptLanguagePolicy(prompt)
 	resp, err := a.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               a.model,
 		SystemPrompt:        prompt,
@@ -68,7 +69,7 @@ func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalys
 	}
 	if analysis.TurnID != input.TargetTurn.TurnID {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{
-			Scene:   "analyze_turn",
+			Scene:   "postaction_l1_main",
 			Message: fmt.Sprintf("turn_id mismatch: got %d want %d", analysis.TurnID, input.TargetTurn.TurnID),
 			Raw:     resp.Content,
 		}
@@ -83,7 +84,7 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 	// 抽取第一个 JSON 对象，避免 markdown 围栏或 provider 包装破坏结构化解析。
 	jsonBody, err := extractJSONObject(raw)
 	if err != nil {
-		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
 		UserInputKind string `json:"user_input_kind"`
@@ -113,10 +114,10 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		SupersededMemoryIDs []uint64 `json:"superseded_memory_ids"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
-		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "json decode failed", Raw: raw}
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "json decode failed", Raw: raw}
 	}
 	if payload.TurnID == 0 {
-		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "turn_id is required", Raw: raw}
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "turn_id is required", Raw: raw}
 	}
 
 	// Validate and de-duplicate extracted items so the persistence layer only receives canonical node candidates.
@@ -130,36 +131,36 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		SupersededMemoryIDs: normalizeUint64Set(payload.SupersededMemoryIDs),
 	}
 	if !logicdomain.ValidTurnAnalysisUserInputKind(analysis.UserInputKind) {
-		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid user_input_kind %q", payload.UserInputKind), Raw: raw}
+		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid user_input_kind %q", payload.UserInputKind), Raw: raw}
 	}
 	memorySeen := map[string]int{}
 	for _, node := range payload.MemoryNodes {
 		node.Abstract = strings.TrimSpace(node.Abstract)
 		node.Details = strings.TrimSpace(node.Details)
 		if !logicdomain.ValidMemoryNodeCategory(node.Category) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory category %d", node.Category), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid memory category %d", node.Category), Raw: raw}
 		}
 		if node.Abstract == "" {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "memory node abstract is required", Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "memory node abstract is required", Raw: raw}
 		}
 		if node.Details == "" {
 			node.Details = node.Abstract
 		}
 		evidenceSource := normalizeTurnAnalysisEvidenceSource(node.EvidenceSource)
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(evidenceSource) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory evidence_source %q", node.EvidenceSource), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid memory evidence_source %q", node.EvidenceSource), Raw: raw}
 		}
 		admission := normalizeTurnAnalysisAdmission(node.Admission)
 		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory admission %q", node.Admission), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid memory admission %q", node.Admission), Raw: raw}
 		}
 		admissionReason := normalizeTurnAnalysisAdmissionReason(node.AdmissionReason)
 		if admissionReason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(admissionReason) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid memory admission_reason %q", node.AdmissionReason), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid memory admission_reason %q", node.AdmissionReason), Raw: raw}
 		}
 		contextEdges, err := normalizeMemoryContextEdgeCandidates(node.ContextEdges)
 		if err != nil {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: err.Error(), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: err.Error(), Raw: raw}
 		}
 		supersedeMemoryIDs := normalizeUint64Set(node.SupersedeMemoryIDs)
 		key := fmt.Sprintf("%d|%s|%s", node.Category, node.Abstract, node.Details)
@@ -187,22 +188,22 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 	for _, node := range payload.ProfileNodes {
 		node.Content = strings.TrimSpace(node.Content)
 		if !logicdomain.ValidProfileType(node.ProfileType) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile_type %d", node.ProfileType), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile_type %d", node.ProfileType), Raw: raw}
 		}
 		if node.Content == "" {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: "profile node content is required", Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "profile node content is required", Raw: raw}
 		}
 		evidenceSource := normalizeTurnAnalysisEvidenceSource(node.EvidenceSource)
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(evidenceSource) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile evidence_source %q", node.EvidenceSource), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile evidence_source %q", node.EvidenceSource), Raw: raw}
 		}
 		admission := normalizeTurnAnalysisAdmission(node.Admission)
 		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile admission %q", node.Admission), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile admission %q", node.Admission), Raw: raw}
 		}
 		admissionReason := normalizeTurnAnalysisAdmissionReason(node.AdmissionReason)
 		if admissionReason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(admissionReason) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "analyze_turn", Message: fmt.Sprintf("invalid profile admission_reason %q", node.AdmissionReason), Raw: raw}
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile admission_reason %q", node.AdmissionReason), Raw: raw}
 		}
 		key := fmt.Sprintf("%d|%s", node.ProfileType, node.Content)
 		if _, ok := profileSeen[key]; ok {

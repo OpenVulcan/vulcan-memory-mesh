@@ -221,14 +221,11 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 func writePromptBundleForAppTest(t *testing.T, dir string, prefix string) {
 	t.Helper()
 	for _, scene := range []string{
-		"extract_intent.md",
-		"assemble_context.md",
-		"analyze_turn.md",
-		"summarize_entry.md",
-		"merge_profile.md",
-		"review_precheck_memory.md",
-		"review_postaction_candidates.md",
-		"review_profile_instruction.md",
+		"precheck_l1_main.md",
+		"precheck_l2_main.md",
+		"postaction_l1_main.md",
+		"postaction_l2_main.md",
+		"profile_instruction_main.md",
 	} {
 		if err := os.MkdirAll(dir, 0o755); err != nil {
 			t.Fatal(err)

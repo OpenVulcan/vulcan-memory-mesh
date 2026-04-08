@@ -323,8 +323,8 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 	}
 }
 
-// appendQueuedTurnAnalysisFailureLogFields enriches queued analyze_turn failures with the configured model and, for JSON decode failures, the verbatim model output needed for operator debugging.
-// appendQueuedTurnAnalysisFailureLogFields 用于为排队 analyze_turn 失败补充日志字段：默认带上当前模型；若是 JSON 解码失败，则追加排障所需的模型原始输出。
+// appendQueuedTurnAnalysisFailureLogFields enriches queued post-action first-stage failures with the configured model and, for JSON decode failures, the verbatim model output needed for operator debugging.
+// appendQueuedTurnAnalysisFailureLogFields 用于为排队 post-action 第一层失败补充日志字段：默认带上当前模型；若是 JSON 解码失败，则追加排障所需的模型原始输出。
 func (u *PostActionUseCase) appendQueuedTurnAnalysisFailureLogFields(fields []any, err error) []any {
 	// Always surface the configured model so operators can correlate malformed outputs with one concrete route/model combination.
 	// 始终输出当前配置模型，便于运维把畸形响应快速关联到具体的路由/模型组合。
@@ -334,10 +334,10 @@ func (u *PostActionUseCase) appendQueuedTurnAnalysisFailureLogFields(fields []an
 		}
 	}
 
-	// Only dump the raw provider body for analyze_turn JSON decode failures, because that class of issue cannot be diagnosed from the summary error text alone.
-	// 只有 analyze_turn 的 JSON 解码失败才追加原始 provider 响应，因为这类问题仅靠摘要错误文本无法定位实际返回体。
+	// Only dump the raw provider body for postaction_l1_main JSON decode failures, because that class of issue cannot be diagnosed from the summary error text alone.
+	// 只有 postaction_l1_main 的 JSON 解码失败才追加原始 provider 响应，因为这类问题仅靠摘要错误文本无法定位实际返回体。
 	var invalid logicdomain.InvalidLLMOutputError
-	if errors.As(err, &invalid) && invalid.Scene == "analyze_turn" && invalid.Message == "json decode failed" {
+	if errors.As(err, &invalid) && invalid.Scene == "postaction_l1_main" && invalid.Message == "json decode failed" {
 		if raw := strings.TrimSpace(invalid.Raw); raw != "" {
 			fields = append(fields, "llm_raw_output", invalid.Raw)
 		}

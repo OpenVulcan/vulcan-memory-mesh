@@ -245,7 +245,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		relational,
 		processor.NewIntentExtractor(processorLLM, prompts, preCheckL1PromptModel, cfg.MemoryPipeline.MaxSearchKeywords),
 		processor.NewPreCheckMemoryReviewer(processorLLM, prompts, preCheckL2PromptModel),
-		processor.NewContextAssembler(prompts, preCheckL2PromptModel),
+		processor.NewContextAssembler(),
 		usecase.PreCheckConfig{
 			IntentTimeout:      cfg.PreCheck.IntentTimeout.Duration,
 			TopK:               cfg.PreCheck.TopK,

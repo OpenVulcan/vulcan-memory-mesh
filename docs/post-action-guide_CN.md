@@ -178,8 +178,8 @@ message PostActionTimelineItem {
 14. 追加到关系库存储（默认 `split` 模式为 SQLite；`combined` 模式为 PostgreSQL）：
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
-15. turn 写入成功后，会由后台队列异步发起一次单轮 `analyze_turn`
-16. `analyze_turn` 请求会包含：
+15. turn 写入成功后，会由后台队列异步发起一次单轮 `postaction_l1_main`
+16. `postaction_l1_main` 请求会包含：
     - 最近若干条已提炼历史 `details`
     - 当前 turn 的原始脱水 JSON
     - 当前 session 下仍然活跃的旧记忆节点
@@ -188,7 +188,7 @@ message PostActionTimelineItem {
       - 历史部分只用于参考
       - 当前 turn 是唯一允许输出新 `details / memory_nodes / profile_nodes` 的目标
       - 活跃记忆节点用于去重与覆盖判断
-17. `analyze_turn` 会返回：
+17. `postaction_l1_main` 会返回：
     - 当前 turn 的 `user_input_kind`
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
@@ -206,7 +206,7 @@ message PostActionTimelineItem {
         - `admission`
         - `admission_reason`
     - 顶层兼容字段 `superseded_memory_ids`
-18. `analyze_turn` 的第一层准入会先压缩明显噪音：
+18. `postaction_l1_main` 的第一层准入会先压缩明显噪音：
     - 如果当前轮主要是用户提问或下指令，而助手只是基于既有记忆、既有画像或通识能力完成回答：
       - 这类候选通常会被标记为 `admission="drop"`
       - 常见原因包括：
@@ -248,7 +248,7 @@ message PostActionTimelineItem {
       - 每条记忆候选对应的高相似旧记忆
       - 当前 user/project 活跃画像节点
       - 本轮新画像候选
-      一起送入一次统一的 `review_postaction_candidates`
+      一起送入一次统一的 `postaction_l2_main`
     - 这个统一 reviewer 会同时输出：
       - 哪些记忆候选应保留
         - 通过 `memory.accepted_candidates[]`
@@ -617,9 +617,9 @@ grpcurl -plaintext `
 - `post_action.session_analysis_idle_timeout`
   - 当前仍用于后台恢复扫描：如果某个 session 的 pending turn 长时间未被消费，会在超过该阈值后被重新入队
 - `post_action.session_analysis_history_turns`
-  - 表示每次单轮 `analyze_turn` 最多回带多少条历史 `details` 精要
+  - 表示每次单轮 `postaction_l1_main` 最多回带多少条历史 `details` 精要
 - `post_action.session_analysis_max_input_tokens`
-  - 表示单次 `analyze_turn` 允许送给 LLM 的总输入预算上限
+  - 表示单次 `postaction_l1_main` 允许送给 LLM 的总输入预算上限
 - `logging.level`
   - 支持 `debug` / `info` / `warn` / `error`
   - 默认 `info`
@@ -648,10 +648,10 @@ grpcurl -plaintext `
 
 当前已经接入的行为是：
 
-- `PostAction` 成功写入 turn 并完成入队后，后台会尽快触发一次 `analyze_turn`
-- `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结果
-- 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `review_postaction_candidates`
-- `review_postaction_candidates` 会同时返回：
+- `PostAction` 成功写入 turn 并完成入队后，后台会尽快触发一次 `postaction_l1_main`
+- `postaction_l1_main` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结果
+- 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `postaction_l2_main`
+- `postaction_l2_main` 会同时返回：
   - 记忆候选的保留/丢弃结果
   - user/project 两侧画像候选的接纳、无效、替代与 retire-only 结果
 - 后端会把新候选落成原子化画像节点，并自动重建 `vmm_users.profile / vmm_projects.profile`

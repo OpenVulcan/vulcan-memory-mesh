@@ -147,7 +147,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 读取最近 turn 窗口，并在 token 预算内混合：
   - 已提炼 turn 的 `details`
   - 未提炼 turn 的脱水原文
-- 第一层 `extract_intent` 会结合最近 turn、当前输入和服务端提取的 context hints，先判断是否真的需要长期记忆，再生成带情境锚点的检索语句
+- 第一层 `precheck_l1_main` 会结合最近 turn、当前输入和服务端提取的 context hints，先判断是否真的需要长期记忆，再生成带情境锚点的检索语句
 - 通过统一记忆检索接口批量向量化这些检索语句并召回长期候选
   - 当前服务端检索链是：`vector + lexical + RRF + rerank(optional) + Weibull + context-aware scoring + MMR`
   - 当前检索过滤范围是已解析出来的 `team_id + space_id + project_id`
@@ -157,7 +157,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 若当前 session 尚未 compact，会排除当前 session 的 turn-extract 记忆
     - 若当前 session 已 compact，只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
   - 当 `recall_mode` 为未来新增的非零值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
-- 第二层 `review_precheck_memory` 会结合候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
+- 第二层 `precheck_l2_main` 会结合候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
 - 只把被采纳的记忆组装为 `context_text / context_items`
   - `PreCheckResponse.context_text` 已废弃，gRPC 返回中固定留空
@@ -203,14 +203,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 7. 如果不过滤，则写入 `vmm_turn_records`
 8. 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
 9. turn 写入成功后，立即返回 `accepted=true`
-10. 后台工作器异步读取 pending turn，并发起单轮 `analyze_turn`
+10. 后台工作器异步读取 pending turn，并发起单轮 `postaction_l1_main`
 11. 单轮分析输入会包含：
     - 最近若干条已提炼完成的历史 `details`
     - 当前 turn 的原始脱水 JSON
     - 当前 session 下仍活跃的旧记忆节点锚点
       - 会携带 `support_count / rebuttal_count` 作为既有证据强度提示
     - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
-12. `analyze_turn` 会返回：
+12. `postaction_l1_main` 会返回：
     - 当前 turn 的 `user_input_kind`
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
@@ -228,7 +228,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
         - `admission`
         - `admission_reason`
     - 顶层兼容字段 `superseded_memory_ids`
-13. `analyze_turn` 的第一层准入会先压缩明显噪音：
+13. `postaction_l1_main` 的第一层准入会先压缩明显噪音：
     - 用户提问后，助手只是回显既有记忆、既有画像或通识答案时，会优先标记为 `drop`
     - 通过外部检索、访问网站、资料归纳、工具调用发现的新长期事实，仍然允许标记为 `keep`
     - 但实时天气、当前 CPU 温度、当前系统负载等临时态结果，仍会按 `non_durable` 拒绝
@@ -237,7 +237,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
       - 默认 `space`
       - 支持显式 `team / project`
     - 同时加载当前 user/project 下仍然 `active` 且未过期的画像节点
-    - 然后把记忆候选、相似旧记忆、画像活跃节点和新画像候选，一起送入一次 `review_postaction_candidates`
+    - 然后把记忆候选、相似旧记忆、画像活跃节点和新画像候选，一起送入一次 `postaction_l2_main`
     - 自动提炼与统一评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
 15. 对统一评审后保留下来的新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
 16. 只有向量侧写入成功后，才会回写当前启用的关系库存储：
@@ -312,7 +312,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 指令不会绑定 `turn_id`
 - 关系库存储中这类节点的 `vmm_profile_nodes.turn_id` 会保持 `NULL`
 - 服务端会先写入 `vmm_profile_instructions`
-- 再把当前 active 节点与这条显式指令交给 `review_profile_instruction`
+- 再把当前 active 节点与这条显式指令交给 `profile_instruction_main`
 - 同目标同指令的并发调用会复用第一次进行中的结果，不会重复触发第二次 LLM 评审
 - 同一目标上的不同手工指令会按目标串行执行，避免基于同一批旧节点并发写回
 - 最后持久化新节点、退役旧节点，并重建对应 scope 的 profile 文本
@@ -652,10 +652,20 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 支持别名：
     - 英文：`default_en` / `default` / `en` / `english`
     - 中文：`default_cn` / `zh` / `zh-cn` / `cn` / `chinese`
-  - 也可以直接填写 `configs/prompts/` 下的其他目录名，例如 `qwen3.5-base`
+  - 也可以直接填写 `configs/prompts/` 下的其他目录名，例如自定义的 `custom-bundle`
 - 服务端启动时会严格校验当前选中的提示词目录：
   - 如果目录不存在，启动会直接失败
   - 如果目录下缺少任一必需提示词文件，启动也会直接失败
+- 当前必需主提示词文件固定为：
+  - `precheck_l1_main.md`
+  - `precheck_l2_main.md`
+  - `postaction_l1_main.md`
+  - `postaction_l2_main.md`
+  - `profile_instruction_main.md`
+- 这 5 个主提示词入口都会在运行时自动追加统一语言规则：
+  - 优先跟随用户最新自然语言输入
+  - 混合语言时优先选择主导语言
+  - 所有自由文本字段必须一致使用该目标语言
 - 当前已经彻底取消“根据模型名称自动匹配提示词目录”的逻辑：
   - 不再支持 `prompts.routes`
   - 如果旧配置里仍保留 `prompts.routes`，加载阶段会直接报错
@@ -785,15 +795,15 @@ AI 容灾边界当前统一为：
 - `session_analysis_idle_timeout`
   - 当前仍用于后台恢复扫描：如果某个 session 的 pending turn 长时间未被消费，会在超过该阈值后被重新入队
 - `session_analysis_history_turns`
-  - 每次单轮 `analyze_turn` 最多回带多少条历史 `details` 精要作为参考
+  - 每次单轮 `postaction_l1_main` 最多回带多少条历史 `details` 精要作为参考
 - `session_analysis_max_input_tokens`
-  - 单次 `analyze_turn` 允许发送给 LLM 的总输入预算上限，统计口径是“当前 turn 原始脱水预算 + 历史精要预算”
+  - 单次 `postaction_l1_main` 允许发送给 LLM 的总输入预算上限，统计口径是“当前 turn 原始脱水预算 + 历史精要预算”
 
 当前主线的行为是：
 
-- `PostAction` 成功写入 turn 并完成入队后，后台会尽快发起一次 `analyze_turn`
-- `analyze_turn` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结构化结果
-- 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `review_postaction_candidates`
+- `PostAction` 成功写入 turn 并完成入队后，后台会尽快发起一次 `postaction_l1_main`
+- `postaction_l1_main` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结构化结果
+- 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `postaction_l2_main`
 - 这次统一评审会同时处理：
   - 记忆候选的高重复去重
   - user/project 两侧画像候选的接纳、无效、替代与 retire-only 决策

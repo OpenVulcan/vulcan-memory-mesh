@@ -35,10 +35,11 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 	if strings.TrimSpace(instruction) == "" {
 		return logicdomain.ManualProfileInstructionReview{}, logicdomain.ValidationError{Field: "instruction", Message: "is required"}
 	}
-	prompt, err := r.prompts.GetPrompt("review_profile_instruction", r.model)
+	prompt, err := r.prompts.GetPrompt("profile_instruction_main", r.model)
 	if err != nil {
-		return logicdomain.ManualProfileInstructionReview{}, fmt.Errorf("load review_profile_instruction prompt: %w", err)
+		return logicdomain.ManualProfileInstructionReview{}, fmt.Errorf("load profile_instruction_main prompt: %w", err)
 	}
+	prompt = withMainPromptLanguagePolicy(prompt)
 	requestBody, err := buildManualProfileReviewRequest(target, activeNodes, instruction, floorPriority, floorLevel)
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err
@@ -121,7 +122,7 @@ func buildManualProfileReviewRequest(target logicdomain.ProfileTargetRef, active
 func parseManualProfileReviewResponse(raw string, activeNodes []logicdomain.ProfileNodeRecord) (logicdomain.ManualProfileInstructionReview, error) {
 	jsonBody, err := extractJSONObject(raw)
 	if err != nil {
-		return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: err.Error(), Raw: raw}
+		return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
 		AcceptedNodes []struct {
@@ -141,7 +142,7 @@ func parseManualProfileReviewResponse(raw string, activeNodes []logicdomain.Prof
 		Reason string `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
-		return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: "json decode failed", Raw: raw}
+		return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: "json decode failed", Raw: raw}
 	}
 
 	activeIDs := make(map[uint64]struct{}, len(activeNodes))
@@ -156,26 +157,26 @@ func parseManualProfileReviewResponse(raw string, activeNodes []logicdomain.Prof
 	for idx, item := range payload.AcceptedNodes {
 		content := strings.TrimSpace(item.NormalizedContent)
 		if content == "" {
-			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].normalized_content is required", idx), Raw: raw}
+			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].normalized_content is required", idx), Raw: raw}
 		}
 		priority, err := parseProfilePriorityLabel(item.Priority)
 		if err != nil {
-			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].priority %s", idx, err.Error()), Raw: raw}
+			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].priority %s", idx, err.Error()), Raw: raw}
 		}
 		level, err := parseProfileLevelLabel(item.Level)
 		if err != nil {
-			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].level %s", idx, err.Error()), Raw: raw}
+			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].level %s", idx, err.Error()), Raw: raw}
 		}
 		supersede := make([]logicdomain.ProfileRetireDecision, 0, len(item.SupersedeNodes))
 		for supIdx, decision := range item.SupersedeNodes {
 			if decision.NodeID == 0 {
-				return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id is required", idx, supIdx), Raw: raw}
+				return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id is required", idx, supIdx), Raw: raw}
 			}
 			if _, ok := activeIDs[decision.NodeID]; !ok {
-				return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id %d was not present in active nodes", idx, supIdx, decision.NodeID), Raw: raw}
+				return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("accepted_nodes[%d].supersede_nodes[%d].node_id %d was not present in active nodes", idx, supIdx, decision.NodeID), Raw: raw}
 			}
 			if _, exists := retiredSeen[decision.NodeID]; exists {
-				return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID), Raw: raw}
+				return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID), Raw: raw}
 			}
 			retiredSeen[decision.NodeID] = struct{}{}
 			supersede = append(supersede, logicdomain.ProfileRetireDecision{
@@ -195,13 +196,13 @@ func parseManualProfileReviewResponse(raw string, activeNodes []logicdomain.Prof
 	retired := make([]logicdomain.ProfileRetireDecision, 0, len(payload.RetiredNodes))
 	for idx, decision := range payload.RetiredNodes {
 		if decision.NodeID == 0 {
-			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("retired_nodes[%d].node_id is required", idx), Raw: raw}
+			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("retired_nodes[%d].node_id is required", idx), Raw: raw}
 		}
 		if _, ok := activeIDs[decision.NodeID]; !ok {
-			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("retired_nodes[%d].node_id %d was not present in active nodes", idx, decision.NodeID), Raw: raw}
+			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("retired_nodes[%d].node_id %d was not present in active nodes", idx, decision.NodeID), Raw: raw}
 		}
 		if _, exists := retiredSeen[decision.NodeID]; exists {
-			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "review_profile_instruction", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID), Raw: raw}
+			return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: fmt.Sprintf("node_id %d is retired multiple times", decision.NodeID), Raw: raw}
 		}
 		retiredSeen[decision.NodeID] = struct{}{}
 		retired = append(retired, logicdomain.ProfileRetireDecision{

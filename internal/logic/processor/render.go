@@ -104,8 +104,8 @@ func renderContextSectionTitle(defaultTitle string, section []logicdomain.Contex
 	return title
 }
 
-// renderTurnAnalysisRequest serializes one reference-aware single-turn analysis input into the stable JSON body consumed by the analyze_turn scene.
-// renderTurnAnalysisRequest 用于把一份参考感知型单轮分析输入序列化成 analyze_turn 场景消费的稳定 JSON 请求体。
+// renderTurnAnalysisRequest serializes one reference-aware single-turn analysis input into the stable JSON body consumed by the postaction_l1_main scene.
+// renderTurnAnalysisRequest 用于把一份参考感知型单轮分析输入序列化成 postaction_l1_main 场景消费的稳定 JSON 请求体。
 func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, error) {
 	type referenceTurnInput struct {
 		TurnID  uint64 `json:"turn_id"`
@@ -199,13 +199,13 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 	}
 	rendered, err := json.MarshalIndent(body, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("marshal analyze_turn request: %w", err)
+		return "", fmt.Errorf("marshal postaction_l1_main request: %w", err)
 	}
 	return string(rendered), nil
 }
 
-// renderTurnAnalysisSystemPrompt applies the optional analyze_turn TAG blocks so direct-write exclusion and active-memory instructions only appear when the corresponding inputs exist.
-// renderTurnAnalysisSystemPrompt 用于对 analyze_turn 的可选 TAG 块做替换，让主动写入排斥和活跃记忆规则只在对应输入存在时出现。
+// renderTurnAnalysisSystemPrompt applies the optional postaction_l1_main TAG blocks so direct-write exclusion and active-memory instructions only appear when the corresponding inputs exist.
+// renderTurnAnalysisSystemPrompt 用于对 postaction_l1_main 的可选 TAG 块做替换，让主动写入排斥和活跃记忆规则只在对应输入存在时出现。
 func renderTurnAnalysisSystemPrompt(template string, input logicdomain.TurnAnalysisInput) string {
 	replacements := map[string]string{
 		"REFERENCE_RULE":              "",

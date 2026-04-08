@@ -12,8 +12,8 @@ import (
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
-// IntentExtractor drives prompt lookup, LLM invocation, and JSON parsing for the first-stage pre-check scene that expands recent turns into search queries.
-// IntentExtractor 用于驱动 pre-check 第一层场景的提示词读取、LLM 调用和 JSON 解析，把最近 turn 窗口展开成检索语句。
+// IntentExtractor drives prompt lookup, LLM invocation, and JSON parsing for the first-stage pre-check main scene that expands recent turns into search queries.
+// IntentExtractor 用于驱动 pre-check 第一层主场景的提示词读取、LLM 调用和 JSON 解析，把最近 turn 窗口展开成检索语句。
 type IntentExtractor struct {
 	llm     logicports.LLMClient
 	prompts logicports.PromptSource
@@ -41,10 +41,11 @@ func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCh
 	if e.llm == nil {
 		return logicdomain.IntentResult{}, fmt.Errorf("llm client is nil")
 	}
-	prompt, err := e.prompts.GetPrompt("extract_intent", e.model)
+	prompt, err := e.prompts.GetPrompt("precheck_l1_main", e.model)
 	if err != nil {
-		return logicdomain.IntentResult{}, fmt.Errorf("load extract_intent prompt: %w", err)
+		return logicdomain.IntentResult{}, fmt.Errorf("load precheck_l1_main prompt: %w", err)
 	}
+	prompt = withMainPromptLanguagePolicy(prompt)
 	resp, err := e.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               e.model,
 		SystemPrompt:        prompt,
@@ -75,7 +76,7 @@ func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 	// 先从带噪声的模型输出中抽取 JSON 对象，再解码字段。
 	jsonBody, err := extractJSONObject(raw)
 	if err != nil {
-		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "extract_intent", Message: err.Error(), Raw: raw}
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
 		Queries    []string `json:"queries"`
@@ -84,13 +85,13 @@ func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 		Reason     string   `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
-		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "extract_intent", Message: "json decode failed", Raw: raw}
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "json decode failed", Raw: raw}
 	}
 
 	// Validate required fields and normalize keywords into a de-duplicated list.
 	// 校验必填字段，并将关键词归一为去重后的列表。
 	if payload.NeedMemory == nil {
-		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "extract_intent", Message: "missing need_memory", Raw: raw}
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "missing need_memory", Raw: raw}
 	}
 	sourceQueries := payload.Queries
 	if len(sourceQueries) == 0 {

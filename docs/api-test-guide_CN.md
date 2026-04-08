@@ -271,7 +271,7 @@ grpcurl -plaintext `
 
 - 服务端会先记录原始日志，再记录清洗后日志
 - 当前同步阶段会先把 turn 落到关系库存储，并把 session 入异步分析队列
-- 返回 `accepted=true` 只表示 turn 已稳定入库且异步提炼已入队，不表示 `analyze_turn` 已完成
+- 返回 `accepted=true` 只表示 turn 已稳定入库且异步提炼已入队，不表示 `postaction_l1_main` 已完成
 - 当 `timeline` 为空时，才会走 `NoiseGate`
 
 ## 十三、GetProfileNodes

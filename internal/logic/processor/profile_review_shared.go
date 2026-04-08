@@ -75,7 +75,7 @@ func parseProfileReviewSection(payload *profileReviewSectionPayload, expectedCou
 			SupersedeNodeIDs:  normalizeUint64IDs(item.SupersedeNodeIDs),
 		})
 	}
-	invalidIndexes, err := normalizeProfileMergeIndexes(payload.InvalidCandidateIndexes, expectedCount, label+".invalid_candidate_indexes", raw)
+	invalidIndexes, err := normalizeProfileReviewIndexes(payload.InvalidCandidateIndexes, expectedCount, label+".invalid_candidate_indexes", scene, raw)
 	if err != nil {
 		return nil, err
 	}
@@ -88,6 +88,25 @@ func parseProfileReviewSection(payload *profileReviewSectionPayload, expectedCou
 		RetireOnlyNodeIDs:       normalizeUint64IDs(payload.RetireOnlyNodeIDs),
 		Reason:                  strings.TrimSpace(payload.Reason),
 	}, nil
+}
+
+// normalizeProfileReviewIndexes validates one reviewer index array, rejects out-of-range and duplicate indexes, and returns the sorted form for stable downstream comparisons.
+// normalizeProfileReviewIndexes 用于校验 reviewer 返回的一组索引，拒绝越界和重复项，并返回排序后的稳定结果，便于后续比较和落库。
+func normalizeProfileReviewIndexes(values []int, expectedCount int, field, scene, raw string) ([]int, error) {
+	seen := map[int]struct{}{}
+	out := make([]int, 0, len(values))
+	for _, idx := range values {
+		if idx < 0 || idx >= expectedCount {
+			return nil, logicdomain.InvalidLLMOutputError{Scene: scene, Message: fmt.Sprintf("%s contains out-of-range index %d", field, idx), Raw: raw}
+		}
+		if _, ok := seen[idx]; ok {
+			return nil, logicdomain.InvalidLLMOutputError{Scene: scene, Message: fmt.Sprintf("%s contains duplicate index %d", field, idx), Raw: raw}
+		}
+		seen[idx] = struct{}{}
+		out = append(out, idx)
+	}
+	sort.Ints(out)
+	return out, nil
 }
 
 // canonicalizeProfileReviewAcceptedPayloads collapses duplicate candidate_index entries into one deterministic winner so a repeated LLM item does not turn into a full review failure.

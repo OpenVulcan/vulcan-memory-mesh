@@ -144,7 +144,7 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 		return nil, false, nil
 	}
 	if section == nil {
-		return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("missing %s block", label)}
+		return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("missing %s block", label)}
 	}
 
 	activeByID := make(map[uint64]logicdomain.ProfileActiveNodeRecord, len(activeNodes))
@@ -158,23 +158,23 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 	// 先把 accepted 候选映射回新节点，让它们变成 active，并携带规范化内容和生命周期元数据。
 	for _, accepted := range section.AcceptedCandidates {
 		if accepted.CandidateIndex < 0 || accepted.CandidateIndex >= len(refs) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s accepted candidate_index %d is out of range", label, accepted.CandidateIndex)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s accepted candidate_index %d is out of range", label, accepted.CandidateIndex)}
 		}
 		ref := refs[accepted.CandidateIndex]
 		node := &analysis.Turns[ref.TurnIndex].ProfileNodes[ref.NodeIndex]
 		if !logicdomain.ValidProfilePriority(accepted.Priority) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s accepted candidate priority is invalid", label)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s accepted candidate priority is invalid", label)}
 		}
 		if !logicdomain.ValidProfileLevel(accepted.ProfileLevel) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s accepted candidate level is invalid", label)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s accepted candidate level is invalid", label)}
 		}
 		supersedeIDs := normalizeProfileNodeIDs(accepted.SupersedeNodeIDs)
 		for _, nodeID := range supersedeIDs {
 			if _, ok := activeByID[nodeID]; !ok {
-				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s supersede_node_id %d was not present in active nodes", label, nodeID)}
+				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s supersede_node_id %d was not present in active nodes", label, nodeID)}
 			}
 			if _, exists := retiredSet[nodeID]; exists {
-				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s node id %d is retired by multiple actions", label, nodeID)}
+				return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s node id %d is retired by multiple actions", label, nodeID)}
 			}
 			retiredSet[nodeID] = struct{}{}
 		}
@@ -193,7 +193,7 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 	// 然后把被拒绝的候选标成 invalid，便于异步流水线继续落库存档，但不会污染活跃画像集合。
 	for _, idx := range section.InvalidCandidateIndexes {
 		if idx < 0 || idx >= len(refs) {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s invalid candidate_index %d is out of range", label, idx)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s invalid candidate_index %d is out of range", label, idx)}
 		}
 		ref := refs[idx]
 		analysis.Turns[ref.TurnIndex].ProfileNodes[ref.NodeIndex].Status = logicdomain.ProfileStatusInvalid
@@ -203,10 +203,10 @@ func applySessionBatchProfileReviewSection(analysis *logicdomain.SessionBatchAna
 	// 最后应用 retire-only 指令，让某些旧节点在没有新替代节点的情况下也能退出渲染画像。
 	for _, nodeID := range normalizeProfileNodeIDs(section.RetireOnlyNodeIDs) {
 		if _, ok := activeByID[nodeID]; !ok {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s retire_only_node_id %d was not present in active nodes", label, nodeID)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s retire_only_node_id %d was not present in active nodes", label, nodeID)}
 		}
 		if _, exists := retiredSet[nodeID]; exists {
-			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s node id %d is retired multiple times", label, nodeID)}
+			return nil, false, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s node id %d is retired multiple times", label, nodeID)}
 		}
 		retiredSet[nodeID] = struct{}{}
 		updated = true

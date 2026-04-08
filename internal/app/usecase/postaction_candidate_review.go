@@ -271,7 +271,7 @@ func remapPostActionMemoryReviewSectionToOriginal(section *logicdomain.PostActio
 	remapIndex := func(reviewerIndex int) (int, error) {
 		if reviewerIndex < 0 || reviewerIndex >= len(reviewerToOriginal) {
 			return 0, logicdomain.InvalidLLMOutputError{
-				Scene:   "review_postaction_candidates",
+				Scene:   "postaction_l2_main",
 				Message: fmt.Sprintf("memory reviewer subset index %d is out of range", reviewerIndex),
 			}
 		}
@@ -356,7 +356,7 @@ func mergePostActionMemoryReviewSectionWithHardDropped(totalCandidates int, revi
 	for idx, dropped := range hardDropped {
 		if _, ok := acceptedSet[idx]; ok {
 			return nil, logicdomain.InvalidLLMOutputError{
-				Scene:   "review_postaction_candidates",
+				Scene:   "postaction_l2_main",
 				Message: fmt.Sprintf("memory candidate %d is both hard-dropped and accepted", idx),
 			}
 		}
@@ -365,7 +365,7 @@ func mergePostActionMemoryReviewSectionWithHardDropped(totalCandidates int, revi
 	}
 	if len(acceptedSet)+len(droppedSet) != totalCandidates {
 		return nil, logicdomain.InvalidLLMOutputError{
-			Scene:   "review_postaction_candidates",
+			Scene:   "postaction_l2_main",
 			Message: fmt.Sprintf("memory review coverage mismatch after hard dedupe merge: accepted=%d dropped=%d total=%d", len(acceptedSet), len(droppedSet), totalCandidates),
 		}
 	}
@@ -437,7 +437,7 @@ func mergePostActionSupersededMemoryIDs(existing []uint64, section *logicdomain.
 	}
 	for _, accepted := range section.AcceptedCandidates {
 		supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
-			"review_postaction_candidates",
+			"postaction_l2_main",
 			accepted.CandidateIndex,
 			candidates[accepted.CandidateIndex].SimilarMemories,
 			accepted.SupersedeMemoryIDs,
@@ -765,22 +765,22 @@ func applyPostActionMemoryReviewResult(nodes []logicdomain.MemoryNodeCandidate, 
 		return nil, 0, nil
 	}
 	if section == nil {
-		return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "missing memory review result"}
+		return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "missing memory review result"}
 	}
 	if len(candidates) != len(nodes) {
-		return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "memory candidate count does not match nodes"}
+		return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "memory candidate count does not match nodes"}
 	}
 	accepted := make(map[int]struct{}, len(section.AcceptedCandidateIndexes))
 	for _, idx := range section.AcceptedCandidateIndexes {
 		if idx < 0 || idx >= len(nodes) {
-			return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory accepted index %d is out of range", idx)}
+			return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory accepted index %d is out of range", idx)}
 		}
 		accepted[idx] = struct{}{}
 	}
 	acceptedByIndex := make(map[int]logicdomain.PostActionAcceptedMemoryCandidate, len(section.AcceptedCandidates))
 	for _, acceptedCandidate := range section.AcceptedCandidates {
 		if acceptedCandidate.CandidateIndex < 0 || acceptedCandidate.CandidateIndex >= len(nodes) {
-			return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory accepted candidate %d is out of range", acceptedCandidate.CandidateIndex)}
+			return nil, 0, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory accepted candidate %d is out of range", acceptedCandidate.CandidateIndex)}
 		}
 		acceptedByIndex[acceptedCandidate.CandidateIndex] = acceptedCandidate
 	}
@@ -791,7 +791,7 @@ func applyPostActionMemoryReviewResult(nodes []logicdomain.MemoryNodeCandidate, 
 		}
 		if acceptedCandidate, ok := acceptedByIndex[idx]; ok {
 			supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
-				"review_postaction_candidates",
+				"postaction_l2_main",
 				acceptedCandidate.CandidateIndex,
 				candidates[idx].SimilarMemories,
 				acceptedCandidate.SupersedeMemoryIDs,

@@ -12,8 +12,8 @@ import (
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
-// PreCheckMemoryReviewer drives prompt lookup, LLM invocation, and JSON parsing for the second-stage pre-check memory adoption scene.
-// PreCheckMemoryReviewer 用于驱动 pre-check 第二层记忆采纳场景的提示词读取、LLM 调用和 JSON 解析。
+// PreCheckMemoryReviewer drives prompt lookup, LLM invocation, and JSON parsing for the second-stage pre-check main scene.
+// PreCheckMemoryReviewer 用于驱动 pre-check 第二层主场景的提示词读取、LLM 调用和 JSON 解析。
 type PreCheckMemoryReviewer struct {
 	llm     logicports.LLMClient
 	prompts logicports.PromptSource
@@ -36,12 +36,13 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 	}
 	requestBody, err := renderPreCheckMemoryReviewRequest(input)
 	if err != nil {
-		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("render review_precheck_memory request: %w", err)
+		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("render precheck_l2_main request: %w", err)
 	}
-	prompt, err := r.prompts.GetPrompt("review_precheck_memory", r.model)
+	prompt, err := r.prompts.GetPrompt("precheck_l2_main", r.model)
 	if err != nil {
-		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("load review_precheck_memory prompt: %w", err)
+		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("load precheck_l2_main prompt: %w", err)
 	}
+	prompt = withMainPromptLanguagePolicy(prompt)
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               r.model,
 		SystemPrompt:        prompt,
@@ -72,7 +73,7 @@ func renderPreCheckMemoryReviewRequest(input logicdomain.PreCheckMemoryReviewInp
 	}
 	rendered, err := json.MarshalIndent(body, "", "  ")
 	if err != nil {
-		return "", fmt.Errorf("marshal review_precheck_memory request: %w", err)
+		return "", fmt.Errorf("marshal precheck_l2_main request: %w", err)
 	}
 	return string(rendered), nil
 }
@@ -84,7 +85,7 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 	// 先抽取第一个 JSON 对象，避免 fenced code 或 provider 包装破坏结构化解析。
 	jsonBody, err := extractJSONObject(raw)
 	if err != nil {
-		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "review_precheck_memory", Message: err.Error(), Raw: raw}
+		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l2_main", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
 		SelectedCandidateNumbers []int    `json:"selected_candidate_numbers"`
@@ -92,7 +93,7 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 		Reason                   string   `json:"reason"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
-		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "review_precheck_memory", Message: "json decode failed", Raw: raw}
+		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l2_main", Message: "json decode failed", Raw: raw}
 	}
 
 	// Keep only deduplicated candidate numbers that belong to the current request so one bad model response cannot select foreign rows.
@@ -128,7 +129,7 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 	}
 	if len(selected) == 0 && len(invalidNumbers) > 0 {
 		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{
-			Scene:   "review_precheck_memory",
+			Scene:   "precheck_l2_main",
 			Message: fmt.Sprintf("selected_candidate_numbers contains unknown number %d", invalidNumbers[0]),
 			Raw:     raw,
 		}

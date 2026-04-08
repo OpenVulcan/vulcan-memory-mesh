@@ -4,33 +4,23 @@ package processor
 
 import (
 	"context"
-	"fmt"
 	"strings"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
-	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
-// ContextAssembler merges persona data and recalled memories into the final context payload returned by pre-check.
-// ContextAssembler 用于把画像数据和召回记忆合并成 pre-check 返回的最终上下文载荷。
-type ContextAssembler struct {
-	prompts logicports.PromptSource
-	model   string
-}
+// ContextAssembler merges persona data and recalled memories into the final context payload returned by pre-check using one deterministic local renderer.
+// ContextAssembler 用于通过本地确定性渲染器，把画像数据和召回记忆合并成 pre-check 返回的最终上下文载荷。
+type ContextAssembler struct{}
 
 // NewContextAssembler creates a ContextAssembler instance.
 // NewContextAssembler 用于创建 ContextAssembler 实例。
-func NewContextAssembler(prompts logicports.PromptSource, model string) *ContextAssembler {
-	return &ContextAssembler{prompts: prompts, model: strings.TrimSpace(model)}
-}
+func NewContextAssembler() *ContextAssembler { return &ContextAssembler{} }
 
 // Assemble executes the Assemble logic.
 // Assemble 用于执行 Assemble 逻辑。
 func (a *ContextAssembler) Assemble(ctx context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, error) {
 	_ = ctx
-	if _, err := a.prompts.GetPrompt("assemble_context", a.model); err != nil {
-		return "", nil, fmt.Errorf("load assemble_context prompt: %w", err)
-	}
 	items := append(personaToItems(persona), memoryHitsToItems(hits)...)
 	return renderContextSummary(items), items, nil
 }

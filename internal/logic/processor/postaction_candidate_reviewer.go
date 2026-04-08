@@ -13,8 +13,8 @@ import (
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
 
-// PostActionCandidateReviewer drives prompt lookup, one joint LLM review call, and strict JSON parsing for post-action memory/profile candidate decisions.
-// PostActionCandidateReviewer 用于驱动 post-action 记忆/画像联合评审的提示词读取、单次 LLM 调用和严格 JSON 解析。
+// PostActionCandidateReviewer drives prompt lookup, one joint LLM review call, and strict JSON parsing for the second-stage post-action main scene.
+// PostActionCandidateReviewer 用于驱动 post-action 第二层主场景的提示词读取、单次 LLM 调用和严格 JSON 解析。
 type PostActionCandidateReviewer struct {
 	llm     logicports.LLMClient
 	prompts logicports.PromptSource
@@ -35,15 +35,16 @@ func (r *PostActionCandidateReviewer) Review(ctx context.Context, input logicdom
 	}
 	requestBody, memoryCount, userCount, projectCount, err := renderPostActionCandidateReviewRequest(input)
 	if err != nil {
-		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("render review_postaction_candidates request: %w", err)
+		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("render postaction_l2_main request: %w", err)
 	}
 	if memoryCount == 0 && userCount == 0 && projectCount == 0 {
 		return logicdomain.PostActionCandidateReviewResult{}, nil
 	}
-	prompt, err := r.prompts.GetPrompt("review_postaction_candidates", r.model)
+	prompt, err := r.prompts.GetPrompt("postaction_l2_main", r.model)
 	if err != nil {
-		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("load review_postaction_candidates prompt: %w", err)
+		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("load postaction_l2_main prompt: %w", err)
 	}
+	prompt = withMainPromptLanguagePolicy(prompt)
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               r.model,
 		SystemPrompt:        prompt,
@@ -227,7 +228,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 
 	rendered, err := json.MarshalIndent(body, "", "  ")
 	if err != nil {
-		return "", 0, 0, 0, fmt.Errorf("marshal review_postaction_candidates request: %w", err)
+		return "", 0, 0, 0, fmt.Errorf("marshal postaction_l2_main request: %w", err)
 	}
 	return string(rendered), len(body.Memory), len(userCandidates), len(projectCandidates), nil
 }
@@ -237,7 +238,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 func parsePostActionCandidateReviewResponse(raw string, memoryCount, userCount, projectCount int) (logicdomain.PostActionCandidateReviewResult, error) {
 	jsonBody, err := extractJSONObject(raw)
 	if err != nil {
-		return logicdomain.PostActionCandidateReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: err.Error(), Raw: raw}
+		return logicdomain.PostActionCandidateReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
 		Memory *struct {
@@ -257,17 +258,17 @@ func parsePostActionCandidateReviewResponse(raw string, memoryCount, userCount, 
 		Project *profileReviewSectionPayload `json:"project"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
-		return logicdomain.PostActionCandidateReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "json decode failed", Raw: raw}
+		return logicdomain.PostActionCandidateReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "json decode failed", Raw: raw}
 	}
 
 	result := logicdomain.PostActionCandidateReviewResult{}
 	if result.Memory, err = parsePostActionMemoryReviewSection(payload.Memory, memoryCount, raw); err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, err
 	}
-	if result.User, err = parseProfileReviewSection(payload.User, userCount, "user", "review_postaction_candidates", raw); err != nil {
+	if result.User, err = parseProfileReviewSection(payload.User, userCount, "user", "postaction_l2_main", raw); err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, err
 	}
-	if result.Project, err = parseProfileReviewSection(payload.Project, projectCount, "project", "review_postaction_candidates", raw); err != nil {
+	if result.Project, err = parseProfileReviewSection(payload.Project, projectCount, "project", "postaction_l2_main", raw); err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, err
 	}
 	return result, nil
@@ -292,7 +293,7 @@ func parsePostActionMemoryReviewSection(payload *struct {
 		return nil, nil
 	}
 	if payload == nil {
-		return nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: "missing memory block", Raw: raw}
+		return nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "missing memory block", Raw: raw}
 	}
 	acceptedCandidates, accepted, err := normalizePostActionAcceptedMemoryCandidates(payload.AcceptedCandidates, payload.AcceptedCandidateIndexes, expectedCount, raw)
 	if err != nil {
@@ -335,10 +336,10 @@ func normalizePostActionAcceptedMemoryCandidates(items []struct {
 	accepted := make([]logicdomain.PostActionAcceptedMemoryCandidate, 0, len(items))
 	for _, item := range items {
 		if item.CandidateIndex < 0 || item.CandidateIndex >= expectedCount {
-			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.accepted_candidates index %d is out of range", item.CandidateIndex), Raw: raw}
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory.accepted_candidates index %d is out of range", item.CandidateIndex), Raw: raw}
 		}
 		if _, ok := seen[item.CandidateIndex]; ok {
-			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.accepted_candidates repeats index %d", item.CandidateIndex), Raw: raw}
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory.accepted_candidates repeats index %d", item.CandidateIndex), Raw: raw}
 		}
 		seen[item.CandidateIndex] = struct{}{}
 		accepted = append(accepted, logicdomain.PostActionAcceptedMemoryCandidate{
@@ -377,10 +378,10 @@ func normalizePostActionDroppedMemoryCandidates(items []struct {
 	dropped := make([]logicdomain.PostActionDroppedMemoryCandidate, 0, len(items))
 	for _, item := range items {
 		if item.CandidateIndex < 0 || item.CandidateIndex >= expectedCount {
-			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.dropped_candidates index %d is out of range", item.CandidateIndex), Raw: raw}
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory.dropped_candidates index %d is out of range", item.CandidateIndex), Raw: raw}
 		}
 		if _, ok := seen[item.CandidateIndex]; ok {
-			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory.dropped_candidates repeats index %d", item.CandidateIndex), Raw: raw}
+			return nil, nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory.dropped_candidates repeats index %d", item.CandidateIndex), Raw: raw}
 		}
 		seen[item.CandidateIndex] = struct{}{}
 		dropped = append(dropped, logicdomain.PostActionDroppedMemoryCandidate{
@@ -408,7 +409,7 @@ func normalizePostActionCandidateIndexes(indexes []int, expectedCount int, label
 	out := make([]int, 0, len(indexes))
 	for _, idx := range indexes {
 		if idx < 0 || idx >= expectedCount {
-			return nil, logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("%s index %d is out of range", label, idx), Raw: raw}
+			return nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("%s index %d is out of range", label, idx), Raw: raw}
 		}
 		if _, ok := seen[idx]; ok {
 			continue
@@ -429,12 +430,12 @@ func ensurePostActionMemoryReviewCoverage(accepted, dropped []int, expectedCount
 	}
 	for _, idx := range dropped {
 		if _, ok := seen[idx]; ok {
-			return logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory block overlaps accepted and dropped index %d", idx), Raw: raw}
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory block overlaps accepted and dropped index %d", idx), Raw: raw}
 		}
 		seen[idx] = struct{}{}
 	}
 	if len(seen) != expectedCount {
-		return logicdomain.InvalidLLMOutputError{Scene: "review_postaction_candidates", Message: fmt.Sprintf("memory block must classify all %d candidates exactly once", expectedCount), Raw: raw}
+		return logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: fmt.Sprintf("memory block must classify all %d candidates exactly once", expectedCount), Raw: raw}
 	}
 	return nil
 }

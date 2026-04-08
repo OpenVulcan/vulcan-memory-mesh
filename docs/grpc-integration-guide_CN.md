@@ -520,7 +520,7 @@
 1. 服务端解析目标 scope
 2. 读取当前 active 节点
 3. 写入 `vmm_profile_instructions`
-4. 调用 `review_profile_instruction`
+4. 调用 `profile_instruction_main`
 5. 持久化新节点与退役节点
 6. 重建对应 scope 的 `profile`
 
@@ -846,13 +846,13 @@
 当前状态：
 
 - 已接回实时两层召回
-- 第一层 `extract_intent` 会读取最近 turn 窗口，并混合：
+- 第一层 `precheck_l1_main` 会读取最近 turn 窗口，并混合：
   - 已提炼 turn 的 `details`
   - 未提炼 turn 的脱水原文
 - 第一层输出多条向量检索语句，而不是只给关键词
 - 检索范围由服务端解析出的 `team / space / project` 决定，并附带 `user_id = 0 OR current_user_id` 过滤
 - 默认不会再额外按 `session_id` 收窄长期记忆检索
-- 第二层 `review_precheck_memory` 负责在统一记忆召回结果里按候选编号选择真正要注入的条目
+- 第二层 `precheck_l2_main` 负责在统一记忆召回结果里按候选编号选择真正要注入的条目
 - 只有被第二层采纳的 memory id 才会刷新生命周期
 - `PreCheck` 不再混入画像 bundle；画像读取继续通过 `GetProfileNodes / GetProfileBundle`
 
