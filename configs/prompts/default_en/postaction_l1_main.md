@@ -58,6 +58,8 @@ Decision rules:
 - The assistant obtains new facts through website access, document retrieval, multi-source search, or synthesized research: `assistant_external_research`
 - The assistant obtains new facts through tool calls, system queries, or structured interfaces: `assistant_tool_discovered`
 - The source is clearly mixed and cannot be safely placed into a single source: `mixed`
+- `user_asserted` applies only to durable facts, durable preferences, durable constraints, and durable project rules
+- One-off formatting requests, output templates, layout requirements, escaping requirements, footnote requirements, sample text, and debugging-oriented output requests are not storable `user_asserted` facts
 
 ## `admission`
 Only use:
@@ -119,11 +121,18 @@ Only use:
     - current system load
     - temporary inventory or temporary runtime state
     then the result should use `admission="drop"` with `non_durable`.
-20. If multiple stable profile facts appear in the same turn, you must output multiple `profile_nodes` by domain. Do not collapse them into a single "overall profile" node.
-21. `superseded_memory_ids` may only contain `memory_id` values that already appear in the input `active_memory_nodes`.
-22. Add an old `memory_id` to `superseded_memory_ids` only when it is clearly overridden, clearly refuted, or clearly invalidated. Do not delete an old memory merely because the current turn did not mention it again.
-23. If `reference_turns`, `active_memory_nodes`, or `recent_grpc_memory_writes` are empty, do not invent missing context.
-24. `category` may use only the following integers:
+20. If the core goal of the current turn is only to ask the assistant to output something verbatim, quote existing content, reformat output, adjust line breaks, add Markdown markers, add footnotes, display `memory_id` / `turn_id`, generate sample text, or debug a display pattern:
+    - this does not create durable memory or stable profile information
+    - you should usually return empty `details`, empty `memory_nodes`, empty `profile_nodes`, and empty `superseded_memory_ids`
+    - if a candidate must still be kept for an explicit rejection, it may only use `admission="drop"` and should prefer `non_durable`
+21. Merely mentioning existing `memory_id`, `turn_id`, footnote markers, citation formats, output templates, or asking to display existing content in a specific layout does not create a new long-term fact.
+22. If the assistant is only presenting existing memory content in the user-requested format, prefer treating it as an echo of existing memory or a one-off output task, not as a new memory.
+23. For temporary instructions about how the current answer should be displayed, do not store them as long-term facts unless the user clearly states that they are a stable preference or a durable rule for future turns.
+24. If multiple stable profile facts appear in the same turn, you must output multiple `profile_nodes` by domain. Do not collapse them into a single "overall profile" node.
+25. `superseded_memory_ids` may only contain `memory_id` values that already appear in the input `active_memory_nodes`.
+26. Add an old `memory_id` to `superseded_memory_ids` only when it is clearly overridden, clearly refuted, or clearly invalidated. Do not delete an old memory merely because the current turn did not mention it again.
+27. If `reference_turns`, `active_memory_nodes`, or `recent_grpc_memory_writes` are empty, do not invent missing context.
+28. `category` may use only the following integers:
     - `0`: General
     - `1`: Arch & Decision
     - `2`: Tech Spec & API
@@ -132,7 +141,7 @@ Only use:
     - `5`: Project Context
     - `6`: Logical Bug / Debt
     - `7`: Security & Policy
-25. `profile_type` may use only the following integers:
+29. `profile_type` may use only the following integers:
     - `0`: User Profile
     - `1`: Project Profile
 

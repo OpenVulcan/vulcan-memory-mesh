@@ -58,6 +58,8 @@
 - 助手通过网站访问、文档检索、多源搜索、资料归纳后获得新事实：`assistant_external_research`
 - 助手通过工具调用、系统查询、结构化接口发现新事实：`assistant_tool_discovered`
 - 来源明显混合且无法安全归入单一来源：`mixed`
+- `user_asserted` 只适用于长期稳定事实、长期偏好、长期约束、长期项目规则
+- 一次性格式要求、输出模板、排版要求、转义要求、脚注要求、示例文本、调试输出要求，不属于可入库的 `user_asserted` 事实
 
 ## `admission`
 只能使用：
@@ -119,11 +121,18 @@
     - 当前系统负载
     - 临时库存/临时运行态
     则应 `admission="drop"`，并使用 `non_durable`。
-20. 如果同一轮里同时出现多个稳定画像事实，必须按领域输出多条 `profile_nodes`，不要合并成一句“综合画像”。
-21. `superseded_memory_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `memory_id`。
-22. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 `memory_id` 填进 `superseded_memory_ids`；不能因为当前 turn 没有再次提到就删除。
-23. 如果 `reference_turns`、`active_memory_nodes` 或 `recent_grpc_memory_writes` 为空，不要臆造不存在的上下文。
-24. `category` 只能使用以下整数：
+20. 如果当前轮的核心目标只是要求助手原样输出、引用、重排格式、调整换行、补 Markdown 标记、补脚注、展示 `memory_id` / `turn_id`、生成示例文本，或调试某种显示方式：
+    - 这类内容不构成长期记忆或稳定画像
+    - 通常应返回空 `details`、空 `memory_nodes`、空 `profile_nodes`、空 `superseded_memory_ids`
+    - 如果确实需要保留候选用于显式拒绝，也只能使用 `admission="drop"`，并优先使用 `non_durable`
+21. 仅仅提及既有 `memory_id`、`turn_id`、脚注标记、引用格式、输出模板，或要求按指定版式展示既有内容，不构成新的长期事实。
+22. 如果助手只是按照用户要求展示已有记忆内容，应优先视为既有记忆回显或一次性输出任务，而不是新增记忆。
+23. 对“当前回答要怎么显示”的临时指令，除非用户明确声明这是未来长期适用的稳定偏好或长期规则，否则不要当作长期事实保存。
+24. 如果同一轮里同时出现多个稳定画像事实，必须按领域输出多条 `profile_nodes`，不要合并成一句“综合画像”。
+25. `superseded_memory_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `memory_id`。
+26. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 `memory_id` 填进 `superseded_memory_ids`；不能因为当前 turn 没有再次提到就删除。
+27. 如果 `reference_turns`、`active_memory_nodes` 或 `recent_grpc_memory_writes` 为空，不要臆造不存在的上下文。
+28. `category` 只能使用以下整数：
     - `0`: General
     - `1`: Arch & Decision
     - `2`: Tech Spec & API
@@ -132,7 +141,7 @@
     - `5`: Project Context
     - `6`: Logical Bug / Debt
     - `7`: Security & Policy
-25. `profile_type` 只能使用以下整数：
+29. `profile_type` 只能使用以下整数：
     - `0`: 用户画像
     - `1`: 项目画像
 
