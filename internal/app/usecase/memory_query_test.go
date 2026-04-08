@@ -846,6 +846,65 @@ func TestMemoryUseCaseSearchKeepsRankOrderWhenMMRDisabled(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchExpandsCandidatePoolForHardDedupeRequests verifies internal reviewer-side searches can widen the first-stage recall pool for hard dedupe without inflating the caller-visible final top-k.
+// TestMemoryUseCaseSearchExpandsCandidatePoolForHardDedupeRequests 用于验证内部 reviewer 链路可以为 hard dedupe 放大首轮召回窗口，同时不放大调用方可见的最终 top-k。
+func TestMemoryUseCaseSearchExpandsCandidatePoolForHardDedupeRequests(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第一条", Details: "第一条详情", VectorID: "vec-1", Vector: []float32{1, 0}},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第二条", Details: "第二条详情", VectorID: "vec-2", Vector: []float32{0.9, 0.1}},
+			{ID: 203, OriginSessionID: 12, SourceTurnID: 43, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第三条", Details: "第三条详情", VectorID: "vec-3", Vector: []float32{0.8, 0.2}},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "第一条", Score: 0.95},
+			{ID: "vec-2", Text: "第二条", Score: 0.94},
+			{ID: "vec-3", Text: "第三条", Score: 0.93},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureHardDedupePoolTopK(6)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:               7,
+		ProjectID:            9,
+		Queries:              []string{"候选池放大"},
+		TopK:                 2,
+		EnableHardDedupePool: true,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with hard dedupe pool: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected hard-dedupe-pool search results: %+v", result.Results)
+	}
+	if len(vector.searchTopKs) != 1 || vector.searchTopKs[0] != 6 {
+		t.Fatalf("expected hard dedupe requests to enlarge candidate pool to 6, got %+v", vector.searchTopKs)
+	}
+}
+
 // TestMemoryUseCaseSearchAppliesRerank verifies the optional rerank layer can reorder first-stage vector hits before the grouped response is returned.
 // TestMemoryUseCaseSearchAppliesRerank 用于验证可选 rerank 层会在返回分组结果前重排首轮向量命中。
 func TestMemoryUseCaseSearchAppliesRerank(t *testing.T) {
@@ -1624,6 +1683,7 @@ func TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory(t *testing.T) {
 			ID:         901,
 			SourceKind: logicdomain.MemorySourceKindTurnExtract,
 			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Category:   logicdomain.MemoryNodeCategoryProjectContext,
 			Abstract:   "当前项目阶段已经切换到 B。",
 			Details:    "当前项目阶段已经切换到 B。",
 			VectorID:   "vec-901",
@@ -1691,8 +1751,8 @@ func TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory(t *testing.T) {
 	}
 }
 
-// TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory verifies real-cosine hard dedupe can reuse an existing durable memory before reviewer execution, even when the highest-cosine hit is not ranked first.
-// TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory 用于验证真实 cosine 硬排重可以在 reviewer 执行前复用已有长期记忆；即使最高 cosine 命中不是排序第一也同样生效。
+// TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory verifies real-cosine hard dedupe can reuse an existing durable memory from the dedicated pre-MMR pool before reviewer execution, even when the reviewer-visible top hit is a different memory.
+// TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory 用于验证真实 cosine 硬排重可以在 reviewer 执行前，从专用的 MMR 前候选池里复用已有长期记忆；即使 reviewer 可见的 top 命中是另一条记忆也同样生效。
 func TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory(t *testing.T) {
 	profiles := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
@@ -1714,6 +1774,7 @@ func TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory(t *testing.T) {
 				ID:         900,
 				SourceKind: logicdomain.MemorySourceKindTurnExtract,
 				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
 				Abstract:   "排序第一但向量不等价。",
 				Details:    "排序第一但向量不等价。",
 				VectorID:   "vec-900",
@@ -1723,6 +1784,7 @@ func TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory(t *testing.T) {
 				ID:         901,
 				SourceKind: logicdomain.MemorySourceKindTurnExtract,
 				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
 				Abstract:   "当前项目阶段已经切换到 B。",
 				Details:    "当前项目阶段已经切换到 B。",
 				VectorID:   "vec-901",
@@ -1748,7 +1810,9 @@ func TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory(t *testing.T) {
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(nil, 5, memoryReplaceScopeProject, 0.80, 0.985)
+	uc.ConfigureMMR(true, 0.75)
+	uc.ConfigureHardDedupePoolTopK(16)
+	uc.ConfigureMemoryReplace(nil, 1, memoryReplaceScopeProject, 0.80, 0.99)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{
@@ -1771,6 +1835,9 @@ func TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory(t *testing.T) {
 	}
 	if len(result.Items) != 1 || !result.Items[0].Deduped || result.Items[0].Ref.ID != 901 {
 		t.Fatalf("expected hard dedupe to reuse memory 901, got %+v", result.Items)
+	}
+	if len(vector.searchTopKs) != 1 || vector.searchTopKs[0] != 16 {
+		t.Fatalf("expected hard dedupe review search to widen candidate pool to 16, got %+v", vector.searchTopKs)
 	}
 	if len(vector.upserts) != 0 {
 		t.Fatalf("expected hard dedupe to skip new vector upsert, got %+v", vector.upserts)
@@ -1795,6 +1862,7 @@ func TestMemoryUseCaseWriteMixedHardDedupeAndReviewerBatch(t *testing.T) {
 			Status:     logicdomain.MemoryStatusActive,
 			SourceKind: logicdomain.MemorySourceKindTurnExtract,
 			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Category:   logicdomain.MemoryNodeCategoryProjectContext,
 			Abstract:   "当前项目阶段已经切换到 B。",
 			Details:    "当前项目阶段已经切换到 B。",
 			VectorID:   "vec-901",
@@ -1805,6 +1873,7 @@ func TestMemoryUseCaseWriteMixedHardDedupeAndReviewerBatch(t *testing.T) {
 				Status:     logicdomain.MemoryStatusActive,
 				SourceKind: logicdomain.MemorySourceKindTurnExtract,
 				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
 				Abstract:   "排序第一但向量不等价。",
 				Details:    "排序第一但向量不等价。",
 				VectorID:   "vec-900",
@@ -1815,6 +1884,7 @@ func TestMemoryUseCaseWriteMixedHardDedupeAndReviewerBatch(t *testing.T) {
 				Status:     logicdomain.MemoryStatusActive,
 				SourceKind: logicdomain.MemorySourceKindTurnExtract,
 				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Category:   logicdomain.MemoryNodeCategoryProjectContext,
 				Abstract:   "当前项目阶段已经切换到 B。",
 				Details:    "当前项目阶段已经切换到 B。",
 				VectorID:   "vec-901",
@@ -1864,7 +1934,7 @@ func TestMemoryUseCaseWriteMixedHardDedupeAndReviewerBatch(t *testing.T) {
 		},
 	}
 	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.80, 0.985)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.80, 0.99)
 
 	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
 		Session: logicdomain.SessionRef{

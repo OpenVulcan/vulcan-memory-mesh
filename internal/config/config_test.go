@@ -33,6 +33,7 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.MemoryPipeline.MinSimilarityScore = nil
 	cfg.MemoryPipeline.ReplaceMinSimilarityScore = nil
 	cfg.MemoryPipeline.HardDedupeCosineThreshold = nil
+	cfg.MemoryPipeline.HardDedupePoolTopK = 0
 	cfg.MaintenanceTool.Postgres.ReadTimeout = Duration{}
 	cfg.MaintenanceTool.Postgres.WriteTimeout = Duration{}
 	cfg.MaintenanceTool.VectorRebuildBatchSize = 0
@@ -81,6 +82,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.MemoryPipeline.HardDedupeCosineThreshold == nil || *cfg.MemoryPipeline.HardDedupeCosineThreshold != defaultMemoryHardDedupeCosineThreshold {
 		t.Fatalf("hard dedupe cosine threshold = %#v", cfg.MemoryPipeline.HardDedupeCosineThreshold)
 	}
+	if cfg.MemoryPipeline.HardDedupePoolTopK != defaultMemoryHardDedupePoolTopK {
+		t.Fatalf("hard dedupe pool top k = %d", cfg.MemoryPipeline.HardDedupePoolTopK)
+	}
 	if cfg.Rerank.TopN != 8 {
 		t.Fatalf("rerank top_n = %d", cfg.Rerank.TopN)
 	}
@@ -117,6 +121,19 @@ func TestConfigNormalizePreservesExplicitZeroHardDedupeThreshold(t *testing.T) {
 
 	if cfg.MemoryPipeline.HardDedupeCosineThreshold == nil || *cfg.MemoryPipeline.HardDedupeCosineThreshold != 0 {
 		t.Fatalf("hard dedupe cosine threshold = %#v", cfg.MemoryPipeline.HardDedupeCosineThreshold)
+	}
+}
+
+// TestConfigValidateRejectsNonPositiveHardDedupePoolTopK verifies startup validation rejects disabled or malformed hard-dedupe pool sizes because the reviewer-front recall split depends on a positive expansion window.
+// TestConfigValidateRejectsNonPositiveHardDedupePoolTopK 用于验证启动校验会拒绝禁用或格式错误的硬排重候选池大小，因为 reviewer 前召回拆分依赖一个正数扩展窗口。
+func TestConfigValidateRejectsNonPositiveHardDedupePoolTopK(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.MemoryPipeline.HardDedupePoolTopK = -1
+	cfg.MemoryPipeline.hardDedupePoolTopKSet = true
+	cfg.Normalize()
+
+	if err := cfg.Validate(); err == nil || err.Error() != "memory_pipeline.hard_dedupe_pool_top_k must be > 0" {
+		t.Fatalf("unexpected hard dedupe pool top k validate error: %v", err)
 	}
 }
 
@@ -614,6 +631,94 @@ memory_pipeline:
 	}
 	if got, want := cfg.Prompts.Routes["*"], "default"; got != want {
 		t.Fatalf("wildcard prompt route = %q, want %q", got, want)
+	}
+}
+
+// TestLoadRejectsNonPositiveHardDedupePoolTopKFromYAML verifies the standard load chain preserves explicit YAML values for hard_dedupe_pool_top_k so invalid numbers fail validation instead of silently falling back to defaults.
+// TestLoadRejectsNonPositiveHardDedupePoolTopKFromYAML 用于验证标准加载链路会保留 YAML 中显式提供的 hard_dedupe_pool_top_k；因此非法数值应直接触发校验错误，而不是静默回退默认值。
+func TestLoadRejectsNonPositiveHardDedupePoolTopKFromYAML(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["test-key"]
+      model: "test-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+  hard_dedupe_pool_top_k: -1
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(configPath, DefaultLocal())
+	if err == nil || !strings.Contains(err.Error(), "memory_pipeline.hard_dedupe_pool_top_k must be > 0") {
+		t.Fatalf("unexpected hard dedupe pool top k load error: %v", err)
+	}
+}
+
+// TestLoadRejectsNonPositiveHardDedupePoolTopKFromEnvOverride verifies environment overrides can still trigger hard_dedupe_pool_top_k validation errors when the config explicitly opts into that env key.
+// TestLoadRejectsNonPositiveHardDedupePoolTopKFromEnvOverride 用于验证当配置显式引用该环境变量时，环境变量覆盖仍会正确触发 hard_dedupe_pool_top_k 的校验错误。
+func TestLoadRejectsNonPositiveHardDedupePoolTopKFromEnvOverride(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	restoreEnv(t, "VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K")
+	t.Setenv("VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K", "0")
+
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+env_probe: "${VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K}"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["test-key"]
+      model: "test-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+  hard_dedupe_pool_top_k: 16
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(configPath, DefaultLocal())
+	if err == nil || !strings.Contains(err.Error(), "memory_pipeline.hard_dedupe_pool_top_k must be > 0") {
+		t.Fatalf("unexpected hard dedupe pool env-override error: %v", err)
 	}
 }
 

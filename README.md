@@ -679,6 +679,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 仍用于 `PreCheck` 的关键词扇出上限
 - `min_similarity_score`
   - 仍用于 `PreCheck` 过滤低质量召回候选
+- `replace_min_similarity_score`
+  - 仍用于 `PostAction` / `WriteMemories` 把高相似旧记忆送给统一 reviewer 前的最低展示阈值
+- `hard_dedupe_cosine_threshold`
+  - 仍用于 `PostAction` / `WriteMemories` 在统一 reviewer 前，基于真实向量 cosine 直接短路明显重复项；设置为 `0` 时可关闭该捷径
+  - 当前默认值为 `0.99`，只会短路最明显的近重复命中
+- `hard_dedupe_pool_top_k`
+  - 控制 `PostAction` / `WriteMemories` 在 reviewer 前，最多扫描多少条 MMR 之前的旧记忆候选来执行硬排重
+  - 这个窗口独立于 reviewer 最终看到的 `top_k`，默认值为 `16`
 - `hybrid_enabled`
   - 是否启用“向量召回 + SQLite FTS5 lexical 召回 + RRF 融合”链路；关闭时保持纯向量检索
 - `lexical_pre_tokenize`

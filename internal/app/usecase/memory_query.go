@@ -69,18 +69,19 @@ var (
 	defaultUserMemoryTTL = 365 * 24 * time.Hour
 )
 
-// MemoryQueryCommand carries one simple query list together with the resolved user/project selectors and one optional scope override for specialized callers such as pre-check.
-// MemoryQueryCommand 用于承载一个简单查询字符串列表、解析范围所需的 user/project 选择参数，以及供 pre-check 等特殊调用方使用的可选作用域覆盖。
+// MemoryQueryCommand carries one simple query list together with the resolved user/project selectors, one optional scope override, and one internal reviewer-side flag that may widen the first-stage recall pool for hard dedupe.
+// MemoryQueryCommand 用于承载一个简单查询字符串列表、解析范围所需的 user/project 选择参数、一个可选作用域覆盖，以及一个供内部 reviewer 链路按需放大首轮召回窗口的 hard dedupe 标记。
 type MemoryQueryCommand struct {
-	UserID              uint64
-	ProjectID           uint64
-	SessionID           uint64
-	Queries             []string
-	TopK                int
-	ScopeOverride       string
-	BoundarySessionID   uint64
-	BoundaryMaxTurnID   uint64
-	ExcludeBoundaryTurn bool
+	UserID               uint64
+	ProjectID            uint64
+	SessionID            uint64
+	Queries              []string
+	TopK                 int
+	EnableHardDedupePool bool
+	ScopeOverride        string
+	BoundarySessionID    uint64
+	BoundaryMaxTurnID    uint64
+	ExcludeBoundaryTurn  bool
 }
 
 // MemoryQueryItem stores one normalized query string before embedding and vector search begin.
@@ -124,10 +125,11 @@ type MemoryQueryHit struct {
 // MemoryQueryGroupResult returns the echoed normalized query together with the hit list produced for that query.
 // MemoryQueryGroupResult 用于返回原样回显的规范化查询，以及针对该查询生成的命中结果。
 type MemoryQueryGroupResult struct {
-	QueryIndex  int
-	Query       string
-	QueryVector []float32
-	Hits        []MemoryQueryHit
+	QueryIndex     int
+	Query          string
+	QueryVector    []float32
+	Hits           []MemoryQueryHit
+	HardDedupeHits []MemoryQueryHit
 }
 
 // MemoryQueryResult returns the resolved user/project targets plus all grouped recall results after fusion, rerank, and optional diversity control.
@@ -241,6 +243,7 @@ type MemoryUseCase struct {
 	memoryReplaceTopK                      int
 	memoryReplaceMinSimilarity             float64
 	memoryReplaceHardDedupeCosineThreshold float64
+	hardDedupePoolTopK                     int
 	memoryReplaceConfigured                bool
 	hybridEnabled                          bool
 	lexicalTopK                            int
@@ -279,7 +282,8 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		memoryReplaceScope:                     memoryReplaceScopeProject,
 		memoryReplaceTopK:                      defaultMemorySearchTopK,
 		memoryReplaceMinSimilarity:             0.80,
-		memoryReplaceHardDedupeCosineThreshold: 0.985,
+		memoryReplaceHardDedupeCosineThreshold: 0.99,
+		hardDedupePoolTopK:                     16,
 		memoryReplaceConfigured:                false,
 		lexicalTopK:                            defaultMemorySearchTopK,
 		rrfK:                                   60,
@@ -382,6 +386,21 @@ func (u *MemoryUseCase) ConfigureRerank(reranker appports.RerankerClient, topN i
 	u.rerankTopN = topN
 }
 
+// ConfigureHardDedupePoolTopK sets the dedicated pre-review candidate window used by hard dedupe so it can inspect a slightly larger pre-MMR pool without inflating reviewer prompts.
+// ConfigureHardDedupePoolTopK 用于设置硬排重专用的 reviewer 前候选窗口，让它可以扫描更大的 MMR 之前候选池，同时不放大 reviewer 提示词。
+func (u *MemoryUseCase) ConfigureHardDedupePoolTopK(topK int) {
+	if u == nil {
+		return
+	}
+	if topK <= 0 {
+		topK = 16
+	}
+	if topK > maxMemorySearchTopK {
+		topK = maxMemorySearchTopK
+	}
+	u.hardDedupePoolTopK = topK
+}
+
 // ConfigureMemoryReplace attaches the optional semantic replacement reviewer and its recall knobs so direct writes can converge with post-action memory replacement decisions.
 // ConfigureMemoryReplace 用于挂载可选的语义替代 reviewer 及其召回参数，让主动写记忆与 post-action 共享同一套更替决策语义。
 func (u *MemoryUseCase) ConfigureMemoryReplace(reviewer PostActionCandidateReviewer, topK int, scope string, minSimilarity float64, hardDedupeCosineThreshold float64) {
@@ -403,7 +422,7 @@ func (u *MemoryUseCase) ConfigureMemoryReplace(reviewer PostActionCandidateRevie
 	}
 	u.memoryReplaceMinSimilarity = minSimilarity
 	if hardDedupeCosineThreshold < 0 || hardDedupeCosineThreshold > 1 {
-		hardDedupeCosineThreshold = 0.985
+		hardDedupeCosineThreshold = 0.99
 	}
 	u.memoryReplaceHardDedupeCosineThreshold = hardDedupeCosineThreshold
 }
@@ -492,7 +511,14 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		}
 		candidatePoolK = normalizeMemoryCandidatePoolK(topK, lexicalTopK, rerankTopN, u.mmrEnabled)
 	}
+	if cmd.EnableHardDedupePool {
+		hardDedupeCandidatePoolK := u.configuredHardDedupePoolTopK(topK)
+		if hardDedupeCandidatePoolK > candidatePoolK {
+			candidatePoolK = hardDedupeCandidatePoolK
+		}
+	}
 	cachedHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
+	cachedHardDedupeHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
 	cachedQueryVectors := make(map[string][]float32, len(uniqueItems))
 	for idx, item := range uniqueItems {
 		queryText := buildMemorySearchText(item)
@@ -539,27 +565,41 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		mapped = clampMemoryQueryHitScores(mapped)
 		mapped = u.applyContextEvidenceScoring(ctx, item, mapped)
 		mapped = clampMemoryQueryHitScores(mapped)
+
+		// Capture a dedicated hard-dedupe window before MMR and final top-k trimming so the duplicate shortcut can still inspect near-identical memories that diversity control intentionally pushes out of reviewer-visible results.
+		// 在 MMR 和最终 top-k 截断之前截取一份独立的硬排重窗口，这样即便多样性控制故意把近重复旧记忆挤出 reviewer 可见结果，硬排重捷径仍能扫描到它们。
+		hardDedupePoolTopK := topK
+		if cmd.EnableHardDedupePool {
+			hardDedupePoolTopK = u.effectiveHardDedupePoolTopK(topK, candidatePoolK)
+		}
+		hardDedupeHits := trimSearchHits(mapped, hardDedupePoolTopK)
+
 		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
 		mapped = clampMemoryQueryHitScores(mapped)
 		u.logMemorySearchStage(ctx, "memory search final stage completed", queryText, []any{
 			"query_index", idx,
 			"final_hit_count", len(mapped),
 			"top_k", topK,
+			"hard_dedupe_pool_top_k", hardDedupePoolTopK,
+			"hard_dedupe_pool_hit_count", len(hardDedupeHits),
 		}, map[string]any{
-			"query_index":   idx,
-			"query":         item.Query,
-			"top_final_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
+			"query_index":         idx,
+			"query":               item.Query,
+			"top_final_hit":       summarizeMemoryQueryHitForLog(firstMemoryQueryHit(mapped)),
+			"top_hard_dedupe_hit": summarizeMemoryQueryHitForLog(firstMemoryQueryHit(hardDedupeHits)),
 		})
 		cachedHits[uniqueKeys[idx]] = cloneMemoryQueryHits(trimSearchHits(mapped, topK))
+		cachedHardDedupeHits[uniqueKeys[idx]] = cloneMemoryQueryHits(hardDedupeHits)
 		cachedQueryVectors[uniqueKeys[idx]] = cloneFloat32Slice(embedResp.Vectors[idx])
 	}
 	results := make([]MemoryQueryGroupResult, 0, len(items))
 	for idx, item := range items {
 		results = append(results, MemoryQueryGroupResult{
-			QueryIndex:  idx,
-			Query:       item.Query,
-			QueryVector: cloneFloat32Slice(cachedQueryVectors[keys[idx]]),
-			Hits:        cloneMemoryQueryHits(cachedHits[keys[idx]]),
+			QueryIndex:     idx,
+			Query:          item.Query,
+			QueryVector:    cloneFloat32Slice(cachedQueryVectors[keys[idx]]),
+			Hits:           cloneMemoryQueryHits(cachedHits[keys[idx]]),
+			HardDedupeHits: cloneMemoryQueryHits(cachedHardDedupeHits[keys[idx]]),
 		})
 	}
 	return MemoryQueryResult{
@@ -567,6 +607,29 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		ProjectTarget: projectTarget,
 		Results:       results,
 	}, nil
+}
+
+// configuredHardDedupePoolTopK returns the configured reviewer-front hard-dedupe window after clamping it into the shared search top-k bounds and keeping it no smaller than the reviewer-visible top-k.
+// configuredHardDedupePoolTopK 用于返回配置后的 reviewer 前硬排重窗口；它会被钳制到共享搜索上限内，并保证不会小于 reviewer 可见的 top-k。
+func (u *MemoryUseCase) configuredHardDedupePoolTopK(topK int) int {
+	poolTopK := u.hardDedupePoolTopK
+	if poolTopK <= 0 {
+		poolTopK = 16
+	}
+	if poolTopK < topK {
+		poolTopK = topK
+	}
+	return normalizeMemorySearchTopK(poolTopK)
+}
+
+// effectiveHardDedupePoolTopK expands the reviewer top-k into a larger but bounded pre-review scan window so hard dedupe can inspect more durable memories than the reviewer sees, without exceeding the first-stage candidate pool.
+// effectiveHardDedupePoolTopK 用于把 reviewer 的 top-k 扩展成一个更大但受限的 reviewer 前扫描窗口，让硬排重能查看比 reviewer 更多的长期记忆，同时又不超过一阶段候选池。
+func (u *MemoryUseCase) effectiveHardDedupePoolTopK(topK, candidatePoolK int) int {
+	poolTopK := u.configuredHardDedupePoolTopK(topK)
+	if candidatePoolK > 0 && poolTopK > candidatePoolK {
+		poolTopK = candidatePoolK
+	}
+	return normalizeMemorySearchTopK(poolTopK)
 }
 
 // searchMemoryFirstStage selects the fastest safe first-stage retrieval path, preferring one SQL-level hybrid fusion query when the backing vector store explicitly supports combined PostgreSQL search.

@@ -160,7 +160,7 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 		analysisCfg.DedupeMinSimilarity = 0.80
 	}
 	if analysisCfg.HardDedupeCosineThreshold < 0 || analysisCfg.HardDedupeCosineThreshold > 1 {
-		analysisCfg.HardDedupeCosineThreshold = 0.985
+		analysisCfg.HardDedupeCosineThreshold = 0.99
 	}
 	uc := &PostActionUseCase{
 		noiseGate:         noiseGate,

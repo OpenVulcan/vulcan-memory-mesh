@@ -61,7 +61,11 @@ const (
 
 	// defaultMemoryHardDedupeCosineThreshold keeps the new pre-review hard-dedupe gate conservative by only short-circuiting obviously equivalent vectors unless callers tune it explicitly.
 	// defaultMemoryHardDedupeCosineThreshold 用于让新的 reviewer 前硬排重默认保持保守，只在向量极其接近时才短路后续 LLM，除非调用方显式调参。
-	defaultMemoryHardDedupeCosineThreshold = 0.985
+	defaultMemoryHardDedupeCosineThreshold = 0.99
+
+	// defaultMemoryHardDedupePoolTopK controls how many pre-MMR durable memories the hard-dedupe shortcut may inspect before the reviewer runs.
+	// defaultMemoryHardDedupePoolTopK 用于控制 reviewer 运行前，硬排重捷径最多可以扫描多少条 MMR 之前的长期记忆候选。
+	defaultMemoryHardDedupePoolTopK = 16
 )
 
 // Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
@@ -394,6 +398,7 @@ type MemoryPipelineConfig struct {
 	MinSimilarityScore        *float64 `json:"min_similarity_score,omitempty"`
 	ReplaceMinSimilarityScore *float64 `json:"replace_min_similarity_score,omitempty"`
 	HardDedupeCosineThreshold *float64 `json:"hard_dedupe_cosine_threshold,omitempty"`
+	HardDedupePoolTopK        int      `json:"hard_dedupe_pool_top_k,omitempty"`
 	HybridEnabled             bool     `json:"hybrid_enabled"`
 	LexicalPreTokenize        bool     `json:"lexical_pre_tokenize"`
 	LexicalTopK               int      `json:"lexical_top_k,omitempty"`
@@ -406,6 +411,30 @@ type MemoryPipelineConfig struct {
 	WeibullMinMultiplier      float64  `json:"weibull_min_multiplier,omitempty"`
 	WeibullReinforceWeight    float64  `json:"weibull_reinforce_weight,omitempty"`
 	WeibullCrossSessionBoost  float64  `json:"weibull_cross_session_boost,omitempty"`
+
+	hardDedupePoolTopKSet bool `json:"-"`
+}
+
+// UnmarshalJSON keeps layered config merges working while tracking whether hard_dedupe_pool_top_k was explicitly provided, so Normalize can distinguish "missing" from "present but invalid".
+// UnmarshalJSON 用于在保持分层配置合并语义的同时，追踪 hard_dedupe_pool_top_k 是否被显式提供，让 Normalize 能区分“缺省未配置”和“显式给了非法值”。
+func (c *MemoryPipelineConfig) UnmarshalJSON(data []byte) error {
+	if c == nil {
+		return nil
+	}
+	type memoryPipelineConfigAlias MemoryPipelineConfig
+	rawFields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(data, &rawFields); err != nil {
+		return err
+	}
+	next := memoryPipelineConfigAlias(*c)
+	if err := json.Unmarshal(data, &next); err != nil {
+		return err
+	}
+	*c = MemoryPipelineConfig(next)
+	if _, ok := rawFields["hard_dedupe_pool_top_k"]; ok {
+		c.hardDedupePoolTopKSet = true
+	}
+	return nil
 }
 
 // DefaultBase returns the baked-in fallback defaults that mirror the shipped base.yaml template.
@@ -496,6 +525,7 @@ func DefaultBase() Config {
 			MinSimilarityScore:        float64Ptr(0.75),
 			ReplaceMinSimilarityScore: float64Ptr(defaultMemoryReplaceMinSimilarityScore),
 			HardDedupeCosineThreshold: float64Ptr(defaultMemoryHardDedupeCosineThreshold),
+			HardDedupePoolTopK:        defaultMemoryHardDedupePoolTopK,
 			HybridEnabled:             true,
 			LexicalPreTokenize:        true,
 			LexicalTopK:               8,
@@ -1809,6 +1839,9 @@ func (c *Config) Normalize() {
 	if c.MemoryPipeline.HardDedupeCosineThreshold == nil {
 		c.MemoryPipeline.HardDedupeCosineThreshold = float64Ptr(defaultMemoryHardDedupeCosineThreshold)
 	}
+	if !c.MemoryPipeline.hardDedupePoolTopKSet && c.MemoryPipeline.HardDedupePoolTopK <= 0 {
+		c.MemoryPipeline.HardDedupePoolTopK = defaultMemoryHardDedupePoolTopK
+	}
 	c.Prompts.Routes = normalizeRouteMap(c.Prompts.Routes)
 	if len(c.Prompts.Routes) == 0 {
 		c.Prompts.Routes = normalizeRouteMap(DefaultBase().Prompts.Routes)
@@ -2049,6 +2082,9 @@ func (c Config) Validate() error {
 	}
 	if *c.MemoryPipeline.HardDedupeCosineThreshold < 0 || *c.MemoryPipeline.HardDedupeCosineThreshold > 1 {
 		return errors.New("memory_pipeline.hard_dedupe_cosine_threshold must be in [0,1]")
+	}
+	if c.MemoryPipeline.HardDedupePoolTopK <= 0 {
+		return errors.New("memory_pipeline.hard_dedupe_pool_top_k must be > 0")
 	}
 	if c.Noise.SemanticThreshold < 0 || c.Noise.SemanticThreshold > 1 {
 		return errors.New("noise.semantic_threshold must be in [0,1]")
@@ -2430,6 +2466,14 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
 	setOptionalFloat("VMM_MEMORY_REPLACE_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.ReplaceMinSimilarityScore)
 	setOptionalFloat("VMM_MEMORY_HARD_DEDUPE_COSINE_THRESHOLD", &cfg.MemoryPipeline.HardDedupeCosineThreshold)
+	if envOverrideAllowed(referencedEnvKeys, "VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K") {
+		if v := strings.TrimSpace(os.Getenv("VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K")); v != "" {
+			if n, err := strconv.Atoi(v); err == nil {
+				cfg.MemoryPipeline.HardDedupePoolTopK = n
+				cfg.MemoryPipeline.hardDedupePoolTopKSet = true
+			}
+		}
+	}
 	setBool("VMM_MEMORY_HYBRID_ENABLED", &cfg.MemoryPipeline.HybridEnabled)
 	setBool("VMM_MEMORY_LEXICAL_PRETOKENIZE", &cfg.MemoryPipeline.LexicalPreTokenize)
 	setInt("VMM_MEMORY_LEXICAL_TOP_K", &cfg.MemoryPipeline.LexicalTopK)

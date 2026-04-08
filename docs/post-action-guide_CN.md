@@ -229,6 +229,18 @@ message PostActionTimelineItem {
       - 支持显式 `session / team / space / project`
       - 当作用域是 `session` 时，会额外带上 `session_id` 过滤，确保只替代当前 session 旧事实
       - 这个搜索空间独立于 `pre_check.search_scope`
+    - 对记忆候选的旧记忆召回现在会拆成两套结果：
+      - 一套较小的 `similar_memories`
+        - 只提供给统一 reviewer 看
+        - 目的是控制提示词长度与噪声
+      - 一套更大的 reviewer 前硬排重候选池
+        - 在 `MMR` 和最终 `top_k` 截断之前截取
+        - 默认最多扫描 `memory_pipeline.hard_dedupe_pool_top_k = 16` 条
+    - 在进入统一 reviewer 之前，还会先做一层保守的向量硬排重：
+      - 只有当旧记忆与新候选 `Category` 相同
+      - 且真实 cosine 达到 `memory_pipeline.hard_dedupe_cosine_threshold`
+      - 才会直接判定为重复并跳过 reviewer
+      - 默认阈值是 `0.99`
     - 如果当前 turn 有画像候选：
       - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
     - 然后把：

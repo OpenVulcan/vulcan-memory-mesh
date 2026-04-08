@@ -645,7 +645,11 @@ memory_pipeline:
   # 用于在 post-action/主动写记忆重复评审里，在 reviewer 运行前直接短路明显重复项的真实 cosine 阈值。
   # Set to 0 to disable the hard-dedupe shortcut.
   # 设为 0 可关闭该硬排重捷径。
-  hard_dedupe_cosine_threshold: 0.985
+  hard_dedupe_cosine_threshold: 0.99
+
+  # Maximum number of pre-MMR durable hits that hard dedupe may scan before the reviewer runs.
+  # 硬排重在 reviewer 运行前最多可扫描多少条 MMR 之前的长期记忆候选。
+  hard_dedupe_pool_top_k: 16
 
   # Whether hybrid retrieval is enabled.
   # 是否启用混合检索。

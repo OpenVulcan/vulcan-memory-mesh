@@ -717,8 +717,8 @@ func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
 	}
 }
 
-// TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer verifies real-cosine hard dedupe scans the full recalled hit set and can drop an obvious duplicate even when the highest-cosine hit is not the top-ranked item.
-// TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer 用于验证真实 cosine 硬排重会扫描完整召回命中集合；即使最高 cosine 命中不是排序第一，也能直接丢弃明显重复项。
+// TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer verifies hard dedupe scans its dedicated pre-MMR pool instead of the reviewer-visible top-k hits, so an obvious duplicate can still be dropped even after diversity trimming.
+// TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer 用于验证硬排重会扫描专用的 MMR 前候选池，而不是只看 reviewer 可见的 top-k 命中；因此即使多样性裁剪后不再可见，明显重复项仍可被直接丢弃。
 func TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer(t *testing.T) {
 	searcher := &stubPostActionMemorySearcher{
 		result: MemoryQueryResult{
@@ -738,15 +738,28 @@ func TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer(t *testing
 						DetailsPreview: "这条命中在最终排序里第一，但真实向量并不接近。",
 						Vector:         []float32{1, 0},
 					},
+				},
+				HardDedupeHits: []MemoryQueryHit{
+					{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 901},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 301},
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Category:       logicdomain.MemoryNodeCategoryProjectContext,
+						Score:          0.99,
+						Origin:         "vector_mmr",
+						Abstract:       "排序第一但向量并不等价",
+						DetailsPreview: "这条命中在最终排序里第一，但真实向量并不接近。",
+						Vector:         []float32{1, 0},
+					},
 					{
 						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 902},
 						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 302},
 						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
 						Category:       logicdomain.MemoryNodeCategoryProjectContext,
 						Score:          0.94,
-						Origin:         "vector_mmr",
+						Origin:         "vector_pre_mmr",
 						Abstract:       "真正重复的旧记忆",
-						DetailsPreview: "这条命中虽然不是 top1，但真实向量几乎完全一致。",
+						DetailsPreview: "这条命中虽然不在 reviewer 看到的结果里，但真实向量几乎完全一致。",
 						Vector:         []float32{0, 1},
 					},
 				},
@@ -764,7 +777,7 @@ func TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer(t *testing
 		DedupeSearchTopK:          5,
 		MemoryReplaceScope:        memoryReplaceScopeProject,
 		DedupeMinSimilarity:       0.80,
-		HardDedupeCosineThreshold: 0.985,
+		HardDedupeCosineThreshold: 0.99,
 	}, nil, false)
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
@@ -811,6 +824,99 @@ func TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer(t *testing
 	}
 	if stats.HardDedupeDroppedCount != 1 {
 		t.Fatalf("expected one hard-dedupe drop, got %+v", stats)
+	}
+}
+
+// TestPostActionUseCaseReviewTurnCandidatesHardDedupeRequiresMatchingCategory verifies reviewer-front hard dedupe stays conservative by refusing to auto-drop a memory when only a different-category hit crosses the cosine threshold.
+// TestPostActionUseCaseReviewTurnCandidatesHardDedupeRequiresMatchingCategory 用于验证 reviewer 前硬排重会保持保守：如果只有不同 Category 的命中跨过余弦阈值，也不会自动丢弃记忆。
+func TestPostActionUseCaseReviewTurnCandidatesHardDedupeRequiresMatchingCategory(t *testing.T) {
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{{
+				QueryIndex:  0,
+				Query:       "记录新的发布约束",
+				QueryVector: []float32{0, 1},
+				Hits: []MemoryQueryHit{
+					{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 910},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 401},
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Category:       logicdomain.MemoryNodeCategoryProjectContext,
+						Score:          0.93,
+						Origin:         "vector_mmr",
+						Abstract:       "已有项目背景",
+						DetailsPreview: "已有项目背景详情",
+						Vector:         []float32{1, 0},
+					},
+				},
+				HardDedupeHits: []MemoryQueryHit{
+					{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 911},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 402},
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Category:       logicdomain.MemoryNodeCategoryProjectContext,
+						Score:          0.91,
+						Origin:         "vector_pre_mmr",
+						Abstract:       "不同类目的旧记忆",
+						DetailsPreview: "不同类目的旧记忆虽然向量极近，但不应被自动复用。",
+						Vector:         []float32{0, 1},
+					},
+				},
+			}},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidateIndexes: []int{0},
+			},
+		},
+	}
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{
+		DedupeSearchTopK:          5,
+		MemoryReplaceScope:        memoryReplaceScopeProject,
+		DedupeMinSimilarity:       0.80,
+		HardDedupeCosineThreshold: 0.99,
+	}, nil, false)
+	analysis := &logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Category:       logicdomain.MemoryNodeCategoryRequirementTODO,
+			Abstract:       "上线前必须跑 smoke test",
+			Details:        "这是新的工程约束，不应该被项目背景自动吞掉。",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceAssistantToolDiscovered,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}
+	stats := postActionCompactionStats{}
+
+	err := uc.reviewTurnCandidates(context.Background(), logicdomain.SessionRef{
+		SessionID:  62,
+		SessionKey: "sess-hard-dedupe-category",
+		UserID:     7,
+		TeamID:     3,
+		SpaceID:    5,
+		ProjectID:  9,
+	}, logicdomain.PersistedTurnRecord{
+		ID:        100,
+		SessionID: 62,
+		ProjectID: 9,
+		CreatedAt: time.Date(2026, 4, 8, 8, 5, 0, 0, time.UTC),
+	}, logicdomain.TurnRecord{
+		UserContent:      "记下发布前 smoke test 约束",
+		AssistantContent: "我会先看是否和旧记忆重复。",
+	}, analysis, &stats)
+	if err != nil {
+		t.Fatalf("review turn candidates: %v", err)
+	}
+	if reviewer.calls != 1 {
+		t.Fatalf("expected reviewer to run when categories differ, got %d calls", reviewer.calls)
+	}
+	if len(analysis.MemoryNodes) != 1 {
+		t.Fatalf("expected candidate to survive hard dedupe and reach reviewer, got %+v", analysis.MemoryNodes)
+	}
+	if stats.HardDedupeDroppedCount != 0 {
+		t.Fatalf("expected no hard-dedupe drop when categories differ, got %+v", stats)
 	}
 }
 

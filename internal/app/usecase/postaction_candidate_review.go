@@ -616,11 +616,12 @@ func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionM
 		return resultBundle, nil
 	}
 	queryCmd := MemoryQueryCommand{
-		UserID:        session.UserID,
-		ProjectID:     session.ProjectID,
-		Queries:       queries,
-		TopK:          topK,
-		ScopeOverride: scope,
+		UserID:               session.UserID,
+		ProjectID:            session.ProjectID,
+		Queries:              queries,
+		TopK:                 topK,
+		EnableHardDedupePool: true,
+		ScopeOverride:        scope,
 	}
 	if normalizeConfigToken(scope) == memoryReplaceScopeSession {
 		queryCmd.SessionID = session.SessionID
@@ -641,7 +642,7 @@ func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionM
 			continue
 		}
 		resultBundle.Candidates[candidateIndex].SimilarMemories = buildPostActionSimilarMemoryCandidates(group.Hits, minSimilarity)
-		if hardDedupe, ok := detectHardDedupeMemoryCandidate(candidateIndex, group.QueryVector, group.Hits, hardDedupeCosineThreshold); ok {
+		if hardDedupe, ok := detectHardDedupeMemoryCandidate(candidateIndex, resultBundle.Candidates[candidateIndex].Category, group.QueryVector, group.HardDedupeHits, hardDedupeCosineThreshold); ok {
 			resultBundle.HardDropped[candidateIndex] = hardDedupe
 		}
 	}
@@ -651,16 +652,22 @@ func buildScopedMemoryReviewCandidates(ctx context.Context, searcher PostActionM
 	return resultBundle, nil
 }
 
-// detectHardDedupeMemoryCandidate scans the full recalled hit set with real cosine similarity and returns one explicit dedupe target when any durable hit crosses the configured hard-dedupe threshold.
-// detectHardDedupeMemoryCandidate 用于基于真实 cosine 扫描完整召回命中集合；只要某条长期记忆跨过配置好的硬排重阈值，就返回一个显式 dedupe 目标。
-func detectHardDedupeMemoryCandidate(candidateIndex int, queryVector []float32, hits []MemoryQueryHit, threshold float64) (logicdomain.PostActionDroppedMemoryCandidate, bool) {
+// detectHardDedupeMemoryCandidate scans the dedicated hard-dedupe hit pool with real cosine similarity and only short-circuits when one durable memory of the same category crosses the configured threshold.
+// detectHardDedupeMemoryCandidate 用于基于真实 cosine 扫描专用硬排重候选池，并且仅在同 Category 的长期记忆跨过配置阈值时才允许直接短路。
+func detectHardDedupeMemoryCandidate(candidateIndex int, candidateCategory int, queryVector []float32, hits []MemoryQueryHit, threshold float64) (logicdomain.PostActionDroppedMemoryCandidate, bool) {
 	if threshold <= 0 || len(queryVector) == 0 || len(hits) == 0 {
+		return logicdomain.PostActionDroppedMemoryCandidate{}, false
+	}
+	if !logicdomain.ValidMemoryNodeCategory(candidateCategory) {
 		return logicdomain.PostActionDroppedMemoryCandidate{}, false
 	}
 	bestMemoryID := uint64(0)
 	bestCosine := threshold
 	for _, hit := range hits {
 		if hit.MemoryRef.Type != logicdomain.MemoryRefTypeMemory || hit.MemoryRef.ID == 0 || len(hit.Vector) == 0 {
+			continue
+		}
+		if hit.Category != candidateCategory {
 			continue
 		}
 		cosine := cosineSimilarityFloat32(queryVector, hit.Vector)

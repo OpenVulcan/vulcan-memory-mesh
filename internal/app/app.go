@@ -273,6 +273,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		cfg.MemoryPipeline.WeibullCrossSessionBoost,
 	)
 	memory.ConfigureRerank(reranker, cfg.Rerank.TopN)
+	memory.ConfigureHardDedupePoolTopK(hardDedupePoolTopKOrDefault(cfg))
 	memory.ConfigureMemoryReplace(
 		candidateReviewer,
 		cfg.PreCheck.TopK,
@@ -544,7 +545,16 @@ func hardDedupeCosineThresholdOrDefault(cfg config.Config) float64 {
 	if cfg.MemoryPipeline.HardDedupeCosineThreshold != nil && *cfg.MemoryPipeline.HardDedupeCosineThreshold >= 0 {
 		return *cfg.MemoryPipeline.HardDedupeCosineThreshold
 	}
-	return 0.985
+	return 0.99
+}
+
+// hardDedupePoolTopKOrDefault keeps the reviewer-front hard-dedupe scan window aligned with validated config while guaranteeing a non-zero bounded expansion target for the search pipeline.
+// hardDedupePoolTopKOrDefault 用于让 reviewer 前硬排重扫描窗口与已校验配置保持一致，并保证检索流水线总能拿到一个非零的扩展目标值。
+func hardDedupePoolTopKOrDefault(cfg config.Config) int {
+	if cfg.MemoryPipeline.HardDedupePoolTopK > 0 {
+		return cfg.MemoryPipeline.HardDedupePoolTopK
+	}
+	return 16
 }
 
 // normalizeProviderAlias keeps runtime adapter selection aligned with config validation by trimming accidental surrounding whitespace before lower-casing provider aliases.
