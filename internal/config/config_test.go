@@ -77,6 +77,9 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if got, want := cfg.Prompts.PromptLanguage, defaultPromptBundle; got != want {
 		t.Fatalf("prompt language = %q, want %q", got, want)
 	}
+	if cfg.Logging.LLMOutputEnabled {
+		t.Fatal("expected llm output logging to stay disabled by default")
+	}
 	if cfg.MemoryPipeline.MinSimilarityScore == nil || *cfg.MemoryPipeline.MinSimilarityScore != 0.82 {
 		t.Fatalf("min similarity score = %#v", cfg.MemoryPipeline.MinSimilarityScore)
 	}
@@ -857,6 +860,22 @@ func TestApplyEnvOverridesSetsPromptLanguageWhenReferenced(t *testing.T) {
 
 	if got, want := cfg.Prompts.PromptLanguage, defaultChinesePromptBundle; got != want {
 		t.Fatalf("prompt language = %q, want %q", got, want)
+	}
+}
+
+// TestApplyEnvOverridesSetsLLMOutputLoggingWhenReferenced verifies the dedicated LLM output log switch only changes when the config explicitly opts into the environment override.
+// TestApplyEnvOverridesSetsLLMOutputLoggingWhenReferenced 用于验证只有在配置显式引用对应环境变量时，专用 LLM 输出日志开关才会被环境覆盖。
+func TestApplyEnvOverridesSetsLLMOutputLoggingWhenReferenced(t *testing.T) {
+	cfg := newValidConfigForTest()
+	t.Setenv("VMM_LOG_LLM_OUTPUT_ENABLED", "true")
+
+	applyEnvOverrides(&cfg, map[string]struct{}{
+		"VMM_LOG_LLM_OUTPUT_ENABLED": {},
+	})
+	cfg.Normalize()
+
+	if !cfg.Logging.LLMOutputEnabled {
+		t.Fatal("expected llm output logging to be enabled by env override")
 	}
 }
 

@@ -33,8 +33,8 @@ const (
 // LLMRequest 用于承载处理器和用例层构建的 provider 无关生成请求。
 type LLMRequest = logicports.LLMRequest
 
-// LLMResponse returns the raw model output plus token usage in the internal contract shape.
-// LLMResponse 用于返回内部契约形态的原始模型输出和 token 用量。
+// LLMResponse returns the raw model output, actual model identity, and token usage in the internal contract shape.
+// LLMResponse 用于返回内部契约形态的原始模型输出、实际模型标识和 token 用量。
 type LLMResponse = logicports.LLMResponse
 
 // LLMClient is the port that lets processors call a model without binding to a specific provider SDK.

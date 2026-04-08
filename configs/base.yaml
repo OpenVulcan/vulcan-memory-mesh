@@ -79,6 +79,10 @@ logging:
   # 是否输出用于调试的明文 RPC 载荷。
   debug_rpc_payloads: false
 
+  # Whether to mirror LLM output content into one dedicated prefixed log stream for malformed-JSON and enum-drift troubleshooting.
+  # 是否把 LLM 输出内容镜像到带专属前缀的独立日志流，便于排查 JSON 畸形和枚举漂移问题。
+  llm_output_enabled: false
+
   # Whether to write protected payload snapshots instead of plaintext payloads.
   # 是否在不输出明文时改为写入受保护的载荷快照。
   protect_payloads: false

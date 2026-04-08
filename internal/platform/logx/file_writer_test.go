@@ -73,3 +73,29 @@ func TestHourlyFileWriterRotatesAcrossHourBoundary(t *testing.T) {
 		t.Fatalf("expected second-hour log body, got %q", string(secondBody))
 	}
 }
+
+// TestHourlyPrefixedFileWriterUsesPrefixedHourlyFile verifies prefixed writers keep the same day bucket layout while materializing the hourly file name with the requested prefix.
+// TestHourlyPrefixedFileWriterUsesPrefixedHourlyFile 用于验证带前缀的写入器会保持同样的按天目录布局，并把小时日志文件名改成请求的前缀格式。
+func TestHourlyPrefixedFileWriterUsesPrefixedHourlyFile(t *testing.T) {
+	now := time.Date(2026, 4, 3, 13, 25, 0, 0, time.FixedZone("CST", 8*3600))
+	rootDir := filepath.Join(t.TempDir(), "logs")
+
+	writer, err := newHourlyFileWriterWithPrefix(rootDir, "LLM-", func() time.Time { return now })
+	if err != nil {
+		t.Fatalf("new prefixed hourly file writer: %v", err)
+	}
+	defer func() { _ = writer.Close() }()
+
+	if _, err := writer.Write([]byte("llm output\n")); err != nil {
+		t.Fatalf("write prefixed log: %v", err)
+	}
+
+	logPath := filepath.Join(rootDir, "20260403", "LLM-2026040313.log")
+	body, err := os.ReadFile(logPath)
+	if err != nil {
+		t.Fatalf("read prefixed log file: %v", err)
+	}
+	if !strings.Contains(string(body), "llm output") {
+		t.Fatalf("expected prefixed log body, got %q", string(body))
+	}
+}

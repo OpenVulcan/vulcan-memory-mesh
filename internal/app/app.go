@@ -105,6 +105,10 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, fmt.Errorf("init runtime log file writer: %w", err)
 	}
+	llmOutputLogger, llmOutputShutdowner, err := buildLLMOutputLogger(cfg, logDir)
+	if err != nil {
+		return nil, fmt.Errorf("init llm output log file writer: %w", err)
+	}
 	// Close eager startup resources again when later dependency wiring fails, so a half-built runtime does not leave file handles, pools, or workers behind.
 	// 当后续依赖装配失败时，及时关闭这些提前创建的启动资源，避免半装配运行时留下文件句柄、连接池或后台工作器。
 	initSucceeded := false
@@ -113,6 +117,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		startupShutdowns = appendUniqueShutdowner(startupShutdowns, shutdowner)
 	}
 	trackStartupShutdown(fileWriter)
+	trackStartupShutdown(llmOutputShutdowner)
 	defer func() {
 		if initSucceeded {
 			return
@@ -215,6 +220,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	postActionL1PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL1)
 	postActionL2PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL2)
 	processorLLM := adaptLLMForProcessorRoutes(cfg, llm)
+	processorLLM = wrapLLMWithOutputLogger(processorLLM, llmOutputLogger)
 	profiles := usecase.NewProfileUseCase(profileStore, processor.NewManualProfileReviewer(processorLLM, prompts, reservePromptModel), logger)
 	memory := usecase.NewMemoryUseCase(profileStore, memoryStore, embedding, vector, logger)
 	memory.ConfigurePIIScrubber(piiScrubber)
@@ -323,7 +329,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
 	reflection.Register(server)
 
-	shutdowns := buildUniqueShutdownSequence(fileWriter, relational, vector, post, retention)
+	shutdowns := buildUniqueShutdownSequence(fileWriter, llmOutputShutdowner, relational, vector, post, retention)
 	initSucceeded = true
 	return &Application{Config: cfg, Logger: logger, Server: server, Shutdowns: shutdowns}, nil
 }

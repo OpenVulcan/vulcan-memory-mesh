@@ -69,6 +69,9 @@ func TestLLMClientGenerateMapsRequestToGeminiAPI(t *testing.T) {
 	if resp.Usage.TotalTokens != 18 {
 		t.Fatalf("unexpected usage: %#v", resp.Usage)
 	}
+	if resp.Model != "gemini-2.5-flash" {
+		t.Fatalf("response model = %q", resp.Model)
+	}
 	if gotHeaders.Get("x-goog-api-key") != "google-key" {
 		t.Fatalf("api key header = %q", gotHeaders.Get("x-goog-api-key"))
 	}

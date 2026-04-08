@@ -44,10 +44,11 @@ type LLMRequest struct {
 	ProviderHints       map[string]any
 }
 
-// LLMResponse returns the raw model output plus token usage in the internal contract shape.
-// LLMResponse 用于返回内部契约形态的原始模型输出和 token 用量。
+// LLMResponse returns the raw model output, the concrete model identity, and token usage in the internal contract shape.
+// LLMResponse 用于返回内部契约形态的原始模型输出、实际模型标识以及 token 用量。
 type LLMResponse struct {
 	Content string
+	Model   string
 	Usage   logicdomain.LLMUsage
 }
 

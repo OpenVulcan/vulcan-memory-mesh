@@ -77,6 +77,7 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	// 将 SDK 的 usage 结构转换为内部响应契约。
 	return appports.LLMResponse{
 		Content: content,
+		Model:   model,
 		Usage: logicdomain.LLMUsage{
 			PromptTokens:     int(resp.Usage.PromptTokens),
 			CompletionTokens: int(resp.Usage.CompletionTokens),

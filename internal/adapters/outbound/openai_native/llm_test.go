@@ -76,6 +76,9 @@ func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 	if resp.Usage.TotalTokens != 18 {
 		t.Fatalf("unexpected usage: %#v", resp.Usage)
 	}
+	if resp.Model != "test-model" {
+		t.Fatalf("response model = %q", resp.Model)
+	}
 	if gotHeaders.Get("Authorization") != "Bearer key" {
 		t.Fatalf("authorization header = %q", gotHeaders.Get("Authorization"))
 	}

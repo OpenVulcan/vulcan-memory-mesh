@@ -89,7 +89,7 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 			TotalTokens:      int(resp.UsageMetadata.TotalTokenCount),
 		}
 	}
-	return appports.LLMResponse{Content: content, Usage: usage}, nil
+	return appports.LLMResponse{Content: content, Model: model, Usage: usage}, nil
 }
 
 // applyGenerateHints maps portable and Google-specific hint fields onto the GenerateContentConfig used by the Gemini API.

@@ -3,6 +3,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"net"
@@ -213,6 +214,103 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 	}
 	if len(entries) == 0 {
 		t.Fatalf("expected at least one hourly log file in %s", dayDir)
+	}
+}
+
+// TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled verifies enabling the dedicated LLM output log switch eagerly creates the prefixed hourly log file during runtime composition.
+// TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled 用于验证开启专用 LLM 输出日志开关后，运行时装配会立即创建带前缀的小时日志文件。
+func TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled(t *testing.T) {
+	root := t.TempDir()
+	writePromptBundleForAppTest(t, filepath.Join(root, "output", "configs", "prompts", "default_en"), "packaged-default")
+	writeConfigStubForAppTest(t, filepath.Join(root, "output", "configs", "base.yaml"))
+	writeConfigStubForAppTest(t, filepath.Join(root, "output", "configs", "config.yaml"))
+	writeRuleStubsForAppTest(t, filepath.Join(root, "output", "configs"))
+	layout, err := config.ResolvePromptLayout(
+		filepath.Join(root, "output", "bin", "vmm-local.exe"),
+		filepath.Join(root, "cmd", "vmm-local"),
+		"",
+		"config",
+	)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prompts, err := config.NewPromptManager(layout.SystemDir, layout.UserDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	sqliteAddr, stopSQLite := startFakeSQLiteGateway(t)
+	defer stopSQLite()
+	lanceAddr, stopLance := startFakeLanceDBGateway(t)
+	defer stopLance()
+
+	cfg := newRuntimeConfigForTest()
+	cfg.SQLite.Address = sqliteAddr
+	cfg.LanceDB.Address = lanceAddr
+	cfg.Logging.LLMOutputEnabled = true
+
+	application, err := NewLocal(cfg, prompts, layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = application.Shutdown(context.Background())
+	})
+
+	logDir, err := resolveRuntimeLogDir(layout)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Local()
+	llmLogPath := filepath.Join(logDir, now.Format("20060102"), "LLM-"+now.Format("2006010215")+".log")
+	if _, err := os.Stat(llmLogPath); err != nil {
+		t.Fatalf("expected dedicated llm log file %s to exist: %v", llmLogPath, err)
+	}
+}
+
+// TestWrapLLMWithOutputLoggerRecordsResponseMetadata verifies the dedicated LLM output logger writes response content, model identity, elapsed time, and token accounting without logging prompt input text.
+// TestWrapLLMWithOutputLoggerRecordsResponseMetadata 用于验证专用 LLM 输出日志会记录响应内容、模型标识、耗时和 token 统计，同时不会写入输入 prompt 文本。
+func TestWrapLLMWithOutputLoggerRecordsResponseMetadata(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := logx.New(&logBuf, logx.Config{Level: "info", Format: "text"})
+	upstream := &recordingLLMClient{
+		response: appports.LLMResponse{
+			Content: "{\"ok\":true}",
+			Model:   "qwen3.5-32b",
+			Usage:   appports.LLMResponse{}.Usage,
+		},
+	}
+	upstream.response.Usage.PromptTokens = 11
+	upstream.response.Usage.CompletionTokens = 7
+	upstream.response.Usage.TotalTokens = 18
+
+	client := wrapLLMWithOutputLogger(upstream, logger)
+	if _, err := client.Generate(context.Background(), appports.LLMRequest{
+		SystemPrompt:        "system prompt should stay hidden",
+		UserPrompt:          "user prompt should stay hidden",
+		ResponseFormat:      appports.LLMResponseFormatJSON,
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPostActionL1,
+	}); err != nil {
+		t.Fatalf("generate with llm output logger: %v", err)
+	}
+
+	output := logBuf.String()
+	for _, fragment := range []string{
+		`MSG："llm output captured"`,
+		`scene："postaction_l1"`,
+		`model："qwen3.5-32b"`,
+		`prompt_tokens：11`,
+		`completion_tokens：7`,
+		`total_tokens：18`,
+		`JSON(llm_output)：`,
+		`"ok": true`,
+	} {
+		if !strings.Contains(output, fragment) {
+			t.Fatalf("expected llm output log to contain %s, got %s", fragment, output)
+		}
+	}
+	if strings.Contains(output, "system prompt should stay hidden") || strings.Contains(output, "user prompt should stay hidden") {
+		t.Fatalf("expected llm output log to exclude prompt inputs, got %s", output)
 	}
 }
 

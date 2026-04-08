@@ -156,6 +156,7 @@ type LoggingConfig struct {
 	Level                string `json:"level"`
 	Format               string `json:"format"`
 	DebugRPCPayloads     bool   `json:"debug_rpc_payloads"`
+	LLMOutputEnabled     bool   `json:"llm_output_enabled"`
 	ProtectPayloads      bool   `json:"protect_payloads"`
 	PayloadEncryptionKey string `json:"payload_encryption_key,omitempty"`
 }
@@ -447,7 +448,7 @@ func DefaultBase() Config {
 			RequestTimeout:         GRPCRequestTimeout{Workspace: Duration{15 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
 		},
-		Logging: LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, ProtectPayloads: false},
+		Logging: LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, LLMOutputEnabled: false, ProtectPayloads: false},
 		PII:     PIIConfig{DefaultLanguage: "zh-CN"},
 		Noise:   NoiseConfig{Enabled: true, DefaultLanguage: "zh-CN", SemanticEnabled: true, SemanticThreshold: 0.88},
 		Prompts: PromptConfig{
@@ -2399,6 +2400,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
 	setBool("VMM_LOG_DEBUG_RPC_PAYLOADS", &cfg.Logging.DebugRPCPayloads)
+	setBool("VMM_LOG_LLM_OUTPUT_ENABLED", &cfg.Logging.LLMOutputEnabled)
 	setBool("VMM_LOG_PROTECT_PAYLOADS", &cfg.Logging.ProtectPayloads)
 	setString("VMM_LOG_PAYLOAD_ENCRYPTION_KEY", &cfg.Logging.PayloadEncryptionKey)
 	setString("VMM_PII_DEFAULT_LANGUAGE", &cfg.PII.DefaultLanguage)
