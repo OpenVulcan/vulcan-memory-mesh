@@ -39,7 +39,6 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, fmt.Errorf("load profile_instruction_main prompt: %w", err)
 	}
-	prompt = withMainPromptLanguagePolicy(prompt)
 	requestBody, err := buildManualProfileReviewRequest(target, activeNodes, instruction, floorPriority, floorLevel)
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err

@@ -61,6 +61,14 @@ Your tasks are:
    - `supersede_nodes`
 5. For every retired old node, you must clearly explain the reason
 
+# Output Language Rules
+1. Every free-text field you generate must follow the dominant language of the current `instruction`, not the language of this prompt file:
+   - If `instruction` is mainly Chinese, then `normalized_content`, `level_reason`, `supersede_nodes[].reason`, `retired_nodes[].reason`, and the top-level `reason` must all be written in Chinese
+   - If `instruction` is mainly English, those free-text fields must be written in English
+   - If `instruction` is mixed, follow the dominant language of the user's latest natural-language sentence first; if that is still unclear, follow the dominant language of the full instruction
+2. If the instruction alone is still ambiguous, you may use the language style of `active_nodes` only as a tie-breaker. Do not default to English merely because this prompt file is written in English.
+3. Keep JSON keys, numbers, IDs, enum values, `priority`, `level`, code identifiers, config keys, API names, and file paths unchanged.
+
 # Review Rules
 1. Do not output the final profile blob. Output only node-level decisions.
 2. `normalized_content` must be:

@@ -62,8 +62,8 @@ func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	if prompts.scene != "profile_instruction_main" || prompts.modelName != "qwen-test" {
 		t.Fatalf("unexpected prompt lookup: %+v", prompts)
 	}
-	if !strings.Contains(llm.request.SystemPrompt, "Unified Output Language Rule") {
-		t.Fatalf("expected shared language policy in system prompt, got %s", llm.request.SystemPrompt)
+	if llm.request.SystemPrompt != "return json only" {
+		t.Fatalf("expected runtime to preserve prompt file content without shared injection, got %s", llm.request.SystemPrompt)
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"target": "TEAM"`) {
 		t.Fatalf("expected TEAM target in request body, got %s", llm.request.UserPrompt)

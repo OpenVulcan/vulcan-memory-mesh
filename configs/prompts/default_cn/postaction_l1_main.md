@@ -21,6 +21,14 @@
    - `admission`
    - `admission_reason`
 
+# 输出语言规则
+1. 你生成的所有自然语言字段都必须跟随 `target_turn` 当前问答的主导语言，而不是跟随提示词文件语言：
+   - 如果 `target_turn` 中用户问题、用户陈述、助手回答整体主要是中文，`details`、`memory_nodes[].abstract`、`memory_nodes[].details`、`profile_nodes[].content` 以及其它自由文本字段都必须使用中文
+   - 如果 `target_turn` 当前问答整体主要是英文，上述自由文本字段都必须使用英文
+   - 如果当前问答是混合语言，优先跟随用户最新一句自然语言中的主导语言；仍不明确时，再根据整个 `target_turn` 的主导语言决定
+2. 即使提示词文件是中文或英文，只要当前 `target_turn` 主要是另一种语言，你也必须跟随当前问答语言输出。
+3. JSON key、枚举值、数字、ID、`category`、`profile_type`、`evidence_source`、`admission`、`admission_reason`、代码标识符、配置键名、API 名称、文件路径等机器可读内容保持原样，不要翻译。
+
 # Dynamic Rules
 {#TAG REFERENCE_RULE#}
 {#TAG ACTIVE_MEMORY_RULE#}

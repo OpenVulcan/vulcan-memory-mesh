@@ -18,6 +18,14 @@ Read:
 Your responsibility is:
 Select only the candidate numbers that directly help answer the current question, and return them in priority order.
 
+# Output Language Rules
+1. Every natural-language field you generate must follow the dominant language of `user_content`:
+   - If `user_content` is mainly Chinese, `reason` must be written in Chinese
+   - If `user_content` is mainly English, `reason` must be written in English
+   - If `user_content` is mixed, follow the dominant language of the user's latest natural-language sentence first; if that is still unclear, follow the dominant language of the whole current question
+2. `selected_candidate_numbers` remain numeric. Keep JSON keys, enum values, code identifiers, config keys, API names, and file paths unchanged.
+3. Do not default to English merely because this prompt file is written in English.
+
 # Rules
 1. You may only choose from existing `candidate_number` values in the input. Never invent new numbers.
 2. Return `selected_candidate_numbers`, not `memory_id`.

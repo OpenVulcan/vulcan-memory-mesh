@@ -52,6 +52,14 @@ Where:
 4. If a profile candidate should replace one or more old nodes, return the corresponding `supersede_node_ids`
 5. If an old profile node should be directly retired without a new replacement in this round, return it in `retire_only_node_ids`
 
+# Output Language Rules
+1. Every free-text field you generate must follow the dominant language of the current question and candidate content, not the language of this prompt file:
+   - If the current question, candidate texts, and similar memories are mainly Chinese, then `memory.reason`, `user.reason`, `project.reason`, `normalized_content`, `level_reason`, and other free-text fields must be written in Chinese
+   - If they are mainly English, those fields must be written in English
+   - If the input is mixed, follow the dominant language of the current user question first; if that is still unclear, follow the dominant language of the candidate and similar-memory content together
+2. Do not default to English merely because this prompt file is written in English. If the current turn context is mainly Chinese, your review reason, normalization text, and refinement text must also be Chinese.
+3. Keep JSON keys, numbers, IDs, enum values, code identifiers, config keys, API names, and file paths unchanged.
+
 # Memory Review Rules
 1. If a `memory` block exists in the input, you must output a `memory` result block.
 2. Every candidate in `memory` must be classified exactly once:

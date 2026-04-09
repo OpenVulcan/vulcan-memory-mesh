@@ -14,6 +14,14 @@ You have only two responsibilities:
 1. Decide whether the current question truly needs retrieval of long-term memory
 2. If retrieval is needed, output 1-N retrieval statements that are suitable for direct vector search
 
+# Output Language Rules
+1. Every natural-language field you generate must follow the dominant language of the current user input:
+   - If `current_user_input` is mainly Chinese, both `queries` and `reason` must be written in Chinese
+   - If `current_user_input` is mainly English, both `queries` and `reason` must be written in English
+   - If `current_user_input` is mixed, follow the dominant language of the user's latest natural-language sentence first; if that is still unclear, follow the dominant language of the whole current question
+2. Do not default to English merely because this prompt file is written in English.
+3. Keep JSON keys, booleans, enum values, code identifiers, config keys, API names, and file paths unchanged.
+
 # Rules
 1. The `recent_turns` you see are only for understanding recent context. Never return them as candidate memories themselves.
 

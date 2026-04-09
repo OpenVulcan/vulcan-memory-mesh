@@ -45,7 +45,6 @@ func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCh
 	if err != nil {
 		return logicdomain.IntentResult{}, fmt.Errorf("load precheck_l1_main prompt: %w", err)
 	}
-	prompt = withMainPromptLanguagePolicy(prompt)
 	resp, err := e.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               e.model,
 		SystemPrompt:        prompt,

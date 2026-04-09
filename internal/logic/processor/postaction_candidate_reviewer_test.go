@@ -96,8 +96,8 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	if prompts.scene != "postaction_l2_main" || prompts.modelName != "qwen-test" {
 		t.Fatalf("unexpected prompt lookup: %+v", prompts)
 	}
-	if !strings.Contains(llm.request.SystemPrompt, "Unified Output Language Rule") {
-		t.Fatalf("expected shared language policy in system prompt, got %s", llm.request.SystemPrompt)
+	if llm.request.SystemPrompt != "return json only" {
+		t.Fatalf("expected runtime to preserve prompt file content without shared injection, got %s", llm.request.SystemPrompt)
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"similar_memories"`) || !strings.Contains(llm.request.UserPrompt, `"new_candidates"`) {
 		t.Fatalf("expected memory dedupe and profile candidate sections, got %s", llm.request.UserPrompt)

@@ -101,8 +101,8 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if !strings.Contains(llm.request.SystemPrompt, "这些事实已经由工具链主动写入") {
 		t.Fatalf("expected direct-write exclusion rule in system prompt, got %s", llm.request.SystemPrompt)
 	}
-	if !strings.Contains(llm.request.SystemPrompt, "Unified Output Language Rule") {
-		t.Fatalf("expected shared language policy in system prompt, got %s", llm.request.SystemPrompt)
+	if strings.Contains(llm.request.SystemPrompt, "Unified Output Language Rule") {
+		t.Fatalf("expected shared language policy injection to be removed, got %s", llm.request.SystemPrompt)
 	}
 	if analysis.UserInputKind != logicdomain.TurnAnalysisUserInputQuestion {
 		t.Fatalf("unexpected user input kind: %+v", analysis)

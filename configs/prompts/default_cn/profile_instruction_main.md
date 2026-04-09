@@ -61,6 +61,14 @@
    - `supersede_nodes`
 5. 每条退役旧节点都必须明确说明原因
 
+# 输出语言规则
+1. 你生成的所有自由文本字段都必须跟随当前 `instruction` 的主导语言，而不是跟随提示词文件语言：
+   - 如果 `instruction` 主要是中文，`normalized_content`、`level_reason`、`supersede_nodes[].reason`、`retired_nodes[].reason`、顶层 `reason` 都必须使用中文
+   - 如果 `instruction` 主要是英文，上述自由文本字段都必须使用英文
+   - 如果 `instruction` 是混合语言，优先跟随用户最新一句自然语言中的主导语言；仍不明确时，再根据整条 `instruction` 的主导语言决定
+2. 如果 `instruction` 不够明确，可以参考 `active_nodes` 的语言风格辅助判断，但不能因为提示词文件本身是中文或英文就固定输出语言。
+3. JSON key、数字、ID、枚举值、`priority`、`level`、代码标识符、配置键名、API 名称、文件路径等机器可读内容保持原样，不要翻译。
+
 # Review Rules
 1. 不要输出最终 profile Blob，只输出节点决策。
 2. `normalized_content` 必须：

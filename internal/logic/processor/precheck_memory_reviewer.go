@@ -42,7 +42,6 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 	if err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("load precheck_l2_main prompt: %w", err)
 	}
-	prompt = withMainPromptLanguagePolicy(prompt)
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               r.model,
 		SystemPrompt:        prompt,

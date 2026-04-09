@@ -44,7 +44,6 @@ func (r *PostActionCandidateReviewer) Review(ctx context.Context, input logicdom
 	if err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("load postaction_l2_main prompt: %w", err)
 	}
-	prompt = withMainPromptLanguagePolicy(prompt)
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               r.model,
 		SystemPrompt:        prompt,

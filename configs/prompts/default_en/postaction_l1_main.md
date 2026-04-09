@@ -21,6 +21,14 @@ Your tasks are:
    - `admission`
    - `admission_reason`
 
+# Output Language Rules
+1. Every natural-language field you generate must follow the dominant language of the current dialogue inside `target_turn`, not the language of this prompt file:
+   - If the user/assistant dialogue in `target_turn` is mainly Chinese, then `details`, `memory_nodes[].abstract`, `memory_nodes[].details`, `profile_nodes[].content`, and every other free-text field must be written in Chinese
+   - If the current dialogue in `target_turn` is mainly English, those free-text fields must be written in English
+   - If the current dialogue is mixed, follow the dominant language of the user's latest natural-language sentence first; if that is still unclear, follow the dominant language of the full `target_turn`
+2. Do not default to English merely because this prompt file is written in English. If the current turn contains Chinese as the dominant language, your summaries, refined details, and extracted texts must also be Chinese.
+3. Keep JSON keys, enum values, numbers, IDs, `category`, `profile_type`, `evidence_source`, `admission`, `admission_reason`, code identifiers, config keys, API names, and file paths unchanged.
+
 # Dynamic Rules
 {#TAG REFERENCE_RULE#}
 {#TAG ACTIVE_MEMORY_RULE#}
