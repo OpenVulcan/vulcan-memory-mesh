@@ -719,8 +719,8 @@ func (s *Server) ScratchpadDelete(ctx context.Context, req *vmmv1.ScratchpadDele
 	}, nil
 }
 
-// ScratchpadGet reloads either one deterministic DWM key or the whole isolated scratchpad payload for the current scope.
-// ScratchpadGet 用于为当前范围重新加载单个确定性 DWM key 或整个隔离 scratchpad 载荷。
+// ScratchpadGet reloads either one deterministic DWM key batch or the whole isolated scratchpad payload for the current scope.
+// ScratchpadGet 用于为当前范围重新加载一批确定性 DWM key 或整个隔离 scratchpad 载荷。
 func (s *Server) ScratchpadGet(ctx context.Context, req *vmmv1.ScratchpadGetRequest) (*vmmv1.ScratchpadGetResponse, error) {
 	if err := s.requireReceiver(); err != nil {
 		return nil, err
@@ -740,7 +740,7 @@ func (s *Server) ScratchpadGet(ctx context.Context, req *vmmv1.ScratchpadGetRequ
 			UserID:     req.GetUserId(),
 			SessionKey: req.GetSessionId(),
 		},
-		Key: req.GetKey(),
+		Keys: append([]string(nil), req.GetKeys()...),
 	})
 	if err != nil {
 		return nil, toStatus(describeError(err))
@@ -751,6 +751,41 @@ func (s *Server) ScratchpadGet(ctx context.Context, req *vmmv1.ScratchpadGetRequ
 		Items:            toProtoScratchpadItems(result.Items),
 		PlanName:         result.PlanName,
 		ItemCount:        uint32(maxInt(result.ItemCount, 0)),
+		UpdatedTimestamp: toUnixMillis(result.UpdatedAt),
+	}, nil
+}
+
+// ScratchpadListKeys reloads the canonical plan name plus the full ordered scratchpad key list for the current scope without fetching any values.
+// ScratchpadListKeys 用于在不拉取任何 value 的前提下，为当前范围重新加载 canonical 计划名和完整有序的 scratchpad key 列表。
+func (s *Server) ScratchpadListKeys(ctx context.Context, req *vmmv1.ScratchpadListKeysRequest) (*vmmv1.ScratchpadListKeysResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
+	if s.scratchpad == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeScratchpadListKeysRequest(req)
+	if err := s.validator().ValidateScratchpadListKeys(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.scratchpad.ListKeys(ctx, usecase.ScratchpadListKeysQuery{
+		Scope: logicdomain.ScratchpadScope{
+			ProjectID:  req.GetProjectId(),
+			UserID:     req.GetUserId(),
+			SessionKey: req.GetSessionId(),
+		},
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.ScratchpadListKeysResponse{
+		Status:           toProtoScratchpadStatus(result.Status),
+		Msg:              result.Message,
+		PlanName:         result.PlanName,
+		Keys:             append([]string(nil), result.Keys...),
+		KeyCount:         uint32(maxInt(result.KeyCount, 0)),
 		UpdatedTimestamp: toUnixMillis(result.UpdatedAt),
 	}, nil
 }

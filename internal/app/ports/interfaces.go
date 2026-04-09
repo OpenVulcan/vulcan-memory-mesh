@@ -145,6 +145,7 @@ type ScratchpadStore interface {
 	UpsertScratchpadItems(ctx context.Context, planID uint64, items []logicdomain.ScratchpadItem, updatedAt time.Time) (logicdomain.ScratchpadUpsertPersistResult, error)
 	DeleteScratchpadItems(ctx context.Context, planID uint64, keys []string, updatedAt time.Time) (logicdomain.ScratchpadDeletePersistResult, error)
 	ListScratchpadItems(ctx context.Context, planID uint64, keys []string) ([]logicdomain.ScratchpadItem, error)
+	ListScratchpadKeys(ctx context.Context, planID uint64) ([]string, error)
 	CleanScratchpad(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadCleanPersistResult, error)
 }
 

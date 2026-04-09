@@ -222,9 +222,18 @@ func NormalizeScratchpadGetRequest(req *vmmv1.ScratchpadGetRequest) {
 		return
 	}
 	req.SessionId = strings.TrimSpace(req.GetSessionId())
-	if req.Key != nil {
-		req.Key = proto.String(strings.TrimSpace(req.GetKey()))
+	for idx, key := range req.GetKeys() {
+		req.Keys[idx] = strings.TrimSpace(key)
 	}
+}
+
+// NormalizeScratchpadListKeysRequest trims the isolated DWM list-keys payload before validation and use-case execution begin.
+// NormalizeScratchpadListKeysRequest 用于在校验和用例执行开始前裁剪隔离 DWM list-keys 载荷。
+func NormalizeScratchpadListKeysRequest(req *vmmv1.ScratchpadListKeysRequest) {
+	if req == nil {
+		return
+	}
+	req.SessionId = strings.TrimSpace(req.GetSessionId())
 }
 
 // NormalizeScratchpadCleanRequest trims the isolated DWM clean payload before validation starts.
@@ -649,10 +658,31 @@ func (v *RequestValidator) ValidateScratchpadGet(req *vmmv1.ScratchpadGetRequest
 	if req.GetProjectId() == 0 {
 		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 	}
-	if req.Key != nil {
-		if err := requireString("key", req.GetKey(), 128); err != nil {
+	if len(req.GetKeys()) > 64 {
+		return logicdomain.ValidationError{Field: "keys", Message: "must contain at most 64 keys"}
+	}
+	for idx, key := range req.GetKeys() {
+		if err := requireString(fmt.Sprintf("keys[%d]", idx), key, 128); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// ValidateScratchpadListKeys checks the isolated DWM list-keys payload before one read-only key-catalog reload starts.
+// ValidateScratchpadListKeys 用于在只读 key 目录回载开始前校验隔离 DWM list-keys 载荷。
+func (v *RequestValidator) ValidateScratchpadListKeys(req *vmmv1.ScratchpadListKeysRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "scratchpad_list_keys", Message: "is required"}
+	}
+	if err := requireString("session_id", req.GetSessionId(), 128); err != nil {
+		return err
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 	}
 	return nil
 }

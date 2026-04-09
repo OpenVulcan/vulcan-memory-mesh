@@ -306,6 +306,21 @@ func (s *Store) ListScratchpadItems(ctx context.Context, planID uint64, keys []s
 	return items, nil
 }
 
+// ListScratchpadKeys returns the ordered deterministic DWM key slice for one plan without loading value payloads.
+// ListScratchpadKeys 用于在不加载 value 载荷的前提下，返回某个计划下有序的确定性 DWM key 切片。
+func (s *Store) ListScratchpadKeys(ctx context.Context, planID uint64) ([]string, error) {
+	if planID == 0 {
+		return nil, logicdomain.ValidationError{Field: "plan_id", Message: "must be a numeric id"}
+	}
+	callCtx, cancel := s.queryContext(ctx)
+	defer cancel()
+	keys, err := s.listScratchpadKeysWithQueryer(callCtx, s.pool, planID)
+	if err != nil {
+		return nil, err
+	}
+	return keys, nil
+}
+
 // CleanScratchpad deletes all DWM nodes and the parent plan row for one deterministic scope, while keeping empty sessions idempotent.
 // CleanScratchpad 用于删除某个确定性范围下的全部 DWM 节点和父级计划行，同时保持空 session 场景幂等。
 func (s *Store) CleanScratchpad(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadCleanPersistResult, error) {
@@ -451,6 +466,34 @@ WHERE plan_id = $1
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate postgres scratchpad item rows: %w", err)
+	}
+	return out, nil
+}
+
+// listScratchpadKeysWithQueryer loads the ordered scratchpad key slice through the shared pool/transaction query abstraction without touching value payload columns.
+// listScratchpadKeysWithQueryer 用于通过共享连接池/事务查询抽象加载有序 scratchpad key 切片，并且不会触碰 value 载荷列。
+func (s *Store) listScratchpadKeysWithQueryer(ctx context.Context, q profileQueryer, planID uint64) ([]string, error) {
+	sqlText := fmt.Sprintf(`
+SELECT item_key
+FROM %s
+WHERE plan_id = $1
+ORDER BY item_key ASC, id ASC
+`, s.scratchpadNodesTable())
+	rows, err := q.Query(ctx, strings.TrimSpace(sqlText), int64(planID))
+	if err != nil {
+		return nil, fmt.Errorf("query postgres scratchpad keys: %w", err)
+	}
+	defer rows.Close()
+	out := make([]string, 0)
+	for rows.Next() {
+		var itemKey string
+		if err := rows.Scan(&itemKey); err != nil {
+			return nil, fmt.Errorf("scan postgres scratchpad key row: %w", err)
+		}
+		out = append(out, strings.TrimSpace(itemKey))
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate postgres scratchpad key rows: %w", err)
 	}
 	return out, nil
 }

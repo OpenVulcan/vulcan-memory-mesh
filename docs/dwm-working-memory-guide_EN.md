@@ -16,6 +16,7 @@ In this repository, DWM is implemented as an isolated scratchpad branch:
 - `ScratchpadUpsert`
 - `ScratchpadDelete`
 - `ScratchpadGet`
+- `ScratchpadListKeys`
 - `ScratchpadClean`
 
 ## 2. What DWM Solves
@@ -176,12 +177,12 @@ Response fields:
 Purpose:
 
 - load the whole scratchpad
-- or load one specific anchor by `key`
+- or load one filtered anchor batch by `keys[]`
 
 Read rules:
 
-- no `key`: return all items
-- with `key`: return one hit or an empty list
+- no `keys[]` or an empty list: return all items
+- with `keys[]`: return matching hits or an empty list
 
 No-data behavior:
 
@@ -201,7 +202,41 @@ Important guarantee:
 - `plan_name` is always the canonical stored value
 - if no plan exists, `plan_name` is empty
 
-### 4. `ScratchpadClean`
+### 4. `ScratchpadListKeys`
+
+Purpose:
+
+- load the current scratchpad plan name plus the full key catalog
+- let hosts rebuild the available anchor set without fetching any values
+
+Read rules:
+
+- no `plan_name` is required
+- only the normal scope is required:
+  - `session_id`
+  - `user_id`
+  - `project_id`
+
+No-data behavior:
+
+- not an error
+- `status = SUCCESS`
+- `keys = []`
+- `msg = "No scratchpad records found for the current session."`
+
+Returned metadata:
+
+- `plan_name`
+- `key_count`
+- `updated_timestamp`
+
+Important guarantee:
+
+- `ListKeys` returns the full ordered `keys[]`
+- `ListKeys` never returns any `value`
+- if no plan exists, `plan_name` is empty
+
+### 5. `ScratchpadClean`
 
 Purpose:
 

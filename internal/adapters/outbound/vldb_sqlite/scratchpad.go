@@ -70,6 +70,18 @@ func (r scratchpadNodeRow) toItem() logicdomain.ScratchpadItem {
 	}
 }
 
+// scratchpadKeyRow mirrors one SQLite scratchpad item-key row so list-keys reads can avoid loading large value payloads unnecessarily.
+// scratchpadKeyRow 用于映射一条 SQLite scratchpad item_key 行，让 list-keys 读取无需额外加载大 value 载荷。
+type scratchpadKeyRow struct {
+	ItemKey string `json:"item_key"`
+}
+
+// toKey converts one SQLite scratchpad key transport row into the trimmed AI-facing key string returned by list-keys.
+// toKey 用于把一条 SQLite scratchpad key 传输行转换成 list-keys 返回的裁剪后 key 字符串。
+func (r scratchpadKeyRow) toKey() string {
+	return strings.TrimSpace(r.ItemKey)
+}
+
 // scratchpadCountRow mirrors one COUNT(*) query result used by deterministic scratchpad maintenance helpers.
 // scratchpadCountRow 用于映射 scratchpad 维护辅助逻辑里使用的 COUNT(*) 查询结果。
 type scratchpadCountRow struct {
@@ -290,6 +302,28 @@ WHERE plan_id = ? AND `, planID, keys)
 		items = append(items, row.toItem())
 	}
 	return items, nil
+}
+
+// ListScratchpadKeys returns the ordered deterministic DWM key slice for one plan without loading value payloads.
+// ListScratchpadKeys 用于在不加载 value 载荷的前提下，返回某个计划下有序的确定性 DWM key 切片。
+func (s *Store) ListScratchpadKeys(ctx context.Context, planID uint64) ([]string, error) {
+	if planID == 0 {
+		return nil, logicdomain.ValidationError{Field: "plan_id", Message: "must be a numeric id"}
+	}
+	rows, err := queryRows[scratchpadKeyRow](s, ctx, `
+SELECT item_key
+FROM vmm_scratchpad_nodes
+WHERE plan_id = ?
+ORDER BY item_key ASC, id ASC
+`, planID)
+	if err != nil {
+		return nil, fmt.Errorf("list scratchpad keys: %w", err)
+	}
+	keys := make([]string, 0, len(rows))
+	for _, row := range rows {
+		keys = append(keys, row.toKey())
+	}
+	return keys, nil
 }
 
 // CleanScratchpad deletes all DWM nodes and the parent plan row for one deterministic scope, while keeping empty sessions idempotent.

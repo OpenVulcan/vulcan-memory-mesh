@@ -84,6 +84,17 @@ type ScratchpadQueryResult struct {
 	Items     []ScratchpadItem
 }
 
+// ScratchpadKeyListResult reports one list-keys operation together with canonical plan metadata and the ordered scratchpad key slice selected from the current scope.
+// ScratchpadKeyListResult 用于表示一次 list-keys 操作的结果，并返回当前范围的 canonical 计划 metadata 与有序 scratchpad key 切片。
+type ScratchpadKeyListResult struct {
+	Status    ScratchpadStatus
+	Message   string
+	PlanName  string
+	UpdatedAt time.Time
+	KeyCount  int
+	Keys      []string
+}
+
 // ScratchpadUpsertPersistResult reports how many concrete node rows were inserted or updated inside one deterministic scratchpad write pass.
 // ScratchpadUpsertPersistResult 用于表示一次确定性 scratchpad 写入流程中插入和更新了多少具体节点行。
 type ScratchpadUpsertPersistResult struct {

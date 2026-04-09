@@ -8,7 +8,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 另外当前还提供一条与主长期记忆体系隔离的 DWM 支线：
 
-- `ScratchpadUpsert / ScratchpadDelete / ScratchpadGet / ScratchpadClean`
+- `ScratchpadUpsert / ScratchpadDelete / ScratchpadGet / ScratchpadListKeys / ScratchpadClean`
 
 当前运行时的定位是：
 
@@ -90,6 +90,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `ScratchpadUpsert`
 - `ScratchpadDelete`
 - `ScratchpadGet`
+- `ScratchpadListKeys`
 - `ScratchpadClean`
 - `ChatCompact`
 - `PreCheck`
@@ -422,6 +423,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `ScratchpadUpsert`
 - `ScratchpadDelete`
 - `ScratchpadGet`
+- `ScratchpadListKeys`
 - `ScratchpadClean`
 
 这组接口的定位不是长期记忆，也不是 turn 提炼结果，而是给 AI Agent 保存“当前任务计划、关键步骤、关键文件摘要、关键约束”的确定性工作态。
@@ -451,15 +453,27 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 返回成功
   - `items = []`
   - `msg = "No scratchpad records found for the current session."`
+- `Get` 支持：
+  - `keys[]` 为空或不传时，读取当前范围全部 item
+  - `keys[]` 非空时，批量读取命中的多条 item
+- `ListKeys` 支持：
+  - 直接返回当前 canonical `plan_name`
+  - 返回当前范围完整且有序的 `keys[]`
+  - 不返回任何 `value`
 - `Get` 返回 metadata：
   - `plan_name`
   - `item_count`
+  - `updated_timestamp`
+- `ListKeys` 返回 metadata：
+  - `plan_name`
+  - `key_count`
   - `updated_timestamp`
 - `Upsert / Delete` 返回稳定计数字段：
   - `affected_count`
   - `inserted_count`
   - `updated_count`（仅 `Upsert`）
 - `Get` 返回的 `plan_name` 永远是当前 canonical 值
+- `ListKeys` 返回的 `plan_name` 也永远是当前 canonical 值
 - scratchpad 的批量写入/删除采用整批原子语义：
   - 任一 item 非法则整批失败
 - scratchpad 不参与 `MigrateProject`

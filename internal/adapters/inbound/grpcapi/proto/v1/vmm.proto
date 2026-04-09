@@ -77,9 +77,13 @@ service VMMService {
   // ScratchpadDelete 用于从隔离 DWM scratchpad 中删除一个或多个 key，并且不会为当前空 session 伪造新的计划锁。
   rpc ScratchpadDelete(ScratchpadDeleteRequest) returns (ScratchpadDeleteResponse);
 
-  // ScratchpadGet reloads either one key or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
-  // ScratchpadGet 用于重新读取单个 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
+  // ScratchpadGet reloads either one filtered key batch or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
+  // ScratchpadGet 用于重新读取一批过滤 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
   rpc ScratchpadGet(ScratchpadGetRequest) returns (ScratchpadGetResponse);
+
+  // ScratchpadListKeys reloads the canonical plan name plus the full ordered scratchpad key list for the current isolated scope without fetching values.
+  // ScratchpadListKeys 用于在不拉取 value 的前提下，重新读取当前隔离范围的 canonical 计划名和完整有序 key 列表。
+  rpc ScratchpadListKeys(ScratchpadListKeysRequest) returns (ScratchpadListKeysResponse);
 
   // ScratchpadClean clears the whole isolated DWM scratchpad for the current project/user/session scope.
   // ScratchpadClean 用于清空当前 project/user/session 范围下的整个隔离 DWM scratchpad。
@@ -520,23 +524,42 @@ message ScratchpadDeleteResponse {
   uint32 affected_count = 3;
 }
 
-// ScratchpadGetRequest carries the deterministic scope plus an optional single-key selector for DWM reloads.
-// ScratchpadGetRequest 用于承载 DWM 读取所需的确定性范围，以及可选的单 key 选择器。
+// ScratchpadGetRequest carries the deterministic scope plus an optional multi-key selector for DWM reloads.
+// ScratchpadGetRequest 用于承载 DWM 读取所需的确定性范围，以及可选的多 key 选择器。
 message ScratchpadGetRequest {
   string session_id = 1;
   uint64 user_id = 2;
   uint64 project_id = 3;
-  optional string key = 4;
+  repeated string keys = 4;
 }
 
 // ScratchpadGetResponse returns the enum status, one English message, stable metadata for the canonical plan, and the selected DWM key/value anchors.
-// ScratchpadGetResponse 用于返回枚举状态、一条英文提示消息、canonical 计划的稳定 metadata，以及选中的 DWM key/value 锚点。
+// ScratchpadGetResponse 用于返回枚举状态、一条英文提示消息、canonical 计划的稳定 metadata，以及命中的 DWM key/value 锚点。
 message ScratchpadGetResponse {
   ScratchpadStatus status = 1;
   string msg = 2;
   repeated ScratchpadItem items = 3;
   string plan_name = 4;
   uint32 item_count = 5;
+  int64 updated_timestamp = 6;
+}
+
+// ScratchpadListKeysRequest carries the deterministic scope whose canonical plan name and full ordered key list should be reloaded without fetching any values.
+// ScratchpadListKeysRequest 用于承载需要只读回载 canonical 计划名与完整有序 key 列表的确定性范围，并且不会拉取任何 value。
+message ScratchpadListKeysRequest {
+  string session_id = 1;
+  uint64 user_id = 2;
+  uint64 project_id = 3;
+}
+
+// ScratchpadListKeysResponse returns the enum status, one English message, stable metadata for the canonical plan, and the full ordered scratchpad key slice for the current scope.
+// ScratchpadListKeysResponse 用于返回枚举状态、一条英文提示消息、canonical 计划的稳定 metadata，以及当前范围下完整有序的 scratchpad key 切片。
+message ScratchpadListKeysResponse {
+  ScratchpadStatus status = 1;
+  string msg = 2;
+  string plan_name = 3;
+  repeated string keys = 4;
+  uint32 key_count = 5;
   int64 updated_timestamp = 6;
 }
 

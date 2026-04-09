@@ -38,6 +38,7 @@ const (
 	VMMService_ScratchpadUpsert_FullMethodName        = "/vmm.v1.VMMService/ScratchpadUpsert"
 	VMMService_ScratchpadDelete_FullMethodName        = "/vmm.v1.VMMService/ScratchpadDelete"
 	VMMService_ScratchpadGet_FullMethodName           = "/vmm.v1.VMMService/ScratchpadGet"
+	VMMService_ScratchpadListKeys_FullMethodName      = "/vmm.v1.VMMService/ScratchpadListKeys"
 	VMMService_ScratchpadClean_FullMethodName         = "/vmm.v1.VMMService/ScratchpadClean"
 	VMMService_ChatCompact_FullMethodName             = "/vmm.v1.VMMService/ChatCompact"
 	VMMService_PreCheck_FullMethodName                = "/vmm.v1.VMMService/PreCheck"
@@ -102,9 +103,12 @@ type VMMServiceClient interface {
 	// ScratchpadDelete removes one or more keys from the isolated DWM scratchpad without fabricating a new plan lock for empty sessions.
 	// ScratchpadDelete 用于从隔离 DWM scratchpad 中删除一个或多个 key，并且不会为当前空 session 伪造新的计划锁。
 	ScratchpadDelete(ctx context.Context, in *ScratchpadDeleteRequest, opts ...grpc.CallOption) (*ScratchpadDeleteResponse, error)
-	// ScratchpadGet reloads either one key or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
-	// ScratchpadGet 用于重新读取单个 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
+	// ScratchpadGet reloads either one filtered key batch or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
+	// ScratchpadGet 用于重新读取一批过滤 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
 	ScratchpadGet(ctx context.Context, in *ScratchpadGetRequest, opts ...grpc.CallOption) (*ScratchpadGetResponse, error)
+	// ScratchpadListKeys reloads the canonical plan name plus the full ordered scratchpad key list for the current isolated scope without fetching values.
+	// ScratchpadListKeys 用于在不拉取 value 的前提下，重新读取当前隔离范围的 canonical 计划名和完整有序 key 列表。
+	ScratchpadListKeys(ctx context.Context, in *ScratchpadListKeysRequest, opts ...grpc.CallOption) (*ScratchpadListKeysResponse, error)
 	// ScratchpadClean clears the whole isolated DWM scratchpad for the current project/user/session scope.
 	// ScratchpadClean 用于清空当前 project/user/session 范围下的整个隔离 DWM scratchpad。
 	ScratchpadClean(ctx context.Context, in *ScratchpadCleanRequest, opts ...grpc.CallOption) (*ScratchpadCleanResponse, error)
@@ -307,6 +311,16 @@ func (c *vMMServiceClient) ScratchpadGet(ctx context.Context, in *ScratchpadGetR
 	return out, nil
 }
 
+func (c *vMMServiceClient) ScratchpadListKeys(ctx context.Context, in *ScratchpadListKeysRequest, opts ...grpc.CallOption) (*ScratchpadListKeysResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ScratchpadListKeysResponse)
+	err := c.cc.Invoke(ctx, VMMService_ScratchpadListKeys_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *vMMServiceClient) ScratchpadClean(ctx context.Context, in *ScratchpadCleanRequest, opts ...grpc.CallOption) (*ScratchpadCleanResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ScratchpadCleanResponse)
@@ -405,9 +419,12 @@ type VMMServiceServer interface {
 	// ScratchpadDelete removes one or more keys from the isolated DWM scratchpad without fabricating a new plan lock for empty sessions.
 	// ScratchpadDelete 用于从隔离 DWM scratchpad 中删除一个或多个 key，并且不会为当前空 session 伪造新的计划锁。
 	ScratchpadDelete(context.Context, *ScratchpadDeleteRequest) (*ScratchpadDeleteResponse, error)
-	// ScratchpadGet reloads either one key or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
-	// ScratchpadGet 用于重新读取单个 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
+	// ScratchpadGet reloads either one filtered key batch or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
+	// ScratchpadGet 用于重新读取一批过滤 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
 	ScratchpadGet(context.Context, *ScratchpadGetRequest) (*ScratchpadGetResponse, error)
+	// ScratchpadListKeys reloads the canonical plan name plus the full ordered scratchpad key list for the current isolated scope without fetching values.
+	// ScratchpadListKeys 用于在不拉取 value 的前提下，重新读取当前隔离范围的 canonical 计划名和完整有序 key 列表。
+	ScratchpadListKeys(context.Context, *ScratchpadListKeysRequest) (*ScratchpadListKeysResponse, error)
 	// ScratchpadClean clears the whole isolated DWM scratchpad for the current project/user/session scope.
 	// ScratchpadClean 用于清空当前 project/user/session 范围下的整个隔离 DWM scratchpad。
 	ScratchpadClean(context.Context, *ScratchpadCleanRequest) (*ScratchpadCleanResponse, error)
@@ -483,6 +500,9 @@ func (UnimplementedVMMServiceServer) ScratchpadDelete(context.Context, *Scratchp
 }
 func (UnimplementedVMMServiceServer) ScratchpadGet(context.Context, *ScratchpadGetRequest) (*ScratchpadGetResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadGet not implemented")
+}
+func (UnimplementedVMMServiceServer) ScratchpadListKeys(context.Context, *ScratchpadListKeysRequest) (*ScratchpadListKeysResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadListKeys not implemented")
 }
 func (UnimplementedVMMServiceServer) ScratchpadClean(context.Context, *ScratchpadCleanRequest) (*ScratchpadCleanResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadClean not implemented")
@@ -841,6 +861,24 @@ func _VMMService_ScratchpadGet_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VMMService_ScratchpadListKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ScratchpadListKeysRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).ScratchpadListKeys(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_ScratchpadListKeys_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).ScratchpadListKeys(ctx, req.(*ScratchpadListKeysRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _VMMService_ScratchpadClean_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ScratchpadCleanRequest)
 	if err := dec(in); err != nil {
@@ -991,6 +1029,10 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "ScratchpadGet",
 			Handler:    _VMMService_ScratchpadGet_Handler,
+		},
+		{
+			MethodName: "ScratchpadListKeys",
+			Handler:    _VMMService_ScratchpadListKeys_Handler,
 		},
 		{
 			MethodName: "ScratchpadClean",

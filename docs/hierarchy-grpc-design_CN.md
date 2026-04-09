@@ -166,6 +166,7 @@ flowchart TD
 - `ScratchpadUpsert`
 - `ScratchpadDelete`
 - `ScratchpadGet`
+- `ScratchpadListKeys`
 - `ScratchpadClean`
 
 ### 5. 业务主链
@@ -265,10 +266,15 @@ flowchart TD
    - `key` 与 `keys[]` 不能混传
    - 批量删除采用整批原子事务
 3. `ScratchpadGet`
-   - 不带 `key` 时返回完整 scratchpad
-   - 带 `key` 时返回单项或空数组
+   - 不带 `keys[]` 或传空数组时返回完整 scratchpad
+   - 带 `keys[]` 时返回命中的多项或空数组
    - 返回 `plan_name / item_count / updated_timestamp`
-4. `ScratchpadClean`
+4. `ScratchpadListKeys`
+   - 不要求 `plan_name`
+   - 直接返回当前 canonical `plan_name` 与完整有序 `keys[]`
+   - 不返回任何 `value`
+   - 返回 `key_count / updated_timestamp`
+5. `ScratchpadClean`
    - 删除当前范围下的全部 scratchpad 节点与计划锁
 
 计划守卫规则：

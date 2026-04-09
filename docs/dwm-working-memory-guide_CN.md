@@ -16,6 +16,7 @@ DWM（Deterministic Working Memory，确定性工作记忆中枢）是面向 AI 
 - `ScratchpadUpsert`
 - `ScratchpadDelete`
 - `ScratchpadGet`
+- `ScratchpadListKeys`
 - `ScratchpadClean`
 
 ## 二、DWM 解决什么问题
@@ -175,12 +176,12 @@ DWM 支持批量 `items[]` 写入，一次工具调用即可原子写入一批�
 用途：
 
 - 读取完整 scratchpad
-- 或按单个 `key` 读取局部锚点
+- 或按多个 `keys[]` 读取局部锚点
 
 请求规则：
 
-- `key` 为空：返回全部
-- `key` 非空：返回单项或空数组
+- `keys[]` 为空或未传：返回全部
+- `keys[]` 非空：返回命中的多项或空数组
 
 无数据时：
 
@@ -200,7 +201,41 @@ DWM 支持批量 `items[]` 写入，一次工具调用即可原子写入一批�
 - `Get` 返回的 `plan_name` 永远是 canonical 值
 - 若当前没有 plan，则 `plan_name` 为空
 
-### 4. `ScratchpadClean`
+### 4. `ScratchpadListKeys`
+
+用途：
+
+- 只读取当前 scratchpad 的计划名与完整 key 目录
+- 用于宿主在不关心 value 时快速重建可用锚点集合
+
+请求规则：
+
+- 不需要传 `plan_name`
+- 只要求标准 scope：
+  - `session_id`
+  - `user_id`
+  - `project_id`
+
+无数据时：
+
+- 不报错
+- `status = SUCCESS`
+- `keys = []`
+- `msg = "No scratchpad records found for the current session."`
+
+响应 metadata：
+
+- `plan_name`
+- `key_count`
+- `updated_timestamp`
+
+重要约束：
+
+- `ListKeys` 返回完整有序的 `keys[]`
+- `ListKeys` 不返回任何 `value`
+- 若当前没有 plan，则 `plan_name` 为空
+
+### 5. `ScratchpadClean`
 
 用途：
 

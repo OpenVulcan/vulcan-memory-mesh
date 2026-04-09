@@ -55,6 +55,7 @@
 - `ScratchpadUpsert`
 - `ScratchpadDelete`
 - `ScratchpadGet`
+- `ScratchpadListKeys`
 - `ScratchpadClean`
 
 ### 业务面
@@ -243,6 +244,7 @@
 - `ScratchpadUpsert`
 - `ScratchpadDelete`
 - `ScratchpadGet`
+- `ScratchpadListKeys`
 - `ScratchpadClean`
 
 这条支线的边界非常明确：
@@ -298,6 +300,11 @@
 - `ScratchpadGet` 额外返回：
   - `plan_name`
   - `item_count`
+  - `updated_timestamp`
+- `ScratchpadListKeys` 额外返回：
+  - `plan_name`
+  - `keys[]`
+  - `key_count`
   - `updated_timestamp`
 - `ScratchpadUpsert` 额外返回：
   - `affected_count`
@@ -803,24 +810,47 @@
 
 用途：
 
-- 在上下文压缩后重新拉取完整 scratchpad 或某个单键锚点
+- 在上下文压缩后重新拉取完整 scratchpad 或一批指定锚点
 
 请求字段：
 
 - `session_id`
 - `user_id`
 - `project_id`
-- 可选 `key`
+- 可选 `keys[]`
 
 语义：
 
-- 不传 `key`
+- 不传 `keys[]` 或传空数组
   - 返回当前范围下全部 scratchpad item
-- 传 `key`
-  - 返回命中的单项或空数组
+- 传 `keys[]`
+  - 返回命中的多项或空数组
 - 同时返回 metadata：
   - `plan_name`
   - `item_count`
+  - `updated_timestamp`
+
+### ScratchpadListKeys
+
+用途：
+
+- 直接读取当前 scope 的 canonical `plan_name` 与完整有序 `keys[]`
+- 适合宿主只想恢复锚点目录、不需要 value 的场景
+
+请求字段：
+
+- `session_id`
+- `user_id`
+- `project_id`
+
+语义：
+
+- 不要求传 `plan_name`
+- 返回当前范围完整 key 列表，不返回 value
+- 无数据时返回成功和空数组
+- 同时返回 metadata：
+  - `plan_name`
+  - `key_count`
   - `updated_timestamp`
 
 ### ScratchpadClean

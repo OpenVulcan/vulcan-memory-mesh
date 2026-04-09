@@ -4,6 +4,7 @@ package usecase
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -100,16 +101,38 @@ func (f *fakeScratchpadStore) ListScratchpadItems(_ context.Context, _ uint64, k
 	}
 	out := make([]logicdomain.ScratchpadItem, 0, len(f.items))
 	if len(keys) == 0 {
-		for key, value := range f.items {
+		sortedKeys := make([]string, 0, len(f.items))
+		for key := range f.items {
+			sortedKeys = append(sortedKeys, key)
+		}
+		sort.Strings(sortedKeys)
+		for _, key := range sortedKeys {
+			value := f.items[key]
 			out = append(out, logicdomain.ScratchpadItem{Key: key, Value: value})
 		}
 		return out, nil
 	}
-	for _, key := range keys {
+	sortedKeys := append([]string(nil), keys...)
+	sort.Strings(sortedKeys)
+	for _, key := range sortedKeys {
 		if value, ok := f.items[key]; ok {
 			out = append(out, logicdomain.ScratchpadItem{Key: key, Value: value})
 		}
 	}
+	return out, nil
+}
+
+// ListScratchpadKeys returns the fake key set in stable sorted order so list-keys callers can rebuild the host-visible anchor catalog without touching values.
+// ListScratchpadKeys 用于按稳定排序返回 fake key 集合，让 list-keys 调用方无需触碰 value 也能重建宿主可见锚点目录。
+func (f *fakeScratchpadStore) ListScratchpadKeys(_ context.Context, _ uint64) ([]string, error) {
+	if len(f.items) == 0 {
+		return nil, nil
+	}
+	out := make([]string, 0, len(f.items))
+	for key := range f.items {
+		out = append(out, key)
+	}
+	sort.Strings(out)
 	return out, nil
 }
 
@@ -292,5 +315,112 @@ func TestScratchpadUseCaseGetReturnsCanonicalMetadata(t *testing.T) {
 	}
 	if len(result.Items) != 2 {
 		t.Fatalf("items len = %d, want 2", len(result.Items))
+	}
+}
+
+// TestScratchpadUseCaseGetSupportsMultiKeyFilters verifies get can reload a deterministic subset of anchors when the caller specifies multiple keys.
+// TestScratchpadUseCaseGetSupportsMultiKeyFilters 用于验证当调用方指定多个 key 时，get 可以重载一个确定性的锚点子集。
+func TestScratchpadUseCaseGetSupportsMultiKeyFilters(t *testing.T) {
+	now := time.Unix(1712300000, 0).UTC()
+	store := &fakeScratchpadStore{
+		hasPlan: true,
+		plan: logicdomain.ScratchpadPlanRecord{
+			ID:        77,
+			PlanName:  "USER_AUTH_PLAN",
+			UpdatedAt: now,
+		},
+		items: map[string]string{
+			"关键文件": "auth/service.go",
+			"方案":   "先收敛鉴权链路，再补测试",
+			"备注":   "这条不会被返回",
+		},
+	}
+	uc := NewScratchpadUseCase(store)
+
+	result, err := uc.Get(context.Background(), ScratchpadGetQuery{
+		Scope: logicdomain.ScratchpadScope{ProjectID: 9, UserID: 7, SessionKey: "sess-1"},
+		Keys:  []string{"方案", "关键文件"},
+	})
+	if err != nil {
+		t.Fatalf("Get returned error: %v", err)
+	}
+	if result.ItemCount != 2 {
+		t.Fatalf("item count = %d, want 2", result.ItemCount)
+	}
+	if len(result.Items) != 2 {
+		t.Fatalf("items len = %d, want 2", len(result.Items))
+	}
+	if result.Items[0].Key != "关键文件" || result.Items[1].Key != "方案" {
+		t.Fatalf("unexpected filtered items: %+v", result.Items)
+	}
+}
+
+// TestScratchpadUseCaseListKeysWithoutRecordsReturnsSuccess verifies list-keys treats an empty scope as a successful no-data response instead of surfacing an error.
+// TestScratchpadUseCaseListKeysWithoutRecordsReturnsSuccess 用于验证 list-keys 会把空范围视为成功的无数据响应，而不是抛出错误。
+func TestScratchpadUseCaseListKeysWithoutRecordsReturnsSuccess(t *testing.T) {
+	store := &fakeScratchpadStore{}
+	uc := NewScratchpadUseCase(store)
+
+	result, err := uc.ListKeys(context.Background(), ScratchpadListKeysQuery{
+		Scope: logicdomain.ScratchpadScope{ProjectID: 9, UserID: 7, SessionKey: "sess-1"},
+	})
+	if err != nil {
+		t.Fatalf("ListKeys returned error: %v", err)
+	}
+	if result.Status != logicdomain.ScratchpadStatusSuccess {
+		t.Fatalf("status = %v, want success", result.Status)
+	}
+	if result.Message != scratchpadNoRecordsMessage {
+		t.Fatalf("message = %q, want %q", result.Message, scratchpadNoRecordsMessage)
+	}
+	if result.PlanName != "" {
+		t.Fatalf("plan name = %q, want empty", result.PlanName)
+	}
+	if result.KeyCount != 0 {
+		t.Fatalf("key count = %d, want 0", result.KeyCount)
+	}
+	if len(result.Keys) != 0 {
+		t.Fatalf("keys = %+v, want empty", result.Keys)
+	}
+}
+
+// TestScratchpadUseCaseListKeysReturnsCanonicalMetadata verifies list-keys returns the canonical plan metadata together with a stable ordered key slice.
+// TestScratchpadUseCaseListKeysReturnsCanonicalMetadata 用于验证 list-keys 会连同稳定有序的 key 切片一起返回 canonical 计划 metadata。
+func TestScratchpadUseCaseListKeysReturnsCanonicalMetadata(t *testing.T) {
+	now := time.Unix(1712300000, 0).UTC()
+	store := &fakeScratchpadStore{
+		hasPlan: true,
+		plan: logicdomain.ScratchpadPlanRecord{
+			ID:        77,
+			PlanName:  "USER_AUTH_PLAN",
+			UpdatedAt: now,
+		},
+		items: map[string]string{
+			"关键文件": "auth/service.go",
+			"方案":   "先收敛鉴权链路，再补测试",
+		},
+	}
+	uc := NewScratchpadUseCase(store)
+
+	result, err := uc.ListKeys(context.Background(), ScratchpadListKeysQuery{
+		Scope: logicdomain.ScratchpadScope{ProjectID: 9, UserID: 7, SessionKey: "sess-1"},
+	})
+	if err != nil {
+		t.Fatalf("ListKeys returned error: %v", err)
+	}
+	if result.PlanName != "USER_AUTH_PLAN" {
+		t.Fatalf("plan name = %q, want canonical USER_AUTH_PLAN", result.PlanName)
+	}
+	if !result.UpdatedAt.Equal(now) {
+		t.Fatalf("updated at = %v, want %v", result.UpdatedAt, now)
+	}
+	if result.KeyCount != 2 {
+		t.Fatalf("key count = %d, want 2", result.KeyCount)
+	}
+	if len(result.Keys) != 2 {
+		t.Fatalf("keys len = %d, want 2", len(result.Keys))
+	}
+	if result.Keys[0] != "关键文件" || result.Keys[1] != "方案" {
+		t.Fatalf("unexpected key list: %+v", result.Keys)
 	}
 }

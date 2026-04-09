@@ -55,6 +55,7 @@ type ScratchpadExecutor interface {
 	Upsert(ctx context.Context, cmd ScratchpadUpsertCommand) (logicdomain.ScratchpadMutationResult, error)
 	Delete(ctx context.Context, cmd ScratchpadDeleteCommand) (logicdomain.ScratchpadMutationResult, error)
 	Get(ctx context.Context, query ScratchpadGetQuery) (logicdomain.ScratchpadQueryResult, error)
+	ListKeys(ctx context.Context, query ScratchpadListKeysQuery) (logicdomain.ScratchpadKeyListResult, error)
 	Clean(ctx context.Context, cmd ScratchpadCleanCommand) (logicdomain.ScratchpadMutationResult, error)
 }
 
@@ -74,11 +75,17 @@ type ScratchpadDeleteCommand struct {
 	Keys     []string
 }
 
-// ScratchpadGetQuery carries the deterministic scope and optional single-key filter used to reload scratchpad anchors after context compaction.
-// ScratchpadGetQuery 用于承载上下文压缩后重新加载 scratchpad 锚点时需要的确定性范围与可选单键过滤条件。
+// ScratchpadGetQuery carries the deterministic scope and optional multi-key filter used to reload scratchpad anchors after context compaction.
+// ScratchpadGetQuery 用于承载上下文压缩后重新加载 scratchpad 锚点时需要的确定性范围与可选多 key 过滤条件。
 type ScratchpadGetQuery struct {
 	Scope logicdomain.ScratchpadScope
-	Key   string
+	Keys  []string
+}
+
+// ScratchpadListKeysQuery carries the deterministic scope whose canonical plan name and ordered key list should be reloaded without fetching any values.
+// ScratchpadListKeysQuery 用于承载需要只读回载 canonical 计划名与有序 key 列表的确定性范围，并且不会拉取任何 value。
+type ScratchpadListKeysQuery struct {
+	Scope logicdomain.ScratchpadScope
 }
 
 // ScratchpadCleanCommand carries the deterministic scope whose working-memory anchors should be deleted explicitly at task end.
@@ -222,8 +229,8 @@ func (u *ScratchpadUseCase) Delete(ctx context.Context, cmd ScratchpadDeleteComm
 	}, nil
 }
 
-// Get reloads either the full isolated scratchpad state or one selected key and treats empty results as a successful no-data response instead of an error.
-// Get 用于重新加载完整隔离 scratchpad 状态或单个选定 key，并把空结果视为成功的无数据响应，而不是错误。
+// Get reloads either the full isolated scratchpad state or one selected key batch and treats empty results as a successful no-data response instead of an error.
+// Get 用于重新加载完整隔离 scratchpad 状态或一批选定 key，并把空结果视为成功的无数据响应，而不是错误。
 func (u *ScratchpadUseCase) Get(ctx context.Context, query ScratchpadGetQuery) (logicdomain.ScratchpadQueryResult, error) {
 	store, err := u.requireStore()
 	if err != nil {
@@ -232,9 +239,10 @@ func (u *ScratchpadUseCase) Get(ctx context.Context, query ScratchpadGetQuery) (
 	if err := validateScratchpadScope(query.Scope); err != nil {
 		return logicdomain.ScratchpadQueryResult{}, err
 	}
-	query.Key = strings.TrimSpace(query.Key)
-	if query.Key != "" {
-		if err := requireScratchpadKey("key", query.Key); err != nil {
+	keys := []string(nil)
+	if len(query.Keys) > 0 {
+		keys, err = normalizeScratchpadKeys(query.Keys)
+		if err != nil {
 			return logicdomain.ScratchpadQueryResult{}, err
 		}
 	}
@@ -254,10 +262,6 @@ func (u *ScratchpadUseCase) Get(ctx context.Context, query ScratchpadGetQuery) (
 		}, nil
 	}
 
-	keys := []string(nil)
-	if query.Key != "" {
-		keys = []string{query.Key}
-	}
 	items, err := store.ListScratchpadItems(ctx, plan.ID, keys)
 	if err != nil {
 		return logicdomain.ScratchpadQueryResult{}, err
@@ -279,6 +283,56 @@ func (u *ScratchpadUseCase) Get(ctx context.Context, query ScratchpadGetQuery) (
 		UpdatedAt: plan.UpdatedAt,
 		ItemCount: len(items),
 		Items:     items,
+	}, nil
+}
+
+// ListKeys reloads the canonical plan metadata plus the ordered scratchpad key slice for the current scope and treats empty results as a successful no-data response.
+// ListKeys 用于重新加载当前范围的 canonical 计划 metadata 与有序 scratchpad key 切片，并把空结果视为成功的无数据响应。
+func (u *ScratchpadUseCase) ListKeys(ctx context.Context, query ScratchpadListKeysQuery) (logicdomain.ScratchpadKeyListResult, error) {
+	store, err := u.requireStore()
+	if err != nil {
+		return logicdomain.ScratchpadKeyListResult{}, err
+	}
+	if err := validateScratchpadScope(query.Scope); err != nil {
+		return logicdomain.ScratchpadKeyListResult{}, err
+	}
+	if err := store.EnsureScratchpadScope(ctx, query.Scope); err != nil {
+		return logicdomain.ScratchpadKeyListResult{}, err
+	}
+	plan, found, err := store.LoadScratchpadPlan(ctx, query.Scope)
+	if err != nil {
+		return logicdomain.ScratchpadKeyListResult{}, err
+	}
+	if !found {
+		return logicdomain.ScratchpadKeyListResult{
+			Status:   logicdomain.ScratchpadStatusSuccess,
+			Message:  scratchpadNoRecordsMessage,
+			KeyCount: 0,
+			Keys:     []string{},
+		}, nil
+	}
+
+	keys, err := store.ListScratchpadKeys(ctx, plan.ID)
+	if err != nil {
+		return logicdomain.ScratchpadKeyListResult{}, err
+	}
+	if len(keys) == 0 {
+		return logicdomain.ScratchpadKeyListResult{
+			Status:    logicdomain.ScratchpadStatusSuccess,
+			Message:   scratchpadNoRecordsMessage,
+			PlanName:  plan.PlanName,
+			UpdatedAt: plan.UpdatedAt,
+			KeyCount:  0,
+			Keys:      []string{},
+		}, nil
+	}
+	return logicdomain.ScratchpadKeyListResult{
+		Status:    logicdomain.ScratchpadStatusSuccess,
+		Message:   fmt.Sprintf("Listed %d scratchpad key(s).", len(keys)),
+		PlanName:  plan.PlanName,
+		UpdatedAt: plan.UpdatedAt,
+		KeyCount:  len(keys),
+		Keys:      keys,
 	}, nil
 }
 
