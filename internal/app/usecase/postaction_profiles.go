@@ -13,6 +13,13 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
+// postActionProfileNodeRef points back to one profile node inside one turn-local analysis result.
+// postActionProfileNodeRef 用于回指某个 turn 局部分析结果中的一条画像节点。
+type postActionProfileNodeRef struct {
+	TurnIndex int
+	NodeIndex int
+}
+
 // convergeExpiredProfiles runs the periodic profile-lifecycle convergence path so due active nodes are materialized as expired rows and cached profile blobs stay in sync.
 // convergeExpiredProfiles 用于执行周期性的画像生命周期收敛，让到期 active 节点真实落成 expired 行，并保持缓存 profile Blob 同步。
 func (u *PostActionUseCase) convergeExpiredProfiles() {

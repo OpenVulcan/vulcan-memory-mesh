@@ -192,7 +192,7 @@ func TestPostgresIdleSessionInspectionBudgetAddsBoundedHeadroom(t *testing.T) {
 func TestBuildPostgresIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows(t *testing.T) {
 	args := &sqlArgsBuilder{}
 	store := &Store{cfg: Config{Schema: "public"}}
-	clause := buildPostgresIdleSessionCandidateAvailabilityClause(args, store, time.Unix(120, 0).UTC(), 8)
+	clause := store.buildPostgresIdleSessionCandidateAvailabilityClauseForTest(args, time.Unix(120, 0).UTC(), 8)
 	if !strings.Contains(clause, "FROM "+store.memoryNodesTable()+" AS m") {
 		t.Fatalf("candidate availability clause missing stale-memory branch: %q", clause)
 	}
@@ -236,7 +236,7 @@ func TestBuildPostgresDeleteCompletedVectorGCJobsSQLDeletesRows(t *testing.T) {
 func TestBuildPostgresColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns(t *testing.T) {
 	args := &sqlArgsBuilder{}
 	store := &Store{cfg: Config{Schema: "public"}}
-	clause := buildPostgresColdTurnJobSessionAvailabilityClause(args, store, 8)
+	clause := store.buildPostgresColdTurnJobSessionAvailabilityClauseForTest(args, 8)
 	if !strings.Contains(clause, "LIMIT 8") {
 		t.Fatalf("cold-turn availability clause missing hot-window limit: %q", clause)
 	}

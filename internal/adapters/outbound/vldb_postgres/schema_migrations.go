@@ -15,7 +15,7 @@ type trackedSchemaMigrationStep struct {
 	FromVersion int
 	ToVersion   int
 	Name        string
-	Up          func(context.Context, *Store) error
+	Up          func(context.Context, *maintenanceRepository) error
 }
 
 // trackedSchemaMigrationSteps returns the explicit PostgreSQL migration chain known by the current runtime.
@@ -27,7 +27,9 @@ func trackedSchemaMigrationSteps(flavor string) []trackedSchemaMigrationStep {
 			FromVersion: 1,
 			ToVersion:   2,
 			Name:        "add isolated scratchpad tables and indexes",
-			Up:          migrateCombinedSchema1To2,
+			Up: func(ctx context.Context, r *maintenanceRepository) error {
+				return r.migrateCombinedSchema1To2(ctx)
+			},
 		},
 	}
 }
@@ -87,13 +89,13 @@ func resolveTrackedSchemaMigrationPath(component string, stored, target int, ste
 
 // applyTrackedSchemaMigrations executes every explicit PostgreSQL migration step before the generic current-schema ensure phase runs.
 // applyTrackedSchemaMigrations 用于在通用当前 schema 幂等补齐之前执行所有显式 PostgreSQL 迁移步骤。
-func (s *Store) applyTrackedSchemaMigrations(ctx context.Context) error {
-	if s == nil || s.pool == nil {
+func (r *maintenanceRepository) applyTrackedSchemaMigrations(ctx context.Context) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	steps := trackedSchemaMigrationSteps(s.cfg.Flavor)
-	for _, component := range trackedSchemaComponents(s.cfg.Flavor) {
-		stored, err := s.GetSchemaComponentVersion(ctx, component.component)
+	steps := trackedSchemaMigrationSteps(r.shared.cfg.Flavor)
+	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
+		stored, err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).GetSchemaComponentVersion(ctx, component.component)
 		if err != nil {
 			return err
 		}
@@ -103,11 +105,11 @@ func (s *Store) applyTrackedSchemaMigrations(ctx context.Context) error {
 		}
 		current := stored
 		for _, step := range path {
-			if err := step.Up(ctx, s); err != nil {
+			if err := step.Up(ctx, r); err != nil {
 				return fmt.Errorf("migrate postgres schema component %s %d -> %d (%s): %w", step.Component, step.FromVersion, step.ToVersion, step.Name, err)
 			}
 			current = step.ToVersion
-			if err := s.SetSchemaComponentVersion(ctx, component.component, current); err != nil {
+			if err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).SetSchemaComponentVersion(ctx, component.component, current); err != nil {
 				return err
 			}
 		}
@@ -117,14 +119,14 @@ func (s *Store) applyTrackedSchemaMigrations(ctx context.Context) error {
 
 // migrateCombinedSchema1To2 adds the isolated scratchpad tables and indexes so older PostgreSQL combined stores can upgrade in place.
 // migrateCombinedSchema1To2 用于增加隔离 scratchpad 表和索引，让旧版 PostgreSQL 组合库可以原地升级。
-func migrateCombinedSchema1To2(ctx context.Context, s *Store) error {
-	if s == nil || s.pool == nil {
+func (r *maintenanceRepository) migrateCombinedSchema1To2(ctx context.Context) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	if err := s.execDDLStatements(ctx, s.scratchpadSchemaDDLs(), "postgres scratchpad schema migration"); err != nil {
+	if err := r.execDDLStatements(ctx, r.scratchpadSchemaDDLs(), "postgres scratchpad schema migration"); err != nil {
 		return err
 	}
-	if err := s.execDDLStatements(ctx, s.scratchpadIndexDDLs(), "postgres scratchpad index migration"); err != nil {
+	if err := r.execDDLStatements(ctx, r.scratchpadIndexDDLs(), "postgres scratchpad index migration"); err != nil {
 		return err
 	}
 	return nil
@@ -132,9 +134,9 @@ func migrateCombinedSchema1To2(ctx context.Context, s *Store) error {
 
 // execDDLStatements executes one deterministic DDL batch sequentially so migration errors stay attributable to one schema phase.
 // execDDLStatements 用于顺序执行一组确定性的 DDL，让迁移错误可以稳定归因到某个 schema 阶段。
-func (s *Store) execDDLStatements(ctx context.Context, statements []string, phase string) error {
+func (r *maintenanceRepository) execDDLStatements(ctx context.Context, statements []string, phase string) error {
 	for _, statement := range statements {
-		if _, err := s.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
+		if _, err := r.shared.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
 			return fmt.Errorf("%s: %w", strings.TrimSpace(phase), err)
 		}
 	}
@@ -143,16 +145,16 @@ func (s *Store) execDDLStatements(ctx context.Context, statements []string, phas
 
 // scratchpadSchemaDDLs returns the isolated scratchpad table DDL shared by bootstrap and explicit migration flows.
 // scratchpadSchemaDDLs 用于返回 bootstrap 与显式迁移共享的 scratchpad 表 DDL。
-func (s *Store) scratchpadSchemaDDLs() []string {
+func (r *maintenanceRepository) scratchpadSchemaDDLs() []string {
 	return []string{
-		s.scratchpadPlansTableDDL(),
-		s.scratchpadNodesTableDDL(),
+		r.scratchpadPlansTableDDL(),
+		r.scratchpadNodesTableDDL(),
 	}
 }
 
 // scratchpadPlansTableDDL returns the canonical PostgreSQL DDL for the isolated DWM plan-lock table.
 // scratchpadPlansTableDDL 用于返回隔离 DWM 计划锁表的标准 PostgreSQL DDL。
-func (s *Store) scratchpadPlansTableDDL() string {
+func (r *maintenanceRepository) scratchpadPlansTableDDL() string {
 	return fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -164,12 +166,12 @@ CREATE TABLE IF NOT EXISTS %s (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE(project_id, user_id, session_key)
-)`, s.scratchpadPlansTable(), s.projectsTable(), s.usersTable())
+)`, r.scratchpadPlansTable(), r.projectsTable(), r.usersTable())
 }
 
 // scratchpadNodesTableDDL returns the canonical PostgreSQL DDL for the isolated DWM key/value node table.
 // scratchpadNodesTableDDL 用于返回隔离 DWM key/value 节点表的标准 PostgreSQL DDL。
-func (s *Store) scratchpadNodesTableDDL() string {
+func (r *maintenanceRepository) scratchpadNodesTableDDL() string {
 	return fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	id BIGINT GENERATED BY DEFAULT AS IDENTITY PRIMARY KEY,
@@ -179,16 +181,16 @@ CREATE TABLE IF NOT EXISTS %s (
 	created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 	UNIQUE(plan_id, item_key)
-)`, s.scratchpadNodesTable(), s.scratchpadPlansTable())
+)`, r.scratchpadNodesTable(), r.scratchpadPlansTable())
 }
 
 // scratchpadIndexDDLs returns the isolated scratchpad index DDL shared by bootstrap and explicit migration flows.
 // scratchpadIndexDDLs 用于返回 bootstrap 与显式迁移共享的 scratchpad 索引 DDL。
-func (s *Store) scratchpadIndexDDLs() []string {
+func (r *maintenanceRepository) scratchpadIndexDDLs() []string {
 	return []string{
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_scope ON %s (project_id, user_id, session_key, updated_at DESC)`, s.scratchpadPlansTable()),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_gc ON %s (updated_at, id)`, s.scratchpadPlansTable()),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_plan ON %s (plan_id, updated_at DESC, id)`, s.scratchpadNodesTable()),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_created ON %s (created_at, id)`, s.scratchpadNodesTable()),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_scope ON %s (project_id, user_id, session_key, updated_at DESC)`, r.scratchpadPlansTable()),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_plans_gc ON %s (updated_at, id)`, r.scratchpadPlansTable()),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_plan ON %s (plan_id, updated_at DESC, id)`, r.scratchpadNodesTable()),
+		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_scratchpad_nodes_created ON %s (created_at, id)`, r.scratchpadNodesTable()),
 	}
 }

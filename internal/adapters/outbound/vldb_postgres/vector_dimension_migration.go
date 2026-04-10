@@ -12,17 +12,17 @@ import (
 
 // RebuildMemoryVectorDimensions rebuilds the combined-store vector-bearing columns with the current configured dimension and repopulates active rows inside the same transaction, while intentionally resetting trash/cache vector payloads instead of re-embedding them.
 // RebuildMemoryVectorDimensions 用于按当前配置维度重建组合库里的向量列，并在同一事务里回填 active 行；同时有意重置垃圾箱/缓存向量载荷而不对其重新做 embedding。
-func (s *Store) RebuildMemoryVectorDimensions(ctx context.Context, records []logicdomain.MemoryRecord) error {
-	if s == nil || s.pool == nil {
+func (r *vectorRepository) RebuildMemoryVectorDimensions(ctx context.Context, records []logicdomain.MemoryRecord) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	if s.cfg.EmbeddingDimension <= 0 {
+	if r.shared.cfg.EmbeddingDimension <= 0 {
 		return fmt.Errorf("postgres embedding dimension must be > 0 for vector dimension rebuild")
 	}
 
-	callCtx, cancel := s.maintenanceWriteContext(ctx)
+	callCtx, cancel := r.maintenanceWriteContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return fmt.Errorf("begin postgres vector dimension rebuild tx: %w", err)
 	}
@@ -30,7 +30,7 @@ func (s *Store) RebuildMemoryVectorDimensions(ctx context.Context, records []log
 		_ = tx.Rollback(context.Background())
 	}()
 
-	statements := buildVectorDimensionRebuildStatements(s.cfg.Schema, s.noiseEmbeddingsTable(), s.memoryNodesTable(), s.memoryNodesTrashTable(), s.cfg.EmbeddingDimension)
+	statements := buildVectorDimensionRebuildStatements(r.shared.cfg.Schema, r.noiseEmbeddingsTable(), r.memoryNodesTable(), r.memoryNodesTrashTable(), r.shared.cfg.EmbeddingDimension)
 	for _, statement := range statements {
 		if _, err := tx.Exec(callCtx, strings.TrimSpace(statement)); err != nil {
 			return fmt.Errorf("execute postgres vector dimension rebuild statement: %w", err)
@@ -39,16 +39,16 @@ func (s *Store) RebuildMemoryVectorDimensions(ctx context.Context, records []log
 
 	// Rewrite every active durable row before commit so outside readers never observe the freshly rebuilt column layout with zero-vector placeholders still in place.
 	// 在提交前先回填全部 active durable 行，避免外部读取方观察到“列布局已重建但仍停留在零向量占位符”的中间状态。
-	sqlText := buildReplaceMemoryVectorSQL(s.memoryNodesTable())
+	sqlText := buildReplaceMemoryVectorSQL(r.memoryNodesTable())
 	for idx, record := range records {
 		vectorID := strings.TrimSpace(record.ID)
 		if vectorID == "" {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].id", idx), Message: "is required"}
 		}
-		if len(record.Vector) != s.cfg.EmbeddingDimension {
+		if len(record.Vector) != r.shared.cfg.EmbeddingDimension {
 			return logicdomain.ValidationError{
 				Field:   fmt.Sprintf("records[%d].vector", idx),
-				Message: fmt.Sprintf("must contain exactly %d dimensions", s.cfg.EmbeddingDimension),
+				Message: fmt.Sprintf("must contain exactly %d dimensions", r.shared.cfg.EmbeddingDimension),
 			}
 		}
 		tag, execErr := tx.Exec(callCtx, sqlText, encodePGVectorLiteral(record.Vector), vectorID)
@@ -60,7 +60,7 @@ func (s *Store) RebuildMemoryVectorDimensions(ctx context.Context, records []log
 		}
 	}
 
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(buildMemoryVectorIndexSQL(s.memoryNodesTable(), s.cfg.VectorLists))); err != nil {
+	if _, err := tx.Exec(callCtx, strings.TrimSpace(buildMemoryVectorIndexSQL(r.memoryNodesTable(), r.shared.cfg.VectorLists))); err != nil {
 		return fmt.Errorf("recreate postgres vector index inside dimension rebuild tx: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {

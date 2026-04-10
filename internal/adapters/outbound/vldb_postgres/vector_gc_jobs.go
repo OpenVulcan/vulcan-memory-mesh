@@ -52,8 +52,8 @@ func (r postgresVectorGCJobRow) toDomain() logicdomain.VectorGCJobRecord {
 
 // EnqueueVectorGCJobs persists failed sidecar vector deletes into the PostgreSQL retry queue so later maintenance passes can compensate transient vector-store failures.
 // EnqueueVectorGCJobs 用于把失败的旁路向量删除持久化到 PostgreSQL 重试队列，让后续维护轮次可以补偿瞬时向量库故障。
-func (s *Store) EnqueueVectorGCJobs(ctx context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
-	if s == nil || s.pool == nil {
+func (r *vectorRepository) EnqueueVectorGCJobs(ctx context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	vectorIDs := normalizeStringList(query.VectorIDs)
@@ -86,11 +86,11 @@ INSERT INTO %s (
 )
 VALUES %s
 ON CONFLICT (vector_id, job_type, batch_id) DO NOTHING
-`, s.vectorGCJobsTable(), strings.Join(valueClauses, ",\n"))
+`, r.vectorGCJobsTable(), strings.Join(valueClauses, ",\n"))
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), args.Args()...); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), args.Args()...); err != nil {
 		return fmt.Errorf("enqueue postgres vector gc jobs: %w", err)
 	}
 	return nil
@@ -98,8 +98,8 @@ ON CONFLICT (vector_id, job_type, batch_id) DO NOTHING
 
 // ClaimPendingVectorGCJobs leases one bounded PostgreSQL retry batch with SKIP LOCKED so concurrent maintenance workers cannot consume the same vector-delete work twice.
 // ClaimPendingVectorGCJobs 用于通过 SKIP LOCKED 领取一批有界的 PostgreSQL 重试任务，避免并发维护工作器重复消费同一批向量删除工作。
-func (s *Store) ClaimPendingVectorGCJobs(ctx context.Context, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.VectorGCJobRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *vectorRepository) ClaimPendingVectorGCJobs(ctx context.Context, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.VectorGCJobRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	limit = normalizeRetentionBatchLimit(limit, 128)
@@ -126,11 +126,11 @@ WHERE jobs.id = claimed.id
 RETURNING jobs.id, jobs.batch_id, jobs.vector_id, jobs.job_type, jobs.attempt_count,
           jobs.next_run_at, jobs.claimed_at, jobs.completed_at, jobs.last_error,
           jobs.created_at, jobs.updated_at
-`, s.vectorGCJobsTable(), s.vectorGCJobsTable())
+`, r.vectorGCJobsTable(), r.vectorGCJobsTable())
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return nil, fmt.Errorf("begin postgres vector gc claim tx: %w", err)
 	}
@@ -175,19 +175,19 @@ RETURNING jobs.id, jobs.batch_id, jobs.vector_id, jobs.job_type, jobs.attempt_co
 
 // CompleteVectorGCJobs removes one PostgreSQL retry batch immediately after the sidecar delete succeeds, keeping the queue strictly transient instead of retaining completed bookkeeping rows forever.
 // CompleteVectorGCJobs 用于在旁路删除成功后立即删除一批 PostgreSQL 重试任务，让该队列严格保持瞬时补偿语义，而不是永久保留已完成台账。
-func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
-	if s == nil || s.pool == nil {
+func (r *vectorRepository) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}
-	sqlText := buildPostgresDeleteCompletedVectorGCJobsSQL(s.vectorGCJobsTable())
+	sqlText := buildPostgresDeleteCompletedVectorGCJobsSQL(r.vectorGCJobsTable())
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs)); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs)); err != nil {
 		return fmt.Errorf("complete postgres vector gc jobs: %w", err)
 	}
 	return nil
@@ -204,8 +204,8 @@ WHERE id = ANY($1)
 
 // RetryVectorGCJobs reschedules one PostgreSQL retry batch after the sidecar delete still fails, incrementing attempts while releasing the current lease.
 // RetryVectorGCJobs 用于在旁路删除仍然失败时重新调度一批 PostgreSQL 重试任务，同时递增尝试次数并释放当前租约。
-func (s *Store) RetryVectorGCJobs(ctx context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
-	if s == nil || s.pool == nil {
+func (r *vectorRepository) RetryVectorGCJobs(ctx context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)
@@ -225,11 +225,11 @@ SET attempt_count = attempt_count + 1,
     updated_at = $4
 WHERE id = ANY($1)
   AND completed_at IS NULL
-`, s.vectorGCJobsTable())
+`, r.vectorGCJobsTable())
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now); err != nil {
 		return fmt.Errorf("retry postgres vector gc jobs: %w", err)
 	}
 	return nil

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
@@ -17,11 +18,11 @@ import (
 var (
 	// _ScratchpadStoreContract keeps the PostgreSQL combined store aligned with the isolated DWM CRUD port at compile time.
 	// _ScratchpadStoreContract 用于在编译期确保 PostgreSQL 组合库满足隔离 DWM CRUD 端口契约。
-	_ appports.ScratchpadStore = (*Store)(nil)
+	_ appports.ScratchpadStore = (*scratchpadRepository)(nil)
 
 	// _ScratchpadMaintenanceStoreContract keeps the PostgreSQL combined store aligned with the isolated DWM maintenance port at compile time.
 	// _ScratchpadMaintenanceStoreContract 用于在编译期确保 PostgreSQL 组合库满足隔离 DWM 维护端口契约。
-	_ appports.ScratchpadMaintenanceStore = (*Store)(nil)
+	_ appports.ScratchpadMaintenanceStore = (*scratchpadRepository)(nil)
 )
 
 // scratchpadPlanScanRow mirrors one PostgreSQL scratchpad-plan row so transport decoding stays separate from domain-level plan semantics.
@@ -72,9 +73,127 @@ func (r scratchpadNodeScanRow) toItem() logicdomain.ScratchpadItem {
 	}
 }
 
+// scratchpadPool returns the shared PostgreSQL connection pool for repository-level pool access.
+// scratchpadPool 用于返回仓储层共享的 PostgreSQL 连接池，供仓储方法直接访问。
+func (r *scratchpadRepository) scratchpadPool() *pgxpool.Pool {
+	return r.shared.pool
+}
+
+// scratchpadQueryContext derives a bounded query context for scratchpad repository methods.
+// scratchpadQueryContext 用于为 scratchpad 仓储方法派生有界查询上下文。
+func (r *scratchpadRepository) scratchpadQueryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := r.shared.cfg.QueryTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// scratchpadPlansTable returns the qualified plans table name for SQL generation within the scratchpad repository.
+// scratchpadPlansTable 用于在 scratchpad 仓储内生成 SQL 时返回限定的 plans 表名。
+func (r *scratchpadRepository) scratchpadPlansTable() string {
+	return r.scratchpadQualifiedTable("vmm_scratchpad_plans")
+}
+
+// scratchpadNodesTable returns the qualified nodes table name for SQL generation within the scratchpad repository.
+// scratchpadNodesTable 用于在 scratchpad 仓储内生成 SQL 时返回限定的 nodes 表名。
+func (r *scratchpadRepository) scratchpadNodesTable() string {
+	return r.scratchpadQualifiedTable("vmm_scratchpad_nodes")
+}
+
+// scratchpadQualifiedTable returns the qualified table name within the scratchpad repository's configured schema.
+// scratchpadQualifiedTable 用于在 scratchpad 仓储的配置 schema 内返回限定的表名。
+func (r *scratchpadRepository) scratchpadQualifiedTable(name string) string {
+	return quoteIdentifier(r.shared.cfg.Schema) + "." + quoteIdentifier(strings.TrimSpace(name))
+}
+
+// loadUserByID loads a user record by ID for scratchpad scope validation.
+// loadUserByID 用于加载用户记录以校验 scratchpad 范围。
+func (r *scratchpadRepository) loadUserByID(ctx context.Context, userID uint64) (logicdomain.UserRecord, error) {
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
+	defer cancel()
+	sqlText := fmt.Sprintf(`
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
+FROM %s
+WHERE id = $1
+LIMIT 1
+`, r.scratchpadQualifiedTable("vmm_users"))
+	var row struct {
+		ID                uint64
+		Name              string
+		Profile           string
+		DeleteConfirmCode string
+		CreatedAt         time.Time
+		UpdatedAt         time.Time
+	}
+	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(userID)).Scan(
+		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.UserRecord{}, fmt.Errorf("load postgres user by id: %w", err)
+		}
+		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user id %d does not exist", userID)}
+	}
+	return logicdomain.UserRecord{
+		ID:                row.ID,
+		Name:              strings.TrimSpace(row.Name),
+		Profile:           strings.TrimSpace(row.Profile),
+		DeleteConfirmCode: strings.TrimSpace(row.DeleteConfirmCode),
+		CreatedAt:         row.CreatedAt.UTC(),
+		UpdatedAt:         row.UpdatedAt.UTC(),
+	}, nil
+}
+
+// loadProjectByID loads a project record by ID for scratchpad scope validation.
+// loadProjectByID 用于加载项目记录以校验 scratchpad 范围。
+func (r *scratchpadRepository) loadProjectByID(ctx context.Context, projectID uint64) (logicdomain.ProjectRecord, error) {
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
+	defer cancel()
+	sqlText := fmt.Sprintf(`
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
+FROM %s AS p
+JOIN %s AS t ON t.id = p.team_id
+JOIN %s AS sp ON sp.id = p.space_id
+WHERE p.id = $1
+LIMIT 1
+`, r.scratchpadQualifiedTable("vmm_projects"), r.scratchpadQualifiedTable("vmm_teams"), r.scratchpadQualifiedTable("vmm_spaces"))
+	var row struct {
+		ID        uint64
+		TeamID    uint64
+		SpaceID   uint64
+		Name      string
+		Profile   string
+		TeamName  string
+		SpaceName string
+		CreatedAt time.Time
+		UpdatedAt time.Time
+	}
+	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(projectID)).Scan(
+		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.ProjectRecord{}, fmt.Errorf("load postgres project by id: %w", err)
+		}
+		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project id %d does not exist", projectID)}
+	}
+	return logicdomain.ProjectRecord{
+		ID:        row.ID,
+		TeamID:    row.TeamID,
+		SpaceID:   row.SpaceID,
+		Name:      strings.TrimSpace(row.Name),
+		Profile:   strings.TrimSpace(row.Profile),
+		TeamName:  strings.TrimSpace(row.TeamName),
+		SpaceName: strings.TrimSpace(row.SpaceName),
+		CreatedAt: row.CreatedAt.UTC(),
+		UpdatedAt: row.UpdatedAt.UTC(),
+	}, nil
+}
+
 // EnsureScratchpadScope validates that the referenced user and project already exist without creating any durable session rows.
 // EnsureScratchpadScope 用于校验引用的 user 和 project 已存在，同时不会创建任何长期 session 行。
-func (s *Store) EnsureScratchpadScope(ctx context.Context, scope logicdomain.ScratchpadScope) error {
+func (r *scratchpadRepository) EnsureScratchpadScope(ctx context.Context, scope logicdomain.ScratchpadScope) error {
 	if strings.TrimSpace(scope.SessionKey) == "" {
 		return logicdomain.ValidationError{Field: "session_id", Message: "is required"}
 	}
@@ -84,10 +203,10 @@ func (s *Store) EnsureScratchpadScope(ctx context.Context, scope logicdomain.Scr
 	if scope.ProjectID == 0 {
 		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 	}
-	if _, err := s.loadUserByID(ctx, scope.UserID); err != nil {
+	if _, err := r.loadUserByID(ctx, scope.UserID); err != nil {
 		return err
 	}
-	if _, err := s.loadProjectByID(ctx, scope.ProjectID); err != nil {
+	if _, err := r.loadProjectByID(ctx, scope.ProjectID); err != nil {
 		return err
 	}
 	return nil
@@ -95,10 +214,10 @@ func (s *Store) EnsureScratchpadScope(ctx context.Context, scope logicdomain.Scr
 
 // LoadScratchpadPlan loads the current canonical plan lock for one isolated DWM scope.
 // LoadScratchpadPlan 用于加载某个隔离 DWM 范围下当前生效的 canonical 计划锁。
-func (s *Store) LoadScratchpadPlan(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadPlanRecord, bool, error) {
-	callCtx, cancel := s.queryContext(ctx)
+func (r *scratchpadRepository) LoadScratchpadPlan(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadPlanRecord, bool, error) {
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	row, found, err := s.loadScratchpadPlanWithQueryer(callCtx, s.pool, scope, false)
+	row, found, err := r.loadScratchpadPlanWithQueryer(callCtx, r.shared.pool, scope, false)
 	if err != nil {
 		return logicdomain.ScratchpadPlanRecord{}, false, err
 	}
@@ -110,10 +229,10 @@ func (s *Store) LoadScratchpadPlan(ctx context.Context, scope logicdomain.Scratc
 
 // CreateScratchpadPlan inserts the canonical plan lock when the current isolated DWM scope does not have one yet, and reuses a same-plan concurrent winner when needed.
 // CreateScratchpadPlan 用于在当前隔离 DWM 范围尚无计划锁时插入 canonical 计划锁，并在并发情况下复用同计划的先到者。
-func (s *Store) CreateScratchpadPlan(ctx context.Context, scope logicdomain.ScratchpadScope, planName string, createdAt time.Time) (logicdomain.ScratchpadPlanRecord, error) {
-	callCtx, cancel := s.queryContext(ctx)
+func (r *scratchpadRepository) CreateScratchpadPlan(ctx context.Context, scope logicdomain.ScratchpadScope, planName string, createdAt time.Time) (logicdomain.ScratchpadPlanRecord, error) {
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ScratchpadPlanRecord{}, fmt.Errorf("begin postgres scratchpad-create tx: %w", err)
 	}
@@ -122,7 +241,7 @@ func (s *Store) CreateScratchpadPlan(ctx context.Context, scope logicdomain.Scra
 	}()
 
 	planName = strings.TrimSpace(planName)
-	insertSQL := buildPostgresScratchpadPlanInsertSQL(s.scratchpadPlansTable())
+	insertSQL := buildPostgresScratchpadPlanInsertSQL(r.scratchpadPlansTable())
 	var created scratchpadPlanScanRow
 	at := chooseNonZeroTime(createdAt, time.Now().UTC())
 	if err := tx.QueryRow(callCtx, strings.TrimSpace(insertSQL), int64(scope.ProjectID), int64(scope.UserID), strings.TrimSpace(scope.SessionKey), planName, strings.ToLower(planName), at).Scan(
@@ -140,7 +259,7 @@ func (s *Store) CreateScratchpadPlan(ctx context.Context, scope logicdomain.Scra
 
 	// When the insert lost a concurrent race, lock and reuse the persisted winner if it belongs to the same canonical plan.
 	// 当插入在并发中败给先到者后，重新加锁读取持久化赢家；若仍属于同一 canonical 计划，则直接复用。
-	row, found, err := s.loadScratchpadPlanWithQueryer(callCtx, tx, scope, true)
+	row, found, err := r.loadScratchpadPlanWithQueryer(callCtx, tx, scope, true)
 	if err != nil {
 		return logicdomain.ScratchpadPlanRecord{}, err
 	}
@@ -173,16 +292,16 @@ RETURNING id, project_id, user_id, session_key, plan_name, plan_name_norm, creat
 
 // UpsertScratchpadItems inserts or overwrites one deterministic DWM item batch and refreshes the parent plan timestamp only when real writes occurred.
 // UpsertScratchpadItems 用于插入或覆盖一批确定性的 DWM item，并且只在真实写入发生时刷新父级计划时间戳。
-func (s *Store) UpsertScratchpadItems(ctx context.Context, planID uint64, items []logicdomain.ScratchpadItem, updatedAt time.Time) (logicdomain.ScratchpadUpsertPersistResult, error) {
+func (r *scratchpadRepository) UpsertScratchpadItems(ctx context.Context, planID uint64, items []logicdomain.ScratchpadItem, updatedAt time.Time) (logicdomain.ScratchpadUpsertPersistResult, error) {
 	if planID == 0 {
 		return logicdomain.ScratchpadUpsertPersistResult{}, logicdomain.ValidationError{Field: "plan_id", Message: "must be a numeric id"}
 	}
 	if len(items) == 0 {
 		return logicdomain.ScratchpadUpsertPersistResult{}, nil
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ScratchpadUpsertPersistResult{}, fmt.Errorf("begin postgres scratchpad-upsert tx: %w", err)
 	}
@@ -194,7 +313,7 @@ func (s *Store) UpsertScratchpadItems(ctx context.Context, planID uint64, items 
 	for _, item := range items {
 		keys = append(keys, strings.TrimSpace(item.Key))
 	}
-	existingKeys, err := s.loadScratchpadExistingKeysWithQueryer(callCtx, tx, planID, keys)
+	existingKeys, err := r.loadScratchpadExistingKeysWithQueryer(callCtx, tx, planID, keys)
 	if err != nil {
 		return logicdomain.ScratchpadUpsertPersistResult{}, err
 	}
@@ -206,7 +325,7 @@ VALUES ($1, $2, $3, $4, $4)
 ON CONFLICT (plan_id, item_key) DO UPDATE SET
   item_value = EXCLUDED.item_value,
   updated_at = EXCLUDED.updated_at
-`, s.scratchpadNodesTable())
+`, r.scratchpadNodesTable())
 	at := chooseNonZeroTime(updatedAt, time.Now().UTC())
 	for _, item := range items {
 		itemKey := strings.TrimSpace(item.Key)
@@ -219,7 +338,7 @@ ON CONFLICT (plan_id, item_key) DO UPDATE SET
 			return logicdomain.ScratchpadUpsertPersistResult{}, fmt.Errorf("upsert postgres scratchpad item %s: %w", itemKey, err)
 		}
 	}
-	updatePlanSQL := fmt.Sprintf(`UPDATE %s SET updated_at = $1 WHERE id = $2`, s.scratchpadPlansTable())
+	updatePlanSQL := fmt.Sprintf(`UPDATE %s SET updated_at = $1 WHERE id = $2`, r.scratchpadPlansTable())
 	if _, err := tx.Exec(callCtx, updatePlanSQL, at, int64(planID)); err != nil {
 		return logicdomain.ScratchpadUpsertPersistResult{}, fmt.Errorf("refresh postgres scratchpad plan timestamp: %w", err)
 	}
@@ -234,16 +353,16 @@ ON CONFLICT (plan_id, item_key) DO UPDATE SET
 
 // DeleteScratchpadItems deletes one deterministic key batch and keeps the plan row intact even when the last node disappears.
 // DeleteScratchpadItems 用于删除一批确定性 key，并且即使删掉最后一个节点也保留计划行。
-func (s *Store) DeleteScratchpadItems(ctx context.Context, planID uint64, keys []string, updatedAt time.Time) (logicdomain.ScratchpadDeletePersistResult, error) {
+func (r *scratchpadRepository) DeleteScratchpadItems(ctx context.Context, planID uint64, keys []string, updatedAt time.Time) (logicdomain.ScratchpadDeletePersistResult, error) {
 	if planID == 0 {
 		return logicdomain.ScratchpadDeletePersistResult{}, logicdomain.ValidationError{Field: "plan_id", Message: "must be a numeric id"}
 	}
 	if len(keys) == 0 {
 		return logicdomain.ScratchpadDeletePersistResult{}, nil
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ScratchpadDeletePersistResult{}, fmt.Errorf("begin postgres scratchpad-delete tx: %w", err)
 	}
@@ -252,12 +371,12 @@ func (s *Store) DeleteScratchpadItems(ctx context.Context, planID uint64, keys [
 	}()
 
 	keyList := normalizeStringList(keys)
-	deletedCount, err := s.countScratchpadNodesByKeysWithQueryer(callCtx, tx, planID, keyList)
+	deletedCount, err := r.countScratchpadNodesByKeysWithQueryer(callCtx, tx, planID, keyList)
 	if err != nil {
 		return logicdomain.ScratchpadDeletePersistResult{}, err
 	}
 	if deletedCount == 0 {
-		remainingCount, err := s.countScratchpadNodesWithQueryer(callCtx, tx, planID)
+		remainingCount, err := r.countScratchpadNodesWithQueryer(callCtx, tx, planID)
 		if err != nil {
 			return logicdomain.ScratchpadDeletePersistResult{}, err
 		}
@@ -266,15 +385,15 @@ func (s *Store) DeleteScratchpadItems(ctx context.Context, planID uint64, keys [
 		}
 		return logicdomain.ScratchpadDeletePersistResult{DeletedCount: 0, RemainingCount: remainingCount}, nil
 	}
-	deleteSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id = $1 AND item_key = ANY($2)`, s.scratchpadNodesTable())
+	deleteSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id = $1 AND item_key = ANY($2)`, r.scratchpadNodesTable())
 	if _, err := tx.Exec(callCtx, deleteSQL, int64(planID), keyList); err != nil {
 		return logicdomain.ScratchpadDeletePersistResult{}, fmt.Errorf("delete postgres scratchpad items: %w", err)
 	}
-	remainingCount, err := s.countScratchpadNodesWithQueryer(callCtx, tx, planID)
+	remainingCount, err := r.countScratchpadNodesWithQueryer(callCtx, tx, planID)
 	if err != nil {
 		return logicdomain.ScratchpadDeletePersistResult{}, err
 	}
-	updatePlanSQL := fmt.Sprintf(`UPDATE %s SET updated_at = $1 WHERE id = $2`, s.scratchpadPlansTable())
+	updatePlanSQL := fmt.Sprintf(`UPDATE %s SET updated_at = $1 WHERE id = $2`, r.scratchpadPlansTable())
 	if _, err := tx.Exec(callCtx, updatePlanSQL, chooseNonZeroTime(updatedAt, time.Now().UTC()), int64(planID)); err != nil {
 		return logicdomain.ScratchpadDeletePersistResult{}, fmt.Errorf("refresh postgres scratchpad plan after delete: %w", err)
 	}
@@ -289,13 +408,13 @@ func (s *Store) DeleteScratchpadItems(ctx context.Context, planID uint64, keys [
 
 // ListScratchpadItems returns either all deterministic DWM items or one filtered key subset ordered by key for stable AI consumption.
 // ListScratchpadItems 用于返回全部确定性 DWM item，或按 key 过滤后的子集，并按 key 排序以保证 AI 消费稳定。
-func (s *Store) ListScratchpadItems(ctx context.Context, planID uint64, keys []string) ([]logicdomain.ScratchpadItem, error) {
+func (r *scratchpadRepository) ListScratchpadItems(ctx context.Context, planID uint64, keys []string) ([]logicdomain.ScratchpadItem, error) {
 	if planID == 0 {
 		return nil, logicdomain.ValidationError{Field: "plan_id", Message: "must be a numeric id"}
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	rows, err := s.listScratchpadItemsWithQueryer(callCtx, s.pool, planID, keys)
+	rows, err := r.listScratchpadItemsWithQueryer(callCtx, r.shared.pool, planID, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -308,13 +427,13 @@ func (s *Store) ListScratchpadItems(ctx context.Context, planID uint64, keys []s
 
 // ListScratchpadKeys returns the ordered deterministic DWM key slice for one plan without loading value payloads.
 // ListScratchpadKeys 用于在不加载 value 载荷的前提下，返回某个计划下有序的确定性 DWM key 切片。
-func (s *Store) ListScratchpadKeys(ctx context.Context, planID uint64) ([]string, error) {
+func (r *scratchpadRepository) ListScratchpadKeys(ctx context.Context, planID uint64) ([]string, error) {
 	if planID == 0 {
 		return nil, logicdomain.ValidationError{Field: "plan_id", Message: "must be a numeric id"}
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	keys, err := s.listScratchpadKeysWithQueryer(callCtx, s.pool, planID)
+	keys, err := r.listScratchpadKeysWithQueryer(callCtx, r.shared.pool, planID)
 	if err != nil {
 		return nil, err
 	}
@@ -323,10 +442,10 @@ func (s *Store) ListScratchpadKeys(ctx context.Context, planID uint64) ([]string
 
 // CleanScratchpad deletes all DWM nodes and the parent plan row for one deterministic scope, while keeping empty sessions idempotent.
 // CleanScratchpad 用于删除某个确定性范围下的全部 DWM 节点和父级计划行，同时保持空 session 场景幂等。
-func (s *Store) CleanScratchpad(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadCleanPersistResult, error) {
-	callCtx, cancel := s.queryContext(ctx)
+func (r *scratchpadRepository) CleanScratchpad(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadCleanPersistResult, error) {
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ScratchpadCleanPersistResult{}, fmt.Errorf("begin postgres scratchpad-clean tx: %w", err)
 	}
@@ -334,7 +453,7 @@ func (s *Store) CleanScratchpad(ctx context.Context, scope logicdomain.Scratchpa
 		_ = tx.Rollback(context.Background())
 	}()
 
-	row, found, err := s.loadScratchpadPlanWithQueryer(callCtx, tx, scope, true)
+	row, found, err := r.loadScratchpadPlanWithQueryer(callCtx, tx, scope, true)
 	if err != nil {
 		return logicdomain.ScratchpadCleanPersistResult{}, err
 	}
@@ -345,14 +464,14 @@ func (s *Store) CleanScratchpad(ctx context.Context, scope logicdomain.Scratchpa
 		return logicdomain.ScratchpadCleanPersistResult{}, nil
 	}
 	plan := row.toDomain()
-	nodeCount, err := s.countScratchpadNodesWithQueryer(callCtx, tx, plan.ID)
+	nodeCount, err := r.countScratchpadNodesWithQueryer(callCtx, tx, plan.ID)
 	if err != nil {
 		return logicdomain.ScratchpadCleanPersistResult{}, err
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE plan_id = $1`, s.scratchpadNodesTable()), int64(plan.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE plan_id = $1`, r.scratchpadNodesTable()), int64(plan.ID)); err != nil {
 		return logicdomain.ScratchpadCleanPersistResult{}, fmt.Errorf("delete postgres scratchpad nodes during clean: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.scratchpadPlansTable()), int64(plan.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.scratchpadPlansTable()), int64(plan.ID)); err != nil {
 		return logicdomain.ScratchpadCleanPersistResult{}, fmt.Errorf("delete postgres scratchpad plan during clean: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {
@@ -367,13 +486,13 @@ func (s *Store) CleanScratchpad(ctx context.Context, scope logicdomain.Scratchpa
 
 // DeleteExpiredScratchpadSessions hard-deletes expired DWM sessions by plan updated timestamp without using any trash or soft-backup tables.
 // DeleteExpiredScratchpadSessions 用于按计划更新时间硬删除过期 DWM session，并且不会使用任何回收站或软备份表。
-func (s *Store) DeleteExpiredScratchpadSessions(ctx context.Context, before time.Time, limit int) (logicdomain.ScratchpadGCResult, error) {
+func (r *scratchpadRepository) DeleteExpiredScratchpadSessions(ctx context.Context, before time.Time, limit int) (logicdomain.ScratchpadGCResult, error) {
 	if limit <= 0 {
 		return logicdomain.ScratchpadGCResult{}, nil
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ScratchpadGCResult{}, fmt.Errorf("begin postgres scratchpad-gc tx: %w", err)
 	}
@@ -381,7 +500,7 @@ func (s *Store) DeleteExpiredScratchpadSessions(ctx context.Context, before time
 		_ = tx.Rollback(context.Background())
 	}()
 
-	planIDs, err := s.claimExpiredScratchpadPlanIDs(callCtx, tx, before, limit)
+	planIDs, err := r.claimExpiredScratchpadPlanIDs(callCtx, tx, before, limit)
 	if err != nil {
 		return logicdomain.ScratchpadGCResult{}, err
 	}
@@ -391,15 +510,15 @@ func (s *Store) DeleteExpiredScratchpadSessions(ctx context.Context, before time
 		}
 		return logicdomain.ScratchpadGCResult{}, nil
 	}
-	nodeCount, err := s.countScratchpadNodesByPlanIDsWithQueryer(callCtx, tx, planIDs)
+	nodeCount, err := r.countScratchpadNodesByPlanIDsWithQueryer(callCtx, tx, planIDs)
 	if err != nil {
 		return logicdomain.ScratchpadGCResult{}, err
 	}
-	deleteNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id = ANY($1)`, s.scratchpadNodesTable())
+	deleteNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id = ANY($1)`, r.scratchpadNodesTable())
 	if _, err := tx.Exec(callCtx, deleteNodesSQL, toInt64List(planIDs)); err != nil {
 		return logicdomain.ScratchpadGCResult{}, fmt.Errorf("delete postgres expired scratchpad nodes: %w", err)
 	}
-	deletePlansSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, s.scratchpadPlansTable())
+	deletePlansSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.scratchpadPlansTable())
 	if _, err := tx.Exec(callCtx, deletePlansSQL, toInt64List(planIDs)); err != nil {
 		return logicdomain.ScratchpadGCResult{}, fmt.Errorf("delete postgres expired scratchpad plans: %w", err)
 	}
@@ -414,13 +533,13 @@ func (s *Store) DeleteExpiredScratchpadSessions(ctx context.Context, before time
 
 // loadScratchpadPlanWithQueryer loads one scratchpad plan row through the shared pool/transaction query abstraction, optionally locking it for follow-up mutations.
 // loadScratchpadPlanWithQueryer 用于通过共享连接池/事务查询抽象加载一条 scratchpad 计划行，并按需为后续变更加锁。
-func (s *Store) loadScratchpadPlanWithQueryer(ctx context.Context, q profileQueryer, scope logicdomain.ScratchpadScope, forUpdate bool) (scratchpadPlanScanRow, bool, error) {
+func (r *scratchpadRepository) loadScratchpadPlanWithQueryer(ctx context.Context, q profileQueryer, scope logicdomain.ScratchpadScope, forUpdate bool) (scratchpadPlanScanRow, bool, error) {
 	sqlText := fmt.Sprintf(`
 SELECT id, project_id, user_id, session_key, plan_name, plan_name_norm, created_at, updated_at
 FROM %s
 WHERE project_id = $1 AND user_id = $2 AND session_key = $3
 LIMIT 1
-`, s.scratchpadPlansTable())
+`, r.scratchpadPlansTable())
 	if forUpdate {
 		sqlText = strings.TrimSpace(sqlText) + ` FOR UPDATE`
 	}
@@ -439,12 +558,12 @@ LIMIT 1
 
 // listScratchpadItemsWithQueryer loads all or filtered scratchpad nodes through the shared pool/transaction query abstraction.
 // listScratchpadItemsWithQueryer 用于通过共享连接池/事务查询抽象加载全部或过滤后的 scratchpad 节点。
-func (s *Store) listScratchpadItemsWithQueryer(ctx context.Context, q profileQueryer, planID uint64, keys []string) ([]scratchpadNodeScanRow, error) {
+func (r *scratchpadRepository) listScratchpadItemsWithQueryer(ctx context.Context, q profileQueryer, planID uint64, keys []string) ([]scratchpadNodeScanRow, error) {
 	sqlText := fmt.Sprintf(`
 SELECT id, plan_id, item_key, item_value, created_at, updated_at
 FROM %s
 WHERE plan_id = $1
-`, s.scratchpadNodesTable())
+`, r.scratchpadNodesTable())
 	args := []any{int64(planID)}
 	if len(keys) > 0 {
 		sqlText += ` AND item_key = ANY($2)`
@@ -472,13 +591,13 @@ WHERE plan_id = $1
 
 // listScratchpadKeysWithQueryer loads the ordered scratchpad key slice through the shared pool/transaction query abstraction without touching value payload columns.
 // listScratchpadKeysWithQueryer 用于通过共享连接池/事务查询抽象加载有序 scratchpad key 切片，并且不会触碰 value 载荷列。
-func (s *Store) listScratchpadKeysWithQueryer(ctx context.Context, q profileQueryer, planID uint64) ([]string, error) {
+func (r *scratchpadRepository) listScratchpadKeysWithQueryer(ctx context.Context, q profileQueryer, planID uint64) ([]string, error) {
 	sqlText := fmt.Sprintf(`
 SELECT item_key
 FROM %s
 WHERE plan_id = $1
 ORDER BY item_key ASC, id ASC
-`, s.scratchpadNodesTable())
+`, r.scratchpadNodesTable())
 	rows, err := q.Query(ctx, strings.TrimSpace(sqlText), int64(planID))
 	if err != nil {
 		return nil, fmt.Errorf("query postgres scratchpad keys: %w", err)
@@ -500,8 +619,8 @@ ORDER BY item_key ASC, id ASC
 
 // loadScratchpadExistingKeysWithQueryer loads the subset of keys that already exist under one plan so upsert can report inserted vs updated counts deterministically.
 // loadScratchpadExistingKeysWithQueryer 用于加载某个计划下已存在的 key 子集，让 upsert 能确定性地区分 inserted 与 updated 计数。
-func (s *Store) loadScratchpadExistingKeysWithQueryer(ctx context.Context, q profileQueryer, planID uint64, keys []string) (map[string]struct{}, error) {
-	rows, err := s.listScratchpadItemsWithQueryer(ctx, q, planID, keys)
+func (r *scratchpadRepository) loadScratchpadExistingKeysWithQueryer(ctx context.Context, q profileQueryer, planID uint64, keys []string) (map[string]struct{}, error) {
+	rows, err := r.listScratchpadItemsWithQueryer(ctx, q, planID, keys)
 	if err != nil {
 		return nil, err
 	}
@@ -514,8 +633,8 @@ func (s *Store) loadScratchpadExistingKeysWithQueryer(ctx context.Context, q pro
 
 // countScratchpadNodesWithQueryer returns how many nodes currently remain under one plan.
 // countScratchpadNodesWithQueryer 用于返回某个计划下当前剩余节点数量。
-func (s *Store) countScratchpadNodesWithQueryer(ctx context.Context, q profileQueryer, planID uint64) (int, error) {
-	sqlText := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE plan_id = $1`, s.scratchpadNodesTable())
+func (r *scratchpadRepository) countScratchpadNodesWithQueryer(ctx context.Context, q profileQueryer, planID uint64) (int, error) {
+	sqlText := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE plan_id = $1`, r.scratchpadNodesTable())
 	var count int
 	if err := q.QueryRow(ctx, sqlText, int64(planID)).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count postgres scratchpad nodes: %w", err)
@@ -525,12 +644,12 @@ func (s *Store) countScratchpadNodesWithQueryer(ctx context.Context, q profileQu
 
 // countScratchpadNodesByKeysWithQueryer returns how many of the requested keys currently exist under one plan.
 // countScratchpadNodesByKeysWithQueryer 用于返回某个计划下当前命中的请求 key 数量。
-func (s *Store) countScratchpadNodesByKeysWithQueryer(ctx context.Context, q profileQueryer, planID uint64, keys []string) (int, error) {
+func (r *scratchpadRepository) countScratchpadNodesByKeysWithQueryer(ctx context.Context, q profileQueryer, planID uint64, keys []string) (int, error) {
 	keyList := normalizeStringList(keys)
 	if len(keyList) == 0 {
 		return 0, nil
 	}
-	sqlText := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE plan_id = $1 AND item_key = ANY($2)`, s.scratchpadNodesTable())
+	sqlText := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE plan_id = $1 AND item_key = ANY($2)`, r.scratchpadNodesTable())
 	var count int
 	if err := q.QueryRow(ctx, sqlText, int64(planID), keyList).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count postgres scratchpad nodes by keys: %w", err)
@@ -540,12 +659,12 @@ func (s *Store) countScratchpadNodesByKeysWithQueryer(ctx context.Context, q pro
 
 // countScratchpadNodesByPlanIDsWithQueryer returns how many nodes belong to the selected expired plan set.
 // countScratchpadNodesByPlanIDsWithQueryer 用于返回所选过期计划集合下的节点数量。
-func (s *Store) countScratchpadNodesByPlanIDsWithQueryer(ctx context.Context, q profileQueryer, planIDs []uint64) (int, error) {
+func (r *scratchpadRepository) countScratchpadNodesByPlanIDsWithQueryer(ctx context.Context, q profileQueryer, planIDs []uint64) (int, error) {
 	ids := toInt64List(planIDs)
 	if len(ids) == 0 {
 		return 0, nil
 	}
-	sqlText := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE plan_id = ANY($1)`, s.scratchpadNodesTable())
+	sqlText := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE plan_id = ANY($1)`, r.scratchpadNodesTable())
 	var count int
 	if err := q.QueryRow(ctx, sqlText, ids).Scan(&count); err != nil {
 		return 0, fmt.Errorf("count postgres scratchpad nodes by plan ids: %w", err)
@@ -555,7 +674,7 @@ func (s *Store) countScratchpadNodesByPlanIDsWithQueryer(ctx context.Context, q 
 
 // claimExpiredScratchpadPlanIDs locks a bounded ordered batch of expired plans so concurrent maintenance workers do not hard-delete the same scope twice.
 // claimExpiredScratchpadPlanIDs 用于锁定一批有界且有序的过期计划，避免并发维护工作器重复硬删同一范围。
-func (s *Store) claimExpiredScratchpadPlanIDs(ctx context.Context, q profileQueryer, before time.Time, limit int) ([]uint64, error) {
+func (r *scratchpadRepository) claimExpiredScratchpadPlanIDs(ctx context.Context, q profileQueryer, before time.Time, limit int) ([]uint64, error) {
 	sqlText := fmt.Sprintf(`
 SELECT id
 FROM %s
@@ -563,7 +682,7 @@ WHERE updated_at <= $1
 ORDER BY updated_at ASC, id ASC
 LIMIT $2
 FOR UPDATE SKIP LOCKED
-`, s.scratchpadPlansTable())
+`, r.scratchpadPlansTable())
 	rows, err := q.Query(ctx, strings.TrimSpace(sqlText), before.UTC(), limit)
 	if err != nil {
 		return nil, fmt.Errorf("claim postgres expired scratchpad plans: %w", err)
@@ -581,4 +700,66 @@ FOR UPDATE SKIP LOCKED
 		return nil, fmt.Errorf("iterate postgres expired scratchpad plans: %w", err)
 	}
 	return out, nil
+}
+
+// ---------------------------------------------------------------------------
+// Store delegation: forwards ScratchpadStore / ScratchpadMaintenanceStore calls
+// to the scratchpadRepository so the public Store still satisfies the adapter
+// contracts without re-implementing SQL paths.
+// Store 委托层：把 ScratchpadStore / ScratchpadMaintenanceStore 调用转发到
+// scratchpadRepository，让公开 Store 在不重复实现 SQL 路径的前提下仍满足适配器契约。
+// ---------------------------------------------------------------------------
+
+// EnsureScratchpadScope delegates to the internal scratchpad repository.
+// EnsureScratchpadScope 用于委托到内部 scratchpad repository。
+func (s *Store) EnsureScratchpadScope(ctx context.Context, scope logicdomain.ScratchpadScope) error {
+	return s.repos.scratchpad.EnsureScratchpadScope(ctx, scope)
+}
+
+// LoadScratchpadPlan delegates to the internal scratchpad repository.
+// LoadScratchpadPlan 用于委托到内部 scratchpad repository。
+func (s *Store) LoadScratchpadPlan(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadPlanRecord, bool, error) {
+	return s.repos.scratchpad.LoadScratchpadPlan(ctx, scope)
+}
+
+// CreateScratchpadPlan delegates to the internal scratchpad repository.
+// CreateScratchpadPlan 用于委托到内部 scratchpad repository。
+func (s *Store) CreateScratchpadPlan(ctx context.Context, scope logicdomain.ScratchpadScope, planName string, createdAt time.Time) (logicdomain.ScratchpadPlanRecord, error) {
+	return s.repos.scratchpad.CreateScratchpadPlan(ctx, scope, planName, createdAt)
+}
+
+// UpsertScratchpadItems delegates to the internal scratchpad repository.
+// UpsertScratchpadItems 用于委托到内部 scratchpad repository。
+func (s *Store) UpsertScratchpadItems(ctx context.Context, planID uint64, items []logicdomain.ScratchpadItem, updatedAt time.Time) (logicdomain.ScratchpadUpsertPersistResult, error) {
+	return s.repos.scratchpad.UpsertScratchpadItems(ctx, planID, items, updatedAt)
+}
+
+// DeleteScratchpadItems delegates to the internal scratchpad repository.
+// DeleteScratchpadItems 用于委托到内部 scratchpad repository。
+func (s *Store) DeleteScratchpadItems(ctx context.Context, planID uint64, keys []string, updatedAt time.Time) (logicdomain.ScratchpadDeletePersistResult, error) {
+	return s.repos.scratchpad.DeleteScratchpadItems(ctx, planID, keys, updatedAt)
+}
+
+// ListScratchpadItems delegates to the internal scratchpad repository.
+// ListScratchpadItems 用于委托到内部 scratchpad repository。
+func (s *Store) ListScratchpadItems(ctx context.Context, planID uint64, keys []string) ([]logicdomain.ScratchpadItem, error) {
+	return s.repos.scratchpad.ListScratchpadItems(ctx, planID, keys)
+}
+
+// ListScratchpadKeys delegates to the internal scratchpad repository.
+// ListScratchpadKeys 用于委托到内部 scratchpad repository。
+func (s *Store) ListScratchpadKeys(ctx context.Context, planID uint64) ([]string, error) {
+	return s.repos.scratchpad.ListScratchpadKeys(ctx, planID)
+}
+
+// CleanScratchpad delegates to the internal scratchpad repository.
+// CleanScratchpad 用于委托到内部 scratchpad repository。
+func (s *Store) CleanScratchpad(ctx context.Context, scope logicdomain.ScratchpadScope) (logicdomain.ScratchpadCleanPersistResult, error) {
+	return s.repos.scratchpad.CleanScratchpad(ctx, scope)
+}
+
+// DeleteExpiredScratchpadSessions delegates to the internal scratchpad repository.
+// DeleteExpiredScratchpadSessions 用于委托到内部 scratchpad repository。
+func (s *Store) DeleteExpiredScratchpadSessions(ctx context.Context, before time.Time, limit int) (logicdomain.ScratchpadGCResult, error) {
+	return s.repos.scratchpad.DeleteExpiredScratchpadSessions(ctx, before, limit)
 }

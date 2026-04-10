@@ -10,3 +10,5 @@ configs/.env
 .opencode
 .gomodcache
 .gocache
+.qwen
+.claude

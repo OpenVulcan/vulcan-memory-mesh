@@ -51,8 +51,8 @@ func (r postgresRecycleJobRow) toDomain() logicdomain.RecycleJobRecord {
 
 // EnqueueColdTurnRecycleJobs scans for sessions that currently expose recyclable old turns and persists bounded recycle jobs so scan and execution no longer share the same transaction.
 // EnqueueColdTurnRecycleJobs 用于扫描当前存在可回收旧 turn 的 session，并持久化一批有界的回收任务，让扫描与执行不再共用同一事务。
-func (s *Store) EnqueueColdTurnRecycleJobs(ctx context.Context, query logicdomain.ColdTurnRecycleJobEnqueueQuery) (int, error) {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) EnqueueColdTurnRecycleJobs(ctx context.Context, query logicdomain.ColdTurnRecycleJobEnqueueQuery) (int, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return 0, fmt.Errorf("postgres store is not initialized")
 	}
 	limit := normalizeRetentionBatchLimit(query.Limit, 64)
@@ -70,14 +70,14 @@ func (s *Store) EnqueueColdTurnRecycleJobs(ctx context.Context, query logicdomai
   FROM %s tr
   WHERE tr.session_id = s.id
     AND tr.extracted_status = %s
-)`, s.turnsTable(), args.Add(logicdomain.TurnExtractedStatusPending)),
-		buildPostgresColdTurnJobSessionAvailabilityClause(args, s, turnHotWindowSize),
+)`, r.turnsTable(), args.Add(logicdomain.TurnExtractedStatusPending)),
+		buildPostgresColdTurnJobSessionAvailabilityClause(args, r, turnHotWindowSize),
 		fmt.Sprintf(`NOT EXISTS (
   SELECT 1
   FROM %s jobs
   WHERE jobs.session_id = s.id
     AND jobs.job_type = %s
-)`, s.recycleJobsTable(), jobTypePlaceholder),
+)`, r.recycleJobsTable(), jobTypePlaceholder),
 	}
 	limitPlaceholder := args.Add(limit)
 	sqlText := fmt.Sprintf(`
@@ -90,11 +90,11 @@ WHERE %s
 ORDER BY s.updated_at ASC, s.id ASC
 LIMIT %s
 ON CONFLICT (session_id, job_type) DO NOTHING
-`, s.recycleJobsTable(), jobTypePlaceholder, nextRunAtPlaceholder, scannedAtPlaceholder, scannedAtPlaceholder, s.sessionsTable(), strings.Join(whereClauses, "\n  AND "), limitPlaceholder)
+`, r.recycleJobsTable(), jobTypePlaceholder, nextRunAtPlaceholder, scannedAtPlaceholder, scannedAtPlaceholder, r.sessionsTable(), strings.Join(whereClauses, "\n  AND "), limitPlaceholder)
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	tag, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), args.Args()...)
+	tag, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), args.Args()...)
 	if err != nil {
 		return 0, fmt.Errorf("enqueue postgres cold-turn recycle jobs: %w", err)
 	}
@@ -103,8 +103,8 @@ ON CONFLICT (session_id, job_type) DO NOTHING
 
 // ClaimPendingRecycleJobs leases one bounded PostgreSQL recycle-job batch with SKIP LOCKED so concurrent maintenance workers cannot execute the same cold-turn work twice.
 // ClaimPendingRecycleJobs 用于通过 SKIP LOCKED 领取一批有界的 PostgreSQL 回收任务，避免并发维护工作器重复执行同一批冷 turn 工作。
-func (s *Store) ClaimPendingRecycleJobs(ctx context.Context, jobType string, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.RecycleJobRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) ClaimPendingRecycleJobs(ctx context.Context, jobType string, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.RecycleJobRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	jobType = strings.TrimSpace(jobType)
@@ -116,11 +116,11 @@ func (s *Store) ClaimPendingRecycleJobs(ctx context.Context, jobType string, due
 	claimAt := time.Now().UTC()
 	claimUntil = chooseNonZeroTime(claimUntil, claimAt)
 
-	sqlText := buildPostgresClaimPendingRecycleJobsSQL(s.recycleJobsTable())
+	sqlText := buildPostgresClaimPendingRecycleJobsSQL(r.recycleJobsTable())
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return nil, fmt.Errorf("begin postgres recycle-job claim tx: %w", err)
 	}
@@ -164,8 +164,8 @@ func (s *Store) ClaimPendingRecycleJobs(ctx context.Context, jobType string, due
 
 // RecycleColdTurns executes one claimed cold-turn recycle job by moving unreferenced turns outside the hot window into the turn-trash table under one transaction.
 // RecycleColdTurns 用于执行一条已领取的冷 turn 回收任务，并在一个事务里把热窗口外且无引用的旧 turn 迁入 turn 回收站表。
-func (s *Store) RecycleColdTurns(ctx context.Context, query logicdomain.ColdTurnRecycleQuery) (logicdomain.ColdTurnRecycleResult, error) {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) RecycleColdTurns(ctx context.Context, query logicdomain.ColdTurnRecycleQuery) (logicdomain.ColdTurnRecycleResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if query.SessionID == 0 {
@@ -178,9 +178,9 @@ func (s *Store) RecycleColdTurns(ctx context.Context, query logicdomain.ColdTurn
 		reason = logicdomain.RecycleReasonColdTurnArchive
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.retentionMaintenanceWriteContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("begin postgres cold-turn recycle tx: %w", err)
 	}
@@ -196,7 +196,7 @@ SELECT id, session_key, user_id, team_id, space_id, project_id,
 FROM %s
 WHERE id = $1
 FOR UPDATE
-`, s.sessionsTable())
+`, r.sessionsTable())
 	var session sessionScanRow
 	if err := tx.QueryRow(callCtx, strings.TrimSpace(sessionSQL), int64(query.SessionID)).Scan(
 		&session.ID,
@@ -228,7 +228,7 @@ FROM %s
 WHERE session_id = $1
   AND extracted_status = $2
 LIMIT 1
-`, s.turnsTable())
+`, r.turnsTable())
 	var pendingMarker int
 	if err := tx.QueryRow(callCtx, strings.TrimSpace(pendingCheckSQL), int64(query.SessionID), logicdomain.TurnExtractedStatusPending).Scan(&pendingMarker); err == nil {
 		return logicdomain.ColdTurnRecycleResult{SessionID: query.SessionID, ProjectID: session.ProjectID}, nil
@@ -245,13 +245,13 @@ WITH recent_turns AS (
   ORDER BY id DESC
   LIMIT %d
 )
-`, s.turnsTable(), args.Add(int64(query.SessionID)), turnHotWindowSize)
+`, r.turnsTable(), args.Add(int64(query.SessionID)), turnHotWindowSize)
 	turnWhereClauses := []string{
 		"tr.session_id = " + args.Add(int64(query.SessionID)),
 		"tr.extracted_status <> " + args.Add(logicdomain.TurnExtractedStatusPending),
 		"tr.id NOT IN (SELECT id FROM recent_turns)",
-		fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM %s mn WHERE mn.source_turn_id = tr.id)`, s.memoryNodesTable()),
-		fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM %s pn WHERE pn.turn_id = tr.id)`, s.profileNodesTable()),
+		fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM %s mn WHERE mn.source_turn_id = tr.id)`, r.memoryNodesTable()),
+		fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM %s pn WHERE pn.turn_id = tr.id)`, (&workspaceRepository{shared: r.shared}).profileNodesTable()),
 	}
 	turnSQL := fmt.Sprintf(`
 %s
@@ -260,7 +260,7 @@ FROM %s AS tr
 WHERE %s
 ORDER BY tr.id ASC
 FOR UPDATE
-`, strings.TrimSpace(recentTurnsCTE), s.turnsTable(), strings.Join(turnWhereClauses, " AND "))
+`, strings.TrimSpace(recentTurnsCTE), r.turnsTable(), strings.Join(turnWhereClauses, " AND "))
 	rows, err := tx.Query(callCtx, strings.TrimSpace(turnSQL), args.Args()...)
 	if err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("query postgres cold turns for session %d: %w", query.SessionID, err)
@@ -287,7 +287,7 @@ FOR UPDATE
 INSERT INTO %s (recycle_type, session_id, project_id, reason, recycled_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $5, $5)
 RETURNING id
-`, s.recycleBatchesTable())
+`, r.recycleBatchesTable())
 	var batchID uint64
 	if err := tx.QueryRow(callCtx, strings.TrimSpace(insertBatchSQL), logicdomain.RecycleTypeColdTurn, int64(query.SessionID), int64(session.ProjectID), reason, recycledAt).Scan(&batchID); err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("insert postgres cold-turn recycle batch for session %d: %w", query.SessionID, err)
@@ -305,12 +305,12 @@ SELECT $1, $2, $3,
        extracted_status, details, details_budget, created_at, updated_at
 FROM %s
 WHERE id = ANY($4)
-`, s.turnsTrashTable(), s.turnsTable())
+`, r.turnsTrashTable(), r.turnsTable())
 	turnTag, err := tx.Exec(callCtx, strings.TrimSpace(insertTurnTrashSQL), batchID, recycledAt, reason, turnIDArgs)
 	if err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("copy postgres cold turns into trash for session %d: %w", query.SessionID, err)
 	}
-	deleteTurnSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, s.turnsTable())
+	deleteTurnSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.turnsTable())
 	if _, err := tx.Exec(callCtx, deleteTurnSQL, turnIDArgs); err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("delete postgres cold turns for session %d: %w", query.SessionID, err)
 	}
@@ -328,8 +328,8 @@ WHERE id = ANY($4)
 
 // CompleteRecycleJobs removes one PostgreSQL recycle-job batch immediately after scan-separated cold-turn execution completes, keeping the queue transient instead of turning it into a second long-lived ledger.
 // CompleteRecycleJobs 用于在 scan 分离后的冷 turn 执行完成后立即删除一批 PostgreSQL 回收任务，让队列保持瞬时补偿语义，而不是演化成第二套长期台账。
-func (s *Store) CompleteRecycleJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) CompleteRecycleJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)
@@ -339,11 +339,11 @@ func (s *Store) CompleteRecycleJobs(ctx context.Context, jobIDs []uint64, _ time
 	sqlText := fmt.Sprintf(`
 DELETE FROM %s
 WHERE id = ANY($1)
-`, s.recycleJobsTable())
+`, r.recycleJobsTable())
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs)); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs)); err != nil {
 		return fmt.Errorf("complete postgres recycle jobs: %w", err)
 	}
 	return nil
@@ -351,8 +351,8 @@ WHERE id = ANY($1)
 
 // RetryRecycleJobs reschedules one PostgreSQL recycle-job batch after execution still fails, incrementing attempts while releasing the current lease.
 // RetryRecycleJobs 用于在执行仍然失败时重新调度一批 PostgreSQL 回收任务，同时递增尝试次数并释放当前租约。
-func (s *Store) RetryRecycleJobs(ctx context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) RetryRecycleJobs(ctx context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)
@@ -371,11 +371,11 @@ SET attempt_count = attempt_count + 1,
     last_error = $3,
     updated_at = $4
 WHERE id = ANY($1)
-`, s.recycleJobsTable())
+`, r.recycleJobsTable())
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now); err != nil {
 		return fmt.Errorf("retry postgres recycle jobs: %w", err)
 	}
 	return nil
@@ -383,8 +383,8 @@ WHERE id = ANY($1)
 
 // buildPostgresColdTurnJobSessionAvailabilityClause renders the candidate predicate used by the independent cold-turn scan so only sessions with real recyclable turns enter the queue.
 // buildPostgresColdTurnJobSessionAvailabilityClause 用于渲染独立冷 turn 扫描使用的候选谓词，确保只有确实存在可回收旧 turn 的 session 才会入队。
-func buildPostgresColdTurnJobSessionAvailabilityClause(args *sqlArgsBuilder, s *Store, turnHotWindowSize int) string {
-	if args == nil || s == nil {
+func buildPostgresColdTurnJobSessionAvailabilityClause(args *sqlArgsBuilder, r *retentionRepository, turnHotWindowSize int) string {
+	if args == nil || r == nil {
 		return "FALSE"
 	}
 	pendingStatusPlaceholder := args.Add(logicdomain.TurnExtractedStatusPending)
@@ -403,7 +403,13 @@ func buildPostgresColdTurnJobSessionAvailabilityClause(args *sqlArgsBuilder, s *
     AND tr.id NOT IN (SELECT id FROM recent_turns)
     AND NOT EXISTS (SELECT 1 FROM %s mn WHERE mn.source_turn_id = tr.id)
     AND NOT EXISTS (SELECT 1 FROM %s pn WHERE pn.turn_id = tr.id)
-)`, s.turnsTable(), turnHotWindowSize, s.turnsTable(), pendingStatusPlaceholder, s.memoryNodesTable(), s.profileNodesTable())
+)`, r.turnsTable(), turnHotWindowSize, r.turnsTable(), pendingStatusPlaceholder, r.memoryNodesTable(), (&workspaceRepository{shared: r.shared}).profileNodesTable())
+}
+
+// buildPostgresColdTurnJobSessionAvailabilityClauseForTest provides a Store-compatible wrapper for legacy unit tests.
+// buildPostgresColdTurnJobSessionAvailabilityClauseForTest 用于为旧单元测试提供 Store 兼容包装。
+func (s *Store) buildPostgresColdTurnJobSessionAvailabilityClauseForTest(args *sqlArgsBuilder, turnHotWindowSize int) string {
+	return buildPostgresColdTurnJobSessionAvailabilityClause(args, &retentionRepository{shared: &storeShared{cfg: s.cfg}}, turnHotWindowSize)
 }
 
 // buildPostgresClaimPendingRecycleJobsSQL renders the SKIP LOCKED claim statement used by the recycle-job queue so tests can assert multi-worker no-duplicate semantics without needing a live PostgreSQL instance.

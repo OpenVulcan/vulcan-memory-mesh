@@ -13,8 +13,8 @@ import (
 
 // AppendTurnRecord persists one cleaned turn into the resolved session, increments the session turn counter, and returns the new durable identifier.
 // AppendTurnRecord 用于把一条清洗后的 turn 写入已解析 session、递增会话 turn 计数，并返回新的长期标识。
-func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) (logicdomain.PersistedTurnRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) (logicdomain.PersistedTurnRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if strings.TrimSpace(turn.UserContent) == "" && strings.TrimSpace(turn.AssistantContent) == "" && len(turn.Timeline) == 0 {
@@ -35,9 +35,9 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 
 	// Keep the turn insert and session counter update inside one explicit PostgreSQL transaction so combined mode never exposes a half-written turn window.
 	// 把 turn 插入和 session 计数更新放进同一个显式 PostgreSQL 事务，确保组合模式不会暴露“半写入”的 turn 窗口。
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.turnQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("begin postgres turn append tx: %w", err)
 	}
@@ -52,7 +52,7 @@ INSERT INTO %s (
 	$1, $2, $3, $4, $5, '', 0, $6, $6
 )
 RETURNING id, session_id, project_id, dehydrated_budget, created_at, updated_at
-`, s.turnsTable())
+`, r.turnsTable())
 	var persisted logicdomain.PersistedTurnRecord
 	if err := tx.QueryRow(
 		callCtx,
@@ -83,7 +83,7 @@ SET turn_count = turn_count + 1,
         ELSE updated_at
     END
 WHERE id = $3
-`, s.sessionsTable())
+`, r.sessionsTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateSessionSQL), dehydratedBudget, createdAt.UTC(), int64(session.SessionID)); err != nil {
 		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("update postgres session turn counters: %w", err)
 	}
@@ -97,8 +97,8 @@ WHERE id = $3
 
 // LoadPendingSessionTurns returns the oldest not-yet-extracted turn rows for one session so queued post-action workers can drain durable work in order.
 // LoadPendingSessionTurns 用于返回某个 session 中尚未提炼的最早 turn 行，让排队的 post-action 工作器按持久化顺序消化任务。
-func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) LoadPendingSessionTurns(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -109,8 +109,8 @@ SELECT id, session_id, project_id, dehydrated_content, dehydrated_budget, extrac
 FROM %s
 WHERE session_id = $1 AND extracted_status = $2
 ORDER BY id ASC
-`, s.turnsTable())
-	rows, err := s.queryTurnRecords(ctx, strings.TrimSpace(sqlText), int64(session.SessionID), logicdomain.TurnExtractedStatusPending)
+`, r.turnsTable())
+	rows, err := r.queryTurnRecords(ctx, strings.TrimSpace(sqlText), int64(session.SessionID), logicdomain.TurnExtractedStatusPending)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres pending session turns: %w", err)
 	}
@@ -119,8 +119,8 @@ ORDER BY id ASC
 
 // LoadRecentSessionTurns returns the latest persisted turn rows for one session regardless of extracted status, ordered from oldest to newest after the final window is chosen.
 // LoadRecentSessionTurns 用于返回某个 session 最近持久化的 turn 行，不区分 extracted 状态；最终结果按从旧到新排序。
-func (s *Store) LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -139,8 +139,8 @@ FROM (
 	LIMIT $2
 ) AS recent_turns
 ORDER BY id ASC
-`, s.turnsTable())
-	rows, err := s.queryTurnRecords(ctx, strings.TrimSpace(sqlText), int64(session.SessionID), limit)
+`, r.turnsTable())
+	rows, err := r.queryTurnRecords(ctx, strings.TrimSpace(sqlText), int64(session.SessionID), limit)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres recent session turns: %w", err)
 	}
@@ -149,8 +149,8 @@ ORDER BY id ASC
 
 // LoadRecentSessionHistory returns the latest extracted turn summaries for one session, ordered from oldest to newest for prompt assembly.
 // LoadRecentSessionHistory 用于返回某个 session 最近已提炼的 turn 精要，并按从旧到新排序，供提示词组装使用。
-func (s *Store) LoadRecentSessionHistory(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) LoadRecentSessionHistory(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -171,8 +171,8 @@ FROM (
 	LIMIT $3
 ) AS recent_history
 ORDER BY id ASC
-`, s.turnsTable())
-	rows, err := s.queryTurnRecords(ctx, strings.TrimSpace(sqlText), int64(session.SessionID), logicdomain.TurnExtractedStatusDone, limit)
+`, r.turnsTable())
+	rows, err := r.queryTurnRecords(ctx, strings.TrimSpace(sqlText), int64(session.SessionID), logicdomain.TurnExtractedStatusDone, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres recent session history: %w", err)
 	}
@@ -181,8 +181,8 @@ ORDER BY id ASC
 
 // LoadTurnsByIDs returns one explicit set of dehydrated turn rows so memory-detail RPCs can inspect the exact persisted payload behind recalled turn ids.
 // LoadTurnsByIDs 用于返回一组明确指定的脱水 turn 行，让记忆详情 RPC 可以查看召回 turn id 背后的精确持久化载荷。
-func (s *Store) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdomain.SessionTurnRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdomain.SessionTurnRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	turnIDs = normalizeUint64List(turnIDs)
@@ -194,8 +194,8 @@ SELECT id, session_id, project_id, dehydrated_content, dehydrated_budget, extrac
 FROM %s
 WHERE id = ANY($1)
 ORDER BY id ASC
-`, s.turnsTable())
-	rows, err := s.queryTurnRecords(ctx, strings.TrimSpace(sqlText), toInt64List(turnIDs))
+`, r.turnsTable())
+	rows, err := r.queryTurnRecords(ctx, strings.TrimSpace(sqlText), toInt64List(turnIDs))
 	if err != nil {
 		return nil, fmt.Errorf("query postgres turns by ids: %w", err)
 	}
@@ -204,8 +204,8 @@ ORDER BY id ASC
 
 // LoadTurnWindows returns the previous and next turn ids around each requested anchor turn inside the same session.
 // LoadTurnWindows 用于返回每个请求锚点 turn 在同一 session 内前后相邻的 turn id。
-func (s *Store) LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius int) (map[uint64]logicdomain.TurnDetailWindow, error) {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius int) (map[uint64]logicdomain.TurnDetailWindow, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	turnIDs = normalizeUint64List(turnIDs)
@@ -232,10 +232,10 @@ JOIN ordered_turns o
  AND o.rn BETWEEN t.target_rn - $2 AND t.target_rn + $2
  AND o.id <> t.target_id
 ORDER BY t.target_id ASC, o.rn ASC
-`, s.turnsTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.turnsTable())
+	callCtx, cancel := r.turnQueryContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Query(callCtx, strings.TrimSpace(sqlText), toInt64List(turnIDs), radius)
+	rows, err := r.shared.pool.Query(callCtx, strings.TrimSpace(sqlText), toInt64List(turnIDs), radius)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres turn windows: %w", err)
 	}
@@ -269,9 +269,9 @@ ORDER BY t.target_id ASC, o.rn ASC
 }
 
 // ListIdlePendingSessions returns sessions whose latest conversation activity is older than the idle timeout while still carrying pending turn rows.
-// ListIdlePendingSessions 用于返回“最后会话时间已超过空闲阈值且仍存在待处理 turn”的 session 列表。
-func (s *Store) ListIdlePendingSessions(ctx context.Context, idleTimeout time.Duration, limit int) ([]logicdomain.SessionRef, error) {
-	if s == nil || s.pool == nil {
+// ListIdlePendingSessions 用于返回"最后会话时间已超过空闲阈值且仍存在待处理 turn"的 session 列表。
+func (r *turnRepository) ListIdlePendingSessions(ctx context.Context, idleTimeout time.Duration, limit int) ([]logicdomain.SessionRef, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if idleTimeout <= 0 {
@@ -295,10 +295,10 @@ WHERE updated_at <= $1
   )
 ORDER BY updated_at ASC, id ASC
 LIMIT $3
-`, s.sessionsTable(), s.turnsTable(), s.sessionsTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.sessionsTable(), r.turnsTable(), r.sessionsTable())
+	callCtx, cancel := r.turnQueryContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Query(callCtx, strings.TrimSpace(sqlText), cutoff, logicdomain.TurnExtractedStatusPending, limit)
+	rows, err := r.shared.pool.Query(callCtx, strings.TrimSpace(sqlText), cutoff, logicdomain.TurnExtractedStatusPending, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres idle pending sessions: %w", err)
 	}
@@ -355,8 +355,8 @@ LIMIT $3
 
 // AdvanceSessionExtractWindow stores the latest direct-memory observation window after one immediate turn analysis succeeds.
 // AdvanceSessionExtractWindow 用于在一次即时 turn 分析成功后，记录最新的主动记忆观察窗口。
-func (s *Store) AdvanceSessionExtractWindow(ctx context.Context, sessionID uint64, observedAt, completedAt time.Time) error {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) AdvanceSessionExtractWindow(ctx context.Context, sessionID uint64, observedAt, completedAt time.Time) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	if sessionID == 0 {
@@ -389,10 +389,10 @@ SET last_extract_observed_at = CASE
         ELSE updated_at
     END
 WHERE id = $4
-`, s.sessionsTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.sessionsTable())
+	callCtx, cancel := r.turnQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), nullableTime(observedAt), nullableTime(completedAt), nullableTime(updatedAt), int64(sessionID)); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), nullableTime(observedAt), nullableTime(completedAt), nullableTime(updatedAt), int64(sessionID)); err != nil {
 		return fmt.Errorf("advance postgres session extract window: %w", err)
 	}
 	return nil
@@ -400,8 +400,8 @@ WHERE id = $4
 
 // MarkSessionCompacted stores the latest persisted turn id as the current compact boundary for one resolved session and keeps repeated calls idempotent.
 // MarkSessionCompacted 用于把某个已解析 session 的最新持久化 turn id 记录为当前 compact 边界，并保持重复调用幂等。
-func (s *Store) MarkSessionCompacted(ctx context.Context, session logicdomain.SessionRef, compactedAt time.Time) (uint64, bool, error) {
-	if s == nil || s.pool == nil {
+func (r *turnRepository) MarkSessionCompacted(ctx context.Context, session logicdomain.SessionRef, compactedAt time.Time) (uint64, bool, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return 0, false, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -412,10 +412,10 @@ func (s *Store) MarkSessionCompacted(ctx context.Context, session logicdomain.Se
 	}
 
 	// Keep the latest-turn read and compact-boundary write inside one transaction so compaction acknowledgements cannot race with fresh turn inserts.
-	// 把“读取最新 turn”和“写入 compact 边界”放进同一个事务，避免 compact 确认与新的 turn 插入发生竞态。
-	callCtx, cancel := s.queryContext(ctx)
+	// 把"读取最新 turn"和"写入 compact 边界"放进同一个事务，避免 compact 确认与新的 turn 插入发生竞态。
+	callCtx, cancel := r.turnQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return 0, false, fmt.Errorf("begin postgres compact tx: %w", err)
 	}
@@ -424,7 +424,7 @@ func (s *Store) MarkSessionCompacted(ctx context.Context, session logicdomain.Se
 	}()
 
 	var latestTurnID uint64
-	latestSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) AS latest_turn_id FROM %s WHERE session_id = $1`, s.turnsTable())
+	latestSQL := fmt.Sprintf(`SELECT COALESCE(MAX(id), 0) AS latest_turn_id FROM %s WHERE session_id = $1`, r.turnsTable())
 	if err := tx.QueryRow(callCtx, latestSQL, int64(session.SessionID)).Scan(&latestTurnID); err != nil {
 		return 0, false, fmt.Errorf("query postgres latest session turn: %w", err)
 	}
@@ -433,7 +433,7 @@ func (s *Store) MarkSessionCompacted(ctx context.Context, session logicdomain.Se
 	}
 
 	var currentBoundary uint64
-	boundarySQL := fmt.Sprintf(`SELECT last_compacted_turn_id FROM %s WHERE id = $1 FOR UPDATE`, s.sessionsTable())
+	boundarySQL := fmt.Sprintf(`SELECT last_compacted_turn_id FROM %s WHERE id = $1 FOR UPDATE`, r.sessionsTable())
 	if err := tx.QueryRow(callCtx, boundarySQL, int64(session.SessionID)).Scan(&currentBoundary); err != nil {
 		return 0, false, fmt.Errorf("lock postgres session compact boundary: %w", err)
 	}
@@ -450,7 +450,7 @@ SET last_compacted_turn_id = $1,
         ELSE updated_at
     END
 WHERE id = $3
-`, s.sessionsTable())
+`, r.sessionsTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateSQL), int64(latestTurnID), compactedAt.UTC(), int64(session.SessionID)); err != nil {
 		return 0, false, fmt.Errorf("update postgres session compact boundary: %w", err)
 	}
@@ -462,14 +462,14 @@ WHERE id = $3
 
 // queryTurnRecords executes one PostgreSQL turn query and maps the result rows into the shared durable session-turn model.
 // queryTurnRecords 用于执行一条 PostgreSQL turn 查询，并把结果行映射成共享的长期 session-turn 模型。
-func (s *Store) queryTurnRecords(ctx context.Context, sqlText string, args ...any) ([]logicdomain.SessionTurnRecord, error) {
-	return s.queryTurnRecordsWithQueryer(ctx, s.pool, sqlText, args...)
+func (r *turnRepository) queryTurnRecords(ctx context.Context, sqlText string, args ...any) ([]logicdomain.SessionTurnRecord, error) {
+	return r.queryTurnRecordsWithQueryer(ctx, r.shared.pool, sqlText, args...)
 }
 
 // queryTurnRecordsWithQueryer executes one PostgreSQL turn query against either the shared pool or one transaction and maps the result rows into the shared durable session-turn model.
 // queryTurnRecordsWithQueryer 用于通过连接池或事务执行 PostgreSQL turn 查询，并把结果行映射成共享的长期 session-turn 模型。
-func (s *Store) queryTurnRecordsWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]logicdomain.SessionTurnRecord, error) {
-	callCtx, cancel := s.queryContext(ctx)
+func (r *turnRepository) queryTurnRecordsWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]logicdomain.SessionTurnRecord, error) {
+	callCtx, cancel := r.turnQueryContext(ctx)
 	defer cancel()
 	rows, err := q.Query(callCtx, sqlText, args...)
 	if err != nil {
@@ -500,4 +500,58 @@ func (s *Store) queryTurnRecordsWithQueryer(ctx context.Context, q profileQuerye
 		return nil, fmt.Errorf("iterate postgres turn rows: %w", err)
 	}
 	return turns, nil
+}
+
+// AppendTurnRecord delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// AppendTurnRecord 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.TurnRecord) (logicdomain.PersistedTurnRecord, error) {
+	return s.repos.turns.AppendTurnRecord(ctx, session, turn)
+}
+
+// LoadPendingSessionTurns delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadPendingSessionTurns 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionTurnRecord, error) {
+	return s.repos.turns.LoadPendingSessionTurns(ctx, session)
+}
+
+// LoadRecentSessionTurns delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadRecentSessionTurns 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
+	return s.repos.turns.LoadRecentSessionTurns(ctx, session, limit)
+}
+
+// LoadRecentSessionHistory delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadRecentSessionHistory 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadRecentSessionHistory(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {
+	return s.repos.turns.LoadRecentSessionHistory(ctx, session, limit)
+}
+
+// LoadTurnsByIDs delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadTurnsByIDs 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdomain.SessionTurnRecord, error) {
+	return s.repos.turns.LoadTurnsByIDs(ctx, turnIDs)
+}
+
+// LoadTurnWindows delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadTurnWindows 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius int) (map[uint64]logicdomain.TurnDetailWindow, error) {
+	return s.repos.turns.LoadTurnWindows(ctx, turnIDs, radius)
+}
+
+// ListIdlePendingSessions delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// ListIdlePendingSessions 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ListIdlePendingSessions(ctx context.Context, idleTimeout time.Duration, limit int) ([]logicdomain.SessionRef, error) {
+	return s.repos.turns.ListIdlePendingSessions(ctx, idleTimeout, limit)
+}
+
+// AdvanceSessionExtractWindow delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// AdvanceSessionExtractWindow 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) AdvanceSessionExtractWindow(ctx context.Context, sessionID uint64, observedAt, completedAt time.Time) error {
+	return s.repos.turns.AdvanceSessionExtractWindow(ctx, sessionID, observedAt, completedAt)
+}
+
+// MarkSessionCompacted delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
+// MarkSessionCompacted 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) MarkSessionCompacted(ctx context.Context, session logicdomain.SessionRef, compactedAt time.Time) (uint64, bool, error) {
+	return s.repos.turns.MarkSessionCompacted(ctx, session, compactedAt)
 }

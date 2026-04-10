@@ -33,8 +33,8 @@ type postgresIdleSessionRecycleResult struct {
 
 // RecycleColdMemories transactionally moves terminal durable memories and their context edges into PostgreSQL trash tables, then removes them from the hot tables.
 // RecycleColdMemories 用于在一个 PostgreSQL 事务里把终态长期记忆及其情境边迁入回收站，并从热表删除。
-func (s *Store) RecycleColdMemories(ctx context.Context, query logicdomain.MemoryRecycleQuery) (logicdomain.MemoryRecycleResult, error) {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) RecycleColdMemories(ctx context.Context, query logicdomain.MemoryRecycleQuery) (logicdomain.MemoryRecycleResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	limit := normalizeRetentionBatchLimit(query.Limit, 128)
@@ -44,9 +44,9 @@ func (s *Store) RecycleColdMemories(ctx context.Context, query logicdomain.Memor
 		reason = logicdomain.RecycleReasonColdTerminalMemory
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("begin postgres cold-memory recycle tx: %w", err)
 	}
@@ -69,8 +69,8 @@ WHERE %s
 ORDER BY m.updated_at ASC, m.id ASC
 LIMIT %s
 FOR UPDATE SKIP LOCKED
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
-	rows, err := s.queryMemoryNodesWithQueryer(callCtx, tx, selectSQL, args.Args()...)
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
+	rows, err := (&memoryRepository{shared: r.shared}).queryMemoryNodesWithQueryer(callCtx, tx, selectSQL, args.Args()...)
 	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("query postgres cold memories: %w", err)
 	}
@@ -97,7 +97,7 @@ FOR UPDATE SKIP LOCKED
 INSERT INTO %s (recycle_type, project_id, reason, recycled_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $4, $4)
 RETURNING id
-`, s.recycleBatchesTable())
+`, r.recycleBatchesTable())
 	var batchID uint64
 	if err := tx.QueryRow(callCtx, strings.TrimSpace(insertBatchSQL), logicdomain.RecycleTypeColdMemory, sharedRecycleProjectID(rows), reason, recycledAt).Scan(&batchID); err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("insert postgres recycle batch: %w", err)
@@ -121,7 +121,7 @@ SELECT $1, $2, $3,
        cross_session_adopted_count, decay_disabled, dedupe_hash, created_at, updated_at
 FROM %s
 WHERE id = ANY($4)
-`, s.memoryNodesTrashTable(), s.memoryNodesTable())
+`, r.memoryNodesTrashTable(), r.memoryNodesTable())
 	insertMemoryTag, err := tx.Exec(callCtx, strings.TrimSpace(insertTrashSQL), batchID, recycledAt, reason, idArgs)
 	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("copy postgres memories into trash: %w", err)
@@ -138,17 +138,17 @@ SELECT $1, $2, $3,
        last_supported_at, last_rebutted_at, created_at, updated_at
 FROM %s
 WHERE memory_id = ANY($4)
-`, s.memoryContextEdgesTrashTable(), s.memoryContextEdgesTable())
+`, r.memoryContextEdgesTrashTable(), r.memoryContextEdgesTable())
 	insertContextTag, err := tx.Exec(callCtx, strings.TrimSpace(insertContextTrashSQL), batchID, recycledAt, reason, idArgs)
 	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("copy postgres memory context edges into trash: %w", err)
 	}
 
-	deleteContextSQL := fmt.Sprintf(`DELETE FROM %s WHERE memory_id = ANY($1)`, s.memoryContextEdgesTable())
+	deleteContextSQL := fmt.Sprintf(`DELETE FROM %s WHERE memory_id = ANY($1)`, r.memoryContextEdgesTable())
 	if _, err := tx.Exec(callCtx, deleteContextSQL, idArgs); err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("delete postgres memory context edges: %w", err)
 	}
-	deleteMemorySQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, s.memoryNodesTable())
+	deleteMemorySQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.memoryNodesTable())
 	if _, err := tx.Exec(callCtx, deleteMemorySQL, idArgs); err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("delete postgres cold memories: %w", err)
 	}
@@ -166,8 +166,8 @@ WHERE memory_id = ANY($4)
 
 // RecycleIdleSessions compacts long-idle PostgreSQL sessions by moving stale session memories and eligible old turns into trash tables before removing them from the hot tables.
 // RecycleIdleSessions 用于压缩长期空闲的 PostgreSQL session，把陈旧 session 记忆和符合条件的旧 turn 迁入回收站，再从热表删除。
-func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.SessionIdleRecycleQuery) (logicdomain.SessionIdleRecycleResult, error) {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) RecycleIdleSessions(ctx context.Context, query logicdomain.SessionIdleRecycleQuery) (logicdomain.SessionIdleRecycleResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.SessionIdleRecycleResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	limit := normalizeRetentionBatchLimit(query.Limit, 32)
@@ -179,7 +179,7 @@ func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.Sessi
 		reason = logicdomain.RecycleReasonIdleSessionCompact
 	}
 	return collectPostgresIdleSessionRecyclePass(limit, func(excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
-		return s.recycleOnePostgresIdleSession(ctx, idleBefore, turnHotWindowSize, recycledAt, reason, excludedSessionIDs)
+		return r.recycleOnePostgresIdleSession(ctx, idleBefore, turnHotWindowSize, recycledAt, reason, excludedSessionIDs)
 	})
 }
 
@@ -235,16 +235,16 @@ func postgresIdleSessionInspectionBudget(limit int) int {
 
 // PurgeExpiredTrash permanently deletes old PostgreSQL trash batches once their soft-backup retention window has elapsed, including the batch metadata row itself so recycle bookkeeping does not grow forever after the backup window ends.
 // PurgeExpiredTrash 用于在 PostgreSQL 回收站保留窗口到期后，永久删除旧的垃圾批次，并一并删除批次元数据行，避免软备份窗口结束后回收台账无限增长。
-func (s *Store) PurgeExpiredTrash(ctx context.Context, before time.Time, limit int) (logicdomain.RetentionTrashPurgeResult, error) {
-	if s == nil || s.pool == nil {
+func (r *retentionRepository) PurgeExpiredTrash(ctx context.Context, before time.Time, limit int) (logicdomain.RetentionTrashPurgeResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	purgeBefore := chooseNonZeroTime(before, time.Now().UTC())
 	limit = normalizeRetentionBatchLimit(limit, 64)
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("begin postgres trash purge tx: %w", err)
 	}
@@ -260,7 +260,7 @@ WHERE purged_at IS NULL
 ORDER BY recycled_at ASC, id ASC
 LIMIT $2
 FOR UPDATE SKIP LOCKED
-`, s.recycleBatchesTable())
+`, r.recycleBatchesTable())
 	rows, err := tx.Query(callCtx, strings.TrimSpace(selectBatchSQL), purgeBefore, limit)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("query postgres trash batches: %w", err)
@@ -283,22 +283,22 @@ FOR UPDATE SKIP LOCKED
 	}
 
 	batchArgs := toInt64List(normalizedBatchIDs)
-	deleteContextTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, s.memoryContextEdgesTrashTable())
+	deleteContextTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, r.memoryContextEdgesTrashTable())
 	contextTag, err := tx.Exec(callCtx, deleteContextTrashSQL, batchArgs)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres memory-context trash rows: %w", err)
 	}
-	deleteMemoryTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, s.memoryNodesTrashTable())
+	deleteMemoryTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, r.memoryNodesTrashTable())
 	memoryTag, err := tx.Exec(callCtx, deleteMemoryTrashSQL, batchArgs)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres memory trash rows: %w", err)
 	}
-	deleteTurnTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, s.turnsTrashTable())
+	deleteTurnTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, r.turnsTrashTable())
 	turnTag, err := tx.Exec(callCtx, deleteTurnTrashSQL, batchArgs)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres turn trash rows: %w", err)
 	}
-	deleteBatchSQL := buildPostgresRecycleBatchDeleteSQL(s.recycleBatchesTable())
+	deleteBatchSQL := buildPostgresRecycleBatchDeleteSQL(r.recycleBatchesTable())
 	if _, err := tx.Exec(callCtx, deleteBatchSQL, batchArgs); err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres recycle batch metadata: %w", err)
 	}
@@ -322,10 +322,10 @@ func buildPostgresRecycleBatchDeleteSQL(table string) string {
 
 // recycleOnePostgresIdleSession locks and compacts one concrete long-idle session so concurrent workers and foreground writers cannot split one recycle batch across overlapping hot-table states.
 // recycleOnePostgresIdleSession 用于锁定并压缩单个长期空闲 session，避免并发工作器和前台写入把一次回收批次切割到重叠的热表状态。
-func (s *Store) recycleOnePostgresIdleSession(ctx context.Context, idleBefore time.Time, turnHotWindowSize int, recycledAt time.Time, reason string, excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
-	callCtx, cancel := s.queryContext(ctx)
+func (r *retentionRepository) recycleOnePostgresIdleSession(ctx context.Context, idleBefore time.Time, turnHotWindowSize int, recycledAt time.Time, reason string, excludedSessionIDs []uint64) (postgresIdleSessionRecycleResult, error) {
+	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return postgresIdleSessionRecycleResult{}, fmt.Errorf("begin postgres idle-session recycle tx: %w", err)
 	}
@@ -341,8 +341,8 @@ func (s *Store) recycleOnePostgresIdleSession(ctx context.Context, idleBefore ti
     FROM %s tr
     WHERE tr.session_id = s.id
       AND tr.extracted_status = %s
-  )`, s.turnsTable(), sessionArgs.Add(logicdomain.TurnExtractedStatusPending)),
-		buildPostgresIdleSessionCandidateAvailabilityClause(sessionArgs, s, idleBefore, turnHotWindowSize),
+  )`, r.turnsTable(), sessionArgs.Add(logicdomain.TurnExtractedStatusPending)),
+		buildPostgresIdleSessionCandidateAvailabilityClause(sessionArgs, r, idleBefore, turnHotWindowSize),
 	}
 	if len(excludedSessionIDs) > 0 {
 		sessionWhereClauses = append(sessionWhereClauses, "s.id <> ALL("+sessionArgs.Add(toInt64List(excludedSessionIDs))+")")
@@ -357,7 +357,7 @@ WHERE %s
 ORDER BY s.updated_at ASC, s.id ASC
 LIMIT 1
 FOR UPDATE SKIP LOCKED
-`, s.sessionsTable(), strings.Join(sessionWhereClauses, "\n  AND "))
+`, r.sessionsTable(), strings.Join(sessionWhereClauses, "\n  AND "))
 	var session sessionScanRow
 	if err := tx.QueryRow(callCtx, strings.TrimSpace(sessionSQL), sessionArgs.Args()...).Scan(
 		&session.ID,
@@ -399,8 +399,8 @@ WHERE m.origin_session_id = $1
   ) <= $4
 ORDER BY m.updated_at ASC, m.id ASC
 FOR UPDATE
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable())
-	memoryRows, err := s.queryMemoryNodesWithQueryer(callCtx, tx, strings.TrimSpace(memorySQL), int64(session.ID), logicdomain.MemoryScopeLevelSession, logicdomain.MemoryStatusActive, idleBefore)
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable())
+	memoryRows, err := (&memoryRepository{shared: r.shared}).queryMemoryNodesWithQueryer(callCtx, tx, strings.TrimSpace(memorySQL), int64(session.ID), logicdomain.MemoryScopeLevelSession, logicdomain.MemoryStatusActive, idleBefore)
 	if err != nil {
 		return postgresIdleSessionRecycleResult{}, fmt.Errorf("query postgres idle-session memories for session %d: %w", session.ID, err)
 	}
@@ -417,7 +417,7 @@ FOR UPDATE
 
 	contextCount := 0
 	if len(normalizedMemoryIDs) > 0 {
-		contextCountSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE memory_id = ANY($1)`, s.memoryContextEdgesTable())
+		contextCountSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE memory_id = ANY($1)`, r.memoryContextEdgesTable())
 		if err := tx.QueryRow(callCtx, contextCountSQL, toInt64List(normalizedMemoryIDs)).Scan(&contextCount); err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("count postgres idle-session context edges for session %d: %w", session.ID, err)
 		}
@@ -436,18 +436,18 @@ WITH recent_turns AS (
 	ORDER BY id DESC
 	LIMIT %d
 )
-`, s.turnsTable(), turnArgs.Add(int64(session.ID)), turnHotWindowSize)
+`, r.turnsTable(), turnArgs.Add(int64(session.ID)), turnHotWindowSize)
 	turnWhereClauses = append(turnWhereClauses, "tr.id NOT IN (SELECT id FROM recent_turns)")
-	turnWhereClauses = append(turnWhereClauses, buildPostgresIdleSessionTurnReferenceClause(turnArgs, s.memoryNodesTable(), normalizedMemoryIDs))
-	turnWhereClauses = append(turnWhereClauses, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM %s pn WHERE pn.turn_id = tr.id)`, s.profileNodesTable()))
+	turnWhereClauses = append(turnWhereClauses, buildPostgresIdleSessionTurnReferenceClause(turnArgs, r.memoryNodesTable(), normalizedMemoryIDs))
+	turnWhereClauses = append(turnWhereClauses, fmt.Sprintf(`NOT EXISTS (SELECT 1 FROM %s pn WHERE pn.turn_id = tr.id)`, r.profileNodesTable()))
 	turnSQL := fmt.Sprintf(`
 %s
 SELECT id, session_id, project_id, dehydrated_content, dehydrated_budget, extracted_status, details, details_budget, created_at, updated_at
 FROM %s AS tr
 WHERE %s
 ORDER BY tr.id ASC
-`, strings.TrimSpace(recentTurnsCTE), s.turnsTable(), strings.Join(turnWhereClauses, " AND "))
-	turnRows, err := s.queryTurnRecordsWithQueryer(callCtx, tx, strings.TrimSpace(turnSQL), turnArgs.Args()...)
+`, strings.TrimSpace(recentTurnsCTE), r.turnsTable(), strings.Join(turnWhereClauses, " AND "))
+	turnRows, err := (&turnRepository{shared: r.shared}).queryTurnRecordsWithQueryer(callCtx, tx, strings.TrimSpace(turnSQL), turnArgs.Args()...)
 	if err != nil {
 		return postgresIdleSessionRecycleResult{}, fmt.Errorf("query postgres idle-session turns for session %d: %w", session.ID, err)
 	}
@@ -459,7 +459,7 @@ ORDER BY tr.id ASC
 INSERT INTO %s (recycle_type, session_id, project_id, reason, recycled_at, created_at, updated_at)
 VALUES ($1, $2, $3, $4, $5, $5, $5)
 RETURNING id
-`, s.recycleBatchesTable())
+`, r.recycleBatchesTable())
 	var batchID uint64
 	if err := tx.QueryRow(callCtx, strings.TrimSpace(insertBatchSQL), logicdomain.RecycleTypeSessionIdle, int64(session.ID), int64(session.ProjectID), reason, recycledAt).Scan(&batchID); err != nil {
 		return postgresIdleSessionRecycleResult{}, fmt.Errorf("insert postgres idle-session recycle batch for session %d: %w", session.ID, err)
@@ -486,7 +486,7 @@ SELECT $1, $2, $3,
        cross_session_adopted_count, decay_disabled, dedupe_hash, created_at, updated_at
 FROM %s
 WHERE id = ANY($4)
-`, s.memoryNodesTrashTable(), s.memoryNodesTable())
+`, r.memoryNodesTrashTable(), r.memoryNodesTable())
 		memoryTag, err := tx.Exec(callCtx, strings.TrimSpace(insertMemoryTrashSQL), batchID, recycledAt, reason, idArgs)
 		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("copy postgres idle-session memories into trash for session %d: %w", session.ID, err)
@@ -504,15 +504,15 @@ SELECT $1, $2, $3,
        last_supported_at, last_rebutted_at, created_at, updated_at
 FROM %s
 WHERE memory_id = ANY($4)
-`, s.memoryContextEdgesTrashTable(), s.memoryContextEdgesTable())
+`, r.memoryContextEdgesTrashTable(), r.memoryContextEdgesTable())
 		if _, err := tx.Exec(callCtx, strings.TrimSpace(insertContextTrashSQL), batchID, recycledAt, reason, idArgs); err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("copy postgres idle-session memory context edges into trash for session %d: %w", session.ID, err)
 		}
-		deleteContextSQL := fmt.Sprintf(`DELETE FROM %s WHERE memory_id = ANY($1)`, s.memoryContextEdgesTable())
+		deleteContextSQL := fmt.Sprintf(`DELETE FROM %s WHERE memory_id = ANY($1)`, r.memoryContextEdgesTable())
 		if _, err := tx.Exec(callCtx, deleteContextSQL, idArgs); err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("delete postgres idle-session memory context edges for session %d: %w", session.ID, err)
 		}
-		deleteMemorySQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, s.memoryNodesTable())
+		deleteMemorySQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.memoryNodesTable())
 		if _, err := tx.Exec(callCtx, deleteMemorySQL, idArgs); err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("delete postgres idle-session memories for session %d: %w", session.ID, err)
 		}
@@ -536,13 +536,13 @@ SELECT $1, $2, $3,
        extracted_status, details, details_budget, created_at, updated_at
 FROM %s
 WHERE id = ANY($4)
-`, s.turnsTrashTable(), s.turnsTable())
+`, r.turnsTrashTable(), r.turnsTable())
 		turnTag, err := tx.Exec(callCtx, strings.TrimSpace(insertTurnTrashSQL), batchID, recycledAt, reason, turnArgs)
 		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("copy postgres idle-session turns into trash for session %d: %w", session.ID, err)
 		}
 		recycledTurnCount = int(turnTag.RowsAffected())
-		deleteTurnSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, s.turnsTable())
+		deleteTurnSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.turnsTable())
 		if _, err := tx.Exec(callCtx, deleteTurnSQL, turnArgs); err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("delete postgres idle-session turns for session %d: %w", session.ID, err)
 		}
@@ -563,8 +563,8 @@ WHERE id = ANY($4)
 
 // buildPostgresIdleSessionCandidateAvailabilityClause prefilters idle-session candidates to only sessions that already expose recyclable stale session memories or old turns, so no-op oldest sessions do not block later useful work.
 // buildPostgresIdleSessionCandidateAvailabilityClause 用于为 idle-session 候选追加“确实存在可回收数据”的预过滤，避免最老但无可回收内容的 session 阻塞后续真正有收益的回收工作。
-func buildPostgresIdleSessionCandidateAvailabilityClause(args *sqlArgsBuilder, s *Store, idleBefore time.Time, turnHotWindowSize int) string {
-	if args == nil || s == nil {
+func buildPostgresIdleSessionCandidateAvailabilityClause(args *sqlArgsBuilder, r *retentionRepository, idleBefore time.Time, turnHotWindowSize int) string {
+	if args == nil || r == nil {
 		return "TRUE"
 	}
 	staleMemoryIdleBeforePlaceholder := args.Add(idleBefore)
@@ -604,7 +604,13 @@ OR EXISTS (
     AND NOT EXISTS (SELECT 1 FROM %s mn WHERE mn.source_turn_id = tr.id)
     AND NOT EXISTS (SELECT 1 FROM %s pn WHERE pn.turn_id = tr.id)
 )
- )`, s.memoryNodesTable(), staleMemoryScopePlaceholder, staleMemoryStatusPlaceholder, staleMemoryIdleBeforePlaceholder, staleMemoryFreshnessPlaceholder, s.turnsTable(), turnHotWindowSize, s.turnsTable(), oldTurnPendingStatusPlaceholder, s.memoryNodesTable(), s.profileNodesTable())
+ )`, r.memoryNodesTable(), staleMemoryScopePlaceholder, staleMemoryStatusPlaceholder, staleMemoryIdleBeforePlaceholder, staleMemoryFreshnessPlaceholder, r.turnsTable(), turnHotWindowSize, r.turnsTable(), oldTurnPendingStatusPlaceholder, r.memoryNodesTable(), r.profileNodesTable())
+}
+
+// buildPostgresIdleSessionCandidateAvailabilityClauseForTest provides a Store-compatible wrapper so legacy unit tests can still call the helper without constructing a repository literal.
+// buildPostgresIdleSessionCandidateAvailabilityClauseForTest 用于为旧单元测试提供 Store 兼容包装，让测试无需构造 repository 字面量即可调用该辅助函数。
+func (s *Store) buildPostgresIdleSessionCandidateAvailabilityClauseForTest(args *sqlArgsBuilder, idleBefore time.Time, turnHotWindowSize int) string {
+	return buildPostgresIdleSessionCandidateAvailabilityClause(args, &retentionRepository{shared: &storeShared{cfg: s.cfg}}, idleBefore, turnHotWindowSize)
 }
 
 // appendProtectedSharedMemoryRecycleFilter appends the shared-memory protection predicate so retention does not recycle important shared facts by default.

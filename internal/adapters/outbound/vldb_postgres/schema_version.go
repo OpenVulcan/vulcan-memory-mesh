@@ -46,21 +46,21 @@ func searchSchemaVersionComponent(flavor string) string {
 
 // ensureSchemaVersionTable bootstraps the schema-version table early so version checks can fail fast before later DDL mutates more objects.
 // ensureSchemaVersionTable 用于优先初始化版本表，让版本校验能在后续 DDL 变更更多对象前尽早失败。
-func (s *Store) ensureSchemaVersionTable(ctx context.Context) error {
-	if s == nil || s.pool == nil {
+func (r *maintenanceRepository) ensureSchemaVersionTable(ctx context.Context) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	statements := []string{
-		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdentifier(s.cfg.Schema)),
+		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdentifier(r.shared.cfg.Schema)),
 		fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	component TEXT PRIMARY KEY,
 	schema_version INTEGER NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`, s.schemaTable()),
+)`, r.maintenanceQualifiedTable("vmm_schema_versions")),
 	}
 	for _, statement := range statements {
-		if _, err := s.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
+		if _, err := r.shared.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
 			return fmt.Errorf("bootstrap postgres schema version table: %w", err)
 		}
 	}
@@ -69,12 +69,12 @@ CREATE TABLE IF NOT EXISTS %s (
 
 // validateTrackedSchemaVersions checks every stored version row that already exists and stops startup when the runtime cannot safely understand it.
 // validateTrackedSchemaVersions 用于检查当前已存在的版本记录，并在运行时代码无法安全理解时阻止启动继续进行。
-func (s *Store) validateTrackedSchemaVersions(ctx context.Context) error {
-	if s == nil || s.pool == nil {
+func (r *maintenanceRepository) validateTrackedSchemaVersions(ctx context.Context) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	for _, component := range trackedSchemaComponents(s.cfg.Flavor) {
-		stored, err := s.GetSchemaComponentVersion(ctx, component.component)
+	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
+		stored, err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).GetSchemaComponentVersion(ctx, component.component)
 		if err != nil {
 			return err
 		}
@@ -87,19 +87,19 @@ func (s *Store) validateTrackedSchemaVersions(ctx context.Context) error {
 
 // backfillTrackedSchemaVersions writes the current runtime versions only when the table still lacks those rows after a successful bootstrap.
 // backfillTrackedSchemaVersions 用于在启动成功后，仅为尚不存在的版本记录补写当前运行时版本。
-func (s *Store) backfillTrackedSchemaVersions(ctx context.Context) error {
-	if s == nil || s.pool == nil {
+func (r *maintenanceRepository) backfillTrackedSchemaVersions(ctx context.Context) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	for _, component := range trackedSchemaComponents(s.cfg.Flavor) {
-		stored, err := s.GetSchemaComponentVersion(ctx, component.component)
+	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
+		stored, err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).GetSchemaComponentVersion(ctx, component.component)
 		if err != nil {
 			return err
 		}
 		if stored != 0 {
 			continue
 		}
-		if err := s.SetSchemaComponentVersion(ctx, component.component, component.version); err != nil {
+		if err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).SetSchemaComponentVersion(ctx, component.component, component.version); err != nil {
 			return err
 		}
 	}
@@ -108,12 +108,12 @@ func (s *Store) backfillTrackedSchemaVersions(ctx context.Context) error {
 
 // writeTrackedSchemaVersions forcefully persists the current runtime versions and is used by destructive maintenance flows that intentionally replace all managed rows.
 // writeTrackedSchemaVersions 用于强制写入当前运行时版本，供有意替换整套受管数据的破坏性维护流程复用。
-func (s *Store) writeTrackedSchemaVersions(ctx context.Context) error {
-	if s == nil || s.pool == nil {
+func (r *maintenanceRepository) writeTrackedSchemaVersions(ctx context.Context) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	for _, component := range trackedSchemaComponents(s.cfg.Flavor) {
-		if err := s.SetSchemaComponentVersion(ctx, component.component, component.version); err != nil {
+	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
+		if err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).SetSchemaComponentVersion(ctx, component.component, component.version); err != nil {
 			return err
 		}
 	}

@@ -13,8 +13,8 @@ import (
 
 // LoadMemoryNodesByIDs loads unified durable memory rows by numeric ids while preserving ascending id order for deterministic detail responses.
 // LoadMemoryNodesByIDs 用于按数字 id 读取统一长期记忆行，并保持升序返回，保证详情响应可预测。
-func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	memoryIDs = normalizeUint64List(memoryIDs)
@@ -26,8 +26,8 @@ SELECT %s
 FROM %s AS m
 WHERE m.id = ANY($1)
 ORDER BY m.id ASC
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable())
-	rows, err := s.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), toInt64List(memoryIDs))
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable())
+	rows, err := r.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), toInt64List(memoryIDs))
 	if err != nil {
 		return nil, fmt.Errorf("query postgres memory nodes by ids: %w", err)
 	}
@@ -40,8 +40,8 @@ ORDER BY m.id ASC
 
 // LoadMemoryContextEdgesByMemoryIDs loads the contextual evidence rows attached to one durable-memory batch.
 // LoadMemoryContextEdgesByMemoryIDs 用于按长期记忆批次加载附着的情境证据边。
-func (s *Store) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
+	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	memoryIDs = normalizeUint64List(memoryIDs)
@@ -54,10 +54,10 @@ SELECT memory_id, context_key, context_value, support_count, rebuttal_count,
 FROM %s
 WHERE memory_id = ANY($1)
 ORDER BY memory_id ASC, context_key ASC, context_value ASC
-`, s.memoryContextEdgesTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.memoryContextEdgesTable())
+	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Query(callCtx, strings.TrimSpace(sqlText), toInt64List(memoryIDs))
+	rows, err := r.shared.pool.Query(callCtx, strings.TrimSpace(sqlText), toInt64List(memoryIDs))
 	if err != nil {
 		return nil, fmt.Errorf("query postgres memory context edges: %w", err)
 	}
@@ -89,8 +89,8 @@ ORDER BY memory_id ASC, context_key ASC, context_value ASC
 
 // LoadMemoryNodesByVectorIDs materializes active durable memory rows by vector ids so semantic recall hits can be enriched with relational metadata.
 // LoadMemoryNodesByVectorIDs 用于按 vector id 回表加载 active 长期记忆行，让语义召回结果补齐关系元数据。
-func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
+	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	vectorIDs = normalizeStringList(vectorIDs)
@@ -103,8 +103,8 @@ FROM %s AS m
 WHERE m.vector_id = ANY($1)
   AND %s
 ORDER BY m.created_at ASC, m.id ASC
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
-	rows, err := s.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), vectorIDs)
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
+	rows, err := r.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), vectorIDs)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres memory nodes by vector ids: %w", err)
 	}
@@ -117,9 +117,18 @@ ORDER BY m.created_at ASC, m.id ASC
 
 // SearchLexicalMemory delegates lexical SQL generation to the active dialect so ParadeDB and standard PostgreSQL can share one relational materialization flow.
 // SearchLexicalMemory 用于把 lexical SQL 生成委托给当前方言，让 ParadeDB 与 standard PostgreSQL 共享同一条关系回表链路。
-func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
+	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
+	}
+	// Build a complete Store view so dialect SQL generation can still access table names, cfg thresholds, and Store helpers.
+	// 构建完整的 Store 视图，让方言 SQL 生成仍能访问表名、cfg 阈值和 Store 辅助方法。
+	storeView := &Store{
+		shared:  r.shared,
+		repos:   storeRepositories{memory: *r},
+		pool:    r.shared.pool,
+		cfg:     r.shared.cfg,
+		dialect: r.shared.dialect,
 	}
 	query = strings.TrimSpace(query)
 	if query == "" || topK <= 0 {
@@ -128,10 +137,10 @@ func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int,
 	if topK > 32 {
 		topK = 32
 	}
-	sqlText, args := s.dialect.BuildLexicalSearchSQL(s, query, topK, filter)
-	callCtx, cancel := s.queryContext(ctx)
+	sqlText, args := r.shared.dialect.BuildLexicalSearchSQL(storeView, query, topK, filter)
+	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Query(callCtx, sqlText, args...)
+	rows, err := r.shared.pool.Query(callCtx, sqlText, args...)
 	if err != nil {
 		return nil, fmt.Errorf("search postgres lexical memory: %w", err)
 	}
@@ -159,8 +168,8 @@ func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int,
 
 // FindRecentActiveMemoryByDedupe loads the newest active direct-write memory inside the same resolved session and dedupe window.
 // FindRecentActiveMemoryByDedupe 用于在同一已解析 session 和去重时间窗内加载最新的 active 主动写记忆。
-func (s *Store) FindRecentActiveMemoryByDedupe(ctx context.Context, session logicdomain.SessionRef, sourceKind, scopeLevel int, dedupeHash string, notBefore time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) FindRecentActiveMemoryByDedupe(ctx context.Context, session logicdomain.SessionRef, sourceKind, scopeLevel int, dedupeHash string, notBefore time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
+	if r == nil || r.shared.pool == nil {
 		return logicdomain.MemoryNodeRecord{}, false, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -183,8 +192,8 @@ WHERE m.origin_session_id = $1
   AND m.created_at >= $7
 ORDER BY m.created_at DESC, m.id DESC
 LIMIT 1
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
-	rows, err := s.queryMemoryNodes(ctx, strings.TrimSpace(sqlText),
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
+	rows, err := r.queryMemoryNodes(ctx, strings.TrimSpace(sqlText),
 		int64(session.SessionID),
 		int64(session.ProjectID),
 		int64(session.UserID),
@@ -204,8 +213,8 @@ LIMIT 1
 
 // CreateDirectMemoryNode upserts one fully materialized direct-write durable memory row into the shared combined-store table.
 // CreateDirectMemoryNode 用于把一条已完整物化的主动写长期记忆 upsert 到共享组合库表中。
-func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
+	if r == nil || r.shared.pool == nil {
 		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -214,17 +223,17 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 	if strings.TrimSpace(record.VectorID) == "" {
 		return logicdomain.MemoryNodeRecord{}, logicdomain.ValidationError{Field: "vector_id", Message: "is required"}
 	}
-	if len(record.Vector) != s.cfg.EmbeddingDimension {
-		return logicdomain.MemoryNodeRecord{}, logicdomain.ValidationError{Field: "vector", Message: fmt.Sprintf("must contain exactly %d dimensions", s.cfg.EmbeddingDimension)}
+	if len(record.Vector) != r.shared.cfg.EmbeddingDimension {
+		return logicdomain.MemoryNodeRecord{}, logicdomain.ValidationError{Field: "vector", Message: fmt.Sprintf("must contain exactly %d dimensions", r.shared.cfg.EmbeddingDimension)}
 	}
 	if !logicdomain.ValidMemoryNodeCategory(record.Category) {
 		return logicdomain.MemoryNodeRecord{}, logicdomain.ValidationError{Field: "category", Message: "must be one supported memory category"}
 	}
 	now := time.Now().UTC()
 	record = normalizeDirectMemoryNodeRecord(session, record, now)
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	created, err := s.upsertDirectMemoryNodeRow(callCtx, s.pool.QueryRow(callCtx, directMemoryNodeUpsertSQL(s.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
+	created, err := r.upsertDirectMemoryNodeRow(callCtx, r.shared.pool.QueryRow(callCtx, directMemoryNodeUpsertSQL(r.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
 	if err != nil {
 		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("upsert postgres direct memory node: %w", err)
 	}
@@ -233,8 +242,8 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 
 // ApplyDirectMemoryWrite atomically inserts one direct-write durable memory row and supersedes any replaced active rows so explicit writes share the same replacement semantics as post-action.
 // ApplyDirectMemoryWrite 用于原子写入一条主动长期记忆，并同时 supersede 被其替代的活跃旧行，让显式写入与 post-action 共享同一套替代语义。
-func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
+	if r == nil || r.shared.pool == nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -243,8 +252,8 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 	if strings.TrimSpace(record.VectorID) == "" {
 		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "vector_id", Message: "is required"}
 	}
-	if len(record.Vector) != s.cfg.EmbeddingDimension {
-		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "vector", Message: fmt.Sprintf("must contain exactly %d dimensions", s.cfg.EmbeddingDimension)}
+	if len(record.Vector) != r.shared.cfg.EmbeddingDimension {
+		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "vector", Message: fmt.Sprintf("must contain exactly %d dimensions", r.shared.cfg.EmbeddingDimension)}
 	}
 	if !logicdomain.ValidMemoryNodeCategory(record.Category) {
 		return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.ValidationError{Field: "category", Message: "must be one supported memory category"}
@@ -256,9 +265,9 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 
 	// Keep the insert and the old-row retirement inside one explicit transaction so combined mode never exposes the fresh direct-write memory and the stale rows as simultaneously active.
 	// 把新插入和旧行退役都放进一个显式事务，确保组合模式不会同时暴露刚写入的新主动记忆和仍处于 active 的旧行。
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("begin postgres direct memory write tx: %w", err)
 	}
@@ -266,11 +275,11 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 		_ = tx.Rollback(context.Background())
 	}()
 
-	supersededVectorIDs, err := s.loadActiveMemoryVectorIDsTx(callCtx, tx, supersededMemoryIDs)
+	supersededVectorIDs, err := r.analysis.loadActiveMemoryVectorIDsTx(callCtx, tx, supersededMemoryIDs)
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("load postgres direct-write superseded vector ids: %w", err)
 	}
-	created, err := s.upsertDirectMemoryNodeRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeUpsertSQL(s.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
+	created, err := r.upsertDirectMemoryNodeRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeUpsertSQL(r.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("insert postgres direct memory write row: %w", err)
 	}
@@ -281,7 +290,7 @@ SET memory_status = $1,
     updated_at = $2
 WHERE memory_status = $3
   AND id = ANY($4)
-`, s.memoryNodesTable())
+`, r.memoryNodesTable())
 		if _, err := tx.Exec(
 			callCtx,
 			strings.TrimSpace(updateSupersededSQL),
@@ -404,7 +413,7 @@ func directMemoryNodeUpsertArgs(record logicdomain.MemoryNodeRecord) []any {
 
 // upsertDirectMemoryNodeRow scans one direct-memory UPSERT result row into the shared durable memory record model.
 // upsertDirectMemoryNodeRow 用于把一条主动记忆 UPSERT 返回行扫描成共享的长期记忆记录模型。
-func (s *Store) upsertDirectMemoryNodeRow(_ context.Context, row pgRowScanner) (logicdomain.MemoryNodeRecord, error) {
+func (r *memoryRepository) upsertDirectMemoryNodeRow(_ context.Context, row pgRowScanner) (logicdomain.MemoryNodeRecord, error) {
 	var scan memoryNodeScanRow
 	if err := row.Scan(
 		&scan.ID,
@@ -448,26 +457,26 @@ func (s *Store) upsertDirectMemoryNodeRow(_ context.Context, row pgRowScanner) (
 
 // ListProjectMemories returns active unified durable memory rows for one project so shared admin flows can rebuild or migrate recall state deterministically.
 // ListProjectMemories 用于返回某个项目下的 active 统一长期记忆行，让共享管理流程可以稳定地重建或迁移召回状态。
-func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) ListProjectMemories(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	return s.listProjectMemoriesWithQueryerAndContextBuilder(ctx, s.pool, s.queryContext, projectID)
+	return r.listProjectMemoriesWithQueryerAndContextBuilder(ctx, r.shared.pool, r.queryContext, projectID)
 }
 
 // ListProjectMemoriesForMaintenance returns the same active project memories as the online admin path but wraps the scan in the dedicated maintenance read timeout so one-shot rebuild/export tools can read large projects safely.
 // ListProjectMemoriesForMaintenance 用于返回与在线管理路径相同的 active 项目记忆，但会套用专用维护读取超时，让一次性重建/导出工具可以安全扫描大项目。
-func (s *Store) ListProjectMemoriesForMaintenance(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) ListProjectMemoriesForMaintenance(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	return s.listProjectMemoriesWithQueryerAndContextBuilder(ctx, s.pool, s.maintenanceReadContext, projectID)
+	return r.listProjectMemoriesWithQueryerAndContextBuilder(ctx, r.shared.pool, r.maintenanceReadContext, projectID)
 }
 
 // listProjectMemoriesWithQueryerAndContextBuilder centralizes project-memory enumeration so online callers keep the normal query timeout while maintenance callers can explicitly opt into the longer maintenance budget.
 // listProjectMemoriesWithQueryerAndContextBuilder 用于集中承载项目记忆枚举逻辑，让在线调用方继续使用常规查询超时，而维护调用方可以显式切到更长的维护预算。
-func (s *Store) listProjectMemoriesWithQueryerAndContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), projectID uint64) ([]logicdomain.MemoryRecord, error) {
-	if s == nil || q == nil {
+func (r *memoryRepository) listProjectMemoriesWithQueryerAndContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	if r == nil || q == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	sqlText := fmt.Sprintf(`
@@ -476,8 +485,8 @@ FROM %s AS m
 WHERE m.project_id = $1
   AND %s
 ORDER BY m.created_at ASC, m.id ASC
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
-	rows, err := s.queryMemoryNodesWithContextBuilder(ctx, q, buildContext, strings.TrimSpace(sqlText), int64(projectID))
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
+	rows, err := r.queryMemoryNodesWithContextBuilder(ctx, q, buildContext, strings.TrimSpace(sqlText), int64(projectID))
 	if err != nil {
 		return nil, fmt.Errorf("list postgres project memories: %w", err)
 	}
@@ -508,17 +517,17 @@ ORDER BY m.created_at ASC, m.id ASC
 
 // ReplaceMemoryVectors rewrites one durable-memory batch's inline embedding column so combined PostgreSQL mode can fully rebuild vectors without replaying business writes.
 // ReplaceMemoryVectors 用于重写一批长期记忆行的内联 embedding 列，让组合 PostgreSQL 模式可以在不重放业务写入的前提下完整重建向量。
-func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error {
-	if s == nil || s.pool == nil {
+func (r *memoryRepository) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error {
+	if r == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	if len(records) == 0 {
 		return nil
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return fmt.Errorf("begin postgres vector rebuild tx: %w", err)
 	}
@@ -526,14 +535,14 @@ func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.
 		_ = tx.Rollback(context.Background())
 	}()
 
-	sqlText := buildReplaceMemoryVectorSQL(s.memoryNodesTable())
+	sqlText := buildReplaceMemoryVectorSQL(r.memoryNodesTable())
 	for idx, record := range records {
 		vectorID := strings.TrimSpace(record.ID)
 		if vectorID == "" {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].id", idx), Message: "is required"}
 		}
-		if len(record.Vector) != s.cfg.EmbeddingDimension {
-			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].vector", idx), Message: fmt.Sprintf("must contain exactly %d dimensions", s.cfg.EmbeddingDimension)}
+		if len(record.Vector) != r.shared.cfg.EmbeddingDimension {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("records[%d].vector", idx), Message: fmt.Sprintf("must contain exactly %d dimensions", r.shared.cfg.EmbeddingDimension)}
 		}
 		tag, execErr := tx.Exec(callCtx, sqlText, encodePGVectorLiteral(record.Vector), vectorID)
 		if execErr != nil {
@@ -561,21 +570,21 @@ WHERE vector_id = $2
 
 // queryMemoryNodes executes one PostgreSQL memory query and decodes the rows into scan structs shared by multiple memory-facing methods.
 // queryMemoryNodes 用于执行 PostgreSQL 记忆查询，并把结果解码为多个记忆方法共享的扫描结构。
-func (s *Store) queryMemoryNodes(ctx context.Context, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
-	return s.queryMemoryNodesWithQueryer(ctx, s.pool, sqlText, args...)
+func (r *memoryRepository) queryMemoryNodes(ctx context.Context, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
+	return r.queryMemoryNodesWithQueryer(ctx, r.shared.pool, sqlText, args...)
 }
 
 // queryMemoryNodesWithQueryer executes one PostgreSQL memory query against either the pool or a transaction so lifecycle updates can safely read locked rows.
 // queryMemoryNodesWithQueryer 用于在连接池或事务上执行 PostgreSQL 记忆查询，让生命周期更新可以安全读取已加锁的行。
-func (s *Store) queryMemoryNodesWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
-	return s.queryMemoryNodesWithContextBuilder(ctx, q, s.queryContext, sqlText, args...)
+func (r *memoryRepository) queryMemoryNodesWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
+	return r.queryMemoryNodesWithContextBuilder(ctx, q, r.queryContext, sqlText, args...)
 }
 
 // queryMemoryNodesWithContextBuilder executes one PostgreSQL memory query against either the pool or a transaction while letting callers choose the timeout policy that wraps the SQL work.
 // queryMemoryNodesWithContextBuilder 用于在连接池或事务上执行 PostgreSQL 记忆查询，并允许调用方选择包裹该 SQL 工作的超时策略。
-func (s *Store) queryMemoryNodesWithContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), sqlText string, args ...any) ([]memoryNodeScanRow, error) {
+func (r *memoryRepository) queryMemoryNodesWithContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), sqlText string, args ...any) ([]memoryNodeScanRow, error) {
 	if buildContext == nil {
-		buildContext = s.queryContext
+		buildContext = r.queryContext
 	}
 	callCtx, cancel := buildContext(ctx)
 	defer cancel()
@@ -684,4 +693,104 @@ func nullableUint64(value uint64) any {
 		return nil
 	}
 	return int64(value)
+}
+
+// LoadMemoryNodesByIDs delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadMemoryNodesByIDs 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.LoadMemoryNodesByIDs(ctx, memoryIDs)
+}
+
+// LoadMemoryContextEdgesByMemoryIDs delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadMemoryContextEdgesByMemoryIDs 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.LoadMemoryContextEdgesByMemoryIDs(ctx, memoryIDs)
+}
+
+// LoadMemoryNodesByVectorIDs delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadMemoryNodesByVectorIDs 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.LoadMemoryNodesByVectorIDs(ctx, vectorIDs)
+}
+
+// SearchLexicalMemory delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// SearchLexicalMemory 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.SearchLexicalMemory(ctx, query, topK, filter)
+}
+
+// FindRecentActiveMemoryByDedupe delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// FindRecentActiveMemoryByDedupe 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) FindRecentActiveMemoryByDedupe(ctx context.Context, session logicdomain.SessionRef, sourceKind, scopeLevel int, dedupeHash string, notBefore time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.FindRecentActiveMemoryByDedupe(ctx, session, sourceKind, scopeLevel, dedupeHash, notBefore)
+}
+
+// CreateDirectMemoryNode delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// CreateDirectMemoryNode 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.CreateDirectMemoryNode(ctx, session, record)
+}
+
+// ApplyDirectMemoryWrite delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// ApplyDirectMemoryWrite 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.ApplyDirectMemoryWrite(ctx, session, record, supersededMemoryIDs)
+}
+
+// ListProjectMemories delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// ListProjectMemories 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.ListProjectMemories(ctx, projectID)
+}
+
+// ListProjectMemoriesForMaintenance delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// ListProjectMemoriesForMaintenance 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ListProjectMemoriesForMaintenance(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.ListProjectMemoriesForMaintenance(ctx, projectID)
+}
+
+// ReplaceMemoryVectors delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
+// ReplaceMemoryVectors 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error {
+	s.ensureMemoryRepo()
+	return s.repos.memory.ReplaceMemoryVectors(ctx, records)
+}
+
+// queryMemoryNodes delegates to the memory repository so internal callers can still execute memory queries through the Store facade.
+// queryMemoryNodes 用于让内部调用方仍能通过 Store 门面执行记忆查询。
+func (s *Store) queryMemoryNodes(ctx context.Context, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.queryMemoryNodes(ctx, sqlText, args...)
+}
+
+// queryMemoryNodesWithQueryer delegates to the memory repository so internal callers can execute memory queries against a specific queryer (pool or transaction).
+// queryMemoryNodesWithQueryer 用于让内部调用方仍能针对特定查询器（连接池或事务）执行记忆查询。
+func (s *Store) queryMemoryNodesWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.queryMemoryNodesWithQueryer(ctx, q, sqlText, args...)
+}
+
+// listProjectMemoriesWithQueryerAndContextBuilder delegates to the memory repository so internal callers and tests can still use the shared project-memory listing helper through the Store facade.
+// listProjectMemoriesWithQueryerAndContextBuilder 用于让内部调用方和测试仍能通过 Store 门面使用共享的项目记忆枚举辅助方法。
+func (s *Store) listProjectMemoriesWithQueryerAndContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), projectID uint64) ([]logicdomain.MemoryRecord, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.listProjectMemoriesWithQueryerAndContextBuilder(ctx, q, buildContext, projectID)
+}
+
+// ensureMemoryRepo lazily wires a memoryRepository from Store compatibility mirrors so tests that construct bare Store literals via cfg/pool continue to work.
+// ensureMemoryRepo 用于从 Store 兼容镜像延迟组装 memoryRepository，让通过 cfg/pool 字面量构造的轻量测试仍能正常工作。
+func (s *Store) ensureMemoryRepo() {
+	if s.repos.memory.shared == nil {
+		s.repos.memory.shared = &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}
+		s.repos.memory.analysis = analysisRepository{shared: s.repos.memory.shared}
+	}
 }

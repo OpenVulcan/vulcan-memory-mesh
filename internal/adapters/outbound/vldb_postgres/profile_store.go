@@ -25,8 +25,8 @@ type profileQueryer interface {
 
 // LoadProfileTargets loads the current durable user/project profile blobs so post-action can merge fresh profile evidence before persistence.
 // LoadProfileTargets 用于加载当前长期 user/project 画像 Blob，让 post-action 在持久化前先合并新的画像证据。
-func (s *Store) LoadProfileTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error) {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) LoadProfileTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ProfileTargetsSnapshot{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.UserID == 0 {
@@ -35,11 +35,11 @@ func (s *Store) LoadProfileTargets(ctx context.Context, session logicdomain.Sess
 	if session.ProjectID == 0 {
 		return logicdomain.ProfileTargetsSnapshot{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
-	user, err := s.loadUserByID(ctx, session.UserID)
+	user, err := r.loadUserByID(ctx, session.UserID)
 	if err != nil {
 		return logicdomain.ProfileTargetsSnapshot{}, err
 	}
-	project, err := s.loadProjectByID(ctx, session.ProjectID)
+	project, err := r.loadProjectByID(ctx, session.ProjectID)
 	if err != nil {
 		return logicdomain.ProfileTargetsSnapshot{}, err
 	}
@@ -51,8 +51,8 @@ func (s *Store) LoadProfileTargets(ctx context.Context, session logicdomain.Sess
 
 // LoadProfileReviewTargets loads the currently active and non-expired user/project profile nodes so post-action can review new candidates against factual atomic records.
 // LoadProfileReviewTargets 用于加载当前活跃且未过期的 user/project 画像节点，让 post-action 可以基于原子事实记录评审新候选。
-func (s *Store) LoadProfileReviewTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileReviewTargetsSnapshot, error) {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) LoadProfileReviewTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileReviewTargetsSnapshot, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.UserID == 0 {
@@ -62,11 +62,11 @@ func (s *Store) LoadProfileReviewTargets(ctx context.Context, session logicdomai
 		return logicdomain.ProfileReviewTargetsSnapshot{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
 	now := time.Now().UTC()
-	userNodes, err := s.loadActiveProfileNodes(ctx, s.pool, logicdomain.ProfileTypeUser, session.UserID, now, 0)
+	userNodes, err := r.loadActiveProfileNodes(ctx, r.shared.pool, logicdomain.ProfileTypeUser, session.UserID, now, 0)
 	if err != nil {
 		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query postgres user profile review targets: %w", err)
 	}
-	projectNodes, err := s.loadActiveProfileNodes(ctx, s.pool, logicdomain.ProfileTypeProject, session.ProjectID, now, 0)
+	projectNodes, err := r.loadActiveProfileNodes(ctx, r.shared.pool, logicdomain.ProfileTypeProject, session.ProjectID, now, 0)
 	if err != nil {
 		return logicdomain.ProfileReviewTargetsSnapshot{}, fmt.Errorf("query postgres project profile review targets: %w", err)
 	}
@@ -78,8 +78,8 @@ func (s *Store) LoadProfileReviewTargets(ctx context.Context, session logicdomai
 
 // ListActiveProfileNodes returns only the current active nodes for one resolved target in a bounded, deterministic order.
 // ListActiveProfileNodes 用于按确定性且受限的顺序返回某个已解析目标当前 active 的画像节点。
-func (s *Store) ListActiveProfileNodes(ctx context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) ListActiveProfileNodes(ctx context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if !logicdomain.ValidProfileType(target.ProfileType) {
@@ -95,7 +95,7 @@ func (s *Store) ListActiveProfileNodes(ctx context.Context, target logicdomain.P
 		limit = 256
 	}
 	now := time.Now().UTC()
-	rows, err := s.queryProfileNodes(ctx, s.pool, target.ProfileType, target.BindID, now, limit, true)
+	rows, err := r.queryProfileNodes(ctx, r.shared.pool, target.ProfileType, target.BindID, now, limit, true)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres active profile nodes: %w", err)
 	}
@@ -108,8 +108,8 @@ func (s *Store) ListActiveProfileNodes(ctx context.Context, target logicdomain.P
 
 // LoadRenderedProfile returns the durable scope-level rendered profile body stored on the resolved target row.
 // LoadRenderedProfile 用于返回已解析目标行上持久化的 scope 级渲染画像正文。
-func (s *Store) LoadRenderedProfile(ctx context.Context, target logicdomain.ProfileTargetRef) (string, error) {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) LoadRenderedProfile(ctx context.Context, target logicdomain.ProfileTargetRef) (string, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return "", fmt.Errorf("postgres store is not initialized")
 	}
 	if !logicdomain.ValidProfileType(target.ProfileType) {
@@ -118,13 +118,13 @@ func (s *Store) LoadRenderedProfile(ctx context.Context, target logicdomain.Prof
 	if target.BindID == 0 {
 		return "", logicdomain.ValidationError{Field: "bind_id", Message: "must resolve to one persisted target"}
 	}
-	return s.loadRenderedProfileByTarget(ctx, s.pool, target.ProfileType, target.BindID)
+	return r.loadRenderedProfileByTarget(ctx, r.shared.pool, target.ProfileType, target.BindID)
 }
 
 // CreateProfileInstruction inserts one pending manual profile instruction so later review results can reference a durable instruction id.
 // CreateProfileInstruction 用于插入一条 pending 的手工画像指令，让后续评审结果能够引用稳定的 instruction id。
-func (s *Store) CreateProfileInstruction(ctx context.Context, record logicdomain.ProfileInstructionRecord) (logicdomain.ProfileInstructionRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) CreateProfileInstruction(ctx context.Context, record logicdomain.ProfileInstructionRecord) (logicdomain.ProfileInstructionRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ProfileInstructionRecord{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if !logicdomain.ValidProfileType(record.ProfileType) {
@@ -147,11 +147,11 @@ INSERT INTO %s (
 	$1, $2, $3, $4, $5, $6, $7, $7
 )
 RETURNING id, profile_type, bind_id, instruction, instruction_status, review_result_json, failure_reason, created_at, updated_at
-`, s.profileInstructionsTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.profileInstructionsTable())
+	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
 	var row profileInstructionScanRow
-	if err := s.pool.QueryRow(
+	if err := r.shared.pool.QueryRow(
 		callCtx,
 		strings.TrimSpace(sqlText),
 		record.ProfileType,
@@ -179,8 +179,8 @@ RETURNING id, profile_type, bind_id, instruction, instruction_status, review_res
 
 // FailProfileInstruction marks one pending manual profile instruction as failed and stores the failure reason for later debugging.
 // FailProfileInstruction 用于把一条 pending 手工画像指令标记为失败，并保存失败原因，便于后续调试。
-func (s *Store) FailProfileInstruction(ctx context.Context, instructionID uint64, failureReason, reviewResult string) error {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) FailProfileInstruction(ctx context.Context, instructionID uint64, failureReason, reviewResult string) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	if instructionID == 0 {
@@ -193,10 +193,10 @@ SET instruction_status = $1,
     failure_reason = $3,
     updated_at = $4
 WHERE id = $5
-`, s.profileInstructionsTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.profileInstructionsTable())
+	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, strings.TrimSpace(sqlText), logicdomain.ProfileInstructionStatusFailed, strings.TrimSpace(reviewResult), strings.TrimSpace(failureReason), time.Now().UTC(), int64(instructionID)); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), logicdomain.ProfileInstructionStatusFailed, strings.TrimSpace(reviewResult), strings.TrimSpace(failureReason), time.Now().UTC(), int64(instructionID)); err != nil {
 		return fmt.Errorf("mark postgres profile instruction failed: %w", err)
 	}
 	return nil
@@ -204,8 +204,8 @@ WHERE id = $5
 
 // ApplyManualProfileInstruction persists the reviewed manual profile instruction inside one transaction so accepted nodes, retirements, instruction state, and rendered profile stay aligned.
 // ApplyManualProfileInstruction 用于在单个事务里持久化手工画像评审结果，确保接纳节点、退役节点、指令状态和渲染画像保持一致。
-func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicdomain.ProfileTargetRef, instruction logicdomain.ProfileInstructionRecord, nodes []logicdomain.ProfileNodeCandidate, retired []logicdomain.ProfileRetireDecision, renderedProfile, reviewResult string) (logicdomain.ManualProfileInstructionApplyResult, error) {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) ApplyManualProfileInstruction(ctx context.Context, target logicdomain.ProfileTargetRef, instruction logicdomain.ProfileInstructionRecord, nodes []logicdomain.ProfileNodeCandidate, retired []logicdomain.ProfileRetireDecision, renderedProfile, reviewResult string) (logicdomain.ManualProfileInstructionApplyResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if !logicdomain.ValidProfileType(target.ProfileType) {
@@ -218,9 +218,9 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 		return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.ValidationError{Field: "instruction_id", Message: "must be one persisted profile instruction id"}
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("begin postgres manual profile tx: %w", err)
 	}
@@ -264,7 +264,7 @@ INSERT INTO %s (
 )
 RETURNING id, turn_id, profile_type, bind_id, content, profile_status, priority, profile_level, level_reason, refresh_weight,
           source_kind, source_id, status_reason, expires_at, superseded_by_id, profile_date, created_at, updated_at
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 		var row profileNodeScanRow
 		if err := tx.QueryRow(
 			callCtx,
@@ -315,7 +315,7 @@ SET profile_status = $1,
     updated_at = $4
 WHERE profile_status = $5
   AND id = ANY($6)
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 			if _, err := tx.Exec(
 				callCtx,
 				strings.TrimSpace(updateSupersededSQL),
@@ -343,7 +343,7 @@ SET profile_status = $1,
     updated_at = $3
 WHERE profile_status = $4
   AND id = $5
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 		if _, err := tx.Exec(callCtx, strings.TrimSpace(retireSQL), logicdomain.ProfileStatusSuperseded, strings.TrimSpace(decision.Reason), now, logicdomain.ProfileStatusActive, int64(decision.NodeID)); err != nil {
 			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("retire postgres manual profile node %d: %w", decision.NodeID, err)
 		}
@@ -356,11 +356,11 @@ SET instruction_status = $1,
     failure_reason = '',
     updated_at = $3
 WHERE id = $4
-`, s.profileInstructionsTable())
+`, r.profileInstructionsTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateInstructionSQL), logicdomain.ProfileInstructionStatusApplied, strings.TrimSpace(reviewResult), now, int64(instruction.ID)); err != nil {
 		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("mark postgres manual profile instruction applied: %w", err)
 	}
-	if err := s.updateRenderedProfileTarget(callCtx, tx, target.ProfileType, target.BindID, renderedProfile, now); err != nil {
+	if err := r.updateRenderedProfileTarget(callCtx, tx, target.ProfileType, target.BindID, renderedProfile, now); err != nil {
 		return logicdomain.ManualProfileInstructionApplyResult{}, err
 	}
 	if err := tx.Commit(callCtx); err != nil {
@@ -375,17 +375,17 @@ WHERE id = $4
 
 // ConvergeExpiredProfileNodes marks due active profile nodes as expired and returns the affected targets together with their remaining renderable active nodes.
 // ConvergeExpiredProfileNodes 用于把已到期的 active 画像节点收敛为 expired，并返回受影响目标及其剩余可渲染 active 节点。
-func (s *Store) ConvergeExpiredProfileNodes(ctx context.Context, limit int) ([]logicdomain.ProfileRenderTargetSnapshot, error) {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) ConvergeExpiredProfileNodes(ctx context.Context, limit int) ([]logicdomain.ProfileRenderTargetSnapshot, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if limit <= 0 {
 		limit = 256
 	}
 	now := time.Now().UTC()
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return nil, fmt.Errorf("begin postgres profile convergence tx: %w", err)
 	}
@@ -402,7 +402,7 @@ WHERE profile_status = $1
   AND expires_at <= $2
 ORDER BY expires_at ASC, id ASC
 LIMIT $3
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 	rows, err := tx.Query(callCtx, strings.TrimSpace(expiredSQL), logicdomain.ProfileStatusActive, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres expired profile nodes: %w", err)
@@ -444,12 +444,12 @@ SET profile_status = $1,
     updated_at = $3
 WHERE profile_status = $4
   AND id = ANY($5)
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateExpiredSQL), logicdomain.ProfileStatusExpired, "expired by lifecycle convergence", now, logicdomain.ProfileStatusActive, toInt64List(expiredIDs)); err != nil {
 		return nil, fmt.Errorf("mark postgres expired profile nodes: %w", err)
 	}
 	for idx := range targets {
-		nodes, err := s.loadActiveProfileNodes(callCtx, tx, targets[idx].ProfileType, targets[idx].BindID, now, 0)
+		nodes, err := r.loadActiveProfileNodes(callCtx, tx, targets[idx].ProfileType, targets[idx].BindID, now, 0)
 		if err != nil {
 			return nil, fmt.Errorf("load postgres active profile nodes for render target: %w", err)
 		}
@@ -463,16 +463,16 @@ WHERE profile_status = $4
 
 // ReplaceRenderedProfiles writes the already rendered scope-level profile blobs back into PostgreSQL after lifecycle convergence, manual instruction review, or batch review.
 // ReplaceRenderedProfiles 用于在生命周期收敛、手工画像评审或批量评审之后，把已经渲染好的 scope 画像文本回写到 PostgreSQL。
-func (s *Store) ReplaceRenderedProfiles(ctx context.Context, updates logicdomain.RenderedProfileSet) error {
-	if s == nil || s.pool == nil {
+func (r *profileRepository) ReplaceRenderedProfiles(ctx context.Context, updates logicdomain.RenderedProfileSet) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	if len(updates.UserProfiles) == 0 && len(updates.TeamProfiles) == 0 && len(updates.SpaceProfiles) == 0 && len(updates.ProjectProfiles) == 0 {
 		return nil
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return fmt.Errorf("begin postgres rendered-profile replace tx: %w", err)
 	}
@@ -481,16 +481,16 @@ func (s *Store) ReplaceRenderedProfiles(ctx context.Context, updates logicdomain
 	}()
 
 	now := time.Now().UTC()
-	if err := s.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeUser, updates.UserProfiles, now); err != nil {
+	if err := r.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeUser, updates.UserProfiles, now); err != nil {
 		return err
 	}
-	if err := s.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeTeam, updates.TeamProfiles, now); err != nil {
+	if err := r.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeTeam, updates.TeamProfiles, now); err != nil {
 		return err
 	}
-	if err := s.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeSpace, updates.SpaceProfiles, now); err != nil {
+	if err := r.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeSpace, updates.SpaceProfiles, now); err != nil {
 		return err
 	}
-	if err := s.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeProject, updates.ProjectProfiles, now); err != nil {
+	if err := r.replaceRenderedProfileBatch(callCtx, tx, logicdomain.ProfileTypeProject, updates.ProjectProfiles, now); err != nil {
 		return err
 	}
 	if err := tx.Commit(callCtx); err != nil {
@@ -501,7 +501,7 @@ func (s *Store) ReplaceRenderedProfiles(ctx context.Context, updates logicdomain
 
 // queryProfileNodes loads profile rows for one target and keeps the row order aligned with the calling workflow's needs.
 // queryProfileNodes 用于按目标加载画像行，并保持返回顺序与调用场景一致。
-func (s *Store) queryProfileNodes(ctx context.Context, q profileQueryer, profileType int, bindID uint64, now time.Time, limit int, profileListOrder bool) ([]profileNodeScanRow, error) {
+func (r *profileRepository) queryProfileNodes(ctx context.Context, q profileQueryer, profileType int, bindID uint64, now time.Time, limit int, profileListOrder bool) ([]profileNodeScanRow, error) {
 	orderBy := "profile_date ASC, priority ASC, refresh_weight DESC, id ASC"
 	if profileListOrder {
 		orderBy = "priority ASC, refresh_weight DESC, profile_date DESC, id ASC"
@@ -514,7 +514,7 @@ WHERE profile_type = $1
   AND bind_id = $2
   AND profile_status = $3
   AND (expires_at IS NULL OR expires_at > $4)
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 	args := []any{profileType, int64(bindID), logicdomain.ProfileStatusActive, now}
 	if limit > 0 {
 		sqlText += fmt.Sprintf("\nORDER BY %s\nLIMIT $5", orderBy)
@@ -531,8 +531,8 @@ WHERE profile_type = $1
 
 // loadActiveProfileNodes converts active durable profile rows into the lightweight active-node model shared by reviewers and lifecycle convergence.
 // loadActiveProfileNodes 用于把活跃画像行转换成评审器和生命周期收敛共享的轻量 active-node 模型。
-func (s *Store) loadActiveProfileNodes(ctx context.Context, q profileQueryer, profileType int, bindID uint64, now time.Time, limit int) ([]logicdomain.ProfileActiveNodeRecord, error) {
-	rows, err := s.queryProfileNodes(ctx, q, profileType, bindID, now, limit, false)
+func (r *profileRepository) loadActiveProfileNodes(ctx context.Context, q profileQueryer, profileType int, bindID uint64, now time.Time, limit int) ([]logicdomain.ProfileActiveNodeRecord, error) {
+	rows, err := r.queryProfileNodes(ctx, q, profileType, bindID, now, limit, false)
 	if err != nil {
 		return nil, err
 	}
@@ -545,17 +545,17 @@ func (s *Store) loadActiveProfileNodes(ctx context.Context, q profileQueryer, pr
 
 // loadRenderedProfileByTarget reads the durable scope-level rendered profile blob after the caller resolves one profile target.
 // loadRenderedProfileByTarget 用于在调用方解析完 profile target 后读取对应的长期 scope 级渲染画像 Blob。
-func (s *Store) loadRenderedProfileByTarget(ctx context.Context, q profileQueryer, profileType int, bindID uint64) (string, error) {
+func (r *profileRepository) loadRenderedProfileByTarget(ctx context.Context, q profileQueryer, profileType int, bindID uint64) (string, error) {
 	table := ""
 	switch profileType {
 	case logicdomain.ProfileTypeUser:
-		table = s.usersTable()
+		table = r.usersTable()
 	case logicdomain.ProfileTypeTeam:
-		table = s.teamsTable()
+		table = r.teamsTable()
 	case logicdomain.ProfileTypeSpace:
-		table = s.spacesTable()
+		table = r.spacesTable()
 	case logicdomain.ProfileTypeProject:
-		table = s.projectsTable()
+		table = r.projectsTable()
 	default:
 		return "", logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile target"}
 	}
@@ -572,17 +572,17 @@ func (s *Store) loadRenderedProfileByTarget(ctx context.Context, q profileQuerye
 
 // updateRenderedProfileTarget writes one rendered profile blob back to its durable scope row inside the current transaction.
 // updateRenderedProfileTarget 用于在当前事务内把一份渲染画像文本写回到对应的长期 scope 行。
-func (s *Store) updateRenderedProfileTarget(ctx context.Context, q profileQueryer, profileType int, bindID uint64, renderedProfile string, updatedAt time.Time) error {
+func (r *profileRepository) updateRenderedProfileTarget(ctx context.Context, q profileQueryer, profileType int, bindID uint64, renderedProfile string, updatedAt time.Time) error {
 	table := ""
 	switch profileType {
 	case logicdomain.ProfileTypeUser:
-		table = s.usersTable()
+		table = r.usersTable()
 	case logicdomain.ProfileTypeTeam:
-		table = s.teamsTable()
+		table = r.teamsTable()
 	case logicdomain.ProfileTypeSpace:
-		table = s.spacesTable()
+		table = r.spacesTable()
 	case logicdomain.ProfileTypeProject:
-		table = s.projectsTable()
+		table = r.projectsTable()
 	default:
 		return logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile target"}
 	}
@@ -595,13 +595,115 @@ func (s *Store) updateRenderedProfileTarget(ctx context.Context, q profileQuerye
 
 // replaceRenderedProfileBatch reuses the scope-specific updater for one binding-id map so rendered profile writes stay deterministic.
 // replaceRenderedProfileBatch 用于对单个 scope 的 binding-id map 复用统一更新器，保证渲染画像写入保持确定性。
-func (s *Store) replaceRenderedProfileBatch(ctx context.Context, q profileQueryer, profileType int, profiles map[uint64]string, now time.Time) error {
+func (r *profileRepository) replaceRenderedProfileBatch(ctx context.Context, q profileQueryer, profileType int, profiles map[uint64]string, now time.Time) error {
 	for _, bindID := range sortedProfileBindingIDs(profiles) {
-		if err := s.updateRenderedProfileTarget(ctx, q, profileType, bindID, profiles[bindID], now); err != nil {
+		if err := r.updateRenderedProfileTarget(ctx, q, profileType, bindID, profiles[bindID], now); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// profileQueryContext derives one bounded query context so profile repository calls stay inside the configured runtime timeout.
+// profileQueryContext 用于派生一个有界查询上下文，确保 profile repository 调用始终受运行时超时约束。
+func (r *profileRepository) profileQueryContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	timeout := r.shared.cfg.QueryTimeout
+	if timeout <= 0 {
+		timeout = 5 * time.Second
+	}
+	return context.WithTimeout(ctx, timeout)
+}
+
+// profileQualifiedTable returns the fully-qualified table name for one profile table inside the configured schema.
+// profileQualifiedTable 用于返回配置 schema 中某个画像表的完整限定表名。
+func (r *profileRepository) profileQualifiedTable(name string) string {
+	return fmt.Sprintf("%s.%s", quoteIdentifier(r.shared.cfg.Schema), quoteIdentifier(name))
+}
+
+// profileNodesTable returns the fully-qualified durable profile-node table name.
+// profileNodesTable 用于返回长期画像节点表的完整限定名称。
+func (r *profileRepository) profileNodesTable() string {
+	return r.profileQualifiedTable("vmm_profile_nodes")
+}
+
+// profileInstructionsTable returns the fully-qualified manual profile-instruction table name.
+// profileInstructionsTable 用于返回手工画像指令表的完整限定名称。
+func (r *profileRepository) profileInstructionsTable() string {
+	return r.profileQualifiedTable("vmm_profile_instructions")
+}
+
+// usersTable returns the fully-qualified durable user table name for profile review lookups.
+// usersTable 用于返回画像评审查找所需的长期用户表完整限定名称。
+func (r *profileRepository) usersTable() string {
+	return r.profileQualifiedTable("vmm_users")
+}
+
+// teamsTable returns the fully-qualified durable team table name for profile review lookups.
+// teamsTable 用于返回画像评审查找所需的长期 team 表完整限定名称。
+func (r *profileRepository) teamsTable() string {
+	return r.profileQualifiedTable("vmm_teams")
+}
+
+// spacesTable returns the fully-qualified durable space table name for profile review lookups.
+// spacesTable 用于返回画像评审查找所需的长期 space 表完整限定名称。
+func (r *profileRepository) spacesTable() string {
+	return r.profileQualifiedTable("vmm_spaces")
+}
+
+// projectsTable returns the fully-qualified durable project table name for profile review lookups.
+// projectsTable 用于返回画像评审查找所需的长期 project 表完整限定名称。
+func (r *profileRepository) projectsTable() string {
+	return r.profileQualifiedTable("vmm_projects")
+}
+
+// loadUserByID loads one user row by numeric id so profile targets can read the durable user profile blob.
+// loadUserByID 用于按数字 id 加载用户行，让画像目标能够读取长期用户画像 Blob。
+func (r *profileRepository) loadUserByID(ctx context.Context, userID uint64) (logicdomain.UserRecord, error) {
+	sqlText := fmt.Sprintf(`
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
+FROM %s
+WHERE id = $1
+LIMIT 1
+`, r.usersTable())
+	callCtx, cancel := r.profileQueryContext(ctx)
+	defer cancel()
+	var row userScanRow
+	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(userID)).Scan(
+		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.UserRecord{}, fmt.Errorf("load postgres user by id: %w", err)
+		}
+		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user id %d does not exist", userID)}
+	}
+	return row.toDomain(), nil
+}
+
+// loadProjectByID loads one project row by numeric id together with its Team/Space display names so profile targets can read the durable project profile blob.
+// loadProjectByID 用于按数字 id 加载项目行及其 Team/Space 展示名称，让画像目标能够读取长期项目画像 Blob。
+func (r *profileRepository) loadProjectByID(ctx context.Context, projectID uint64) (logicdomain.ProjectRecord, error) {
+	sqlText := fmt.Sprintf(`
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
+FROM %s AS p
+JOIN %s AS t ON t.id = p.team_id
+JOIN %s AS sp ON sp.id = p.space_id
+WHERE p.id = $1
+LIMIT 1
+`, r.projectsTable(), r.teamsTable(), r.spacesTable())
+	callCtx, cancel := r.profileQueryContext(ctx)
+	defer cancel()
+	var row projectScanRow
+	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(projectID)).Scan(
+		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.ProjectRecord{}, fmt.Errorf("load postgres project by id: %w", err)
+		}
+		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project id %d does not exist", projectID)}
+	}
+	return row.toDomain(), nil
 }
 
 // scanProfileNodeRows decodes PostgreSQL profile rows into reusable scan structs and always closes the rows before returning.

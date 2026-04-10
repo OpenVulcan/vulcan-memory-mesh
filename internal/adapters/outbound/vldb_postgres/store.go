@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
 const (
@@ -47,9 +48,16 @@ type Config struct {
 	EmbeddingDimension      int
 }
 
-// Store holds the shared PostgreSQL pool, resolved dialect, and minimal shared schema metadata for the combined-store runtime.
-// Store 用于持有 PostgreSQL 组合库运行时共享的连接池、已解析方言与最小共享 schema 元数据。
+// Store acts as the public PostgreSQL combined-store facade while delegating shared runtime state and future repository ownership to internal repository bundles.
+// Store 用于作为 PostgreSQL 组合库对外暴露的统一门面，并把共享运行时状态与后续仓储职责归属收口到内部 repository bundle。
 type Store struct {
+	// shared and repos express the intended runtime boundary: one shared core plus one explicit repository bundle.
+	// shared 与 repos 用于表达目标运行时边界：一个共享核心，加上一组显式 repository bundle。
+	shared *storeShared
+	repos  storeRepositories
+
+	// pool/cfg/dialect stay on Store as compatibility mirrors so existing focused tests can still construct lightweight Store literals directly.
+	// pool/cfg/dialect 暂时保留在 Store 上作为兼容镜像，保证现有轻量测试仍可直接通过 Store 字面量构造实例。
 	pool    *pgxpool.Pool
 	cfg     Config
 	dialect searchDialect
@@ -77,10 +85,16 @@ func NewStore(cfg Config) (*Store, error) {
 		return nil, fmt.Errorf("dial postgres: %w", err)
 	}
 	store := &Store{
+		shared: &storeShared{
+			pool:    pool,
+			cfg:     cfg,
+			dialect: newSearchDialect(cfg.Flavor),
+		},
 		pool:    pool,
 		cfg:     cfg,
 		dialect: newSearchDialect(cfg.Flavor),
 	}
+	store.repos = newStoreRepositories(store.shared)
 	if err := store.init(context.Background()); err != nil {
 		pool.Close()
 		return nil, err
@@ -160,7 +174,7 @@ func (s *Store) init(ctx context.Context) error {
 	if err := s.dialect.EnsureSearchExtensions(ctx, s.pool, s.cfg.AutoCreateExtensions); err != nil {
 		return err
 	}
-	if err := s.ensureSchema(ctx); err != nil {
+	if err := s.repos.maintenance.ensureSchema(ctx); err != nil {
 		return err
 	}
 	return nil
@@ -251,4 +265,82 @@ func validateConfig(cfg Config) error {
 // quoteIdentifier 用于转义 PostgreSQL 标识符，确保运行时生成的 schema 与表名在 DDL 中保持确定且安全。
 func quoteIdentifier(raw string) string {
 	return `"` + strings.ReplaceAll(strings.TrimSpace(raw), `"`, `""`) + `"`
+}
+
+// LoadActiveSessionMemoryNodes delegates to the analysis repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadActiveSessionMemoryNodes 用于委托给 analysis repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
+	return s.repos.analysis.LoadActiveSessionMemoryNodes(ctx, session)
+}
+
+// LoadRecentDirectMemoryWrites delegates to the analysis repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadRecentDirectMemoryWrites 用于委托给 analysis repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicdomain.SessionRef, observedAfter, observedBefore time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {
+	return s.repos.analysis.LoadRecentDirectMemoryWrites(ctx, session, observedAfter, observedBefore)
+}
+
+// ApplyMemoryAdoption delegates to the analysis repository so existing port interfaces continue to compile while ownership moves inward.
+// ApplyMemoryAdoption 用于委托给 analysis repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+	return s.repos.analysis.ApplyMemoryAdoption(ctx, session, memoryIDs, adoptedAt)
+}
+
+// ApplyTurnAnalysis delegates to the analysis repository so existing port interfaces continue to compile while ownership moves inward.
+// ApplyTurnAnalysis 用于委托给 analysis repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error) {
+	return s.repos.analysis.ApplyTurnAnalysis(ctx, session, turn, analysis)
+}
+
+// LoadProfileTargets delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadProfileTargets 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadProfileTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileTargetsSnapshot, error) {
+	return s.repos.profile.LoadProfileTargets(ctx, session)
+}
+
+// LoadProfileReviewTargets delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadProfileReviewTargets 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadProfileReviewTargets(ctx context.Context, session logicdomain.SessionRef) (logicdomain.ProfileReviewTargetsSnapshot, error) {
+	return s.repos.profile.LoadProfileReviewTargets(ctx, session)
+}
+
+// ListActiveProfileNodes delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// ListActiveProfileNodes 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ListActiveProfileNodes(ctx context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error) {
+	return s.repos.profile.ListActiveProfileNodes(ctx, target, limit)
+}
+
+// LoadRenderedProfile delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// LoadRenderedProfile 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) LoadRenderedProfile(ctx context.Context, target logicdomain.ProfileTargetRef) (string, error) {
+	return s.repos.profile.LoadRenderedProfile(ctx, target)
+}
+
+// CreateProfileInstruction delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// CreateProfileInstruction 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) CreateProfileInstruction(ctx context.Context, record logicdomain.ProfileInstructionRecord) (logicdomain.ProfileInstructionRecord, error) {
+	return s.repos.profile.CreateProfileInstruction(ctx, record)
+}
+
+// FailProfileInstruction delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// FailProfileInstruction 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) FailProfileInstruction(ctx context.Context, instructionID uint64, failureReason, reviewResult string) error {
+	return s.repos.profile.FailProfileInstruction(ctx, instructionID, failureReason, reviewResult)
+}
+
+// ApplyManualProfileInstruction delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// ApplyManualProfileInstruction 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicdomain.ProfileTargetRef, instruction logicdomain.ProfileInstructionRecord, nodes []logicdomain.ProfileNodeCandidate, retired []logicdomain.ProfileRetireDecision, renderedProfile, reviewResult string) (logicdomain.ManualProfileInstructionApplyResult, error) {
+	return s.repos.profile.ApplyManualProfileInstruction(ctx, target, instruction, nodes, retired, renderedProfile, reviewResult)
+}
+
+// ConvergeExpiredProfileNodes delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// ConvergeExpiredProfileNodes 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ConvergeExpiredProfileNodes(ctx context.Context, limit int) ([]logicdomain.ProfileRenderTargetSnapshot, error) {
+	return s.repos.profile.ConvergeExpiredProfileNodes(ctx, limit)
+}
+
+// ReplaceRenderedProfiles delegates to the profile repository so existing port interfaces continue to compile while ownership moves inward.
+// ReplaceRenderedProfiles 用于委托给 profile repository，让现有接口保持兼容的同时把职责向内迁移。
+func (s *Store) ReplaceRenderedProfiles(ctx context.Context, updates logicdomain.RenderedProfileSet) error {
+	return s.repos.profile.ReplaceRenderedProfiles(ctx, updates)
 }

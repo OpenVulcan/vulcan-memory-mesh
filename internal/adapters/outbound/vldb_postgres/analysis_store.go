@@ -15,8 +15,8 @@ import (
 
 // LoadActiveSessionMemoryNodes returns the active memory rows belonging to one session so turn analysis can decide what older facts should be superseded.
 // LoadActiveSessionMemoryNodes 用于返回某个 session 当前活跃的记忆行，让 turn 分析可以判断哪些旧事实应被覆盖。
-func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
-	if s == nil || s.pool == nil {
+func (r *analysisRepository) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -28,8 +28,8 @@ FROM %s AS m
 WHERE m.origin_session_id = $1
   AND %s
 ORDER BY COALESCE(m.source_turn_id, 0) ASC, m.id ASC
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
-	rows, err := s.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), int64(session.SessionID))
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
+	rows, err := r.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), int64(session.SessionID))
 	if err != nil {
 		return nil, fmt.Errorf("query postgres active session memory nodes: %w", err)
 	}
@@ -42,8 +42,8 @@ ORDER BY COALESCE(m.source_turn_id, 0) ASC, m.id ASC
 
 // LoadRecentDirectMemoryWrites returns the direct AI-written memory rows created inside one exclusion window so the turn analyzer can avoid duplicate extraction.
 // LoadRecentDirectMemoryWrites 用于返回某个排斥窗口内新建的 AI 主动写记忆行，让 turn analyzer 避免重复提炼。
-func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicdomain.SessionRef, observedAfter, observedBefore time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {
-	if s == nil || s.pool == nil {
+func (r *analysisRepository) LoadRecentDirectMemoryWrites(ctx context.Context, session logicdomain.SessionRef, observedAfter, observedBefore time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -61,8 +61,8 @@ WHERE m.origin_session_id = $1
   AND m.created_at > $3
   AND m.created_at <= $4
 ORDER BY m.created_at ASC, m.id ASC
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
-	rows, err := s.queryMemoryNodes(
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
+	rows, err := r.queryMemoryNodes(
 		ctx,
 		strings.TrimSpace(sqlText),
 		int64(session.SessionID),
@@ -82,8 +82,8 @@ ORDER BY m.created_at ASC, m.id ASC
 
 // ApplyMemoryAdoption increments lifecycle counters for the memory rows selected by pre-check and promotes hot session facts when they prove useful across sessions.
 // ApplyMemoryAdoption 用于为被 pre-check 采纳的记忆行递增生命周期计数，并在 session 级事实跨会话多次命中后将其升级。
-func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
-	if s == nil || s.pool == nil {
+func (r *analysisRepository) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
@@ -99,9 +99,9 @@ func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.Ses
 		adoptedAt = adoptedAt.UTC()
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return fmt.Errorf("begin postgres memory adoption tx: %w", err)
 	}
@@ -117,8 +117,8 @@ FROM %s AS m
 WHERE m.id = ANY($1)
 ORDER BY m.id ASC
 FOR UPDATE
-`, memoryNodeSelectColumns("m"), s.memoryNodesTable())
-	rows, err := s.queryMemoryNodesWithQueryer(callCtx, tx, strings.TrimSpace(selectAdoptionTargetsSQL), toInt64List(memoryIDs))
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable())
+	rows, err := r.queryMemoryNodesWithQueryer(callCtx, tx, strings.TrimSpace(selectAdoptionTargetsSQL), toInt64List(memoryIDs))
 	if err != nil {
 		return fmt.Errorf("load postgres memory adoption targets: %w", err)
 	}
@@ -143,7 +143,7 @@ SET scope_level = $1,
     decay_disabled = $13,
     updated_at = $14
 WHERE id = $15
-`, s.memoryNodesTable())
+`, r.memoryNodesTable())
 	for _, row := range rows {
 		record := row.toMemoryNodeRecord()
 		if !logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(record, adoptedAt) {
@@ -180,8 +180,8 @@ WHERE id = $15
 
 // ApplyTurnAnalysis writes the extracted turn summary back to the turn row, inserts durable memory/profile nodes, and returns follow-up vector cleanup coordinates.
 // ApplyTurnAnalysis 用于把提炼出的 turn 总结回写到 turn 行、插入长期记忆/画像节点，并返回后续向量清理坐标。
-func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error) {
-	if s == nil || s.pool == nil {
+func (r *analysisRepository) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	if turn.ID == 0 {
@@ -200,9 +200,9 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 
 	// Keep every multi-table mutation inside one explicit transaction so combined mode never commits turn details, memory rows, and profile facts out of sync.
 	// 把全部多表变更放进一个显式事务，确保组合模式不会出现 turn 细节、记忆行和画像事实彼此不同步的提交结果。
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("begin postgres turn analysis tx: %w", err)
 	}
@@ -211,7 +211,7 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	}()
 
 	supersededMemoryIDs := normalizeUint64List(analysis.SupersededMemoryIDs)
-	supersededVectorIDs, err := s.loadActiveMemoryVectorIDsTx(callCtx, tx, supersededMemoryIDs)
+	supersededVectorIDs, err := r.loadActiveMemoryVectorIDsTx(callCtx, tx, supersededMemoryIDs)
 	if err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load postgres superseded vector ids: %w", err)
 	}
@@ -223,19 +223,19 @@ SET details = $1,
     extracted_status = $3,
     updated_at = $4
 WHERE id = $5
-`, s.turnsTable())
+`, r.turnsTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateTurnSQL), strings.TrimSpace(analysis.Details), analysis.DetailsBudget, logicdomain.TurnExtractedStatusDone, now, int64(turn.ID)); err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update postgres turn analysis details: %w", err)
 	}
 
 	if analysis.UserProfileMerged {
-		updateUserSQL := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, s.usersTable())
+		updateUserSQL := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, r.usersTable())
 		if _, err := tx.Exec(callCtx, updateUserSQL, strings.TrimSpace(analysis.MergedUserProfile), now, int64(session.UserID)); err != nil {
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update postgres merged user profile: %w", err)
 		}
 	}
 	if analysis.ProjectProfileMerged {
-		updateProjectSQL := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, s.projectsTable())
+		updateProjectSQL := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, r.projectsTable())
 		if _, err := tx.Exec(callCtx, updateProjectSQL, strings.TrimSpace(analysis.MergedProjectProfile), now, int64(session.ProjectID)); err != nil {
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update postgres merged project profile: %w", err)
 		}
@@ -246,8 +246,8 @@ WHERE id = $5
 		if strings.TrimSpace(node.VectorID) == "" {
 			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector_id", Message: "is required after vector persistence"}
 		}
-		if len(node.Vector) != s.cfg.EmbeddingDimension {
-			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector", Message: fmt.Sprintf("must contain exactly %d dimensions", s.cfg.EmbeddingDimension)}
+		if len(node.Vector) != r.shared.cfg.EmbeddingDimension {
+			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].vector", Message: fmt.Sprintf("must contain exactly %d dimensions", r.shared.cfg.EmbeddingDimension)}
 		}
 		if !logicdomain.ValidMemoryNodeCategory(node.Category) {
 			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].category", Message: "must be one supported memory category"}
@@ -274,7 +274,7 @@ INSERT INTO %s (
 	$31, $32
 )
 RETURNING %s
-`, s.memoryNodesTable(), memoryNodeSelectColumns(""))
+`, r.memoryNodesTable(), memoryNodeSelectColumns(""))
 		var inserted memoryNodeScanRow
 		if err := tx.QueryRow(
 			callCtx,
@@ -359,7 +359,7 @@ INSERT INTO %s (
 	$1, $2, $3, $4, $5,
 	$6, $7, $8, $9
 )
-`, s.memoryContextEdgesTable())
+`, r.memoryContextEdgesTable())
 			for _, edge := range contextEdges {
 				if _, err := tx.Exec(
 					callCtx,
@@ -389,7 +389,7 @@ SET profile_status = $1,
     updated_at = $4
 WHERE profile_status = $5
   AND id = ANY($6)
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 	for idx, node := range analysis.ProfileNodes {
 		if !logicdomain.ValidProfileType(node.ProfileType) {
 			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
@@ -431,7 +431,7 @@ INSERT INTO %s (
 	$8, $9, $10, $11, $12, $13, 0, $14, $15, $15
 )
 RETURNING id
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 		var insertedProfileID uint64
 		if err := tx.QueryRow(
 			callCtx,
@@ -481,7 +481,7 @@ SET memory_status = $1,
     updated_at = $2
 WHERE memory_status = $3
   AND id = ANY($4)
-`, s.memoryNodesTable())
+`, r.memoryNodesTable())
 		if _, err := tx.Exec(
 			callCtx,
 			strings.TrimSpace(updateSupersededSQL),
@@ -505,7 +505,7 @@ WHERE memory_status = $3
 
 // loadActiveMemoryVectorIDsTx loads the vector ids of active memory rows by memory id inside one transaction so later status flips can return deterministic cleanup coordinates.
 // loadActiveMemoryVectorIDsTx 用于在单个事务内按记忆 id 加载 active 行的 vector id，确保后续状态切换返回确定性的清理坐标。
-func (s *Store) loadActiveMemoryVectorIDsTx(ctx context.Context, tx pgx.Tx, memoryIDs []uint64) ([]string, error) {
+func (r *analysisRepository) loadActiveMemoryVectorIDsTx(ctx context.Context, tx pgx.Tx, memoryIDs []uint64) ([]string, error) {
 	memoryIDs = normalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return nil, nil
@@ -516,7 +516,7 @@ FROM %s
 WHERE memory_status = $1
   AND id = ANY($2)
 ORDER BY id ASC
-`, s.memoryNodesTable())
+`, r.memoryNodesTable())
 	rows, err := tx.Query(ctx, strings.TrimSpace(sqlText), logicdomain.MemoryStatusActive, toInt64List(memoryIDs))
 	if err != nil {
 		return nil, err

@@ -38,15 +38,15 @@ type userDeletePlan struct {
 
 // EnsureProjectPath resolves or creates a Team/Space/Project path according to the confirm flag rules required by the admin RPCs.
 // EnsureProjectPath 用于按管理 RPC 约定的确认规则，解析或创建一个 Team/Space/Project 路径。
-func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confirmCreate bool) (logicdomain.ProjectMutationResult, error) {
-	if s == nil || s.pool == nil {
+func (r *workspaceRepository) EnsureProjectPath(ctx context.Context, projectPath string, confirmCreate bool) (logicdomain.ProjectMutationResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ProjectMutationResult{}, fmt.Errorf("postgres store is not initialized")
 	}
 	teamName, spaceName, projectName, err := parseProjectPath(projectPath)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
-	if existing, err := s.ResolveProjectRef(ctx, projectPath); err == nil {
+	if existing, err := r.ResolveProjectRef(ctx, projectPath); err == nil {
 		return logicdomain.ProjectMutationResult{
 			Project: existing,
 			Message: fmt.Sprintf("project %s already exists", existing.Path()),
@@ -56,11 +56,11 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 		return logicdomain.ProjectMutationResult{}, err
 	}
 
-	team, teamExists, err := s.lookupTeamByName(ctx, s.pool, teamName)
+	team, teamExists, err := r.lookupTeamByName(ctx, r.shared.pool, teamName)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
-	space, spaceExists, err := s.lookupSpaceByName(ctx, s.pool, team.ID, spaceName, teamExists)
+	space, spaceExists, err := r.lookupSpaceByName(ctx, r.shared.pool, team.ID, spaceName, teamExists)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
@@ -73,9 +73,9 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 		}, nil
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.workspaceQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, fmt.Errorf("begin postgres ensure-project tx: %w", err)
 	}
@@ -87,34 +87,34 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 	createdTeam := false
 	createdSpace := false
 	createdProject := false
-	team, teamExists, err = s.lookupTeamByName(callCtx, tx, teamName)
+	team, teamExists, err = r.lookupTeamByName(callCtx, tx, teamName)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
 	if !teamExists {
-		team, err = s.insertTeam(callCtx, tx, teamName, now)
+		team, err = r.insertTeam(callCtx, tx, teamName, now)
 		if err != nil {
 			return logicdomain.ProjectMutationResult{}, err
 		}
 		createdTeam = true
 	}
-	space, spaceExists, err = s.lookupSpaceByName(callCtx, tx, team.ID, spaceName, true)
+	space, spaceExists, err = r.lookupSpaceByName(callCtx, tx, team.ID, spaceName, true)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
 	if !spaceExists {
-		space, err = s.insertSpace(callCtx, tx, team.ID, spaceName, now)
+		space, err = r.insertSpace(callCtx, tx, team.ID, spaceName, now)
 		if err != nil {
 			return logicdomain.ProjectMutationResult{}, err
 		}
 		createdSpace = true
 	}
-	project, exists, err := s.lookupProjectBySpaceAndName(callCtx, tx, team, space, projectName)
+	project, exists, err := r.lookupProjectBySpaceAndName(callCtx, tx, team, space, projectName)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
 	if !exists {
-		project, err = s.insertProject(callCtx, tx, team, space, projectName, now)
+		project, err = r.insertProject(callCtx, tx, team, space, projectName, now)
 		if err != nil {
 			return logicdomain.ProjectMutationResult{}, err
 		}
@@ -141,11 +141,11 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 
 // DeleteProjectPath deletes one resolved project plus its sessions, turn records, and SQL-backed memories when confirmation is explicit.
 // DeleteProjectPath 用于在确认删除时，删除一个已解析项目及其 sessions、turn 记录和 SQL 侧记忆。
-func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
-	if s == nil || s.pool == nil {
+func (r *workspaceRepository) DeleteProjectPath(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("postgres store is not initialized")
 	}
-	project, err := s.ResolveProjectRef(ctx, projectPath)
+	project, err := r.ResolveProjectRef(ctx, projectPath)
 	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, err
 	}
@@ -157,9 +157,9 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 		}, nil
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.workspaceQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("begin postgres delete-project tx: %w", err)
 	}
@@ -167,41 +167,41 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 		_ = tx.Rollback(context.Background())
 	}()
 
-	deletePlan, err := s.planProjectDelete(callCtx, tx, project)
+	deletePlan, err := r.planProjectDelete(callCtx, tx, project)
 	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, err
 	}
-	whereSQL, args := s.buildProjectProfileNodesWhere(project.ID, project.SpaceID, project.TeamID, deletePlan.DeletedSpaces > 0, deletePlan.DeletedTeams > 0)
-	deleteProfileSQL := fmt.Sprintf(`DELETE FROM %s WHERE %s`, s.profileNodesTable(), whereSQL)
+	whereSQL, args := r.buildProjectProfileNodesWhere(project.ID, project.SpaceID, project.TeamID, deletePlan.DeletedSpaces > 0, deletePlan.DeletedTeams > 0)
+	deleteProfileSQL := fmt.Sprintf(`DELETE FROM %s WHERE %s`, r.profileNodesTable(), whereSQL)
 	if _, err := tx.Exec(callCtx, deleteProfileSQL, args...); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project profile nodes: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, s.memoryNodesTable()), int64(project.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.memoryNodesTable()), int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project memory nodes: %w", err)
 	}
-	deleteProjectScratchpadNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id IN (SELECT id FROM %s WHERE project_id = $1)`, s.scratchpadNodesTable(), s.scratchpadPlansTable())
+	deleteProjectScratchpadNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id IN (SELECT id FROM %s WHERE project_id = $1)`, r.scratchpadNodesTable(), r.scratchpadPlansTable())
 	if _, err := tx.Exec(callCtx, deleteProjectScratchpadNodesSQL, int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project scratchpad nodes: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, s.scratchpadPlansTable()), int64(project.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.scratchpadPlansTable()), int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project scratchpad plans: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, s.turnsTable()), int64(project.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.turnsTable()), int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project turn records: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, s.sessionsTable()), int64(project.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.sessionsTable()), int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project sessions: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.projectsTable()), int64(project.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.projectsTable()), int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project row: %w", err)
 	}
 	if deletePlan.DeletedSpaces > 0 {
-		if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.spacesTable()), int64(project.SpaceID)); err != nil {
+		if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.spacesTable()), int64(project.SpaceID)); err != nil {
 			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres empty project space row: %w", err)
 		}
 	}
 	if deletePlan.DeletedTeams > 0 {
-		if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.teamsTable()), int64(project.TeamID)); err != nil {
+		if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.teamsTable()), int64(project.TeamID)); err != nil {
 			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres empty project team row: %w", err)
 		}
 	}
@@ -223,15 +223,15 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 
 // MigrateProjectPath moves SQL-backed sessions, turn records, memories, and project-bound profile nodes from one project scope onto another when explicitly confirmed.
 // MigrateProjectPath 用于在显式确认后，把 SQL 侧的 sessions、turn 记录、记忆和项目绑定画像节点从源项目范围迁移到目标项目范围。
-func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath string, confirm bool) (logicdomain.ProjectMigrationResult, error) {
-	if s == nil || s.pool == nil {
+func (r *workspaceRepository) MigrateProjectPath(ctx context.Context, sourcePath, targetPath string, confirm bool) (logicdomain.ProjectMigrationResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("postgres store is not initialized")
 	}
-	source, err := s.ResolveProjectRef(ctx, sourcePath)
+	source, err := r.ResolveProjectRef(ctx, sourcePath)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, err
 	}
-	target, err := s.ResolveProjectRef(ctx, targetPath)
+	target, err := r.ResolveProjectRef(ctx, targetPath)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, err
 	}
@@ -246,14 +246,14 @@ func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath s
 			NeedsConfirm: true,
 		}, nil
 	}
-	sessions, messages, memories, err := s.countProjectRows(ctx, s.pool, source.ID)
+	sessions, messages, memories, err := r.countProjectRows(ctx, r.shared.pool, source.ID)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, err
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.workspaceQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("begin postgres migrate-project tx: %w", err)
 	}
@@ -263,7 +263,7 @@ func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath s
 
 	// Reject colliding session keys before rewriting the hierarchy so the admin flow returns a deterministic conflict instead of surfacing a late unique-index failure.
 	// 在改写层级归属前先拒绝冲突的 session_key，这样管理流程会返回稳定的冲突提示，而不是在后面抛出唯一键异常。
-	conflictSessionKeys, err := s.loadProjectSessionKeyConflicts(callCtx, tx, source.ID, target.ID)
+	conflictSessionKeys, err := r.loadProjectSessionKeyConflicts(callCtx, tx, source.ID, target.ID)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, err
 	}
@@ -275,7 +275,7 @@ func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath s
 UPDATE %s
 SET team_id = $1, space_id = $2, project_id = $3, updated_at = $4
 WHERE project_id = $5
-`, s.sessionsTable())
+`, r.sessionsTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateSessionsSQL), int64(target.TeamID), int64(target.SpaceID), int64(target.ID), now, int64(source.ID)); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
@@ -283,7 +283,7 @@ WHERE project_id = $5
 		}
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres sessions: %w", err)
 	}
-	updateTurnsSQL := fmt.Sprintf(`UPDATE %s SET project_id = $1, updated_at = $2 WHERE project_id = $3`, s.turnsTable())
+	updateTurnsSQL := fmt.Sprintf(`UPDATE %s SET project_id = $1, updated_at = $2 WHERE project_id = $3`, r.turnsTable())
 	if _, err := tx.Exec(callCtx, updateTurnsSQL, int64(target.ID), now, int64(source.ID)); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres turn records: %w", err)
 	}
@@ -291,7 +291,7 @@ WHERE project_id = $5
 UPDATE %s
 SET team_id = $1, space_id = $2, project_id = $3, updated_at = $4
 WHERE project_id = $5
-`, s.memoryNodesTable())
+`, r.memoryNodesTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateMemoriesSQL), int64(target.TeamID), int64(target.SpaceID), int64(target.ID), now, int64(source.ID)); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres memory nodes: %w", err)
 	}
@@ -299,7 +299,7 @@ WHERE project_id = $5
 UPDATE %s
 SET bind_id = $1, updated_at = $2
 WHERE profile_type = $3 AND bind_id = $4
-`, s.profileNodesTable())
+`, r.profileNodesTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateProfileNodesSQL), int64(target.ID), now, logicdomain.ProfileTypeProject, int64(source.ID)); err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres project profile nodes: %w", err)
 	}
@@ -318,25 +318,25 @@ WHERE profile_type = $3 AND bind_id = $4
 
 // DeleteUserRef executes the protected two-phase user deletion flow and removes the user plus all SQL-side dependent data.
 // DeleteUserRef 用于执行受保护的双阶段用户删除流程，并删除该用户及其所有 SQL 侧关联数据。
-func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error) {
-	if s == nil || s.pool == nil {
+func (r *workspaceRepository) DeleteUserRef(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("postgres store is not initialized")
 	}
-	user, err := s.ResolveUserRef(ctx, userRef)
+	user, err := r.ResolveUserRef(ctx, userRef)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
 	confirmationCode = strings.TrimSpace(confirmationCode)
 	if confirmationCode == "" {
-		return s.ensureUserDeleteConfirmation(ctx, user)
+		return r.ensureUserDeleteConfirmation(ctx, user)
 	}
 
-	currentUser, err := s.loadUserByID(ctx, user.ID)
+	currentUser, err := r.loadUserByID(ctx, user.ID)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
 	if strings.TrimSpace(currentUser.DeleteConfirmCode) == "" {
-		return s.ensureUserDeleteConfirmation(ctx, currentUser)
+		return r.ensureUserDeleteConfirmation(ctx, currentUser)
 	}
 	if confirmationCode != strings.TrimSpace(currentUser.DeleteConfirmCode) {
 		return logicdomain.UserDeleteResult{
@@ -347,9 +347,9 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 		}, nil
 	}
 
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.workspaceQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("begin postgres delete-user tx: %w", err)
 	}
@@ -357,12 +357,12 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 		_ = tx.Rollback(context.Background())
 	}()
 
-	deletePlan, err := s.planUserDelete(callCtx, tx, currentUser.ID)
+	deletePlan, err := r.planUserDelete(callCtx, tx, currentUser.ID)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
 	now := time.Now().UTC()
-	deleteUserProfilesSQL := fmt.Sprintf(`DELETE FROM %s WHERE profile_type = $1 AND bind_id = $2`, s.profileNodesTable())
+	deleteUserProfilesSQL := fmt.Sprintf(`DELETE FROM %s WHERE profile_type = $1 AND bind_id = $2`, r.profileNodesTable())
 	if _, err := tx.Exec(callCtx, deleteUserProfilesSQL, logicdomain.ProfileTypeUser, int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user profile nodes by bind: %w", err)
 	}
@@ -380,7 +380,7 @@ WHERE profile_type <> $5
     JOIN %s se ON se.id = tr.session_id
     WHERE se.user_id = $6
   )
-`, s.profileNodesTable(), s.turnsTable(), s.sessionsTable())
+`, r.profileNodesTable(), r.turnsTable(), r.sessionsTable())
 	if _, err := tx.Exec(
 		callCtx,
 		strings.TrimSpace(detachSharedSQL),
@@ -393,24 +393,24 @@ WHERE profile_type <> $5
 	); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("detach postgres shared profile nodes from deleted user turns: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, s.memoryNodesTable()), int64(currentUser.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.memoryNodesTable()), int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user memory nodes: %w", err)
 	}
-	deleteUserScratchpadNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id IN (SELECT id FROM %s WHERE user_id = $1)`, s.scratchpadNodesTable(), s.scratchpadPlansTable())
+	deleteUserScratchpadNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id IN (SELECT id FROM %s WHERE user_id = $1)`, r.scratchpadNodesTable(), r.scratchpadPlansTable())
 	if _, err := tx.Exec(callCtx, deleteUserScratchpadNodesSQL, int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user scratchpad nodes: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, s.scratchpadPlansTable()), int64(currentUser.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.scratchpadPlansTable()), int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user scratchpad plans: %w", err)
 	}
-	deleteTurnsSQL := fmt.Sprintf(`DELETE FROM %s WHERE session_id IN (SELECT id FROM %s WHERE user_id = $1)`, s.turnsTable(), s.sessionsTable())
+	deleteTurnsSQL := fmt.Sprintf(`DELETE FROM %s WHERE session_id IN (SELECT id FROM %s WHERE user_id = $1)`, r.turnsTable(), r.sessionsTable())
 	if _, err := tx.Exec(callCtx, deleteTurnsSQL, int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user turn records: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, s.sessionsTable()), int64(currentUser.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.sessionsTable()), int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user sessions: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, s.usersTable()), int64(currentUser.ID)); err != nil {
+	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.usersTable()), int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user row: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {
@@ -429,13 +429,13 @@ WHERE profile_type <> $5
 
 // ensureUserDeleteConfirmation keeps the first delete step idempotent by generating one confirmation code only when the durable row still has none.
 // ensureUserDeleteConfirmation 用于让删除第一步保持幂等：只有当长期行里还没有确认码时才生成新的确认码。
-func (s *Store) ensureUserDeleteConfirmation(ctx context.Context, user logicdomain.UserRecord) (logicdomain.UserDeleteResult, error) {
+func (r *workspaceRepository) ensureUserDeleteConfirmation(ctx context.Context, user logicdomain.UserRecord) (logicdomain.UserDeleteResult, error) {
 	if user.ID == 0 {
 		return logicdomain.UserDeleteResult{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.workspaceQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("begin postgres user confirmation tx: %w", err)
 	}
@@ -443,7 +443,7 @@ func (s *Store) ensureUserDeleteConfirmation(ctx context.Context, user logicdoma
 		_ = tx.Rollback(context.Background())
 	}()
 
-	currentUser, err := s.loadUserByIDWithQueryer(callCtx, tx, user.ID, true)
+	currentUser, err := r.loadUserByIDWithQueryer(callCtx, tx, user.ID, true)
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
@@ -459,7 +459,7 @@ SET delete_confirm_code = $1,
     updated_at = $2
 WHERE id = $3
   AND delete_confirm_code = ''
-`, s.usersTable())
+`, r.usersTable())
 		updateResult, err := tx.Exec(callCtx, strings.TrimSpace(updateSQL), generatedCode, time.Now().UTC(), int64(currentUser.ID))
 		if err != nil {
 			return logicdomain.UserDeleteResult{}, fmt.Errorf("persist postgres user delete confirmation code: %w", err)
@@ -468,7 +468,7 @@ WHERE id = $3
 		if updateResult.RowsAffected() == 0 {
 			// Re-read the durable row when the guarded update lost a race so the caller always receives the token that can actually authorize deletion.
 			// 当带条件的更新在竞态中落败时重新读取持久化行，确保返回给调用方的一定是可实际用于授权删除的令牌。
-			currentUser, err = s.loadUserByIDWithQueryer(callCtx, tx, user.ID, false)
+			currentUser, err = r.loadUserByIDWithQueryer(callCtx, tx, user.ID, false)
 			if err != nil {
 				return logicdomain.UserDeleteResult{}, err
 			}
@@ -534,7 +534,7 @@ func finalizeDeleteConfirmationCode(existingCode, generatedCode string, rowsAffe
 
 // loadProjectSessionKeyConflicts lists the session keys that already exist in both the source and target projects so migration can fail fast with a clear conflict.
 // loadProjectSessionKeyConflicts 用于列出同时存在于源项目与目标项目的 session key，让迁移可以提前失败并返回清晰的冲突说明。
-func (s *Store) loadProjectSessionKeyConflicts(ctx context.Context, q profileQueryer, sourceProjectID, targetProjectID uint64) ([]string, error) {
+func (r *workspaceRepository) loadProjectSessionKeyConflicts(ctx context.Context, q profileQueryer, sourceProjectID, targetProjectID uint64) ([]string, error) {
 	sqlText := fmt.Sprintf(`
 SELECT DISTINCT src.session_key
 FROM %s AS src
@@ -543,8 +543,8 @@ JOIN %s AS dst
  AND dst.session_key = src.session_key
 WHERE src.project_id = $1
 ORDER BY src.session_key ASC
-`, s.sessionsTable(), s.sessionsTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.sessionsTable(), r.sessionsTable())
+	callCtx, cancel := r.workspaceQueryContext(ctx)
 	defer cancel()
 	rows, err := q.Query(callCtx, strings.TrimSpace(sqlText), int64(sourceProjectID), int64(targetProjectID))
 	if err != nil {
@@ -567,13 +567,13 @@ ORDER BY src.session_key ASC
 
 // lookupTeamByName resolves one team name and reports whether it already exists.
 // lookupTeamByName 用于解析单个 team 名称，并返回它是否已经存在。
-func (s *Store) lookupTeamByName(ctx context.Context, q profileQueryer, teamName string) (logicdomain.TeamRecord, bool, error) {
+func (r *workspaceRepository) lookupTeamByName(ctx context.Context, q profileQueryer, teamName string) (logicdomain.TeamRecord, bool, error) {
 	sqlText := fmt.Sprintf(`
 SELECT id, name, profile, created_at, updated_at
 FROM %s
 WHERE name = $1
 LIMIT 1
-`, s.teamsTable())
+`, r.teamsTable())
 	var row teamScanRow
 	if err := q.QueryRow(ctx, strings.TrimSpace(sqlText), teamName).Scan(&row.ID, &row.Name, &row.Profile, &row.CreatedAt, &row.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -586,7 +586,7 @@ LIMIT 1
 
 // lookupSpaceByName resolves one space under the given team and reports whether it already exists.
 // lookupSpaceByName 用于在给定 team 下解析单个 space，并返回它是否已经存在。
-func (s *Store) lookupSpaceByName(ctx context.Context, q profileQueryer, teamID uint64, spaceName string, teamExists bool) (logicdomain.SpaceRecord, bool, error) {
+func (r *workspaceRepository) lookupSpaceByName(ctx context.Context, q profileQueryer, teamID uint64, spaceName string, teamExists bool) (logicdomain.SpaceRecord, bool, error) {
 	if !teamExists {
 		return logicdomain.SpaceRecord{}, false, nil
 	}
@@ -595,7 +595,7 @@ SELECT id, team_id, name, profile, created_at, updated_at
 FROM %s
 WHERE team_id = $1 AND name = $2
 LIMIT 1
-`, s.spacesTable())
+`, r.spacesTable())
 	var row spaceScanRow
 	if err := q.QueryRow(ctx, strings.TrimSpace(sqlText), int64(teamID), spaceName).Scan(&row.ID, &row.TeamID, &row.Name, &row.Profile, &row.CreatedAt, &row.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -608,13 +608,13 @@ LIMIT 1
 
 // lookupProjectBySpaceAndName resolves one project under the given Team/Space hierarchy and reports whether it already exists.
 // lookupProjectBySpaceAndName 用于在给定 Team/Space 层级下解析单个 project，并返回它是否已经存在。
-func (s *Store) lookupProjectBySpaceAndName(ctx context.Context, q profileQueryer, team logicdomain.TeamRecord, space logicdomain.SpaceRecord, projectName string) (logicdomain.ProjectRecord, bool, error) {
+func (r *workspaceRepository) lookupProjectBySpaceAndName(ctx context.Context, q profileQueryer, team logicdomain.TeamRecord, space logicdomain.SpaceRecord, projectName string) (logicdomain.ProjectRecord, bool, error) {
 	sqlText := fmt.Sprintf(`
 SELECT id, team_id, space_id, name, profile, created_at, updated_at
 FROM %s
 WHERE space_id = $1 AND name = $2
 LIMIT 1
-`, s.projectsTable())
+`, r.projectsTable())
 	var row projectScanRow
 	if err := q.QueryRow(ctx, strings.TrimSpace(sqlText), int64(space.ID), projectName).Scan(&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.CreatedAt, &row.UpdatedAt); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -629,7 +629,7 @@ LIMIT 1
 
 // insertTeam creates one missing team row under the current transaction while collapsing duplicate concurrent creates into the same durable row.
 // insertTeam 用于在当前事务中创建缺失的 team 行，并把并发重复创建收敛到同一条长期行上。
-func (s *Store) insertTeam(ctx context.Context, q profileQueryer, teamName string, now time.Time) (logicdomain.TeamRecord, error) {
+func (r *workspaceRepository) insertTeam(ctx context.Context, q profileQueryer, teamName string, now time.Time) (logicdomain.TeamRecord, error) {
 	// Resolve both the first creator and any duplicate concurrent creator through one upsert statement so the transaction never aborts on a unique-name race.
 	// 用单条 upsert 语句同时覆盖“首次创建者”和“并发重复创建者”，避免事务因为 team 名称唯一键竞争而直接中止。
 	sqlText := fmt.Sprintf(`
@@ -638,7 +638,7 @@ VALUES ($1, '', $2, $2)
 ON CONFLICT (name)
 DO UPDATE SET name = EXCLUDED.name
 RETURNING id, name, profile, created_at, updated_at
-`, s.teamsTable())
+`, r.teamsTable())
 	var row teamScanRow
 	if err := q.QueryRow(ctx, strings.TrimSpace(sqlText), teamName, now.UTC()).Scan(&row.ID, &row.Name, &row.Profile, &row.CreatedAt, &row.UpdatedAt); err != nil {
 		return logicdomain.TeamRecord{}, fmt.Errorf("insert postgres team: %w", err)
@@ -648,14 +648,14 @@ RETURNING id, name, profile, created_at, updated_at
 
 // insertSpace creates one missing space row under an existing team inside the current transaction while remaining idempotent under duplicate concurrent requests.
 // insertSpace 用于在当前事务中为已存在的 team 创建缺失的 space 行，并在并发重复请求下保持幂等。
-func (s *Store) insertSpace(ctx context.Context, q profileQueryer, teamID uint64, spaceName string, now time.Time) (logicdomain.SpaceRecord, error) {
+func (r *workspaceRepository) insertSpace(ctx context.Context, q profileQueryer, teamID uint64, spaceName string, now time.Time) (logicdomain.SpaceRecord, error) {
 	sqlText := fmt.Sprintf(`
 INSERT INTO %s (team_id, name, profile, created_at, updated_at)
 VALUES ($1, $2, '', $3, $3)
 ON CONFLICT (team_id, name)
 DO UPDATE SET team_id = EXCLUDED.team_id
 RETURNING id, team_id, name, profile, created_at, updated_at
-`, s.spacesTable())
+`, r.spacesTable())
 	var row spaceScanRow
 	if err := q.QueryRow(ctx, strings.TrimSpace(sqlText), int64(teamID), spaceName, now.UTC()).Scan(&row.ID, &row.TeamID, &row.Name, &row.Profile, &row.CreatedAt, &row.UpdatedAt); err != nil {
 		return logicdomain.SpaceRecord{}, fmt.Errorf("insert postgres space: %w", err)
@@ -665,14 +665,14 @@ RETURNING id, team_id, name, profile, created_at, updated_at
 
 // insertProject creates one missing project row under the resolved Team/Space hierarchy inside the current transaction while tolerating duplicate concurrent creates.
 // insertProject 用于在当前事务中于已解析的 Team/Space 层级下创建缺失的 project 行，并容忍并发重复创建。
-func (s *Store) insertProject(ctx context.Context, q profileQueryer, team logicdomain.TeamRecord, space logicdomain.SpaceRecord, projectName string, now time.Time) (logicdomain.ProjectRecord, error) {
+func (r *workspaceRepository) insertProject(ctx context.Context, q profileQueryer, team logicdomain.TeamRecord, space logicdomain.SpaceRecord, projectName string, now time.Time) (logicdomain.ProjectRecord, error) {
 	sqlText := fmt.Sprintf(`
 INSERT INTO %s (team_id, space_id, name, profile, created_at, updated_at)
 VALUES ($1, $2, $3, '', $4, $4)
 ON CONFLICT (space_id, name)
 DO UPDATE SET team_id = EXCLUDED.team_id, space_id = EXCLUDED.space_id
 RETURNING id, team_id, space_id, name, profile, created_at, updated_at
-`, s.projectsTable())
+`, r.projectsTable())
 	var row projectScanRow
 	if err := q.QueryRow(ctx, strings.TrimSpace(sqlText), int64(team.ID), int64(space.ID), projectName, now.UTC()).Scan(&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.CreatedAt, &row.UpdatedAt); err != nil {
 		return logicdomain.ProjectRecord{}, fmt.Errorf("insert postgres project: %w", err)
@@ -684,7 +684,7 @@ RETURNING id, team_id, space_id, name, profile, created_at, updated_at
 
 // countRows centralizes the one-row COUNT(*) query pattern used by delete and migration planning.
 // countRows 用于集中处理删除和迁移规划中使用的单行 COUNT(*) 查询模式。
-func (s *Store) countRows(ctx context.Context, q profileQueryer, sqlText string, args ...any) (int, error) {
+func (r *workspaceRepository) countRows(ctx context.Context, q profileQueryer, sqlText string, args ...any) (int, error) {
 	var count int
 	if err := q.QueryRow(ctx, strings.TrimSpace(sqlText), args...).Scan(&count); err != nil {
 		return 0, err
@@ -694,16 +694,16 @@ func (s *Store) countRows(ctx context.Context, q profileQueryer, sqlText string,
 
 // countProjectRows returns project-scoped row counts so delete and migrate operations can report meaningful summaries.
 // countProjectRows 用于返回项目范围内的行计数，让删除和迁移操作能够输出有意义的结果摘要。
-func (s *Store) countProjectRows(ctx context.Context, q profileQueryer, projectID uint64) (int, int, int, error) {
-	sessionCount, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE project_id = $1`, s.sessionsTable()), int64(projectID))
+func (r *workspaceRepository) countProjectRows(ctx context.Context, q profileQueryer, projectID uint64) (int, int, int, error) {
+	sessionCount, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE project_id = $1`, r.sessionsTable()), int64(projectID))
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count postgres project sessions: %w", err)
 	}
-	messageCount, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE project_id = $1`, s.turnsTable()), int64(projectID))
+	messageCount, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE project_id = $1`, r.turnsTable()), int64(projectID))
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count postgres project turn records: %w", err)
 	}
-	memoryCount, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE project_id = $1`, s.memoryNodesTable()), int64(projectID))
+	memoryCount, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE project_id = $1`, r.memoryNodesTable()), int64(projectID))
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count postgres project memory nodes: %w", err)
 	}
@@ -712,17 +712,17 @@ func (s *Store) countProjectRows(ctx context.Context, q profileQueryer, projectI
 
 // countUserRows returns user-scoped row counts so protected user deletion can explain what will be removed.
 // countUserRows 用于返回用户范围内的行计数，让受保护的用户删除能够说明将要删除的内容。
-func (s *Store) countUserRows(ctx context.Context, q profileQueryer, userID uint64) (int, int, int, error) {
-	sessionCount, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE user_id = $1`, s.sessionsTable()), int64(userID))
+func (r *workspaceRepository) countUserRows(ctx context.Context, q profileQueryer, userID uint64) (int, int, int, error) {
+	sessionCount, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE user_id = $1`, r.sessionsTable()), int64(userID))
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count postgres user sessions: %w", err)
 	}
-	messageSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE session_id IN (SELECT id FROM %s WHERE user_id = $1)`, s.turnsTable(), s.sessionsTable())
-	messageCount, err := s.countRows(ctx, q, messageSQL, int64(userID))
+	messageSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE session_id IN (SELECT id FROM %s WHERE user_id = $1)`, r.turnsTable(), r.sessionsTable())
+	messageCount, err := r.countRows(ctx, q, messageSQL, int64(userID))
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count postgres user turn records: %w", err)
 	}
-	memoryCount, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE user_id = $1`, s.memoryNodesTable()), int64(userID))
+	memoryCount, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE user_id = $1`, r.memoryNodesTable()), int64(userID))
 	if err != nil {
 		return 0, 0, 0, fmt.Errorf("count postgres user memory nodes: %w", err)
 	}
@@ -731,26 +731,26 @@ func (s *Store) countUserRows(ctx context.Context, q profileQueryer, userID uint
 
 // planProjectDelete computes the concrete delete counts and empty-parent cascade decisions for one resolved project.
 // planProjectDelete 用于为一个已解析项目计算实际删除计数，以及空父级的级联删除决策。
-func (s *Store) planProjectDelete(ctx context.Context, q profileQueryer, project logicdomain.ProjectRecord) (projectDeletePlan, error) {
-	sessions, messages, memories, err := s.countProjectRows(ctx, q, project.ID)
+func (r *workspaceRepository) planProjectDelete(ctx context.Context, q profileQueryer, project logicdomain.ProjectRecord) (projectDeletePlan, error) {
+	sessions, messages, memories, err := r.countProjectRows(ctx, q, project.ID)
 	if err != nil {
 		return projectDeletePlan{}, err
 	}
-	remainingProjectsInSpace, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE space_id = $1 AND id <> $2`, s.projectsTable()), int64(project.SpaceID), int64(project.ID))
+	remainingProjectsInSpace, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE space_id = $1 AND id <> $2`, r.projectsTable()), int64(project.SpaceID), int64(project.ID))
 	if err != nil {
 		return projectDeletePlan{}, fmt.Errorf("count postgres remaining projects in space: %w", err)
 	}
 	deleteSpace := remainingProjectsInSpace == 0
 	deleteTeam := false
 	if deleteSpace {
-		remainingSpacesInTeam, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE team_id = $1 AND id <> $2`, s.spacesTable()), int64(project.TeamID), int64(project.SpaceID))
+		remainingSpacesInTeam, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE team_id = $1 AND id <> $2`, r.spacesTable()), int64(project.TeamID), int64(project.SpaceID))
 		if err != nil {
 			return projectDeletePlan{}, fmt.Errorf("count postgres remaining spaces in team: %w", err)
 		}
 		deleteTeam = remainingSpacesInTeam == 0
 	}
-	whereSQL, args := s.buildProjectProfileNodesWhere(project.ID, project.SpaceID, project.TeamID, deleteSpace, deleteTeam)
-	deletedProfiles, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s`, s.profileNodesTable(), whereSQL), args...)
+	whereSQL, args := r.buildProjectProfileNodesWhere(project.ID, project.SpaceID, project.TeamID, deleteSpace, deleteTeam)
+	deletedProfiles, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s`, r.profileNodesTable(), whereSQL), args...)
 	if err != nil {
 		return projectDeletePlan{}, fmt.Errorf("count postgres project profile nodes: %w", err)
 	}
@@ -772,12 +772,12 @@ func (s *Store) planProjectDelete(ctx context.Context, q profileQueryer, project
 
 // planUserDelete computes the concrete delete counts for one resolved user while excluding shared-scope profile nodes that are retained after the user disappears.
 // planUserDelete 用于为一个已解析用户计算实际删除计数，并排除用户删除后仍会保留的共享范围画像节点。
-func (s *Store) planUserDelete(ctx context.Context, q profileQueryer, userID uint64) (userDeletePlan, error) {
-	sessions, messages, memories, err := s.countUserRows(ctx, q, userID)
+func (r *workspaceRepository) planUserDelete(ctx context.Context, q profileQueryer, userID uint64) (userDeletePlan, error) {
+	sessions, messages, memories, err := r.countUserRows(ctx, q, userID)
 	if err != nil {
 		return userDeletePlan{}, err
 	}
-	deletedProfiles, err := s.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE profile_type = $1 AND bind_id = $2`, s.profileNodesTable()), logicdomain.ProfileTypeUser, int64(userID))
+	deletedProfiles, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE profile_type = $1 AND bind_id = $2`, r.profileNodesTable()), logicdomain.ProfileTypeUser, int64(userID))
 	if err != nil {
 		return userDeletePlan{}, fmt.Errorf("count postgres user profile nodes: %w", err)
 	}
@@ -792,7 +792,7 @@ func (s *Store) planUserDelete(ctx context.Context, q profileQueryer, userID uin
 
 // buildProjectProfileNodesWhere centralizes the delete/count predicate used by project deletion so statistics and actual row removal stay locked to the same scope definition.
 // buildProjectProfileNodesWhere 用于集中维护项目删除时的画像节点条件，让删除统计与实际删行始终共享同一套范围定义。
-func (s *Store) buildProjectProfileNodesWhere(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) (string, []any) {
+func (r *workspaceRepository) buildProjectProfileNodesWhere(projectID, spaceID, teamID uint64, deleteSpace, deleteTeam bool) (string, []any) {
 	args := &sqlArgsBuilder{}
 	conditions := []string{
 		fmt.Sprintf("(profile_type = %s AND bind_id = %s)", args.Add(logicdomain.ProfileTypeProject), args.Add(int64(projectID))),
@@ -805,7 +805,7 @@ func (s *Store) buildProjectProfileNodesWhere(projectID, spaceID, teamID uint64,
 		conditions = append(conditions, fmt.Sprintf("(profile_type = %s AND bind_id = %s)", args.Add(logicdomain.ProfileTypeTeam), args.Add(int64(teamID))))
 	}
 	whereSQL := strings.Join(conditions, " OR ")
-	whereSQL = strings.ReplaceAll(whereSQL, "%TURN_TABLE%", s.turnsTable())
+	whereSQL = strings.ReplaceAll(whereSQL, "%TURN_TABLE%", r.turnsTable())
 	return whereSQL, args.Args()
 }
 
@@ -820,4 +820,28 @@ func buildProjectConfirmMessage(teamName, spaceName, projectName string, teamExi
 		missing = append(missing, "space")
 	}
 	return fmt.Sprintf("path %s/%s/%s is incomplete; missing %s, use confirm_create=1 to create them", teamName, spaceName, projectName, strings.Join(missing, ", "))
+}
+
+// EnsureProjectPath delegates to the workspace repository for project path resolution or creation.
+// EnsureProjectPath 用于把项目路径解析或创建委托给 workspace 仓储。
+func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confirmCreate bool) (logicdomain.ProjectMutationResult, error) {
+	return s.repos.workspace.EnsureProjectPath(ctx, projectPath, confirmCreate)
+}
+
+// DeleteProjectPath delegates to the workspace repository for project path deletion.
+// DeleteProjectPath 用于把项目路径删除委托给 workspace 仓储。
+func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
+	return s.repos.workspace.DeleteProjectPath(ctx, projectPath, confirmDelete)
+}
+
+// MigrateProjectPath delegates to the workspace repository for project path migration.
+// MigrateProjectPath 用于把项目路径迁移委托给 workspace 仓储。
+func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath string, confirm bool) (logicdomain.ProjectMigrationResult, error) {
+	return s.repos.workspace.MigrateProjectPath(ctx, sourcePath, targetPath, confirm)
+}
+
+// DeleteUserRef delegates to the workspace repository for user reference deletion.
+// DeleteUserRef 用于把用户引用删除委托给 workspace 仓储。
+func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error) {
+	return s.repos.workspace.DeleteUserRef(ctx, userRef, confirmationCode)
 }

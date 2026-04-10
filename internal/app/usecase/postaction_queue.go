@@ -20,13 +20,6 @@ type postActionQueueState struct {
 	Dirty    bool
 }
 
-// postActionProfileNodeRef points back to one profile node inside one turn-local analysis result.
-// postActionProfileNodeRef 用于回指某个 turn 局部分析结果中的一条画像节点。
-type postActionProfileNodeRef struct {
-	TurnIndex int
-	NodeIndex int
-}
-
 // startQueueWorker boots the background worker and the periodic idle scan used by the queued single-turn extraction pipeline.
 // startQueueWorker 用于启动后台工作器和周期性空闲扫描，让排队式单轮提炼流水线开始工作。
 func (u *PostActionUseCase) startQueueWorker() {
