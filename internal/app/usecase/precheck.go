@@ -32,9 +32,7 @@ const (
 	// defaultPreCheckReviewCandidates caps the candidate fan-out sent to the second-stage reviewer so one request stays compact and stable.
 	// defaultPreCheckReviewCandidates 用于限制送入第二层评审器的候选扇出，保证单次请求保持紧凑稳定。
 	defaultPreCheckReviewCandidates = 12
-)
 
-var (
 	// defaultPreCheckSimilarity keeps recall aligned with the repo's default vector similarity floor when config does not override it.
 	// defaultPreCheckSimilarity 用于在配置未覆盖时，让召回沿用仓库默认的相似度下限。
 	defaultPreCheckSimilarity = 0.75

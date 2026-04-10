@@ -11,12 +11,13 @@ import (
 // Variables expose reusable sentinel errors that higher layers can match without string parsing.
 // Variables 用于暴露可复用的哨兵错误，方便上层在不解析字符串的情况下做匹配。
 var (
-	ErrValidation       = errors.New("validation failed")
-	ErrTimeout          = errors.New("request timeout")
-	ErrNotFound         = errors.New("resource not found")
-	ErrConflict         = errors.New("resource conflict")
-	ErrConfirm          = errors.New("confirmation required")
-	ErrOutcomeUncertain = errors.New("storage outcome uncertain")
+	ErrValidation        = errors.New("validation failed")
+	ErrTimeout           = errors.New("request timeout")
+	ErrNotFound          = errors.New("resource not found")
+	ErrConflict          = errors.New("resource conflict")
+	ErrConfirm           = errors.New("confirmation required")
+	ErrOutcomeUncertain  = errors.New("storage outcome uncertain")
+	ErrInvalidLLMOutput  = errors.New("invalid llm output")
 )
 
 // ValidationError marks one concrete field-level validation failure coming from domain or use-case checks.
@@ -168,3 +169,11 @@ func (e InvalidLLMOutputError) Error() string {
 	}
 	return fmt.Sprintf("invalid llm output for %s: %s", e.Scene, e.Message)
 }
+
+// Unwrap executes the Unwrap logic.
+// Unwrap 用于执行 Unwrap 逻辑。
+func (e InvalidLLMOutputError) Unwrap() error { return ErrInvalidLLMOutput }
+
+// IsInvalidLLMOutputError reports whether the condition is true.
+// IsInvalidLLMOutputError 用于返回条件是否成立。
+func IsInvalidLLMOutputError(err error) bool { return errors.Is(err, ErrInvalidLLMOutput) }

@@ -1364,44 +1364,44 @@ func (s *stubWorkspaceExecutor) ListProjects(context.Context) ([]logicdomain.Pro
 	return append([]logicdomain.ProjectRecord(nil), s.projects...), nil
 }
 
-// ResolveProject keeps the test double interface-complete while focused tests only cover project listing.
-// ResolveProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
+// ResolveProject returns the canned project record for deterministic transport assertions.
+// ResolveProject 用于返回预设项目记录，保证传输层断言稳定。
 func (s *stubWorkspaceExecutor) ResolveProject(_ context.Context, _ string) (logicdomain.ProjectRecord, error) {
 	return s.resolvedProject, nil
 }
 
-// EnsureProject keeps the test double interface-complete while focused tests only cover project listing.
-// EnsureProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
+// EnsureProject keeps the test double interface-complete while focused tests only cover project creation.
+// EnsureProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目创建。
 func (s *stubWorkspaceExecutor) EnsureProject(_ context.Context, _ string, _ bool) (logicdomain.ProjectMutationResult, error) {
 	return logicdomain.ProjectMutationResult{}, nil
 }
 
-// DeleteProject keeps the test double interface-complete while focused tests only cover project listing.
-// DeleteProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
+// DeleteProject keeps the test double interface-complete while focused tests only cover project deletion.
+// DeleteProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目删除。
 func (s *stubWorkspaceExecutor) DeleteProject(_ context.Context, _ string, _ bool) (logicdomain.ProjectDeleteResult, error) {
 	return logicdomain.ProjectDeleteResult{}, nil
 }
 
-// MigrateProject keeps the test double interface-complete while focused tests only cover project listing.
-// MigrateProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
+// MigrateProject keeps the test double interface-complete while focused tests only cover project migration.
+// MigrateProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目迁移。
 func (s *stubWorkspaceExecutor) MigrateProject(_ context.Context, _ string, _ string, _ bool) (logicdomain.ProjectMigrationResult, error) {
 	return logicdomain.ProjectMigrationResult{}, nil
 }
 
-// ResolveUser keeps the test double interface-complete while focused tests only cover project listing.
-// ResolveUser 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
+// ResolveUser keeps the test double interface-complete while focused tests only cover user resolution.
+// ResolveUser 用于补齐测试替身接口，而当前聚焦测试只覆盖用户解析。
 func (s *stubWorkspaceExecutor) ResolveUser(_ context.Context, _ string, _ bool) (logicdomain.UserResolveResult, error) {
 	return logicdomain.UserResolveResult{}, nil
 }
 
-// ListUsers keeps the test double interface-complete while focused tests only cover project listing.
-// ListUsers 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
+// ListUsers keeps the test double interface-complete while focused tests only cover user listing.
+// ListUsers 用于补齐测试替身接口，而当前聚焦测试只覆盖用户列表。
 func (s *stubWorkspaceExecutor) ListUsers(_ context.Context) ([]logicdomain.UserRecord, error) {
 	return nil, nil
 }
 
-// DeleteUser keeps the test double interface-complete while focused tests only cover project listing.
-// DeleteUser 用于补齐测试替身接口，而当前聚焦测试只覆盖项目列表。
+// DeleteUser keeps the test double interface-complete while focused tests only cover user deletion.
+// DeleteUser 用于补齐测试替身接口，而当前聚焦测试只覆盖用户删除。
 func (s *stubWorkspaceExecutor) DeleteUser(_ context.Context, _ string, _ string) (logicdomain.UserDeleteResult, error) {
 	return logicdomain.UserDeleteResult{}, nil
 }
