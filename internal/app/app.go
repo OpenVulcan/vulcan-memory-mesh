@@ -28,6 +28,7 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/pii"
 	"github.com/openvulcan/vmm/internal/platform/xid"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 	"google.golang.org/grpc/reflection"
 )
 
@@ -38,6 +39,39 @@ type Application struct {
 	Logger    *logx.Logger
 	Server    *grpc.Server
 	Shutdowns []appports.Shutdowner
+}
+
+// buildGRPCKeepaliveConfiguration converts the runtime config into gRPC keepalive primitives so the server can keep long-lived unary connections healthy without changing any RPC shape.
+// buildGRPCKeepaliveConfiguration 用于把运行时配置转换成 gRPC keepalive 原语，让服务端在不改变任何 RPC 形态的前提下维持长时间一元连接的健康状态。
+func buildGRPCKeepaliveConfiguration(cfg config.GRPCKeepaliveConfig) (keepalive.ServerParameters, keepalive.EnforcementPolicy, bool) {
+	if !cfg.Enabled {
+		return keepalive.ServerParameters{}, keepalive.EnforcementPolicy{}, false
+	}
+	params := keepalive.ServerParameters{
+		Time:                  cfg.Time.Duration,
+		Timeout:               cfg.Timeout.Duration,
+		MaxConnectionIdle:     cfg.MaxConnectionIdle.Duration,
+		MaxConnectionAge:      cfg.MaxConnectionAge.Duration,
+		MaxConnectionAgeGrace: cfg.MaxConnectionAgeGrace.Duration,
+	}
+	policy := keepalive.EnforcementPolicy{
+		MinTime:             cfg.MinPingInterval.Duration,
+		PermitWithoutStream: cfg.PermitWithoutStream,
+	}
+	return params, policy, true
+}
+
+// buildGRPCServerOptions assembles the transport-level gRPC server options so runtime composition stays deterministic and tests can assert keepalive wiring without booting the full app.
+// buildGRPCServerOptions 用于组装传输层 gRPC Server 选项，让运行时装配保持确定性，并让测试无需启动完整应用也能断言 keepalive 已接线。
+func buildGRPCServerOptions(cfg config.Config, deps grpcapi.Dependencies) []grpc.ServerOption {
+	options := []grpc.ServerOption{
+		grpc.MaxRecvMsgSize(cfg.GRPC.MaxReceiveMessageBytes),
+		grpc.ChainUnaryInterceptor(grpcapi.BuildUnaryInterceptors(deps)...),
+	}
+	if params, policy, ok := buildGRPCKeepaliveConfiguration(cfg.GRPC.Keepalive); ok {
+		options = append(options, grpc.KeepaliveParams(params), grpc.KeepaliveEnforcementPolicy(policy))
+	}
+	return options
 }
 
 // storageDependencies bundles the relational and vector ports selected for one runtime mode together with the startup schema workflow the composition root must apply.
@@ -321,10 +355,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		PreCheckTimeout:   cfg.GRPC.RequestTimeout.PreCheck.Duration,
 		PostActionTimeout: cfg.GRPC.RequestTimeout.PostAction.Duration,
 	}
-	grpcOptions := []grpc.ServerOption{
-		grpc.MaxRecvMsgSize(cfg.GRPC.MaxReceiveMessageBytes),
-		grpc.ChainUnaryInterceptor(grpcapi.BuildUnaryInterceptors(deps)...),
-	}
+	grpcOptions := buildGRPCServerOptions(cfg, deps)
 	server := grpc.NewServer(grpcOptions...)
 	vmmv1.RegisterVMMServiceServer(server, grpcapi.NewServer(deps))
 	reflection.Register(server)

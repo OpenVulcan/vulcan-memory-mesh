@@ -32,7 +32,7 @@ PII 规则目录是固定的，不支持路径配置。
 
 - 默认 `~/.vmm`
 - `-config` 指向的目录
-- `-config` 文件所在目录
+- `-config` 文件所在目录（仅当传入的是 `.yaml` / `.yml` 主配置文件时）
 
 ## 当前支持的文件类型
 
@@ -195,7 +195,7 @@ pii:
 
 1. 系统层 `configs/base.yaml`
 2. 系统层 `configs/config.yaml`
-3. 用户层 `~/.vmm/config.yaml` 或 `-config` 指向的目录 / 文件
+3. 用户层 `~/.vmm/config.yaml`、`-config` 指向目录下的 `config.yaml`，或显式传入的 `.yaml` / `.yml` 配置文件
 4. 当配置值显式写成 `${ENV_NAME}` 时，对应的 `.env` 与进程环境变量参与展开
 
 ## 规则系统当前能做什么

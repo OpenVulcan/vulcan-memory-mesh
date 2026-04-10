@@ -17,7 +17,7 @@ import (
 // main executes the standalone maintenance bootstrap and dispatches to the selected one-shot action.
 // main 用于执行独立维护工具的启动流程，并分发到选中的一次性动作。
 func main() {
-	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config file path is also supported")
+	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config files must use .yaml or .yml")
 	cleanTarget := flag.String("clean", "", "maintenance cleanup target: sqlite, lancedb, postgres, or all")
 	migrateTarget := flag.String("migrate", "", "maintenance migration target: split-to-combined")
 	vectorRebuild := flag.Bool("vector-rebuild", false, "rebuild vectors with the currently configured embedding model")

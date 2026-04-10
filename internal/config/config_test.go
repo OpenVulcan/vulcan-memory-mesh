@@ -118,6 +118,45 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 }
 
+// TestConfigNormalizeAppliesGRPCKeepaliveDefaults verifies Normalize restores the server-side keepalive defaults and clamps negative connection-age values back to the disabled baseline.
+// TestConfigNormalizeAppliesGRPCKeepaliveDefaults 用于验证 Normalize 会恢复服务端 keepalive 默认值，并把负数连接年龄配置钳制回“关闭该限制”的基线。
+func TestConfigNormalizeAppliesGRPCKeepaliveDefaults(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.GRPC.Keepalive.Time = Duration{}
+	cfg.GRPC.Keepalive.Timeout = Duration{}
+	cfg.GRPC.Keepalive.MinPingInterval = Duration{}
+	cfg.GRPC.Keepalive.MaxConnectionIdle = Duration{-1 * time.Second}
+	cfg.GRPC.Keepalive.MaxConnectionAge = Duration{-1 * time.Second}
+	cfg.GRPC.Keepalive.MaxConnectionAgeGrace = Duration{-1 * time.Second}
+
+	cfg.Normalize()
+
+	if !cfg.GRPC.Keepalive.Enabled {
+		t.Fatal("expected grpc keepalive to stay enabled by default")
+	}
+	if got, want := cfg.GRPC.Keepalive.Time.Duration, 30*time.Second; got != want {
+		t.Fatalf("grpc keepalive time = %v, want %v", got, want)
+	}
+	if got, want := cfg.GRPC.Keepalive.Timeout.Duration, 10*time.Second; got != want {
+		t.Fatalf("grpc keepalive timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.GRPC.Keepalive.MinPingInterval.Duration, 20*time.Second; got != want {
+		t.Fatalf("grpc keepalive min ping interval = %v, want %v", got, want)
+	}
+	if got := cfg.GRPC.Keepalive.MaxConnectionIdle.Duration; got != 0 {
+		t.Fatalf("grpc keepalive max connection idle = %v, want 0", got)
+	}
+	if got := cfg.GRPC.Keepalive.MaxConnectionAge.Duration; got != 0 {
+		t.Fatalf("grpc keepalive max connection age = %v, want 0", got)
+	}
+	if got := cfg.GRPC.Keepalive.MaxConnectionAgeGrace.Duration; got != 0 {
+		t.Fatalf("grpc keepalive max connection age grace = %v, want 0", got)
+	}
+	if !cfg.GRPC.Keepalive.PermitWithoutStream {
+		t.Fatal("expected grpc keepalive permit_without_stream to stay enabled by default")
+	}
+}
+
 // TestConfigNormalizeCanonicalizesPromptLanguageAliases verifies built-in prompt-language aliases normalize into the canonical bundle directory names while preserving custom bundle names.
 // TestConfigNormalizeCanonicalizesPromptLanguageAliases 用于验证内建提示词语言别名会归一成规范目录名，同时保留自定义提示词包名称。
 func TestConfigNormalizeCanonicalizesPromptLanguageAliases(t *testing.T) {
@@ -905,6 +944,47 @@ func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeoutsWhenReferenced(t *t
 	}
 	if got, want := cfg.Postgres.QueryTimeout.Duration, 5*time.Second; got != want {
 		t.Fatalf("postgres query timeout = %v, want %v", got, want)
+	}
+}
+
+// TestApplyEnvOverridesSetsGRPCKeepaliveWhenReferenced verifies explicit env placeholders can tune the new gRPC keepalive block without mutating unrelated transport defaults.
+// TestApplyEnvOverridesSetsGRPCKeepaliveWhenReferenced 用于验证在显式引用环境变量占位符后，可以调整新的 gRPC keepalive 配置块，同时不污染无关的传输层默认值。
+func TestApplyEnvOverridesSetsGRPCKeepaliveWhenReferenced(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.GRPC.Keepalive.Enabled = false
+	originalPreCheckTimeout := cfg.GRPC.RequestTimeout.PreCheck.Duration
+	t.Setenv("VMM_GRPC_KEEPALIVE_ENABLED", "true")
+	t.Setenv("VMM_GRPC_KEEPALIVE_TIME", "45s")
+	t.Setenv("VMM_GRPC_KEEPALIVE_TIMEOUT", "12s")
+	t.Setenv("VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL", "30s")
+	t.Setenv("VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM", "false")
+
+	applyEnvOverrides(&cfg, map[string]struct{}{
+		"VMM_GRPC_KEEPALIVE_ENABLED":               {},
+		"VMM_GRPC_KEEPALIVE_TIME":                  {},
+		"VMM_GRPC_KEEPALIVE_TIMEOUT":               {},
+		"VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL":     {},
+		"VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM": {},
+	})
+	cfg.Normalize()
+
+	if !cfg.GRPC.Keepalive.Enabled {
+		t.Fatal("expected grpc keepalive to be enabled by env override")
+	}
+	if got, want := cfg.GRPC.Keepalive.Time.Duration, 45*time.Second; got != want {
+		t.Fatalf("grpc keepalive time = %v, want %v", got, want)
+	}
+	if got, want := cfg.GRPC.Keepalive.Timeout.Duration, 12*time.Second; got != want {
+		t.Fatalf("grpc keepalive timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.GRPC.Keepalive.MinPingInterval.Duration, 30*time.Second; got != want {
+		t.Fatalf("grpc keepalive min ping interval = %v, want %v", got, want)
+	}
+	if cfg.GRPC.Keepalive.PermitWithoutStream {
+		t.Fatal("expected grpc keepalive permit_without_stream to be disabled by env override")
+	}
+	if got, want := cfg.GRPC.RequestTimeout.PreCheck.Duration, originalPreCheckTimeout; got != want {
+		t.Fatalf("pre-check timeout = %v, want %v", got, want)
 	}
 }
 

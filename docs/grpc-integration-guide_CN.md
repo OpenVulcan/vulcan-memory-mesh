@@ -76,7 +76,17 @@
 {
   "grpc": {
     "listen_addr": "127.0.0.1:17625",
-    "max_receive_message_bytes": 1048576
+    "max_receive_message_bytes": 1048576,
+    "keepalive": {
+      "enabled": true,
+      "time": "30s",
+      "timeout": "10s",
+      "max_connection_idle": "0s",
+      "max_connection_age": "0s",
+      "max_connection_age_grace": "0s",
+      "min_ping_interval": "20s",
+      "permit_without_stream": true
+    }
   }
 }
 ```
@@ -85,6 +95,8 @@
 
 - 当前默认只监听本机
 - 需要跨主机访问时，请自行调整监听地址并加反向代理
+- 当前 `VMMService` 仍然全部是一元 RPC，不提供业务流式长连接接口
+- 现有客户端不修改协议也可以继续使用；如果客户端把 `grpc.ClientConn` 做成进程级复用，连接稳定性和时延会更好
 
 ## 四、metadata 与 trace
 
@@ -131,6 +143,42 @@
 - `VMM_GRPC_WORKSPACE_TIMEOUT`
 - `VMM_GRPC_PRE_CHECK_TIMEOUT`
 - `VMM_GRPC_POST_ACTION_TIMEOUT`
+
+### 连接复用与 keepalive
+
+当前推荐的接入方式是：
+
+- 一个客户端进程尽量只维护一个长期复用的 `grpc.ClientConn`
+- 每次调用单独设置 RPC 级 `deadline/timeout`
+- 不要把“每次请求重新拨号”当成常规模式
+
+当前服务端新增了 `grpc.keepalive` 配置块，用来在不修改 proto 的前提下增强长时间连接复用的稳定性。默认策略如下：
+
+- 服务端会在空闲连接上定期发送 keepalive ping
+- 默认不主动限制连接空闲寿命和总寿命，因此不会强制现有客户端频繁重连
+- 默认允许客户端在没有活动 RPC 时发送 keepalive ping，方便未来调用方按需增强稳定性
+
+`grpc.keepalive` 当前包含这些字段：
+
+- `enabled`
+- `time`
+- `timeout`
+- `max_connection_idle`
+- `max_connection_age`
+- `max_connection_age_grace`
+- `min_ping_interval`
+- `permit_without_stream`
+
+如需通过环境变量注入这些 keepalive 值，也必须先在配置文件里显式使用 `${...}` 占位符。可注入变量包括：
+
+- `VMM_GRPC_KEEPALIVE_ENABLED`
+- `VMM_GRPC_KEEPALIVE_TIME`
+- `VMM_GRPC_KEEPALIVE_TIMEOUT`
+- `VMM_GRPC_KEEPALIVE_MAX_CONNECTION_IDLE`
+- `VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE`
+- `VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE_GRACE`
+- `VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL`
+- `VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM`
 
 ## 七、业务接口约束
 

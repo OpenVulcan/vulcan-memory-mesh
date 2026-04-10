@@ -219,12 +219,18 @@ func resolveUserDir(cwd, configArg string) (string, string, error) {
 		// 将目录参数直接视为用户覆盖根目录。
 		return path, "", nil
 	case statErr == nil && !info.IsDir():
-		// Treat a file argument as both the override file and the user override root's config.yaml.
-		// 将文件参数同时视为覆盖文件，以及对应覆盖根目录中的 config.yaml。
+		// Treat one explicit YAML file as both the override file and the user override root's config.yaml so the main runtime config stays YAML-only even when callers bypass the default filename.
+		// 将显式传入的 YAML 文件同时视为覆盖文件及其所在覆盖根目录中的 config.yaml，以便调用方绕过默认文件名时，主运行时配置仍保持 YAML-only 约束。
+		if err := validateExplicitMainConfigFilePath(path); err != nil {
+			return "", "", err
+		}
 		return userDirWithConfig(path), path, nil
-	case errors.Is(statErr, os.ErrNotExist) && configLooksLikeFile(path):
-		// Preserve legacy file-style arguments even before the file is created.
-		// 兼容尚未创建文件时的旧式文件参数传法。
+	case errors.Is(statErr, os.ErrNotExist) && pathLooksLikeFile(path):
+		// Preserve explicit YAML file-style arguments even before the file is created, but reject legacy JSON/TOML suffixes up front so startup behavior matches the documented YAML-only main-config contract.
+		// 即使文件尚未创建，也继续支持显式 YAML 文件式参数；但要前置拒绝旧的 JSON/TOML 后缀，确保启动行为与文档声明的主配置 YAML-only 契约一致。
+		if err := validateExplicitMainConfigFilePath(path); err != nil {
+			return "", "", err
+		}
 		return userDirWithConfig(path), path, nil
 	case statErr == nil:
 		return path, "", nil
@@ -290,14 +296,24 @@ func expandHome(path string) (string, error) {
 	return path, nil
 }
 
-// configLooksLikeFile executes the configLooksLikeFile logic.
-// configLooksLikeFile 用于执行 configLooksLikeFile 逻辑。
-func configLooksLikeFile(path string) bool {
+// pathLooksLikeFile reports whether one -config argument is likely intended as a file path so layout resolution can reject unsupported main-config suffixes even before the target file exists.
+// pathLooksLikeFile 用于判断某个 -config 参数是否更像文件路径，让布局解析在目标文件尚未存在时也能拒绝不支持的主配置后缀。
+func pathLooksLikeFile(path string) bool {
 	ext := strings.ToLower(filepath.Ext(path))
 	if ext == ".json" || ext == ".yaml" || ext == ".yml" || ext == ".toml" {
 		return true
 	}
 	return strings.Contains(filepath.Base(path), ".")
+}
+
+// validateExplicitMainConfigFilePath verifies one explicit -config file path still honors the repository-wide YAML-only contract for the main runtime config.
+// validateExplicitMainConfigFilePath 用于校验显式传入的 -config 文件路径仍然遵守仓库范围内“主运行时配置只接受 YAML”的约束。
+func validateExplicitMainConfigFilePath(path string) error {
+	ext := strings.ToLower(filepath.Ext(strings.TrimSpace(path)))
+	if ext == ".yaml" || ext == ".yml" {
+		return nil
+	}
+	return fmt.Errorf("explicit -config file %q must end with .yaml or .yml", path)
 }
 
 // looksLikeGoRunExecutable executes the looksLikeGoRunExecutable logic.

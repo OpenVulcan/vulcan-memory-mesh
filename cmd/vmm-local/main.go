@@ -27,7 +27,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "获取工作目录失败: %v\n", err)
 		os.Exit(1)
 	}
-	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config file path is also supported")
+	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config files must use .yaml or .yml")
 	flag.Parse()
 
 	// Build the prompt/config layout before any application dependency is created.

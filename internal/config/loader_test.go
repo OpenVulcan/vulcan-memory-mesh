@@ -141,9 +141,9 @@ func TestResolvePromptLayoutAcceptsExplicitUserDir(t *testing.T) {
 	}
 }
 
-// TestResolvePromptLayoutSupportsExplicitConfigFilePath verifies the TestResolvePromptLayoutSupportsExplicitConfigFilePath behavior.
-// TestResolvePromptLayoutSupportsExplicitConfigFilePath 用于验证 TestResolvePromptLayoutSupportsExplicitConfigFilePath 行为。
-func TestResolvePromptLayoutSupportsExplicitConfigFilePath(t *testing.T) {
+// TestResolvePromptLayoutSupportsExplicitYAMLConfigFilePath verifies callers may still point -config at one explicit YAML file while the loader derives the override root from that file's parent directory.
+// TestResolvePromptLayoutSupportsExplicitYAMLConfigFilePath 用于验证调用方仍可把 -config 指向显式 YAML 文件，同时让加载器从该文件的父目录推导覆盖根目录。
+func TestResolvePromptLayoutSupportsExplicitYAMLConfigFilePath(t *testing.T) {
 	root := t.TempDir()
 	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "system-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
@@ -168,6 +168,44 @@ func TestResolvePromptLayoutSupportsExplicitConfigFilePath(t *testing.T) {
 	}
 	if got, want := layout.OverrideConfigPath, configFile; got != want {
 		t.Fatalf("override config = %q, want %q", got, want)
+	}
+}
+
+// TestResolvePromptLayoutRejectsExplicitNonYAMLConfigFilePath verifies explicit main-config file arguments no longer accept legacy JSON/TOML-style suffixes, even when the file already exists or has not been created yet.
+// TestResolvePromptLayoutRejectsExplicitNonYAMLConfigFilePath 用于验证显式主配置文件参数不再接受旧的 JSON/TOML 后缀，无论文件已经存在还是尚未创建都会被拒绝。
+func TestResolvePromptLayoutRejectsExplicitNonYAMLConfigFilePath(t *testing.T) {
+	root := t.TempDir()
+	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "system-default")
+	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
+	writeConfigStub(t, filepath.Join(root, "configs", "config.yaml"))
+
+	cases := []struct {
+		name   string
+		path   string
+		create bool
+	}{
+		{name: "existing json file", path: filepath.Join(root, "bundle", "custom.override.json"), create: true},
+		{name: "missing toml file", path: filepath.Join(root, "bundle", "custom.override.toml"), create: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.create {
+				if err := os.MkdirAll(filepath.Dir(tc.path), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(tc.path, []byte("{}\n"), 0o644); err != nil {
+					t.Fatal(err)
+				}
+			}
+
+			_, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, tc.path, "config")
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), "must end with .yaml or .yml") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

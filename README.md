@@ -559,13 +559,15 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 .\output\bin\vmm-local.exe -config ~/.vmm
 ```
 
-`-config` 表示“覆盖根目录”，不是单个配置文件路径。
+`-config` 默认表示“覆盖根目录”；如果显式传入配置文件，该文件必须是 `.yaml` / `.yml`，其所在目录仍视为覆盖根目录。
 
 当前主配置加载顺序是：
 
 - `output/configs/base.yaml`
 - `output/configs/config.yaml`
-- `~/.vmm/config.yaml` 或 `-config` 指向目录下的 `config.yaml`
+- `~/.vmm/config.yaml`
+- `-config` 指向目录下的 `config.yaml`
+- `-config` 显式传入的 `.yaml` / `.yml` 覆盖文件
 
 说明：
 

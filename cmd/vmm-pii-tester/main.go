@@ -18,7 +18,7 @@ import (
 func main() {
 	text := flag.String("text", "", "raw text to test against the PII rules")
 	lang := flag.String("lang", "zh-CN", "language bundle to test")
-	configArg := flag.String("config", "", "user config root (~/.vmm by default); legacy single-file config path is still supported")
+	configArg := flag.String("config", "", "user config root (~/.vmm by default); explicit config files must use .yaml or .yml")
 	pattern := flag.String("pattern", "", "single ad-hoc regexp pattern; enabling this switches the tester into ad-hoc mode")
 	condition := flag.String("condition", "", "optional ad-hoc VM condition expression used with -pattern")
 	replace := flag.String("replace", "[TEST_MASKED]", "replacement text used in ad-hoc mode")

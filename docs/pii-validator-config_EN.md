@@ -32,7 +32,7 @@ Typical `go run` development location:
 
 - `~/.vmm` by default
 - the directory passed to `-config`
-- the parent directory of the `-config` file
+- the parent directory of the `-config` file, only when that file is a `.yaml` / `.yml` main config
 
 ## Required File Types
 
@@ -194,7 +194,7 @@ Configuration override order:
 
 1. system `configs/base.yaml`
 2. system `configs/config.yaml`
-3. user `~/.vmm/config.yaml` or the directory/file passed via `-config`
+3. user `~/.vmm/config.yaml`, the `config.yaml` inside the directory passed via `-config`, or one explicit `.yaml` / `.yml` file passed via `-config`
 4. `.env` and process environment variables only when a config value explicitly uses a `${ENV_NAME}` placeholder
 
 ## What the Rule System Can Do

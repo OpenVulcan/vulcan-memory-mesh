@@ -134,12 +134,26 @@ type PromptConfig struct {
 }
 
 // GRPCConfig holds listener and timeout settings for the inbound gRPC server.
-// GRPCConfig 用于保存入站 gRPC 服务的监听地址和超时配置。
+// GRPCConfig 用于保存入站 gRPC 服务的监听地址、超时配置和连接治理配置。
 type GRPCConfig struct {
-	ListenAddr             string             `json:"listen_addr"`
-	MaxReceiveMessageBytes int                `json:"max_receive_message_bytes"`
-	RequestTimeout         GRPCRequestTimeout `json:"request_timeout"`
-	ShutdownTimeout        Duration           `json:"shutdown_timeout"`
+	ListenAddr             string              `json:"listen_addr"`
+	MaxReceiveMessageBytes int                 `json:"max_receive_message_bytes"`
+	RequestTimeout         GRPCRequestTimeout  `json:"request_timeout"`
+	ShutdownTimeout        Duration            `json:"shutdown_timeout"`
+	Keepalive              GRPCKeepaliveConfig `json:"keepalive"`
+}
+
+// GRPCKeepaliveConfig holds server-side keepalive and connection-lifecycle settings that improve unary gRPC connection stability without changing the public proto contract.
+// GRPCKeepaliveConfig 用于保存服务端 keepalive 与连接生命周期设置，在不改变对外 proto 契约的前提下提升一元 gRPC 连接稳定性。
+type GRPCKeepaliveConfig struct {
+	Enabled               bool     `json:"enabled"`
+	Time                  Duration `json:"time"`
+	Timeout               Duration `json:"timeout"`
+	MaxConnectionIdle     Duration `json:"max_connection_idle"`
+	MaxConnectionAge      Duration `json:"max_connection_age"`
+	MaxConnectionAgeGrace Duration `json:"max_connection_age_grace"`
+	MinPingInterval       Duration `json:"min_ping_interval"`
+	PermitWithoutStream   bool     `json:"permit_without_stream"`
 }
 
 // GRPCRequestTimeout groups per-method timeout settings used by the gRPC handlers.
@@ -447,6 +461,16 @@ func DefaultBase() Config {
 			MaxReceiveMessageBytes: 1 << 20,
 			RequestTimeout:         GRPCRequestTimeout{Workspace: Duration{15 * time.Second}, PreCheck: Duration{8 * time.Second}, PostAction: Duration{8 * time.Second}},
 			ShutdownTimeout:        Duration{10 * time.Second},
+			Keepalive: GRPCKeepaliveConfig{
+				Enabled:               true,
+				Time:                  Duration{30 * time.Second},
+				Timeout:               Duration{10 * time.Second},
+				MaxConnectionIdle:     Duration{},
+				MaxConnectionAge:      Duration{},
+				MaxConnectionAgeGrace: Duration{},
+				MinPingInterval:       Duration{20 * time.Second},
+				PermitWithoutStream:   true,
+			},
 		},
 		Logging: LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, LLMOutputEnabled: false, ProtectPayloads: false},
 		PII:     PIIConfig{DefaultLanguage: "zh-CN"},
@@ -1772,6 +1796,24 @@ func (c *Config) Normalize() {
 	if c.GRPC.ShutdownTimeout.Duration <= 0 {
 		c.GRPC.ShutdownTimeout = Duration{10 * time.Second}
 	}
+	if c.GRPC.Keepalive.Time.Duration <= 0 {
+		c.GRPC.Keepalive.Time = Duration{30 * time.Second}
+	}
+	if c.GRPC.Keepalive.Timeout.Duration <= 0 {
+		c.GRPC.Keepalive.Timeout = Duration{10 * time.Second}
+	}
+	if c.GRPC.Keepalive.MaxConnectionIdle.Duration < 0 {
+		c.GRPC.Keepalive.MaxConnectionIdle = Duration{}
+	}
+	if c.GRPC.Keepalive.MaxConnectionAge.Duration < 0 {
+		c.GRPC.Keepalive.MaxConnectionAge = Duration{}
+	}
+	if c.GRPC.Keepalive.MaxConnectionAgeGrace.Duration < 0 {
+		c.GRPC.Keepalive.MaxConnectionAgeGrace = Duration{}
+	}
+	if c.GRPC.Keepalive.MinPingInterval.Duration <= 0 {
+		c.GRPC.Keepalive.MinPingInterval = Duration{20 * time.Second}
+	}
 	if c.PreCheck.IntentTimeout.Duration <= 0 {
 		c.PreCheck.IntentTimeout = Duration{5 * time.Second}
 	}
@@ -2023,6 +2065,17 @@ func (c Config) Validate() error {
 	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
+	}
+	if c.GRPC.Keepalive.Enabled {
+		if c.GRPC.Keepalive.Time.Duration <= 0 {
+			return errors.New("grpc.keepalive.time must be > 0 when grpc.keepalive.enabled is true")
+		}
+		if c.GRPC.Keepalive.Timeout.Duration <= 0 {
+			return errors.New("grpc.keepalive.timeout must be > 0 when grpc.keepalive.enabled is true")
+		}
+		if c.GRPC.Keepalive.MinPingInterval.Duration <= 0 {
+			return errors.New("grpc.keepalive.min_ping_interval must be > 0 when grpc.keepalive.enabled is true")
+		}
 	}
 	switch strings.ToLower(strings.TrimSpace(c.Logging.Level)) {
 	case "", "debug", "info", "warn", "warning", "error":
@@ -2397,6 +2450,14 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 	setDuration("VMM_GRPC_PRE_CHECK_TIMEOUT", &cfg.GRPC.RequestTimeout.PreCheck)
 	setDuration("VMM_GRPC_POST_ACTION_TIMEOUT", &cfg.GRPC.RequestTimeout.PostAction)
 	setDuration("VMM_GRPC_SHUTDOWN_TIMEOUT", &cfg.GRPC.ShutdownTimeout)
+	setBool("VMM_GRPC_KEEPALIVE_ENABLED", &cfg.GRPC.Keepalive.Enabled)
+	setDuration("VMM_GRPC_KEEPALIVE_TIME", &cfg.GRPC.Keepalive.Time)
+	setDuration("VMM_GRPC_KEEPALIVE_TIMEOUT", &cfg.GRPC.Keepalive.Timeout)
+	setDuration("VMM_GRPC_KEEPALIVE_MAX_CONNECTION_IDLE", &cfg.GRPC.Keepalive.MaxConnectionIdle)
+	setDuration("VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE", &cfg.GRPC.Keepalive.MaxConnectionAge)
+	setDuration("VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE_GRACE", &cfg.GRPC.Keepalive.MaxConnectionAgeGrace)
+	setDuration("VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL", &cfg.GRPC.Keepalive.MinPingInterval)
+	setBool("VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM", &cfg.GRPC.Keepalive.PermitWithoutStream)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
 	setBool("VMM_LOG_DEBUG_RPC_PAYLOADS", &cfg.Logging.DebugRPCPayloads)

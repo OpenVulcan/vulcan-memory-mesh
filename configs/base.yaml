@@ -50,6 +50,39 @@ grpc:
   # 应用关闭时留给 gRPC 服务与依赖组件的优雅收尾时间。
   shutdown_timeout: "10s"
 
+  keepalive:
+    # Whether the runtime sends server-side keepalive pings and publishes a client ping policy.
+    # 运行时是否发送服务端 keepalive ping，并公开客户端 ping 策略。
+    enabled: true
+
+    # Idle duration before the server proactively sends one keepalive ping on an otherwise quiet connection.
+    # 当连接处于空闲状态时，服务端在主动发送一次 keepalive ping 前等待的时间。
+    time: "30s"
+
+    # How long the server waits for the keepalive ping acknowledgement before considering the connection unhealthy.
+    # 服务端在把连接判定为不健康前，等待 keepalive ping 应答的最长时间。
+    timeout: "10s"
+
+    # Optional idle-close budget for fully quiet connections. Set 0s to keep the limit disabled.
+    # 可选的空闲连接关闭预算。设为 0s 表示关闭该限制。
+    max_connection_idle: "0s"
+
+    # Optional absolute connection age budget. Set 0s to keep the limit disabled.
+    # 可选的连接总寿命预算。设为 0s 表示关闭该限制。
+    max_connection_age: "0s"
+
+    # Grace period granted after max_connection_age starts a graceful drain. Set 0s to disable the extra grace cap.
+    # 当 max_connection_age 触发优雅排空后额外给予的宽限时间。设为 0s 表示不额外限制。
+    max_connection_age_grace: "0s"
+
+    # Minimum interval accepted from client-originated keepalive pings.
+    # 服务端接受客户端主动 keepalive ping 的最小间隔。
+    min_ping_interval: "20s"
+
+    # Whether client keepalive pings may arrive without active RPC streams.
+    # 是否允许客户端在没有活动 RPC stream 时仍发送 keepalive ping。
+    permit_without_stream: true
+
 logging:
   # Runtime log level.
   # 运行时日志级别。

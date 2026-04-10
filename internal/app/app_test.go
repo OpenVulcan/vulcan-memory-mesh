@@ -20,6 +20,7 @@ import (
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/keepalive"
 )
 
 // newRuntimeConfigForTest builds one runtime-ready config fixture that follows the new AI contract:
@@ -37,6 +38,54 @@ func newRuntimeConfigForTest() config.Config {
 	cfg.Embedding.Dimension = 1024
 	cfg.Rerank.Enabled = false
 	return cfg
+}
+
+// TestBuildGRPCKeepaliveConfigurationMapsConfigValues verifies the transport helper preserves the configured keepalive timings and client-ping policy before the runtime builds the gRPC server.
+// TestBuildGRPCKeepaliveConfigurationMapsConfigValues 用于验证在运行时构建 gRPC 服务之前，传输层辅助函数会保留配置中的 keepalive 时序和客户端 ping 策略。
+func TestBuildGRPCKeepaliveConfigurationMapsConfigValues(t *testing.T) {
+	params, policy, ok := buildGRPCKeepaliveConfiguration(config.GRPCKeepaliveConfig{
+		Enabled:               true,
+		Time:                  config.Duration{45 * time.Second},
+		Timeout:               config.Duration{12 * time.Second},
+		MaxConnectionIdle:     config.Duration{3 * time.Minute},
+		MaxConnectionAge:      config.Duration{15 * time.Minute},
+		MaxConnectionAgeGrace: config.Duration{30 * time.Second},
+		MinPingInterval:       config.Duration{25 * time.Second},
+		PermitWithoutStream:   false,
+	})
+	if !ok {
+		t.Fatal("expected grpc keepalive configuration to be enabled")
+	}
+	if got, want := params, (keepalive.ServerParameters{
+		Time:                  45 * time.Second,
+		Timeout:               12 * time.Second,
+		MaxConnectionIdle:     3 * time.Minute,
+		MaxConnectionAge:      15 * time.Minute,
+		MaxConnectionAgeGrace: 30 * time.Second,
+	}); got != want {
+		t.Fatalf("grpc keepalive params = %#v, want %#v", got, want)
+	}
+	if got, want := policy, (keepalive.EnforcementPolicy{
+		MinTime:             25 * time.Second,
+		PermitWithoutStream: false,
+	}); got != want {
+		t.Fatalf("grpc keepalive enforcement policy = %#v, want %#v", got, want)
+	}
+}
+
+// TestBuildGRPCKeepaliveConfigurationSupportsDisable verifies the runtime can explicitly skip keepalive server options when operators want to preserve a fully passive transport posture.
+// TestBuildGRPCKeepaliveConfigurationSupportsDisable 用于验证当运维方希望保持完全被动的传输层行为时，运行时可以显式跳过 keepalive 服务端选项。
+func TestBuildGRPCKeepaliveConfigurationSupportsDisable(t *testing.T) {
+	params, policy, ok := buildGRPCKeepaliveConfiguration(config.GRPCKeepaliveConfig{})
+	if ok {
+		t.Fatal("expected disabled grpc keepalive configuration to be skipped")
+	}
+	if got, want := params, (keepalive.ServerParameters{}); got != want {
+		t.Fatalf("grpc keepalive params = %#v, want %#v", got, want)
+	}
+	if got, want := policy, (keepalive.EnforcementPolicy{}); got != want {
+		t.Fatalf("grpc keepalive enforcement policy = %#v, want %#v", got, want)
+	}
 }
 
 // newLLMRouteForTest builds one explicit LLM route fixture so runtime tests always exercise the route-only configuration path.
