@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_postgres"
@@ -54,7 +55,9 @@ func initRuntimeStorageCapabilities(cfg config.Config, logger *logx.Logger) (run
 		return runtimeStorageCapabilities{}, err
 	}
 	if caps.ManageVectorSchema {
-		if err := ensureVectorSchema(context.Background(), caps.SchemaVersions, caps.WorkspaceStore, caps.Vector, logger); err != nil {
+		schemaCtx, schemaCancel := context.WithTimeout(context.Background(), 5*time.Minute)
+		defer schemaCancel()
+		if err := ensureVectorSchema(schemaCtx, caps.SchemaVersions, caps.WorkspaceStore, caps.Vector, logger); err != nil {
 			return runtimeStorageCapabilities{}, err
 		}
 	}

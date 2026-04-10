@@ -406,12 +406,23 @@ func (u *RetentionUseCase) retryPendingVectorGCJobs(ctx context.Context, now tim
 	}
 	vectorIDs := make([]string, 0, len(jobs))
 	jobIDs := make([]uint64, 0, len(jobs))
+	invalidJobIDs := make([]uint64, 0)
 	for _, job := range jobs {
 		if strings.TrimSpace(job.VectorID) == "" || job.ID == 0 {
+			if job.ID != 0 {
+				invalidJobIDs = append(invalidJobIDs, job.ID)
+			}
 			continue
 		}
 		vectorIDs = append(vectorIDs, job.VectorID)
 		jobIDs = append(jobIDs, job.ID)
+	}
+	// Complete invalid jobs (empty vector ID) to prevent them from staying claimed forever.
+	// 完成无效的画像 GC 任务（向量 ID 为空），防止它们永远停留在 claimed 状态。
+	if len(invalidJobIDs) > 0 {
+		if err := u.store.CompleteVectorGCJobs(ctx, invalidJobIDs, now); err != nil {
+			u.logError("retention complete invalid vector gc jobs failed", err)
+		}
 	}
 	if len(jobIDs) == 0 || len(vectorIDs) == 0 {
 		return

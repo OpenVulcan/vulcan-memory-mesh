@@ -98,11 +98,13 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	applyResult, err := u.store.ApplyTurnAnalysis(ctx, session, turn, analysis)
 	if err != nil {
 		if len(vectorIDs) > 0 && u.vector != nil {
-			if _, rollbackErr := u.vector.DeleteByIDs(ctx, vectorIDs); rollbackErr != nil {
+			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer rollbackCancel()
+			if _, rollbackErr := u.vector.DeleteByIDs(rollbackCtx, vectorIDs); rollbackErr != nil {
 				if u.logger != nil {
 					u.logger.Error("post-action turn vector rollback failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", rollbackErr)
 				}
-				enqueueVectorGCCompensation(ctx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisRollback, vectorIDs, time.Now().UTC(),
+				enqueueVectorGCCompensation(rollbackCtx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisRollback, vectorIDs, time.Now().UTC(),
 					"session_key", session.SessionKey,
 					"session_id", session.SessionID,
 					"turn_id", turn.ID,
@@ -502,11 +504,15 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		if len(insertedIDs) == 0 || u.vector == nil {
 			return
 		}
-		if _, rollbackErr := u.vector.DeleteByIDs(ctx, insertedIDs); rollbackErr != nil {
+		// Use a fresh context for rollback to avoid failure when caller's ctx is already cancelled.
+		// 回滚使用独立的超时 context，避免调用方 ctx 已取消导致回滚失败。
+		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer rollbackCancel()
+		if _, rollbackErr := u.vector.DeleteByIDs(rollbackCtx, insertedIDs); rollbackErr != nil {
 			if u.logger != nil {
 				u.logger.Error("post-action partial vector rollback failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", rollbackErr)
 			}
-			enqueueVectorGCCompensation(ctx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisRollback, insertedIDs, time.Now().UTC(),
+			enqueueVectorGCCompensation(rollbackCtx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisRollback, insertedIDs, time.Now().UTC(),
 				"session_key", session.SessionKey,
 				"session_id", session.SessionID,
 				"turn_id", turn.ID,

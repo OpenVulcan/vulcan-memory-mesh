@@ -239,7 +239,10 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 	for _, row := range rows {
 		metadata := map[string]string{}
 		if strings.TrimSpace(row.MetadataJSON) != "" {
-			_ = json.Unmarshal([]byte(row.MetadataJSON), &metadata)
+			if err := json.Unmarshal([]byte(row.MetadataJSON), &metadata); err != nil {
+				// Metadata decoding failed; proceed with empty metadata to keep the search result usable.
+				// 元数据解码失败：保持空元数据继续处理，确保搜索结果仍可用。
+			}
 		}
 		distance := row.Distance
 		if distance == 0 {
@@ -556,7 +559,7 @@ func asUint64(value any) (uint64, error) {
 		}
 		return number, nil
 	default:
-		return 0, nil
+		return 0, fmt.Errorf("unexpected type %T for uint64 field", value)
 	}
 }
 
@@ -610,6 +613,6 @@ func asFloat64(value any) (float64, error) {
 		}
 		return number, nil
 	default:
-		return 0, nil
+		return 0, fmt.Errorf("unexpected type %T for float64 field", value)
 	}
 }
