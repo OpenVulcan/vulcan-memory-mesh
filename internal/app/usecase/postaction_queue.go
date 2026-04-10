@@ -295,10 +295,15 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 		}
 		rawTurn, err := turnRecordFromStoredTurn(pendingTurn)
 		if err != nil {
+			// Return the error instead of silently continuing; a corrupted turn that keeps returning from
+			// LoadPendingSessionTurns would cause an infinite skip loop without ever advancing the window.
+			// Returning the error stops the queue and surfaces the issue for operator intervention.
+			// 返回错误而不是静默 continue；损坏的 turn 如果持续从 LoadPendingSessionTurns 返回，
+			// 会导致无限跳过循环而永远无法推进窗口。返回错误可以停止队列并让运维介入处理。
 			if u.logger != nil {
-				u.logger.Error("post-action queued turn decode failed, skipping", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
+				u.logger.Error("post-action queued turn decode failed, halting queue", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
 			}
-			continue
+			return
 		}
 		if err := u.applyImmediateTurnAnalysis(workerCtx, session, persistedTurn, rawTurn); err != nil {
 			if u.logger != nil {

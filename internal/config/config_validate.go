@@ -73,6 +73,9 @@ func (c Config) Validate() error {
 	if c.GRPC.RequestTimeout.PreCheck.Duration <= c.PreCheck.IntentTimeout.Duration {
 		return errors.New("grpc.request_timeout.pre_check must be greater than pre_check.intent_timeout")
 	}
+	if c.GRPC.RequestTimeout.PostAction.Duration <= c.PreCheck.IntentTimeout.Duration {
+		return errors.New("grpc.request_timeout.post_action must be greater than pre_check.intent_timeout")
+	}
 	if c.MemoryPipeline.MaxSearchKeywords <= 0 || c.MemoryPipeline.MaxSearchKeywords > 10 {
 		return errors.New("memory_pipeline.max_search_keywords must be in [1,10]")
 	}
@@ -339,11 +342,12 @@ func validateRemovedAIEnvOverrides(referencedEnvKeys map[string]struct{}) error 
 	return nil
 }
 
-// applyEnvOverrides applies the supported target settings.
-// applyEnvOverrides 用于应用仍然受支持的目标设置。
-func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
+// applyEnvOverrides applies the supported target settings and returns keys whose integer/float/bool/duration values failed to parse.
+// applyEnvOverrides 用于应用受支持的目标设置，并返回解析失败的整数/浮点/布尔/时长键列表。
+func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []string {
 	// Reapply explicit process-level overrides after file-based expansion.
 	// 在文件占位符展开之后，再次应用进程级显式覆盖。
+	var parseWarnings []string
 	setString := func(k string, target *string) {
 		if !envOverrideAllowed(referencedEnvKeys, k) {
 			return
@@ -370,6 +374,8 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.Atoi(v); err == nil {
 				*target = n
+			} else {
+				parseWarnings = append(parseWarnings, k)
 			}
 		}
 	}
@@ -529,6 +535,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) {
 	setFloat("VMM_MEMORY_WEIBULL_MIN_MULTIPLIER", &cfg.MemoryPipeline.WeibullMinMultiplier)
 	setFloat("VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT", &cfg.MemoryPipeline.WeibullReinforceWeight)
 	setFloat("VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST", &cfg.MemoryPipeline.WeibullCrossSessionBoost)
+	return parseWarnings
 }
 
 // envOverrideAllowed reports whether one supported environment override key was explicitly referenced by the loaded config layers.

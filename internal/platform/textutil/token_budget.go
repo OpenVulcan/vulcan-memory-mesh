@@ -220,12 +220,20 @@ func EnforceTokenBudget(text string, cfg TokenBudgetConfig) string {
 	}
 
 	runes := []rune(text)
-	if len(runes) <= cfg.HeadRunes+cfg.TailRunes {
-		return text
-	}
 
-	headRunes := minTokenBudgetInt(cfg.HeadRunes, len(runes))
-	tailRunes := minTokenBudgetInt(cfg.TailRunes, len(runes)-headRunes)
+	// When the text is extremely short (fewer runes than head+tail budget) but still exceeds the token budget due to high token density,
+	// skip the initial head/tail split and enter progressive shrinking directly.
+	// 当文本极短（rune 数少于 head+tail 预算）但因 token 密度极高仍超标时，跳过初始头尾分割，直接进入渐进收缩。
+	var headRunes, tailRunes int
+	if len(runes) <= cfg.HeadRunes+cfg.TailRunes {
+		// For dense text, start shrinking from a reduced head/tail baseline.
+		// 对高密度文本，从缩减后的 head/tail 基线开始收缩。
+		headRunes = minTokenBudgetInt(cfg.HeadRunes, len(runes))
+		tailRunes = minTokenBudgetInt(cfg.TailRunes, maxTokenBudgetInt(0, len(runes)-headRunes))
+	} else {
+		headRunes = minTokenBudgetInt(cfg.HeadRunes, len(runes))
+		tailRunes = minTokenBudgetInt(cfg.TailRunes, len(runes)-headRunes)
+	}
 	clipped := string(runes[:headRunes]) + cfg.Marker + string(runes[len(runes)-tailRunes:])
 	if estimator.Estimate(clipped) <= cfg.MaxTokens {
 		return clipped

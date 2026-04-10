@@ -65,7 +65,12 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	if err := validateRemovedAIEnvOverrides(referencedEnvKeys); err != nil {
 		return Config{}, err
 	}
-	applyEnvOverrides(&cfg, referencedEnvKeys)
+	applyEnvWarnings := applyEnvOverrides(&cfg, referencedEnvKeys)
+	if len(applyEnvWarnings) > 0 {
+		// Log at warn level so operators know which environment variables were silently ignored due to parse errors.
+		// 输出警告日志，让运维知道哪些环境变量因解析错误被静默忽略。
+		fmt.Fprintf(os.Stderr, "[WARN] config: failed to parse integer env variables: %v\n", applyEnvWarnings)
+	}
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		return Config{}, err

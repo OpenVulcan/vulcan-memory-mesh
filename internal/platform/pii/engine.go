@@ -100,6 +100,11 @@ func NewEngineWithLogger(systemDir, userDir, defaultLang string, logger *logx.Lo
 	if err := engine.LoadDirs(systemDir, userDir); err != nil {
 		return nil, err
 	}
+	// Warn when common.json is missing so operators know that universal PII rules (emails, credit cards, API keys) are not active.
+	// 当 common.json 缺失时发出警告，让运维知道通用 PII 规则（邮箱、信用卡、API Key）未生效。
+	if _, ok := engine.languages[commonLanguage]; !ok {
+		logger.Warn("pii engine common.json not found, universal PII rules will be missing", "system_dir", systemDir, "user_dir", userDir)
+	}
 	if engine.defaultLang == "" {
 		for lang := range engine.languages {
 			engine.defaultLang = lang

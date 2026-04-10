@@ -115,6 +115,11 @@ func NewNoiseGate(ctx context.Context, embedding logicports.EmbeddingClient, log
 	if gate.semanticThreshold <= 0 {
 		gate.semanticThreshold = 0.88
 	}
+	// Warn when common.json is missing so operators know that universal noise categories (greetings, acknowledgments) are not active.
+	// 当 common.json 缺失时发出警告，让运维知道通用噪声类别（问候语、确认语）未生效。
+	if selectNoiseRuleFile(cfg.SystemDir, cfg.UserDir, noiseLanguageCommon) == "" {
+		gate.logger.Warn("noise gate common.json not found, common categories will be missing", "system_dir", cfg.SystemDir, "user_dir", cfg.UserDir)
+	}
 	compiled, rulesHash, err := loadCompiledNoiseCategories(cfg.SystemDir, cfg.UserDir, gate.defaultLanguage, gate.semanticThreshold)
 	if err != nil {
 		return nil, err
@@ -127,9 +132,8 @@ func NewNoiseGate(ctx context.Context, embedding logicports.EmbeddingClient, log
 		}
 	}
 	if gate.semanticEnabled && gate.embedding != nil {
-		if err := gate.preloadSemanticPrototypes(ctx); err != nil {
-			gate.logger.Warn("noise gate semantic preload degraded to regex-only", "err", err, "language", gate.defaultLanguage)
-			gate.semanticEnabled = false
+		if degraded := gate.preloadSemanticPrototypes(ctx); degraded > 0 {
+			gate.logger.Warn("noise gate semantic preload partially degraded", "failed_categories", degraded, "language", gate.defaultLanguage)
 		}
 	}
 	return gate, nil
@@ -194,7 +198,9 @@ func (g *NoiseGate) AllowTurn(ctx context.Context, turn logicdomain.NormalizedTu
 
 // preloadSemanticPrototypes embeds category phrases at startup so runtime admission checks only compare vectors.
 // preloadSemanticPrototypes 用于在启动阶段对类别短语做 embedding，让运行时只需做向量比较。
-func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
+// Returns the number of categories that failed to embed; failed categories fall back to regex-only matching.
+// 返回 embedding 失败的类别数量；失败的类别将回退到纯正则匹配。
+func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) int {
 	// Reuse persisted vectors whenever the active rules, model, and dimension fingerprint has not changed.
 	// 当当前规则、模型和维度指纹未变化时，优先复用持久化向量。
 	if g.cache != nil {
@@ -210,12 +216,13 @@ func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
 			g.logger.Warn("noise gate cache load degraded to live embedding", "err", err, "language", g.defaultLanguage)
 		} else if g.restoreCachedVectors(entries) {
 			g.logger.Info("noise gate semantic prototypes restored from cache", "language", g.defaultLanguage, "model", g.model, "dimension", g.dimension)
-			return nil
+			return 0
 		}
 	}
 
 	// Fall back to live embedding only for missing or invalid caches, then refresh the persistent cache.
 	// 仅在缓存缺失或无效时回退到实时 embedding，并刷新持久化缓存。
+	failedCount := 0
 	for _, category := range g.categories {
 		if len(category.Phrases) == 0 {
 			continue
@@ -229,10 +236,14 @@ func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
 			},
 		})
 		if err != nil {
-			return fmt.Errorf("embed noise category %s: %w", category.Name, err)
+			g.logger.Warn("noise gate embedding failed for category, falling back to regex-only", "category", category.Name, "err", err)
+			failedCount++
+			continue
 		}
 		if err := resp.ValidateStrict(len(category.Phrases)); err != nil {
-			return fmt.Errorf("embed noise category %s: %w", category.Name, err)
+			g.logger.Warn("noise gate embedding validation failed for category, falling back to regex-only", "category", category.Name, "err", err)
+			failedCount++
+			continue
 		}
 		category.Vectors = make([][]float32, 0, len(resp.Vectors))
 		for _, vector := range resp.Vectors {
@@ -251,7 +262,7 @@ func (g *NoiseGate) preloadSemanticPrototypes(ctx context.Context) error {
 			g.logger.Warn("noise gate cache refresh degraded", "err", err, "language", g.defaultLanguage)
 		}
 	}
-	return nil
+	return failedCount
 }
 
 // restoreCachedVectors maps persisted vectors back onto the compiled categories and returns whether the cache is complete.

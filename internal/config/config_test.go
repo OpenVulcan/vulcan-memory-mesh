@@ -848,7 +848,7 @@ func TestApplyEnvOverridesSetsEmbeddingKeyPoolsWhenReferenced(t *testing.T) {
 	t.Setenv("VMM_EMBED_RPD", "70")
 	t.Setenv("VMM_EMBED_MAX_BATCH_SIZE", "12")
 
-	applyEnvOverrides(&cfg, map[string]struct{}{
+	_ = applyEnvOverrides(&cfg, map[string]struct{}{
 		"VMM_EMBED_API_KEYS":       {},
 		"VMM_EMBED_RPM":            {},
 		"VMM_EMBED_TPM":            {},
@@ -879,7 +879,7 @@ func TestApplyEnvOverridesSkipsUnreferencedValues(t *testing.T) {
 	cfg.GRPC.RequestTimeout.PreCheck = Duration{15 * time.Second}
 	t.Setenv("VMM_GRPC_PRE_CHECK_TIMEOUT", "8s")
 
-	applyEnvOverrides(&cfg, nil)
+	_ = applyEnvOverrides(&cfg, nil)
 
 	if got, want := cfg.GRPC.RequestTimeout.PreCheck.Duration, 15*time.Second; got != want {
 		t.Fatalf("pre-check timeout = %v, want %v", got, want)
@@ -892,7 +892,7 @@ func TestApplyEnvOverridesSetsPromptLanguageWhenReferenced(t *testing.T) {
 	cfg := newValidConfigForTest()
 	t.Setenv("VMM_PROMPTS_PROMPT_LANGUAGE", "zh-CN")
 
-	applyEnvOverrides(&cfg, map[string]struct{}{
+	_ = applyEnvOverrides(&cfg, map[string]struct{}{
 		"VMM_PROMPTS_PROMPT_LANGUAGE": {},
 	})
 	cfg.Normalize()
@@ -908,7 +908,7 @@ func TestApplyEnvOverridesSetsLLMOutputLoggingWhenReferenced(t *testing.T) {
 	cfg := newValidConfigForTest()
 	t.Setenv("VMM_LOG_LLM_OUTPUT_ENABLED", "true")
 
-	applyEnvOverrides(&cfg, map[string]struct{}{
+	_ = applyEnvOverrides(&cfg, map[string]struct{}{
 		"VMM_LOG_LLM_OUTPUT_ENABLED": {},
 	})
 	cfg.Normalize()
@@ -926,7 +926,7 @@ func TestApplyEnvOverridesSetsMaintenanceToolPostgresTimeoutsWhenReferenced(t *t
 	t.Setenv("VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT", "12m")
 	t.Setenv("VMM_MAINTENANCE_TOOL_VECTOR_REBUILD_BATCH_SIZE", "24")
 
-	applyEnvOverrides(&cfg, map[string]struct{}{
+	_ = applyEnvOverrides(&cfg, map[string]struct{}{
 		"VMM_MAINTENANCE_TOOL_POSTGRES_READ_TIMEOUT":     {},
 		"VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT":    {},
 		"VMM_MAINTENANCE_TOOL_VECTOR_REBUILD_BATCH_SIZE": {},
@@ -959,7 +959,7 @@ func TestApplyEnvOverridesSetsGRPCKeepaliveWhenReferenced(t *testing.T) {
 	t.Setenv("VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL", "30s")
 	t.Setenv("VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM", "false")
 
-	applyEnvOverrides(&cfg, map[string]struct{}{
+	_ = applyEnvOverrides(&cfg, map[string]struct{}{
 		"VMM_GRPC_KEEPALIVE_ENABLED":               {},
 		"VMM_GRPC_KEEPALIVE_TIME":                  {},
 		"VMM_GRPC_KEEPALIVE_TIMEOUT":               {},
@@ -1006,6 +1006,7 @@ func TestLoadPathsIgnoresUnreferencedSupportedEnvOverrides(t *testing.T) {
   listen_addr: "127.0.0.1:8080"
   request_timeout:
     pre_check: "15s"
+    post_action: "15s"
 pre_check:
   intent_timeout: "10s"
   top_k: 5
@@ -1061,6 +1062,7 @@ func TestLoadPathsExpandsExplicitEnvPlaceholdersFromDotEnv(t *testing.T) {
 	configPath := filepath.Join(configDir, "config.yaml")
 	if err := os.WriteFile(filepath.Join(configDir, ".env"), []byte(strings.Join([]string{
 		"VMM_GRPC_PRE_CHECK_TIMEOUT=15s",
+		"VMM_GRPC_POST_ACTION_TIMEOUT=15s",
 		"VMM_PRE_CHECK_INTENT_TIMEOUT=10s",
 	}, "\n")+"\n"), 0o644); err != nil {
 		t.Fatal(err)
@@ -1069,6 +1071,7 @@ func TestLoadPathsExpandsExplicitEnvPlaceholdersFromDotEnv(t *testing.T) {
   listen_addr: "127.0.0.1:8080"
   request_timeout:
     pre_check: "${VMM_GRPC_PRE_CHECK_TIMEOUT}"
+    post_action: "${VMM_GRPC_POST_ACTION_TIMEOUT}"
 pre_check:
   intent_timeout: "${VMM_PRE_CHECK_INTENT_TIMEOUT}"
   top_k: 5
