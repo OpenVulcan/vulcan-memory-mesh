@@ -241,6 +241,8 @@ func profileSourceKindLabel(sourceKind int) string {
 		return "manual_instruction"
 	case logicdomain.ProfileSourceKindSystemSeed:
 		return "system_seed"
+	case logicdomain.ProfileSourceKindRetainedAfterUserDelete:
+		return "retained_after_user_delete"
 	default:
 		return "turn_extract"
 	}

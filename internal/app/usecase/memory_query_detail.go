@@ -143,7 +143,10 @@ func (u *MemoryUseCase) loadTurnDetails(ctx context.Context, requested []uint64)
 	ordered := make([]TurnDetailRecord, 0, len(rows))
 	for _, turnID := range requested {
 		if row, ok := byID[turnID]; ok {
-			userContent, timeline, assistantContent := parseDehydratedTurnContent(row.DehydratedContent)
+			userContent, timeline, assistantContent, err := parseDehydratedTurnContent(row.DehydratedContent)
+			if err != nil {
+				return TurnDetailResult{}, err
+			}
 			window := windows[turnID]
 			ordered = append(ordered, TurnDetailRecord{
 				Turn:             row,
@@ -234,7 +237,7 @@ func normalizeTurnIDList(values []uint64) []uint64 {
 
 // parseDehydratedTurnContent expands the stored dehydrated JSON into direct user/assistant/timeline fields so callers do not have to decode it client-side.
 // parseDehydratedTurnContent 用于把存储中的脱水 JSON 展开成直接可用的 user/assistant/timeline 字段，避免调用方再自行解码。
-func parseDehydratedTurnContent(raw string) (string, []logicdomain.TurnDetailTimelineItem, string) {
+func parseDehydratedTurnContent(raw string) (string, []logicdomain.TurnDetailTimelineItem, string, error) {
 	type dehydratedTurnTimelineItem struct {
 		Type    string `json:"type"`
 		Content string `json:"content"`
@@ -247,7 +250,7 @@ func parseDehydratedTurnContent(raw string) (string, []logicdomain.TurnDetailTim
 
 	payload := dehydratedTurnPayload{}
 	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &payload); err != nil {
-		return "", nil, ""
+		return "", nil, "", fmt.Errorf("parse dehydrated turn content: %w", err)
 	}
 	timeline := make([]logicdomain.TurnDetailTimelineItem, 0, len(payload.Timeline))
 	for _, item := range payload.Timeline {
@@ -256,7 +259,7 @@ func parseDehydratedTurnContent(raw string) (string, []logicdomain.TurnDetailTim
 			Content: item.Content,
 		})
 	}
-	return payload.User, timeline, payload.Assistant
+	return payload.User, timeline, payload.Assistant, nil
 }
 
 // normalizeWriteMemoryItem fills direct-write defaults so tool callers can omit optional lifecycle controls without losing deterministic persistence behavior.

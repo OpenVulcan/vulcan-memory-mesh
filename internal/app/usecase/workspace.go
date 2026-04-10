@@ -76,28 +76,37 @@ func (u *WorkspaceUseCase) EnsureProject(ctx context.Context, projectPath string
 }
 
 // DeleteProject removes one project from the relational store and then clears all vector rows under the same flattened hierarchy filter.
-// DeleteProject 用于先从关系库存储删除单个项目，再清理同一扁平层级范围下的全部向量行。
+// DeleteProject 用于先清理同一扁平层级范围下的全部向量行，再从关系库存储删除单个项目，避免向量删除失败导致数据不一致。
 func (u *WorkspaceUseCase) DeleteProject(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
 	store, err := u.workspaceStore()
 	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, err
 	}
-	result, err := store.DeleteProjectPath(ctx, projectPath, confirmDelete)
-	if err != nil || result.NeedsConfirm {
-		return result, err
-	}
+	// Delete vectors first; if it fails, relational data remains intact and the operation can be retried.
+	// 先删除向量：如果失败，关系数据保持完整，操作可重试。
 	if u.vector != nil {
+		// Resolve project to get vector filter fields before deleting relational data.
+		// 在删除关系数据之前解析项目以获取向量过滤字段。
+		project, err := store.ResolveProjectRef(ctx, projectPath)
+		if err != nil {
+			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("resolve project for vector cleanup: %w", err)
+		}
 		deletedRows, err := u.vector.DeleteByFilter(ctx, logicdomain.SearchFilter{
-			TeamID:    result.Project.TeamID,
-			SpaceID:   result.Project.SpaceID,
-			ProjectID: result.Project.ID,
+			TeamID:    project.TeamID,
+			SpaceID:   project.SpaceID,
+			ProjectID: project.ID,
 		})
 		if err != nil {
-			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project vectors: %w", err)
+			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project vectors before relational delete: %w", err)
+		}
+		result, err := store.DeleteProjectPath(ctx, projectPath, confirmDelete)
+		if err != nil || result.NeedsConfirm {
+			return result, err
 		}
 		result.DeletedVectorRows = deletedRows
+		return result, nil
 	}
-	return result, nil
+	return store.DeleteProjectPath(ctx, projectPath, confirmDelete)
 }
 
 // MigrateProject moves SQL rows first, then rebuilds target project vectors from the durable SQL-side memory entries.
@@ -114,13 +123,8 @@ func (u *WorkspaceUseCase) MigrateProject(ctx context.Context, sourcePath, targe
 	if u.vector == nil {
 		return result, nil
 	}
-	if _, err := u.vector.DeleteByFilter(ctx, logicdomain.SearchFilter{
-		TeamID:    result.Source.TeamID,
-		SpaceID:   result.Source.SpaceID,
-		ProjectID: result.Source.ID,
-	}); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("delete source project vectors: %w", err)
-	}
+	// Rebuild target project vectors from source project memories first, then delete source vectors after confirmation.
+	// 先从源项目记忆重建目标项目向量，确认全部成功后再删除源向量，避免中途失败导致数据丢失。
 	memories, err := store.ListProjectMemories(ctx, result.Target.ID)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("list target project memories: %w", err)
@@ -133,6 +137,15 @@ func (u *WorkspaceUseCase) MigrateProject(ctx context.Context, sourcePath, targe
 			return logicdomain.ProjectMigrationResult{}, fmt.Errorf("rebuild target project vector %s: %w", memory.ID, err)
 		}
 		result.RebuiltVectorRows++
+	}
+	// All target vectors rebuilt successfully; safe to delete source vectors now.
+	// 目标向量全部重建成功，现在可以安全删除源向量。
+	if _, err := u.vector.DeleteByFilter(ctx, logicdomain.SearchFilter{
+		TeamID:    result.Source.TeamID,
+		SpaceID:   result.Source.SpaceID,
+		ProjectID: result.Source.ID,
+	}); err != nil {
+		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("delete source project vectors after migration: %w", err)
 	}
 	return result, nil
 }
@@ -165,22 +178,31 @@ func (u *WorkspaceUseCase) ListUsers(ctx context.Context) ([]logicdomain.UserRec
 }
 
 // DeleteUser removes one user from the relational store and then clears all vector rows associated with that user.
-// DeleteUser 用于先从关系库存储删除用户，再清理与该用户关联的全部向量行。
+// DeleteUser 用于先清理与用户关联的全部向量行，再从关系库存储删除用户，避免向量删除失败导致数据不一致。
 func (u *WorkspaceUseCase) DeleteUser(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error) {
 	store, err := u.workspaceStore()
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
-	result, err := store.DeleteUserRef(ctx, userRef, confirmationCode)
-	if err != nil || result.RequiresConfirmation {
-		return result, err
-	}
+	// Delete vectors first; if it fails, relational data remains intact and the operation can be retried.
+	// 先删除向量：如果失败，关系数据保持完整，操作可重试。
 	if u.vector != nil {
-		deletedRows, err := u.vector.DeleteByFilter(ctx, logicdomain.SearchFilter{UserID: result.User.ID})
+		// Resolve user to get vector filter fields before deleting relational data.
+		// 在删除关系数据之前解析用户以获取向量过滤字段。
+		user, err := store.ResolveUserRef(ctx, userRef)
 		if err != nil {
-			return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user vectors: %w", err)
+			return logicdomain.UserDeleteResult{}, fmt.Errorf("resolve user for vector cleanup: %w", err)
+		}
+		deletedRows, err := u.vector.DeleteByFilter(ctx, logicdomain.SearchFilter{UserID: user.ID})
+		if err != nil {
+			return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user vectors before relational delete: %w", err)
+		}
+		result, err := store.DeleteUserRef(ctx, userRef, confirmationCode)
+		if err != nil || result.RequiresConfirmation {
+			return result, err
 		}
 		result.DeletedVectorRows = deletedRows
+		return result, nil
 	}
-	return result, nil
+	return store.DeleteUserRef(ctx, userRef, confirmationCode)
 }

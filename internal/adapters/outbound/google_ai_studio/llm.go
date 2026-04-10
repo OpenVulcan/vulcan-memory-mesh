@@ -74,6 +74,9 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	if err != nil {
 		return appports.LLMResponse{}, err
 	}
+	if resp == nil {
+		return appports.LLMResponse{}, fmt.Errorf("google ai studio generate returned nil response")
+	}
 	content := strings.TrimSpace(resp.Text())
 	if content == "" {
 		return appports.LLMResponse{}, fmt.Errorf("google ai studio generate content empty text")

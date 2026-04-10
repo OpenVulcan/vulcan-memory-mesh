@@ -296,9 +296,9 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 		rawTurn, err := turnRecordFromStoredTurn(pendingTurn)
 		if err != nil {
 			if u.logger != nil {
-				u.logger.Error("post-action queued turn decode failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
+				u.logger.Error("post-action queued turn decode failed, skipping", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
 			}
-			return
+			continue
 		}
 		if err := u.applyImmediateTurnAnalysis(workerCtx, session, persistedTurn, rawTurn); err != nil {
 			if u.logger != nil {

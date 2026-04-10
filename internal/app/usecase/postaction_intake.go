@@ -169,9 +169,9 @@ func rawTurnFromCommand(cmd PostActionCommand) logicdomain.TurnRecord {
 // turnRecordFromStoredTurn rebuilds one raw turn from the dehydrated row so background workers can rerun the same single-turn analyzer input after async queueing.
 // turnRecordFromStoredTurn 用于从脱水 turn 行重建原始轮次，让后台工作器在异步入队后仍能重建同样的单轮分析输入。
 func turnRecordFromStoredTurn(turn logicdomain.SessionTurnRecord) (logicdomain.TurnRecord, error) {
-	userContent, timeline, assistantContent := parseDehydratedTurnContent(turn.DehydratedContent)
-	if strings.TrimSpace(userContent) == "" && strings.TrimSpace(assistantContent) == "" && len(timeline) == 0 {
-		return logicdomain.TurnRecord{}, fmt.Errorf("stored turn %d dehydrated_content could not be decoded", turn.ID)
+	userContent, timeline, assistantContent, err := parseDehydratedTurnContent(turn.DehydratedContent)
+	if err != nil {
+		return logicdomain.TurnRecord{}, fmt.Errorf("stored turn %d dehydrated_content decode failed: %w", turn.ID, err)
 	}
 	rawTimeline := make([]logicdomain.TurnTimelineItem, 0, len(timeline))
 	for _, item := range timeline {

@@ -749,10 +749,7 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 			TraceID:      traceID,
 		}, nil
 	}
-	contextText, items, assembleDegraded, err := u.assemblePreCheckContext(ctx, memoryHits)
-	if err != nil {
-		return PreCheckResult{}, err
-	}
+	contextText, items, assembleDegraded := u.assemblePreCheckContext(ctx, memoryHits)
 	return PreCheckResult{
 		ShouldInject: len(items) > 0,
 		ContextText:  contextText,
@@ -779,11 +776,11 @@ func appendUniquePreCheckMemoryHit(hits []logicdomain.MemoryHit, incoming logicd
 
 // assemblePreCheckContext prefers the shared assembler but falls back to a local deterministic renderer if prompt loading degrades.
 // assemblePreCheckContext 用于优先使用共享 assembler；若提示词加载降级，则回退到本地确定性渲染。
-func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, bool, error) {
+func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, bool) {
 	if u.assembler != nil {
 		contextText, items, err := u.assembler.Assemble(ctx, logicdomain.PersonaContext{}, hits)
 		if err == nil {
-			return contextText, items, false, nil
+			return contextText, items, false
 		}
 		if u.logger != nil {
 			u.logger.Warn("pre-check assembler degraded to fallback", "err", err)
@@ -791,10 +788,10 @@ func (u *PreCheckUseCase) assemblePreCheckContext(ctx context.Context, hits []lo
 		// Surface fallback activation to the caller so the RPC degraded bit stays honest even when local rendering succeeds.
 		// 把 fallback 激活信号向上传递，确保即便本地渲染成功，RPC 的 degraded 标志仍能如实反映本次降级。
 		fallbackItems := buildFallbackContextItems(hits)
-		return buildFallbackContextSummary(fallbackItems), fallbackItems, true, nil
+		return buildFallbackContextSummary(fallbackItems), fallbackItems, true
 	}
 	items := buildFallbackContextItems(hits)
-	return buildFallbackContextSummary(items), items, false, nil
+	return buildFallbackContextSummary(items), items, false
 }
 
 // buildPreCheckMemoryQueries converts the stage-one retrieval hints into the simplified query list already consumed by the unified search surface.
