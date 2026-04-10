@@ -506,6 +506,9 @@ WHERE memory_status = $3
 // loadActiveMemoryVectorIDsTx loads the vector ids of active memory rows by memory id inside one transaction so later status flips can return deterministic cleanup coordinates.
 // loadActiveMemoryVectorIDsTx 用于在单个事务内按记忆 id 加载 active 行的 vector id，确保后续状态切换返回确定性的清理坐标。
 func (r *analysisRepository) loadActiveMemoryVectorIDsTx(ctx context.Context, tx pgx.Tx, memoryIDs []uint64) ([]string, error) {
+	if r == nil || r.shared == nil {
+		return nil, fmt.Errorf("postgres analysis store is not initialized")
+	}
 	memoryIDs = normalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return nil, nil

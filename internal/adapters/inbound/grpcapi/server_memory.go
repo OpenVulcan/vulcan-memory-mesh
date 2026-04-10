@@ -79,7 +79,9 @@ func (s *Server) GetTurnDetails(ctx context.Context, req *vmmv1.GetTurnDetailsRe
 	}
 	turns := make([]*vmmv1.TurnDetailEntry, 0, len(result.Turns))
 	for _, turn := range result.Turns {
-		turns = append(turns, toTurnDetailEntry(turn))
+		if entry := toTurnDetailEntry(turn); entry != nil {
+			turns = append(turns, entry)
+		}
 	}
 	return &vmmv1.GetTurnDetailsResponse{
 		Turns:   turns,

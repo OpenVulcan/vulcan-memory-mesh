@@ -28,7 +28,9 @@ func (s *Server) ListProjects(ctx context.Context, _ *emptypb.Empty) (*vmmv1.Lis
 	}
 	items := make([]*vmmv1.ProjectEntry, 0, len(projects))
 	for _, item := range projects {
-		items = append(items, toProjectEntry(item))
+		if entry := toProjectEntry(item); entry != nil {
+			items = append(items, entry)
+		}
 	}
 	return &vmmv1.ListProjectsResponse{Projects: items, TraceId: trace.IDFromContext(ctx)}, nil
 }
@@ -204,7 +206,9 @@ func (s *Server) ListUsers(ctx context.Context, _ *emptypb.Empty) (*vmmv1.ListUs
 	}
 	items := make([]*vmmv1.UserEntry, 0, len(users))
 	for _, item := range users {
-		items = append(items, toUserEntry(item))
+		if entry := toUserEntry(item); entry != nil {
+			items = append(items, entry)
+		}
 	}
 	return &vmmv1.ListUsersResponse{Users: items, TraceId: trace.IDFromContext(ctx)}, nil
 }
@@ -273,7 +277,9 @@ func (s *Server) GetProfileNodes(ctx context.Context, req *vmmv1.GetProfileNodes
 	}
 	nodes := make([]*vmmv1.ProfileNodeEntry, 0, len(result.Nodes))
 	for _, node := range result.Nodes {
-		nodes = append(nodes, toProfileNodeEntry(node))
+		if entry := toProfileNodeEntry(node); entry != nil {
+			nodes = append(nodes, entry)
+		}
 	}
 	return &vmmv1.GetProfileNodesResponse{
 		Nodes:   nodes,

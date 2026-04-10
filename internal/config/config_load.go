@@ -474,7 +474,7 @@ func collectEnvReferencesInString(raw string, referenced map[string]struct{}) {
 			end++
 		}
 		if end >= len(raw) {
-			return
+			continue
 		}
 		key := strings.TrimSpace(raw[start:end])
 		if key != "" {

@@ -579,58 +579,7 @@ func (r *memoryRepository) queryMemoryNodesWithContextBuilder(ctx context.Contex
 	}
 	callCtx, cancel := buildContext(ctx)
 	defer cancel()
-	rows, err := q.Query(callCtx, sqlText, args...)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-
-	items := make([]memoryNodeScanRow, 0)
-	for rows.Next() {
-		var row memoryNodeScanRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.TeamID,
-			&row.SpaceID,
-			&row.ProjectID,
-			&row.UserID,
-			&row.OriginSessionID,
-			&row.SourceTurnID,
-			&row.VectorID,
-			&row.EmbeddingText,
-			&row.SourceKind,
-			&row.ScopeLevel,
-			&row.Category,
-			&row.Abstract,
-			&row.Details,
-			&row.MemoryStatus,
-			&row.Priority,
-			&row.MemoryLevel,
-			&row.RefreshWeight,
-			&row.SupportCount,
-			&row.RebuttalCount,
-			&row.StatusReason,
-			&row.ExpiresAt,
-			&row.LastRecalledAt,
-			&row.LastAdoptedAt,
-			&row.LastReinforcedAt,
-			&row.RecalledCount,
-			&row.AdoptedCount,
-			&row.ReinforcementCount,
-			&row.CrossSessionAdoptedCount,
-			&row.DecayDisabled,
-			&row.DedupeHash,
-			&row.CreatedAt,
-			&row.UpdatedAt,
-		); err != nil {
-			return nil, fmt.Errorf("scan postgres memory node: %w", err)
-		}
-		items = append(items, row)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, fmt.Errorf("iterate postgres memory nodes: %w", err)
-	}
-	return items, nil
+	return scanMemoryNodeRows(callCtx, q, sqlText, args...)
 }
 
 // memoryNodeSelectColumns keeps every memory-row query aligned on one stable column order so scanning remains deterministic.
