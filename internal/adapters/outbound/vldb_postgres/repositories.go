@@ -4,11 +4,14 @@ package vldb_postgres
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
 // storeShared owns the runtime-wide PostgreSQL pool, normalized config, and resolved search dialect shared by every repository slice.
@@ -224,6 +227,12 @@ func (r *memoryRepository) memoryNodesTable() string {
 // memoryContextEdgesTable 用于返回长期记忆情境边表的完整限定名称。
 func (r *memoryRepository) memoryContextEdgesTable() string {
 	return r.qualifiedTable("vmm_memory_context_edges")
+}
+
+// trgmSimilarityThreshold returns the configured trigram similarity threshold used by lexical SQL generation.
+// trgmSimilarityThreshold 用于返回 lexical SQL 生成所需的配置 trigram 相似度阈值。
+func (r *memoryRepository) trgmSimilarityThreshold() float64 {
+	return r.shared.cfg.TRGMSimilarityThreshold
 }
 
 // profileRepository marks the profile review, lifecycle, and rendered-profile persistence slice inside the PostgreSQL combined store.
@@ -732,4 +741,50 @@ func (r *analysisRepository) queryMemoryNodesWithContextBuilder(ctx context.Cont
 		return nil, fmt.Errorf("iterate postgres memory node rows: %w", err)
 	}
 	return items, nil
+}
+
+// loadUserByQueryer executes one id-bounded user lookup through the given queryer so workspace, profile, and scratchpad repositories share a single scan contract.
+// loadUserByQueryer 用于通过给定 queryer 执行按 id 查找用户的操作，让 workspace、profile 与 scratchpad 仓储共享同一套扫描逻辑。
+func loadUserByQueryer(ctx context.Context, q profileQueryer, userID uint64, userTable string, lockClause string) (logicdomain.UserRecord, error) {
+	sqlText := fmt.Sprintf(`
+SELECT id, name, profile, delete_confirm_code, created_at, updated_at
+FROM %s
+WHERE id = $1
+LIMIT 1%s
+`, userTable, lockClause)
+	var row userScanRow
+	err := q.QueryRow(ctx, strings.TrimSpace(sqlText), int64(userID)).Scan(
+		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.UserRecord{}, fmt.Errorf("load postgres user by id: %w", err)
+		}
+		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user id %d does not exist", userID)}
+	}
+	return row.toDomain(), nil
+}
+
+// loadProjectByQueryer executes one id-bounded project lookup with team/space joins through the given queryer so multiple repositories share a single scan contract.
+// loadProjectByQueryer 用于通过给定 queryer 执行带 team/space 联接的按 id 查找项目的操作，让多个仓储共享同一套扫描逻辑。
+func loadProjectByQueryer(ctx context.Context, q profileQueryer, projectID uint64, projectTable, teamTable, spaceTable string) (logicdomain.ProjectRecord, error) {
+	sqlText := fmt.Sprintf(`
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
+FROM %s AS p
+JOIN %s AS t ON t.id = p.team_id
+JOIN %s AS sp ON sp.id = p.space_id
+WHERE p.id = $1
+LIMIT 1
+`, projectTable, teamTable, spaceTable)
+	var row projectScanRow
+	err := q.QueryRow(ctx, strings.TrimSpace(sqlText), int64(projectID)).Scan(
+		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
+	)
+	if err != nil {
+		if !errors.Is(err, pgx.ErrNoRows) {
+			return logicdomain.ProjectRecord{}, fmt.Errorf("load postgres project by id: %w", err)
+		}
+		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project id %d does not exist", projectID)}
+	}
+	return row.toDomain(), nil
 }

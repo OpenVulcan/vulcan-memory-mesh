@@ -112,37 +112,7 @@ func (r *scratchpadRepository) scratchpadQualifiedTable(name string) string {
 func (r *scratchpadRepository) loadUserByID(ctx context.Context, userID uint64) (logicdomain.UserRecord, error) {
 	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	sqlText := fmt.Sprintf(`
-SELECT id, name, profile, delete_confirm_code, created_at, updated_at
-FROM %s
-WHERE id = $1
-LIMIT 1
-`, r.scratchpadQualifiedTable("vmm_users"))
-	var row struct {
-		ID                uint64
-		Name              string
-		Profile           string
-		DeleteConfirmCode string
-		CreatedAt         time.Time
-		UpdatedAt         time.Time
-	}
-	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(userID)).Scan(
-		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
-	)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return logicdomain.UserRecord{}, fmt.Errorf("load postgres user by id: %w", err)
-		}
-		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user id %d does not exist", userID)}
-	}
-	return logicdomain.UserRecord{
-		ID:                row.ID,
-		Name:              strings.TrimSpace(row.Name),
-		Profile:           strings.TrimSpace(row.Profile),
-		DeleteConfirmCode: strings.TrimSpace(row.DeleteConfirmCode),
-		CreatedAt:         row.CreatedAt.UTC(),
-		UpdatedAt:         row.UpdatedAt.UTC(),
-	}, nil
+	return loadUserByQueryer(callCtx, r.shared.pool, userID, r.scratchpadQualifiedTable("vmm_users"), "")
 }
 
 // loadProjectByID loads a project record by ID for scratchpad scope validation.
@@ -150,45 +120,7 @@ LIMIT 1
 func (r *scratchpadRepository) loadProjectByID(ctx context.Context, projectID uint64) (logicdomain.ProjectRecord, error) {
 	callCtx, cancel := r.scratchpadQueryContext(ctx)
 	defer cancel()
-	sqlText := fmt.Sprintf(`
-SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
-FROM %s AS p
-JOIN %s AS t ON t.id = p.team_id
-JOIN %s AS sp ON sp.id = p.space_id
-WHERE p.id = $1
-LIMIT 1
-`, r.scratchpadQualifiedTable("vmm_projects"), r.scratchpadQualifiedTable("vmm_teams"), r.scratchpadQualifiedTable("vmm_spaces"))
-	var row struct {
-		ID        uint64
-		TeamID    uint64
-		SpaceID   uint64
-		Name      string
-		Profile   string
-		TeamName  string
-		SpaceName string
-		CreatedAt time.Time
-		UpdatedAt time.Time
-	}
-	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(projectID)).Scan(
-		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
-	)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return logicdomain.ProjectRecord{}, fmt.Errorf("load postgres project by id: %w", err)
-		}
-		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project id %d does not exist", projectID)}
-	}
-	return logicdomain.ProjectRecord{
-		ID:        row.ID,
-		TeamID:    row.TeamID,
-		SpaceID:   row.SpaceID,
-		Name:      strings.TrimSpace(row.Name),
-		Profile:   strings.TrimSpace(row.Profile),
-		TeamName:  strings.TrimSpace(row.TeamName),
-		SpaceName: strings.TrimSpace(row.SpaceName),
-		CreatedAt: row.CreatedAt.UTC(),
-		UpdatedAt: row.UpdatedAt.UTC(),
-	}, nil
+	return loadProjectByQueryer(callCtx, r.shared.pool, projectID, r.scratchpadQualifiedTable("vmm_projects"), r.scratchpadQualifiedTable("vmm_teams"), r.scratchpadQualifiedTable("vmm_spaces"))
 }
 
 // EnsureScratchpadScope validates that the referenced user and project already exist without creating any durable session rows.

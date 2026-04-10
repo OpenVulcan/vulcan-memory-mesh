@@ -48,8 +48,15 @@ type Config struct {
 	EmbeddingDimension      int
 }
 
+// memoryTableResolver defines the minimum surface the dialect SQL builders need from the combined store.
+// memoryTableResolver 用于定义方言 SQL 构建器对组合库的最小依赖面。
+type memoryTableResolver interface {
+	memoryNodesTable() string
+	trgmSimilarityThreshold() float64
+}
+
 // Store acts as the public PostgreSQL combined-store facade while delegating shared runtime state and future repository ownership to internal repository bundles.
-// Store 用于作为 PostgreSQL 组合库对外暴露的统一门面，并把共享运行时状态与后续仓储职责归属收口到内部 repository bundle。
+// Store 用于作为 PostgreSQL 组合库对外暴露的统一门面，并把共享运行时状态与后续仓储职责收口到内部 repository bundle。
 type Store struct {
 	// shared and repos express the intended runtime boundary: one shared core plus one explicit repository bundle.
 	// shared 与 repos 用于表达目标运行时边界：一个共享核心，加上一组显式 repository bundle。
@@ -184,6 +191,12 @@ func (s *Store) init(ctx context.Context) error {
 // schemaTable 用于返回配置 schema 下完整限定的组件版本表名。
 func (s *Store) schemaTable() string {
 	return s.qualifiedTable("vmm_schema_versions")
+}
+
+// trgmSimilarityThreshold returns the configured trigram similarity threshold used by lexical SQL generation.
+// trgmSimilarityThreshold 用于返回 lexical SQL 生成所需的配置 trigram 相似度阈值。
+func (s *Store) trgmSimilarityThreshold() float64 {
+	return s.cfg.TRGMSimilarityThreshold
 }
 
 // queryContext derives one bounded query context so shared PostgreSQL calls stay inside the configured runtime timeout.

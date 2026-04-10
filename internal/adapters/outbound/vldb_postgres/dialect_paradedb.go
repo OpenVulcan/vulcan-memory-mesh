@@ -59,7 +59,7 @@ CREATE INDEX %sIF NOT EXISTS %s ON %s USING bm25 (
 
 // BuildLexicalSearchSQL renders the ParadeDB-native lexical recall SQL that uses the @@@ operator plus pdb.parse query builder output.
 // BuildLexicalSearchSQL 用于渲染 ParadeDB 原生 lexical 召回 SQL，使用 @@@ 操作符和 pdb.parse 查询构建器。
-func (paradeDBDialect) BuildLexicalSearchSQL(store *Store, query string, topK int, filter logicdomain.SearchFilter) (string, []any) {
+func (paradeDBDialect) BuildLexicalSearchSQL(r memoryTableResolver, query string, topK int, filter logicdomain.SearchFilter) (string, []any) {
 	args := &sqlArgsBuilder{}
 	queryPlaceholder := args.Add(strings.TrimSpace(query))
 	limitPlaceholder := args.Add(topK)
@@ -74,13 +74,13 @@ FROM %s AS m
 WHERE %s
 ORDER BY pdb.score(m.id) DESC, m.id ASC
 LIMIT %s
-`, store.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
+`, r.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }
 
 // BuildHybridSearchSQL renders one ParadeDB-first-stage hybrid recall query that fuses pgvector and BM25 candidates inside PostgreSQL before the application rerank/MMR stages run.
 // BuildHybridSearchSQL 用于渲染一条 ParadeDB 首轮混合召回 SQL，在进入应用层 rerank/MMR 之前，先在 PostgreSQL 内部融合 pgvector 与 BM25 候选。
-func (paradeDBDialect) BuildHybridSearchSQL(store *Store, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) (string, []any) {
+func (paradeDBDialect) BuildHybridSearchSQL(r memoryTableResolver, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) (string, []any) {
 	args := &sqlArgsBuilder{}
 	vectorPlaceholder := args.Add(encodePGVectorLiteral(vector))
 	queryPlaceholder := args.Add(strings.TrimSpace(query))
@@ -174,6 +174,6 @@ SELECT
 FROM fused_candidates
 ORDER BY fused_score DESC, memory_id ASC
 LIMIT %s
-`, vectorPlaceholder, store.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, store.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), limitPlaceholder, rrfPlaceholder, rrfPlaceholder, limitPlaceholder)
+`, vectorPlaceholder, r.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, r.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), limitPlaceholder, rrfPlaceholder, rrfPlaceholder, limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }

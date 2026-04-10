@@ -33,16 +33,7 @@ func (r *memoryRepository) SearchHybridMemory(ctx context.Context, query string,
 		rrfK = 60
 	}
 
-	// Build a complete Store view so dialect SQL generation can still access table names, cfg thresholds, and Store helpers.
-	// 构建完整的 Store 视图，让方言 SQL 生成仍能访问表名、cfg 阈值和 Store 辅助方法。
-	storeView := &Store{
-		shared:  r.shared,
-		repos:   storeRepositories{memory: *r},
-		pool:    r.shared.pool,
-		cfg:     r.shared.cfg,
-		dialect: r.shared.dialect,
-	}
-	sqlText, args := r.shared.dialect.BuildHybridSearchSQL(storeView, query, vector, topK, filter, rrfK)
+	sqlText, args := r.shared.dialect.BuildHybridSearchSQL(r, query, vector, topK, filter, rrfK)
 	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
 	tx, err := r.shared.pool.Begin(callCtx)

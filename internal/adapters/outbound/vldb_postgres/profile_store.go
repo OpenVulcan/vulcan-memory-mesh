@@ -659,51 +659,17 @@ func (r *profileRepository) projectsTable() string {
 // loadUserByID loads one user row by numeric id so profile targets can read the durable user profile blob.
 // loadUserByID 用于按数字 id 加载用户行，让画像目标能够读取长期用户画像 Blob。
 func (r *profileRepository) loadUserByID(ctx context.Context, userID uint64) (logicdomain.UserRecord, error) {
-	sqlText := fmt.Sprintf(`
-SELECT id, name, profile, delete_confirm_code, created_at, updated_at
-FROM %s
-WHERE id = $1
-LIMIT 1
-`, r.usersTable())
 	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
-	var row userScanRow
-	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(userID)).Scan(
-		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
-	)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return logicdomain.UserRecord{}, fmt.Errorf("load postgres user by id: %w", err)
-		}
-		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user id %d does not exist", userID)}
-	}
-	return row.toDomain(), nil
+	return loadUserByQueryer(callCtx, r.shared.pool, userID, r.usersTable(), "")
 }
 
 // loadProjectByID loads one project row by numeric id together with its Team/Space display names so profile targets can read the durable project profile blob.
 // loadProjectByID 用于按数字 id 加载项目行及其 Team/Space 展示名称，让画像目标能够读取长期项目画像 Blob。
 func (r *profileRepository) loadProjectByID(ctx context.Context, projectID uint64) (logicdomain.ProjectRecord, error) {
-	sqlText := fmt.Sprintf(`
-SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
-FROM %s AS p
-JOIN %s AS t ON t.id = p.team_id
-JOIN %s AS sp ON sp.id = p.space_id
-WHERE p.id = $1
-LIMIT 1
-`, r.projectsTable(), r.teamsTable(), r.spacesTable())
 	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
-	var row projectScanRow
-	err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(projectID)).Scan(
-		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
-	)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return logicdomain.ProjectRecord{}, fmt.Errorf("load postgres project by id: %w", err)
-		}
-		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project id %d does not exist", projectID)}
-	}
-	return row.toDomain(), nil
+	return loadProjectByQueryer(callCtx, r.shared.pool, projectID, r.projectsTable(), r.teamsTable(), r.spacesTable())
 }
 
 // scanProfileNodeRows decodes PostgreSQL profile rows into reusable scan structs and always closes the rows before returning.

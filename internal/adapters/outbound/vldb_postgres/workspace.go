@@ -349,7 +349,9 @@ ORDER BY id ASC
 // loadUserByID loads one user row by numeric id and returns a stable not-found error when it does not exist.
 // loadUserByID 用于按数字 id 加载用户行，并在不存在时返回稳定的 not-found 错误。
 func (r *workspaceRepository) loadUserByID(ctx context.Context, userID uint64) (logicdomain.UserRecord, error) {
-	return r.loadUserByIDWithQueryer(ctx, r.shared.pool, userID, false)
+	callCtx, cancel := r.workspaceQueryContext(ctx)
+	defer cancel()
+	return loadUserByQueryer(callCtx, r.shared.pool, userID, r.usersTable(), "")
 }
 
 // loadUserByIDWithQueryer loads one user row through either the pool or a transaction, with optional row locking for admin flows that must serialize confirmation state.
@@ -359,57 +361,21 @@ func (r *workspaceRepository) loadUserByIDWithQueryer(ctx context.Context, q pro
 	if forUpdate {
 		lockClause = " FOR UPDATE"
 	}
-	sqlText := fmt.Sprintf(`
-SELECT id, name, profile, delete_confirm_code, created_at, updated_at
-FROM %s
-WHERE id = $1
-LIMIT 1%s
-`, r.usersTable(), lockClause)
-	callCtx, cancel := r.workspaceQueryContext(ctx)
-	defer cancel()
-	var row userScanRow
-	err := q.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(userID)).Scan(
-		&row.ID, &row.Name, &row.Profile, &row.DeleteConfirmCode, &row.CreatedAt, &row.UpdatedAt,
-	)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return logicdomain.UserRecord{}, fmt.Errorf("load postgres user by id: %w", err)
-		}
-		return logicdomain.UserRecord{}, logicdomain.NotFoundError{Resource: "user", Message: fmt.Sprintf("user id %d does not exist", userID)}
-	}
-	return row.toDomain(), nil
+	return loadUserByQueryer(ctx, q, userID, r.usersTable(), lockClause)
 }
 
 // loadProjectByID loads one project row by numeric id together with its Team/Space display names.
 // loadProjectByID 用于按数字 id 加载项目行及其 Team/Space 展示名称。
 func (r *workspaceRepository) loadProjectByID(ctx context.Context, projectID uint64) (logicdomain.ProjectRecord, error) {
-	return r.loadProjectByIDWithQueryer(ctx, r.shared.pool, projectID)
+	callCtx, cancel := r.workspaceQueryContext(ctx)
+	defer cancel()
+	return loadProjectByQueryer(callCtx, r.shared.pool, projectID, r.projectsTable(), r.teamsTable(), r.spacesTable())
 }
 
 // loadProjectByIDWithQueryer loads one project row through either the pool or a transaction so profile and admin helpers can share the same hierarchy lookup contract.
 // loadProjectByIDWithQueryer 用于通过连接池或事务加载单条项目行，让画像与管理辅助逻辑共享同一套层级查询契约。
 func (r *workspaceRepository) loadProjectByIDWithQueryer(ctx context.Context, q profileQueryer, projectID uint64) (logicdomain.ProjectRecord, error) {
-	sqlText := fmt.Sprintf(`
-SELECT p.id, p.team_id, p.space_id, p.name, p.profile, t.name AS team_name, sp.name AS space_name, p.created_at, p.updated_at
-FROM %s AS p
-JOIN %s AS t ON t.id = p.team_id
-JOIN %s AS sp ON sp.id = p.space_id
-WHERE p.id = $1
-LIMIT 1
-`, r.projectsTable(), r.teamsTable(), r.spacesTable())
-	callCtx, cancel := r.workspaceQueryContext(ctx)
-	defer cancel()
-	var row projectScanRow
-	err := q.QueryRow(callCtx, strings.TrimSpace(sqlText), int64(projectID)).Scan(
-		&row.ID, &row.TeamID, &row.SpaceID, &row.Name, &row.Profile, &row.TeamName, &row.SpaceName, &row.CreatedAt, &row.UpdatedAt,
-	)
-	if err != nil {
-		if !errors.Is(err, pgx.ErrNoRows) {
-			return logicdomain.ProjectRecord{}, fmt.Errorf("load postgres project by id: %w", err)
-		}
-		return logicdomain.ProjectRecord{}, logicdomain.NotFoundError{Resource: "project", Message: fmt.Sprintf("project id %d does not exist", projectID)}
-	}
-	return row.toDomain(), nil
+	return loadProjectByQueryer(ctx, q, projectID, r.projectsTable(), r.teamsTable(), r.spacesTable())
 }
 
 // ensureSession loads or creates one session row under the resolved user/project scope.

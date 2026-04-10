@@ -17,8 +17,8 @@ type searchDialect interface {
 	Name() string
 	EnsureSearchExtensions(ctx context.Context, pool *pgxpool.Pool, autoCreate bool) error
 	EnsureSearchIndexes(ctx context.Context, store *Store) error
-	BuildLexicalSearchSQL(store *Store, query string, topK int, filter logicdomain.SearchFilter) (string, []any)
-	BuildHybridSearchSQL(store *Store, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) (string, []any)
+	BuildLexicalSearchSQL(r memoryTableResolver, query string, topK int, filter logicdomain.SearchFilter) (string, []any)
+	BuildHybridSearchSQL(r memoryTableResolver, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) (string, []any)
 }
 
 // newSearchDialect resolves the configured flavor into one concrete dialect implementation.

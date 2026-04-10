@@ -121,15 +121,6 @@ func (r *memoryRepository) SearchLexicalMemory(ctx context.Context, query string
 	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	// Build a complete Store view so dialect SQL generation can still access table names, cfg thresholds, and Store helpers.
-	// 构建完整的 Store 视图，让方言 SQL 生成仍能访问表名、cfg 阈值和 Store 辅助方法。
-	storeView := &Store{
-		shared:  r.shared,
-		repos:   storeRepositories{memory: *r},
-		pool:    r.shared.pool,
-		cfg:     r.shared.cfg,
-		dialect: r.shared.dialect,
-	}
 	query = strings.TrimSpace(query)
 	if query == "" || topK <= 0 {
 		return []logicdomain.MemoryLexicalHit{}, nil
@@ -137,7 +128,7 @@ func (r *memoryRepository) SearchLexicalMemory(ctx context.Context, query string
 	if topK > 32 {
 		topK = 32
 	}
-	sqlText, args := r.shared.dialect.BuildLexicalSearchSQL(storeView, query, topK, filter)
+	sqlText, args := r.shared.dialect.BuildLexicalSearchSQL(r, query, topK, filter)
 	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
 	rows, err := r.shared.pool.Query(callCtx, sqlText, args...)

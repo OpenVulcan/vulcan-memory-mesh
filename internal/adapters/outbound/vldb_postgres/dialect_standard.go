@@ -45,10 +45,10 @@ func (standardDialect) EnsureSearchIndexes(ctx context.Context, store *Store) er
 
 // BuildLexicalSearchSQL renders the pg_trgm-based lexical fallback SQL that combines ILIKE recall with similarity scoring.
 // BuildLexicalSearchSQL 用于渲染基于 pg_trgm 的 lexical 兜底 SQL，把 ILIKE 召回与 similarity 打分组合起来。
-func (standardDialect) BuildLexicalSearchSQL(store *Store, query string, topK int, filter logicdomain.SearchFilter) (string, []any) {
+func (standardDialect) BuildLexicalSearchSQL(r memoryTableResolver, query string, topK int, filter logicdomain.SearchFilter) (string, []any) {
 	args := &sqlArgsBuilder{}
 	queryPlaceholder := args.Add(strings.TrimSpace(query))
-	thresholdPlaceholder := args.Add(store.cfg.TRGMSimilarityThreshold)
+	thresholdPlaceholder := args.Add(r.trgmSimilarityThreshold())
 	limitPlaceholder := args.Add(topK)
 	likeExpr := "'%' || " + queryPlaceholder + " || '%'"
 	whereClauses := []string{
@@ -68,17 +68,17 @@ FROM %s AS m
 WHERE %s
 ORDER BY score DESC, m.id ASC
 LIMIT %s
-`, queryPlaceholder, queryPlaceholder, store.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
+`, queryPlaceholder, queryPlaceholder, r.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }
 
 // BuildHybridSearchSQL renders one standard-PostgreSQL first-stage hybrid recall query that fuses pgvector and trigram candidates inside SQL before application-side rerank/MMR continues.
 // BuildHybridSearchSQL 用于渲染一条 standard PostgreSQL 首轮混合召回 SQL，在应用层 rerank/MMR 继续处理前，先在 SQL 内融合 pgvector 与 trigram 候选。
-func (standardDialect) BuildHybridSearchSQL(store *Store, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) (string, []any) {
+func (standardDialect) BuildHybridSearchSQL(r memoryTableResolver, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) (string, []any) {
 	args := &sqlArgsBuilder{}
 	vectorPlaceholder := args.Add(encodePGVectorLiteral(vector))
 	queryPlaceholder := args.Add(strings.TrimSpace(query))
-	thresholdPlaceholder := args.Add(store.cfg.TRGMSimilarityThreshold)
+	thresholdPlaceholder := args.Add(r.trgmSimilarityThreshold())
 	limitPlaceholder := args.Add(topK)
 	rrfPlaceholder := args.Add(rrfK)
 	likeExpr := "'%' || " + queryPlaceholder + " || '%'"
@@ -177,6 +177,6 @@ SELECT
 FROM fused_candidates
 ORDER BY fused_score DESC, memory_id ASC
 LIMIT %s
-`, vectorPlaceholder, store.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, queryPlaceholder, queryPlaceholder, store.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), queryPlaceholder, queryPlaceholder, limitPlaceholder, rrfPlaceholder, rrfPlaceholder, limitPlaceholder)
+`, vectorPlaceholder, r.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, queryPlaceholder, queryPlaceholder, r.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), queryPlaceholder, queryPlaceholder, limitPlaceholder, rrfPlaceholder, rrfPlaceholder, limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }
