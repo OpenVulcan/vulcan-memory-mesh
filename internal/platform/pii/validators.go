@@ -25,7 +25,8 @@ var cnCheckRemainderMap = map[byte]int{
 // LuhnSum calculates the Luhn checksum sum and reports whether the input is pure digits.
 // LuhnSum 用于计算 Luhn 校验和，并返回输入是否为纯数字。
 func LuhnSum(s string) (int, bool) {
-	if strings.TrimSpace(s) == "" {
+	s = strings.TrimSpace(s)
+	if s == "" {
 		return 0, false
 	}
 	sum := 0
@@ -51,7 +52,8 @@ func LuhnSum(s string) (int, bool) {
 // WeightSum multiplies each digit by its matching weight and rejects length mismatches or non-digits.
 // WeightSum 用于将每一位数字与对应权重相乘求和，并拒绝长度不匹配或非数字输入。
 func WeightSum(s string, weights []int) (int, bool) {
-	if strings.TrimSpace(s) == "" || len(s) != len(weights) {
+	s = strings.TrimSpace(s)
+	if s == "" || len(s) != len(weights) {
 		return 0, false
 	}
 	sum := 0

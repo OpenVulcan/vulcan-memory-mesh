@@ -148,17 +148,18 @@ func classifyGoogleAIStudioError(err error, options Options, now time.Time) fail
 		}
 		return failureDecision{Class: errorClassPublicFault}
 	case http.StatusTooManyRequests:
+		googleCooldown := chooseCooldownFromGoogleError(&apiErr, now, options.RespectRetryAfter, options.RateLimitCooldown)
 		if containsAny(body, "insufficient_quota", "quota", "billing", "resource_exhausted", "exhausted", "budget") {
 			return failureDecision{
 				Class:     errorClassQuota,
 				SwitchKey: true,
-				Cooldown:  options.QuotaCooldown,
+				Cooldown:  chooseCooldownFromGoogleError(&apiErr, now, options.RespectRetryAfter, options.QuotaCooldown),
 			}
 		}
 		return failureDecision{
 			Class:     errorClassRateLimit,
 			SwitchKey: true,
-			Cooldown:  options.RateLimitCooldown,
+			Cooldown:  googleCooldown,
 		}
 	default:
 		if apiErr.Code == http.StatusRequestTimeout || apiErr.Code == http.StatusConflict || apiErr.Code >= http.StatusInternalServerError {
@@ -256,6 +257,60 @@ func chooseCooldownFromHeader(header http.Header, now time.Time, respectRetryAft
 		return duration
 	}
 	return fallback
+}
+
+// chooseCooldownFromGoogleError extracts Retry-After information from a genai.APIError and falls back to the configured duration.
+// chooseCooldownFromGoogleError 用于从 genai.APIError 中提取 Retry-After 信息，失败时回退到配置时长。
+func chooseCooldownFromGoogleError(apiErr *genai.APIError, now time.Time, respectRetryAfter bool, fallback time.Duration) time.Duration {
+	if !respectRetryAfter || apiErr == nil {
+		return fallback
+	}
+	// Try to find Retry-After or Retry-After-Ms in the error details.
+	// 尝试在错误详情中查找 Retry-After 或 Retry-After-Ms。
+	for _, detail := range apiErr.Details {
+		if ms, found := detail["retry_after_ms"]; found {
+			if msVal, ok := ms.(float64); ok && msVal > 0 {
+				return time.Duration(msVal) * time.Millisecond
+			}
+		}
+		if seconds, found := detail["retry_after"]; found {
+			if secVal, ok := seconds.(float64); ok && secVal > 0 {
+				return time.Duration(secVal * float64(time.Second))
+			}
+		}
+	}
+	// Also check the message string for embedded retry hints.
+	// 同时检查消息字符串中是否嵌入了重试提示。
+	if header := parseRetryAfterFromText(apiErr.Message); header != nil {
+		if duration, ok := retryAfterDuration(header, now); ok && duration > 0 {
+			return duration
+		}
+	}
+	return fallback
+}
+
+// parseRetryAfterFromText creates a fake http.Header from text that may contain Retry-After values.
+// parseRetryAfterFromText 用于从可能包含 Retry-After 值的文本构造一个伪 http.Header。
+func parseRetryAfterFromText(text string) http.Header {
+	if text == "" {
+		return nil
+	}
+	// Look for patterns like "retry-after: 120" or "Retry-After: 120".
+	// 查找类似 "retry-after: 120" 或 "Retry-After: 120" 的模式。
+	lines := strings.Split(text, "\n")
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if idx := strings.Index(line, ":"); idx > 0 {
+			key := strings.TrimSpace(line[:idx])
+			val := strings.TrimSpace(line[idx+1:])
+			if strings.EqualFold(key, "retry-after") || strings.EqualFold(key, "retry-after-ms") {
+				h := make(http.Header)
+				h.Set(key, val)
+				return h
+			}
+		}
+	}
+	return nil
 }
 
 // retryAfterDuration parses Retry-After-Ms or Retry-After headers into one positive cooldown duration.

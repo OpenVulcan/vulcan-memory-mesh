@@ -353,12 +353,20 @@ func (s *selector) reconcileKeyBudget(nodeIndex, keyIndex int, reserved, actual 
 	budget := &node.budgets[keyIndex]
 	s.syncKeyBudgetWindowLocked(budget, now)
 	tokenDelta := actual.Tokens - reserved.Tokens
-	if tokenDelta == 0 {
-		return
-	}
+	requestDelta := actual.Requests - reserved.Requests
 	budget.MinuteTokens += tokenDelta
 	if budget.MinuteTokens < 0 {
 		budget.MinuteTokens = 0
+	}
+	// Reconcile request counts as well, since reserveKeyBudgetLocked reserves both tokens and requests.
+	// 同时回补请求计数，因为 reserveKeyBudgetLocked 同时预留了 token 和请求配额。
+	budget.MinuteRequests += requestDelta
+	if budget.MinuteRequests < 0 {
+		budget.MinuteRequests = 0
+	}
+	budget.DayRequests += requestDelta
+	if budget.DayRequests < 0 {
+		budget.DayRequests = 0
 	}
 }
 

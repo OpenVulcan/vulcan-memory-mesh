@@ -432,12 +432,12 @@ INSERT INTO %s (
 	$6, $6
 )
 ON CONFLICT (project_id, session_key)
-DO UPDATE SET updated_at = %s.updated_at
+DO UPDATE SET updated_at = EXCLUDED.updated_at
 RETURNING id, session_key, user_id, team_id, space_id, project_id,
           turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
           last_extract_observed_at, last_extract_completed_at, last_compacted_at,
           created_at, updated_at
-`, r.sessionsTable(), r.sessionsTable())
+`, r.sessionsTable())
 	var created sessionScanRow
 	if err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(insertSQL),
 		sessionKey,
