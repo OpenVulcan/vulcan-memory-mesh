@@ -19,12 +19,12 @@ func main() {
 	// 根据可执行文件位置和当前工作区解析运行时路径。
 	exePath, err := os.Executable()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "获取程序运行路径失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to resolve executable path: %v\n", err)
 		os.Exit(1)
 	}
 	wd, err := os.Getwd()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "获取工作目录失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to get working directory: %v\n", err)
 		os.Exit(1)
 	}
 	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config files must use .yaml or .yml")
