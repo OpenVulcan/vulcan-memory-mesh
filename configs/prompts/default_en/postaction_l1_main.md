@@ -59,7 +59,7 @@ Only use:
 
 Decision rules:
 - The user directly states a durable fact worth long-term storage: `user_asserted`
-- The user explicitly confirms or corrects the assistant's summary, guess, or follow-up: `user_confirmed`
+- The user explicitly confirms or corrects the assistant's summary, guess, or follow-up, especially when correcting or refining an existing profile: `user_confirmed`
 - The assistant is only restating existing long-term memory: `assistant_recalled_memory`
 - The assistant is only echoing existing user/project profile information: `assistant_recalled_profile`
 - The assistant answers only from its own general knowledge: `assistant_general_knowledge`
@@ -84,7 +84,7 @@ Only use:
   - `non_durable`
 
 # Constraints
-1. You must return exactly one valid JSON object and no extra explanatory text.
+1. You must return one absolutely clean JSON object: the first output character must be `{` and the last output character must be `}`; do not wrap it in Markdown code fences, and do not output any prefix, suffix, reasoning trace, or extra text.
 2. You may extract only from `target_turn`. Do not treat `reference_turns` or `active_memory_nodes` as new memory sources.
 3. The `turn_id` in the output must exactly match `target_turn.turn_id`.
 4. If `target_turn` contains nothing worth adding, you may return an empty string for `details`, and make `memory_nodes`, `profile_nodes`, and `superseded_memory_ids` empty arrays.
@@ -118,29 +118,34 @@ Only use:
     - It should usually be output with `admission="drop"`
     - If the source is only existing memory, use `derived_from_existing_memory`
     - If the source is only existing profile information, use `derived_from_profile_echo`
-17. If the current turn is mainly a user question or instruction, and the assistant only answers from existing memory, existing profile information, or general knowledge:
+17. If the user explicitly confirms, supplements, or corrects their own durable preferences, stable habits, identity/role, project tech stack, or engineering conventions in the current turn, you should still output the corresponding `profile_nodes` candidates even if the turn superficially looks like a correction to the assistant or a response to the assistant's summary:
+    - The factual basis of such candidates comes primarily from the user's explicit statement, and may use `user_asserted` or `user_confirmed`
+    - Do not assume that the system's old profile has already been corrected merely because the assistant verbally corrected itself, restated the update, apologized, or acknowledged it in the same turn
+    - As long as the user provides a durable profile correction signal, surface the candidate for the downstream profile-review workflow so that later stages can decide whether to replace, retire, or keep the old profile
+    - When the correction itself is a durable profile fact, do not downgrade it to `qa_answer_only` or `derived_from_profile_echo` merely because the dialogue format resembles Q&A
+18. If the current turn is mainly a user question or instruction, and the assistant only answers from existing memory, existing profile information, or general knowledge:
     - That content usually should not enter long-term memory
     - Pure answer-style echoes should prefer `qa_answer_only`
     - Pure general-knowledge answers should prefer `general_knowledge_answer`
-18. Even if the current turn is a user question or instruction, as long as the assistant truly obtains new information with long-term business value through high-cost external retrieval, website access, document synthesis, tool calls, or system queries, such candidates may still use `admission="keep"`.
-19. However, if external retrieval or tool queries only yield temporary state, transient observations, or short-lived environmental data, such as:
+19. Even if the current turn is a user question or instruction, as long as the assistant truly obtains new information with long-term business value through high-cost external retrieval, website access, document synthesis, tool calls, or system queries, such candidates may still use `admission="keep"`.
+20. However, if external retrieval or tool queries only yield temporary state, transient observations, or short-lived environmental data, such as:
     - today's weather
     - current CPU temperature
     - current system load
     - temporary inventory or temporary runtime state
     then the result should use `admission="drop"` with `non_durable`.
-20. If the core goal of the current turn is only to ask the assistant to output something verbatim, quote existing content, reformat output, adjust line breaks, add Markdown markers, add footnotes, display `memory_id` / `turn_id`, generate sample text, or debug a display pattern:
+21. If the core goal of the current turn is only to ask the assistant to output something verbatim, quote existing content, reformat output, adjust line breaks, add Markdown markers, add footnotes, display `memory_id` / `turn_id`, generate sample text, or debug a display pattern:
     - this does not create durable memory or stable profile information
     - you should usually return empty `details`, empty `memory_nodes`, empty `profile_nodes`, and empty `superseded_memory_ids`
     - if a candidate must still be kept for an explicit rejection, it may only use `admission="drop"` and should prefer `non_durable`
-21. Merely mentioning existing `memory_id`, `turn_id`, footnote markers, citation formats, output templates, or asking to display existing content in a specific layout does not create a new long-term fact.
-22. If the assistant is only presenting existing memory content in the user-requested format, prefer treating it as an echo of existing memory or a one-off output task, not as a new memory.
-23. For temporary instructions about how the current answer should be displayed, do not store them as long-term facts unless the user clearly states that they are a stable preference or a durable rule for future turns.
-24. If multiple stable profile facts appear in the same turn, you must output multiple `profile_nodes` by domain. Do not collapse them into a single "overall profile" node.
-25. `superseded_memory_ids` may only contain `memory_id` values that already appear in the input `active_memory_nodes`.
-26. Add an old `memory_id` to `superseded_memory_ids` only when it is clearly overridden, clearly refuted, or clearly invalidated. Do not delete an old memory merely because the current turn did not mention it again.
-27. If `reference_turns`, `active_memory_nodes`, or `recent_grpc_memory_writes` are empty, do not invent missing context.
-28. `category` may use only the following integers:
+22. Merely mentioning existing `memory_id`, `turn_id`, footnote markers, citation formats, output templates, or asking to display existing content in a specific layout does not create a new long-term fact.
+23. If the assistant is only presenting existing memory content in the user-requested format, prefer treating it as an echo of existing memory or a one-off output task, not as a new memory.
+24. For temporary instructions about how the current answer should be displayed, do not store them as long-term facts unless the user clearly states that they are a stable preference or a durable rule for future turns.
+25. If multiple stable profile facts appear in the same turn, you must output multiple `profile_nodes` by domain. Do not collapse them into a single "overall profile" node.
+26. `superseded_memory_ids` may only contain `memory_id` values that already appear in the input `active_memory_nodes`.
+27. Add an old `memory_id` to `superseded_memory_ids` only when it is clearly overridden, clearly refuted, or clearly invalidated. Do not delete an old memory merely because the current turn did not mention it again.
+28. If `reference_turns`, `active_memory_nodes`, or `recent_grpc_memory_writes` are empty, do not invent missing context.
+29. `category` may use only the following integers:
     - `0`: General
     - `1`: Arch & Decision
     - `2`: Tech Spec & API
@@ -149,7 +154,7 @@ Only use:
     - `5`: Project Context
     - `6`: Logical Bug / Debt
     - `7`: Security & Policy
-29. `profile_type` may use only the following integers:
+30. `profile_type` may use only the following integers:
     - `0`: User Profile
     - `1`: Project Profile
 

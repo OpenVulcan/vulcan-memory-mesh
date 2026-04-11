@@ -59,7 +59,7 @@
 
 判定规则：
 - 用户直接陈述可长期保存事实：`user_asserted`
-- 用户对助手总结/猜测/追问做了明确确认或纠正：`user_confirmed`
+- 用户对助手总结/猜测/追问做了明确确认或纠正；尤其是对既有画像的显式补充或纠偏：`user_confirmed`
 - 助手只是复述既有长期记忆：`assistant_recalled_memory`
 - 助手只是回显既有用户/项目画像：`assistant_recalled_profile`
 - 助手只是依靠自身通识回答：`assistant_general_knowledge`
@@ -84,7 +84,7 @@
   - `non_durable`
 
 # Constraints
-1. 你必须只返回一个合法的 JSON object，不能输出任何额外说明文字。
+1. 你必须只返回一个绝对纯净的 JSON object：输出的第一个字符必须是 `{`，最后一个字符必须是 `}`；禁止使用 Markdown 代码块包裹，禁止输出任何前缀、后缀说明、思考过程或额外文字。
 2. 你只能提炼 `target_turn`，不能把 `reference_turns` 或 `active_memory_nodes` 重新当成新增记忆来源。
 3. 输出里的 `turn_id` 必须与输入 `target_turn.turn_id` 完全一致。
 4. 如果 `target_turn` 没有任何值得新增入库的内容，允许返回空字符串 `details`，并让 `memory_nodes`、`profile_nodes`、`superseded_memory_ids` 都为空数组。
@@ -118,29 +118,34 @@
     - 通常应输出为 `admission="drop"`
     - 如果来源只是既有记忆，使用 `derived_from_existing_memory`
     - 如果来源只是既有画像，使用 `derived_from_profile_echo`
-17. 如果当前轮主要是用户提问或下指令，而助手只是基于既有记忆、既有画像或自身通识给出答案：
+17. 如果用户在当前轮里明确确认、补充、纠正自己的长期偏好、稳定习惯、身份角色、项目技术栈、工程约定等稳定画像事实，即使这轮表面上像是在纠正助手或回应助手总结，也应输出对应 `profile_nodes` 候选：
+    - 这类候选的事实依据优先来自用户的明确表达，可使用 `user_asserted` 或 `user_confirmed`
+    - 不要因为助手已经在本轮口头更正、复述、致歉或表示理解，就误判为系统里的旧画像已经完成更正
+    - 只要用户给出了稳定画像的纠偏信号，就应把候选交给后续画像评审链路，由后续流程决定是否替换、退役或保留旧画像
+    - 当纠正内容本身属于稳定画像事实时，不要仅因为这轮对话形式像问答，就把它降成 `qa_answer_only` 或 `derived_from_profile_echo`
+18. 如果当前轮主要是用户提问或下指令，而助手只是基于既有记忆、既有画像或自身通识给出答案：
     - 这类内容通常不应进入长期记忆
     - 纯回答型回显优先使用 `qa_answer_only`
     - 纯通识回答优先使用 `general_knowledge_answer`
-18. 即使当前轮是用户提问或下指令，只要助手为了完成回答，确实通过高成本外部检索、访问网站、文档归纳、工具调用或系统查询获得了新的长期业务价值信息，这类候选仍然可以 `admission="keep"`。
-19. 但如果外部检索或工具查询得到的只是临时状态、瞬时观测值或短期环境数据，例如：
+19. 即使当前轮是用户提问或下指令，只要助手为了完成回答，确实通过高成本外部检索、访问网站、文档归纳、工具调用或系统查询获得了新的长期业务价值信息，这类候选仍然可以 `admission="keep"`。
+20. 但如果外部检索或工具查询得到的只是临时状态、瞬时观测值或短期环境数据，例如：
     - 今天的天气
     - 当前 CPU 温度
     - 当前系统负载
     - 临时库存/临时运行态
     则应 `admission="drop"`，并使用 `non_durable`。
-20. 如果当前轮的核心目标只是要求助手原样输出、引用、重排格式、调整换行、补 Markdown 标记、补脚注、展示 `memory_id` / `turn_id`、生成示例文本，或调试某种显示方式：
+21. 如果当前轮的核心目标只是要求助手原样输出、引用、重排格式、调整换行、补 Markdown 标记、补脚注、展示 `memory_id` / `turn_id`、生成示例文本，或调试某种显示方式：
     - 这类内容不构成长期记忆或稳定画像
     - 通常应返回空 `details`、空 `memory_nodes`、空 `profile_nodes`、空 `superseded_memory_ids`
     - 如果确实需要保留候选用于显式拒绝，也只能使用 `admission="drop"`，并优先使用 `non_durable`
-21. 仅仅提及既有 `memory_id`、`turn_id`、脚注标记、引用格式、输出模板，或要求按指定版式展示既有内容，不构成新的长期事实。
-22. 如果助手只是按照用户要求展示已有记忆内容，应优先视为既有记忆回显或一次性输出任务，而不是新增记忆。
-23. 对“当前回答要怎么显示”的临时指令，除非用户明确声明这是未来长期适用的稳定偏好或长期规则，否则不要当作长期事实保存。
-24. 如果同一轮里同时出现多个稳定画像事实，必须按领域输出多条 `profile_nodes`，不要合并成一句“综合画像”。
-25. `superseded_memory_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `memory_id`。
-26. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 `memory_id` 填进 `superseded_memory_ids`；不能因为当前 turn 没有再次提到就删除。
-27. 如果 `reference_turns`、`active_memory_nodes` 或 `recent_grpc_memory_writes` 为空，不要臆造不存在的上下文。
-28. `category` 只能使用以下整数：
+22. 仅仅提及既有 `memory_id`、`turn_id`、脚注标记、引用格式、输出模板，或要求按指定版式展示既有内容，不构成新的长期事实。
+23. 如果助手只是按照用户要求展示已有记忆内容，应优先视为既有记忆回显或一次性输出任务，而不是新增记忆。
+24. 对“当前回答要怎么显示”的临时指令，除非用户明确声明这是未来长期适用的稳定偏好或长期规则，否则不要当作长期事实保存。
+25. 如果同一轮里同时出现多个稳定画像事实，必须按领域输出多条 `profile_nodes`，不要合并成一句“综合画像”。
+26. `superseded_memory_ids` 只能填写输入 `active_memory_nodes` 中已经出现过的 `memory_id`。
+27. 只有在“明确被覆盖、明确被推翻、明确失效”时，才把旧记忆 `memory_id` 填进 `superseded_memory_ids`；不能因为当前 turn 没有再次提到就删除。
+28. 如果 `reference_turns`、`active_memory_nodes` 或 `recent_grpc_memory_writes` 为空，不要臆造不存在的上下文。
+29. `category` 只能使用以下整数：
     - `0`: General
     - `1`: Arch & Decision
     - `2`: Tech Spec & API
@@ -149,7 +154,7 @@
     - `5`: Project Context
     - `6`: Logical Bug / Debt
     - `7`: Security & Policy
-29. `profile_type` 只能使用以下整数：
+30. `profile_type` 只能使用以下整数：
     - `0`: 用户画像
     - `1`: 项目画像
 

@@ -223,6 +223,9 @@ message PostActionTimelineItem {
       - 不应提炼成长期记忆
       - 也不应提炼成画像节点
       - 只有当用户自己明确确认、补充、纠正或直接陈述这些偏好时，才允许进入长期画像系统
+      - 在这类“用户显式纠正画像”的场景中，`postaction_l1_main` 仍应产出新的 `profile_nodes` 候选
+      - 助手在当前轮里的口头更正、复述或确认，不代表系统内旧画像已经完成替换
+      - 是否替换、退役或保留旧画像，仍交由后续画像评审链路决定
 19. 如果当前 turn 有新的 `memory_nodes[]` 或 `profile_nodes[]`：
     - 会按专用的 `memory_replace_scope`，先做一次高相似旧记忆召回：
       - 默认是 `project`
