@@ -20,8 +20,8 @@ type postActionQueueState struct {
 	Dirty    bool
 }
 
-// startQueueWorker boots the background worker pool and the periodic idle scan used by the queued single-turn extraction pipeline.
-// startQueueWorker 用于启动后台工作器池和周期性空闲扫描，让排队式单轮提炼流水线开始工作。
+// startQueueWorker boots the background worker pool and a single maintenance ticker used by the queued single-turn extraction pipeline.
+// startQueueWorker 用于启动后台工作器池和单一维护 ticker，让排队式单轮提炼流水线开始工作。
 func (u *PostActionUseCase) startQueueWorker() {
 	if u == nil || u.queueCh != nil {
 		return
@@ -40,6 +40,10 @@ func (u *PostActionUseCase) startQueueWorker() {
 		u.queueWG.Add(1)
 		go u.queueWorkerLoop()
 	}
+	// Start exactly one maintenance goroutine so convergeExpiredProfiles, scanIdlePendingSessions, and flushDeferredQueueIDs run once per interval instead of N times.
+	// 只启动一个维护 goroutine，确保画像过期收敛、idle session 补扫和 deferred flush 每个周期只执行一次，而不是 N 倍重复。
+	u.queueWG.Add(1)
+	go u.maintenanceLoop()
 }
 
 // Shutdown drains the post-action queue worker before relational and vector dependencies are closed.
@@ -179,12 +183,10 @@ func (u *PostActionUseCase) flushDeferredQueueIDs() {
 	u.deferredQueueIDs = remaining
 }
 
-// queueWorkerLoop processes work items from the shared channel and periodically scans for stale pending sessions.
-// queueWorkerLoop 用于从共享通道中消费工作项，并周期性扫描待处理 session。
+// queueWorkerLoop processes work items from the shared channel.
+// queueWorkerLoop 用于从共享通道中消费工作项。
 func (u *PostActionUseCase) queueWorkerLoop() {
 	defer u.queueWG.Done()
-	ticker := time.NewTicker(u.analysisCfg.QueueScanInterval)
-	defer ticker.Stop()
 
 	for {
 		select {
@@ -198,6 +200,21 @@ func (u *PostActionUseCase) queueWorkerLoop() {
 			u.handleQueuedSession(sessionID)
 			u.unlockSession(sessionID)
 			u.flushDeferredQueueIDs()
+		}
+	}
+}
+
+// maintenanceLoop runs a single periodic ticker that performs low-priority maintenance tasks once per interval regardless of worker count.
+// maintenanceLoop 用于运行单一的周期性维护 ticker，确保低优先级维护任务每个周期只执行一次，与 worker 数量无关。
+func (u *PostActionUseCase) maintenanceLoop() {
+	defer u.queueWG.Done()
+	ticker := time.NewTicker(u.analysisCfg.QueueScanInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-u.queueCtx.Done():
+			return
 		case <-ticker.C:
 			if u.queueMaintenanceBackoffActive(time.Now()) {
 				continue
