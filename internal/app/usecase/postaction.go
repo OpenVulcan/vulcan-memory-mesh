@@ -158,6 +158,8 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	if analysisCfg.HardDedupeCosineThreshold < 0 || analysisCfg.HardDedupeCosineThreshold > 1 {
 		analysisCfg.HardDedupeCosineThreshold = 0.99
 	}
+	// 0 means "use default worker count" so validation only rejects explicitly negative values while the runtime fills in a safe floor.
+	// 0 表示"使用默认 worker 数量"，校验只拒绝明确的负值，运行时补齐安全下限。
 	if analysisCfg.MaxQueueWorkers <= 0 {
 		analysisCfg.MaxQueueWorkers = 1
 	}
