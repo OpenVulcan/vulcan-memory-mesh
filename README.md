@@ -683,6 +683,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `post_action.session_analysis_idle_timeout`
 - `post_action.session_analysis_history_turns`
 - `post_action.session_analysis_max_input_tokens`
+- `post_action.max_queue_workers`
 
 `prompts` 下当前提示词目录选择规则已经收敛为显式配置：
 
@@ -827,18 +828,23 @@ AI 容灾边界当前统一为：
 - 所有位置的单值 `api_key`
 - 对应的旧版 `VMM_LLM_*` 与 route 顶层 `VMM_RERANK_*` 运行时覆盖
 
-`post_action` 下当前保留 5 个与异步单轮提炼窗口和恢复扫描相关的参数：
+`post_action` 下当前保留 6 个与异步单轮提炼窗口和恢复扫描相关的参数：
 
 - `session_analysis_turn_threshold`
-  - 兼容保留参数，当前主线不会再按“累计待处理 turn 数”触发批量提炼
+  - 兼容保留参数，当前主线不会再按”累计待处理 turn 数”触发批量提炼
 - `session_analysis_token_threshold`
-  - 兼容保留参数，当前主线不会再按“累计待处理 token”触发批量提炼
+  - 兼容保留参数，当前主线不会再按”累计待处理 token”触发批量提炼
 - `session_analysis_idle_timeout`
   - 当前仍用于后台恢复扫描：如果某个 session 的 pending turn 长时间未被消费，会在超过该阈值后被重新入队
 - `session_analysis_history_turns`
   - 每次单轮 `postaction_l1_main` 最多回带多少条历史 `details` 精要作为参考
 - `session_analysis_max_input_tokens`
-  - 单次 `postaction_l1_main` 允许发送给 LLM 的总输入预算上限，统计口径是“当前 turn 原始脱水预算 + 历史精要预算”
+  - 单次 `postaction_l1_main` 允许发送给 LLM 的总输入预算上限，统计口径是”当前 turn 原始脱水预算 + 历史精要预算”
+- `max_queue_workers`
+  - 后台并行队列工作器数量，控制最多同时有多少个 worker 处理不同 session 的 turn 分析
+  - 同一 session 的多个 turn 仍按顺序串行处理，不会并发
+  - 默认值：`4`
+  - 环境变量覆盖：`VMM_POST_ACTION_MAX_QUEUE_WORKERS`
 
 当前主线的行为是：
 

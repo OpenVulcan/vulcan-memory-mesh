@@ -120,6 +120,7 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 			MemoryReplaceScope:        cfg.MemoryReplaceScope,
 			DedupeMinSimilarity:       replaceMinSimilarityOrDefault(cfg),
 			HardDedupeCosineThreshold: hardDedupeCosineThresholdOrDefault(cfg),
+			MaxQueueWorkers:           cfg.PostAction.MaxQueueWorkers,
 		},
 		logger,
 	)

@@ -498,6 +498,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", &cfg.PostAction.SessionAnalysisIdleTimeout)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS", &cfg.PostAction.SessionAnalysisHistoryTurns)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", &cfg.PostAction.SessionAnalysisMaxInputTokens)
+	setInt("VMM_POST_ACTION_MAX_QUEUE_WORKERS", &cfg.PostAction.MaxQueueWorkers)
 	setString("VMM_MEMORY_REPLACE_SCOPE", &cfg.MemoryReplaceScope)
 	setDuration("VMM_PRE_CHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)
 	setInt("VMM_PRE_CHECK_TOPK", &cfg.PreCheck.TopK)

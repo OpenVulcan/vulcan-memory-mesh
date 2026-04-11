@@ -83,6 +83,7 @@ type PostActionAnalysisConfig struct {
 	DedupeSearchScope         string
 	DedupeMinSimilarity       float64
 	HardDedupeCosineThreshold float64
+	MaxQueueWorkers           int
 }
 
 // PostActionUseCase stores one cleaned turn, queues asynchronous single-turn extraction work,
@@ -110,6 +111,8 @@ type PostActionUseCase struct {
 	queueState              map[uint64]*postActionQueueState
 	deferredQueueIDs        []uint64
 	deferredQueueSet        map[uint64]struct{}
+	queueWorkers            int
+	sessionLocked           map[uint64]bool
 }
 
 // NewPostActionUseCase creates a PostActionUseCase instance for the runtime asynchronous single-turn path.
@@ -155,6 +158,9 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	if analysisCfg.HardDedupeCosineThreshold < 0 || analysisCfg.HardDedupeCosineThreshold > 1 {
 		analysisCfg.HardDedupeCosineThreshold = 0.99
 	}
+	if analysisCfg.MaxQueueWorkers <= 0 {
+		analysisCfg.MaxQueueWorkers = 1
+	}
 	uc := &PostActionUseCase{
 		noiseGate:         noiseGate,
 		store:             store,
@@ -165,6 +171,7 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 		candidateReviewer: candidateReviewer,
 		analysisCfg:       analysisCfg,
 		logger:            logger,
+		queueWorkers:      analysisCfg.MaxQueueWorkers,
 	}
 	if startWorker && store != nil {
 		uc.startQueueWorker()

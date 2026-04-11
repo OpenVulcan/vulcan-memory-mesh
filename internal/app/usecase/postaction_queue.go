@@ -20,8 +20,8 @@ type postActionQueueState struct {
 	Dirty    bool
 }
 
-// startQueueWorker boots the background worker and the periodic idle scan used by the queued single-turn extraction pipeline.
-// startQueueWorker 用于启动后台工作器和周期性空闲扫描，让排队式单轮提炼流水线开始工作。
+// startQueueWorker boots the background worker pool and the periodic idle scan used by the queued single-turn extraction pipeline.
+// startQueueWorker 用于启动后台工作器池和周期性空闲扫描，让排队式单轮提炼流水线开始工作。
 func (u *PostActionUseCase) startQueueWorker() {
 	if u == nil || u.queueCh != nil {
 		return
@@ -30,8 +30,16 @@ func (u *PostActionUseCase) startQueueWorker() {
 	u.queueCh = make(chan uint64, 256)
 	u.queueState = map[uint64]*postActionQueueState{}
 	u.deferredQueueSet = map[uint64]struct{}{}
-	u.queueWG.Add(1)
-	go u.queueWorkerLoop()
+	u.sessionLocked = map[uint64]bool{}
+
+	n := u.queueWorkers
+	if n <= 0 {
+		n = 1
+	}
+	for i := 0; i < n; i++ {
+		u.queueWG.Add(1)
+		go u.queueWorkerLoop()
+	}
 }
 
 // Shutdown drains the post-action queue worker before relational and vector dependencies are closed.
@@ -171,8 +179,8 @@ func (u *PostActionUseCase) flushDeferredQueueIDs() {
 	u.deferredQueueIDs = remaining
 }
 
-// queueWorkerLoop prioritizes explicit queue items while also scanning every 30 seconds for stale pending sessions that crossed the idle threshold.
-// queueWorkerLoop 用于优先处理显式入队内容，同时每 30 秒扫描一次超过空闲阈值的待处理 session。
+// queueWorkerLoop processes work items from the shared channel and periodically scans for stale pending sessions.
+// queueWorkerLoop 用于从共享通道中消费工作项，并周期性扫描待处理 session。
 func (u *PostActionUseCase) queueWorkerLoop() {
 	defer u.queueWG.Done()
 	ticker := time.NewTicker(u.analysisCfg.QueueScanInterval)
@@ -183,7 +191,12 @@ func (u *PostActionUseCase) queueWorkerLoop() {
 		case <-u.queueCtx.Done():
 			return
 		case sessionID := <-u.queueCh:
+			if !u.tryLockSession(sessionID) {
+				u.pushQueueID(sessionID)
+				continue
+			}
 			u.handleQueuedSession(sessionID)
+			u.unlockSession(sessionID)
 			u.flushDeferredQueueIDs()
 		case <-ticker.C:
 			if u.queueMaintenanceBackoffActive(time.Now()) {
@@ -194,6 +207,26 @@ func (u *PostActionUseCase) queueWorkerLoop() {
 			u.flushDeferredQueueIDs()
 		}
 	}
+}
+
+// tryLockSession attempts to acquire an exclusive lock for one session so no two workers process it concurrently.
+// tryLockSession 用于尝试获取某个 session 的排他锁，确保不会有两个 worker 同时处理同一 session。
+func (u *PostActionUseCase) tryLockSession(sessionID uint64) bool {
+	u.queueMu.Lock()
+	defer u.queueMu.Unlock()
+	if u.sessionLocked[sessionID] {
+		return false
+	}
+	u.sessionLocked[sessionID] = true
+	return true
+}
+
+// unlockSession releases the exclusive lock for one session after its queued work completes.
+// unlockSession 用于在某个 session 的队列工作完成后释放排他锁。
+func (u *PostActionUseCase) unlockSession(sessionID uint64) {
+	u.queueMu.Lock()
+	defer u.queueMu.Unlock()
+	delete(u.sessionLocked, sessionID)
 }
 
 // handleQueuedSession snapshots the latest queue state for one session, runs one asynchronous extraction attempt, and reschedules if new turns arrived mid-flight.

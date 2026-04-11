@@ -637,6 +637,10 @@ post_action:
   # 单次 session 分析输入允许使用的最大 token 预算。
   session_analysis_max_input_tokens: 6000
 
+  # Maximum number of parallel queue workers that process different sessions concurrently.
+  # 并行队列工作器上限，用于同时处理不同 session 的分析任务。
+  max_queue_workers: 4
+
 pre_check:
   # Internal LLM timeout used by the first-stage PreCheck intent extraction.
   # PreCheck 第一阶段意图提取使用的内部 LLM 超时。

@@ -371,6 +371,7 @@ type PostActionConfig struct {
 	SessionAnalysisIdleTimeout    Duration `json:"session_analysis_idle_timeout"`
 	SessionAnalysisHistoryTurns   int      `json:"session_analysis_history_turns"`
 	SessionAnalysisMaxInputTokens int      `json:"session_analysis_max_input_tokens"`
+	MaxQueueWorkers               int      `json:"max_queue_workers,omitempty"`
 }
 
 // RetentionConfig keeps the cold-data governance knobs for recycle scanning, turn hot-window buffering, and trash retention.
@@ -528,6 +529,7 @@ func DefaultBase() Config {
 			SessionAnalysisIdleTimeout:    Duration{15 * time.Minute},
 			SessionAnalysisHistoryTurns:   3,
 			SessionAnalysisMaxInputTokens: 6000,
+			MaxQueueWorkers:               4,
 		},
 		PreCheck: PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5, SearchScope: "space"},
 		MemoryPipeline: MemoryPipelineConfig{
