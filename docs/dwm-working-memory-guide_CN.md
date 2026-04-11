@@ -114,7 +114,7 @@ DWM 支持批量 `items[]` 写入，一次工具调用即可原子写入一批�
 
 - `(plan_id, item_key)`
 
-## 五、四个接口的最终语义
+## 五、五个接口的最终语义
 
 ### 1. `ScratchpadUpsert`
 
@@ -320,5 +320,5 @@ DWM 当前不是：
 - 长期记忆系统
 - 自动任务规划器
 - 回收站恢复系统
-- 项目迁移的一部分
+- 不参与 MigrateProject 操作（仅参与 DeleteProject/DeleteUser 级联清理）
 - 任意文本大对象存储

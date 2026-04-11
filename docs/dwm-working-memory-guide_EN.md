@@ -321,5 +321,5 @@ DWM is currently not:
 - a long-term memory system,
 - an automatic task planner,
 - a recovery console,
-- part of project migration,
+- part of MigrateProject (scratchpad only participates in DeleteProject/DeleteUser cascade cleanup),
 - or a generic blob store for large arbitrary text.

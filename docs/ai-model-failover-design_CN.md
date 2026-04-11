@@ -351,6 +351,7 @@
   - `model`
   - `timeout`
   - `api_keys` 或 `nodes`
+  - `priority` 为可选字段（默认 `0`，数值越大优先级越高，按降序排序）
 - `embedding` 必须声明：
   - `provider`
   - `endpoint`

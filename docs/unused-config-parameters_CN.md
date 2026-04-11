@@ -46,6 +46,7 @@
 | `pre_check.similarity_threshold` | 仅配置桥接或启动校验使用 | 当 `memory_pipeline.min_similarity_score` 为空时，在 `Normalize()` 中回填过去 | 运行时实际读取的是 `memory_pipeline.min_similarity_score` |
 | `memory_pipeline.max_search_keywords` | 主运行时已消费 | 限制第一层意图提取最多返回多少条检索语句 | 已进入实时 pre-check 工作流 |
 | `memory_pipeline.min_similarity_score` | 主运行时已消费 | 控制 pre-check 过滤低相似度记忆候选的阈值 | 已进入实时 pre-check 工作流 |
+| `pii.default_language` | 主运行时已消费 | PII 规则引擎的默认语言目录 | 在 `runtime_pipeline.go` 中用于装配 PII 脱敏器 |
 
 ## 关联代码位置
 

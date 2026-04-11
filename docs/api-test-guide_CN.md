@@ -567,7 +567,7 @@ grpcurl -plaintext `
 
 - gRPC code：`ResourceExhausted`
 
-## 二十四、推荐测试顺序
+## 二十五、推荐测试顺序
 
 建议按这个顺序联调：
 

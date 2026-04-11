@@ -59,8 +59,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 说明：
 
-- 当前主线 gRPC 运行时并不会自动把这套脱敏器挂接到现有接口链路
-- 如需验证或演进规则，请优先使用 `vmm-pii-tester` 或直接调用 `internal/platform/pii`
+- 当前主线 gRPC 运行时已在 `PreCheck`、`PostAction` 和 `WriteMemories` 的首环节自动挂接 PII 脱敏器
+- 脱敏规则的实现位于 `internal/platform/pii`
+- 独立测试入口位于 `cmd/vmm-pii-tester`
+- 系统规则目录固定为 `configs/pii_rules`
+- 用户覆盖目录固定为 `~/.vmm/pii_rules` 或 `-config` 指向根目录下的 `pii_rules`
 
 ## 当前运行模型
 
@@ -563,11 +566,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 当前主配置加载顺序是：
 
-- `output/configs/base.yaml`
-- `output/configs/config.yaml`
-- `~/.vmm/config.yaml`
-- `-config` 指向目录下的 `config.yaml`
-- `-config` 显式传入的 `.yaml` / `.yml` 覆盖文件
+- `output/configs/base.yaml`（项目基础配置，总是加载）
+- `output/configs/config.yaml`（项目覆盖层，仅当文件存在时加载）
+- 以下三项互斥，根据 `-config` 参数的取值选择其一：
+  - 未传 `-config`：尝试加载 `~/.vmm/config.yaml`（仅当文件存在时）
+  - `-config` 指向目录：尝试加载该目录下的 `config.yaml`（仅当文件存在时）
+  - `-config` 指向 `.yaml` / `.yml` 文件：直接使用该文件（总是加载）
+- 环境变量覆盖：仅对配置文件中显式写成 `${VMM_...}` 的字段生效（按需 opt-in 模型），不是全局覆盖
+- `.env` 文件：如果配置文件中存在 `${...}` 占位符，也会在同级目录下搜索 `.env` 文件作为补充来源
 
 说明：
 
@@ -667,7 +673,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 内建中文提示词目录：`configs/prompts/default_cn`
   - 支持别名：
     - 英文：`default_en` / `default` / `en` / `english`
-    - 中文：`default_cn` / `zh` / `zh-cn` / `cn` / `chinese`
+    - 中文：`default_cn` / `zh` / `zh-cn` / `cn` / `chinese` / `zh_hans`
   - 也可以直接填写 `configs/prompts/` 下的其他目录名，例如自定义的 `custom-bundle`
 - 服务端启动时会严格校验当前选中的提示词目录：
   - 如果目录不存在，启动会直接失败
@@ -949,6 +955,7 @@ AI 容灾边界当前统一为：
   - idle-session recycle
   - vector GC retry
   - trash purge
+  - scratchpad 过期硬删除
 - 当前维护器会周期性回收 `superseded / expired / deleted` 的终态记忆，并把对应 `memory_context_edges` 一并迁入回收站
 - 独立冷 `turn` 回收现在使用持久化 `recycle_jobs` 队列做 scan / claim / execute 分离：
   - 扫描阶段只为确实存在可回收旧 `turn` 的 session 入队
