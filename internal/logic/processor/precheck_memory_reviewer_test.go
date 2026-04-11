@@ -30,6 +30,26 @@ func TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers(t *testing.T) {
 	}
 }
 
+// TestParsePreCheckMemoryReviewResponseAllowsMissingReason verifies the reviewer parser still accepts the compact output shape where only candidate numbers are returned.
+// TestParsePreCheckMemoryReviewResponseAllowsMissingReason 用于验证当 reviewer 只返回候选编号、不再返回 reason 时，解析器仍能兼容通过。
+func TestParsePreCheckMemoryReviewResponseAllowsMissingReason(t *testing.T) {
+	result, err := parsePreCheckMemoryReviewResponse(`{"selected_candidate_numbers":[2,1]}`, logicdomain.PreCheckMemoryReviewInput{
+		Candidates: []logicdomain.PreCheckMemoryCandidate{
+			{CandidateNumber: 1, MemoryID: 12},
+			{CandidateNumber: 2, MemoryID: 15},
+		},
+	})
+	if err != nil {
+		t.Fatalf("parse compact review response: %v", err)
+	}
+	if len(result.SelectedCandidateNumbers) != 2 || result.SelectedCandidateNumbers[0] != 2 || result.SelectedCandidateNumbers[1] != 1 {
+		t.Fatalf("unexpected selected numbers: %#v", result.SelectedCandidateNumbers)
+	}
+	if result.Reason != "" {
+		t.Fatalf("expected empty reason, got %q", result.Reason)
+	}
+}
+
 // TestParsePreCheckMemoryReviewResponseRejectsUnknownNumbers verifies the reviewer parser rejects candidate numbers that were not present in the current request.
 // TestParsePreCheckMemoryReviewResponseRejectsUnknownNumbers 用于验证评审器解析器会拒绝本次请求中不存在的候选编号。
 func TestParsePreCheckMemoryReviewResponseRejectsUnknownNumbers(t *testing.T) {

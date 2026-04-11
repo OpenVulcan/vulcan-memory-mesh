@@ -35,8 +35,8 @@ type PreCheckMemoryCandidate struct {
 	MatchedContextScoreDelta    float64  `json:"matched_context_score_delta,omitempty"`
 }
 
-// PreCheckMemoryReviewInput carries the current user request, stage-one search reasoning, and numbered candidates into the second-stage reviewer.
-// PreCheckMemoryReviewInput 用于把当前用户请求、第一层检索推理结果以及带编号候选送入第二层评审器。
+// PreCheckMemoryReviewInput carries the current user request, stage-one recall reasoning, and numbered candidates into the second-stage reviewer.
+// PreCheckMemoryReviewInput 用于把当前用户请求、第一层“为什么需要召回长期记忆”的推理结果，以及带编号候选送入第二层评审器。
 type PreCheckMemoryReviewInput struct {
 	UserContent   string
 	SearchQueries []string

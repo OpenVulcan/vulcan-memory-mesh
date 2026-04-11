@@ -92,9 +92,9 @@ llm:
       rpm: 600
       tpm: 1000000
       weights:
-        precheck_l1: 140
+        precheck_l1: 145
         precheck_l2: 130
-        postaction_l1: 140
+        postaction_l1: 145
         postaction_l2: 130
         reserve: 100
 
@@ -144,30 +144,6 @@ llm:
         precheck_l2: 139
         postaction_l1: 119
         postaction_l2: 139
-        reserve: 100
-
-    - <<: *llm_bailian
-      name: "qwen3-coder-flash"
-      model: "qwen3-coder-flash"
-      rpm: 5000
-      tpm: 5000000
-      weights:
-        precheck_l1: 135
-        precheck_l2: 135
-        postaction_l1: 145
-        postaction_l2: 145
-        reserve: 100
-
-    - <<: *llm_bailian
-      name: "qwen3-coder-flash-2025-07-28"
-      model: "qwen3-coder-flash-2025-07-28"
-      rpm: 60
-      tpm: 1000000
-      weights:
-        precheck_l1: 134
-        precheck_l2: 134
-        postaction_l1: 144
-        postaction_l2: 144
         reserve: 100
 
     - <<: *llm_bailian
