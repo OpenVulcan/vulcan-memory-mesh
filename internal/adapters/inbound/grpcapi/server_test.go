@@ -1021,7 +1021,7 @@ func TestRecoveryInterceptorRedactsRawPanic(t *testing.T) {
 // TestRequestLoggerInterceptorAllowsNilInfo 用于验证导出的请求日志拦截器在直接测试或手工调用缺少 UnaryServerInfo 时仍可用，而不会直接崩溃。
 func TestRequestLoggerInterceptorAllowsNilInfo(t *testing.T) {
 	logBuf := &bytes.Buffer{}
-	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	logger := logx.New(logBuf, logx.Config{Level: "debug", Format: "text"})
 	interceptor := RequestLoggerInterceptor(logger)
 
 	_, err := interceptor(context.Background(), nil, nil, func(context.Context, any) (any, error) {
@@ -1138,7 +1138,7 @@ func TestScopeResolutionInterceptorInfersBusinessRPCWithoutInfo(t *testing.T) {
 // TestRequestLoggerInterceptorAllowsNilContext 用于验证导出的请求日志拦截器在直接测试缺少请求 context 时仍然安全，不会因为读取 peer 信息而崩溃。
 func TestRequestLoggerInterceptorAllowsNilContext(t *testing.T) {
 	logBuf := &bytes.Buffer{}
-	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	logger := logx.New(logBuf, logx.Config{Level: "debug", Format: "text"})
 	interceptor := RequestLoggerInterceptor(logger)
 
 	_, err := interceptor(nil, nil, &grpc.UnaryServerInfo{FullMethod: "/vmm.v1.VMMService/Healthz"}, func(context.Context, any) (any, error) {

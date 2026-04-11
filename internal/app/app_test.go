@@ -266,8 +266,8 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 	}
 }
 
-// TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled verifies enabling the dedicated LLM output log switch eagerly creates the prefixed hourly log file during runtime composition.
-// TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled 用于验证开启专用 LLM 输出日志开关后，运行时装配会立即创建带前缀的小时日志文件。
+// TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled verifies the dedicated LLM output log file is created when the LLM output switch is enabled.
+// TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled 用于验证专用 LLM 输出日志文件在 LLM 输出开关开启时会创建。
 func TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled(t *testing.T) {
 	root := t.TempDir()
 	writePromptBundleForAppTest(t, filepath.Join(root, "output", "configs", "prompts", "default_en"), "packaged-default")

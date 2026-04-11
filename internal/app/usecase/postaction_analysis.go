@@ -131,8 +131,8 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	return nil
 }
 
-// logPostActionAnalysisResult records one redacted summary of the persisted analysis so operators can diagnose extraction throughput without writing derived user text into runtime logs, while also stripping high-dimensional vectors from debug JSON output.
-// logPostActionAnalysisResult 用于记录一份脱敏后的分析结果摘要，让排障仍能观察提炼吞吐，同时会从调试 JSON 输出中剥离高维向量。
+// logPostActionAnalysisResult records one redacted debug-level summary of the persisted analysis so operators can diagnose extraction throughput without writing derived user text into runtime logs, while also stripping high-dimensional vectors from debug JSON output.
+// logPostActionAnalysisResult 用于在 debug 级别记录一份脱敏后的分析结果摘要，让排障仍能观察提炼吞吐，同时会从调试 JSON 输出中剥离高维向量。
 func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, input logicdomain.TurnAnalysisInput, analysis logicdomain.TurnAnalysis, vectorIDs []string, compaction postActionCompactionStats) {
 	if u == nil || u.logger == nil {
 		return
@@ -609,33 +609,4 @@ func generatePostActionUUID() (string, error) {
 	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
 }
 
-// buildPostActionAnalysisTranscript pretty-prints the current raw turn into a stable JSON transcript so the existing single-turn prompt can inspect the full dialogue structure.
-// buildPostActionAnalysisTranscript 用于把当前原始 turn 以稳定 JSON 形式美化输出，让现有单轮提示词可以看到完整对话结构。
-func buildPostActionAnalysisTranscript(turn logicdomain.TurnRecord) (string, error) {
-	type turnTimelineItem struct {
-		Type    string `json:"type"`
-		Content string `json:"content"`
-	}
-	type turnPayload struct {
-		User      string             `json:"user"`
-		Timeline  []turnTimelineItem `json:"timeline"`
-		Assistant string             `json:"assistant"`
-	}
 
-	timeline := make([]turnTimelineItem, 0, len(turn.Timeline))
-	for _, item := range turn.Timeline {
-		timeline = append(timeline, turnTimelineItem{
-			Type:    strings.TrimSpace(item.Type),
-			Content: strings.TrimSpace(item.Content),
-		})
-	}
-	body, err := json.MarshalIndent(turnPayload{
-		User:      strings.TrimSpace(turn.UserContent),
-		Timeline:  timeline,
-		Assistant: strings.TrimSpace(turn.AssistantContent),
-	}, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return string(body), nil
-}

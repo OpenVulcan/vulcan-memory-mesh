@@ -269,8 +269,8 @@ func (c Config) Validate() error {
 	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
 		return errors.New("post_action.session_analysis_max_input_tokens must be > 0")
 	}
-	if c.PostAction.MaxQueueWorkers < 0 {
-		return errors.New("post_action.max_queue_workers must be >= 1")
+	if c.PostAction.MaxQueueWorkers <= 0 {
+		return errors.New("post_action.max_queue_workers must be > 0")
 	}
 	if c.PostAction.MaxQueueWorkers > 64 {
 		return errors.New("post_action.max_queue_workers must be <= 64")

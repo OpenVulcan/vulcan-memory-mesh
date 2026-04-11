@@ -673,6 +673,14 @@ pre_check:
 memory_pipeline:
   max_search_keywords: 5
   min_similarity_score: 0.75
+post_action:
+  input_mode: "strict"
+  session_analysis_turn_threshold: 2
+  session_analysis_token_threshold: 12000
+  session_analysis_idle_timeout: "15m"
+  session_analysis_history_turns: 3
+  session_analysis_max_input_tokens: 6000
+  max_queue_workers: 4
 `
 	overrideBody := `prompts:
   prompt_language: "default_cn"
@@ -1029,6 +1037,14 @@ relational:
 memory_pipeline:
   max_search_keywords: 5
   min_similarity_score: 0.75
+post_action:
+  input_mode: "strict"
+  session_analysis_turn_threshold: 2
+  session_analysis_token_threshold: 12000
+  session_analysis_idle_timeout: "15m"
+  session_analysis_history_turns: 3
+  session_analysis_max_input_tokens: 6000
+  max_queue_workers: 4
 `
 	if err := os.WriteFile(basePath, []byte(baseBody), 0o644); err != nil {
 		t.Fatal(err)
@@ -1094,6 +1110,14 @@ relational:
 memory_pipeline:
   max_search_keywords: 5
   min_similarity_score: 0.75
+post_action:
+  input_mode: "strict"
+  session_analysis_turn_threshold: 2
+  session_analysis_token_threshold: 12000
+  session_analysis_idle_timeout: "15m"
+  session_analysis_history_turns: 3
+  session_analysis_max_input_tokens: 6000
+  max_queue_workers: 4
 `
 	if err := os.WriteFile(basePath, []byte(baseBody), 0o644); err != nil {
 		t.Fatal(err)

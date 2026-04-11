@@ -83,13 +83,13 @@ func ScopeResolutionInterceptor(resolver appports.RequestScopeResolver, logger *
 		if err != nil {
 			return nil, toStatus(describeError(err))
 		}
-		logger.Info("grpc scope resolved", "trace_id", trace.IDFromContext(ctx), "method", method, "session_key", session.SessionKey, "session_id", session.SessionID, "user_id", session.UserID, "project_id", session.ProjectID)
+		logger.Debug("grpc scope resolved", "trace_id", trace.IDFromContext(ctx), "method", method, "session_key", session.SessionKey, "session_id", session.SessionID, "user_id", session.UserID, "project_id", session.ProjectID)
 		return invokeUnaryHandler(withResolvedSessionRef(ctx, session), req, handler)
 	}
 }
 
-// RequestLoggerInterceptor emits one structured log line per unary RPC.
-// RequestLoggerInterceptor 用于为每个一元 RPC 输出一条结构化日志。
+// RequestLoggerInterceptor emits one structured debug-level log line per successful unary RPC and one warn-level line for failures.
+// RequestLoggerInterceptor 用于为每个成功的一元 RPC 输出一条 debug 级结构化日志，失败时输出 warn 级日志。
 func RequestLoggerInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 	if logger == nil {
 		logger = logx.Default()
@@ -113,7 +113,7 @@ func RequestLoggerInterceptor(logger *logx.Logger) grpc.UnaryServerInterceptor {
 			args = append(args, "client_ip", p.Addr.String())
 		}
 		if code == codes.OK {
-			logger.Info("grpc request", args...)
+			logger.Debug("grpc request", args...)
 		} else {
 			logger.Warn("grpc request", args...)
 		}

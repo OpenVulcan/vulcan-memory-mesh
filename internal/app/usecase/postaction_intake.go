@@ -80,7 +80,7 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 	// Queue the owning session for asynchronous extraction so the transport layer does not block on model latency.
 	// 把所属 session 排入异步提炼队列，避免传输层被模型延迟卡住。
 	if u.logger != nil {
-		u.logger.Info("post-action turn queued", "trace_id", traceID, "session_key", cmd.Session.SessionKey, "session_id", cmd.Session.SessionID, "turn_id", persistedTurn.ID)
+		u.logger.Debug("post-action turn queued", "trace_id", traceID, "session_key", cmd.Session.SessionKey, "session_id", cmd.Session.SessionID, "turn_id", persistedTurn.ID)
 	}
 	u.enqueueSessionAnalysis(cmd.Session)
 	return PostActionResult{Accepted: true, TraceID: traceID}, nil
