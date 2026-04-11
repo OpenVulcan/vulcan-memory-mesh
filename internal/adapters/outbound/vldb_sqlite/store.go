@@ -1989,6 +1989,26 @@ ORDER BY id ASC
 	return turns, nil
 }
 
+// MarkTurnAsCorrupted marks one pending turn whose dehydrated payload cannot be decoded as done so it stops being returned by LoadPendingSessionTurns.
+// MarkTurnAsCorrupted 用于将无法解码的损坏 pending turn 标记为已处理，让它不再被 LoadPendingSessionTurns 返回。
+func (s *Store) MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error {
+	if session.SessionID == 0 {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if turnID == 0 {
+		return logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+	}
+	nowMs := time.Now().UTC().UnixMilli()
+	if err := s.exec(ctx, fmt.Sprintf(`
+UPDATE vmm_turn_records
+SET extracted_status = %d, updated_timestamp = %d
+WHERE id = %d AND session_id = %d AND extracted_status = %d;
+`, logicdomain.TurnExtractedStatusDone, nowMs, turnID, session.SessionID, logicdomain.TurnExtractedStatusPending)); err != nil {
+		return fmt.Errorf("mark turn as corrupted: %w", err)
+	}
+	return nil
+}
+
 // LoadRecentSessionTurns returns the latest persisted turn rows for one session regardless of extracted status, ordered from oldest to newest after the final window is chosen.
 // LoadRecentSessionTurns 用于返回某个 session 最近持久化的 turn 行，不区分 extracted 状态；最终结果按从旧到新排序。
 func (s *Store) LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {

@@ -295,15 +295,20 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 		}
 		rawTurn, err := turnRecordFromStoredTurn(pendingTurn)
 		if err != nil {
-			// Return the error instead of silently continuing; a corrupted turn that keeps returning from
-			// LoadPendingSessionTurns would cause an infinite skip loop without ever advancing the window.
-			// Returning the error stops the queue and surfaces the issue for operator intervention.
-			// 返回错误而不是静默 continue；损坏的 turn 如果持续从 LoadPendingSessionTurns 返回，
-			// 会导致无限跳过循环而永远无法推进窗口。返回错误可以停止队列并让运维介入处理。
+			// Mark the corrupted turn as done so it stops being returned by LoadPendingSessionTurns.
+			// This prevents an infinite skip loop while allowing subsequent healthy turns to be processed.
+			// 将损坏的 turn 标记为已处理，让它不再被 LoadPendingSessionTurns 返回。
+			// 这样既能防止无限跳过循环，又能让后续健康的 turn 继续被处理。
 			if u.logger != nil {
-				u.logger.Error("post-action queued turn decode failed, halting queue", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
+				u.logger.Error("post-action queued turn decode failed, marking as corrupted", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", err)
 			}
-			return
+			if markErr := u.store.MarkTurnAsCorrupted(workerCtx, session, pendingTurn.ID); markErr != nil {
+				if u.logger != nil {
+					u.logger.Error("post-action corrupted turn mark failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "err", markErr)
+				}
+				return
+			}
+			continue
 		}
 		if err := u.applyImmediateTurnAnalysis(workerCtx, session, persistedTurn, rawTurn); err != nil {
 			if u.logger != nil {

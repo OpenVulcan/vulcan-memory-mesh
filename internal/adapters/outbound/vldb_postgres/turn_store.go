@@ -514,6 +514,12 @@ func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain
 	return s.repos.turns.LoadPendingSessionTurns(ctx, session)
 }
 
+// MarkTurnAsCorrupted rejects PostgreSQL corrupted-turn marking until the relational read workflow is fully ported.
+// MarkTurnAsCorrupted 用于在 PostgreSQL 关系读取工作流完整迁移前，显式拒绝损坏 turn 标记。
+func (s *Store) MarkTurnAsCorrupted(context.Context, logicdomain.SessionRef, uint64) error {
+	return unsupportedOperationError("MarkTurnAsCorrupted")
+}
+
 // LoadRecentSessionTurns delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.
 // LoadRecentSessionTurns 用于委托给 turn repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error) {

@@ -36,6 +36,7 @@ type RelationalStore interface {
 	AdvanceSessionExtractWindow(ctx context.Context, sessionID uint64, observedAt, completedAt time.Time) error
 	ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error
 	ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error)
+	MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error
 	Shutdowner
 }
 

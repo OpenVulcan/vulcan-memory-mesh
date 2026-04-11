@@ -1245,6 +1245,8 @@ type testRelationalStore struct {
 	adoptedMemoryIDs        []uint64
 	adoptedAt               time.Time
 	adoptionErr             error
+	markedCorruptedTurnIDs  []uint64
+	markCorruptedErr        error
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
@@ -1386,6 +1388,13 @@ func (s *testRelationalStore) ApplyTurnAnalysis(_ context.Context, _ logicdomain
 		return logicdomain.TurnAnalysisApplyResult{}, s.analysisErr
 	}
 	return s.analysisApplyResult, nil
+}
+
+// MarkTurnAsCorrupted keeps interface completeness for tests that need corrupted-turn handling.
+// MarkTurnAsCorrupted 用于补齐接口，让需要损坏 turn 处理的测试场景仍可编译。
+func (s *testRelationalStore) MarkTurnAsCorrupted(_ context.Context, _ logicdomain.SessionRef, turnID uint64) error {
+	s.markedCorruptedTurnIDs = append(s.markedCorruptedTurnIDs, turnID)
+	return s.markCorruptedErr
 }
 
 // EnqueueVectorGCJobs records the latest compensation enqueue request so post-action tests can assert failed vector cleanup is bridged into the persistent retry queue.
