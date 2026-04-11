@@ -51,8 +51,7 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
       "admission": "keep",
       "admission_reason": ""
     }
-  ],
-  "superseded_memory_ids": [71]
+  ]
 }`,
 		},
 	}
@@ -60,7 +59,6 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 		"# Role",
 		"prompt-body",
 		"{#TAG REFERENCE_RULE#}",
-		"{#TAG ACTIVE_MEMORY_RULE#}",
 		"{#TAG DIRECT_WRITE_EXCLUSION_RULE#}",
 	}, "\n")}
 	analyzer := NewTurnAnalyzer(llm, prompts, "qwen3.5-flash")
@@ -72,9 +70,6 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 		TargetTurn: logicdomain.TurnAnalysisTargetTurn{
 			TurnID:  92,
 			RawTurn: `{"user":"你好","assistant":"收到"}`,
-		},
-		ActiveMemoryNodes: []logicdomain.TurnAnalysisActiveMemoryNode{
-			{MemoryID: 71, SourceTurnID: 80, Category: logicdomain.MemoryNodeCategoryRequirementTODO, Abstract: "旧记忆", Details: "旧记忆详情", SupportCount: 2, RebuttalCount: 1},
 		},
 		RecentGRPCMemoryWrites: []logicdomain.TurnAnalysisDirectWrite{
 			{MemoryID: 301, ScopeLevel: "PROJECT", Abstract: "已主动写入的记忆", Details: "这条记忆已经由工具写入"},
@@ -92,8 +87,8 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if !strings.Contains(llm.request.UserPrompt, `"reference_turns"`) || !strings.Contains(llm.request.UserPrompt, `"recent_grpc_memory_writes"`) {
 		t.Fatalf("expected structured turn-analysis request body, got %s", llm.request.UserPrompt)
 	}
-	if !strings.Contains(llm.request.UserPrompt, `"support_count": 2`) || !strings.Contains(llm.request.UserPrompt, `"rebuttal_count": 1`) {
-		t.Fatalf("expected support/rebuttal counts in turn-analysis request body, got %s", llm.request.UserPrompt)
+	if strings.Contains(llm.request.UserPrompt, `"active_memory_nodes"`) {
+		t.Fatalf("expected active memory nodes to be removed from turn-analysis request body, got %s", llm.request.UserPrompt)
 	}
 	if !strings.Contains(llm.request.SystemPrompt, "绝对禁止把这些历史摘要重新提炼成当前 turn 的新增记忆或画像") {
 		t.Fatalf("expected rendered reference rule in system prompt, got %s", llm.request.SystemPrompt)
@@ -128,15 +123,12 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if analysis.ProfileNodes[0].EvidenceSource != logicdomain.TurnAnalysisEvidenceSourceUserConfirmed || analysis.ProfileNodes[0].Admission != logicdomain.TurnAnalysisAdmissionKeep {
 		t.Fatalf("unexpected profile node admission metadata: %+v", analysis.ProfileNodes[0])
 	}
-	if len(analysis.SupersededMemoryIDs) != 1 || analysis.SupersededMemoryIDs[0] != 71 {
-		t.Fatalf("unexpected superseded memory ids: %+v", analysis.SupersededMemoryIDs)
-	}
 }
 
 // TestParseTurnAnalysisResponseRejectsInvalidCategory verifies invalid enum values are surfaced as structured LLM output errors instead of being silently accepted.
 // TestParseTurnAnalysisResponseRejectsInvalidCategory 用于验证无效枚举值会被作为结构化 LLM 输出错误暴露，而不是被静默接受。
 func TestParseTurnAnalysisResponseRejectsInvalidCategory(t *testing.T) {
-	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":99,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep"}],"profile_nodes":[],"superseded_memory_ids":[]}`)
+	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":99,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep"}],"profile_nodes":[]}`)
 	if err == nil {
 		t.Fatal("expected invalid category error")
 	}
@@ -148,7 +140,7 @@ func TestParseTurnAnalysisResponseRejectsInvalidCategory(t *testing.T) {
 // TestParseTurnAnalysisResponseRejectsInvalidContextRelation verifies unsupported context-edge relations are rejected instead of leaking malformed evidence into persistence.
 // TestParseTurnAnalysisResponseRejectsInvalidContextRelation 用于验证不支持的 context-edge relation 会被拒绝，避免畸形证据漏进持久化层。
 func TestParseTurnAnalysisResponseRejectsInvalidContextRelation(t *testing.T) {
-	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep","context_edges":[{"context_key":"stage","context_value":"phase4","relation":"unknown"}]}],"profile_nodes":[],"superseded_memory_ids":[]}`)
+	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep","context_edges":[{"context_key":"stage","context_value":"phase4","relation":"unknown"}]}],"profile_nodes":[]}`)
 	if err == nil {
 		t.Fatal("expected invalid context relation error")
 	}
@@ -175,8 +167,7 @@ func TestParseTurnAnalysisResponseNormalizesEquivalentContextValues(t *testing.T
 				{"context_key":"deployment mode","context_value":"local oss","relation":"support"}
 			]
 		}],
-		"profile_nodes": [],
-		"superseded_memory_ids": []
+		"profile_nodes": []
 	}`)
 	if err != nil {
 		t.Fatalf("parse turn analysis response: %v", err)
@@ -190,9 +181,9 @@ func TestParseTurnAnalysisResponseNormalizesEquivalentContextValues(t *testing.T
 	}
 }
 
-// TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes verifies candidate-local supersede ids are preserved on the node itself and also unioned into the top-level compatibility field.
-// TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes 用于验证候选级 supersede id 会同时保留在节点自身，并汇总到顶层兼容字段中。
-func TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes(t *testing.T) {
+// TestParseTurnAnalysisResponseRejectsUnexpectedCandidateLocalSupersedes verifies the stricter L1 contract silently ignores deprecated candidate-local supersede payloads instead of promoting them into the normalized analysis result.
+// TestParseTurnAnalysisResponseRejectsUnexpectedCandidateLocalSupersedes 用于验证更严格的 L1 契约会忽略废弃的候选级 supersede 载荷，而不会把它提升进归一化分析结果。
+func TestParseTurnAnalysisResponseRejectsUnexpectedCandidateLocalSupersedes(t *testing.T) {
 	analysis, err := parseTurnAnalysisResponse(`{
 		"user_input_kind": "statement",
 		"turn_id": 9,
@@ -208,8 +199,7 @@ func TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes(t *testing.T) {
 				"supersede_memory_ids": [21, 22]
 			}
 		],
-		"profile_nodes": [],
-		"superseded_memory_ids": [22, 23]
+		"profile_nodes": []
 	}`)
 	if err != nil {
 		t.Fatalf("parse turn analysis response: %v", err)
@@ -217,11 +207,8 @@ func TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes(t *testing.T) {
 	if len(analysis.MemoryNodes) != 1 {
 		t.Fatalf("expected one memory node, got %+v", analysis.MemoryNodes)
 	}
-	if len(analysis.MemoryNodes[0].SupersedeMemoryIDs) != 2 || analysis.MemoryNodes[0].SupersedeMemoryIDs[0] != 21 || analysis.MemoryNodes[0].SupersedeMemoryIDs[1] != 22 {
-		t.Fatalf("expected candidate-local supersede ids to stay intact, got %+v", analysis.MemoryNodes[0].SupersedeMemoryIDs)
-	}
-	if len(analysis.SupersededMemoryIDs) != 3 || analysis.SupersededMemoryIDs[0] != 22 || analysis.SupersededMemoryIDs[1] != 23 || analysis.SupersededMemoryIDs[2] != 21 {
-		t.Fatalf("expected top-level supersede ids to merge candidate-local ids, got %+v", analysis.SupersededMemoryIDs)
+	if len(analysis.MemoryNodes[0].SupersedeMemoryIDs) != 0 {
+		t.Fatalf("expected deprecated supersede ids to be ignored by L1 parser, got %+v", analysis.MemoryNodes[0].SupersedeMemoryIDs)
 	}
 }
 
@@ -230,7 +217,7 @@ func TestParseTurnAnalysisResponseMergesCandidateLocalSupersedes(t *testing.T) {
 func TestTurnAnalyzerRejectsMismatchedTurnID(t *testing.T) {
 	analyzer := NewTurnAnalyzer(&stubTurnAnalyzerLLM{
 		response: logicports.LLMResponse{
-			Content: `{"user_input_kind":"mixed","turn_id":999,"details":"","memory_nodes":[],"profile_nodes":[],"superseded_memory_ids":[]}`,
+			Content: `{"user_input_kind":"mixed","turn_id":999,"details":"","memory_nodes":[],"profile_nodes":[]}`,
 		},
 	}, &stubTurnAnalyzerPromptSource{prompt: "prompt-body"}, "qwen3.5-flash")
 
@@ -268,7 +255,6 @@ func TestRenderTurnAnalysisSystemPromptDropsUnusedTags(t *testing.T) {
 	rendered := renderTurnAnalysisSystemPrompt(strings.Join([]string{
 		"head",
 		"{#TAG REFERENCE_RULE#}",
-		"{#TAG ACTIVE_MEMORY_RULE#}",
 		"{#TAG DIRECT_WRITE_EXCLUSION_RULE#}",
 		"tail",
 	}, "\n"), logicdomain.TurnAnalysisInput{
@@ -339,7 +325,7 @@ func TestTurnAnalyzerPropagatesModelFailure(t *testing.T) {
 // TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata verifies the stricter postaction_l1_main contract rejects payloads that omit the new admission metadata fields.
 // TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata 用于验证更严格的 postaction_l1_main 契约会拒绝缺失新准入元数据字段的载荷。
 func TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata(t *testing.T) {
-	_, err := parseTurnAnalysisResponse(`{"turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"keep","details":"keep"}],"profile_nodes":[{"profile_type":1,"content":"项目事实"}],"superseded_memory_ids":[]}`)
+	_, err := parseTurnAnalysisResponse(`{"turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"keep","details":"keep"}],"profile_nodes":[{"profile_type":1,"content":"项目事实"}]}`)
 	if err == nil {
 		t.Fatal("expected strict metadata validation error")
 	}

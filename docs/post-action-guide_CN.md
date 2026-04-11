@@ -182,19 +182,17 @@ message PostActionTimelineItem {
 16. `postaction_l1_main` 请求会包含：
     - 最近若干条已提炼历史 `details`
     - 当前 turn 的原始脱水 JSON
-    - 当前 session 下仍然活跃的旧记忆节点
-      - 这些节点现在会额外携带 `support_count / rebuttal_count`
+    - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
     - 其中：
       - 历史部分只用于参考
       - 当前 turn 是唯一允许输出新 `details / memory_nodes / profile_nodes` 的目标
-      - 活跃记忆节点用于去重与覆盖判断
+      - `recent_grpc_memory_writes` 用于排斥已经由工具链主动写入的重复事实
 17. `postaction_l1_main` 会返回：
     - 当前 turn 的 `user_input_kind`
     - 当前 turn 的 `turn_id`
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
       - 每条 `memory_nodes[]` 现在允许可选 `context_edges[]`
-      - 每条 `memory_nodes[]` 现在还允许携带候选级 `supersede_memory_ids[]`
       - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
       - 每条 `memory_nodes[]` 还会明确给出：
         - `evidence_source`
@@ -205,7 +203,6 @@ message PostActionTimelineItem {
         - `evidence_source`
         - `admission`
         - `admission_reason`
-    - 顶层兼容字段 `superseded_memory_ids`
 18. `postaction_l1_main` 的第一层准入会先压缩明显噪音：
     - 如果当前轮主要是用户提问或下指令，而助手只是基于既有记忆、既有画像或通识能力完成回答：
       - 这类候选通常会被标记为 `admission="drop"`
@@ -302,9 +299,8 @@ message PostActionTimelineItem {
       - `superseded_by_id`
       - `profile_date`
 23. 如果记忆评审中确认旧记忆已被新事实覆盖：
-    - 会优先沿用分析器候选级 `memory_nodes[].supersede_memory_ids[]` 处理同 session 替代
-    - 顶层 `superseded_memory_ids` 只作为兼容回退，不会在候选被过滤或被 reviewer 丢弃后继续盲目沿用
-    - 也会把统一 reviewer 返回的 `supersede_memory_ids[]` 合并进最终写回事务
+    - 会沿用统一 reviewer 返回的 `memory.accepted_candidates[].supersede_memory_ids[]` 回填到存活 `memory_nodes[]`
+    - 最终写回事务只会从存活 `memory_nodes[].supersede_memory_ids[]` 收集 supersede 目标
     - 这些 `supersede_memory_ids[]` 只能引用该候选实际看到过的 `similar_memories.memory_id`
     - 事务提交后会删除对应 LanceDB 旧向量，避免旧事实继续占用热索引
 24. 后台日志现在会额外记录压缩诊断字段：
@@ -325,6 +321,105 @@ message PostActionTimelineItem {
     - 避免 `extracted_status=0` 却残留孤立新向量
 27. 当前限制：
     - 仍不自动更新 `vmm_teams.profile / vmm_spaces.profile`
+
+## 本次职责切割调整说明
+
+这次 `postaction` 调整，不是简单删字段，而是一次明确的职责切割：
+
+- `L1` 负责提炼当前轮候选
+- 检索层负责召回与当前候选语义接近的旧记忆
+- hard dedupe 负责在进入 reviewer 前拦住最明显的近重复
+- `L2` 负责最终的 keep / drop / supersede 判断
+- 持久化阶段只根据最终存活结果退役旧记忆
+
+下面分别说明每一环为什么这样调整。
+
+### 1. 为什么 `L1` 不再看 `active_memory_nodes`
+
+旧链路会把当前 session 下仍然活跃的旧记忆节点整批喂给 `L1`。这个做法有两个问题：
+
+1. 长 session 会不断积累历史记忆，prompt 长度和噪声都会持续增长。
+2. `L1` 的真实职责是“提炼当前轮是否存在长期候选”，而不是“拿整批 session 历史做全局重复判定”。
+
+因此现在的 `L1` 输入被收敛为：
+
+- 最近若干条已提炼历史 `details`
+- 当前原始 turn
+- `recent_grpc_memory_writes`
+
+这让 `L1` 更聚焦当前轮，也避免因为历史记忆越积越多而导致输入失控。
+
+### 2. 为什么 `recent_grpc_memory_writes` 仍然保留
+
+`recent_grpc_memory_writes` 不是去重候选池，而是绝对排斥区。
+
+保留它的原因是：
+
+1. 这部分数据来源确定，是工具链已经成功主动写入的事实。
+2. 它不需要 LLM 做模糊判断，就可以直接拦住明显重复提炼。
+3. 它的规模通常远小于 whole-session 的活跃旧记忆，不会像 `active_memory_nodes` 那样带来 prompt 膨胀。
+
+所以这次调整不是“`L1` 什么旧信息都不看”，而是“`L1` 只保留真正确定、便宜、必要的排斥信息”。
+
+### 3. 为什么记忆去重与 supersede 主责任下沉到检索层与 `L2`
+
+真正的重复 / 替代判断，天然依赖“新候选生成之后”的语义比对证据。
+
+因此当前链路改成：
+
+1. `L1` 先产出当前轮候选
+2. 检索层按 `memory_replace_scope` 召回相似旧记忆
+3. hard dedupe 先用保守阈值拦截最明显的近重复
+4. `L2` 再结合：
+   - 当前轮候选
+   - 实际召回到的 `similar_memories`
+   - 画像活跃节点
+   - 新画像候选
+   做最终决策
+
+这样做的原因是：
+
+1. 去重和替代本来就应该基于“这条新候选到底和哪些旧记忆相近”的证据，而不是靠 `L1` 在大 prompt 里主观预判。
+2. 把 dedupe / supersede 主责任下沉后，`L1`、检索层、`L2` 的职责边界更清楚，后续优化也更容易。
+
+### 4. 为什么最终 supersede 只从 surviving `memory_nodes[].supersede_memory_ids[]` 推导
+
+旧设计里，整轮级 `superseded_memory_ids` 很容易和后续过滤结果脱节。
+
+例如：
+
+- 某条候选在 `L1` 看起来像要替代旧记忆
+- 但它后面可能被 admission 丢弃
+- 也可能被 hard dedupe 丢弃
+- 也可能被 `L2` reviewer 丢弃
+- 甚至可能在 embedding 阶段因为单条输入无效而被过滤掉
+
+如果这时还继续沿用整轮级 supersede 集合，就可能出现“候选已经不存在，但旧记忆仍被误退役”的问题。
+
+因此现在的规则是：
+
+1. `L2` reviewer 只能把 supersede 目标回填到真正保留的 `memory_nodes[]`
+2. 持久化阶段只从最终存活的 `memory_nodes[].supersede_memory_ids[]` 归并 supersede 目标
+
+这保证了退役集合永远和最终成功落库的新节点保持一致。
+
+### 5. 为什么当前策略不追求“一次性清光所有重复”
+
+当前设计选择的是“安全、渐进式收敛”，而不是“一次性穷尽式清洗”。
+
+原因是：
+
+1. 语义重复本来就是概率问题，不存在绝对完美的一次判定。
+2. 两条记忆可能部分重合、包含层级不同、细节不同，是否等价并不总是明确。
+3. 即使数据库里存在很多近似重复，本轮检索也只会召回其中一部分。
+
+所以当前系统的原则是：
+
+- 只有本轮真实召回到、且被 `L2` 明确认可替代的旧记忆，才会被 supersede
+- 没有命中的重复项允许继续保留，留给后续轮次再次命中并继续清理
+- 不为了追求一次性“清干净”，把 LLM 允许删除的范围扩大到它本轮没有看到的旧记忆
+
+这是一种保守策略，代价是重复收敛可能分多轮完成；好处是能显著降低误删无关长期记忆的风险。
 
 ## 后台维护细节
 
@@ -351,7 +446,7 @@ message PostActionTimelineItem {
 
 - 历史精要
 - 当前原始 turn
-- 旧记忆锚点
+- `recent_grpc_memory_writes`
 
 ## 定时监测流程
 
@@ -652,7 +747,7 @@ grpcurl -plaintext `
 当前已经接入的行为是：
 
 - `PostAction` 成功写入 turn 并完成入队后，后台会尽快触发一次 `postaction_l1_main`
-- `postaction_l1_main` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结果
+- `postaction_l1_main` 会基于“历史精要 + 当前原始 turn + recent_grpc_memory_writes”返回当前这一轮的结果
 - 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `postaction_l2_main`
 - `postaction_l2_main` 会同时返回：
   - 记忆候选的保留/丢弃结果

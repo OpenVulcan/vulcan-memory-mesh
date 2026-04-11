@@ -220,6 +220,19 @@ func normalizeUint64List(values []uint64) []uint64 {
 	return out
 }
 
+// collectTurnAnalysisSupersedeMemoryIDs unions reviewer-approved supersede ids from surviving memory nodes so PostgreSQL persistence only retires memories that still have one accepted replacement.
+// collectTurnAnalysisSupersedeMemoryIDs 用于从存活记忆节点中汇总 reviewer 批准的 supersede id，确保 PostgreSQL 持久化只退役那些仍被已接纳新节点替代的旧记忆。
+func collectTurnAnalysisSupersedeMemoryIDs(nodes []logicdomain.MemoryNodeCandidate) []uint64 {
+	if len(nodes) == 0 {
+		return nil
+	}
+	merged := make([]uint64, 0, len(nodes))
+	for _, node := range nodes {
+		merged = append(merged, node.SupersedeMemoryIDs...)
+	}
+	return normalizeUint64List(merged)
+}
+
 // normalizeStringList removes blank values and duplicates while keeping a deterministic ascending order for SQL IN/ANY queries.
 // normalizeStringList 用于移除空值和重复项，并保持确定性的升序，供 SQL IN/ANY 查询复用。
 func normalizeStringList(values []string) []string {

@@ -270,7 +270,6 @@ type TurnAnalysis struct {
 	DetailsBudget        int
 	MemoryNodes          []MemoryNodeCandidate
 	ProfileNodes         []ProfileNodeCandidate
-	SupersededMemoryIDs  []uint64
 	UserProfileMerged    bool
 	MergedUserProfile    string
 	ProjectProfileMerged bool
@@ -291,20 +290,6 @@ type TurnAnalysisTargetTurn struct {
 	RawTurn string
 }
 
-// TurnAnalysisActiveMemoryNode stores one currently active memory node that the single-turn analyzer may use for de-duplication and supersede decisions.
-// TurnAnalysisActiveMemoryNode 用于保存一条当前仍然活跃的记忆节点，让单轮分析器在去重和覆盖判断时可以参考它。
-type TurnAnalysisActiveMemoryNode struct {
-	MemoryID      uint64
-	SourceTurnID  uint64
-	Category      int
-	Abstract      string
-	Details       string
-	SourceKind    string
-	ScopeLevel    string
-	SupportCount  int
-	RebuttalCount int
-}
-
 // TurnAnalysisDirectWrite stores one recently accepted direct-write memory so the single-turn analyzer can avoid extracting facts that the tool path has already persisted.
 // TurnAnalysisDirectWrite 用于保存一条最近已经采纳的主动写入记忆，让单轮分析器避免把工具链路已经入库的事实再次重复提炼。
 type TurnAnalysisDirectWrite struct {
@@ -320,7 +305,6 @@ type TurnAnalysisDirectWrite struct {
 type TurnAnalysisInput struct {
 	ReferenceTurns         []TurnAnalysisReferenceTurn
 	TargetTurn             TurnAnalysisTargetTurn
-	ActiveMemoryNodes      []TurnAnalysisActiveMemoryNode
 	RecentGRPCMemoryWrites []TurnAnalysisDirectWrite
 }
 

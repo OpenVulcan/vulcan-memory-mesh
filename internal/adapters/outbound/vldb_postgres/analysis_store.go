@@ -13,33 +13,6 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
-// LoadActiveSessionMemoryNodes returns the active memory rows belonging to one session so turn analysis can decide what older facts should be superseded.
-// LoadActiveSessionMemoryNodes 用于返回某个 session 当前活跃的记忆行，让 turn 分析可以判断哪些旧事实应被覆盖。
-func (r *analysisRepository) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
-	if r == nil || r.shared == nil || r.shared.pool == nil {
-		return nil, fmt.Errorf("postgres store is not initialized")
-	}
-	if session.SessionID == 0 {
-		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
-	}
-	sqlText := fmt.Sprintf(`
-SELECT %s
-FROM %s AS m
-WHERE m.origin_session_id = $1
-  AND %s
-ORDER BY COALESCE(m.source_turn_id, 0) ASC, m.id ASC
-`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), activeUnexpiredMemoryCondition("m"))
-	rows, err := r.queryMemoryNodes(ctx, strings.TrimSpace(sqlText), int64(session.SessionID))
-	if err != nil {
-		return nil, fmt.Errorf("query postgres active session memory nodes: %w", err)
-	}
-	nodes := make([]logicdomain.SessionMemoryNodeRecord, 0, len(rows))
-	for _, row := range rows {
-		nodes = append(nodes, row.toSessionMemoryNodeRecord())
-	}
-	return nodes, nil
-}
-
 // LoadRecentDirectMemoryWrites returns the direct AI-written memory rows created inside one exclusion window so the turn analyzer can avoid duplicate extraction.
 // LoadRecentDirectMemoryWrites 用于返回某个排斥窗口内新建的 AI 主动写记忆行，让 turn analyzer 避免重复提炼。
 func (r *analysisRepository) LoadRecentDirectMemoryWrites(ctx context.Context, session logicdomain.SessionRef, observedAfter, observedBefore time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {
@@ -210,7 +183,7 @@ func (r *analysisRepository) ApplyTurnAnalysis(ctx context.Context, session logi
 		_ = tx.Rollback(context.Background())
 	}()
 
-	supersededMemoryIDs := normalizeUint64List(analysis.SupersededMemoryIDs)
+	supersededMemoryIDs := collectTurnAnalysisSupersedeMemoryIDs(analysis.MemoryNodes)
 	supersededVectorIDs, err := r.loadActiveMemoryVectorIDsTx(callCtx, tx, supersededMemoryIDs)
 	if err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load postgres superseded vector ids: %w", err)

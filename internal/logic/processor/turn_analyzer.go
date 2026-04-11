@@ -90,13 +90,12 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		TurnID        uint64 `json:"turn_id"`
 		Details       string `json:"details"`
 		MemoryNodes   []struct {
-			Category           int      `json:"category"`
-			Abstract           string   `json:"abstract"`
-			Details            string   `json:"details"`
-			EvidenceSource     string   `json:"evidence_source"`
-			Admission          string   `json:"admission"`
-			AdmissionReason    string   `json:"admission_reason"`
-			SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
+			Category        int    `json:"category"`
+			Abstract        string `json:"abstract"`
+			Details         string `json:"details"`
+			EvidenceSource  string `json:"evidence_source"`
+			Admission       string `json:"admission"`
+			AdmissionReason string `json:"admission_reason"`
 			ContextEdges       []struct {
 				ContextKey   string `json:"context_key"`
 				ContextValue string `json:"context_value"`
@@ -110,7 +109,6 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 			Admission       string `json:"admission"`
 			AdmissionReason string `json:"admission_reason"`
 		} `json:"profile_nodes"`
-		SupersededMemoryIDs []uint64 `json:"superseded_memory_ids"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "json decode failed", Raw: raw}
@@ -127,7 +125,6 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		Details:             strings.TrimSpace(payload.Details),
 		MemoryNodes:         make([]logicdomain.MemoryNodeCandidate, 0, len(payload.MemoryNodes)),
 		ProfileNodes:        make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
-		SupersededMemoryIDs: normalizeUint64Set(payload.SupersededMemoryIDs),
 	}
 	if !logicdomain.ValidTurnAnalysisUserInputKind(analysis.UserInputKind) {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid user_input_kind %q", payload.UserInputKind), Raw: raw}
@@ -161,27 +158,21 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if err != nil {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: err.Error(), Raw: raw}
 		}
-		supersedeMemoryIDs := normalizeUint64Set(node.SupersedeMemoryIDs)
 		key := fmt.Sprintf("%d|%s|%s", node.Category, node.Abstract, node.Details)
 		if existingIdx, ok := memorySeen[key]; ok {
 			analysis.MemoryNodes[existingIdx].ContextEdges = mergeMemoryContextEdgeCandidates(analysis.MemoryNodes[existingIdx].ContextEdges, contextEdges)
-			analysis.MemoryNodes[existingIdx].SupersedeMemoryIDs = normalizeUint64Set(append(analysis.MemoryNodes[existingIdx].SupersedeMemoryIDs, supersedeMemoryIDs...))
 			continue
 		}
 		memorySeen[key] = len(analysis.MemoryNodes)
 		analysis.MemoryNodes = append(analysis.MemoryNodes, logicdomain.MemoryNodeCandidate{
-			Category:           node.Category,
-			Abstract:           node.Abstract,
-			Details:            node.Details,
-			EvidenceSource:     evidenceSource,
-			Admission:          admission,
-			AdmissionReason:    admissionReason,
-			SupersedeMemoryIDs: supersedeMemoryIDs,
-			ContextEdges:       contextEdges,
+			Category:        node.Category,
+			Abstract:        node.Abstract,
+			Details:         node.Details,
+			EvidenceSource:  evidenceSource,
+			Admission:       admission,
+			AdmissionReason: admissionReason,
+			ContextEdges:    contextEdges,
 		})
-	}
-	for _, node := range analysis.MemoryNodes {
-		analysis.SupersededMemoryIDs = normalizeUint64Set(append(analysis.SupersededMemoryIDs, node.SupersedeMemoryIDs...))
 	}
 	profileSeen := map[string]struct{}{}
 	for _, node := range payload.ProfileNodes {

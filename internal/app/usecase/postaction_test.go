@@ -246,28 +246,7 @@ func TestPostActionApplyImmediateTurnAnalysisDropsInvalidEmbeddedMemoryNode(t *t
 // TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMemoryNode verifies post-action removes supersede ids contributed only by dropped memory nodes so partial embedding success cannot retire unrelated old memories.
 // TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMemoryNode 用于验证当部分 memory node 在 embedding 阶段被丢弃时，post-action 会同步清理仅由被丢弃节点贡献的 supersede id，避免误退役无关旧记忆。
 func TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMemoryNode(t *testing.T) {
-	store := &testRelationalStore{
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
-			{
-				ID:         701,
-				TurnID:     73,
-				VectorID:   "memory-701",
-				Category:   logicdomain.MemoryNodeCategoryProjectContext,
-				Abstract:   "待替代的旧记忆摘要一",
-				Details:    "待替代的旧记忆详情一",
-				NodeStatus: logicdomain.MemoryNodeStatusActive,
-			},
-			{
-				ID:         702,
-				TurnID:     74,
-				VectorID:   "memory-702",
-				Category:   logicdomain.MemoryNodeCategoryProjectContext,
-				Abstract:   "待替代的旧记忆摘要二",
-				Details:    "待替代的旧记忆详情二",
-				NodeStatus: logicdomain.MemoryNodeStatusActive,
-			},
-		},
-	}
+	store := &testRelationalStore{}
 	vector := &stubVectorStore{}
 	embedding := &stubEmbeddingClient{
 		response: appports.EmbeddingResponse{
@@ -281,10 +260,9 @@ func TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMem
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
-		TurnID:              93,
-		Details:             "只保留第一条替代关系。",
-		SupersededMemoryIDs: []uint64{701, 702},
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        93,
+		Details:       "只保留第一条替代关系。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{
 				Abstract:           "第一条保留的记忆摘要",
@@ -315,27 +293,15 @@ func TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMem
 	if err != nil {
 		t.Fatalf("applyImmediateTurnAnalysis returned error: %v", err)
 	}
-	if got := store.analysis.SupersededMemoryIDs; len(got) != 1 || got[0] != 701 {
-		t.Fatalf("persisted superseded memory ids = %+v, want [701]", got)
+	if got := store.analysis.MemoryNodes; len(got) != 1 || len(got[0].SupersedeMemoryIDs) != 1 || got[0].SupersedeMemoryIDs[0] != 701 {
+		t.Fatalf("persisted memory supersede ids = %+v, want surviving node to keep [701]", got)
 	}
 }
 
 // TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes verifies post-action accepts a best-effort embedding response that contains only dropped items, so a single invalid memory node no longer aborts the whole turn.
 // TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes 用于验证当 embedding best-effort 响应只包含 dropped 条目时，post-action 仍会接受该结果，不再因为单条无效记忆节点而中断整轮处理。
 func TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes(t *testing.T) {
-	store := &testRelationalStore{
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
-			{
-				ID:         801,
-				TurnID:     81,
-				VectorID:   "memory-801",
-				Category:   logicdomain.MemoryNodeCategoryProjectContext,
-				Abstract:   "唯一一条待替代旧记忆摘要",
-				Details:    "唯一一条待替代旧记忆详情",
-				NodeStatus: logicdomain.MemoryNodeStatusActive,
-			},
-		},
-	}
+	store := &testRelationalStore{}
 	vector := &stubVectorStore{}
 	embedding := &stubEmbeddingClient{
 		response: appports.EmbeddingResponse{
@@ -347,10 +313,9 @@ func TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes(
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
-		TurnID:              94,
-		Details:             "该轮只有一条异常记忆候选。",
-		SupersededMemoryIDs: []uint64{801},
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        94,
+		Details:       "该轮只有一条异常记忆候选。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
 			Abstract:           "唯一一条会被丢弃的记忆摘要",
 			Details:            "唯一一条会被丢弃的记忆详情",
@@ -376,9 +341,6 @@ func TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes(
 	}
 	if got := len(store.analysis.MemoryNodes); got != 0 {
 		t.Fatalf("persisted memory node count = %d, want 0", got)
-	}
-	if got := len(store.analysis.SupersededMemoryIDs); got != 0 {
-		t.Fatalf("persisted superseded memory ids = %+v, want none", store.analysis.SupersededMemoryIDs)
 	}
 }
 
@@ -557,15 +519,12 @@ func TestPostActionUseCaseQueuesAcceptedTurnWithoutBlocking(t *testing.T) {
 	}
 }
 
-// TestBuildTurnAnalysisInputReusesScrubbedStoredData verifies post-action reuses already scrubbed turn/history/memory text from durable storage and does not trigger one extra masking pass before analyzer input assembly.
-// TestBuildTurnAnalysisInputReusesScrubbedStoredData 用于验证 post-action 会复用库里已经脱敏的 turn、历史与记忆文本，并且在组装分析器输入时不再额外触发一次脱敏。
+// TestBuildTurnAnalysisInputReusesScrubbedStoredData verifies post-action reuses already scrubbed turn/history/direct-write text from durable storage and does not trigger one extra masking pass before analyzer input assembly.
+// TestBuildTurnAnalysisInputReusesScrubbedStoredData 用于验证 post-action 会复用库里已经脱敏的 turn、历史与 direct-write 文本，并且在组装分析器输入时不再额外触发一次脱敏。
 func TestBuildTurnAnalysisInputReusesScrubbedStoredData(t *testing.T) {
 	store := &testRelationalStore{
 		historyTurns: []logicdomain.SessionTurnRecord{
 			{ID: 10, Details: "历史里记录的电话是 [PHONE]。"},
-		},
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
-			{ID: 20, TurnID: 10, Abstract: "联系人电话 [PHONE]", Details: "请联系 [PHONE]"},
 		},
 		recentDirectWrites: []logicdomain.TurnAnalysisDirectWrite{
 			{MemoryID: 30, ScopeLevel: "project", Abstract: "最近直写电话 [PHONE]", Details: "工具记下了 [PHONE]", CreatedTimestamp: 123},
@@ -609,16 +568,13 @@ func TestBuildTurnAnalysisInputReusesScrubbedStoredData(t *testing.T) {
 	if len(input.ReferenceTurns) != 1 || strings.Contains(input.ReferenceTurns[0].Details, "13800138000") || !strings.Contains(input.ReferenceTurns[0].Details, "[PHONE]") {
 		t.Fatalf("expected reference turns to reuse scrubbed text, got %#v", input.ReferenceTurns)
 	}
-	if len(input.ActiveMemoryNodes) != 1 || strings.Contains(input.ActiveMemoryNodes[0].Abstract, "13800138000") || strings.Contains(input.ActiveMemoryNodes[0].Details, "13800138000") {
-		t.Fatalf("expected active memory anchors to reuse scrubbed text, got %#v", input.ActiveMemoryNodes)
-	}
 	if len(input.RecentGRPCMemoryWrites) != 1 || strings.Contains(input.RecentGRPCMemoryWrites[0].Abstract, "13800138000") || strings.Contains(input.RecentGRPCMemoryWrites[0].Details, "13800138000") {
 		t.Fatalf("expected recent direct writes to reuse scrubbed text, got %#v", input.RecentGRPCMemoryWrites)
 	}
 }
 
-// TestPostActionUseCaseProcessesQueuedTurnsAsynchronously verifies the async worker uses refined history and active-memory references when it drains pending turns.
-// TestPostActionUseCaseProcessesQueuedTurnsAsynchronously 用于验证异步工作器在消化 pending turn 时，会结合已提炼历史和活跃记忆锚点完成分析。
+// TestPostActionUseCaseProcessesQueuedTurnsAsynchronously verifies the async worker uses refined history plus direct-write exclusions when it drains pending turns.
+// TestPostActionUseCaseProcessesQueuedTurnsAsynchronously 用于验证异步工作器在消化 pending turn 时，会结合已提炼历史与 direct-write 排斥窗口完成分析。
 func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 	store := &testRelationalStore{
 		pendingTurns: []logicdomain.SessionTurnRecord{
@@ -636,15 +592,14 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 		historyTurns: []logicdomain.SessionTurnRecord{
 			{ID: 77, SessionID: 88, ProjectID: 12, Details: "上一轮已经确认并发部分会改成 channel。", DetailsBudget: 20, ExtractedStatus: logicdomain.TurnExtractedStatusDone},
 		},
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
-			{ID: 701, TurnID: 77, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "旧并发方案", Details: "历史上使用过 mutex。", NodeStatus: logicdomain.MemoryNodeStatusActive},
+		recentDirectWrites: []logicdomain.TurnAnalysisDirectWrite{
+			{MemoryID: 9901, ScopeLevel: "PROJECT", Abstract: "已主动写入的并发规则", Details: "这条并发规则已经由工具直接写入。"},
 		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
-		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
-		TurnID:              88,
-		Details:             "当前轮确认保持异步提炼链路。",
-		SupersededMemoryIDs: []uint64{701},
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        88,
+		Details:       "当前轮确认保持异步提炼链路。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{
 				Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
@@ -652,6 +607,7 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 				Details:        "这是新的并发决策。",
 				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
 				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+				SupersedeMemoryIDs: []uint64{701},
 			},
 		},
 	}}
@@ -689,8 +645,8 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 	if len(analyzer.input.ReferenceTurns) != 1 || analyzer.input.ReferenceTurns[0].TurnID != 77 {
 		t.Fatalf("expected one refined reference turn, got %+v", analyzer.input.ReferenceTurns)
 	}
-	if len(analyzer.input.ActiveMemoryNodes) != 1 || analyzer.input.ActiveMemoryNodes[0].MemoryID != 701 {
-		t.Fatalf("expected one active memory anchor, got %+v", analyzer.input.ActiveMemoryNodes)
+	if len(analyzer.input.RecentGRPCMemoryWrites) != 1 || analyzer.input.RecentGRPCMemoryWrites[0].MemoryID != 9901 {
+		t.Fatalf("expected one recent direct write exclusion, got %+v", analyzer.input.RecentGRPCMemoryWrites)
 	}
 	if len(vector.upserts) != 1 {
 		t.Fatalf("expected one vector upsert, got %d", len(vector.upserts))
@@ -701,8 +657,8 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 	if store.analysis.Details != "当前轮确认保持异步提炼链路。" {
 		t.Fatalf("unexpected persisted analysis: %+v", store.analysis)
 	}
-	if len(store.analysis.SupersededMemoryIDs) != 1 || store.analysis.SupersededMemoryIDs[0] != 701 {
-		t.Fatalf("expected superseded memory id 701, got %+v", store.analysis.SupersededMemoryIDs)
+	if len(store.analysis.MemoryNodes) != 1 || len(store.analysis.MemoryNodes[0].SupersedeMemoryIDs) != 1 || store.analysis.MemoryNodes[0].SupersedeMemoryIDs[0] != 701 {
+		t.Fatalf("expected persisted memory node to carry supersede id 701, got %+v", store.analysis.MemoryNodes)
 	}
 }
 
@@ -814,9 +770,6 @@ func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
 				UpdatedAt:         time.Date(2026, 4, 2, 9, 0, 1, 0, time.UTC),
 			},
 		},
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
-			{ID: 701, TurnID: 77, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "旧部署方案", Details: "旧的部署偏好。", NodeStatus: logicdomain.MemoryNodeStatusActive},
-		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
@@ -839,7 +792,6 @@ func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
 				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
 			},
 		},
-		SupersededMemoryIDs: []uint64{701},
 	}}
 	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}}}
 	vector := &stubVectorStore{}
@@ -1030,9 +982,6 @@ func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) 
 				CreatedAt:         time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
 			},
 		},
-		activeMemoryNodes: []logicdomain.SessionMemoryNodeRecord{
-			{ID: 702, TurnID: 78, VectorID: "old-vector", Category: logicdomain.MemoryNodeCategoryArchitectureDecision, Abstract: "旧部署方案", Details: "旧的部署偏好。", NodeStatus: logicdomain.MemoryNodeStatusActive},
-		},
 	}
 	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
@@ -1220,7 +1169,6 @@ type testRelationalStore struct {
 	pendingTurns            []logicdomain.SessionTurnRecord
 	recentTurns             []logicdomain.SessionTurnRecord
 	historyTurns            []logicdomain.SessionTurnRecord
-	activeMemoryNodes       []logicdomain.SessionMemoryNodeRecord
 	recentDirectWrites      []logicdomain.TurnAnalysisDirectWrite
 	idleSessions            []logicdomain.SessionRef
 	idleSessionsErr         error
@@ -1284,12 +1232,6 @@ func (s *testRelationalStore) LoadRecentSessionTurns(_ context.Context, _ logicd
 // LoadRecentSessionHistory 用于返回预设的已提炼历史 turn，作为单轮分析器的参考上下文。
 func (s *testRelationalStore) LoadRecentSessionHistory(_ context.Context, _ logicdomain.SessionRef, _ int) ([]logicdomain.SessionTurnRecord, error) {
 	return append([]logicdomain.SessionTurnRecord(nil), s.historyTurns...), nil
-}
-
-// LoadActiveSessionMemoryNodes returns the canned active memory anchors exposed to the current single-turn analyzer.
-// LoadActiveSessionMemoryNodes 用于返回暴露给当前单轮分析器的预设活跃记忆锚点。
-func (s *testRelationalStore) LoadActiveSessionMemoryNodes(_ context.Context, _ logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
-	return append([]logicdomain.SessionMemoryNodeRecord(nil), s.activeMemoryNodes...), nil
 }
 
 // LoadRecentDirectMemoryWrites returns the canned recent direct writes used by the single-turn exclusion-window tests.
@@ -1425,7 +1367,6 @@ func (s *stubPostActionTurnAnalyzer) Analyze(_ context.Context, input logicdomai
 	s.input = logicdomain.TurnAnalysisInput{
 		ReferenceTurns:         append([]logicdomain.TurnAnalysisReferenceTurn(nil), input.ReferenceTurns...),
 		TargetTurn:             input.TargetTurn,
-		ActiveMemoryNodes:      append([]logicdomain.TurnAnalysisActiveMemoryNode(nil), input.ActiveMemoryNodes...),
 		RecentGRPCMemoryWrites: append([]logicdomain.TurnAnalysisDirectWrite(nil), input.RecentGRPCMemoryWrites...),
 	}
 	if s.err != nil {

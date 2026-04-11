@@ -39,7 +39,6 @@ func clonePostActionTurnAnalysis(analysis logicdomain.TurnAnalysis) logicdomain.
 		}
 	}
 	cloned.ProfileNodes = clonePostActionProfileNodes(analysis.ProfileNodes)
-	cloned.SupersededMemoryIDs = append([]uint64(nil), analysis.SupersededMemoryIDs...)
 	return cloned
 }
 
@@ -144,7 +143,6 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		"session_id", session.SessionID,
 		"turn_id", turn.ID,
 		"reference_turn_count", len(input.ReferenceTurns),
-		"active_memory_count", len(input.ActiveMemoryNodes),
 		"recent_direct_write_count", len(input.RecentGRPCMemoryWrites),
 		"vector_count", len(vectorIDs),
 		"details_len", len(strings.TrimSpace(analysis.Details)),
@@ -157,7 +155,6 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		"review_drop_count", compaction.ReviewDroppedCount,
 		"hard_dedupe_drop_count", compaction.HardDedupeDroppedCount,
 		"external_research_kept_count", compaction.ExternalResearchKeptCount,
-		"superseded_memory_count", len(analysis.SupersededMemoryIDs),
 		"user_profile_merged", analysis.UserProfileMerged,
 		"project_profile_merged", analysis.ProjectProfileMerged,
 	}
@@ -252,7 +249,6 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 		DetailsBudget        int                     `json:"DetailsBudget"`
 		MemoryNodes          []memoryNodeLogPayload  `json:"MemoryNodes"`
 		ProfileNodes         []profileNodeLogPayload `json:"ProfileNodes"`
-		SupersededMemoryIDs  []uint64                `json:"SupersededMemoryIDs"`
 		UserProfileMerged    bool                    `json:"UserProfileMerged"`
 		MergedUserProfile    string                  `json:"MergedUserProfile"`
 		ProjectProfileMerged bool                    `json:"ProjectProfileMerged"`
@@ -318,7 +314,6 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 		DetailsBudget:        analysis.DetailsBudget,
 		MemoryNodes:          memoryNodes,
 		ProfileNodes:         profileNodes,
-		SupersededMemoryIDs:  append([]uint64(nil), analysis.SupersededMemoryIDs...),
 		UserProfileMerged:    analysis.UserProfileMerged,
 		MergedUserProfile:    analysis.MergedUserProfile,
 		ProjectProfileMerged: analysis.ProjectProfileMerged,
@@ -326,8 +321,8 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 	})
 }
 
-// buildTurnAnalysisInput loads refined reference turns and active memory anchors, then builds the structured request consumed by the reference-aware single-turn analyzer.
-// buildTurnAnalysisInput 用于加载已提炼的参考 turn 和活跃记忆锚点，并构建参考感知型单轮分析器需要的结构化请求。
+// buildTurnAnalysisInput loads refined reference turns and recent direct-write exclusions, then builds the structured request consumed by the reference-aware single-turn analyzer.
+// buildTurnAnalysisInput 用于加载已提炼的参考 turn 与最近直写排斥项，并构建参考感知型单轮分析器需要的结构化请求。
 func (u *PostActionUseCase) buildTurnAnalysisInput(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord) (logicdomain.TurnAnalysisInput, time.Time, error) {
 	if u == nil || u.store == nil {
 		return logicdomain.TurnAnalysisInput{}, time.Time{}, fmt.Errorf("post-action relational store is nil")
@@ -352,40 +347,22 @@ func (u *PostActionUseCase) buildTurnAnalysisInput(ctx context.Context, session 
 		}
 		selectedHistory = trimHistoryTurnsByBudget(historyTurns, remainingBudget)
 	}
-	activeMemoryNodes, err := u.store.LoadActiveSessionMemoryNodes(ctx, session)
-	if err != nil {
-		return logicdomain.TurnAnalysisInput{}, time.Time{}, fmt.Errorf("load active session memory nodes: %w", err)
-	}
 	recentDirectWrites, err := u.store.LoadRecentDirectMemoryWrites(ctx, session, session.LastExtractObservedAt, analysisCutoff)
 	if err != nil {
 		return logicdomain.TurnAnalysisInput{}, time.Time{}, fmt.Errorf("load recent direct memory writes: %w", err)
 	}
 
-	// Convert storage rows into the narrower analyzer input model so the prompt only sees the fields relevant to single-turn context, de-duplication, and supersede decisions.
-	// 把存储行转换成更窄的分析器输入模型，让提示词只看到单轮上下文、去重和覆盖判断真正需要的字段。
+	// Convert storage rows into the narrower analyzer input model so the prompt only sees the fields relevant to single-turn context and direct-write exclusion.
+	// 把存储行转换成更窄的分析器输入模型，让提示词只看到单轮上下文与直写排斥真正需要的字段。
 	input := logicdomain.TurnAnalysisInput{
 		ReferenceTurns:         make([]logicdomain.TurnAnalysisReferenceTurn, 0, len(selectedHistory)),
 		TargetTurn:             logicdomain.TurnAnalysisTargetTurn{TurnID: turn.ID, RawTurn: targetBody},
-		ActiveMemoryNodes:      make([]logicdomain.TurnAnalysisActiveMemoryNode, 0, len(activeMemoryNodes)),
 		RecentGRPCMemoryWrites: make([]logicdomain.TurnAnalysisDirectWrite, 0, len(recentDirectWrites)),
 	}
 	for _, historyTurn := range selectedHistory {
 		input.ReferenceTurns = append(input.ReferenceTurns, logicdomain.TurnAnalysisReferenceTurn{
 			TurnID:  historyTurn.ID,
 			Details: strings.TrimSpace(historyTurn.Details),
-		})
-	}
-	for _, node := range activeMemoryNodes {
-		input.ActiveMemoryNodes = append(input.ActiveMemoryNodes, logicdomain.TurnAnalysisActiveMemoryNode{
-			MemoryID:      node.ID,
-			SourceTurnID:  node.TurnID,
-			Category:      node.Category,
-			Abstract:      strings.TrimSpace(node.Abstract),
-			Details:       strings.TrimSpace(node.Details),
-			SourceKind:    logicdomain.MemorySourceKindLabel(node.SourceKind),
-			ScopeLevel:    logicdomain.MemoryScopeLevelLabel(node.ScopeLevel),
-			SupportCount:  node.SupportCount,
-			RebuttalCount: node.RebuttalCount,
 		})
 	}
 	for _, item := range recentDirectWrites {
@@ -400,8 +377,8 @@ func (u *PostActionUseCase) buildTurnAnalysisInput(ctx context.Context, session 
 	return input, analysisCutoff, nil
 }
 
-// validateTurnAnalysis rejects supersede references that do not belong to the active-memory anchors exposed to the single-turn analyzer.
-// validateTurnAnalysis 用于拒绝任何没有出现在单轮分析器输入活跃记忆锚点中的 supersede 引用。
+// validateTurnAnalysis validates the analyzer metadata contract before later review and persistence start.
+// validateTurnAnalysis 用于在后续评审与持久化开始前，校验分析器输出的元数据契约。
 func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdomain.TurnAnalysis) error {
 	if input.TargetTurn.TurnID == 0 {
 		return logicdomain.ValidationError{Field: "target_turn.turn_id", Message: "is required"}
@@ -411,10 +388,6 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 	}
 	if !logicdomain.ValidTurnAnalysisUserInputKind(strings.TrimSpace(analysis.UserInputKind)) {
 		return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("unexpected user_input_kind %q", analysis.UserInputKind)}
-	}
-	activeMemoryIDs := make(map[uint64]struct{}, len(input.ActiveMemoryNodes))
-	for _, node := range input.ActiveMemoryNodes {
-		activeMemoryIDs[node.MemoryID] = struct{}{}
 	}
 	for idx, node := range analysis.MemoryNodes {
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
@@ -427,11 +400,6 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
 			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].admission_reason is invalid", idx)}
 		}
-		for _, memoryID := range node.SupersedeMemoryIDs {
-			if _, ok := activeMemoryIDs[memoryID]; !ok {
-				return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].supersede_memory_ids contains unknown memory_id %d", idx, memoryID)}
-			}
-		}
 	}
 	for idx, node := range analysis.ProfileNodes {
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
@@ -443,11 +411,6 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 		reason := strings.TrimSpace(node.AdmissionReason)
 		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
 			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].admission_reason is invalid", idx)}
-		}
-	}
-	for _, memoryID := range analysis.SupersededMemoryIDs {
-		if _, ok := activeMemoryIDs[memoryID]; !ok {
-			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("superseded_memory_ids contains unknown memory_id %d", memoryID)}
 		}
 	}
 	return nil
@@ -558,8 +521,36 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		memoryDropped = true
 	}
 	analysis.MemoryNodes = keptNodes
-	reconcilePostActionSupersededMemoryIDsAfterMemoryFilter(analysis, memoryDropped)
+	if memoryDropped {
+		for idx := range analysis.MemoryNodes {
+			analysis.MemoryNodes[idx].SupersedeMemoryIDs = normalizePostActionUint64List(analysis.MemoryNodes[idx].SupersedeMemoryIDs)
+		}
+	}
 	return insertedIDs, nil
+}
+
+// normalizePostActionUint64List keeps post-action supersede targets stable, unique, and free of zero ids after partial candidate drops.
+// normalizePostActionUint64List 用于在 post-action 部分候选被丢弃后，保持 supersede 目标稳定去重，并去掉无效的零值 id。
+func normalizePostActionUint64List(values []uint64) []uint64 {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[uint64]struct{}, len(values))
+	out := make([]uint64, 0, len(values))
+	for _, value := range values {
+		if value == 0 {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 // embedPostActionTexts submits one full logical embedding request and returns both successful vectors and intentionally dropped invalid inputs so post-action can skip only the bad memory-node candidates.

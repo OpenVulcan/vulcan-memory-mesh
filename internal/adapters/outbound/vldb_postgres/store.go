@@ -280,12 +280,6 @@ func quoteIdentifier(raw string) string {
 	return `"` + strings.ReplaceAll(strings.TrimSpace(raw), `"`, `""`) + `"`
 }
 
-// LoadActiveSessionMemoryNodes delegates to the analysis repository so existing port interfaces continue to compile while ownership moves inward.
-// LoadActiveSessionMemoryNodes 用于委托给 analysis repository，让现有接口保持兼容的同时把职责向内迁移。
-func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
-	return s.repos.analysis.LoadActiveSessionMemoryNodes(ctx, session)
-}
-
 // LoadRecentDirectMemoryWrites delegates to the analysis repository so existing port interfaces continue to compile while ownership moves inward.
 // LoadRecentDirectMemoryWrites 用于委托给 analysis repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicdomain.SessionRef, observedAfter, observedBefore time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {

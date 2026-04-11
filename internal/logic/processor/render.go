@@ -115,17 +115,6 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 		TurnID  uint64          `json:"turn_id"`
 		RawTurn json.RawMessage `json:"raw_turn"`
 	}
-	type activeMemoryNodeInput struct {
-		MemoryID      uint64 `json:"memory_id"`
-		SourceTurnID  uint64 `json:"source_turn_id,omitempty"`
-		Category      int    `json:"category"`
-		Abstract      string `json:"abstract"`
-		Details       string `json:"details"`
-		SourceKind    string `json:"source_kind,omitempty"`
-		ScopeLevel    string `json:"scope_level,omitempty"`
-		SupportCount  int    `json:"support_count,omitempty"`
-		RebuttalCount int    `json:"rebuttal_count,omitempty"`
-	}
 	type recentDirectWriteInput struct {
 		MemoryID   uint64 `json:"memory_id"`
 		ScopeLevel string `json:"scope_level,omitempty"`
@@ -135,7 +124,6 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 	type requestBody struct {
 		ReferenceTurns         []referenceTurnInput     `json:"reference_turns"`
 		TargetTurn             targetTurnInput          `json:"target_turn"`
-		ActiveMemoryNodes      []activeMemoryNodeInput  `json:"active_memory_nodes"`
 		RecentGRPCMemoryWrites []recentDirectWriteInput `json:"recent_grpc_memory_writes,omitempty"`
 	}
 
@@ -150,7 +138,6 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 	body := requestBody{
 		ReferenceTurns:         make([]referenceTurnInput, 0, len(input.ReferenceTurns)),
 		TargetTurn:             targetTurnInput{TurnID: input.TargetTurn.TurnID, RawTurn: rawTurn},
-		ActiveMemoryNodes:      make([]activeMemoryNodeInput, 0, len(input.ActiveMemoryNodes)),
 		RecentGRPCMemoryWrites: make([]recentDirectWriteInput, 0, len(input.RecentGRPCMemoryWrites)),
 	}
 	for _, turn := range input.ReferenceTurns {
@@ -160,26 +147,6 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 		body.ReferenceTurns = append(body.ReferenceTurns, referenceTurnInput{
 			TurnID:  turn.TurnID,
 			Details: strings.TrimSpace(turn.Details),
-		})
-	}
-	for _, node := range input.ActiveMemoryNodes {
-		if node.MemoryID == 0 || strings.TrimSpace(node.Abstract) == "" {
-			continue
-		}
-		details := strings.TrimSpace(node.Details)
-		if details == "" {
-			details = strings.TrimSpace(node.Abstract)
-		}
-		body.ActiveMemoryNodes = append(body.ActiveMemoryNodes, activeMemoryNodeInput{
-			MemoryID:      node.MemoryID,
-			SourceTurnID:  node.SourceTurnID,
-			Category:      node.Category,
-			Abstract:      strings.TrimSpace(node.Abstract),
-			Details:       details,
-			SourceKind:    strings.TrimSpace(node.SourceKind),
-			ScopeLevel:    strings.TrimSpace(node.ScopeLevel),
-			SupportCount:  node.SupportCount,
-			RebuttalCount: node.RebuttalCount,
 		})
 	}
 	for _, memory := range input.RecentGRPCMemoryWrites {
@@ -209,14 +176,10 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 func renderTurnAnalysisSystemPrompt(template string, input logicdomain.TurnAnalysisInput) string {
 	replacements := map[string]string{
 		"REFERENCE_RULE":              "",
-		"ACTIVE_MEMORY_RULE":          "",
 		"DIRECT_WRITE_EXCLUSION_RULE": "",
 	}
 	if len(input.ReferenceTurns) > 0 {
 		replacements["REFERENCE_RULE"] = "- 如果 `reference_turns` 非空，它们只用于帮助你理解 `target_turn` 的上下文；绝对禁止把这些历史摘要重新提炼成当前 turn 的新增记忆或画像。"
-	}
-	if len(input.ActiveMemoryNodes) > 0 {
-		replacements["ACTIVE_MEMORY_RULE"] = "- 如果 `active_memory_nodes` 非空，先判断 `target_turn` 是否只是重复已有记忆；只有在当前 turn 明确覆盖、推翻或使旧记忆失效时，才把对应 `memory_id` 写入 `superseded_memory_ids`。"
 	}
 	if len(input.RecentGRPCMemoryWrites) > 0 {
 		replacements["DIRECT_WRITE_EXCLUSION_RULE"] = "- 如果 `recent_grpc_memory_writes` 非空，它们属于绝对排斥区；这些事实已经由工具链主动写入，禁止再次提炼入库。若当前 turn 的有效信息已经被它们完全覆盖，必须返回空 `details`、空 `memory_nodes`、空 `profile_nodes`。"

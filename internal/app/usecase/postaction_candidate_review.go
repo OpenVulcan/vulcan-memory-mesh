@@ -78,11 +78,9 @@ func applyPostActionAdmissionFilter(analysis *logicdomain.TurnAnalysis, stats *p
 
 	// Filter memory candidates first so later duplicate review only sees nodes that already passed the analyzer's admission gate.
 	// 先过滤记忆候选，确保后续去重评审只看到已经通过分析器准入闸门的节点。
-	memoryDropped := false
 	filteredMemory := make([]logicdomain.MemoryNodeCandidate, 0, len(analysis.MemoryNodes))
 	for _, node := range analysis.MemoryNodes {
 		if strings.TrimSpace(node.Admission) == logicdomain.TurnAnalysisAdmissionDrop {
-			memoryDropped = true
 			if stats != nil {
 				stats.AdmissionDroppedCount++
 			}
@@ -91,7 +89,6 @@ func applyPostActionAdmissionFilter(analysis *logicdomain.TurnAnalysis, stats *p
 		filteredMemory = append(filteredMemory, node)
 	}
 	analysis.MemoryNodes = filteredMemory
-	reconcilePostActionSupersededMemoryIDsAfterMemoryFilter(analysis, memoryDropped)
 
 	// Filter profile candidates with the same admission rule so only durable, user-confirmed, or otherwise allowed evidence reaches later profile review.
 	// 按同样的准入规则过滤画像候选，确保只有持久、被用户确认或其他允许的证据会进入后续画像评审。
@@ -193,12 +190,7 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 	if err != nil {
 		return err
 	}
-	mergedSupersededMemoryIDs, err := mergePostActionSupersededMemoryIDs(analysis.SupersededMemoryIDs, fullMemorySection, memoryReviewBuild.Candidates, originalMemoryNodes)
-	if err != nil {
-		return err
-	}
 	analysis.MemoryNodes = keptMemoryNodes
-	analysis.SupersededMemoryIDs = mergedSupersededMemoryIDs
 	if stats != nil {
 		stats.ReviewDroppedCount += reviewDroppedCount
 	}
@@ -399,66 +391,6 @@ func mergePostActionMemoryReviewSectionWithHardDropped(totalCandidates int, revi
 	return out, nil
 }
 
-// mergePostActionSupersededMemoryIDs merges analyzer-origin supersede ids with reviewer-approved cross-scope replacements while enforcing that the reviewer can only target the candidate-local similar-memory list it actually saw.
-// mergePostActionSupersededMemoryIDs 用于合并分析器给出的 supersede id 与 reviewer 批准的跨 scope 替代结果，同时强制 reviewer 只能指向该候选真正看到过的 similar memory 列表。
-func mergePostActionSupersededMemoryIDs(existing []uint64, section *logicdomain.PostActionMemoryReviewSection, candidates []logicdomain.PostActionMemoryReviewCandidate, nodes []logicdomain.MemoryNodeCandidate) ([]uint64, error) {
-	if section != nil && len(candidates) > 0 && len(section.AcceptedCandidateIndexes) == 0 && len(section.AcceptedCandidates) == 0 {
-		return nil, nil
-	}
-	if section == nil || len(section.AcceptedCandidateIndexes) == 0 {
-		return nil, nil
-	}
-	merged := make(map[uint64]struct{}, len(existing))
-	out := make([]uint64, 0, len(existing))
-	acceptedCandidateIndexes := make(map[int]struct{}, len(section.AcceptedCandidateIndexes))
-	for _, idx := range section.AcceptedCandidateIndexes {
-		acceptedCandidateIndexes[idx] = struct{}{}
-	}
-	candidateLocalSupersededMemoryIDs, hasCandidateLocalSupersedes := collectAcceptedPostActionCandidateSupersededMemoryIDs(nodes, acceptedCandidateIndexes)
-	if hasCandidateLocalSupersedes {
-		for _, memoryID := range candidateLocalSupersededMemoryIDs {
-			if _, ok := merged[memoryID]; ok {
-				continue
-			}
-			merged[memoryID] = struct{}{}
-			out = append(out, memoryID)
-		}
-	} else if len(section.DroppedCandidateIndexes) == 0 {
-		for _, memoryID := range existing {
-			if memoryID == 0 {
-				continue
-			}
-			if _, ok := merged[memoryID]; ok {
-				continue
-			}
-			merged[memoryID] = struct{}{}
-			out = append(out, memoryID)
-		}
-	}
-	for _, accepted := range section.AcceptedCandidates {
-		supersedeMemoryIDs, err := validatePostActionAcceptedSupersedeMemoryIDs(
-			"postaction_l2_main",
-			accepted.CandidateIndex,
-			candidates[accepted.CandidateIndex].SimilarMemories,
-			accepted.SupersedeMemoryIDs,
-		)
-		if err != nil {
-			return nil, err
-		}
-		for _, memoryID := range supersedeMemoryIDs {
-			if _, seen := merged[memoryID]; seen {
-				continue
-			}
-			merged[memoryID] = struct{}{}
-			out = append(out, memoryID)
-		}
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i] < out[j]
-	})
-	return out, nil
-}
-
 // validatePostActionAcceptedSupersedeMemoryIDs verifies that one accepted candidate only points at similar-memory ids the reviewer actually saw for that candidate.
 // validatePostActionAcceptedSupersedeMemoryIDs 用于校验一条已接纳候选只能指向 reviewer 在该候选下真正看到过的 similar memory id。
 func validatePostActionAcceptedSupersedeMemoryIDs(scene string, candidateIndex int, similarMemories []logicdomain.PostActionSimilarMemoryCandidate, supersedeMemoryIDs []uint64) ([]uint64, error) {
@@ -513,71 +445,6 @@ func validatePostActionDroppedDedupeMemoryID(scene string, candidateIndex int, s
 		}
 	}
 	return dedupeMemoryID, nil
-}
-
-// reconcilePostActionSupersededMemoryIDsAfterMemoryFilter keeps the top-level supersede id set aligned with the surviving memory candidates so later persistence never retires old memories that no accepted node still replaces.
-// reconcilePostActionSupersededMemoryIDsAfterMemoryFilter 用于让顶层 supersede id 集合与仍然存活的记忆候选保持一致，避免后续持久化误退役已经不再被任何接纳节点替代的旧记忆。
-func reconcilePostActionSupersededMemoryIDsAfterMemoryFilter(analysis *logicdomain.TurnAnalysis, memoryDropped bool) {
-	if analysis == nil {
-		return
-	}
-	if len(analysis.MemoryNodes) == 0 {
-		analysis.SupersededMemoryIDs = nil
-		return
-	}
-	candidateLocalSupersededMemoryIDs, hasCandidateLocalSupersedes := collectAcceptedPostActionCandidateSupersededMemoryIDs(
-		analysis.MemoryNodes,
-		buildFullPostActionCandidateIndexSet(len(analysis.MemoryNodes)),
-	)
-	switch {
-	case hasCandidateLocalSupersedes:
-		analysis.SupersededMemoryIDs = candidateLocalSupersededMemoryIDs
-	case memoryDropped:
-		analysis.SupersededMemoryIDs = nil
-	}
-}
-
-// collectAcceptedPostActionCandidateSupersededMemoryIDs unions candidate-local supersede ids for the accepted indexes and reports whether any accepted candidate carried explicit local mapping.
-// collectAcceptedPostActionCandidateSupersededMemoryIDs 用于汇总已接纳候选上的本地 supersede id，并返回这些候选里是否存在显式的候选级映射。
-func collectAcceptedPostActionCandidateSupersededMemoryIDs(nodes []logicdomain.MemoryNodeCandidate, acceptedCandidateIndexes map[int]struct{}) ([]uint64, bool) {
-	if len(nodes) == 0 || len(acceptedCandidateIndexes) == 0 {
-		return nil, false
-	}
-	out := make([]uint64, 0, len(nodes))
-	seen := make(map[uint64]struct{}, len(nodes))
-	hasCandidateLocalSupersedes := false
-	for idx, node := range nodes {
-		if _, ok := acceptedCandidateIndexes[idx]; !ok {
-			continue
-		}
-		if len(node.SupersedeMemoryIDs) > 0 {
-			hasCandidateLocalSupersedes = true
-		}
-		for _, memoryID := range node.SupersedeMemoryIDs {
-			if memoryID == 0 {
-				continue
-			}
-			if _, ok := seen[memoryID]; ok {
-				continue
-			}
-			seen[memoryID] = struct{}{}
-			out = append(out, memoryID)
-		}
-	}
-	return out, hasCandidateLocalSupersedes
-}
-
-// buildFullPostActionCandidateIndexSet constructs one dense accepted-index set for helper paths that need to treat every surviving candidate as accepted temporarily.
-// buildFullPostActionCandidateIndexSet 用于为辅助路径构造一个稠密索引集合，便于把当前所有存活候选临时视为已接纳。
-func buildFullPostActionCandidateIndexSet(count int) map[int]struct{} {
-	if count <= 0 {
-		return nil
-	}
-	out := make(map[int]struct{}, count)
-	for idx := 0; idx < count; idx++ {
-		out[idx] = struct{}{}
-	}
-	return out
 }
 
 // buildScopedMemoryReviewCandidates recalls similar durable memories for each new candidate inside the configured replacement scope and attaches them by QueryIndex so later reviewer decisions stay candidate-stable.

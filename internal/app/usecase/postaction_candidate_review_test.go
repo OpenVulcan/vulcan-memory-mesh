@@ -318,9 +318,6 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	if len(analysis.MemoryNodes[0].SupersedeMemoryIDs) != 1 || analysis.MemoryNodes[0].SupersedeMemoryIDs[0] != 501 {
 		t.Fatalf("expected accepted memory node to retain reviewer-approved supersede id, got %+v", analysis.MemoryNodes[0].SupersedeMemoryIDs)
 	}
-	if len(analysis.SupersededMemoryIDs) != 1 || analysis.SupersededMemoryIDs[0] != 501 {
-		t.Fatalf("expected unified reviewer supersede ids to merge into analysis, got %+v", analysis.SupersededMemoryIDs)
-	}
 	if len(analysis.ProfileNodes) != 1 {
 		t.Fatalf("expected one active profile node after unified review, got %+v", analysis.ProfileNodes)
 	}
@@ -492,8 +489,7 @@ func TestPostActionUseCaseReviewTurnCandidatesClearsAnalyzerSupersedeWhenAllMemo
 	}
 	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
 	analysis := &logicdomain.TurnAnalysis{
-		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
-		SupersededMemoryIDs: []uint64{701},
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
 			Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
 			Abstract:       "这条候选最终会被 reviewer 丢弃。",
@@ -525,16 +521,12 @@ func TestPostActionUseCaseReviewTurnCandidatesClearsAnalyzerSupersedeWhenAllMemo
 	if len(analysis.MemoryNodes) != 0 {
 		t.Fatalf("expected reviewer to drop all memory nodes, got %+v", analysis.MemoryNodes)
 	}
-	if len(analysis.SupersededMemoryIDs) != 0 {
-		t.Fatalf("expected superseded ids to be cleared when all memory candidates drop, got %+v", analysis.SupersededMemoryIDs)
-	}
 }
 
-// TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidatesDrop verifies first-pass memory drops clear legacy turn-level supersede ids when no surviving candidate carries explicit local supersede mapping.
-// TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidatesDrop 用于验证当首轮过滤丢弃部分记忆候选且存活候选没有显式候选级 supersede 映射时，会清空旧的整轮 supersede id。
-func TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidatesDrop(t *testing.T) {
+// TestApplyPostActionAdmissionFilterPreservesSurvivingCandidateSupersedes verifies first-pass admission drops only affect the rejected nodes, while surviving candidate-local supersede mappings remain untouched for later persistence.
+// TestApplyPostActionAdmissionFilterPreservesSurvivingCandidateSupersedes 用于验证首轮准入只会移除被拒绝节点，存活候选上的 supersede 映射会保持不变，供后续持久化继续使用。
+func TestApplyPostActionAdmissionFilterPreservesSurvivingCandidateSupersedes(t *testing.T) {
 	analysis := logicdomain.TurnAnalysis{
-		SupersededMemoryIDs: []uint64{701},
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{
 				Category:        logicdomain.MemoryNodeCategoryRequirementTODO,
@@ -550,6 +542,7 @@ func TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidate
 				Details:        "当前项目阶段已经进入 B。",
 				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
 				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+				SupersedeMemoryIDs: []uint64{701},
 			},
 		},
 		ProfileNodes: []logicdomain.ProfileNodeCandidate{{
@@ -565,8 +558,8 @@ func TestApplyPostActionAdmissionFilterClearsLegacySupersedesWhenMemoryCandidate
 	if len(analysis.MemoryNodes) != 1 {
 		t.Fatalf("expected one surviving memory node, got %+v", analysis.MemoryNodes)
 	}
-	if len(analysis.SupersededMemoryIDs) != 0 {
-		t.Fatalf("expected legacy supersedes to clear after partial memory drop, got %+v", analysis.SupersededMemoryIDs)
+	if len(analysis.MemoryNodes[0].SupersedeMemoryIDs) != 1 || analysis.MemoryNodes[0].SupersedeMemoryIDs[0] != 701 {
+		t.Fatalf("expected surviving candidate-local supersede ids to remain intact, got %+v", analysis.MemoryNodes[0].SupersedeMemoryIDs)
 	}
 }
 
@@ -595,8 +588,7 @@ func TestPostActionUseCaseReviewTurnCandidatesKeepsAcceptedCandidateLocalSuperse
 	}
 	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
 	analysis := &logicdomain.TurnAnalysis{
-		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
-		SupersededMemoryIDs: []uint64{701, 702},
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{
 				Category:           logicdomain.MemoryNodeCategoryProjectContext,
@@ -637,8 +629,8 @@ func TestPostActionUseCaseReviewTurnCandidatesKeepsAcceptedCandidateLocalSuperse
 	if len(analysis.MemoryNodes) != 1 {
 		t.Fatalf("expected only accepted memory node to survive, got %+v", analysis.MemoryNodes)
 	}
-	if len(analysis.SupersededMemoryIDs) != 1 || analysis.SupersededMemoryIDs[0] != 701 {
-		t.Fatalf("expected only accepted candidate-local supersede id to remain, got %+v", analysis.SupersededMemoryIDs)
+	if len(analysis.MemoryNodes[0].SupersedeMemoryIDs) != 1 || analysis.MemoryNodes[0].SupersedeMemoryIDs[0] != 701 {
+		t.Fatalf("expected only accepted candidate-local supersede id to remain, got %+v", analysis.MemoryNodes[0].SupersedeMemoryIDs)
 	}
 }
 
@@ -815,9 +807,6 @@ func TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer(t *testing
 	}
 	if len(analysis.MemoryNodes) != 0 {
 		t.Fatalf("expected hard dedupe to drop duplicate memory node, got %+v", analysis.MemoryNodes)
-	}
-	if len(analysis.SupersededMemoryIDs) != 0 {
-		t.Fatalf("expected no supersede ids after full hard-dedupe drop, got %+v", analysis.SupersededMemoryIDs)
 	}
 	if stats.ReviewDroppedCount != 1 {
 		t.Fatalf("expected one review-stage drop from hard dedupe, got %+v", stats)

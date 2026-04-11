@@ -68,12 +68,6 @@ func (unsupportedOperations) LoadRecentSessionHistory(context.Context, logicdoma
 	return nil, unsupportedOperationError("LoadRecentSessionHistory")
 }
 
-// LoadActiveSessionMemoryNodes rejects PostgreSQL active-memory loading until the relational read workflow is fully ported.
-// LoadActiveSessionMemoryNodes 用于在 PostgreSQL 关系读取工作流完整迁移前，显式拒绝活跃记忆节点加载。
-func (unsupportedOperations) LoadActiveSessionMemoryNodes(context.Context, logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
-	return nil, unsupportedOperationError("LoadActiveSessionMemoryNodes")
-}
-
 // LoadRecentDirectMemoryWrites rejects PostgreSQL recent direct-write loading until the relational read workflow is fully ported.
 // LoadRecentDirectMemoryWrites 用于在 PostgreSQL 关系读取工作流完整迁移前，显式拒绝最近主动写记忆加载。
 func (unsupportedOperations) LoadRecentDirectMemoryWrites(context.Context, logicdomain.SessionRef, time.Time, time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {

@@ -211,8 +211,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 11. 单轮分析输入会包含：
     - 最近若干条已提炼完成的历史 `details`
     - 当前 turn 的原始脱水 JSON
-    - 当前 session 下仍活跃的旧记忆节点锚点
-      - 会携带 `support_count / rebuttal_count` 作为既有证据强度提示
     - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
 12. `postaction_l1_main` 会返回：
     - 当前 turn 的 `user_input_kind`
@@ -220,7 +218,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 当前 turn 的 `details`
     - 当前 turn 的 `memory_nodes[]`
       - 每条 `memory_nodes[]` 可选携带 `context_edges[]`
-      - 每条 `memory_nodes[]` 现在还允许携带候选级 `supersede_memory_ids[]`
       - 每条 edge 只允许包含 `context_key / context_value / relation(support|rebuttal)`
       - 每条 `memory_nodes[]` 还会携带：
         - `evidence_source`
@@ -231,7 +228,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
         - `evidence_source`
         - `admission`
         - `admission_reason`
-    - 顶层兼容字段 `superseded_memory_ids`
 13. `postaction_l1_main` 的第一层准入会先压缩明显噪音：
     - 用户提问后，助手只是回显既有记忆、既有画像或通识答案时，会优先标记为 `drop`
     - 通过外部检索、访问网站、资料归纳、工具调用发现的新长期事实，仍然允许标记为 `keep`
@@ -266,6 +262,28 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `metadata_json` 只保留 `category / details / source_kind / scope_level / priority / memory_level` 这类补充信息
   - 如果 SQLite 在最后回写阶段失败，会反向删除刚写入的 LanceDB 向量行
   - `vmm_teams.profile / vmm_spaces.profile` 不参与 post-action 自动合并，但现在支持通过显式手工画像指令重建
+
+#### PostAction 职责切割说明
+
+- `L1` 现在只负责“当前轮候选提炼 + 首轮粗过滤信号”：
+  - 只看历史 `details`、当前原始 turn 和 `recent_grpc_memory_writes`
+  - 不再看 whole-session 的 `active_memory_nodes`
+  - 调整原因是：长 session 下活跃旧记忆会无限增长，容易把 prompt 膨胀成高噪声上下文；而 `L1` 的真实职责本来就应该是判断“当前轮有没有值得形成候选的长期信息”
+- `recent_grpc_memory_writes` 仍然保留给 `L1`：
+  - 这是确定性的绝对排斥区
+  - 目的是避免工具链已经主动写入的事实又被 `L1` 再提炼一遍
+- 记忆去重与 supersede 主责任现在下沉到“检索层 + hard dedupe + `L2`”：
+  - 先由检索层召回本轮候选的高相似旧记忆
+  - 再由保守的 hard dedupe 快速拦截最明显的近重复
+  - 最后由 `L2` 基于当前轮候选和实际召回证据做 keep / drop / supersede 判断
+  - 调整原因是：去重和替代本来就依赖候选生成后的语义检索证据，不应该再让 `L1` 基于整批 session 旧记忆做高成本预判
+- 最终 supersede 集合只从 surviving `memory_nodes[].supersede_memory_ids[]` 推导：
+  - 不再保留整轮级顶层 `superseded_memory_ids`
+  - 调整原因是：如果某条候选后续被 admission、hard dedupe、review 或 embedding 阶段丢弃，它就不应继续贡献旧记忆退役目标
+- 当前策略追求的是“安全、渐进式收敛”，而不是“一次性清光所有重复”：
+  - 只有本轮真实召回到、并且被 `L2` 明确认可的旧记忆才会被 supersede
+  - 没有命中的重复项允许继续保留，留给后续轮次再次命中和清理
+  - 这样做是为了避免 LLM 或检索误判时误删无关长期记忆
 
 ### 画像接口
 
@@ -825,7 +843,7 @@ AI 容灾边界当前统一为：
 当前主线的行为是：
 
 - `PostAction` 成功写入 turn 并完成入队后，后台会尽快发起一次 `postaction_l1_main`
-- `postaction_l1_main` 会基于“历史精要 + 当前原始 turn + 活跃记忆节点”返回当前这一轮的结构化结果
+- `postaction_l1_main` 会基于“历史精要 + 当前原始 turn + recent_grpc_memory_writes”返回当前这一轮的结构化结果
 - 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `postaction_l2_main`
 - 这次统一评审会同时处理：
   - 记忆候选的高重复去重

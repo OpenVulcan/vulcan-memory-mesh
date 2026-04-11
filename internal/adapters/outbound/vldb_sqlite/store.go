@@ -1112,9 +1112,9 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		}
 	}
 
-	// Resolve the vector ids for superseded memory rows before the status flip so the caller can delete those vector rows after SQL commits.
-	// 在状态切换前先解析被覆盖记忆的 vector_id，供调用方在 SQL 提交后删除对应向量行。
-	supersededMemoryIDs := normalizeUint64List(analysis.SupersededMemoryIDs)
+	// Resolve the vector ids for reviewer-approved superseded memory rows before the status flip so the caller can delete those vector rows after SQL commits.
+	// 在状态切换前先解析 reviewer 批准的被覆盖记忆 vector_id，供调用方在 SQL 提交后删除对应向量行。
+	supersededMemoryIDs := collectTurnAnalysisSupersedeMemoryIDs(analysis.MemoryNodes)
 	supersededVectorIDs, err := s.loadActiveMemoryVectorIDs(ctx, supersededMemoryIDs)
 	if err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load superseded vector ids: %w", err)
@@ -2404,36 +2404,6 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 		InsertedMemoryNode:  record,
 		SupersededVectorIDs: supersededVectorIDs,
 	}, nil
-}
-
-// LoadActiveSessionMemoryNodes returns the active unified memory rows anchored to one origin session so analyzers can reason about duplicates and supersedes.
-// LoadActiveSessionMemoryNodes 用于返回绑定到同一个 origin session 的活跃统一记忆行，让分析器可以判断重复和覆盖关系。
-func (s *Store) LoadActiveSessionMemoryNodes(ctx context.Context, session logicdomain.SessionRef) ([]logicdomain.SessionMemoryNodeRecord, error) {
-	if session.SessionID == 0 {
-		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
-	}
-	nowMs := time.Now().UTC().UnixMilli()
-	rows, err := queryRows[memoryNodeRow](s, ctx, `
-SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
-       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
-       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
-       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
-       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
-       created_timestamp, updated_timestamp
-FROM vmm_memory_nodes
-WHERE origin_session_id = ?
-  AND memory_status = ?
-  AND (expires_timestamp <= 0 OR expires_timestamp > ?)
-ORDER BY COALESCE(source_turn_id, 0) ASC, id ASC
-`, session.SessionID, logicdomain.MemoryStatusActive, nowMs)
-	if err != nil {
-		return nil, fmt.Errorf("query active session memory nodes: %w", err)
-	}
-	nodes := make([]logicdomain.SessionMemoryNodeRecord, 0, len(rows))
-	for _, row := range rows {
-		nodes = append(nodes, row.toDomain())
-	}
-	return nodes, nil
 }
 
 // LoadRecentDirectMemoryWrites returns the direct AI-written memory rows created inside one exclusion window so the turn analyzer can avoid duplicate extraction.
@@ -4373,6 +4343,19 @@ func normalizeUint64List(values []uint64) []uint64 {
 		return out[i] < out[j]
 	})
 	return out
+}
+
+// collectTurnAnalysisSupersedeMemoryIDs unions reviewer-approved supersede ids from surviving memory nodes so persistence can retire only the durable memories still replaced after every filter.
+// collectTurnAnalysisSupersedeMemoryIDs 用于从存活记忆节点中汇总 reviewer 批准的 supersede id，确保持久化只退役经过全部过滤后仍被新节点替代的旧记忆。
+func collectTurnAnalysisSupersedeMemoryIDs(nodes []logicdomain.MemoryNodeCandidate) []uint64 {
+	if len(nodes) == 0 {
+		return nil
+	}
+	merged := make([]uint64, 0, len(nodes))
+	for _, node := range nodes {
+		merged = append(merged, node.SupersedeMemoryIDs...)
+	}
+	return normalizeUint64List(merged)
 }
 
 // normalizeStringList removes blanks and duplicates from generic string id lists while keeping deterministic ascending order.
