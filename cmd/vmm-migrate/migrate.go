@@ -9,6 +9,7 @@ import (
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_postgres"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
+	"github.com/openvulcan/vmm/internal/app"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/platform/storagemigrate"
 )
@@ -51,15 +52,16 @@ func runMaintenanceMigrate(ctx context.Context, cfg config.Config, target string
 // runSplitToCombinedMigration treats SQLite as the only migration fact source, parses vectors in Go memory, and writes them into PostgreSQL native vector columns.
 // runSplitToCombinedMigration 用于把 SQLite 作为唯一迁移事实源，在 Go 内存中解析向量，并把它们写入 PostgreSQL 原生向量列。
 func runSplitToCombinedMigration(ctx context.Context, cfg config.Config) error {
-	if strings.TrimSpace(cfg.SQLite.Address) == "" {
-		return fmt.Errorf("sqlite.address is required for maintenance migrate split-to-combined")
-	}
 	postgresCfg, err := buildPostgresMaintenanceConfig(cfg)
 	if err != nil {
 		return err
 	}
+	localLayout, err := app.ResolveLocalStorageLayout()
+	if err != nil {
+		return err
+	}
 
-	snapshot, err := vldb_sqlite.DebugExportManagedSnapshot(ctx, cfg.SQLite.Address, cfg.SQLite.Timeout.Duration, cfg.Postgres.MigrationBatchSize)
+	snapshot, err := vldb_sqlite.DebugExportManagedSnapshot(ctx, localLayout.SQLiteLibrary, localLayout.SQLiteDatabase, cfg.SQLite.Timeout.Duration, cfg.Postgres.MigrationBatchSize)
 	if err != nil {
 		return fmt.Errorf("export split sqlite snapshot: %w", err)
 	}

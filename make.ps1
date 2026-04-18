@@ -8,7 +8,7 @@
 #>
 Param(
     [Parameter(Position=0)]
-    [ValidateSet("build", "run", "clean", "all", "tester")]
+    [ValidateSet("build", "run", "clean", "all", "tester", "deps")]
     $Target = "build",
     [Parameter(ValueFromRemainingArguments=$true)]
     [string[]]$ForwardArgs = @()
@@ -39,10 +39,15 @@ if ($PSVersionTable.PSEdition -ne "Core") {
 # 1. 定位脚本目录
 $PSScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $VmmScript = Join-Path (Join-Path $PSScriptDir "scripts") "vmm.ps1"
+$HostDepsScript = Join-Path (Join-Path $PSScriptDir "scripts") "install_host_deps.ps1"
 
 # 2. 检查核心脚本是否存在
 if (!(Test-Path $VmmScript)) {
     Write-Host "❌ Error: Cannot find scripts/vmm.ps1" -ForegroundColor Red
+    exit 1
+}
+if ($Target -eq "deps" -and !(Test-Path $HostDepsScript)) {
+    Write-Host "❌ Error: Cannot find scripts/install_host_deps.ps1" -ForegroundColor Red
     exit 1
 }
 
@@ -54,6 +59,13 @@ switch ($Target) {
     "run"   { & $VmmScript run @ForwardArgs }
     "clean" { & $VmmScript clean }
     "tester" { & $VmmScript tester }
+    "deps" {
+        if ($ForwardArgs.Count -gt 0 -and $ForwardArgs[0].Trim().ToLowerInvariant() -ne "host") {
+            Write-Host "❌ Error: only 'deps host' is supported" -ForegroundColor Red
+            exit 1
+        }
+        & $HostDepsScript
+    }
     Default { & $VmmScript build }
 }
 

@@ -497,6 +497,172 @@ func TestMemoryUseCaseSearchFusesHybridRecall(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchKeepsCallerFacingScoresStableWhenLexicalBM25MagnitudeChanges verifies lexical BM25 magnitude changes do not directly alter caller-facing scores as long as the lexical rank order stays the same.
+// TestMemoryUseCaseSearchKeepsCallerFacingScoresStableWhenLexicalBM25MagnitudeChanges 用于验证只要 lexical 排名顺序不变，BM25 数值大小变化就不会直接改写对外分数。
+func TestMemoryUseCaseSearchKeepsCallerFacingScoresStableWhenLexicalBM25MagnitudeChanges(t *testing.T) {
+	buildUseCase := func(lexicalHits []logicdomain.MemoryLexicalHit) *MemoryUseCase {
+		profiles := &stubProfileStore{
+			targets: map[int]logicdomain.ProfileTargetRef{
+				logicdomain.ProfileTypeUser: {
+					ProfileType: logicdomain.ProfileTypeUser,
+					BindID:      7,
+					UserID:      7,
+				},
+				logicdomain.ProfileTypeProject: {
+					ProfileType: logicdomain.ProfileTypeProject,
+					BindID:      9,
+					UserID:      7,
+					TeamID:      3,
+					SpaceID:     5,
+					ProjectID:   9,
+				},
+			},
+		}
+		turns := &stubTurnLookupStore{
+			memoryRowsByID: []logicdomain.MemoryNodeRecord{
+				{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "候选一", Details: "第一条 lexical 候选。", VectorID: "vec-1", Status: logicdomain.MemoryStatusActive},
+				{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "候选二", Details: "第二条 lexical 候选。", VectorID: "vec-2", Status: logicdomain.MemoryStatusActive},
+			},
+			lexicalHits: lexicalHits,
+		}
+		embedding := &stubEmbeddingClient{
+			response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+		}
+		vector := &stubVectorStore{}
+		uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+		uc.ConfigureHybrid(true, 5, 60)
+		return uc
+	}
+
+	// Keep the lexical order identical and only flip the BM25-like score magnitude so we can verify the exposed score contract is rank-based rather than raw-score based.
+	// 保持 lexical 顺序完全一致，只翻转类似 BM25 的数值大小，用于验证对外分数契约依赖的是 rank 而不是原始分值。
+	firstResult, err := buildUseCase([]logicdomain.MemoryLexicalHit{
+		{MemoryID: 201, Score: 0.99},
+		{MemoryID: 202, Score: 0.01},
+	}).Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"部署偏好"},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("first hybrid search returned error: %v", err)
+	}
+	secondResult, err := buildUseCase([]logicdomain.MemoryLexicalHit{
+		{MemoryID: 201, Score: 0.01},
+		{MemoryID: 202, Score: 0.99},
+	}).Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"部署偏好"},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("second hybrid search returned error: %v", err)
+	}
+
+	firstHits := firstResult.Results[0].Hits
+	secondHits := secondResult.Results[0].Hits
+	if len(firstHits) != 2 || len(secondHits) != 2 {
+		t.Fatalf("expected two lexical-only hybrid hits, got first=%+v second=%+v", firstHits, secondHits)
+	}
+	if firstHits[0].MemoryRef.ID != 201 || firstHits[1].MemoryRef.ID != 202 {
+		t.Fatalf("expected first lexical order to stay [201 202], got %+v", firstHits)
+	}
+	if secondHits[0].MemoryRef.ID != 201 || secondHits[1].MemoryRef.ID != 202 {
+		t.Fatalf("expected second lexical order to stay [201 202], got %+v", secondHits)
+	}
+	if math.Abs(firstHits[0].Score-secondHits[0].Score) > 1e-9 || math.Abs(firstHits[1].Score-secondHits[1].Score) > 1e-9 {
+		t.Fatalf("expected caller-facing scores to ignore lexical raw-score magnitude, got first=%+v second=%+v", firstHits, secondHits)
+	}
+	if math.Abs(firstHits[0].Score-1.0) > 1e-9 || math.Abs(firstHits[1].Score-0.75) > 1e-9 {
+		t.Fatalf("expected lexical-only scores to follow rank normalization, got %+v", firstHits)
+	}
+}
+
+// TestMemoryUseCaseSearchChangesCandidateOrderWhenLexicalRankChanges verifies lexical rank drift still propagates into the final candidate order, which is the real BM25/tokenizer migration risk that needs regression coverage.
+// TestMemoryUseCaseSearchChangesCandidateOrderWhenLexicalRankChanges 用于验证 lexical 排名漂移仍会传导到最终候选顺序，这才是 BM25 或 tokenizer 切换后真正需要回归覆盖的风险点。
+func TestMemoryUseCaseSearchChangesCandidateOrderWhenLexicalRankChanges(t *testing.T) {
+	buildUseCase := func(lexicalHits []logicdomain.MemoryLexicalHit) *MemoryUseCase {
+		profiles := &stubProfileStore{
+			targets: map[int]logicdomain.ProfileTargetRef{
+				logicdomain.ProfileTypeUser: {
+					ProfileType: logicdomain.ProfileTypeUser,
+					BindID:      7,
+					UserID:      7,
+				},
+				logicdomain.ProfileTypeProject: {
+					ProfileType: logicdomain.ProfileTypeProject,
+					BindID:      9,
+					UserID:      7,
+					TeamID:      3,
+					SpaceID:     5,
+					ProjectID:   9,
+				},
+			},
+		}
+		turns := &stubTurnLookupStore{
+			memoryRowsByID: []logicdomain.MemoryNodeRecord{
+				{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "候选一", Details: "第一条 lexical 候选。", VectorID: "vec-1", Status: logicdomain.MemoryStatusActive},
+				{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "候选二", Details: "第二条 lexical 候选。", VectorID: "vec-2", Status: logicdomain.MemoryStatusActive},
+			},
+			lexicalHits: lexicalHits,
+		}
+		embedding := &stubEmbeddingClient{
+			response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+		}
+		vector := &stubVectorStore{}
+		uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+		uc.ConfigureHybrid(true, 5, 60)
+		return uc
+	}
+
+	// Swap only the lexical rank order to prove the real downstream sensitivity is candidate ordering, not the raw BM25 number itself.
+	// 只交换 lexical 排名顺序，用于证明当前下游真正敏感的是候选顺序，而不是 BM25 原始数值本身。
+	firstResult, err := buildUseCase([]logicdomain.MemoryLexicalHit{
+		{MemoryID: 201, Score: 0.42},
+		{MemoryID: 202, Score: 0.41},
+	}).Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"部署偏好"},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("first lexical-order search returned error: %v", err)
+	}
+	secondResult, err := buildUseCase([]logicdomain.MemoryLexicalHit{
+		{MemoryID: 202, Score: 0.42},
+		{MemoryID: 201, Score: 0.41},
+	}).Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"部署偏好"},
+		TopK:      5,
+	})
+	if err != nil {
+		t.Fatalf("second lexical-order search returned error: %v", err)
+	}
+
+	firstHits := firstResult.Results[0].Hits
+	secondHits := secondResult.Results[0].Hits
+	if len(firstHits) != 2 || len(secondHits) != 2 {
+		t.Fatalf("expected two lexical-only hybrid hits, got first=%+v second=%+v", firstHits, secondHits)
+	}
+	if firstHits[0].MemoryRef.ID != 201 || firstHits[1].MemoryRef.ID != 202 {
+		t.Fatalf("expected first lexical order [201 202], got %+v", firstHits)
+	}
+	if secondHits[0].MemoryRef.ID != 202 || secondHits[1].MemoryRef.ID != 201 {
+		t.Fatalf("expected second lexical order [202 201], got %+v", secondHits)
+	}
+	if math.Abs(firstHits[0].Score-1.0) > 1e-9 || math.Abs(firstHits[1].Score-0.75) > 1e-9 {
+		t.Fatalf("expected first lexical scores to stay rank-normalized, got %+v", firstHits)
+	}
+	if math.Abs(secondHits[0].Score-1.0) > 1e-9 || math.Abs(secondHits[1].Score-0.75) > 1e-9 {
+		t.Fatalf("expected second lexical scores to stay rank-normalized, got %+v", secondHits)
+	}
+}
+
 // TestMemoryUseCaseSearchPrefersCombinedHybridSQL verifies combined PostgreSQL mode can skip the old lexical fan-out and consume one SQL-fused first-stage candidate list directly.
 // TestMemoryUseCaseSearchPrefersCombinedHybridSQL 用于验证 PostgreSQL 组合模式可以跳过旧的 lexical 分叉路径，直接消费单条 SQL 融合后的一阶段候选列表。
 func TestMemoryUseCaseSearchPrefersCombinedHybridSQL(t *testing.T) {
@@ -2653,8 +2819,18 @@ func TestMemoryUseCaseWriteAcceptedCandidateSupersedesOldMemory(t *testing.T) {
 	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1001 {
 		t.Fatalf("expected fresh memory write result, got %+v", result.Items)
 	}
+	if len(reviewer.inputs) != 1 {
+		t.Fatalf("expected one reviewer input, got %+v", reviewer.inputs)
+	}
 	if len(store.directWriteApplyCalls) != 1 || len(store.directWriteApplyCalls[0].SupersededMemoryIDs) != 1 || store.directWriteApplyCalls[0].SupersededMemoryIDs[0] != 901 {
 		t.Fatalf("expected atomic direct-write apply to receive supersede id 901, got %+v", store.directWriteApplyCalls)
+	}
+	expectedReviewDate := store.directWriteApplyCalls[0].Record.CreatedAt.UTC().Format("2006-01-02")
+	if reviewer.inputs[0].CurrentTurnDate != expectedReviewDate {
+		t.Fatalf("expected reviewer current_turn_date %q to match stable write time, got %+v", expectedReviewDate, reviewer.inputs[0].CurrentTurnDate)
+	}
+	if len(reviewer.inputs[0].MemoryCandidates) != 1 || reviewer.inputs[0].MemoryCandidates[0].CandidateDate != expectedReviewDate {
+		t.Fatalf("expected reviewer candidate_date %q to match stable write time, got %+v", expectedReviewDate, reviewer.inputs[0].MemoryCandidates)
 	}
 	if len(vector.upserts) != 1 {
 		t.Fatalf("expected one new vector upsert, got %+v", vector.upserts)

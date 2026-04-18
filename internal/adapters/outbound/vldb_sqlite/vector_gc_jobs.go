@@ -48,7 +48,7 @@ func (r sqliteVectorGCJobRow) toDomain() logicdomain.VectorGCJobRecord {
 // EnqueueVectorGCJobs persists failed sidecar vector deletes into the SQLite retry queue so later maintenance passes can compensate transient vector-store failures.
 // EnqueueVectorGCJobs 用于把失败的旁路向量删除持久化到 SQLite 重试队列，让后续维护轮次可以补偿瞬时向量库故障。
 func (s *Store) EnqueueVectorGCJobs(ctx context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	vectorIDs := normalizeStringList(query.VectorIDs)
@@ -91,7 +91,7 @@ VALUES (%d, %d, %s, %s, 0, %d, 0, 0, '', %d, %d);
 // ClaimPendingVectorGCJobs leases one bounded SQLite retry batch by moving due jobs to the next-run lease horizon, so crashed workers eventually release the claim automatically.
 // ClaimPendingVectorGCJobs 用于通过把到期任务推进到下一次运行租约窗口来领取一批有界的 SQLite 重试任务，从而在工作器崩溃后自动释放领取状态。
 func (s *Store) ClaimPendingVectorGCJobs(ctx context.Context, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.VectorGCJobRecord, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return nil, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit = normalizeSQLiteRetentionBatchLimit(limit, 128)
@@ -150,7 +150,7 @@ COMMIT;
 // CompleteVectorGCJobs removes one SQLite retry batch immediately after the sidecar delete succeeds, so the queue remains a transient compensation table instead of growing into a second long-lived ledger.
 // CompleteVectorGCJobs 用于在旁路删除成功后立即删除一批 SQLite 重试任务，让该队列表保持“瞬时补偿表”而不是继续演化成第二套长期台账。
 func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)
@@ -176,7 +176,7 @@ COMMIT;
 // RetryVectorGCJobs reschedules one SQLite retry batch after the sidecar delete still fails, incrementing attempts while releasing the current lease.
 // RetryVectorGCJobs 用于在旁路删除仍然失败时重新调度一批 SQLite 重试任务，同时递增尝试计数并释放当前租约。
 func (s *Store) RetryVectorGCJobs(ctx context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)

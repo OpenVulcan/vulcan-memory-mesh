@@ -12,9 +12,12 @@ $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 $RootDir = Split-Path -Parent $ScriptDir
 $OutputDir = Join-Path $RootDir "output"
 $BinDir = Join-Path $OutputDir "bin"
+$LibDir = Join-Path $OutputDir "libs"
+$DatabaseDir = Join-Path $OutputDir "database"
 $ExePath = Join-Path $BinDir "vmm-local.exe"
 $MigrateExePath = Join-Path $BinDir "vmm-migrate.exe"
 $TesterExePath = Join-Path $BinDir "vmm-pii-tester.exe"
+$ThirdPartyDepsDir = Join-Path (Join-Path $RootDir "third_party") "deps"
 
 # Resolve-GoExe locates go.exe lazily so run/clean actions can keep working on machines that only carry packaged binaries.
 # Resolve-GoExe 用于按需解析 go.exe，确保只携带打包产物的机器仍然可以正常执行 run/clean 动作。
@@ -37,6 +40,55 @@ function Sync-Configs {
     $TargetConfig = Join-Path $OutputDir "configs"
     if (Test-Path $TargetConfig) { Remove-Item -Path $TargetConfig -Recurse -Force }
     Copy-Item -Path "$RootDir\configs" -Destination $OutputDir -Recurse -Force
+}
+
+# Get-HostLibraryNames returns the dynamic-library filenames that must be packaged for the current host platform.
+# Get-HostLibraryNames 用于返回当前宿主平台必须打包的动态库文件名。
+function Get-HostLibraryNames {
+    $HostIsWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $HostIsLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
+    $HostIsMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
+
+    if ($HostIsWindows) {
+        return @("vldb_sqlite.dll", "vldb_lancedb.dll")
+    }
+    if ($HostIsLinux) {
+        return @("libvldb_sqlite.so", "libvldb_lancedb.so")
+    }
+    if ($HostIsMacOS) {
+        return @("libvldb_sqlite.dylib", "libvldb_lancedb.dylib")
+    }
+
+    throw "unsupported platform for host library packaging"
+}
+
+# Sync-HostLibraries copies downloaded host libraries into output/libs so the packaged runtime can resolve FFI dependencies without extra setup.
+# Sync-HostLibraries 用于把已下载的宿主动态库复制到 output/libs，确保打包后的运行时无需额外配置即可解析 FFI 依赖。
+function Sync-HostLibraries {
+    Write-Host "=> 📦 Syncing host libraries..." -ForegroundColor Gray
+    if (!(Test-Path -LiteralPath $ThirdPartyDepsDir)) {
+        throw "missing host dependency directory: $ThirdPartyDepsDir. Run '.\\make.ps1 deps host' first."
+    }
+    if (Test-Path -LiteralPath $LibDir) {
+        Remove-Item -Path $LibDir -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $LibDir -Force | Out-Null
+
+    foreach ($LibraryName in Get-HostLibraryNames) {
+        $SourcePath = Join-Path $ThirdPartyDepsDir $LibraryName
+        if (!(Test-Path -LiteralPath $SourcePath)) {
+            throw "missing host dynamic library: $SourcePath. Run '.\\make.ps1 deps host' first."
+        }
+        Copy-Item -Path $SourcePath -Destination (Join-Path $LibDir $LibraryName) -Force
+    }
+}
+
+# Ensure-DatabaseLayout creates the packaged database root next to the binary so local SQLite and LanceDB backends share one deterministic storage layout.
+# Ensure-DatabaseLayout 用于在二进制旁边创建统一的 database 根目录，让本地 SQLite 与 LanceDB 后端共享稳定存储布局。
+function Ensure-DatabaseLayout {
+    Write-Host "=> 🗄️ Ensuring packaged database layout..." -ForegroundColor Gray
+    New-Item -ItemType Directory -Path $DatabaseDir -Force | Out-Null
+    New-Item -ItemType Directory -Path (Join-Path $DatabaseDir "lancedb") -Force | Out-Null
 }
 
 function Invoke-GoBuild {
@@ -81,6 +133,8 @@ function Do-Build {
     Invoke-GoBuild -OutputPath $TesterExePath -PackagePath "$RootDir\cmd\vmm-pii-tester"
     
     Sync-Configs
+    Sync-HostLibraries
+    Ensure-DatabaseLayout
     
     Write-Host "=> ✅ Build Success!" -ForegroundColor Green
 }
@@ -96,6 +150,8 @@ function Do-BuildTester {
     # Keep the tester output self-contained so file mode always reads the rules that were just built and copied.
     # 保持测试器产物自包含，确保文件模式始终读取刚刚构建并复制过去的规则与配置。
     Sync-Configs
+    Sync-HostLibraries
+    Ensure-DatabaseLayout
 
     Write-Host "=> ✅ Tester Build Success!" -ForegroundColor Green
 }

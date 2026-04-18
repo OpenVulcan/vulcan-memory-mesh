@@ -156,6 +156,19 @@ func normalizePostgresFlavorValue(flavor string) string {
 	}
 }
 
+// normalizeSQLiteTokenizerModeValue canonicalizes the SQLite tokenizer mode so runtime wiring can deterministically switch between no-op and Chinese tokenization.
+// normalizeSQLiteTokenizerModeValue 用于规范化 SQLite 分词模式，让运行时可以稳定地在关闭分词与中文分词之间切换。
+func normalizeSQLiteTokenizerModeValue(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "jieba":
+		return "jieba"
+	case "none":
+		return "none"
+	default:
+		return strings.ToLower(strings.TrimSpace(mode))
+	}
+}
+
 // Normalize backfills safe defaults and canonicalizes all runtime-facing config values
 // so validation, startup, and adapter selection all observe one stable normalized view.
 // Normalize 用于补齐安全默认值并规范化所有面向运行时的配置值，
@@ -321,15 +334,10 @@ func (c *Config) Normalize() {
 	}
 	c.Storage.Mode = normalizeStorageModeValue(c.Storage.Mode)
 	c.Storage.CombinedProvider = normalizeCombinedProviderValue(c.Storage.CombinedProvider)
-	if strings.TrimSpace(c.SQLite.Address) == "" {
-		c.SQLite.Address = "127.0.0.1:19501"
-	}
 	if c.SQLite.Timeout.Duration <= 0 {
 		c.SQLite.Timeout = Duration{5 * time.Second}
 	}
-	if strings.TrimSpace(c.LanceDB.Address) == "" {
-		c.LanceDB.Address = "127.0.0.1:19301"
-	}
+	c.SQLite.TokenizerMode = normalizeSQLiteTokenizerModeValue(c.SQLite.TokenizerMode)
 	if c.LanceDB.Timeout.Duration <= 0 {
 		c.LanceDB.Timeout = Duration{5 * time.Second}
 	}
@@ -404,6 +412,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Storage.Mode = strings.TrimSpace(c.Storage.Mode)
 	c.Storage.CombinedProvider = strings.TrimSpace(c.Storage.CombinedProvider)
 	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
+	c.SQLite.TokenizerMode = strings.TrimSpace(c.SQLite.TokenizerMode)
 	c.LanceDB.Address = strings.TrimSpace(c.LanceDB.Address)
 	c.LanceDB.TableName = strings.TrimSpace(c.LanceDB.TableName)
 	c.LanceDB.VectorColumn = strings.TrimSpace(c.LanceDB.VectorColumn)

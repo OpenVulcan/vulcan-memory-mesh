@@ -137,9 +137,6 @@ func (c Config) Validate() error {
 		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, or google_ai_studio")
 	}
 	if normalizeStorageModeValue(c.Storage.Mode) == "split" {
-		if strings.TrimSpace(c.LanceDB.Address) == "" {
-			return errors.New("lancedb.address is required")
-		}
 		if strings.TrimSpace(c.LanceDB.TableName) == "" {
 			return errors.New("lancedb.table_name is required")
 		}
@@ -153,8 +150,10 @@ func (c Config) Validate() error {
 		}
 		switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
 		case "sqlite":
-			if strings.TrimSpace(c.SQLite.Address) == "" {
-				return errors.New("sqlite.address is required")
+			switch normalizeSQLiteTokenizerModeValue(c.SQLite.TokenizerMode) {
+			case "jieba", "none":
+			default:
+				return errors.New("sqlite.tokenizer_mode must be one of jieba or none")
 			}
 		default:
 			return errors.New("relational.provider must be sqlite")
@@ -455,6 +454,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setString("VMM_STORAGE_COMBINED_PROVIDER", &cfg.Storage.CombinedProvider)
 	setString("VMM_SQLITE_ADDRESS", &cfg.SQLite.Address)
 	setDuration("VMM_SQLITE_TIMEOUT", &cfg.SQLite.Timeout)
+	setString("VMM_SQLITE_TOKENIZER_MODE", &cfg.SQLite.TokenizerMode)
 	setString("VMM_LANCEDB_ADDRESS", &cfg.LanceDB.Address)
 	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
 	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
@@ -531,7 +531,6 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 		}
 	}
 	setBool("VMM_MEMORY_HYBRID_ENABLED", &cfg.MemoryPipeline.HybridEnabled)
-	setBool("VMM_MEMORY_LEXICAL_PRETOKENIZE", &cfg.MemoryPipeline.LexicalPreTokenize)
 	setInt("VMM_MEMORY_LEXICAL_TOP_K", &cfg.MemoryPipeline.LexicalTopK)
 	setInt("VMM_MEMORY_RRF_K", &cfg.MemoryPipeline.RRFK)
 	setBool("VMM_MEMORY_MMR_ENABLED", &cfg.MemoryPipeline.MMREnabled)

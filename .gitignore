@@ -12,3 +12,4 @@ configs/.env
 .gocache
 .qwen
 .claude
+third_party/

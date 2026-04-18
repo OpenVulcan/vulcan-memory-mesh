@@ -50,10 +50,12 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 
 	result, err := reviewer.Review(context.Background(), logicdomain.PostActionCandidateReviewInput{
 		UserInputKind:    logicdomain.TurnAnalysisUserInputMixed,
+		CurrentTurnDate:  "2026-04-04",
 		UserContent:      "以后主要用 Rust，帮我记住。",
 		AssistantContent: "我会把它整理成长期规则。",
 		MemoryCandidates: []logicdomain.PostActionMemoryReviewCandidate{{
 			CandidateIndex:  0,
+			CandidateDate:   "2026-04-04",
 			Category:        logicdomain.MemoryNodeCategoryArchitectureDecision,
 			Abstract:        "团队默认使用 Rust 作为主要开发语言。",
 			Details:         "用户确认团队默认使用 Rust 作为主要开发语言。",
@@ -62,6 +64,7 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 			SimilarMemories: []logicdomain.PostActionSimilarMemoryCandidate{{
 				MemoryID:     501,
 				SourceTurnID: 88,
+				CreatedDate:  "2026-04-01",
 				ScopeLevel:   "project",
 				Category:     logicdomain.MemoryNodeCategoryArchitectureDecision,
 				Score:        0.97,
@@ -101,6 +104,11 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"similar_memories"`) || !strings.Contains(llm.request.UserPrompt, `"new_candidates"`) {
 		t.Fatalf("expected memory dedupe and profile candidate sections, got %s", llm.request.UserPrompt)
+	}
+	for _, fragment := range []string{`"current_turn_date": "2026-04-04"`, `"candidate_date": "2026-04-04"`, `"created_date": "2026-04-01"`} {
+		if !strings.Contains(llm.request.UserPrompt, fragment) {
+			t.Fatalf("expected request to contain %s, got %s", fragment, llm.request.UserPrompt)
+		}
 	}
 	if result.Memory == nil || len(result.Memory.AcceptedCandidateIndexes) != 1 || result.Memory.AcceptedCandidateIndexes[0] != 0 {
 		t.Fatalf("unexpected memory review result: %+v", result)

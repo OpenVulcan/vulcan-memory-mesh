@@ -46,7 +46,7 @@ func (r sqliteRecycleJobRow) toDomain() logicdomain.RecycleJobRecord {
 // EnqueueColdTurnRecycleJobs scans for sessions that currently expose recyclable old turns and persists bounded recycle jobs so scan and execution no longer share one write script.
 // EnqueueColdTurnRecycleJobs 用于扫描当前存在可回收旧 turn 的 session，并持久化一批有界的回收任务，让扫描与执行不再共用同一段写脚本。
 func (s *Store) EnqueueColdTurnRecycleJobs(ctx context.Context, query logicdomain.ColdTurnRecycleJobEnqueueQuery) (int, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return 0, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit := normalizeSQLiteRetentionBatchLimit(query.Limit, 64)
@@ -113,7 +113,7 @@ VALUES (%d, %d, %d, %s, 0, %d, 0, '', %d, %d);
 // ClaimPendingRecycleJobs leases one bounded SQLite recycle-job batch by moving due jobs to the lease horizon, so crashed workers eventually release the claim automatically.
 // ClaimPendingRecycleJobs 用于通过把到期任务推进到租约边界来领取一批有界的 SQLite 回收任务，从而在工作器崩溃后自动释放领取状态。
 func (s *Store) ClaimPendingRecycleJobs(ctx context.Context, jobType string, dueBefore, claimUntil time.Time, limit int) ([]logicdomain.RecycleJobRecord, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return nil, fmt.Errorf("sqlite store is not initialized")
 	}
 	jobType = strings.TrimSpace(jobType)
@@ -174,7 +174,7 @@ COMMIT;
 // RecycleColdTurns executes one claimed cold-turn recycle job by moving unreferenced turns outside the hot window into the turn-trash table.
 // RecycleColdTurns 用于执行一条已领取的冷 turn 回收任务，把热窗口外且无引用的旧 turn 迁入 turn 回收站表。
 func (s *Store) RecycleColdTurns(ctx context.Context, query logicdomain.ColdTurnRecycleQuery) (logicdomain.ColdTurnRecycleResult, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	if query.SessionID == 0 {
@@ -306,7 +306,7 @@ COMMIT;
 // CompleteRecycleJobs removes one SQLite recycle-job batch immediately after scan-separated cold-turn execution completes, keeping the queue transient instead of retaining completed rows forever.
 // CompleteRecycleJobs 用于在 scan 分离后的冷 turn 执行完成后立即删除一批 SQLite 回收任务，让队列表保持瞬时语义，而不是永久保留已完成行。
 func (s *Store) CompleteRecycleJobs(ctx context.Context, jobIDs []uint64, _ time.Time) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)
@@ -332,7 +332,7 @@ COMMIT;
 // RetryRecycleJobs reschedules one SQLite recycle-job batch after execution still fails, incrementing attempts while releasing the current lease.
 // RetryRecycleJobs 用于在执行仍然失败时重新调度一批 SQLite 回收任务，同时递增尝试次数并释放当前租约。
 func (s *Store) RetryRecycleJobs(ctx context.Context, jobIDs []uint64, nextRunAt time.Time, lastError string) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	jobIDs = normalizeUint64List(jobIDs)

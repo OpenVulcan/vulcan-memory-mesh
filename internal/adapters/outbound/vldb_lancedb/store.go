@@ -1,5 +1,5 @@
-// store.go implements the LanceDB-gateway outbound adapter used by vector recall and admin cleanup flows.
-// store.go 用于实现基于 LanceDB 网关的出站适配器，承接向量召回和管理清理流程。
+// store.go implements the LanceDB local-FFI outbound adapter used by vector recall and maintenance flows.
+// store.go 用于实现基于 LanceDB 本地 FFI 的出站适配器，承接向量召回与维护流程。
 package vldb_lancedb
 
 import (
@@ -7,16 +7,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"strconv"
 	"strings"
 	"time"
 
-	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
+	"github.com/openvulcan/vmm/internal/platform/ffi/lancedbffi"
 )
 
 const (
@@ -25,36 +22,49 @@ const (
 	CurrentSchemaVersion = 2
 )
 
-// Store is the LanceDB-gateway adapter used by the vector store port.
-// Store 用于作为向量存储端口的 LanceDB 网关适配器。
+// Store is the LanceDB local-FFI adapter used by the vector store port.
+// Store 用于作为向量存储端口的 LanceDB 本地 FFI 适配器。
 type Store struct {
-	conn         *grpc.ClientConn
-	client       lancedbv1.LanceDbServiceClient
+	lib          *lancedbffi.Library
+	runtime      *lancedbffi.Runtime
+	engine       lancedbEngineHandle
 	timeout      time.Duration
 	tableName    string
 	vectorColumn string
 	dimension    int
 }
 
-// NewStore dials the LanceDB gateway and ensures the configured vector table exists before serving traffic.
-// NewStore 用于连接 LanceDB 网关，并在开始提供服务前确保配置指定的向量表已经存在。
-func NewStore(address string, timeout time.Duration, tableName, vectorColumn string, dimension int) (*Store, error) {
-	return newStore(address, timeout, tableName, vectorColumn, dimension, true)
+// lancedbEngineHandle narrows the LanceDB FFI engine surface that the adapter depends on so unit tests can replace the engine with one focused in-memory fake.
+// lancedbEngineHandle 用于收窄适配器依赖的 LanceDB FFI engine 能力面，这样单测可以把 engine 替换成聚焦的内存 fake。
+type lancedbEngineHandle interface {
+	CreateTable(request lancedbffi.CreateTableRequest) (lancedbffi.CreateTableResult, error)
+	VectorUpsertRaw(tableName string, format lancedbffi.InputFormat, data []byte, keyColumns []string) (lancedbffi.UpsertResult, error)
+	VectorSearchF32(tableName string, vector []float32, limit uint32, filter string, vectorColumn string, outputFormat lancedbffi.OutputFormat) (lancedbffi.SearchResult, error)
+	Delete(request lancedbffi.DeleteRequest) (lancedbffi.DeleteResult, error)
+	DropTable(request lancedbffi.DropTableRequest) (lancedbffi.DropTableResult, error)
+	Close() error
 }
 
-// NewStoreWithoutInit dials the LanceDB gateway without eagerly creating the configured table so maintenance flows can decide exactly when the current-dimension table should first appear.
-// NewStoreWithoutInit 用于连接 LanceDB 网关但不提前创建目标表，让维护流程可以精确控制“当前维度表首次出现”的时机。
-func NewStoreWithoutInit(address string, timeout time.Duration, tableName, vectorColumn string, dimension int) (*Store, error) {
-	return newStore(address, timeout, tableName, vectorColumn, dimension, false)
+// NewStore opens the packaged LanceDB dynamic library and eagerly ensures the configured vector table exists.
+// NewStore 用于打开打包后的 LanceDB 动态库，并在启动阶段主动确保目标向量表存在。
+func NewStore(libraryPath string, databaseDir string, timeout time.Duration, tableName, vectorColumn string, dimension int) (*Store, error) {
+	return newStore(libraryPath, databaseDir, timeout, tableName, vectorColumn, dimension, true)
 }
 
-// newStore centralizes LanceDB gateway dialing while letting callers choose whether table initialization should happen eagerly during construction.
-// newStore 用于集中承载 LanceDB 网关连接逻辑，并允许调用方决定是否在构造阶段立即初始化目标表。
-func newStore(address string, timeout time.Duration, tableName, vectorColumn string, dimension int, ensureTable bool) (*Store, error) {
-	// Validate the minimum table configuration first so startup errors stay easy to interpret.
-	// 先校验最小表配置，保证启动错误保持易于理解。
-	if strings.TrimSpace(address) == "" {
-		return nil, fmt.Errorf("lancedb address is required")
+// NewStoreWithoutInit opens the packaged LanceDB dynamic library without eagerly creating the configured table.
+// NewStoreWithoutInit 用于打开打包后的 LanceDB 动态库，但不会提前创建目标表。
+func NewStoreWithoutInit(libraryPath string, databaseDir string, timeout time.Duration, tableName, vectorColumn string, dimension int) (*Store, error) {
+	return newStore(libraryPath, databaseDir, timeout, tableName, vectorColumn, dimension, false)
+}
+
+// newStore centralizes local LanceDB FFI bootstrapping and lets callers decide whether table initialization should happen eagerly.
+// newStore 用于集中处理本地 LanceDB FFI 启动逻辑，并允许调用方决定是否立即初始化目标表。
+func newStore(libraryPath string, databaseDir string, _ time.Duration, tableName, vectorColumn string, dimension int, ensureTable bool) (*Store, error) {
+	if strings.TrimSpace(libraryPath) == "" {
+		return nil, fmt.Errorf("lancedb library path is required")
+	}
+	if strings.TrimSpace(databaseDir) == "" {
+		return nil, fmt.Errorf("lancedb database dir is required")
 	}
 	if strings.TrimSpace(tableName) == "" {
 		return nil, fmt.Errorf("lancedb table_name is required")
@@ -65,35 +75,39 @@ func newStore(address string, timeout time.Duration, tableName, vectorColumn str
 	if dimension <= 0 {
 		return nil, fmt.Errorf("lancedb dimension must be > 0")
 	}
-	if timeout <= 0 {
-		timeout = 5 * time.Second
+	if err := os.MkdirAll(databaseDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create lancedb database dir: %w", err)
 	}
 
-	// Dial the local gateway eagerly so configuration drift is caught during application startup.
-	// 以阻塞方式连接本地网关，让配置漂移在应用启动时就能被发现。
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	conn, err := grpc.DialContext(
-		ctx,
-		strings.TrimSpace(address),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	)
+	lib, err := lancedbffi.Open(strings.TrimSpace(libraryPath))
 	if err != nil {
-		return nil, fmt.Errorf("dial lancedb gateway: %w", err)
+		return nil, err
+	}
+	runtimeOptions := lib.DefaultRuntimeOptions()
+	runtimeOptions.DefaultDBPath = strings.TrimSpace(databaseDir)
+	runtimeHandle, err := lib.CreateRuntime(runtimeOptions)
+	if err != nil {
+		_ = lib.Close()
+		return nil, fmt.Errorf("create lancedb runtime: %w", err)
+	}
+	engine, err := runtimeHandle.OpenDefaultEngine()
+	if err != nil {
+		_ = runtimeHandle.Close()
+		_ = lib.Close()
+		return nil, fmt.Errorf("open lancedb default engine: %w", err)
 	}
 
 	store := &Store{
-		conn:         conn,
-		client:       lancedbv1.NewLanceDbServiceClient(conn),
-		timeout:      timeout,
+		lib:          lib,
+		runtime:      runtimeHandle,
+		engine:       engine,
 		tableName:    resolveVectorTableName(tableName, dimension),
 		vectorColumn: strings.TrimSpace(vectorColumn),
 		dimension:    dimension,
 	}
 	if ensureTable {
 		if err := store.init(context.Background()); err != nil {
-			_ = conn.Close()
+			_ = store.Shutdown(context.Background())
 			return nil, err
 		}
 	}
@@ -103,9 +117,10 @@ func newStore(address string, timeout time.Duration, tableName, vectorColumn str
 // Upsert writes one memory record into the LanceDB-backed vector table using JSON row ingestion.
 // Upsert 用于通过 JSON 行写入方式把一条记忆记录保存到 LanceDB 向量表。
 func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) error {
-	// Convert the domain record into one JSON row so the gateway can upsert it by id.
-	// 将领域记录转换成一条 JSON 行，交给网关按 id 执行 upsert。
-	if s == nil || s.client == nil {
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	if s == nil || s.engine == nil {
 		return fmt.Errorf("lancedb store is not initialized")
 	}
 	metadataJSON, err := json.Marshal(record.Metadata)
@@ -131,117 +146,102 @@ func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) err
 	if err != nil {
 		return fmt.Errorf("marshal lancedb upsert payload: %w", err)
 	}
-
-	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := s.client.VectorUpsert(callCtx, &lancedbv1.UpsertRequest{
-		TableName:   s.tableName,
-		InputFormat: lancedbv1.InputFormat_INPUT_FORMAT_JSON_ROWS,
-		Data:        payload,
-		KeyColumns:  []string{"id"},
-	})
-	if err != nil {
+	if _, err := s.engine.VectorUpsertRaw(s.tableName, lancedbffi.InputFormatJSONRows, payload, []string{"id"}); err != nil {
 		return fmt.Errorf("lancedb vector upsert: %w", err)
 	}
-	if !resp.Success {
-		return fmt.Errorf("lancedb vector upsert: %s", resp.Message)
-	}
-	return nil
+	return checkContext(ctx)
 }
 
 // DeleteByFilter removes all vector rows that match one flattened hierarchy filter.
 // DeleteByFilter 用于删除符合某个扁平层级过滤条件的全部向量行。
 func (s *Store) DeleteByFilter(ctx context.Context, filter logicdomain.SearchFilter) (uint64, error) {
-	if s == nil || s.client == nil {
+	if err := checkContext(ctx); err != nil {
+		return 0, err
+	}
+	if s == nil || s.engine == nil {
 		return 0, fmt.Errorf("lancedb store is not initialized")
 	}
 	condition := buildDeleteCondition(filter)
 	if strings.TrimSpace(condition) == "" {
 		return 0, fmt.Errorf("lancedb delete filter is empty")
 	}
-	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := s.client.Delete(callCtx, &lancedbv1.DeleteRequest{
+	result, err := s.engine.Delete(lancedbffi.DeleteRequest{
 		TableName: s.tableName,
 		Condition: condition,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("lancedb delete: %w", err)
 	}
-	if !resp.GetSuccess() {
-		return 0, fmt.Errorf("lancedb delete: %s", resp.GetMessage())
+	if !result.Success {
+		return 0, fmt.Errorf("lancedb delete: %s", strings.TrimSpace(result.Message))
 	}
-	return resp.GetDeletedRows(), nil
+	return result.DeletedRows, checkContext(ctx)
 }
 
-// DeleteByIDs removes the specified vector rows precisely by their ids so higher-level workflows can roll back partial post-action writes.
-// DeleteByIDs 用于按 id 精确删除指定向量行，让上层工作流可以回滚部分 post-action 写入。
+// DeleteByIDs removes the specified vector rows precisely by their ids.
+// DeleteByIDs 用于按 id 精确删除指定向量行。
 func (s *Store) DeleteByIDs(ctx context.Context, ids []string) (uint64, error) {
-	if s == nil || s.client == nil {
+	if err := checkContext(ctx); err != nil {
+		return 0, err
+	}
+	if s == nil || s.engine == nil {
 		return 0, fmt.Errorf("lancedb store is not initialized")
 	}
 	condition := buildDeleteIDsCondition(ids)
 	if strings.TrimSpace(condition) == "" {
 		return 0, nil
 	}
-	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := s.client.Delete(callCtx, &lancedbv1.DeleteRequest{
+	result, err := s.engine.Delete(lancedbffi.DeleteRequest{
 		TableName: s.tableName,
 		Condition: condition,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("lancedb delete by ids: %w", err)
 	}
-	if !resp.GetSuccess() {
-		return 0, fmt.Errorf("lancedb delete by ids: %s", resp.GetMessage())
+	if !result.Success {
+		return 0, fmt.Errorf("lancedb delete by ids: %s", strings.TrimSpace(result.Message))
 	}
-	return resp.GetDeletedRows(), nil
+	return result.DeletedRows, checkContext(ctx)
 }
 
 // Search runs one vector search against the configured table and maps the returned JSON rows back into MemoryHit values.
 // Search 用于对配置好的表执行一次向量检索，并把返回的 JSON 行映射回 MemoryHit 结构。
 func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
-	// Build a filter expression compatible with the gateway service while keeping the port contract unchanged.
-	// 在保持端口契约不变的前提下，构造一条兼容网关服务的过滤表达式。
-	if s == nil || s.client == nil {
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
+	if s == nil || s.engine == nil {
 		return nil, fmt.Errorf("lancedb store is not initialized")
 	}
 	if topK <= 0 {
 		topK = 10
 	}
-	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := s.client.VectorSearch(callCtx, &lancedbv1.SearchRequest{
-		TableName:    s.tableName,
-		Vector:       vector,
-		Limit:        uint32(topK),
-		Filter:       buildFilterExpr(filter),
-		VectorColumn: s.vectorColumn,
-		OutputFormat: lancedbv1.OutputFormat_OUTPUT_FORMAT_JSON_ROWS,
-	})
+	filterExpr := buildFilterExpr(filter)
+	rows := make([]searchRow, 0)
+	result, err := s.engine.VectorSearchF32(
+		s.tableName,
+		vector,
+		uint32(topK),
+		filterExpr,
+		s.vectorColumn,
+		lancedbffi.OutputFormatJSONRows,
+	)
 	if err != nil {
 		return nil, fmt.Errorf("lancedb vector search: %w", err)
 	}
-	if !resp.Success {
-		return nil, fmt.Errorf("lancedb vector search: %s", resp.Message)
-	}
-
-	// Decode the gateway JSON output and translate the distance metric into the higher-is-better score expected upstream.
-	// 解码网关 JSON 输出，并把距离值转换成上游期望的“越高越好”分数。
-	rows := make([]searchRow, 0)
-	if len(resp.Data) > 0 {
-		if err := json.Unmarshal(resp.Data, &rows); err != nil {
+	if len(result.Data) > 0 {
+		if err := json.Unmarshal(result.Data, &rows); err != nil {
 			return nil, fmt.Errorf("decode lancedb search rows: %w", err)
 		}
 	}
+
 	hits := make([]logicdomain.MemoryHit, 0, len(rows))
 	for _, row := range rows {
 		metadata := map[string]string{}
 		if strings.TrimSpace(row.MetadataJSON) != "" {
 			if err := json.Unmarshal([]byte(row.MetadataJSON), &metadata); err != nil {
-				// Metadata decoding failed; proceed with empty metadata to keep the search result usable.
-				// 元数据解码失败：保持空元数据继续处理，确保搜索结果仍可用。
+				// Keep the hit usable even when metadata decoding fails.
+				// 即使元数据解码失败，也保留命中结果可用性。
 			}
 		}
 		distance := row.Distance
@@ -253,366 +253,403 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 			Text:  row.Content,
 			Score: distanceToScore(distance),
 			Filter: logicdomain.SearchFilter{
-				TeamID:    row.TeamID,
-				SpaceID:   row.SpaceID,
-				ProjectID: row.ProjectID,
-				SessionID: row.SessionID,
-				UserID:    row.UserID,
+				TeamID:              row.TeamID,
+				SpaceID:             row.SpaceID,
+				ProjectID:           row.ProjectID,
+				SessionID:           row.SessionID,
+				UserID:              row.UserID,
+				BoundarySessionID:   filter.BoundarySessionID,
+				BoundaryMaxTurnID:   filter.BoundaryMaxTurnID,
+				ExcludeBoundaryTurn: filter.ExcludeBoundaryTurn,
 			},
 			Metadata: metadata,
 		})
 	}
+	if err := checkContext(ctx); err != nil {
+		return nil, err
+	}
 	return hits, nil
 }
 
-// Shutdown closes the gRPC client connection used by the LanceDB gateway adapter.
-// Shutdown 用于关闭 LanceDB 网关适配器使用的 gRPC 连接。
+// Shutdown releases the underlying engine, runtime, and dynamic library handles.
+// Shutdown 用于释放底层引擎、运行时与动态库句柄。
 func (s *Store) Shutdown(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
+	if err := checkContext(ctx); err != nil {
+		return err
 	}
-	if s == nil || s.conn == nil {
+	if s == nil {
 		return nil
 	}
-	return s.conn.Close()
+	var closeErr error
+	if s.engine != nil {
+		closeErr = s.engine.Close()
+		s.engine = nil
+	}
+	if s.runtime != nil {
+		if err := s.runtime.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		s.runtime = nil
+	}
+	if s.lib != nil {
+		if err := s.lib.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		s.lib = nil
+	}
+	return closeErr
 }
 
-// RecreateTable drops the configured runtime table and rebuilds it with the current schema so controlled migrations can repopulate vectors from SQLite.
-// RecreateTable 用于删除当前运行时表并按最新结构重建，供受控迁移从 SQLite 回灌向量数据。
+// RecreateTable drops and recreates the current-dimension table used by vector rebuild maintenance flows.
+// RecreateTable 用于删除并重建当前维度表，服务向量重建维护流程。
 func (s *Store) RecreateTable(ctx context.Context) error {
-	if s == nil || s.client == nil {
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	if s == nil || s.engine == nil {
 		return fmt.Errorf("lancedb store is not initialized")
 	}
-	if err := debugDropTableWithClient(ctx, s.client, s.tableName, s.timeout); err != nil {
-		return fmt.Errorf("drop lancedb table for recreate: %w", err)
+	result, err := s.engine.DropTable(lancedbffi.DropTableRequest{TableName: s.tableName})
+	if err != nil && !isLanceTableNotFoundMessage(err.Error()) {
+		return fmt.Errorf("drop lancedb table %s: %w", s.tableName, err)
 	}
-	if err := s.init(ctx); err != nil {
-		return fmt.Errorf("recreate lancedb table: %w", err)
+	if err == nil && !result.Success && !isLanceTableNotFoundMessage(result.Message) {
+		return fmt.Errorf("drop lancedb table %s: %s", s.tableName, strings.TrimSpace(result.Message))
 	}
-	return nil
+	return s.init(ctx)
 }
 
-// init creates the configured vector table lazily so seed-memory can upsert without extra setup steps.
-// init 用于惰性创建配置指定的向量表，让 seed-memory 无需额外建表步骤即可写入。
+// init ensures the configured vector table exists with the expected schema.
+// init 用于确保目标向量表按照预期 schema 存在。
 func (s *Store) init(ctx context.Context) error {
-	callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-	defer cancel()
-	resp, err := s.client.CreateTable(callCtx, &lancedbv1.CreateTableRequest{
-		TableName:         s.tableName,
-		OverwriteIfExists: false,
-		Columns: []*lancedbv1.ColumnDef{
-			{Name: "id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: "content", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: "team_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
-			{Name: "space_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
-			{Name: "project_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
-			{Name: "session_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
-			{Name: "user_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
-			{Name: "source_turn_id", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_UINT64, Nullable: false},
-			{Name: "metadata_json", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: "created_at", ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_STRING, Nullable: false},
-			{Name: s.vectorColumn, ColumnType: lancedbv1.ColumnType_COLUMN_TYPE_VECTOR_FLOAT32, VectorDim: uint32(s.dimension), Nullable: false},
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	result, err := s.engine.CreateTable(lancedbffi.CreateTableRequest{
+		TableName: s.tableName,
+		Columns: []lancedbffi.CreateTableColumn{
+			{Name: "id", ColumnType: "string", Nullable: false},
+			{Name: "content", ColumnType: "string", Nullable: false},
+			{Name: "team_id", ColumnType: "int64", Nullable: false},
+			{Name: "space_id", ColumnType: "int64", Nullable: false},
+			{Name: "project_id", ColumnType: "int64", Nullable: false},
+			{Name: "session_id", ColumnType: "int64", Nullable: false},
+			{Name: "user_id", ColumnType: "int64", Nullable: false},
+			{Name: "source_turn_id", ColumnType: "int64", Nullable: false},
+			{Name: "metadata_json", ColumnType: "string", Nullable: false},
+			{Name: "created_at", ColumnType: "string", Nullable: false},
+			{Name: s.vectorColumn, ColumnType: "vector_float32", VectorDim: uint32(s.dimension), Nullable: false},
 		},
+		OverwriteIfExists: false,
 	})
 	if err != nil {
-		// Treat idempotent table-exists failures as success so repeated boots can reuse the same vector table.
-		// 将“表已存在”视为幂等成功，保证重复启动时可以直接复用同一张向量表。
 		if isTableAlreadyExistsError(err) {
 			return nil
 		}
-		return fmt.Errorf("create lancedb table: %w", err)
+		return fmt.Errorf("ensure lancedb table %s: %w", s.tableName, err)
 	}
-	if !resp.Success {
-		// Some gateway builds report existing tables through the response body instead of a transport error.
-		// 某些网关实现会通过响应体而不是传输层错误来报告“表已存在”。
-		if isTableAlreadyExistsMessage(resp.GetMessage()) {
-			return nil
-		}
-		return fmt.Errorf("create lancedb table: %s", resp.Message)
+	if !result.Success && !isTableAlreadyExistsMessage(result.Message) {
+		return fmt.Errorf("ensure lancedb table %s: %s", s.tableName, strings.TrimSpace(result.Message))
 	}
-	return nil
+	return checkContext(ctx)
 }
 
-// isTableAlreadyExistsError classifies gateway transport errors that mean the configured table is already present.
-// isTableAlreadyExistsError 用于识别那些实际表示“目标表已经存在”的网关传输层错误。
+// isTableAlreadyExistsError detects create-table errors that simply mean the target table already exists.
+// isTableAlreadyExistsError 用于识别“目标表已存在”这类可接受的建表错误。
 func isTableAlreadyExistsError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if status.Code(err) == codes.AlreadyExists {
-		return true
-	}
 	return isTableAlreadyExistsMessage(err.Error())
 }
 
-// isTableAlreadyExistsMessage matches the gateway messages used when CreateTable is retried on an existing table.
-// isTableAlreadyExistsMessage 用于匹配网关在重复创建已有表时返回的典型消息。
+// isTableAlreadyExistsMessage normalizes the existing-table message detection used by the LanceDB FFI adapter.
+// isTableAlreadyExistsMessage 用于统一检测 LanceDB FFI 适配器中的“表已存在”消息。
 func isTableAlreadyExistsMessage(message string) bool {
 	normalized := strings.ToLower(strings.TrimSpace(message))
-	if normalized == "" {
-		return false
-	}
-	return strings.Contains(normalized, "already exists")
+	return strings.Contains(normalized, "already exists") || strings.Contains(normalized, "table exists")
 }
 
-// buildFilterExpr converts one search filter into the simple SQL-like predicate syntax accepted by the gateway.
-// buildFilterExpr 用于把检索过滤条件转换成网关接受的简易 SQL 风格谓词表达式。
+// isLanceTableNotFoundMessage detects drop-table responses that mean the table is already absent.
+// isLanceTableNotFoundMessage 用于识别表示 LanceDB 目标表已经不存在的删表响应。
+func isLanceTableNotFoundMessage(message string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(normalized, "not found") || strings.Contains(normalized, "does not exist")
+}
+
+// buildFilterExpr renders one LanceDB-compatible filter expression from the hierarchical search filter.
+// buildFilterExpr 用于根据层级检索过滤条件渲染一条兼容 LanceDB 的过滤表达式。
 func buildFilterExpr(filter logicdomain.SearchFilter) string {
-	parts := make([]string, 0, 8)
+	conditions := make([]string, 0, 7)
 	if filter.TeamID > 0 {
-		parts = append(parts, fmt.Sprintf("team_id = %d", filter.TeamID))
+		conditions = append(conditions, fmt.Sprintf("team_id = %d", filter.TeamID))
 	}
 	if filter.SpaceID > 0 {
-		parts = append(parts, fmt.Sprintf("space_id = %d", filter.SpaceID))
+		conditions = append(conditions, fmt.Sprintf("space_id = %d", filter.SpaceID))
 	}
 	if filter.ProjectID > 0 {
-		parts = append(parts, fmt.Sprintf("project_id = %d", filter.ProjectID))
-	}
-	if filter.SessionID > 0 {
-		parts = append(parts, fmt.Sprintf("session_id = %d", filter.SessionID))
+		conditions = append(conditions, fmt.Sprintf("project_id = %d", filter.ProjectID))
 	}
 	if filter.UserID > 0 {
-		parts = append(parts, fmt.Sprintf("(user_id = 0 OR user_id = %d)", filter.UserID))
+		conditions = append(conditions, fmt.Sprintf("(user_id = 0 OR user_id = %d)", filter.UserID))
+	}
+	if filter.SessionID > 0 {
+		conditions = append(conditions, fmt.Sprintf("session_id = %d", filter.SessionID))
 	}
 	if filter.BoundarySessionID > 0 {
 		if filter.ExcludeBoundaryTurn {
-			parts = append(parts, fmt.Sprintf("(session_id != %d OR source_turn_id = 0)", filter.BoundarySessionID))
+			conditions = append(conditions, fmt.Sprintf("(session_id != %d OR source_turn_id = 0)", filter.BoundarySessionID))
 		} else {
-			parts = append(parts, fmt.Sprintf("(session_id != %d OR source_turn_id = 0 OR source_turn_id <= %d)", filter.BoundarySessionID, filter.BoundaryMaxTurnID))
+			conditions = append(conditions, fmt.Sprintf("(session_id != %d OR source_turn_id = 0 OR source_turn_id <= %d)", filter.BoundarySessionID, filter.BoundaryMaxTurnID))
 		}
 	}
-	return strings.Join(parts, " AND ")
+	return strings.Join(conditions, " AND ")
 }
 
-// buildDeleteCondition converts a hierarchy filter into the stricter predicate used by destructive vector cleanup flows.
-// buildDeleteCondition 用于把层级过滤条件转换成更严格的删除谓词，服务向量清理流程。
+// buildDeleteCondition renders one delete filter that targets one flattened hierarchy scope.
+// buildDeleteCondition 用于渲染一条删除过滤条件，指向一个扁平层级范围。
 func buildDeleteCondition(filter logicdomain.SearchFilter) string {
-	parts := make([]string, 0, 5)
+	conditions := make([]string, 0, 5)
 	if filter.TeamID > 0 {
-		parts = append(parts, fmt.Sprintf("team_id = %d", filter.TeamID))
+		conditions = append(conditions, fmt.Sprintf("team_id = %d", filter.TeamID))
 	}
 	if filter.SpaceID > 0 {
-		parts = append(parts, fmt.Sprintf("space_id = %d", filter.SpaceID))
+		conditions = append(conditions, fmt.Sprintf("space_id = %d", filter.SpaceID))
 	}
 	if filter.ProjectID > 0 {
-		parts = append(parts, fmt.Sprintf("project_id = %d", filter.ProjectID))
-	}
-	if filter.SessionID > 0 {
-		parts = append(parts, fmt.Sprintf("session_id = %d", filter.SessionID))
+		conditions = append(conditions, fmt.Sprintf("project_id = %d", filter.ProjectID))
 	}
 	if filter.UserID > 0 {
-		parts = append(parts, fmt.Sprintf("user_id = %d", filter.UserID))
+		conditions = append(conditions, fmt.Sprintf("user_id = %d", filter.UserID))
 	}
-	return strings.Join(parts, " AND ")
+	if filter.SessionID > 0 {
+		conditions = append(conditions, fmt.Sprintf("session_id = %d", filter.SessionID))
+	}
+	return strings.Join(conditions, " AND ")
 }
 
-// buildDeleteIDsCondition converts one id list into the OR predicate accepted by the gateway delete RPC.
-// buildDeleteIDsCondition 用于把 id 列表转换成网关删除 RPC 接受的 OR 谓词表达式。
+// buildDeleteIDsCondition renders a precise delete condition for one id set.
+// buildDeleteIDsCondition 用于为一组 id 渲染精确删除条件。
 func buildDeleteIDsCondition(ids []string) string {
-	parts := make([]string, 0, len(ids))
+	normalized := make([]string, 0, len(ids))
 	seen := map[string]struct{}{}
 	for _, id := range ids {
-		id = strings.TrimSpace(id)
-		if id == "" {
+		cleaned := strings.TrimSpace(id)
+		if cleaned == "" {
 			continue
 		}
-		if _, ok := seen[id]; ok {
+		if _, exists := seen[cleaned]; exists {
 			continue
 		}
-		seen[id] = struct{}{}
-		parts = append(parts, fmt.Sprintf("id = %s", quoteLanceString(id)))
+		seen[cleaned] = struct{}{}
+		normalized = append(normalized, quoteLanceString(cleaned))
+	}
+	if len(normalized) == 0 {
+		return ""
+	}
+	parts := make([]string, 0, len(normalized))
+	for _, id := range normalized {
+		parts = append(parts, fmt.Sprintf("id = %s", id))
 	}
 	return strings.Join(parts, " OR ")
 }
 
-// quoteLanceString escapes one string literal for the simple SQL-like filter language accepted by the gateway.
-// quoteLanceString 用于为网关接受的简易 SQL 风格过滤语法转义字符串字面量。
+// quoteLanceString escapes one string literal for LanceDB filter expressions.
+// quoteLanceString 用于为 LanceDB 过滤表达式转义一个字符串字面量。
 func quoteLanceString(raw string) string {
 	return "'" + strings.ReplaceAll(raw, "'", "''") + "'"
 }
 
-// distanceToScore turns the LanceDB nearest-neighbor distance into a stable higher-is-better score.
-// distanceToScore 用于把 LanceDB 最近邻距离转换成稳定的“越高越好”分数。
+// distanceToScore converts the lower-is-better distance metric into the higher-is-better score expected upstream.
+// distanceToScore 用于把“越小越好”的距离值转换成上游期望的“越大越好”分数。
 func distanceToScore(distance float64) float64 {
 	if distance <= 0 {
 		return 1
 	}
-	return 1 / (1 + math.Max(distance, 0))
+	return 1 / (1 + distance)
 }
 
-// resolveVectorTableName derives the concrete LanceDB table name from the logical base name and embedding dimension.
-// resolveVectorTableName 用于根据逻辑基础表名和 embedding 维度推导实际的 LanceDB 表名。
+// resolveVectorTableName appends the embedding dimension suffix to the configured base table name.
+// resolveVectorTableName 用于在配置的基础表名后追加 embedding 维度后缀。
 func resolveVectorTableName(baseName string, dimension int) string {
-	trimmedBase := strings.TrimSpace(baseName)
-	return fmt.Sprintf("%s_%d", trimmedBase, dimension)
+	return fmt.Sprintf("%s_%d", strings.TrimSpace(baseName), dimension)
 }
 
-// searchRow mirrors the JSON search row emitted by the gateway in JSON output mode.
-// searchRow 用于映射网关在 JSON 输出模式下返回的一行检索结果。
-type searchRow struct {
-	ID           string  `json:"id"`
-	Content      string  `json:"content"`
-	TeamID       uint64  `json:"team_id"`
-	SpaceID      uint64  `json:"space_id"`
-	ProjectID    uint64  `json:"project_id"`
-	SessionID    uint64  `json:"session_id"`
-	UserID       uint64  `json:"user_id"`
-	SourceTurnID uint64  `json:"source_turn_id"`
-	MetadataJSON string  `json:"metadata_json"`
-	Distance     float64 `json:"_distance"`
-	Score        float64 `json:"distance"`
-}
-
-// UnmarshalJSON keeps search-row distance parsing tolerant to either numeric or string JSON values.
-// UnmarshalJSON 用于兼容检索结果里的距离字段既可能是数值也可能是字符串的情况。
-func (r *searchRow) UnmarshalJSON(data []byte) error {
-	type rawSearchRow struct {
-		ID           string         `json:"id"`
-		Text         string         `json:"text"`
-		UserID       string         `json:"user_id"`
-		ProjectID    string         `json:"project_id"`
-		SpaceID      string         `json:"space_id"`
-		MetadataJSON string         `json:"metadata_json"`
-		Distance     any            `json:"_distance"`
-		AltDistance  any            `json:"distance"`
-		Extra        map[string]any `json:"-"`
+// checkContext returns the current context error when the caller has already cancelled the operation.
+// checkContext 用于在调用方已取消操作时返回当前 context 错误。
+func checkContext(ctx context.Context) error {
+	if ctx == nil {
+		return nil
 	}
-	var raw map[string]any
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+// searchRow mirrors one JSON rows search hit returned by LanceDB.
+// searchRow 用于映射 LanceDB 返回的一条 JSON rows 检索命中。
+type searchRow struct {
+	ID           string    `json:"id"`
+	Content      string    `json:"content"`
+	TeamID       uint64    `json:"team_id"`
+	SpaceID      uint64    `json:"space_id"`
+	ProjectID    uint64    `json:"project_id"`
+	SessionID    uint64    `json:"session_id"`
+	UserID       uint64    `json:"user_id"`
+	SourceTurnID uint64    `json:"source_turn_id"`
+	MetadataJSON string    `json:"metadata_json"`
+	CreatedAt    time.Time `json:"created_at"`
+	Distance     float64   `json:"_distance"`
+	Score        float64   `json:"score"`
+}
+
+// UnmarshalJSON normalizes numeric/string mixed LanceDB fields into one stable searchRow shape.
+// UnmarshalJSON 用于把 LanceDB 数值/字符串混合字段归一化为稳定的 searchRow 结构。
+func (r *searchRow) UnmarshalJSON(data []byte) error {
+	var raw rawSearchRow
 	if err := json.Unmarshal(data, &raw); err != nil {
 		return err
 	}
-	var err error
-	r.ID = asString(raw["id"])
-	r.Content = asString(raw["content"])
-	if r.TeamID, err = asUint64(raw["team_id"]); err != nil {
-		return fmt.Errorf("decode search row team_id: %w", err)
+	teamID, err := asUint64(raw.TeamID)
+	if err != nil {
+		return fmt.Errorf("decode team_id: %w", err)
 	}
-	if r.SpaceID, err = asUint64(raw["space_id"]); err != nil {
-		return fmt.Errorf("decode search row space_id: %w", err)
+	spaceID, err := asUint64(raw.SpaceID)
+	if err != nil {
+		return fmt.Errorf("decode space_id: %w", err)
 	}
-	if r.ProjectID, err = asUint64(raw["project_id"]); err != nil {
-		return fmt.Errorf("decode search row project_id: %w", err)
+	projectID, err := asUint64(raw.ProjectID)
+	if err != nil {
+		return fmt.Errorf("decode project_id: %w", err)
 	}
-	if r.SessionID, err = asUint64(raw["session_id"]); err != nil {
-		return fmt.Errorf("decode search row session_id: %w", err)
+	sessionID, err := asUint64(raw.SessionID)
+	if err != nil {
+		return fmt.Errorf("decode session_id: %w", err)
 	}
-	if r.UserID, err = asUint64(raw["user_id"]); err != nil {
-		return fmt.Errorf("decode search row user_id: %w", err)
+	userID, err := asUint64(raw.UserID)
+	if err != nil {
+		return fmt.Errorf("decode user_id: %w", err)
 	}
-	if r.SourceTurnID, err = asUint64(raw["source_turn_id"]); err != nil {
-		return fmt.Errorf("decode search row source_turn_id: %w", err)
+	sourceTurnID, err := asUint64(raw.SourceTurnID)
+	if err != nil {
+		return fmt.Errorf("decode source_turn_id: %w", err)
 	}
-	r.MetadataJSON = asString(raw["metadata_json"])
-	if r.Distance, err = asFloat64(raw["_distance"]); err != nil {
-		return fmt.Errorf("decode search row _distance: %w", err)
+	distance, err := asFloat64(raw.Distance)
+	if err != nil {
+		return fmt.Errorf("decode _distance: %w", err)
 	}
-	if r.Score, err = asFloat64(raw["distance"]); err != nil {
-		return fmt.Errorf("decode search row distance: %w", err)
+	score, err := asFloat64(raw.Score)
+	if err != nil {
+		return fmt.Errorf("decode score: %w", err)
+	}
+	createdAt := time.Time{}
+	if raw.CreatedAt != nil {
+		parsed, err := time.Parse(time.RFC3339Nano, strings.TrimSpace(asString(raw.CreatedAt)))
+		if err != nil {
+			return fmt.Errorf("parse lancedb created_at: %w", err)
+		}
+		createdAt = parsed
+	}
+	*r = searchRow{
+		ID:           strings.TrimSpace(raw.ID),
+		Content:      strings.TrimSpace(raw.Content),
+		TeamID:       teamID,
+		SpaceID:      spaceID,
+		ProjectID:    projectID,
+		SessionID:    sessionID,
+		UserID:       userID,
+		SourceTurnID: sourceTurnID,
+		MetadataJSON: strings.TrimSpace(raw.MetadataJSON),
+		CreatedAt:    createdAt,
+		Distance:     distance,
+		Score:        score,
 	}
 	return nil
 }
 
-// asUint64 converts one generic JSON field into uint64 while tolerating float and string encodings from the gateway.
-// asUint64 用于把通用 JSON 字段转换成 uint64，并兼容网关返回的浮点或字符串编码。
+// rawSearchRow stores the heterogeneous JSON field types returned by LanceDB JSON rows search.
+// rawSearchRow 用于保存 LanceDB JSON rows 检索返回的异构字段类型。
+type rawSearchRow struct {
+	ID           string `json:"id"`
+	Content      string `json:"content"`
+	TeamID       any    `json:"team_id"`
+	SpaceID      any    `json:"space_id"`
+	ProjectID    any    `json:"project_id"`
+	SessionID    any    `json:"session_id"`
+	UserID       any    `json:"user_id"`
+	SourceTurnID any    `json:"source_turn_id"`
+	MetadataJSON string `json:"metadata_json"`
+	CreatedAt    any    `json:"created_at"`
+	Distance     any    `json:"_distance"`
+	Score        any    `json:"score"`
+}
+
+// asUint64 converts one JSON scalar into uint64 while preserving clear error messages for malformed LanceDB rows.
+// asUint64 用于把一个 JSON 标量转换成 uint64，并在 LanceDB 行数据格式异常时保留清晰错误信息。
 func asUint64(value any) (uint64, error) {
 	switch typed := value.(type) {
 	case nil:
 		return 0, nil
 	case float64:
-		if typed < 0 {
-			return 0, nil
+		if typed < 0 || math.IsNaN(typed) || math.IsInf(typed, 0) {
+			return 0, fmt.Errorf("invalid numeric uint64 value: %v", typed)
 		}
 		return uint64(typed), nil
-	case float32:
-		if typed < 0 {
-			return 0, nil
-		}
-		return uint64(typed), nil
-	case int:
-		if typed < 0 {
-			return 0, nil
-		}
-		return uint64(typed), nil
-	case int64:
-		if typed < 0 {
-			return 0, nil
-		}
-		return uint64(typed), nil
-	case uint64:
-		return typed, nil
 	case json.Number:
-		number, err := strconv.ParseUint(strings.TrimSpace(string(typed)), 10, 64)
+		parsed, err := typed.Int64()
 		if err != nil {
 			return 0, err
 		}
-		return number, nil
+		if parsed < 0 {
+			return 0, fmt.Errorf("invalid negative uint64 value: %d", parsed)
+		}
+		return uint64(parsed), nil
 	case string:
-		trimmed := strings.TrimSpace(typed)
-		if trimmed == "" {
+		if strings.TrimSpace(typed) == "" {
 			return 0, nil
 		}
-		number, err := strconv.ParseUint(trimmed, 10, 64)
+		parsed, err := strconv.ParseUint(strings.TrimSpace(typed), 10, 64)
 		if err != nil {
 			return 0, err
 		}
-		return number, nil
+		return parsed, nil
 	default:
-		return 0, fmt.Errorf("unexpected type %T for uint64 field", value)
+		return 0, fmt.Errorf("unsupported uint64 value type %T", value)
 	}
 }
 
-// asString converts one generic JSON field into a string without panicking on null or unexpected shapes.
-// asString 用于把通用 JSON 字段安全转换成字符串，避免在 null 或意外结构上发生 panic。
+// asString converts one optional JSON scalar into string.
+// asString 用于把一个可选 JSON 标量转换为字符串。
 func asString(value any) string {
 	switch typed := value.(type) {
-	case string:
-		return typed
 	case nil:
 		return ""
+	case string:
+		return typed
 	default:
 		return fmt.Sprint(typed)
 	}
 }
 
-// asFloat64 converts one generic JSON field into a float64 while tolerating integer and string values.
-// asFloat64 用于把通用 JSON 字段转换成 float64，同时兼容整数和字符串值。
+// asFloat64 converts one JSON scalar into float64.
+// asFloat64 用于把一个 JSON 标量转换成 float64。
 func asFloat64(value any) (float64, error) {
 	switch typed := value.(type) {
 	case nil:
 		return 0, nil
 	case float64:
 		return typed, nil
-	case float32:
-		return float64(typed), nil
-	case int:
-		return float64(typed), nil
-	case int32:
-		return float64(typed), nil
-	case int64:
-		return float64(typed), nil
-	case uint32:
-		return float64(typed), nil
-	case uint64:
-		return float64(typed), nil
 	case json.Number:
-		number, err := typed.Float64()
-		if err != nil {
-			return 0, err
-		}
-		return number, nil
+		return typed.Float64()
 	case string:
-		trimmed := strings.TrimSpace(typed)
-		if trimmed == "" {
+		if strings.TrimSpace(typed) == "" {
 			return 0, nil
 		}
-		number, err := strconv.ParseFloat(trimmed, 64)
-		if err != nil {
-			return 0, err
-		}
-		return number, nil
+		return strconv.ParseFloat(strings.TrimSpace(typed), 64)
 	default:
-		return 0, fmt.Errorf("unexpected type %T for float64 field", value)
+		return 0, fmt.Errorf("unsupported float64 value type %T", value)
 	}
 }

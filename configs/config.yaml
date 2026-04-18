@@ -68,13 +68,21 @@ storage:
   mode: "combined"
 
 sqlite:
-  # Placeholder endpoint kept for split-mode switching or local experiments.
-  # 为 split 模式切换或本地实验保留的占位地址。
+  # Legacy compatibility field kept only for older split-mode experiments.
+  # 仅为旧 split 模式实验保留的兼容字段。
+  # Current split mode uses the bundled local SQLite FFI library and ignores this address.
+  # 当前 split 模式使用随包分发的本地 SQLite FFI 动态库，因此会忽略这个地址。
   address: "${VMM_SQLITE_ADDRESS}"
 
+  # Built-in tokenizer mode used by the local SQLite FTS integration when split mode is enabled.
+  # split 模式启用时，本地 SQLite FTS 集成使用的内建分词模式。
+  tokenizer_mode: "${VMM_SQLITE_TOKENIZER_MODE}"
+
 lancedb:
-  # Placeholder endpoint kept for split-mode vector storage.
-  # 为 split 模式向量存储保留的占位地址。
+  # Legacy compatibility field kept only for older split-mode experiments.
+  # 仅为旧 split 模式实验保留的兼容字段。
+  # Current split mode uses the bundled local LanceDB FFI library and ignores this address.
+  # 当前 split 模式使用随包分发的本地 LanceDB FFI 动态库，因此会忽略这个地址。
   address: "${VMM_LANCEDB_ADDRESS}"
 
 postgres:

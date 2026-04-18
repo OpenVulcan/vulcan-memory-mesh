@@ -78,7 +78,7 @@ func run(ctx context.Context, argv0, cfgPath, cleanTarget, migrateTarget string,
 
 	switch {
 	case strings.TrimSpace(cleanTarget) != "":
-		return runMaintenanceClean(ctx, cfg, cleanTarget)
+		return runMaintenanceClean(ctx, cfg, layout, cleanTarget)
 	case strings.TrimSpace(migrateTarget) != "":
 		return runMaintenanceMigrate(ctx, cfg, migrateTarget)
 	case vectorRebuild:

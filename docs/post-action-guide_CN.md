@@ -373,6 +373,7 @@ message PostActionTimelineItem {
 4. `L2` 再结合：
    - 当前轮候选
    - 实际召回到的 `similar_memories`
+   - 当前 turn 日期以及旧记忆轻量创建日期
    - 画像活跃节点
    - 新画像候选
    做最终决策
@@ -380,7 +381,8 @@ message PostActionTimelineItem {
 这样做的原因是：
 
 1. 去重和替代本来就应该基于“这条新候选到底和哪些旧记忆相近”的证据，而不是靠 `L1` 在大 prompt 里主观预判。
-2. 把 dedupe / supersede 主责任下沉后，`L1`、检索层、`L2` 的职责边界更清楚，后续优化也更容易。
+2. 当新候选与旧记忆属于同一事实域时，轻量日期上下文可以辅助区分“只是重复表达”还是“发生了更新、纠正或阶段推进”。
+3. 把 dedupe / supersede 主责任下沉后，`L1`、检索层、`L2` 的职责边界更清楚，后续优化也更容易。
 
 ### 4. 为什么最终 supersede 只从 surviving `memory_nodes[].supersede_memory_ids[]` 推导
 

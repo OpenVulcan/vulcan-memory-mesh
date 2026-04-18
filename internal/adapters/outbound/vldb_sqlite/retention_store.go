@@ -31,7 +31,7 @@ type sqliteIdleSessionRecycleResult struct {
 // RecycleColdMemories transactionally copies terminal durable memories and their context edges into SQLite trash tables before removing them from the hot tables.
 // RecycleColdMemories 用于在同一 SQLite 事务里先复制终态长期记忆及其情境边到回收站，再从热表删除。
 func (s *Store) RecycleColdMemories(ctx context.Context, query logicdomain.MemoryRecycleQuery) (logicdomain.MemoryRecycleResult, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit := normalizeSQLiteRetentionBatchLimit(query.Limit, 128)
@@ -144,9 +144,6 @@ WHERE memory_id IN (%s);
 DELETE FROM vmm_memory_context_edges
 WHERE memory_id IN (%s);
 
-DELETE FROM vmm_memory_nodes_fts
-WHERE memory_id IN (%s);
-
 DELETE FROM vmm_memory_nodes
 WHERE id IN (%s);
 COMMIT;
@@ -154,10 +151,14 @@ COMMIT;
 		batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
 		batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
 		memoryIDList,
-		memoryIDList,
 		memoryIDList)
 	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("recycle sqlite cold memories: %w", err)
+	}
+	if s.database != nil {
+		if err := s.syncMemoryFTSAfterWrite(ctx, nil, normalizedMemoryIDs); err != nil {
+			return logicdomain.MemoryRecycleResult{}, fmt.Errorf("sync sqlite memory fts after cold recycle: %w", err)
+		}
 	}
 
 	return logicdomain.MemoryRecycleResult{
@@ -171,7 +172,7 @@ COMMIT;
 // RecycleIdleSessions compacts long-idle SQLite sessions by moving stale session memories and eligible old turns into trash tables before removing them from the hot tables.
 // RecycleIdleSessions 用于压缩长期空闲的 SQLite session，把陈旧 session 记忆和符合条件的旧 turn 迁入回收站，再从热表删除。
 func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.SessionIdleRecycleQuery) (logicdomain.SessionIdleRecycleResult, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return logicdomain.SessionIdleRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit := normalizeSQLiteRetentionBatchLimit(query.Limit, 32)
@@ -241,7 +242,7 @@ LIMIT ?
 // PurgeExpiredTrash permanently removes SQLite trash batches whose soft-backup retention window has elapsed, including the recycle-batch metadata row so batch bookkeeping cannot grow without bound after trash data is gone.
 // PurgeExpiredTrash 用于永久删除已超过软备份保留窗口的 SQLite 回收站批次，并一并删除回收批次元数据，避免在 trash 数据清空后批次台账继续无界增长。
 func (s *Store) PurgeExpiredTrash(ctx context.Context, before time.Time, limit int) (logicdomain.RetentionTrashPurgeResult, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit = normalizeSQLiteRetentionBatchLimit(limit, 64)
@@ -441,14 +442,10 @@ WHERE memory_id IN (%s);
 DELETE FROM vmm_memory_context_edges
 WHERE memory_id IN (%s);
 
-DELETE FROM vmm_memory_nodes_fts
-WHERE memory_id IN (%s);
-
 DELETE FROM vmm_memory_nodes
 WHERE id IN (%s);
 `, batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
 			batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
-			memoryIDList,
 			memoryIDList,
 			memoryIDList))
 	}
@@ -475,6 +472,11 @@ WHERE id IN (%s);
 
 	if err := s.exec(ctx, builder.String()); err != nil {
 		return sqliteIdleSessionRecycleResult{}, fmt.Errorf("recycle sqlite idle session %d: %w", session.ID, err)
+	}
+	if s.database != nil {
+		if err := s.syncMemoryFTSAfterWrite(ctx, nil, normalizedMemoryIDs); err != nil {
+			return sqliteIdleSessionRecycleResult{}, fmt.Errorf("sync sqlite memory fts after idle recycle %d: %w", session.ID, err)
+		}
 	}
 
 	return sqliteIdleSessionRecycleResult{

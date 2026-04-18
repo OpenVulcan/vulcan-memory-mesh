@@ -9,30 +9,22 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"os"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
 
-	sqlitev1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
 )
 
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
 	currentSchemaVersion = 19
-
-	// versionSingletonID pins the schema-version row to one deterministic singleton record.
-	// versionSingletonID 用于把 schema 版本记录固定到一条确定性的单例行。
-	versionSingletonID = 1
 
 	// debugSeedUserID keeps the testing-stage default user row stable so grpc debugging can immediately target user_id=1.
 	// debugSeedUserID 用于固定测试阶段的默认用户行，便于 gRPC 调试时直接使用 user_id=1。
@@ -58,35 +50,16 @@ const (
 	// sqliteRetryMaxAttempts 用于限制 SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA 这类可重试响应的最大重试次数，避免调用方无限自旋。
 	sqliteRetryMaxAttempts = 3
 
-	// sqliteRetryBaseDelay is the small exponential-backoff seed used after the gateway marks one SQLite response as retryable.
-	// sqliteRetryBaseDelay 用于在网关把某次 SQLite 响应标记为可重试后，提供一个较小的指数退避起始值。
+	// sqliteRetryBaseDelay is the small exponential-backoff seed used after one local FFI SQLite call reports a retryable busy/locked/schema error.
+	// sqliteRetryBaseDelay 用于在本地 FFI SQLite 调用报告 busy/locked/schema 可重试错误后，提供一个较小的指数退避起始值。
 	sqliteRetryBaseDelay = 50 * time.Millisecond
-)
 
-const resetManagedSchemaSQL = `
-DROP TABLE IF EXISTS vmm_profile_nodes;
-DROP TABLE IF EXISTS vmm_profile_instructions;
-DROP TABLE IF EXISTS vmm_turn_records_trash;
-DROP TABLE IF EXISTS vmm_memory_context_edges_trash;
-DROP TABLE IF EXISTS vmm_memory_nodes_trash;
-DROP TABLE IF EXISTS vmm_recycle_batches;
-DROP TABLE IF EXISTS vmm_recycle_jobs;
-DROP TABLE IF EXISTS vmm_vector_gc_jobs;
-DROP TABLE IF EXISTS vmm_memory_nodes_fts;
-DROP TABLE IF EXISTS vmm_memory_context_edges;
-DROP TABLE IF EXISTS vmm_memory_nodes;
-DROP TABLE IF EXISTS vmm_turn_records;
-DROP TABLE IF EXISTS vmm_chat_messages;
-DROP TABLE IF EXISTS vmm_memory_entries;
-DROP TABLE IF EXISTS vmm_scratchpad_nodes;
-DROP TABLE IF EXISTS vmm_scratchpad_plans;
-DROP TABLE IF EXISTS vmm_sessions;
-DROP TABLE IF EXISTS vmm_projects;
-DROP TABLE IF EXISTS vmm_spaces;
-DROP TABLE IF EXISTS vmm_teams;
-DROP TABLE IF EXISTS vmm_users;
-DROP TABLE IF EXISTS vmm_noise_embeddings;
-`
+	// memoryFTSIndexName pins the dedicated SQLite FTS document table used for durable memory lexical retrieval,
+	// so the library can own one standalone fts5 table instead of colliding with the relational source table.
+	// memoryFTSIndexName 用于固定长期记忆 lexical 检索所使用的独立 SQLite FTS 文档表名称，
+	// 让库侧能够维护单独的 fts5 表，而不会与关系源表发生命名冲突。
+	memoryFTSIndexName = "vmm_memory_nodes_fts"
+)
 
 const currentSchemaSQL = `
 CREATE TABLE IF NOT EXISTS vmm_noise_embeddings (
@@ -253,13 +226,6 @@ CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_source_turn ON vmm_memory_nodes(
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_origin_session_active ON vmm_memory_nodes(origin_session_id, memory_status, expires_timestamp, id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_vmm_memory_nodes_vector ON vmm_memory_nodes(vector_id);
 CREATE INDEX IF NOT EXISTS idx_vmm_memory_nodes_dedupe_window ON vmm_memory_nodes(origin_session_id, project_id, user_id, source_kind, scope_level, dedupe_hash, memory_status, expires_timestamp, created_timestamp);
-
-CREATE VIRTUAL TABLE IF NOT EXISTS vmm_memory_nodes_fts USING fts5(
-  memory_id UNINDEXED,
-  abstract,
-  details,
-  tokenize='unicode61 remove_diacritics 2'
-);
 
 CREATE TABLE IF NOT EXISTS vmm_memory_context_edges (
   memory_id BIGINT NOT NULL,
@@ -442,92 +408,141 @@ CREATE INDEX IF NOT EXISTS idx_vmm_profile_instructions_target ON vmm_profile_in
 
 `
 
-// Store is the SQLite-gateway adapter used for hierarchy metadata, session/turn persistence, and cache storage.
-// Store 用于作为 SQLite 网关适配器，承接层级元数据、session/turn 持久化以及缓存存储。
+// Store is the SQLite local-FFI adapter used for hierarchy metadata, session/turn persistence, cache storage, and built-in FTS.
+// Store 用于作为 SQLite 本地 FFI 适配器，承接层级元数据、session/turn 持久化、缓存存储以及内建 FTS。
 type Store struct {
-	conn             *grpc.ClientConn
-	client           sqlitev1.SqliteServiceClient
-	timeout          time.Duration
-	writeMu          sync.Mutex
-	lexicalTokenizer *textutil.LexicalTokenizer
+	lib           *sqliteffi.Library
+	runtime       *sqliteffi.Runtime
+	database      sqliteDatabaseHandle
+	timeout       time.Duration
+	writeMu       sync.Mutex
+	tokenizerMode sqliteffi.TokenizerMode
+	ftsIndexName  string
 }
 
-// StoreOptions collects optional SQLite adapter features that change lexical indexing behavior without affecting unrelated callers.
-// StoreOptions 用于收集会改变 lexical 索引行为、但不会影响其他调用方的 SQLite 适配器可选特性。
+// sqliteDatabaseHandle narrows the SQLite FFI surface that the adapter depends on so unit tests can replace the local database handle with one focused in-memory fake.
+// sqliteDatabaseHandle 用于收窄适配器依赖的 SQLite FFI 能力面，这样单测就可以把本地数据库句柄替换成一个聚焦的内存 fake。
+type sqliteDatabaseHandle interface {
+	ExecuteScript(sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.ExecuteResult, error)
+	ExecuteBatch(sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error)
+	QueryJSON(sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.QueryJSONResult, error)
+	EnsureFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.EnsureFtsIndexResult, error)
+	RebuildFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.RebuildFtsIndexResult, error)
+	UpsertFtsDocument(indexName string, mode sqliteffi.TokenizerMode, id string, filePath string, title string, content string) (sqliteffi.FtsMutationResult, error)
+	DeleteFtsDocument(indexName string, id string) (sqliteffi.FtsMutationResult, error)
+	SearchFts(indexName string, mode sqliteffi.TokenizerMode, query string, limit uint32, offset uint32) (sqliteffi.SearchResult, error)
+	Close() error
+}
+
+// hasSQLiteStore reports whether the adapter currently holds one local SQLite database handle.
+// hasSQLiteStore 用于判断适配器当前是否持有一个本地 SQLite 数据库句柄。
+func (s *Store) hasSQLiteStore() bool {
+	return s != nil && s.database != nil
+}
+
+// StoreOptions collects optional SQLite adapter features that change local FTS behavior without affecting unrelated callers.
+// StoreOptions 用于收集会改变本地 FTS 行为、但不会影响其他调用方的 SQLite 适配器可选特性。
 type StoreOptions struct {
-	LexicalPreTokenize bool
+	TokenizerMode string
 }
 
-// NewStore dials the SQLite gateway and ensures the local schema is initialized before serving traffic.
-// NewStore 用于连接 SQLite 网关，并在对外提供服务前确保本地表结构已经初始化。
-func NewStore(address string, timeout time.Duration, options ...StoreOptions) (*Store, error) {
-	// Validate and normalize the gateway endpoint first so startup failures remain easy to diagnose.
-	// 先校验并规范化网关地址，确保启动失败原因保持易于诊断。
-	if strings.TrimSpace(address) == "" {
-		return nil, fmt.Errorf("sqlite address is required")
+// NewStore opens the packaged SQLite dynamic library and ensures the local schema and built-in FTS index are initialized before serving traffic.
+// NewStore 用于打开打包后的 SQLite 动态库，并在对外提供服务前确保本地表结构和内建 FTS 索引已经初始化。
+func NewStore(libraryPath string, databasePath string, timeout time.Duration, options ...StoreOptions) (*Store, error) {
+	if strings.TrimSpace(libraryPath) == "" {
+		return nil, fmt.Errorf("sqlite library path is required")
+	}
+	if strings.TrimSpace(databasePath) == "" {
+		return nil, fmt.Errorf("sqlite database path is required")
 	}
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-	storeOptions := StoreOptions{LexicalPreTokenize: true}
+	storeOptions := StoreOptions{TokenizerMode: "jieba"}
 	if len(options) > 0 {
 		storeOptions = options[0]
 	}
 
-	// Initialize the tokenizer before dialing so lexical configuration errors fail during startup instead of the first recall request.
-	// 在建立连接前初始化分词器，让 lexical 配置错误在启动阶段暴露，而不是拖到首次召回时才失败。
-	lexicalTokenizer, err := textutil.NewLexicalTokenizer(textutil.LexicalTokenizerConfig{
-		EnablePreTokenize: storeOptions.LexicalPreTokenize,
-	})
+	if err := os.MkdirAll(filepathDir(databasePath), 0o755); err != nil {
+		return nil, fmt.Errorf("create sqlite database dir: %w", err)
+	}
+	lib, err := sqliteffi.Open(strings.TrimSpace(libraryPath))
 	if err != nil {
-		return nil, fmt.Errorf("init lexical tokenizer: %w", err)
+		return nil, err
+	}
+	runtimeHandle, err := lib.CreateRuntime()
+	if err != nil {
+		_ = lib.Close()
+		return nil, fmt.Errorf("create sqlite runtime: %w", err)
+	}
+	databaseHandle, err := runtimeHandle.OpenDatabase(strings.TrimSpace(databasePath))
+	if err != nil {
+		_ = runtimeHandle.Close()
+		_ = lib.Close()
+		return nil, fmt.Errorf("open sqlite database: %w", err)
 	}
 
-	// Dial the gateway eagerly so configuration drift is caught during application boot.
-	// 以阻塞方式建立网关连接，让配置漂移在应用启动阶段就暴露出来。
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
-	defer cancel()
-	conn, err := grpc.DialContext(
-		ctx,
-		strings.TrimSpace(address),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	)
+	tokenizerMode, err := parseSQLiteTokenizerMode(storeOptions.TokenizerMode)
 	if err != nil {
-		return nil, fmt.Errorf("dial sqlite gateway: %w", err)
+		_ = databaseHandle.Close()
+		_ = runtimeHandle.Close()
+		_ = lib.Close()
+		return nil, err
 	}
 
 	store := &Store{
-		conn:             conn,
-		client:           sqlitev1.NewSqliteServiceClient(conn),
-		timeout:          timeout,
-		lexicalTokenizer: lexicalTokenizer,
+		lib:           lib,
+		runtime:       runtimeHandle,
+		database:      databaseHandle,
+		timeout:       timeout,
+		tokenizerMode: tokenizerMode,
+		ftsIndexName:  memoryFTSIndexName,
 	}
 	if err := store.init(context.Background()); err != nil {
-		_ = conn.Close()
+		_ = store.Shutdown(context.Background())
 		return nil, err
 	}
 	return store, nil
 }
 
-// Shutdown closes the gRPC client connection used by the SQLite gateway adapter.
-// Shutdown 用于关闭 SQLite 网关适配器所使用的 gRPC 客户端连接。
+// Shutdown closes the opened database, runtime, and dynamic-library handles used by the SQLite local-FFI adapter.
+// Shutdown 用于关闭 SQLite 本地 FFI 适配器所使用的数据库、运行时和动态库句柄。
 func (s *Store) Shutdown(ctx context.Context) error {
 	select {
 	case <-ctx.Done():
 		return ctx.Err()
 	default:
 	}
-	if s == nil || s.conn == nil {
+	if s == nil {
 		return nil
 	}
-	return s.conn.Close()
+	var closeErr error
+	if s.database != nil {
+		closeErr = s.database.Close()
+		s.database = nil
+	}
+	if s.runtime != nil {
+		if err := s.runtime.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		s.runtime = nil
+	}
+	if s.lib != nil {
+		if err := s.lib.Close(); err != nil && closeErr == nil {
+			closeErr = err
+		}
+		s.lib = nil
+	}
+	return closeErr
 }
 
 // init ensures the SQLite schema is bootstrapped or incrementally migrated before the store starts serving traffic.
 // init 用于在存储开始提供服务前，确保 SQLite schema 已完成初始化或增量迁移。
 func (s *Store) init(ctx context.Context) error {
-	return s.ensureSQLiteSchema(ctx)
+	if err := s.ensureSQLiteSchema(ctx); err != nil {
+		return err
+	}
+	return s.ensureBuiltinMemoryFTS(ctx)
 }
 
 // buildDebugSeedWorkspaceSQL renders the deterministic testing-stage seed rows so grpc debugging always starts with user_id=1 and project_id=1 available.
@@ -556,23 +571,19 @@ VALUES (%d, %d, %d, %s, '', %s, %s);
 // exec sends one SQL statement or script to the SQLite gateway and prefers native typed params for the sqlite-first runtime path.
 // exec 用于把单条 SQL 或脚本发送给 SQLite 网关，并在 sqlite-first 运行路径里优先使用原生强类型参数。
 func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
 		return err
 	}
-	req := &sqlitev1.ExecuteRequest{
-		Sql: strings.TrimSpace(sql),
-	}
-	applySQLiteExecParams(req, prepared)
-	resp, err := s.executeScript(ctx, req)
+	resp, err := s.executeScript(ctx, strings.TrimSpace(sql), prepared.Values)
 	if err != nil {
 		return fmt.Errorf("sqlite execute: %w", err)
 	}
-	if !resp.GetSuccess() {
-		return fmt.Errorf("sqlite execute: %s", strings.TrimSpace(resp.GetMessage()))
+	if !resp.Success {
+		return fmt.Errorf("sqlite execute: %s", strings.TrimSpace(resp.Message))
 	}
 	return nil
 }
@@ -580,29 +591,26 @@ func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 // execBatch sends one repeated-shape write workload through SQLite's native ExecuteBatch RPC so sqlite-first storage avoids one-RPC-per-row churn.
 // execBatch 用于通过 SQLite 原生 ExecuteBatch RPC 发送同构写入，避免 sqlite-first 存储退化成“一行一次 RPC”。
 func (s *Store) execBatch(ctx context.Context, sql string, items [][]any) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	if len(items) == 0 {
 		return nil
 	}
-	batchItems := make([]*sqlitev1.ExecuteBatchItem, 0, len(items))
+	batchItems := make([][]sqliteffi.SQLValue, 0, len(items))
 	for idx, item := range items {
 		values, err := prepareSQLiteBatchParams(item)
 		if err != nil {
 			return fmt.Errorf("prepare sqlite batch item %d: %w", idx, err)
 		}
-		batchItems = append(batchItems, &sqlitev1.ExecuteBatchItem{Params: values})
+		batchItems = append(batchItems, values)
 	}
-	resp, err := s.executeBatch(ctx, &sqlitev1.ExecuteBatchRequest{
-		Sql:   strings.TrimSpace(sql),
-		Items: batchItems,
-	})
+	resp, err := s.executeBatch(ctx, strings.TrimSpace(sql), batchItems)
 	if err != nil {
 		return fmt.Errorf("sqlite execute batch: %w", err)
 	}
-	if !resp.GetSuccess() {
-		return fmt.Errorf("sqlite execute batch: %s", strings.TrimSpace(resp.GetMessage()))
+	if !resp.Success {
+		return fmt.Errorf("sqlite execute batch: %s", strings.TrimSpace(resp.Message))
 	}
 	return nil
 }
@@ -610,23 +618,19 @@ func (s *Store) execBatch(ctx context.Context, sql string, items [][]any) error 
 // queryRows decodes one JSON query response into a typed slice so higher-level methods can stay small and explicit while still preferring native sqlite params.
 // queryRows 用于把 JSON 查询结果解码为强类型切片，在保持上层逻辑简洁的同时优先使用 sqlite 原生参数。
 func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) ([]T, error) {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return nil, fmt.Errorf("sqlite store is not initialized")
 	}
 	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
 		return nil, err
 	}
-	req := &sqlitev1.QueryRequest{
-		Sql: strings.TrimSpace(sql),
-	}
-	applySQLiteQueryParams(req, prepared)
-	resp, err := s.queryJSON(ctx, req)
+	resp, err := s.queryJSON(ctx, strings.TrimSpace(sql), prepared.Values)
 	if err != nil {
 		return nil, fmt.Errorf("sqlite query: %w", err)
 	}
 	rows := make([]T, 0)
-	body := strings.TrimSpace(resp.GetJsonData())
+	body := strings.TrimSpace(resp.JSONData)
 	if body == "" {
 		return rows, nil
 	}
@@ -639,17 +643,16 @@ func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) 
 // sqlitePreparedParams stores the normalized parameter payload that can be attached to ExecuteScript / QueryJson requests.
 // sqlitePreparedParams 用于保存标准化后的参数载荷，便于附加到 ExecuteScript / QueryJson 请求。
 type sqlitePreparedParams struct {
-	Values       []*sqlitev1.SqliteValue
-	FallbackJSON string
+	Values []sqliteffi.SQLValue
 }
 
-// prepareSQLiteParams converts Go scalar values into the typed sqlite gRPC payload expected by the sqlite-first gateway path.
-// prepareSQLiteParams 用于把 Go 标量参数转换成 sqlite-first 网关期望的强类型 gRPC 载荷。
+// prepareSQLiteParams converts Go scalar values into the typed SQLite FFI payload expected by the local sqlite-first runtime path.
+// prepareSQLiteParams 用于把 Go 标量参数转换成 sqlite-first 本地 FFI 路径期望的强类型载荷。
 func prepareSQLiteParams(params []any) (sqlitePreparedParams, error) {
 	if len(params) == 0 {
 		return sqlitePreparedParams{}, nil
 	}
-	values := make([]*sqlitev1.SqliteValue, 0, len(params))
+	values := make([]sqliteffi.SQLValue, 0, len(params))
 	for idx, param := range params {
 		value, err := toSQLiteValue(param)
 		if err != nil {
@@ -660,147 +663,115 @@ func prepareSQLiteParams(params []any) (sqlitePreparedParams, error) {
 	return sqlitePreparedParams{Values: values}, nil
 }
 
-// prepareSQLiteBatchParams converts one ExecuteBatch item into native sqlite gRPC values so repeated writes never fall back to JSON strings.
-// prepareSQLiteBatchParams 用于把单个 ExecuteBatch item 转成原生 sqlite gRPC 值，确保重复写入不会退回 JSON 兼容模式。
-func prepareSQLiteBatchParams(params []any) ([]*sqlitev1.SqliteValue, error) {
+// prepareSQLiteBatchParams converts one ExecuteBatch item into native SQLite FFI values.
+// prepareSQLiteBatchParams 用于把单个 ExecuteBatch item 转换成原生 SQLite FFI 值。
+func prepareSQLiteBatchParams(params []any) ([]sqliteffi.SQLValue, error) {
 	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
 		return nil, err
 	}
-	if strings.TrimSpace(prepared.FallbackJSON) != "" {
-		return nil, fmt.Errorf("sqlite batch params do not support JSON fallback")
-	}
 	return prepared.Values, nil
 }
 
-// applySQLiteExecParams attaches either native typed params or the compatibility JSON payload to one ExecuteScript request.
-// applySQLiteExecParams 用于把原生强类型参数或兼容 JSON 参数附加到单个 ExecuteScript 请求。
-func applySQLiteExecParams(req *sqlitev1.ExecuteRequest, prepared sqlitePreparedParams) {
-	if req == nil {
-		return
-	}
-	req.Params = prepared.Values
-	req.ParamsJson = strings.TrimSpace(prepared.FallbackJSON)
-}
-
-// applySQLiteQueryParams attaches either native typed params or the compatibility JSON payload to one QueryJson request.
-// applySQLiteQueryParams 用于把原生强类型参数或兼容 JSON 参数附加到单个 QueryJson 请求。
-func applySQLiteQueryParams(req *sqlitev1.QueryRequest, prepared sqlitePreparedParams) {
-	if req == nil {
-		return
-	}
-	req.Params = prepared.Values
-	req.ParamsJson = strings.TrimSpace(prepared.FallbackJSON)
-}
-
-// toSQLiteValue maps one Go scalar to the sqlite gateway's typed protobuf value so the adapter can stay sqlite-native by default.
-// toSQLiteValue 用于把单个 Go 标量映射为 sqlite 网关的强类型 protobuf 值，让适配器默认保持 sqlite 原生风格。
-func toSQLiteValue(param any) (*sqlitev1.SqliteValue, error) {
+// toSQLiteValue maps one Go scalar to the SQLite FFI typed value so the adapter can stay sqlite-native by default.
+// toSQLiteValue 用于把单个 Go 标量映射为 SQLite FFI 的强类型值，让适配器默认保持 sqlite 原生风格。
+func toSQLiteValue(param any) (sqliteffi.SQLValue, error) {
 	switch value := param.(type) {
 	case nil:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_NullValue{NullValue: &sqlitev1.NullValue{}}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueNull}, nil
 	case bool:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_BoolValue{BoolValue: value}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueBool, Bool: value}, nil
 	case string:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_StringValue{StringValue: value}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueString, String: value}, nil
 	case []byte:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_BytesValue{BytesValue: value}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueBytes, Bytes: append([]byte(nil), value...)}, nil
 	case json.RawMessage:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_StringValue{StringValue: string(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueString, String: string(value)}, nil
 	case int:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case int8:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case int16:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case int32:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case int64:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: value}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: value}, nil
 	case uint:
 		if uint64(value) > math.MaxInt64 {
-			return nil, fmt.Errorf("uint %d overflows sqlite int64 binding", value)
+			return sqliteffi.SQLValue{}, fmt.Errorf("uint %d overflows sqlite int64 binding", value)
 		}
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case uint8:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case uint16:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case uint32:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case uint64:
 		if value > math.MaxInt64 {
-			return nil, fmt.Errorf("uint64 %d overflows sqlite int64 binding", value)
+			return sqliteffi.SQLValue{}, fmt.Errorf("uint64 %d overflows sqlite int64 binding", value)
 		}
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Int64Value{Int64Value: int64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
 	case float32:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Float64Value{Float64Value: float64(value)}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueFloat64, Float64: float64(value)}, nil
 	case float64:
-		return &sqlitev1.SqliteValue{Kind: &sqlitev1.SqliteValue_Float64Value{Float64Value: value}}, nil
+		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueFloat64, Float64: value}, nil
 	default:
-		return nil, fmt.Errorf("unsupported sqlite param type %T", param)
+		return sqliteffi.SQLValue{}, fmt.Errorf("unsupported sqlite param type %T", param)
 	}
 }
 
-// executeScript performs one ExecuteScript RPC with bounded retry logic for gateway-declared retryable SQLite errors.
-// executeScript 用于执行单次 ExecuteScript RPC，并在网关声明可重试的 SQLite 错误上做有界重试。
-func (s *Store) executeScript(ctx context.Context, req *sqlitev1.ExecuteRequest) (*sqlitev1.ExecuteResponse, error) {
-	var response *sqlitev1.ExecuteResponse
-	err := s.withSQLiteRetry(ctx, func(callCtx context.Context, trailer *metadata.MD) error {
+// executeScript performs one local ExecuteScript FFI call with bounded retry logic for retryable busy/locked/schema errors.
+// executeScript 用于执行一次本地 ExecuteScript FFI 调用，并对可重试的 busy/locked/schema 错误做有界重试。
+func (s *Store) executeScript(ctx context.Context, sql string, params []sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
+	var response sqliteffi.ExecuteResult
+	err := s.withSQLiteRetry(ctx, func() error {
 		var err error
-		response, err = s.client.ExecuteScript(callCtx, req, grpc.Trailer(trailer))
+		response, err = s.database.ExecuteScript(sql, params, "")
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return response, nil
+	return response, err
 }
 
-// executeBatch performs one ExecuteBatch RPC with bounded retry logic so SQLITE_BUSY / SQLITE_LOCKED do not immediately bubble up to the caller.
-// executeBatch 用于执行单次 ExecuteBatch RPC，并对 SQLITE_BUSY / SQLITE_LOCKED 之类错误做有界重试，避免立刻上抛给调用方。
-func (s *Store) executeBatch(ctx context.Context, req *sqlitev1.ExecuteBatchRequest) (*sqlitev1.ExecuteBatchResponse, error) {
-	var response *sqlitev1.ExecuteBatchResponse
-	err := s.withSQLiteRetry(ctx, func(callCtx context.Context, trailer *metadata.MD) error {
+// executeBatch performs one local ExecuteBatch FFI call with bounded retry logic so SQLITE_BUSY / SQLITE_LOCKED do not immediately bubble up to the caller.
+// executeBatch 用于执行一次本地 ExecuteBatch FFI 调用，并对 SQLITE_BUSY / SQLITE_LOCKED 之类错误做有界重试，避免立刻上抛给调用方。
+func (s *Store) executeBatch(ctx context.Context, sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
+	var response sqliteffi.ExecuteResult
+	err := s.withSQLiteRetry(ctx, func() error {
 		var err error
-		response, err = s.client.ExecuteBatch(callCtx, req, grpc.Trailer(trailer))
+		response, err = s.database.ExecuteBatch(sql, items)
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return response, nil
+	return response, err
 }
 
-// queryJSON performs one QueryJson RPC with the same retry contract used by writes so retryable SQLITE_SCHEMA / SQLITE_BUSY failures can self-heal.
-// queryJSON 用于执行单次 QueryJson RPC，并复用与写请求一致的重试契约，让 SQLITE_SCHEMA / SQLITE_BUSY 这类可重试错误有机会自行恢复。
-func (s *Store) queryJSON(ctx context.Context, req *sqlitev1.QueryRequest) (*sqlitev1.QueryJsonResponse, error) {
-	var response *sqlitev1.QueryJsonResponse
-	err := s.withSQLiteRetry(ctx, func(callCtx context.Context, trailer *metadata.MD) error {
+// queryJSON performs one local QueryJSON FFI call with the same retry contract used by writes so retryable SQLITE_SCHEMA / SQLITE_BUSY failures can self-heal.
+// queryJSON 用于执行一次本地 QueryJSON FFI 调用，并复用与写请求一致的重试契约，让 SQLITE_SCHEMA / SQLITE_BUSY 这类可重试错误有机会自行恢复。
+func (s *Store) queryJSON(ctx context.Context, sql string, params []sqliteffi.SQLValue) (sqliteffi.QueryJSONResult, error) {
+	var response sqliteffi.QueryJSONResult
+	err := s.withSQLiteRetry(ctx, func() error {
 		var err error
-		response, err = s.client.QueryJson(callCtx, req, grpc.Trailer(trailer))
+		response, err = s.database.QueryJSON(sql, params, "")
 		return err
 	})
-	if err != nil {
-		return nil, err
-	}
-	return response, nil
+	return response, err
 }
 
-// withSQLiteRetry wraps one sqlite RPC so retryable trailer-signaled errors are retried with a tiny exponential backoff inside the caller deadline.
-// withSQLiteRetry 用于包裹单个 sqlite RPC，在调用方 deadline 内对 trailer 标记为可重试的错误做一个很小的指数退避重试。
-func (s *Store) withSQLiteRetry(ctx context.Context, call func(context.Context, *metadata.MD) error) error {
+// withSQLiteRetry wraps one local SQLite FFI call so retryable busy/locked/schema errors are retried with a tiny exponential backoff.
+// withSQLiteRetry 用于包裹单个本地 SQLite FFI 调用，并对可重试的 busy/locked/schema 错误做一个很小的指数退避重试。
+func (s *Store) withSQLiteRetry(ctx context.Context, call func() error) error {
 	var lastErr error
 	for attempt := 0; attempt < sqliteRetryMaxAttempts; attempt++ {
-		callCtx, cancel := context.WithTimeout(ctx, s.timeout)
-		trailer := metadata.MD{}
-		err := call(callCtx, &trailer)
-		cancel()
+		if err := checkSQLiteContext(ctx); err != nil {
+			return err
+		}
+		err := call()
 		if err == nil {
-			return nil
+			return checkSQLiteContext(ctx)
 		}
 		lastErr = err
-		if !isSQLiteRetryableRPCError(err, trailer) || attempt == sqliteRetryMaxAttempts-1 {
+		if !isSQLiteRetryableError(err) || attempt == sqliteRetryMaxAttempts-1 {
 			return lastErr
 		}
 		if err := waitSQLiteRetry(ctx, attempt); err != nil {
@@ -810,24 +781,17 @@ func (s *Store) withSQLiteRetry(ctx context.Context, call func(context.Context, 
 	return lastErr
 }
 
-// isSQLiteRetryableRPCError checks the sqlite gateway retry trailer first, then falls back to the documented gRPC status codes used for SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA.
-// isSQLiteRetryableRPCError 用于优先检查 sqlite 网关的重试 trailer，再回退到文档里为 SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA 定义的 gRPC 状态码。
-func isSQLiteRetryableRPCError(err error, trailer metadata.MD) bool {
+// isSQLiteRetryableError detects retryable SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA errors returned by the local FFI layer.
+// isSQLiteRetryableError 用于识别本地 FFI 层返回的 SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA 可重试错误。
+func isSQLiteRetryableError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if values := trailer.Get("x-vldb-retryable"); len(values) > 0 && strings.EqualFold(strings.TrimSpace(values[0]), "true") {
-		return true
-	}
-	switch status.Code(err) {
-	case codes.Unavailable, codes.Aborted:
-		lowered := strings.ToLower(strings.TrimSpace(err.Error()))
-		return strings.Contains(lowered, "sqlite_busy") ||
-			strings.Contains(lowered, "sqlite_locked") ||
-			strings.Contains(lowered, "sqlite_schema")
-	default:
-		return false
-	}
+	lowered := strings.ToLower(strings.TrimSpace(err.Error()))
+	return strings.Contains(lowered, "sqlite_busy") ||
+		strings.Contains(lowered, "sqlite_locked") ||
+		strings.Contains(lowered, "sqlite_schema") ||
+		strings.Contains(lowered, "database is locked")
 }
 
 // waitSQLiteRetry sleeps for a tiny exponential backoff while still honoring the parent context deadline.
@@ -864,12 +828,6 @@ func isSQLiteOutcomeUncertainError(err error) bool {
 		}
 	}
 	return false
-}
-
-// versionRow mirrors the tiny schema-version query payload returned by the gateway.
-// versionRow 用于映射网关返回的 schema 版本查询结果。
-type versionRow struct {
-	SchemaVersion int `json:"schema_version"`
 }
 
 // idRow mirrors one MAX(id) style query used to allocate deterministic numeric ids.
@@ -1139,7 +1097,6 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		contextEdges := normalizeTurnMemoryContextEdges(record.ID, node.ContextEdges, now)
 		record.SupportCount, record.RebuttalCount = summarizeMemoryContextEdges(contextEdges)
 		script += buildMemoryNodeInsertSQL(record)
-		script += s.buildMemoryNodeFTSUpsertSQL(record)
 		script += buildMemoryContextEdgesReplaceSQL(record.ID, contextEdges)
 		insertedMemoryNodes = append(insertedMemoryNodes, record)
 	}
@@ -1164,10 +1121,12 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	}
 	if len(supersededMemoryIDs) > 0 {
 		script += buildMemoryNodesSupersedeSQL(supersededMemoryIDs, nowMs)
-		script += buildMemoryNodesFTSDeleteSQL(supersededMemoryIDs)
 	}
 	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("apply turn analysis: %w", err)
+	}
+	if err := s.syncMemoryFTSAfterWrite(ctx, insertedMemoryNodes, supersededMemoryIDs); err != nil {
+		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("sync memory fts after turn analysis: %w", err)
 	}
 	return logicdomain.TurnAnalysisApplyResult{
 		InsertedMemoryNodes: insertedMemoryNodes,
@@ -2231,67 +2190,41 @@ ORDER BY created_timestamp ASC, id ASC
 // SearchLexicalMemory runs one SQLite FTS recall over durable memory text and returns ranked memory ids for later relational materialization plus RRF fusion.
 // SearchLexicalMemory 用于在长期记忆文本上执行一次 SQLite FTS 召回，并返回后续回表与 RRF 融合所需的排序 memory id。
 func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
-	query = s.lexicalTokenizerOrFallback().BuildSQLiteFTSMatchExpression(query)
-	if query == "" || topK <= 0 {
+	if strings.TrimSpace(query) == "" || topK <= 0 {
 		return []logicdomain.MemoryLexicalHit{}, nil
 	}
 	if topK > 32 {
 		topK = 32
 	}
-
-	// Reuse the same project hierarchy filter as vector recall so hybrid fusion compares candidates from one consistent scope.
-	// 复用与向量召回一致的项目层级过滤，确保混合融合比较的是同一作用域中的候选。
-	sqlText := `
-SELECT n.id AS memory_id, bm25(vmm_memory_nodes_fts, 2.0, 1.0) AS rank
-FROM vmm_memory_nodes_fts
-JOIN vmm_memory_nodes AS n ON n.id = vmm_memory_nodes_fts.rowid
-WHERE vmm_memory_nodes_fts MATCH ?
-`
-	params := []any{query}
-	if filter.TeamID > 0 {
-		sqlText += `  AND n.team_id = ?` + "\n"
-		params = append(params, filter.TeamID)
+	if s == nil || s.database == nil {
+		return nil, fmt.Errorf("sqlite lexical search requires one local ffi database")
 	}
-	if filter.SpaceID > 0 {
-		sqlText += `  AND n.space_id = ?` + "\n"
-		params = append(params, filter.SpaceID)
-	}
-	if filter.ProjectID > 0 {
-		sqlText += `  AND n.project_id = ?` + "\n"
-		params = append(params, filter.ProjectID)
-	}
-	if filter.UserID > 0 {
-		sqlText += `  AND (n.user_id = 0 OR n.user_id = ?)` + "\n"
-		params = append(params, filter.UserID)
-	}
-	if filter.SessionID > 0 {
-		sqlText += `  AND n.origin_session_id = ?` + "\n"
-		params = append(params, filter.SessionID)
-	}
-	if filter.BoundarySessionID > 0 {
-		if filter.ExcludeBoundaryTurn {
-			sqlText += `  AND (n.origin_session_id != ? OR n.source_turn_id IS NULL OR n.source_turn_id = 0)` + "\n"
-			params = append(params, filter.BoundarySessionID)
-		} else {
-			sqlText += `  AND (n.origin_session_id != ? OR n.source_turn_id IS NULL OR n.source_turn_id = 0 OR n.source_turn_id <= ?)` + "\n"
-			params = append(params, filter.BoundarySessionID, filter.BoundaryMaxTurnID)
-		}
-	}
-	sqlText += fmt.Sprintf("  AND %s\nORDER BY rank ASC, n.id ASC\nLIMIT ?\n", buildActiveUnexpiredMemoryCondition("n", time.Now().UTC().UnixMilli()))
-	params = append(params, topK)
-
-	rows, err := queryRows[memoryLexicalRow](s, ctx, sqlText, params...)
+	result, err := s.database.SearchFts(s.ftsIndexName, s.tokenizerMode, strings.TrimSpace(query), uint32(topK), 0)
 	if err != nil {
 		return nil, fmt.Errorf("search lexical memory: %w", err)
 	}
-	hits := make([]logicdomain.MemoryLexicalHit, 0, len(rows))
-	for _, row := range rows {
-		hits = append(hits, logicdomain.MemoryLexicalHit{
-			MemoryID: row.MemoryID,
-			Score:    -row.Rank,
+	filtered := make([]logicdomain.MemoryLexicalHit, 0, len(result.Hits))
+	for _, hit := range result.Hits {
+		memoryID, ok := parseUint64(hit.ID)
+		if !ok || memoryID == 0 {
+			continue
+		}
+		record, found, err := s.loadActiveMemoryNodeByID(ctx, memoryID)
+		if err != nil {
+			return nil, fmt.Errorf("load lexical memory node %d: %w", memoryID, err)
+		}
+		if !found || !matchesLexicalMemoryFilter(record, filter) {
+			continue
+		}
+		filtered = append(filtered, logicdomain.MemoryLexicalHit{
+			MemoryID: memoryID,
+			Score:    hit.Score,
 		})
+		if len(filtered) >= topK {
+			break
+		}
 	}
-	return hits, nil
+	return filtered, nil
 }
 
 // FindRecentActiveMemoryByDedupe finds one recent active direct-write memory row inside the same resolved session scope and soft-idempotency window.
@@ -2354,9 +2287,12 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 	}
 	now := time.Now().UTC()
 	record = normalizeDirectMemoryNodeRecord(session, record, nextID, now)
-	script := buildMemoryNodeInsertSQL(record) + s.buildMemoryNodeFTSUpsertSQL(record)
+	script := buildMemoryNodeInsertSQL(record)
 	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("insert direct memory node: %w", err)
+	}
+	if err := s.syncMemoryFTSAfterWrite(ctx, []logicdomain.MemoryNodeRecord{record}, nil); err != nil {
+		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("sync memory fts after direct insert: %w", err)
 	}
 	return record, nil
 }
@@ -2392,13 +2328,15 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 
 	// Keep the insert and the old-row status flip inside one serialized SQL script so direct writes cannot leave “new row inserted but old row still active” gaps behind.
 	// 把插入新行和旧行状态切换放进同一段串行 SQL 脚本，避免主动写记忆留下“新行已插入但旧行仍 active”的缝隙。
-	script := buildMemoryNodeInsertSQL(record) + s.buildMemoryNodeFTSUpsertSQL(record)
+	script := buildMemoryNodeInsertSQL(record)
 	if len(supersededMemoryIDs) > 0 {
 		script += buildMemoryNodesSupersedeSQL(supersededMemoryIDs, nowMs)
-		script += buildMemoryNodesFTSDeleteSQL(supersededMemoryIDs)
 	}
 	if err := s.exec(ctx, script); err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("apply direct memory write: %w", err)
+	}
+	if err := s.syncMemoryFTSAfterWrite(ctx, []logicdomain.MemoryNodeRecord{record}, supersededMemoryIDs); err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("sync memory fts after direct write: %w", err)
 	}
 	return logicdomain.DirectMemoryWriteApplyResult{
 		InsertedMemoryNode:  record,
@@ -2835,7 +2773,7 @@ func (s *Store) ListProjectMemoriesForMaintenance(ctx context.Context, projectID
 // ReplaceMemoryVectors rewrites the durable SQLite vector_json payload for one active-memory batch so split-mode rebuild tools can keep SQLite and LanceDB strictly synchronized after a model change.
 // ReplaceMemoryVectors 用于重写一批长期记忆在 SQLite 中保存的 vector_json，让分离模式重建工具在模型切换后保持 SQLite 与 LanceDB 严格同步。
 func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	if len(records) == 0 {
@@ -2871,7 +2809,7 @@ WHERE vector_id = ?
 // ClearMemoryVectors clears one active durable batch's SQLite vector_json payload back to the empty baseline before split-mode maintenance rebuilds repopulate both SQLite and LanceDB from scratch.
 // ClearMemoryVectors 用于把一批 active durable 记忆的 SQLite vector_json 清回空基线，再由 split 模式维护重建从零开始同时回填 SQLite 与 LanceDB。
 func (s *Store) ClearMemoryVectors(ctx context.Context, vectorIDs []string) error {
-	if s == nil || s.client == nil {
+	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
 	if len(vectorIDs) == 0 {
@@ -3781,26 +3719,66 @@ INSERT INTO vmm_memory_nodes (
 		boolToSQLiteInt(record.DecayDisabled), sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
 }
 
-// buildMemoryNodeFTSUpsertSQL mirrors one durable memory row into the SQLite FTS table and pre-tokenizes Chinese text before it reaches unicode61.
-// buildMemoryNodeFTSUpsertSQL 用于把长期记忆行同步镜像到 SQLite FTS 表，并在写入 unicode61 之前先完成中文预分词。
-func (s *Store) buildMemoryNodeFTSUpsertSQL(record logicdomain.MemoryNodeRecord) string {
-	tokenizer := s.lexicalTokenizerOrFallback()
-	return fmt.Sprintf(`
-INSERT OR REPLACE INTO vmm_memory_nodes_fts (rowid, memory_id, abstract, details)
-VALUES (%d, %d, %s, %s);
-`, record.ID, record.ID, sqlStringLiteral(tokenizer.BuildSQLiteFTSIndexText(record.Abstract)), sqlStringLiteral(tokenizer.BuildSQLiteFTSIndexText(record.Details)))
+// ensureBuiltinMemoryFTS ensures the built-in SQLite FTS index exists and rebuilds it when the configured tokenizer mode changes.
+// ensureBuiltinMemoryFTS 用于确保内建 SQLite FTS 索引存在，并在配置的分词模式发生变化时触发重建。
+func (s *Store) ensureBuiltinMemoryFTS(ctx context.Context) error {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return err
+	}
+	if s == nil || s.database == nil {
+		return fmt.Errorf("sqlite store is not initialized")
+	}
+	result, err := s.database.EnsureFtsIndex(s.ftsIndexName, s.tokenizerMode)
+	if err != nil {
+		return fmt.Errorf("ensure sqlite builtin fts index: %w", err)
+	}
+	if result.TokenizerMode != s.tokenizerMode {
+		if _, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode); err != nil {
+			return fmt.Errorf("rebuild sqlite builtin fts index: %w", err)
+		}
+	}
+	return checkSQLiteContext(ctx)
 }
 
-// buildMemoryNodesFTSDeleteSQL removes superseded durable rows from the SQLite FTS mirror so lexical recall does not waste work on dead memories.
-// buildMemoryNodesFTSDeleteSQL 用于把已 superseded 的长期行从 SQLite FTS 镜像中删除，避免 lexical 召回继续在失效记忆上浪费开销。
-func buildMemoryNodesFTSDeleteSQL(memoryIDs []uint64) string {
-	if len(memoryIDs) == 0 {
-		return ""
+// syncMemoryFTSAfterWrite synchronizes inserted and deleted memory rows into the built-in SQLite FTS index and falls back to a full rebuild when incremental sync fails.
+// syncMemoryFTSAfterWrite 用于把插入与删除的记忆行同步到内建 SQLite FTS 索引，并在增量同步失败时回退到全量重建。
+func (s *Store) syncMemoryFTSAfterWrite(ctx context.Context, inserted []logicdomain.MemoryNodeRecord, deletedMemoryIDs []uint64) error {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return err
 	}
-	return fmt.Sprintf(`
-DELETE FROM vmm_memory_nodes_fts
-WHERE rowid IN (%s);
-`, sqlUint64List(memoryIDs))
+	if s == nil || s.database == nil {
+		return fmt.Errorf("sqlite store is not initialized")
+	}
+	if len(inserted) == 0 && len(deletedMemoryIDs) == 0 {
+		return nil
+	}
+	for _, record := range inserted {
+		if _, err := s.database.UpsertFtsDocument(
+			s.ftsIndexName,
+			s.tokenizerMode,
+			strconv.FormatUint(record.ID, 10),
+			record.VectorID,
+			strings.TrimSpace(record.Abstract),
+			strings.TrimSpace(record.Details),
+		); err != nil {
+			return s.rebuildMemoryFTSWithFallback(ctx, fmt.Errorf("upsert sqlite memory fts document %d: %w", record.ID, err))
+		}
+	}
+	for _, memoryID := range normalizeUint64List(deletedMemoryIDs) {
+		if _, err := s.database.DeleteFtsDocument(s.ftsIndexName, strconv.FormatUint(memoryID, 10)); err != nil {
+			return s.rebuildMemoryFTSWithFallback(ctx, fmt.Errorf("delete sqlite memory fts document %d: %w", memoryID, err))
+		}
+	}
+	return checkSQLiteContext(ctx)
+}
+
+// rebuildMemoryFTSWithFallback rebuilds the full built-in FTS index so relational/FTS consistency can self-heal after one incremental mutation fails.
+// rebuildMemoryFTSWithFallback 用于重建整个内建 FTS 索引，让关系表与 FTS 在单次增量同步失败后能够自愈。
+func (s *Store) rebuildMemoryFTSWithFallback(ctx context.Context, cause error) error {
+	if _, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode); err != nil {
+		return fmt.Errorf("%w; rebuild sqlite builtin fts index also failed: %v", cause, err)
+	}
+	return cause
 }
 
 // buildMemoryContextEdgesReplaceSQL rewrites one memory row's contextual evidence edges in one deterministic script so later contextual retrieval can trust relational support/rebuttal stats.
@@ -4391,13 +4369,99 @@ func buildActiveUnexpiredMemoryCondition(alias string, nowMs int64) string {
 	return fmt.Sprintf(`%smemory_status = %d AND (%sexpires_timestamp <= 0 OR %sexpires_timestamp > %d)`, alias, logicdomain.MemoryStatusActive, alias, alias, nowMs)
 }
 
-// lexicalTokenizerOrFallback returns the configured tokenizer when available, otherwise one shared disabled tokenizer so tests that instantiate Store manually keep deterministic legacy behavior.
-// lexicalTokenizerOrFallback 用于在存在配置分词器时返回该实例；否则回退到共享的 disabled tokenizer，让手工构造 Store 的测试继续保持确定性的旧行为。
-func (s *Store) lexicalTokenizerOrFallback() *textutil.LexicalTokenizer {
-	if s != nil && s.lexicalTokenizer != nil {
-		return s.lexicalTokenizer
+// parseSQLiteTokenizerMode maps the config string into the SQLite FFI tokenizer enum.
+// parseSQLiteTokenizerMode 用于把配置字符串映射为 SQLite FFI 分词枚举。
+func parseSQLiteTokenizerMode(mode string) (sqliteffi.TokenizerMode, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "jieba":
+		return sqliteffi.TokenizerJieba, nil
+	case "none":
+		return sqliteffi.TokenizerNone, nil
+	default:
+		return sqliteffi.TokenizerNone, fmt.Errorf("unsupported sqlite tokenizer mode: %s", mode)
 	}
-	return textutil.DisabledLexicalTokenizer()
+}
+
+// filepathDir returns the parent directory of one file path and keeps empty input safe for early validation branches.
+// filepathDir 用于返回一个文件路径的父目录，并在空输入场景下保持安全。
+func filepathDir(path string) string {
+	cleaned := strings.TrimSpace(path)
+	if cleaned == "" {
+		return "."
+	}
+	lastSlash := strings.LastIndexAny(cleaned, `/\`)
+	if lastSlash < 0 {
+		return "."
+	}
+	if lastSlash == 0 {
+		return cleaned[:1]
+	}
+	return cleaned[:lastSlash]
+}
+
+// checkSQLiteContext returns the current context error when the caller has already cancelled the operation.
+// checkSQLiteContext 用于在调用方已取消操作时返回当前 context 错误。
+func checkSQLiteContext(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+// loadActiveMemoryNodeByID loads one active and unexpired memory node by id for lexical hit validation.
+// loadActiveMemoryNodeByID 用于按 id 读取一条 active 且未过期的记忆行，供 lexical 命中过滤使用。
+func (s *Store) loadActiveMemoryNodeByID(ctx context.Context, memoryID uint64) (logicdomain.MemoryNodeRecord, bool, error) {
+	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE id = ?
+  AND %s
+LIMIT 1
+`, buildActiveUnexpiredMemoryCondition("", time.Now().UTC().UnixMilli())), memoryID)
+	if err != nil {
+		return logicdomain.MemoryNodeRecord{}, false, err
+	}
+	if len(rows) == 0 {
+		return logicdomain.MemoryNodeRecord{}, false, nil
+	}
+	return rows[0].toMemoryNodeRecord(), true, nil
+}
+
+// matchesLexicalMemoryFilter reuses the relational-memory scope rules to keep lexical recall aligned with vector recall.
+// matchesLexicalMemoryFilter 用于复用关系层的记忆作用域规则，让 lexical 召回与向量召回保持一致。
+func matchesLexicalMemoryFilter(record logicdomain.MemoryNodeRecord, filter logicdomain.SearchFilter) bool {
+	if filter.TeamID > 0 && record.TeamID != filter.TeamID {
+		return false
+	}
+	if filter.SpaceID > 0 && record.SpaceID != filter.SpaceID {
+		return false
+	}
+	if filter.ProjectID > 0 && record.ProjectID != filter.ProjectID {
+		return false
+	}
+	if filter.UserID > 0 && record.UserID != 0 && record.UserID != filter.UserID {
+		return false
+	}
+	if filter.SessionID > 0 && record.OriginSessionID != filter.SessionID {
+		return false
+	}
+	if filter.BoundarySessionID > 0 && record.OriginSessionID == filter.BoundarySessionID {
+		if filter.ExcludeBoundaryTurn {
+			return record.SourceTurnID == 0
+		}
+		return record.SourceTurnID == 0 || record.SourceTurnID <= filter.BoundaryMaxTurnID
+	}
+	return true
 }
 
 // sortedProfileBindingIDs returns one deterministic ascending id slice from a rendered-profile update map so SQL scripts remain stable in tests and logs.

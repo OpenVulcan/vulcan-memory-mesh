@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
@@ -154,6 +155,10 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 	if err != nil {
 		return err
 	}
+	currentTurnDate := formatPostActionReviewerDate(choosePostActionCreatedAt(turn))
+	for idx := range memoryReviewBuild.Candidates {
+		memoryReviewBuild.Candidates[idx].CandidateDate = currentTurnDate
+	}
 	if stats != nil {
 		stats.HardDedupeDroppedCount += len(memoryReviewBuild.HardDropped)
 	}
@@ -166,6 +171,7 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 		}
 		reviewed, err = u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
 			UserInputKind:     strings.TrimSpace(analysis.UserInputKind),
+			CurrentTurnDate:   currentTurnDate,
 			UserContent:       strings.TrimSpace(rawTurn.UserContent),
 			AssistantContent:  strings.TrimSpace(rawTurn.AssistantContent),
 			MemoryCandidates:  memoryReviewPartition.ReviewerCandidates,
@@ -598,6 +604,7 @@ func buildPostActionSimilarMemoryCandidates(hits []MemoryQueryHit, minSimilarity
 		candidate := logicdomain.PostActionSimilarMemoryCandidate{
 			MemoryID:     hit.MemoryRef.ID,
 			SourceTurnID: hit.SourceRef.ID,
+			CreatedDate:  formatPostActionReviewerDate(hit.CreatedAt),
 			ScopeLevel:   logicdomain.MemoryScopeLevelLabel(hit.ScopeLevel),
 			Category:     hit.Category,
 			Score:        score,
@@ -623,6 +630,15 @@ func buildPostActionSimilarMemoryCandidates(hits []MemoryQueryHit, minSimilarity
 		return out[i].MemoryID < out[j].MemoryID
 	})
 	return out
+}
+
+// formatPostActionReviewerDate normalizes one timestamp into the lightweight YYYY-MM-DD string sent to the post-action L2 reviewer so it can reason about recency without paying full timestamp token cost.
+// formatPostActionReviewerDate 用于把时间戳归一成发送给 post-action L2 reviewer 的轻量 YYYY-MM-DD 字符串，让模型感知先后关系时无需承担完整时间戳的 token 成本。
+func formatPostActionReviewerDate(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.UTC().Format("2006-01-02")
 }
 
 // applyPostActionMemoryReviewResult keeps only accepted memory candidates in original order and merges reviewer-approved supersede ids back onto each surviving node so later persistence can safely re-derive the final retirement set after any additional filtering.

@@ -85,7 +85,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
-	storageCaps, err := initRuntimeStorageCapabilities(cfg, logger)
+	storageCaps, err := initRuntimeStorageCapabilities(cfg, logger, layout)
 	if err != nil {
 		return nil, err
 	}

@@ -17,6 +17,29 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 显式切换 `storage.mode=combined` 后，会改为由 PostgreSQL 统一承载关系与向量能力
 - 由 Caddy 等外部反向代理负责 TLS
 
+## 标准构建与运行
+
+标准构建入口请使用：
+
+```powershell
+.\make.bat build
+.\make.bat build release
+```
+
+如果您使用 PowerShell 脚本入口，也请保持同样的标准打包方式：
+
+```powershell
+.\make.ps1 build
+.\make.ps1 build release
+```
+
+说明：
+
+- 不要直接使用 `go build` 绕过打包脚本。
+- 正式运行产物位于 `output/bin/`。
+- 如需手工启动，请先进入 `output/bin/`，再运行其中的 `vmm-local(.exe)`。
+- 不要从仓库根目录直接运行临时可执行文件。
+
 ## 文档导航
 
 - [当前架构与存储模型（中文）](./docs/hierarchy-grpc-design_CN.md)
@@ -103,12 +126,18 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 当前主线保留两种正式运行模式：
 
-- `split`（默认）
+  - `split`（默认）
   - SQLite：关系库存储，负责层级、用户、session、turn、长期记忆、画像与回收治理元数据
-    - 适配层优先使用 typed params、`ExecuteBatch` 和 sqlite 网关声明的可重试 trailer 语义
-    - schema 升级改为非破坏性 migration，不再因版本变化直接清空历史调试数据
-    - 当前版本信息会写入 `vmm_schema_versions`，并保留对旧 `vmm_version` 的兼容同步
+    - 运行时通过本地 `vldb-sqlite` 动态库接入，不再依赖外部 gRPC 网关
+    - 数据文件固定为 `output/database/sqlite.db`
+    - FTS 与中文分词由库内能力负责，分词模式通过 `sqlite.tokenizer_mode` 控制
+    - 当前 schema 基线固定为 `19`，空库会直接 bootstrap 到该版本
+    - 当前版本信息只写入 `vmm_schema_versions`
+    - 低于 `19` 的旧本地库不再自动 reset 或自动迁移，需要手工重建后再运行
+    - 未来 schema 升级仍沿用组件版本框架，后续可直接追加 `19 -> 20` 这类增量迁移
   - LanceDB：向量写入、检索和删除
+    - 运行时通过本地 `vldb-lancedb` 动态库接入，不再依赖外部 gRPC 网关
+    - 数据目录固定为 `output/database/lancedb/`
     - 向量 schema 版本与 SQLite 独立跟踪
     - 只有 LanceDB 列结构变化时，启动期才会触发表重建与 SQLite 回灌
 - `combined`（显式启用）
@@ -275,8 +304,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 记忆去重与 supersede 主责任现在下沉到“检索层 + hard dedupe + `L2`”：
   - 先由检索层召回本轮候选的高相似旧记忆
   - 再由保守的 hard dedupe 快速拦截最明显的近重复
-  - 最后由 `L2` 基于当前轮候选和实际召回证据做 keep / drop / supersede 判断
-  - 调整原因是：去重和替代本来就依赖候选生成后的语义检索证据，不应该再让 `L1` 基于整批 session 旧记忆做高成本预判
+  - 最后由 `L2` 基于当前轮候选、实际召回证据和轻量日期上下文做 keep / drop / supersede 判断
+  - 调整原因是：去重和替代本来就依赖候选生成后的语义检索证据，但当候选与旧记忆属于同一事实域时，轻量日期上下文还能辅助区分“语义重复”和“阶段更新”
 - 最终 supersede 集合只从 surviving `memory_nodes[].supersede_memory_ids[]` 推导：
   - 不再保留整轮级顶层 `superseded_memory_ids`
   - 调整原因是：如果某条候选后续被 admission、hard dedupe、review 或 embedding 阶段丢弃，它就不应继续贡献旧记忆退役目标
@@ -550,6 +579,9 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 标准运行产物：
 
 - `output/bin/vmm-local.exe`
+- `output/libs/`
+- `output/database/sqlite.db`
+- `output/database/lancedb/`
 
 标准配置目录：
 
@@ -559,8 +591,16 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 说明：
 
 - 运行时日志会同时输出到 stdout 和文件。
+- `split` 模式依赖的 SQLite / LanceDB 动态库会从 `output/libs/` 加载。
+- `split` 模式数据库文件会落到 `output/database/`。
 - 标准打包产物默认写入 `output/logs/`。
 - 如果是 `go run` 或直接在仓库内调试，日志会写入仓库根目录下的 `logs/`。
+
+首次构建本地 split 依赖前，请先执行：
+
+```powershell
+.\make.ps1 deps host
+```
 
 ### 启动示例
 
@@ -667,9 +707,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `storage.mode`
 - `storage.combined_provider`
 - `relational.provider`
-- `sqlite.address`
+- `sqlite.timeout`
+- `sqlite.tokenizer_mode`
 - `postgres.*`
-- `lancedb.address`
+- `lancedb.timeout`
 - `lancedb.table_name`
 - `lancedb.vector_column`
 - `llm.*`
@@ -759,10 +800,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 这个窗口独立于 reviewer 最终看到的 `top_k`，默认值为 `16`
 - `hybrid_enabled`
   - 是否启用“向量召回 + SQLite FTS5 lexical 召回 + RRF 融合”链路；关闭时保持纯向量检索
-- `lexical_pre_tokenize`
-  - 是否启用“应用层 GSE 预分词 + SQLite FTS5 unicode61”模式；默认开启，用来修复中文 BM25 只能把整句汉字当成单个 token 的问题
-  - 开启后，记忆写入会先把 `abstract/details` 切成空格分隔 token，再写入独立 FTS5 表；查询时会把原始 query 组装成 tokenized phrase + OR tokens 的 `MATCH` 表达式
-  - 关闭时，会回退到仓库原有的正则分词与原始文本索引方式，适合纯英文或需要完全保留旧行为的环境
+- `sqlite.tokenizer_mode`
+  - 控制本地 `vldb-sqlite` FTS 使用的内建分词模式
+  - `jieba` 表示启用库内中文分词器，适合中文场景
+  - `none` 表示关闭分词扩展，适合纯英文或需要最朴素匹配的场景
 - `lexical_top_k`
   - 每个 query group 最多取多少条 lexical 候选参与 RRF 融合
 - `rrf_k`

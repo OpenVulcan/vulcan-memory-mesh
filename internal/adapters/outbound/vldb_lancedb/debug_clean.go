@@ -8,18 +8,17 @@ import (
 	"strings"
 	"time"
 
-	lancedbv1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb/proto/v1"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/credentials/insecure"
-	"google.golang.org/grpc/status"
+	"github.com/openvulcan/vmm/internal/platform/ffi/lancedbffi"
 )
 
-// DebugDropConfiguredTable connects to the LanceDB gateway, drops the resolved runtime table, and treats missing tables as already clean.
-// DebugDropConfiguredTable 用于连接 LanceDB 网关，删除解析后的运行时表，并把“表不存在”视为已经清理完成。
-func DebugDropConfiguredTable(ctx context.Context, address string, timeout time.Duration, baseTableName string, dimension int) (string, error) {
-	if strings.TrimSpace(address) == "" {
-		return "", fmt.Errorf("lancedb address is required")
+// DebugDropConfiguredTable opens the local LanceDB FFI library, drops the resolved runtime table, and treats missing tables as already clean.
+// DebugDropConfiguredTable 用于打开本地 LanceDB FFI 动态库，删除解析后的运行时表，并把“表不存在”视为已经清理完成。
+func DebugDropConfiguredTable(ctx context.Context, libraryPath string, databaseDir string, timeout time.Duration, baseTableName string, dimension int) (string, error) {
+	if strings.TrimSpace(libraryPath) == "" {
+		return "", fmt.Errorf("lancedb library path is required")
+	}
+	if strings.TrimSpace(databaseDir) == "" {
+		return "", fmt.Errorf("lancedb database dir is required")
 	}
 	if strings.TrimSpace(baseTableName) == "" {
 		return "", fmt.Errorf("lancedb table_name is required")
@@ -30,34 +29,48 @@ func DebugDropConfiguredTable(ctx context.Context, address string, timeout time.
 	if timeout <= 0 {
 		timeout = 5 * time.Second
 	}
-
-	callCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	conn, err := grpc.DialContext(
-		callCtx,
-		strings.TrimSpace(address),
-		grpc.WithTransportCredentials(insecure.NewCredentials()),
-		grpc.WithBlock(),
-	)
+	if err := checkContext(ctx); err != nil {
+		return "", err
+	}
+	lib, err := lancedbffi.Open(strings.TrimSpace(libraryPath))
 	if err != nil {
-		return "", fmt.Errorf("dial lancedb gateway for debug clean: %w", err)
+		return "", fmt.Errorf("open lancedb library for debug clean: %w", err)
 	}
 	defer func() {
-		_ = conn.Close()
+		_ = lib.Close()
+	}()
+	options := lib.DefaultRuntimeOptions()
+	options.DefaultDBPath = strings.TrimSpace(databaseDir)
+	runtimeHandle, err := lib.CreateRuntime(options)
+	if err != nil {
+		return "", fmt.Errorf("create lancedb runtime for debug clean: %w", err)
+	}
+	defer func() {
+		_ = runtimeHandle.Close()
+	}()
+	engine, err := runtimeHandle.OpenDefaultEngine()
+	if err != nil {
+		return "", fmt.Errorf("open lancedb engine for debug clean: %w", err)
+	}
+	defer func() {
+		_ = engine.Close()
 	}()
 
 	tableName := resolveVectorTableName(baseTableName, dimension)
-	if err := debugDropTableWithClient(ctx, lancedbv1.NewLanceDbServiceClient(conn), tableName, timeout); err != nil {
+	if err := debugDropTableWithEngine(ctx, engine, tableName, timeout); err != nil {
 		return "", err
 	}
 	return tableName, nil
 }
 
-// debugDropTableWithClient sends one drop-table request through an already prepared LanceDB gateway client.
-// debugDropTableWithClient 用于通过已准备好的 LanceDB 网关客户端发送删表请求。
-func debugDropTableWithClient(ctx context.Context, client lancedbv1.LanceDbServiceClient, tableName string, timeout time.Duration) error {
-	if client == nil {
-		return fmt.Errorf("lancedb client is not initialized")
+// debugDropTableWithEngine sends one drop-table request through an already prepared LanceDB engine handle.
+// debugDropTableWithEngine 用于通过已准备好的 LanceDB engine 句柄发送删表请求。
+func debugDropTableWithEngine(ctx context.Context, engine lancedbEngineHandle, tableName string, timeout time.Duration) error {
+	if err := checkContext(ctx); err != nil {
+		return err
+	}
+	if engine == nil {
+		return fmt.Errorf("lancedb engine is not initialized")
 	}
 	if strings.TrimSpace(tableName) == "" {
 		return fmt.Errorf("lancedb table_name is required")
@@ -68,32 +81,23 @@ func debugDropTableWithClient(ctx context.Context, client lancedbv1.LanceDbServi
 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resp, err := client.DropTable(callCtx, &lancedbv1.DropTableRequest{TableName: strings.TrimSpace(tableName)})
+	resp, err := engine.DropTable(lancedbffi.DropTableRequest{TableName: strings.TrimSpace(tableName)})
 	if err != nil {
-		if isTableNotFoundError(err) {
+		if isTableNotFoundMessage(err.Error()) {
 			return nil
 		}
 		return fmt.Errorf("drop lancedb table %s: %w", strings.TrimSpace(tableName), err)
 	}
-	if !resp.GetSuccess() {
-		if isTableNotFoundMessage(resp.GetMessage()) {
+	if !resp.Success {
+		if isTableNotFoundMessage(resp.Message) {
 			return nil
 		}
-		return fmt.Errorf("drop lancedb table %s: %s", strings.TrimSpace(tableName), strings.TrimSpace(resp.GetMessage()))
+		return fmt.Errorf("drop lancedb table %s: %s", strings.TrimSpace(tableName), strings.TrimSpace(resp.Message))
+	}
+	if err := checkContext(callCtx); err != nil {
+		return err
 	}
 	return nil
-}
-
-// isTableNotFoundError classifies gateway transport errors that mean the requested table does not exist anymore.
-// isTableNotFoundError 用于识别那些实际表示“目标表已经不存在”的网关传输层错误。
-func isTableNotFoundError(err error) bool {
-	if err == nil {
-		return false
-	}
-	if status.Code(err) == codes.NotFound {
-		return true
-	}
-	return isTableNotFoundMessage(err.Error())
 }
 
 // isTableNotFoundMessage matches the gateway messages used when DropTable is retried on a missing table.

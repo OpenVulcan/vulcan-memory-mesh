@@ -26,10 +26,10 @@ type debugMemoryContextEdgeExportRow struct {
 	memoryContextEdgeRow
 }
 
-// DebugExportManagedSnapshot connects to the SQLite fact store, pages through all managed VMM tables, and returns one normalized migration snapshot.
-// DebugExportManagedSnapshot 用于连接 SQLite 事实库，分页遍历全部 VMM 受管表，并返回一份标准化迁移快照。
-func DebugExportManagedSnapshot(ctx context.Context, address string, timeout time.Duration, batchSize int) (storagemigrate.Snapshot, error) {
-	store, err := NewStore(address, timeout)
+// DebugExportManagedSnapshot connects to the SQLite local-FFI fact store, pages through all managed VMM tables, and returns one normalized migration snapshot.
+// DebugExportManagedSnapshot 用于连接 SQLite 本地 FFI 事实库，分页遍历全部 VMM 受管表，并返回一份标准化迁移快照。
+func DebugExportManagedSnapshot(ctx context.Context, libraryPath string, databasePath string, timeout time.Duration, batchSize int) (storagemigrate.Snapshot, error) {
+	store, err := NewStore(libraryPath, databasePath, timeout)
 	if err != nil {
 		return storagemigrate.Snapshot{}, err
 	}
@@ -42,7 +42,7 @@ func DebugExportManagedSnapshot(ctx context.Context, address string, timeout tim
 // buildManagedMigrationSnapshot gathers the whole managed dataset from SQLite while keeping larger tables paged by id or rowid to avoid one giant query response.
 // buildManagedMigrationSnapshot 用于从 SQLite 汇总整套受管数据，同时对较大表按 id 或 rowid 分页，避免单次查询返回过大的载荷。
 func (s *Store) buildManagedMigrationSnapshot(ctx context.Context, batchSize int) (storagemigrate.Snapshot, error) {
-	if s == nil || s.client == nil {
+	if s == nil || s.database == nil {
 		return storagemigrate.Snapshot{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	if batchSize <= 0 {

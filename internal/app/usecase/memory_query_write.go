@@ -76,7 +76,7 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 		return WriteMemoriesResult{Items: results}, nil
 	}
 
-	decisions, err := u.reviewDirectWriteMemoryCandidates(ctx, cmd.Session, pending)
+	decisions, err := u.reviewDirectWriteMemoryCandidates(ctx, cmd.Session, pending, now)
 	if err != nil {
 		return WriteMemoriesResult{}, err
 	}
@@ -168,7 +168,7 @@ type directWriteMemoryDecision struct {
 
 // reviewDirectWriteMemoryCandidates optionally runs the unified reviewer over pending direct-write items so explicit tool writes can converge with post-action semantic replacement rules.
 // reviewDirectWriteMemoryCandidates 用于按需对待写主动记忆执行统一 reviewer，让工具显式写入也能与 post-action 共享同一套语义替代规则。
-func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, session logicdomain.SessionRef, pending []directWritePendingItem) ([]directWriteMemoryDecision, error) {
+func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, session logicdomain.SessionRef, pending []directWritePendingItem, reviewTime time.Time) ([]directWriteMemoryDecision, error) {
 	if len(pending) == 0 {
 		return nil, nil
 	}
@@ -209,6 +209,10 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 	if err != nil {
 		return nil, err
 	}
+	currentReviewDate := formatPostActionReviewerDate(reviewTime)
+	for idx := range reviewBuild.Candidates {
+		reviewBuild.Candidates[idx].CandidateDate = currentReviewDate
+	}
 	if u.candidateReviewer == nil {
 		return buildDirectWriteFallbackDecisionsWithHardDedupe(len(pending), reviewBuild.HardDropped), nil
 	}
@@ -218,6 +222,7 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 	}
 	reviewed, err := u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
 		UserInputKind:    logicdomain.TurnAnalysisUserInputStatement,
+		CurrentTurnDate:  currentReviewDate,
 		MemoryCandidates: reviewPartition.ReviewerCandidates,
 	})
 	if err != nil {

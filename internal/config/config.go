@@ -186,15 +186,16 @@ type StorageConfig struct {
 	CombinedProvider string `json:"combined_provider"`
 }
 
-// SQLiteConfig holds the gRPC endpoint used by the local SQLite gateway for durable SQL-backed data.
-// SQLiteConfig 用于保存本地 SQLite 网关的 gRPC 地址与超时配置，承载长期 SQL 数据。
+// SQLiteConfig holds local SQLite runtime options for the split-storage relational backend.
+// SQLiteConfig 用于保存 split 存储关系后端的本地 SQLite 运行时配置。
 type SQLiteConfig struct {
-	Address string   `json:"address"`
-	Timeout Duration `json:"timeout"`
+	Address       string   `json:"address"`
+	Timeout       Duration `json:"timeout"`
+	TokenizerMode string   `json:"tokenizer_mode"`
 }
 
-// LanceDBConfig holds the gRPC endpoint and table settings used by the local LanceDB gateway.
-// LanceDBConfig 用于保存本地 LanceDB 网关的 gRPC 地址与表配置。
+// LanceDBConfig holds local LanceDB runtime options for the split-storage vector backend.
+// LanceDBConfig 用于保存 split 存储向量后端的本地 LanceDB 运行时配置。
 type LanceDBConfig struct {
 	Address      string   `json:"address"`
 	Timeout      Duration `json:"timeout"`
@@ -405,7 +406,6 @@ type MemoryPipelineConfig struct {
 	HardDedupeCosineThreshold *float64 `json:"hard_dedupe_cosine_threshold,omitempty"`
 	HardDedupePoolTopK        int      `json:"hard_dedupe_pool_top_k,omitempty"`
 	HybridEnabled             bool     `json:"hybrid_enabled"`
-	LexicalPreTokenize        bool     `json:"lexical_pre_tokenize"`
 	LexicalTopK               int      `json:"lexical_top_k,omitempty"`
 	RRFK                      int      `json:"rrf_k,omitempty"`
 	MMREnabled                bool     `json:"mmr_enabled"`
@@ -469,7 +469,11 @@ func DefaultBase() Config {
 			PromptLanguage: defaultPromptBundle,
 		},
 		Storage: StorageConfig{Mode: "split", CombinedProvider: "postgres"},
-		SQLite:  SQLiteConfig{Address: "127.0.0.1:19501", Timeout: Duration{5 * time.Second}},
+		SQLite: SQLiteConfig{
+			Address:       "127.0.0.1:19501",
+			Timeout:       Duration{5 * time.Second},
+			TokenizerMode: "jieba",
+		},
 		LanceDB: LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
 		Postgres: PostgresConfig{
 			Schema:                  "public",
@@ -539,7 +543,6 @@ func DefaultBase() Config {
 			HardDedupeCosineThreshold: float64Ptr(defaultMemoryHardDedupeCosineThreshold),
 			HardDedupePoolTopK:        defaultMemoryHardDedupePoolTopK,
 			HybridEnabled:             true,
-			LexicalPreTokenize:        true,
 			LexicalTopK:               8,
 			RRFK:                      60,
 			MMREnabled:                true,

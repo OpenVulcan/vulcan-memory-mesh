@@ -13,10 +13,6 @@ const (
 	// schemaComponentSQLite names the relational-schema component tracked in the shared version table.
 	// schemaComponentSQLite 用于标识在共享版本表里跟踪的关系 schema 组件。
 	schemaComponentSQLite = "sqlite"
-
-	// legacySQLiteIncrementalMigrationBaseline marks the oldest SQLite schema version that can continue on the explicit incremental migration chain.
-	// legacySQLiteIncrementalMigrationBaseline 用于标记仍可继续走显式增量迁移链的最老 SQLite schema 版本。
-	legacySQLiteIncrementalMigrationBaseline = 14
 )
 
 // componentVersionRow mirrors one component-scoped schema-version row loaded from SQLite.
@@ -44,10 +40,11 @@ type schemaMigrationStep struct {
 // schemaMigrationPlan collects one component's target version, fresh bootstrap logic, and ordered upgrade steps.
 // schemaMigrationPlan 用于收集某个组件的目标版本、空库初始化逻辑和有序升级步骤。
 type schemaMigrationPlan struct {
-	Component     string
-	TargetVersion int
-	Bootstrap     func(context.Context, *Store) error
-	Steps         []schemaMigrationStep
+	Component               string
+	MinimumSupportedVersion int
+	TargetVersion           int
+	Bootstrap               func(context.Context, *Store) error
+	Steps                   []schemaMigrationStep
 }
 
 // ensureSQLiteSchema applies the reusable component-version framework so SQLite upgrades stop deleting historical data on startup.
@@ -68,12 +65,9 @@ func (s *Store) ensureSQLiteSchema(ctx context.Context) error {
 	return s.applySchemaMigrationPlan(ctx, buildSQLiteSchemaMigrationPlan())
 }
 
-// ensureSchemaVersionTables bootstraps both the legacy singleton table and the new component-version table used for future incremental upgrades.
-// ensureSchemaVersionTables 用于初始化旧版单例版本表和新版组件版本表，为未来的增量升级共同提供基础。
+// ensureSchemaVersionTables bootstraps the component-version table used by current and future incremental upgrades.
+// ensureSchemaVersionTables 用于初始化当前和未来增量升级共同使用的组件版本表。
 func (s *Store) ensureSchemaVersionTables(ctx context.Context) error {
-	if err := s.exec(ctx, `CREATE TABLE IF NOT EXISTS vmm_version (singleton_id INTEGER PRIMARY KEY, schema_version INTEGER NOT NULL, updated_at TEXT NOT NULL DEFAULT '')`); err != nil {
-		return fmt.Errorf("bootstrap legacy sqlite schema version table: %w", err)
-	}
 	if err := s.exec(ctx, `
 CREATE TABLE IF NOT EXISTS vmm_schema_versions (
   component TEXT PRIMARY KEY,
@@ -89,41 +83,11 @@ CREATE TABLE IF NOT EXISTS vmm_schema_versions (
 // buildSQLiteSchemaMigrationPlan 用于返回当前关系 schema 的迁移链，后续版本升级只需要继续追加一步即可。
 func buildSQLiteSchemaMigrationPlan() schemaMigrationPlan {
 	return schemaMigrationPlan{
-		Component:     schemaComponentSQLite,
-		TargetVersion: currentSchemaVersion,
-		Bootstrap:     bootstrapCurrentSQLiteSchema,
-		Steps: []schemaMigrationStep{
-			{
-				FromVersion: 14,
-				ToVersion:   15,
-				Name:        "add session compact boundary columns",
-				Up:          migrateSQLiteSchema14To15,
-			},
-			{
-				FromVersion: 15,
-				ToVersion:   16,
-				Name:        "add retention recycle and trash tables",
-				Up:          migrateSQLiteSchema15To16,
-			},
-			{
-				FromVersion: 16,
-				ToVersion:   17,
-				Name:        "add turn trash table for idle session recycle",
-				Up:          migrateSQLiteSchema16To17,
-			},
-			{
-				FromVersion: 17,
-				ToVersion:   18,
-				Name:        "add recycle job queue for cold turn scan execute split",
-				Up:          migrateSQLiteSchema17To18,
-			},
-			{
-				FromVersion: 18,
-				ToVersion:   19,
-				Name:        "add isolated scratchpad plan and node tables",
-				Up:          migrateSQLiteSchema18To19,
-			},
-		},
+		Component:               schemaComponentSQLite,
+		MinimumSupportedVersion: currentSchemaVersion,
+		TargetVersion:           currentSchemaVersion,
+		Bootstrap:               bootstrapCurrentSQLiteSchema,
+		Steps:                   nil,
 	}
 }
 
@@ -133,8 +97,14 @@ func (s *Store) applySchemaMigrationPlan(ctx context.Context, plan schemaMigrati
 	if strings.TrimSpace(plan.Component) == "" {
 		return fmt.Errorf("schema migration component is required")
 	}
+	if plan.MinimumSupportedVersion <= 0 {
+		return fmt.Errorf("schema migration minimum supported version must be > 0")
+	}
 	if plan.TargetVersion <= 0 {
 		return fmt.Errorf("schema migration target version must be > 0")
+	}
+	if plan.MinimumSupportedVersion > plan.TargetVersion {
+		return fmt.Errorf("schema migration minimum supported version %d cannot exceed target version %d", plan.MinimumSupportedVersion, plan.TargetVersion)
 	}
 	currentVersion, err := s.loadSchemaComponentVersion(ctx, plan.Component)
 	if err != nil {
@@ -152,14 +122,13 @@ func (s *Store) applySchemaMigrationPlan(ctx context.Context, plan schemaMigrati
 		}
 		return nil
 	}
-	if requiresLegacySQLiteReset(plan.Component, currentVersion) {
-		if err := s.resetLegacySQLiteSchemaToCurrent(ctx, currentVersion, plan.TargetVersion); err != nil {
-			return fmt.Errorf("reset legacy sqlite schema %d -> %d: %w", currentVersion, plan.TargetVersion, err)
-		}
-		if err := s.persistSchemaComponentVersion(ctx, plan.Component, plan.TargetVersion); err != nil {
-			return err
-		}
-		return nil
+	if currentVersion < plan.MinimumSupportedVersion {
+		return fmt.Errorf(
+			"component %s schema version %d is no longer supported; minimum supported version is %d",
+			plan.Component,
+			currentVersion,
+			plan.MinimumSupportedVersion,
+		)
 	}
 	if currentVersion > plan.TargetVersion {
 		return fmt.Errorf("component %s schema version %d is newer than runtime target %d", plan.Component, currentVersion, plan.TargetVersion)
@@ -195,28 +164,8 @@ func (s *Store) applySchemaMigrationPlan(ctx context.Context, plan schemaMigrati
 	return nil
 }
 
-// requiresLegacySQLiteReset reports whether one historical SQLite schema version predates the supported incremental migration baseline and therefore must be rebuilt to the current schema directly.
-// requiresLegacySQLiteReset 用于判断某个历史 SQLite schema 版本是否早于受支持的增量迁移基线，因此必须直接重建到当前 schema。
-func requiresLegacySQLiteReset(component string, currentVersion int) bool {
-	return strings.EqualFold(strings.TrimSpace(component), schemaComponentSQLite) &&
-		currentVersion > 0 &&
-		currentVersion < legacySQLiteIncrementalMigrationBaseline
-}
-
-// resetLegacySQLiteSchemaToCurrent rebuilds very old local SQLite databases with the current managed schema so startup stays compatible with pre-incremental local installs.
-// resetLegacySQLiteSchemaToCurrent 用于把非常老的本地 SQLite 数据库直接重建到当前受管 schema，保证增量迁移框架启用前的本地安装仍可启动。
-func (s *Store) resetLegacySQLiteSchemaToCurrent(ctx context.Context, fromVersion, toVersion int) error {
-	if err := s.exec(ctx, resetManagedSchemaSQL); err != nil {
-		return fmt.Errorf("drop managed sqlite tables for legacy reset %d -> %d: %w", fromVersion, toVersion, err)
-	}
-	if err := bootstrapCurrentSQLiteSchema(ctx, s); err != nil {
-		return fmt.Errorf("bootstrap current sqlite schema after legacy reset %d -> %d: %w", fromVersion, toVersion, err)
-	}
-	return nil
-}
-
-// loadSchemaComponentVersion resolves one component version from the new table and falls back to the legacy singleton row for SQLite upgrades.
-// loadSchemaComponentVersion 用于从新版组件表读取某个组件的版本，并在 SQLite 升级时回退到旧版单例版本行。
+// loadSchemaComponentVersion resolves one component version from the shared component table used by the current migration framework.
+// loadSchemaComponentVersion 用于从当前迁移框架使用的共享组件版本表中读取某个组件的版本。
 func (s *Store) loadSchemaComponentVersion(ctx context.Context, component string) (int, error) {
 	rows, err := queryRows[componentVersionRow](s, ctx, `
 SELECT component, schema_version
@@ -230,20 +179,11 @@ LIMIT 1
 	if len(rows) > 0 {
 		return rows[0].SchemaVersion, nil
 	}
-	if strings.EqualFold(strings.TrimSpace(component), schemaComponentSQLite) {
-		legacyRows, err := queryRows[versionRow](s, ctx, `SELECT schema_version FROM vmm_version WHERE singleton_id = ? LIMIT 1`, versionSingletonID)
-		if err != nil {
-			return 0, fmt.Errorf("query legacy sqlite schema version: %w", err)
-		}
-		if len(legacyRows) > 0 {
-			return legacyRows[0].SchemaVersion, nil
-		}
-	}
 	return 0, nil
 }
 
-// persistSchemaComponentVersion upserts the component version row and keeps the legacy sqlite singleton row synchronized for smoother local debugging.
-// persistSchemaComponentVersion 用于 upsert 组件版本记录，并同步维护旧版 sqlite 单例版本行，便于本地调试平滑过渡。
+// persistSchemaComponentVersion upserts the component version row so future schema upgrades can compare against one monotonic stored baseline.
+// persistSchemaComponentVersion 用于 upsert 组件版本记录，让未来 schema 升级能够对照一个单调递增的持久化基线。
 func (s *Store) persistSchemaComponentVersion(ctx context.Context, component string, version int) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	if err := s.exec(ctx, `
@@ -254,15 +194,6 @@ ON CONFLICT(component) DO UPDATE SET
   updated_at = excluded.updated_at
 `, strings.TrimSpace(component), version, now); err != nil {
 		return fmt.Errorf("persist component %s schema version %d: %w", component, version, err)
-	}
-	if !strings.EqualFold(strings.TrimSpace(component), schemaComponentSQLite) {
-		return nil
-	}
-	if err := s.exec(ctx, `DELETE FROM vmm_version WHERE singleton_id = ?`, versionSingletonID); err != nil {
-		return fmt.Errorf("clear legacy sqlite schema version row: %w", err)
-	}
-	if err := s.exec(ctx, `INSERT INTO vmm_version (singleton_id, schema_version, updated_at) VALUES (?, ?, ?)`, versionSingletonID, version, now); err != nil {
-		return fmt.Errorf("persist legacy sqlite schema version row: %w", err)
 	}
 	return nil
 }

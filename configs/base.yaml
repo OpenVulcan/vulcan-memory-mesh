@@ -179,21 +179,35 @@ storage:
   combined_provider: "postgres"
 
 sqlite:
-  # gRPC endpoint for the SQLite relational storage service.
-  # SQLite 关系存储服务的 gRPC 地址。
-  address: "127.0.0.1:19501"
+  # Legacy compatibility field kept for older configs.
+  # 为兼容旧配置而保留的旧字段。
+  # Split mode now uses the bundled local SQLite FFI library and ignores this address.
+  # split 模式现在使用随包分发的本地 SQLite FFI 动态库，因此会忽略这个地址。
+  address: ""
 
-  # Timeout budget for SQLite gateway calls.
-  # SQLite 网关调用的超时预算。
+  # Timeout budget for local SQLite FFI calls.
+  # 本地 SQLite FFI 调用的超时预算。
   timeout: "5s"
 
-lancedb:
-  # gRPC endpoint for the LanceDB vector storage service.
-  # LanceDB 向量存储服务的 gRPC 地址。
-  address: "127.0.0.1:19301"
+  # Built-in tokenizer mode used by the SQLite FTS library integration.
+  # SQLite FTS 库接入使用的内建分词模式。
+  # Allowed values:
+  # 支持取值：
+  # - jieba: enable the built-in Chinese tokenizer.
+  # - jieba：启用内建中文分词器。
+  # - none: disable tokenizer expansion and keep the plain mode.
+  # - none：关闭分词扩展，保持纯文本模式。
+  tokenizer_mode: "jieba"
 
-  # Timeout budget for LanceDB gateway calls.
-  # LanceDB 网关调用的超时预算。
+lancedb:
+  # Legacy compatibility field kept for older configs.
+  # 为兼容旧配置而保留的旧字段。
+  # Split mode now uses the bundled local LanceDB FFI library and ignores this address.
+  # split 模式现在使用随包分发的本地 LanceDB FFI 动态库，因此会忽略这个地址。
+  address: ""
+
+  # Timeout budget for local LanceDB FFI calls.
+  # 本地 LanceDB FFI 调用的超时预算。
   timeout: "5s"
 
   # Base vector table name before the embedding dimension suffix is appended.
@@ -602,8 +616,8 @@ relational:
   # split 存储模式下使用的关系存储后端提供方。
   # Currently supported values:
   # 当前支持取值：
-  # - sqlite: use the SQLite gRPC service as the split-mode relational backend.
-  # - sqlite：在 split 模式下使用 SQLite gRPC 服务作为关系存储后端。
+  # - sqlite: use the local SQLite lib/FFI integration as the split-mode relational backend.
+  # - sqlite：在 split 模式下使用本地 SQLite lib/FFI 作为关系存储后端。
   provider: "sqlite"
 
 post_action:
@@ -692,10 +706,6 @@ memory_pipeline:
   # Whether hybrid retrieval is enabled.
   # 是否启用混合检索。
   hybrid_enabled: true
-
-  # Whether lexical retrieval pre-tokenizes text before writing to SQLite FTS5.
-  # 是否在写入 SQLite FTS5 前对 lexical 检索文本进行预分词。
-  lexical_pre_tokenize: true
 
   # Candidate count kept by the lexical retrieval stage.
   # lexical 检索阶段保留的候选数。

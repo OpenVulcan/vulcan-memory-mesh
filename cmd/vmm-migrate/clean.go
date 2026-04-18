@@ -10,6 +10,7 @@ import (
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_postgres"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
+	"github.com/openvulcan/vmm/internal/app"
 	"github.com/openvulcan/vmm/internal/config"
 )
 
@@ -59,8 +60,12 @@ func parseMaintenanceCleanSelection(raw string) (maintenanceCleanSelection, erro
 
 // runMaintenanceClean connects only to the requested storage backends, executes the destructive cleanup, and exits immediately afterwards.
 // runMaintenanceClean 用于只连接被请求的存储后端，执行破坏性清理，然后立刻退出。
-func runMaintenanceClean(ctx context.Context, cfg config.Config, target string) error {
+func runMaintenanceClean(ctx context.Context, cfg config.Config, layout config.PromptLayout, target string) error {
 	selection, err := parseMaintenanceCleanSelection(target)
+	if err != nil {
+		return err
+	}
+	localLayout, err := app.ResolveLocalStorageLayoutForPromptLayout(layout)
 	if err != nil {
 		return err
 	}
@@ -68,17 +73,17 @@ func runMaintenanceClean(ctx context.Context, cfg config.Config, target string) 
 	// Execute each destructive cleanup sequentially so operators can see exactly which backend blocked the wipe.
 	// 按顺序执行每个破坏性清理动作，确保运维能明确看到究竟是哪个后端阻塞了清空。
 	if selection.SQLite {
-		if err := vldb_sqlite.DebugCleanManagedSchema(ctx, cfg.SQLite.Address, cfg.SQLite.Timeout.Duration); err != nil {
+		if err := vldb_sqlite.DebugCleanManagedSchema(ctx, localLayout.SQLiteLibrary, localLayout.SQLiteDatabase, cfg.SQLite.Timeout.Duration); err != nil {
 			return err
 		}
-		fmt.Printf("[vmm-migrate] SQLite managed schema cleaned via %s\n", strings.TrimSpace(cfg.SQLite.Address))
+		fmt.Printf("[vmm-migrate] SQLite managed schema cleaned via %s\n", strings.TrimSpace(localLayout.SQLiteDatabase))
 	}
 	if selection.LanceDB {
-		tableName, err := vldb_lancedb.DebugDropConfiguredTable(ctx, cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.Embedding.Dimension)
+		tableName, err := vldb_lancedb.DebugDropConfiguredTable(ctx, localLayout.LanceDBLibrary, localLayout.LanceDBDirectory, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.Embedding.Dimension)
 		if err != nil {
 			return err
 		}
-		fmt.Printf("[vmm-migrate] LanceDB table dropped: %s via %s\n", tableName, strings.TrimSpace(cfg.LanceDB.Address))
+		fmt.Printf("[vmm-migrate] LanceDB table dropped: %s via %s\n", tableName, strings.TrimSpace(localLayout.LanceDBDirectory))
 	}
 	if selection.Postgres {
 		postgresCfg, err := buildPostgresMaintenanceConfig(cfg)

@@ -14,6 +14,8 @@
 
 - `.\make.ps1 build`
 - `.\make.bat build`
+- `.\make.ps1 build release`
+- `.\make.bat build release`
 
 不要把根目录直接执行 `go build -o vmm-local ./cmd/vmm-local` 产生的产物，当成正式可运行交付物。
 
@@ -29,6 +31,14 @@
 
 - Windows 下正确的打包运行产物是 `output/bin/vmm-local.exe`。
 - 根目录下的 [vmm-local](./vmm-local) 不是按照标准打包流程生成的，不应作为正式运行产物使用。
+
+## 运行规则
+
+- 正式运行时必须使用 `output/bin/` 目录中的可执行文件。
+- 如果需要手工启动，请先进入 `output/bin/`，再运行：
+  - `.\vmm-local.exe`
+- 不要从仓库根目录直接运行临时产物。
+- 不要把根目录下的可执行文件或其他非 `output/bin/` 产物，当成正式运行入口。
 
 ## 配置规则
 

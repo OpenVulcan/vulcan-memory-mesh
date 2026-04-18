@@ -63,6 +63,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 	type memoryMatchInput struct {
 		MemoryID     uint64  `json:"memory_id"`
 		SourceTurnID uint64  `json:"source_turn_id,omitempty"`
+		CreatedDate  string  `json:"created_date,omitempty"`
 		ScopeLevel   string  `json:"scope_level,omitempty"`
 		Category     int     `json:"category"`
 		Score        float64 `json:"score"`
@@ -72,6 +73,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 	}
 	type memoryCandidateInput struct {
 		CandidateIndex  int                `json:"candidate_index"`
+		CandidateDate   string             `json:"candidate_date,omitempty"`
 		Category        int                `json:"category"`
 		Abstract        string             `json:"abstract"`
 		Details         string             `json:"details"`
@@ -102,6 +104,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 	}
 	type requestBody struct {
 		UserInputKind    string                 `json:"user_input_kind,omitempty"`
+		CurrentTurnDate  string                 `json:"current_turn_date,omitempty"`
 		UserContent      string                 `json:"user_content,omitempty"`
 		AssistantContent string                 `json:"assistant_content,omitempty"`
 		Memory           []memoryCandidateInput `json:"memory,omitempty"`
@@ -134,6 +137,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 
 	body := requestBody{
 		UserInputKind:    strings.TrimSpace(input.UserInputKind),
+		CurrentTurnDate:  strings.TrimSpace(input.CurrentTurnDate),
 		UserContent:      strings.TrimSpace(input.UserContent),
 		AssistantContent: strings.TrimSpace(input.AssistantContent),
 	}
@@ -151,6 +155,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 		}
 		item := memoryCandidateInput{
 			CandidateIndex:  candidate.CandidateIndex,
+			CandidateDate:   strings.TrimSpace(candidate.CandidateDate),
 			Category:        candidate.Category,
 			Abstract:        abstract,
 			Details:         details,
@@ -170,6 +175,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 			item.SimilarMemories = append(item.SimilarMemories, memoryMatchInput{
 				MemoryID:     similar.MemoryID,
 				SourceTurnID: similar.SourceTurnID,
+				CreatedDate:  strings.TrimSpace(similar.CreatedDate),
 				ScopeLevel:   strings.TrimSpace(similar.ScopeLevel),
 				Category:     similar.Category,
 				Score:        similar.Score,

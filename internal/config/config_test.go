@@ -28,6 +28,7 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.Vector.Provider = ""
 	cfg.Relational.Provider = ""
 	cfg.SQLite.Address = ""
+	cfg.SQLite.TokenizerMode = ""
 	cfg.LanceDB.Address = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
@@ -68,10 +69,13 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.Relational.Provider != "sqlite" {
 		t.Fatalf("relational provider = %q", cfg.Relational.Provider)
 	}
-	if cfg.SQLite.Address != "127.0.0.1:19501" {
+	if cfg.SQLite.Address != "" {
 		t.Fatalf("sqlite address = %q", cfg.SQLite.Address)
 	}
-	if cfg.LanceDB.Address != "127.0.0.1:19301" {
+	if cfg.SQLite.TokenizerMode != "jieba" {
+		t.Fatalf("sqlite tokenizer mode = %q", cfg.SQLite.TokenizerMode)
+	}
+	if cfg.LanceDB.Address != "" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
 	}
 	if got, want := cfg.Prompts.PromptLanguage, defaultPromptBundle; got != want {

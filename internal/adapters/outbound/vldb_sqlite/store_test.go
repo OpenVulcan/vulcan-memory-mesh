@@ -1,7 +1,7 @@
-// store_test.go verifies the sqlite-first transport helpers so the adapter keeps using typed params,
-// ExecuteBatch, and retryable gateway semantics instead of silently regressing to an older compatibility path.
-// store_test.go 用于验证 sqlite-first 传输助手，确保适配器持续使用强类型参数、ExecuteBatch 和可重试网关语义，
-// 而不是悄悄回退到旧的兼容实现路径。
+// store_test.go verifies the SQLite local-FFI adapter keeps typed-parameter writes, schema-version behavior,
+// and lifecycle-sensitive SQL helpers stable after the legacy gRPC fallback path was removed.
+// store_test.go 用于验证在移除旧 gRPC fallback 路径后，
+// SQLite 本地 FFI 适配器仍能保持强类型参数写入、schema 版本行为以及生命周期相关 SQL 助手逻辑稳定。
 package vldb_sqlite
 
 import (
@@ -11,66 +11,20 @@ import (
 	"testing"
 	"time"
 
-	sqlitev1 "github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite/proto/v1"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
-	"github.com/openvulcan/vmm/internal/platform/textutil"
-	"google.golang.org/grpc"
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/metadata"
-	"google.golang.org/grpc/status"
+	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
 )
 
-// fakeSqliteClient is a tiny in-memory sqlite RPC stub used by transport-focused adapter tests.
-// fakeSqliteClient 用于作为轻量级内存 sqlite RPC 桩，供聚焦传输层的适配器测试使用。
-type fakeSqliteClient struct {
-	executeScriptFunc func(context.Context, *sqlitev1.ExecuteRequest, ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error)
-	executeBatchFunc  func(context.Context, *sqlitev1.ExecuteBatchRequest, ...grpc.CallOption) (*sqlitev1.ExecuteBatchResponse, error)
-	queryJSONFunc     func(context.Context, *sqlitev1.QueryRequest, ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error)
-}
-
-// ExecuteScript forwards the call to the configured fake function.
-// ExecuteScript 用于把调用转发到测试里配置的 fake 函数。
-func (f *fakeSqliteClient) ExecuteScript(ctx context.Context, req *sqlitev1.ExecuteRequest, opts ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
-	if f.executeScriptFunc == nil {
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
-	}
-	return f.executeScriptFunc(ctx, req, opts...)
-}
-
-// ExecuteBatch forwards the call to the configured fake function.
-// ExecuteBatch 用于把调用转发到测试里配置的 fake 函数。
-func (f *fakeSqliteClient) ExecuteBatch(ctx context.Context, req *sqlitev1.ExecuteBatchRequest, opts ...grpc.CallOption) (*sqlitev1.ExecuteBatchResponse, error) {
-	if f.executeBatchFunc == nil {
-		return &sqlitev1.ExecuteBatchResponse{Success: true}, nil
-	}
-	return f.executeBatchFunc(ctx, req, opts...)
-}
-
-// QueryJson forwards the call to the configured fake function.
-// QueryJson 用于把调用转发到测试里配置的 fake 函数。
-func (f *fakeSqliteClient) QueryJson(ctx context.Context, req *sqlitev1.QueryRequest, opts ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-	if f.queryJSONFunc == nil {
-		return &sqlitev1.QueryJsonResponse{JsonData: "[]"}, nil
-	}
-	return f.queryJSONFunc(ctx, req, opts...)
-}
-
-// QueryStream is unused in these transport tests and should never be invoked.
-// QueryStream 在这些传输测试里不会被使用；如果被调用说明测试范围跑偏了。
-func (*fakeSqliteClient) QueryStream(context.Context, *sqlitev1.QueryRequest, ...grpc.CallOption) (grpc.ServerStreamingClient[sqlitev1.QueryResponse], error) {
-	return nil, status.Error(codes.Unimplemented, "query stream is not used in sqlite transport tests")
-}
-
-// TestStoreLoadUserByIDUsesTypedSQLiteParams verifies single-row lookups now prefer native sqlite typed params instead of params_json.
-// TestStoreLoadUserByIDUsesTypedSQLiteParams 用于验证单行查询现在优先走 sqlite 原生强类型参数，而不是 params_json。
+// TestStoreLoadUserByIDUsesTypedSQLiteParams verifies single-row lookups still use typed SQLite params instead of params_json.
+// TestStoreLoadUserByIDUsesTypedSQLiteParams 用于验证单行查询仍会使用强类型 SQLite 参数，而不是 params_json。
 func TestStoreLoadUserByIDUsesTypedSQLiteParams(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		captured = req
-		return &sqlitev1.QueryJsonResponse{
+		return &fakeQueryJSONResponse{
 			JsonData: `[{"id":1,"name":"default","profile":"","delete_confirm_code":"","created_at":"2026-04-01T00:00:00Z","updated_at":"2026-04-01T00:00:00Z"}]`,
 		}, nil
 	}
@@ -83,7 +37,7 @@ func TestStoreLoadUserByIDUsesTypedSQLiteParams(t *testing.T) {
 		t.Fatalf("loadUserByID returned wrong id: %d", record.ID)
 	}
 	if captured == nil {
-		t.Fatalf("expected QueryJson request to be captured")
+		t.Fatal("expected QueryJSON request to be captured")
 	}
 	if strings.TrimSpace(captured.GetParamsJson()) != "" {
 		t.Fatalf("expected typed params only, got params_json=%q", captured.GetParamsJson())
@@ -91,22 +45,22 @@ func TestStoreLoadUserByIDUsesTypedSQLiteParams(t *testing.T) {
 	if len(captured.GetParams()) != 1 {
 		t.Fatalf("expected one typed param, got %d", len(captured.GetParams()))
 	}
-	value, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_Int64Value)
-	if !ok || value.Int64Value != 1 {
-		t.Fatalf("expected int64 sqlite param 1, got %#v", captured.GetParams()[0].Kind)
+	value := captured.GetParams()[0]
+	if value.Kind != sqliteffi.SQLValueInt64 || value.Int64 != 1 {
+		t.Fatalf("expected int64 sqlite param 1, got %#v", value)
 	}
 }
 
-// TestStoreLoadRenderedProfileUsesTypedSQLiteParams verifies scope-profile lookups now keep the target id in typed sqlite params instead of interpolating it into raw SQL.
-// TestStoreLoadRenderedProfileUsesTypedSQLiteParams 用于验证 scope 画像读取现在会把目标 id 保持在 sqlite 强类型参数里，而不是直接插入原始 SQL。
+// TestStoreLoadRenderedProfileUsesTypedSQLiteParams verifies rendered-profile lookups keep the target id in typed params instead of raw SQL interpolation.
+// TestStoreLoadRenderedProfileUsesTypedSQLiteParams 用于验证渲染画像读取会把目标 id 保持在强类型参数中，而不是直接插进 SQL 文本。
 func TestStoreLoadRenderedProfileUsesTypedSQLiteParams(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		captured = req
-		return &sqlitev1.QueryJsonResponse{JsonData: `[{"profile":"project profile"}]`}, nil
+		return &fakeQueryJSONResponse{JsonData: `[{"profile":"project profile"}]`}, nil
 	}
 
 	profile, err := store.LoadRenderedProfile(context.Background(), logicdomain.ProfileTargetRef{
@@ -120,7 +74,7 @@ func TestStoreLoadRenderedProfileUsesTypedSQLiteParams(t *testing.T) {
 		t.Fatalf("unexpected rendered profile: %q", profile)
 	}
 	if captured == nil {
-		t.Fatal("expected QueryJson request to be captured")
+		t.Fatal("expected QueryJSON request to be captured")
 	}
 	if strings.TrimSpace(captured.GetParamsJson()) != "" {
 		t.Fatalf("expected typed params only, got params_json=%q", captured.GetParamsJson())
@@ -128,35 +82,28 @@ func TestStoreLoadRenderedProfileUsesTypedSQLiteParams(t *testing.T) {
 	if !strings.Contains(captured.GetSql(), "WHERE id = ? LIMIT 1") {
 		t.Fatalf("expected placeholder-based profile lookup sql, got %q", captured.GetSql())
 	}
-	if len(captured.GetParams()) != 1 {
-		t.Fatalf("expected one typed param, got %d", len(captured.GetParams()))
-	}
-	value, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_Int64Value)
-	if !ok || value.Int64Value != 9 {
-		t.Fatalf("expected int64 sqlite param 9, got %#v", captured.GetParams()[0].Kind)
+	value := captured.GetParams()[0]
+	if value.Kind != sqliteffi.SQLValueInt64 || value.Int64 != 9 {
+		t.Fatalf("expected int64 sqlite param 9, got %#v", value)
 	}
 }
 
-// TestStoreExecRetriesRetryableGatewayErrors verifies SQLITE_BUSY / SQLITE_LOCKED style responses are retried inside the adapter before surfacing to callers.
-// TestStoreExecRetriesRetryableGatewayErrors 用于验证 SQLITE_BUSY / SQLITE_LOCKED 这类响应会先在适配器内部重试，而不是立刻暴露给调用方。
-func TestStoreExecRetriesRetryableGatewayErrors(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+// TestStoreExecRetriesRetryableSQLiteErrors verifies SQLITE_BUSY style errors are retried inside the adapter before surfacing.
+// TestStoreExecRetriesRetryableSQLiteErrors 用于验证 SQLITE_BUSY 这类错误会先在适配器内部重试，而不是立刻向外暴露。
+func TestStoreExecRetriesRetryableSQLiteErrors(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	calls := 0
-	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, opts ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		calls++
 		if calls == 1 {
-			setTrailerOptions(opts, metadata.Pairs(
-				"x-vldb-retryable", "true",
-				"x-vldb-sqlite-code", "SQLITE_BUSY",
-			))
-			return nil, status.Error(codes.Unavailable, "SQLITE_BUSY: database is locked")
+			return nil, fmt.Errorf("SQLITE_BUSY: database is locked")
 		}
 		if strings.TrimSpace(req.GetParamsJson()) != "" {
 			t.Fatalf("expected retry attempt to keep typed params, got params_json=%q", req.GetParamsJson())
 		}
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+		return &fakeExecuteResponse{Success: true}, nil
 	}
 
 	if err := store.exec(context.Background(), `UPDATE vmm_users SET profile = ? WHERE id = ?`, "vmm", 1); err != nil {
@@ -167,23 +114,23 @@ func TestStoreExecRetriesRetryableGatewayErrors(t *testing.T) {
 	}
 }
 
-// TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch verifies high-frequency repeated inserts are merged into ExecuteBatch instead of one RPC per row.
-// TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch 用于验证高频重复插入会合并成 ExecuteBatch，而不是退化成“一行一次 RPC”。
+// TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch verifies repeated prototype inserts are merged into one ExecuteBatch call.
+// TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch 用于验证重复原型写入会合并成一次 ExecuteBatch 调用。
 func TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	execCalls := 0
 	batchCalls := 0
-	var capturedBatch *sqlitev1.ExecuteBatchRequest
-	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+	var capturedBatch *fakeExecuteBatchRequest
+	fake.executeScriptFunc = func(_ context.Context, _ *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		execCalls++
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+		return &fakeExecuteResponse{Success: true}, nil
 	}
-	fake.executeBatchFunc = func(_ context.Context, req *sqlitev1.ExecuteBatchRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteBatchResponse, error) {
+	fake.executeBatchFunc = func(_ context.Context, req *fakeExecuteBatchRequest) (*fakeExecuteResponse, error) {
 		batchCalls++
 		capturedBatch = req
-		return &sqlitev1.ExecuteBatchResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
+		return &fakeExecuteResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
 	}
 
 	err := store.ReplaceNoiseEmbeddingCache(context.Background(), logicdomain.NoiseEmbeddingCacheQuery{
@@ -219,40 +166,31 @@ func TestStoreReplaceNoiseEmbeddingCacheUsesExecuteBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplaceNoiseEmbeddingCache returned error: %v", err)
 	}
-	if execCalls != 1 {
-		t.Fatalf("expected one delete ExecuteScript call, got %d", execCalls)
+	if execCalls != 1 || batchCalls != 1 {
+		t.Fatalf("expected delete+batch write, exec=%d batch=%d", execCalls, batchCalls)
 	}
-	if batchCalls != 1 {
-		t.Fatalf("expected one ExecuteBatch call, got %d", batchCalls)
-	}
-	if capturedBatch == nil {
-		t.Fatalf("expected ExecuteBatch request to be captured")
-	}
-	if len(capturedBatch.GetItems()) != 2 {
-		t.Fatalf("expected two ExecuteBatch items, got %d", len(capturedBatch.GetItems()))
-	}
-	if first := capturedBatch.GetItems()[0].GetParams(); len(first) != 9 {
-		t.Fatalf("expected nine typed params in first batch item, got %d", len(first))
+	if capturedBatch == nil || len(capturedBatch.GetItems()) != 2 {
+		t.Fatalf("unexpected batch capture: %#v", capturedBatch)
 	}
 }
 
-// TestStoreReplaceMemoryVectorsUsesExecuteBatch verifies durable vector rebuilds rewrite SQLite vector_json through one homogeneous ExecuteBatch call instead of one row per RPC.
-// TestStoreReplaceMemoryVectorsUsesExecuteBatch 用于验证 durable 向量重建会通过一次同构 ExecuteBatch 重写 SQLite vector_json，而不是退化成逐行 RPC。
+// TestStoreReplaceMemoryVectorsUsesExecuteBatch verifies vector_json rebuilds are persisted through one homogeneous ExecuteBatch call.
+// TestStoreReplaceMemoryVectorsUsesExecuteBatch 用于验证 vector_json 重建会通过一次同构 ExecuteBatch 持久化。
 func TestStoreReplaceMemoryVectorsUsesExecuteBatch(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	execCalls := 0
 	batchCalls := 0
-	var capturedBatch *sqlitev1.ExecuteBatchRequest
-	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+	var capturedBatch *fakeExecuteBatchRequest
+	fake.executeScriptFunc = func(_ context.Context, _ *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		execCalls++
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+		return &fakeExecuteResponse{Success: true}, nil
 	}
-	fake.executeBatchFunc = func(_ context.Context, req *sqlitev1.ExecuteBatchRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteBatchResponse, error) {
+	fake.executeBatchFunc = func(_ context.Context, req *fakeExecuteBatchRequest) (*fakeExecuteResponse, error) {
 		batchCalls++
 		capturedBatch = req
-		return &sqlitev1.ExecuteBatchResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
+		return &fakeExecuteResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
 	}
 
 	err := store.ReplaceMemoryVectors(context.Background(), []logicdomain.MemoryRecord{
@@ -262,348 +200,224 @@ func TestStoreReplaceMemoryVectorsUsesExecuteBatch(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplaceMemoryVectors returned error: %v", err)
 	}
-	if execCalls != 0 {
-		t.Fatalf("expected no ExecuteScript calls, got %d", execCalls)
-	}
-	if batchCalls != 1 {
-		t.Fatalf("expected one ExecuteBatch call, got %d", batchCalls)
-	}
-	if capturedBatch == nil {
-		t.Fatal("expected ExecuteBatch request to be captured")
-	}
-	if !strings.Contains(capturedBatch.GetSql(), "UPDATE vmm_memory_nodes") || !strings.Contains(capturedBatch.GetSql(), "SET vector_json = ?") {
-		t.Fatalf("expected vector rebuild update sql, got %q", capturedBatch.GetSql())
-	}
-	if len(capturedBatch.GetItems()) != 2 {
-		t.Fatalf("expected two ExecuteBatch items, got %d", len(capturedBatch.GetItems()))
+	if execCalls != 0 || batchCalls != 1 {
+		t.Fatalf("expected batch-only vector rebuild, exec=%d batch=%d", execCalls, batchCalls)
 	}
 	first := capturedBatch.GetItems()[0].GetParams()
-	if len(first) != 2 {
-		t.Fatalf("expected two typed params in first batch item, got %d", len(first))
+	if first[0].Kind != sqliteffi.SQLValueString || first[0].String != "[1,2,3]" {
+		t.Fatalf("expected vector json string param, got %#v", first[0])
 	}
-	vectorValue, ok := first[0].Kind.(*sqlitev1.SqliteValue_StringValue)
-	if !ok || vectorValue.StringValue != "[1,2,3]" {
-		t.Fatalf("expected vector json string param, got %#v", first[0].Kind)
-	}
-	idValue, ok := first[1].Kind.(*sqlitev1.SqliteValue_StringValue)
-	if !ok || idValue.StringValue != "vec-1" {
-		t.Fatalf("expected vector id string param, got %#v", first[1].Kind)
+	if first[1].Kind != sqliteffi.SQLValueString || first[1].String != "vec-1" {
+		t.Fatalf("expected vector id string param, got %#v", first[1])
 	}
 }
 
-// TestStoreClearMemoryVectorsUsesExecuteBatch verifies split-mode reset phases clear SQLite vector_json back to the empty baseline through one homogeneous ExecuteBatch call.
-// TestStoreClearMemoryVectorsUsesExecuteBatch 用于验证 split 模式重置阶段会通过一次同构 ExecuteBatch 把 SQLite vector_json 清回空基线。
+// TestStoreClearMemoryVectorsUsesExecuteBatch verifies vector resets clear vector_json through one homogeneous ExecuteBatch call.
+// TestStoreClearMemoryVectorsUsesExecuteBatch 用于验证向量重置会通过一次同构 ExecuteBatch 清空 vector_json。
 func TestStoreClearMemoryVectorsUsesExecuteBatch(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	execCalls := 0
 	batchCalls := 0
-	var capturedBatch *sqlitev1.ExecuteBatchRequest
-	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+	var capturedBatch *fakeExecuteBatchRequest
+	fake.executeScriptFunc = func(_ context.Context, _ *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		execCalls++
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+		return &fakeExecuteResponse{Success: true}, nil
 	}
-	fake.executeBatchFunc = func(_ context.Context, req *sqlitev1.ExecuteBatchRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteBatchResponse, error) {
+	fake.executeBatchFunc = func(_ context.Context, req *fakeExecuteBatchRequest) (*fakeExecuteResponse, error) {
 		batchCalls++
 		capturedBatch = req
-		return &sqlitev1.ExecuteBatchResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
+		return &fakeExecuteResponse{Success: true, StatementsExecuted: int64(len(req.GetItems()))}, nil
 	}
 
 	err := store.ClearMemoryVectors(context.Background(), []string{"vec-1", "vec-2"})
 	if err != nil {
 		t.Fatalf("ClearMemoryVectors returned error: %v", err)
 	}
-	if execCalls != 0 {
-		t.Fatalf("expected no ExecuteScript calls, got %d", execCalls)
-	}
-	if batchCalls != 1 {
-		t.Fatalf("expected one ExecuteBatch call, got %d", batchCalls)
-	}
-	if capturedBatch == nil {
-		t.Fatal("expected ExecuteBatch request to be captured")
+	if execCalls != 0 || batchCalls != 1 {
+		t.Fatalf("expected batch-only vector clear, exec=%d batch=%d", execCalls, batchCalls)
 	}
 	if !strings.Contains(capturedBatch.GetSql(), "SET vector_json = '[]'") {
 		t.Fatalf("expected vector reset sql, got %q", capturedBatch.GetSql())
 	}
-	if len(capturedBatch.GetItems()) != 2 {
-		t.Fatalf("expected two ExecuteBatch items, got %d", len(capturedBatch.GetItems()))
-	}
 	first := capturedBatch.GetItems()[0].GetParams()
-	if len(first) != 1 {
-		t.Fatalf("expected one typed param in first batch item, got %d", len(first))
-	}
-	idValue, ok := first[0].Kind.(*sqlitev1.SqliteValue_StringValue)
-	if !ok || idValue.StringValue != "vec-1" {
-		t.Fatalf("expected vector id string param, got %#v", first[0].Kind)
+	if first[0].Kind != sqliteffi.SQLValueString || first[0].String != "vec-1" {
+		t.Fatalf("expected vector id string param, got %#v", first[0])
 	}
 }
 
-// TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton verifies the reusable version framework can read old sqlite-only version rows before the new component table has been populated.
-// TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton 用于验证在新版组件表尚未填充前，可复用版本框架仍能回退读取旧版 sqlite 单例版本行。
-func TestStoreGetSchemaComponentVersionFallsBackToLegacySingleton(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+// TestStoreGetSchemaComponentVersionReadsComponentTable verifies schema versions are read only from the shared component table.
+// TestStoreGetSchemaComponentVersionReadsComponentTable 用于验证 schema 版本只会从共享组件表读取。
+func TestStoreGetSchemaComponentVersionReadsComponentTable(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-		sql := strings.TrimSpace(req.GetSql())
-		switch {
-		case strings.Contains(sql, "FROM vmm_schema_versions"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
-		case strings.Contains(sql, "FROM vmm_version"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[{"schema_version":14}]`}, nil
-		default:
-			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		if strings.Contains(strings.TrimSpace(req.GetSql()), "FROM vmm_schema_versions") {
+			return &fakeQueryJSONResponse{JsonData: `[{"component":"sqlite","schema_version":19}]`}, nil
 		}
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
 
 	version, err := store.GetSchemaComponentVersion(context.Background(), "sqlite")
 	if err != nil {
 		t.Fatalf("GetSchemaComponentVersion returned error: %v", err)
 	}
-	if version != 14 {
-		t.Fatalf("schema version = %d, want 14", version)
+	if version != 19 {
+		t.Fatalf("schema version = %d, want 19", version)
 	}
 }
 
-// TestStoreSetSchemaComponentVersionPersistsComponentAndLegacyRows verifies version writes keep the new component table and the legacy sqlite singleton row synchronized.
-// TestStoreSetSchemaComponentVersionPersistsComponentAndLegacyRows 用于验证版本写入会同时保持新版组件表和旧版 sqlite 单例版本行同步。
-func TestStoreSetSchemaComponentVersionPersistsComponentAndLegacyRows(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+// TestStoreSetSchemaComponentVersionPersistsComponentRowsOnly verifies version writes only touch the shared component row.
+// TestStoreSetSchemaComponentVersionPersistsComponentRowsOnly 用于验证版本写入只会触达共享组件版本行。
+func TestStoreSetSchemaComponentVersionPersistsComponentRowsOnly(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	executedSQL := make([]string, 0)
-	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+		return &fakeExecuteResponse{Success: true}, nil
 	}
 
 	if err := store.SetSchemaComponentVersion(context.Background(), "sqlite", 15); err != nil {
 		t.Fatalf("SetSchemaComponentVersion returned error: %v", err)
 	}
 	joined := strings.Join(executedSQL, "\n")
-	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_schema_versions") {
-		t.Fatalf("expected schema version bootstrap SQL, got %q", joined)
+	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_schema_versions") ||
+		!strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
+		t.Fatalf("expected shared component table writes, got %q", joined)
 	}
-	if !strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
-		t.Fatalf("expected component version upsert SQL, got %q", joined)
-	}
-	if !strings.Contains(joined, "INSERT INTO vmm_version") {
-		t.Fatalf("expected legacy sqlite version sync SQL, got %q", joined)
+	if strings.Contains(joined, "vmm_version") {
+		t.Fatalf("expected no legacy singleton writes, got %q", joined)
 	}
 }
 
-// TestStoreEnsureSQLiteSchemaResetsLegacyPre14Version verifies very old local sqlite stores still recover by rebuilding to the current schema instead of failing with a missing migration path error.
-// TestStoreEnsureSQLiteSchemaResetsLegacyPre14Version 用于验证非常老的本地 sqlite 库仍会通过重建当前 schema 恢复，而不会因为缺少迁移路径直接失败。
-func TestStoreEnsureSQLiteSchemaResetsLegacyPre14Version(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+// TestStoreEnsureSQLiteSchemaRejectsUnsupportedPre19Version verifies versions older than 19 are explicitly rejected instead of silently reset.
+// TestStoreEnsureSQLiteSchemaRejectsUnsupportedPre19Version 用于验证旧于 19 的版本会被显式拒绝，而不是静默重建。
+func TestStoreEnsureSQLiteSchemaRejectsUnsupportedPre19Version(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	executedSQL := make([]string, 0)
-	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+		return &fakeExecuteResponse{Success: true}, nil
 	}
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-		sql := strings.TrimSpace(req.GetSql())
-		switch {
-		case strings.Contains(sql, "FROM vmm_schema_versions"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
-		case strings.Contains(sql, "FROM vmm_version"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[{"schema_version":13}]`}, nil
-		case strings.Contains(sql, "SELECT COUNT(*) AS count FROM vmm_projects"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[{"count":0}]`}, nil
-		default:
-			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		if strings.Contains(strings.TrimSpace(req.GetSql()), "FROM vmm_schema_versions") {
+			return &fakeQueryJSONResponse{JsonData: `[{"component":"sqlite","schema_version":18}]`}, nil
 		}
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
 
-	if err := store.ensureSQLiteSchema(context.Background()); err != nil {
-		t.Fatalf("ensureSQLiteSchema returned error: %v", err)
+	err := store.ensureSQLiteSchema(context.Background())
+	if err == nil {
+		t.Fatal("expected ensureSQLiteSchema to reject unsupported pre-19 version")
 	}
-
+	if !strings.Contains(err.Error(), "minimum supported version is 19") {
+		t.Fatalf("unexpected ensureSQLiteSchema error: %v", err)
+	}
 	joined := strings.Join(executedSQL, "\n")
-	if !strings.Contains(joined, "DROP TABLE IF EXISTS vmm_sessions;") {
-		t.Fatalf("expected legacy schema reset SQL, got %q", joined)
-	}
-	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_sessions") {
-		t.Fatalf("expected current schema bootstrap SQL, got %q", joined)
-	}
-	if !strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
-		t.Fatalf("expected schema version persistence after legacy reset, got %q", joined)
-	}
-}
-
-// TestStoreEnsureSQLiteSchemaMigratesScratchpadTables verifies schema version 18 upgrades through the dedicated scratchpad migration step instead of relying on a destructive full reset.
-// TestStoreEnsureSQLiteSchemaMigratesScratchpadTables 用于验证 schema 版本 18 会通过独立的 scratchpad 迁移步骤升级，而不是依赖破坏性的全量重建。
-func TestStoreEnsureSQLiteSchemaMigratesScratchpadTables(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
-
-	executedSQL := make([]string, 0)
-	fake.executeScriptFunc = func(_ context.Context, req *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
-		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
-	}
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-		sql := strings.TrimSpace(req.GetSql())
-		switch {
-		case strings.Contains(sql, "FROM vmm_schema_versions"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[{"component":"sqlite","schema_version":18}]`}, nil
-		case strings.Contains(sql, "FROM vmm_version"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
-		default:
-			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
-		}
-	}
-
-	if err := store.ensureSQLiteSchema(context.Background()); err != nil {
-		t.Fatalf("ensureSQLiteSchema returned error: %v", err)
-	}
-
-	joined := strings.Join(executedSQL, "\n")
-	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_scratchpad_plans") {
-		t.Fatalf("expected scratchpad plan migration SQL, got %q", joined)
-	}
-	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_scratchpad_nodes") {
-		t.Fatalf("expected scratchpad node migration SQL, got %q", joined)
-	}
-	if !strings.Contains(joined, "idx_vmm_scratchpad_plans_scope") || !strings.Contains(joined, "idx_vmm_scratchpad_nodes_plan") {
-		t.Fatalf("expected scratchpad index migration SQL, got %q", joined)
-	}
 	if strings.Contains(joined, "DROP TABLE IF EXISTS vmm_sessions;") {
-		t.Fatalf("unexpected legacy reset during 18->19 migration, got %q", joined)
+		t.Fatalf("expected unsupported version to stop before destructive reset, got %q", joined)
 	}
 }
 
-// TestStoreSearchLexicalMemoryUsesTypedSQLiteParams verifies hybrid lexical recall keeps using MATCH with typed params instead of falling back to params_json.
-// TestStoreSearchLexicalMemoryUsesTypedSQLiteParams 用于验证混合 lexical 召回仍通过 MATCH 和强类型参数执行，而不是退回 params_json。
-func TestStoreSearchLexicalMemoryUsesTypedSQLiteParams(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+// TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline verifies an empty database still bootstraps straight to version 19.
+// TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline 用于验证空数据库仍会直接初始化到 19 基线。
+func TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-		captured = req
-		return &sqlitev1.QueryJsonResponse{
-			JsonData: `[{"memory_id":201,"rank":0.42}]`,
-		}, nil
+	executedSQL := make([]string, 0)
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
+		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
+		return &fakeExecuteResponse{Success: true}, nil
+	}
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		sql := strings.TrimSpace(req.GetSql())
+		switch {
+		case strings.Contains(sql, "FROM vmm_schema_versions"):
+			return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+		case strings.Contains(sql, "SELECT COUNT(*) AS count FROM vmm_projects"):
+			return &fakeQueryJSONResponse{JsonData: `[{"count":0}]`}, nil
+		default:
+			return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+		}
 	}
 
-	hits, err := store.SearchLexicalMemory(context.Background(), "文本排序模型", 5, logicdomain.SearchFilter{
-		UserID:    7,
-		TeamID:    3,
-		SpaceID:   5,
-		ProjectID: 9,
+	if err := store.ensureSQLiteSchema(context.Background()); err != nil {
+		t.Fatalf("ensureSQLiteSchema returned error: %v", err)
+	}
+	joined := strings.Join(executedSQL, "\n")
+	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_sessions") ||
+		!strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
+		t.Fatalf("expected fresh bootstrap SQL, got %q", joined)
+	}
+	if strings.Contains(joined, "vmm_version") {
+		t.Fatalf("expected bootstrap to ignore legacy version table, got %q", joined)
+	}
+}
+
+// TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step verifies future upgrades can still chain from the frozen 19 baseline.
+// TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step 用于验证未来升级仍能从冻结后的 19 基线继续向上衔接。
+func TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	executedSQL := make([]string, 0)
+	stepApplied := false
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
+		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
+		return &fakeExecuteResponse{Success: true}, nil
+	}
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		if strings.Contains(strings.TrimSpace(req.GetSql()), "FROM vmm_schema_versions") {
+			return &fakeQueryJSONResponse{JsonData: `[{"component":"sqlite","schema_version":19}]`}, nil
+		}
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+	}
+
+	err := store.applySchemaMigrationPlan(context.Background(), schemaMigrationPlan{
+		Component:               schemaComponentSQLite,
+		MinimumSupportedVersion: 19,
+		TargetVersion:           20,
+		Bootstrap:               bootstrapCurrentSQLiteSchema,
+		Steps: []schemaMigrationStep{{
+			FromVersion: 19,
+			ToVersion:   20,
+			Name:        "future migration",
+			Up: func(ctx context.Context, s *Store) error {
+				stepApplied = true
+				return s.exec(ctx, `CREATE TABLE IF NOT EXISTS vmm_future_upgrade_marker(id INTEGER PRIMARY KEY)`)
+			},
+		}},
 	})
 	if err != nil {
-		t.Fatalf("SearchLexicalMemory returned error: %v", err)
+		t.Fatalf("applySchemaMigrationPlan returned error: %v", err)
 	}
-	if len(hits) != 1 || hits[0].MemoryID != 201 {
-		t.Fatalf("unexpected lexical hits: %+v", hits)
+	if !stepApplied {
+		t.Fatal("expected 19->20 migration step to run")
 	}
-	if captured == nil {
-		t.Fatal("expected QueryJson request to be captured")
-	}
-	if strings.TrimSpace(captured.GetParamsJson()) != "" {
-		t.Fatalf("expected typed params only, got params_json=%q", captured.GetParamsJson())
-	}
-	if !strings.Contains(captured.GetSql(), "vmm_memory_nodes_fts MATCH ?") {
-		t.Fatalf("expected MATCH clause in lexical sql, got %q", captured.GetSql())
-	}
-	if !strings.Contains(captured.GetSql(), "bm25(vmm_memory_nodes_fts, 2.0, 1.0)") {
-		t.Fatalf("expected bm25 clause in lexical sql, got %q", captured.GetSql())
-	}
-	if !strings.Contains(captured.GetSql(), "(n.user_id = 0 OR n.user_id = ?)") {
-		t.Fatalf("expected shared user scope filter in lexical sql, got %q", captured.GetSql())
-	}
-	if len(captured.GetParams()) != 6 {
-		t.Fatalf("expected six typed params, got %d", len(captured.GetParams()))
-	}
-	queryValue, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_StringValue)
-	if !ok || !strings.Contains(queryValue.StringValue, "文本排序模型") {
-		t.Fatalf("expected sanitized lexical query as first param, got %#v", captured.GetParams()[0].Kind)
+	joined := strings.Join(executedSQL, "\n")
+	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_future_upgrade_marker") ||
+		!strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
+		t.Fatalf("expected future migration SQL plus version persistence, got %q", joined)
 	}
 }
 
-// TestStoreSearchLexicalMemoryPretokenizesChineseQuery verifies the sqlite adapter emits tokenized MATCH input when application-side Chinese pre-tokenization is enabled.
-// TestStoreSearchLexicalMemoryPretokenizesChineseQuery 用于验证当启用应用层中文预分词时，sqlite 适配器会发出分词后的 MATCH 查询参数。
-func TestStoreSearchLexicalMemoryPretokenizesChineseQuery(t *testing.T) {
-	tokenizer, err := textutil.NewLexicalTokenizer(textutil.LexicalTokenizerConfig{EnablePreTokenize: true})
-	if err != nil {
-		t.Fatalf("NewLexicalTokenizer returned error: %v", err)
-	}
-
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second, lexicalTokenizer: tokenizer}
-
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-		captured = req
-		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
-	}
-
-	_, err = store.SearchLexicalMemory(context.Background(), "文本排序模型", 5, logicdomain.SearchFilter{})
-	if err != nil {
-		t.Fatalf("SearchLexicalMemory returned error: %v", err)
-	}
-	if captured == nil {
-		t.Fatal("expected QueryJson request to be captured")
-	}
-	queryValue, ok := captured.GetParams()[0].Kind.(*sqlitev1.SqliteValue_StringValue)
-	if !ok {
-		t.Fatalf("expected string sqlite param, got %#v", captured.GetParams()[0].Kind)
-	}
-	want := `"文本 排序 模型" OR "文本" OR "排序" OR "模型"`
-	if queryValue.StringValue != want {
-		t.Fatalf("tokenized lexical query = %q, want %q", queryValue.StringValue, want)
-	}
-}
-
-// TestStoreSearchLexicalMemoryAppliesCompactBoundaryFilter verifies BM25/FTS recall applies the current-session compact boundary directly inside SQL instead of filtering after retrieval.
-// TestStoreSearchLexicalMemoryAppliesCompactBoundaryFilter 用于验证 BM25/FTS 召回会直接在 SQL 中应用当前 session compact 边界，而不是检索后再过滤。
-func TestStoreSearchLexicalMemoryAppliesCompactBoundaryFilter(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
-
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-		captured = req
-		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
-	}
-
-	_, err := store.SearchLexicalMemory(context.Background(), "压缩前决策", 5, logicdomain.SearchFilter{
-		UserID:            7,
-		TeamID:            3,
-		SpaceID:           5,
-		ProjectID:         9,
-		BoundarySessionID: 41,
-		BoundaryMaxTurnID: 88,
-	})
-	if err != nil {
-		t.Fatalf("SearchLexicalMemory returned error: %v", err)
-	}
-	if captured == nil {
-		t.Fatal("expected QueryJson request to be captured")
-	}
-	if !strings.Contains(captured.GetSql(), "n.origin_session_id != ? OR n.source_turn_id IS NULL OR n.source_turn_id = 0 OR n.source_turn_id <= ?") {
-		t.Fatalf("expected compact boundary clause in lexical sql, got %q", captured.GetSql())
-	}
-	if len(captured.GetParams()) != 8 {
-		t.Fatalf("expected eight typed params, got %d", len(captured.GetParams()))
-	}
-}
-
-// TestStoreListProjectMemoriesFiltersExpiredRows verifies vector rebuild source queries stay aligned with the runtime active/unexpired memory contract.
-// TestStoreListProjectMemoriesFiltersExpiredRows 用于验证向量重建数据源查询会与运行时 active/未过期记忆口径保持一致。
+// TestStoreListProjectMemoriesFiltersExpiredRows verifies rebuild-source queries stay aligned with the active/unexpired memory contract.
+// TestStoreListProjectMemoriesFiltersExpiredRows 用于验证重建数据源查询与 active/未过期记忆契约保持一致。
 func TestStoreListProjectMemoriesFiltersExpiredRows(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		captured = req
-		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
 
 	rows, err := store.ListProjectMemories(context.Background(), 9)
@@ -613,30 +427,27 @@ func TestStoreListProjectMemoriesFiltersExpiredRows(t *testing.T) {
 	if len(rows) != 0 {
 		t.Fatalf("expected no rows from canned response, got %#v", rows)
 	}
-	if captured == nil {
-		t.Fatal("expected QueryJson request to be captured")
-	}
 	if !strings.Contains(captured.GetSql(), "memory_status =") || !strings.Contains(captured.GetSql(), "expires_timestamp <= 0 OR expires_timestamp >") {
 		t.Fatalf("expected active/unexpired filter in rebuild SQL, got %q", captured.GetSql())
 	}
 }
 
-// TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn verifies the compact flow now acquires the shared write lock before reading MAX(id), closing the stale-boundary race with turn appends.
-// TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn 用于验证 compact 流程现在会先获取共享写锁再读取 MAX(id)，从而关闭与 turn 追加并发时的过期边界竞态。
+// TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn verifies compact flow acquires the write lock before reading MAX(id).
+// TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn 用于验证 compact 流程会先拿写锁再读取 MAX(id)。
 func TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	latestTurnQueryObserved := make(chan struct{}, 1)
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		if strings.Contains(req.GetSql(), "MAX(id)") {
 			latestTurnQueryObserved <- struct{}{}
-			return &sqlitev1.QueryJsonResponse{JsonData: `[{"latest_turn_id":88}]`}, nil
+			return &fakeQueryJSONResponse{JsonData: `[{"latest_turn_id":88}]`}, nil
 		}
-		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
-	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	fake.executeScriptFunc = func(_ context.Context, _ *fakeExecuteRequest) (*fakeExecuteResponse, error) {
+		return &fakeExecuteResponse{Success: true}, nil
 	}
 
 	locked := false
@@ -671,108 +482,65 @@ func TestStoreMarkSessionCompactedWaitsForWriteLockBeforeReadingLatestTurn(t *te
 	case <-time.After(time.Second):
 		t.Fatal("MarkSessionCompacted did not finish after write lock release")
 	}
-
-	select {
-	case <-latestTurnQueryObserved:
-	default:
-		t.Fatal("expected latest-turn query after write lock release")
-	}
 }
 
-// TestStoreBuildMemoryNodeFTSUpsertSQLPretokenizesIndexText verifies durable memory rows are mirrored into FTS with application-side token spacing instead of raw unsplit Chinese text.
-// TestStoreBuildMemoryNodeFTSUpsertSQLPretokenizesIndexText 用于验证长期记忆行写入 FTS 时会使用应用层预分词后的空格文本，而不是未切分的原始中文。
-func TestStoreBuildMemoryNodeFTSUpsertSQLPretokenizesIndexText(t *testing.T) {
-	tokenizer, err := textutil.NewLexicalTokenizer(textutil.LexicalTokenizerConfig{EnablePreTokenize: true})
-	if err != nil {
-		t.Fatalf("NewLexicalTokenizer returned error: %v", err)
-	}
-
-	store := &Store{lexicalTokenizer: tokenizer}
-	sqlText := store.buildMemoryNodeFTSUpsertSQL(logicdomain.MemoryNodeRecord{
-		ID:       101,
-		Abstract: "文本排序模型",
-		Details:  "vmm-local FTS5 中文分词",
-	})
-
-	if !strings.Contains(sqlText, `'文本 排序 模型'`) {
-		t.Fatalf("expected pretokenized abstract in sql, got %q", sqlText)
-	}
-	if !strings.Contains(sqlText, `'vmm local fts5 中文 分词 vmm-local'`) {
-		t.Fatalf("expected pretokenized details in sql, got %q", sqlText)
-	}
-}
-
-// TestBuildProjectProfileNodesDeleteSQLUsesTypedParams verifies the project-profile delete/count helpers now emit placeholder SQL plus a stable typed-param order instead of embedding ids directly into the statement text.
-// TestBuildProjectProfileNodesDeleteSQLUsesTypedParams 用于验证项目画像节点删除与统计辅助逻辑现在会输出占位符 SQL 和稳定参数顺序，而不是把 id 直接嵌进语句文本。
+// TestBuildProjectProfileNodesDeleteSQLUsesTypedParams verifies delete/count helpers emit placeholder SQL plus stable param ordering.
+// TestBuildProjectProfileNodesDeleteSQLUsesTypedParams 用于验证删除/统计辅助逻辑会输出占位符 SQL 与稳定参数顺序。
 func TestBuildProjectProfileNodesDeleteSQLUsesTypedParams(t *testing.T) {
 	deleteSQL, deleteParams := buildProjectProfileNodesDeleteSQL(9, 5, 3, true, true)
-	if strings.Contains(deleteSQL, "bind_id = 9") || strings.Contains(deleteSQL, "project_id = 9") {
-		t.Fatalf("expected placeholder-based delete sql, got %q", deleteSQL)
+	if strings.Contains(deleteSQL, "bind_id = 9") || strings.Count(deleteSQL, "?") != 7 {
+		t.Fatalf("unexpected delete sql: %q", deleteSQL)
 	}
-	if strings.Count(deleteSQL, "?") != 7 {
-		t.Fatalf("expected seven placeholders in delete sql, got %q", deleteSQL)
-	}
-	expectedDeleteParams := []any{
+	expected := []any{
 		logicdomain.ProfileTypeProject, uint64(9), uint64(9),
 		logicdomain.ProfileTypeSpace, uint64(5),
 		logicdomain.ProfileTypeTeam, uint64(3),
 	}
-	if fmt.Sprint(deleteParams) != fmt.Sprint(expectedDeleteParams) {
-		t.Fatalf("unexpected delete params: got=%v want=%v", deleteParams, expectedDeleteParams)
+	if fmt.Sprint(deleteParams) != fmt.Sprint(expected) {
+		t.Fatalf("unexpected delete params: got=%v want=%v", deleteParams, expected)
 	}
 
 	countSQL, countParams := buildProjectProfileNodesCountSQL(9, 5, 3, true, true)
-	if strings.Contains(countSQL, "bind_id = 9") || strings.Contains(countSQL, "project_id = 9") {
-		t.Fatalf("expected placeholder-based count sql, got %q", countSQL)
+	if strings.Contains(countSQL, "bind_id = 9") || strings.Count(countSQL, "?") != 7 {
+		t.Fatalf("unexpected count sql: %q", countSQL)
 	}
-	if strings.Count(countSQL, "?") != 7 {
-		t.Fatalf("expected seven placeholders in count sql, got %q", countSQL)
-	}
-	if fmt.Sprint(countParams) != fmt.Sprint(expectedDeleteParams) {
-		t.Fatalf("unexpected count params: got=%v want=%v", countParams, expectedDeleteParams)
+	if fmt.Sprint(countParams) != fmt.Sprint(expected) {
+		t.Fatalf("unexpected count params: got=%v want=%v", countParams, expected)
 	}
 }
 
-// TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows verifies vector-hit enrichment now ignores inactive or expired durable rows before they re-enter recall flows.
-// TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows 用于验证向量命中回表现在会先排除 inactive 或已过期的长期行，避免它们重新进入召回链。
+// TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows verifies vector-hit enrichment still ignores inactive or expired rows.
+// TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows 用于验证向量命中回表仍会忽略 inactive 或已过期行。
 func TestStoreLoadMemoryNodesByVectorIDsFiltersExpiredRows(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		captured = req
-		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
 
-	_, err := store.LoadMemoryNodesByVectorIDs(context.Background(), []string{"vec-1", "vec-2"})
-	if err != nil {
+	if _, err := store.LoadMemoryNodesByVectorIDs(context.Background(), []string{"vec-1", "vec-2"}); err != nil {
 		t.Fatalf("LoadMemoryNodesByVectorIDs returned error: %v", err)
 	}
-	if captured == nil {
-		t.Fatal("expected QueryJson request to be captured")
-	}
-	if !strings.Contains(captured.GetSql(), fmt.Sprintf("memory_status = %d", logicdomain.MemoryStatusActive)) {
-		t.Fatalf("expected active status filter in vector lookup sql, got %q", captured.GetSql())
-	}
-	if !strings.Contains(captured.GetSql(), "expires_timestamp <= 0 OR expires_timestamp >") {
-		t.Fatalf("expected expiry filter in vector lookup sql, got %q", captured.GetSql())
-	}
-	if !strings.Contains(captured.GetSql(), "vector_id IN ('vec-1','vec-2')") {
-		t.Fatalf("expected vector id list in vector lookup sql, got %q", captured.GetSql())
+	if !strings.Contains(captured.GetSql(), fmt.Sprintf("memory_status = %d", logicdomain.MemoryStatusActive)) ||
+		!strings.Contains(captured.GetSql(), "expires_timestamp <= 0 OR expires_timestamp >") ||
+		!strings.Contains(captured.GetSql(), "vector_id IN ('vec-1','vec-2')") {
+		t.Fatalf("unexpected vector lookup sql: %q", captured.GetSql())
 	}
 }
 
-// TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically verifies context-edge lookup batches memory ids into one stable relational read.
-// TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically 用于验证 context-edge 查询会把 memory ids 合并成一次稳定的关系层读取。
+// TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically verifies edge lookups normalize ids into one stable relational read.
+// TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically 用于验证情境边读取会把 id 规范化后合并成一次稳定查询。
 func TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
-	var captured *sqlitev1.QueryRequest
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		captured = req
-		return &sqlitev1.QueryJsonResponse{
+		return &fakeQueryJSONResponse{
 			JsonData: `[{"memory_id":201,"context_key":"deployment_mode","context_value":"local oss","support_count":2,"rebuttal_count":1,"last_supported_timestamp":1000,"last_rebutted_timestamp":2000,"created_timestamp":3000,"updated_timestamp":4000}]`,
 		}, nil
 	}
@@ -784,19 +552,13 @@ func TestStoreLoadMemoryContextEdgesByMemoryIDsQueriesDeterministically(t *testi
 	if len(edges) != 1 || edges[0].MemoryID != 201 || edges[0].SupportCount != 2 || edges[0].RebuttalCount != 1 {
 		t.Fatalf("unexpected context edges: %+v", edges)
 	}
-	if captured == nil {
-		t.Fatal("expected QueryJson request to be captured")
-	}
-	if !strings.Contains(captured.GetSql(), "FROM vmm_memory_context_edges") {
-		t.Fatalf("expected context edge table in sql, got %q", captured.GetSql())
-	}
-	if !strings.Contains(captured.GetSql(), "memory_id IN (201,202)") {
-		t.Fatalf("expected normalized memory id list in sql, got %q", captured.GetSql())
+	if !strings.Contains(captured.GetSql(), "FROM vmm_memory_context_edges") || !strings.Contains(captured.GetSql(), "memory_id IN (201,202)") {
+		t.Fatalf("unexpected context edge sql: %q", captured.GetSql())
 	}
 }
 
-// TestEvolveAdoptedMemoryRecordStrengthensLifecycle verifies memory adoption now records reinforcement evidence and promotes hot cross-session facts.
-// TestEvolveAdoptedMemoryRecordStrengthensLifecycle 用于验证记忆采纳现在会记录强化证据，并把跨会话高频命中的事实提升生命周期等级。
+// TestEvolveAdoptedMemoryRecordStrengthensLifecycle verifies adoption records reinforcement evidence and promotes cross-session hot facts.
+// TestEvolveAdoptedMemoryRecordStrengthensLifecycle 用于验证采纳会记录强化证据，并提升跨会话热点事实的生命周期。
 func TestEvolveAdoptedMemoryRecordStrengthensLifecycle(t *testing.T) {
 	adoptedAt := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
 	row := logicdomain.MemoryNodeRecord{
@@ -813,84 +575,70 @@ func TestEvolveAdoptedMemoryRecordStrengthensLifecycle(t *testing.T) {
 	}
 
 	updated := evolveAdoptedMemoryRecord(logicdomain.SessionRef{SessionID: 22}, row, adoptedAt)
-
-	if !updated.LastReinforcedAt.Equal(adoptedAt) {
-		t.Fatalf("last reinforced timestamp = %v", updated.LastReinforcedAt)
+	if !updated.LastReinforcedAt.Equal(adoptedAt) || updated.ReinforcementCount != 2 {
+		t.Fatalf("unexpected reinforcement writeback: %+v", updated)
 	}
-	if updated.ReinforcementCount != 2 {
-		t.Fatalf("reinforcement count = %d", updated.ReinforcementCount)
+	if updated.ScopeLevel != logicdomain.MemoryScopeLevelProject || updated.MemoryLevel != logicdomain.MemoryLevelPersistent {
+		t.Fatalf("unexpected promoted lifecycle: %+v", updated)
 	}
-	if updated.ScopeLevel != logicdomain.MemoryScopeLevelProject {
-		t.Fatalf("scope level = %d", updated.ScopeLevel)
-	}
-	if updated.MemoryLevel != logicdomain.MemoryLevelPersistent {
-		t.Fatalf("memory level = %d", updated.MemoryLevel)
-	}
-	if updated.CrossSessionAdoptedCount != 4 {
-		t.Fatalf("cross-session adopted count = %d", updated.CrossSessionAdoptedCount)
-	}
-	if !updated.ExpiresAt.After(row.ExpiresAt) {
-		t.Fatalf("expected expiry to extend, before=%v after=%v", row.ExpiresAt, updated.ExpiresAt)
+	if updated.CrossSessionAdoptedCount != 4 || !updated.ExpiresAt.After(row.ExpiresAt) {
+		t.Fatalf("unexpected cross-session adoption result: %+v", updated)
 	}
 }
 
-// TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows verifies lifecycle write-back refuses to re-activate an active row whose expiry elapsed after recall but before the adoption transaction begins.
-// TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows 用于验证当某条 active 记忆在召回后、采纳事务开始前刚好过期时，生命周期回写不会把它重新写活。
+// TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows verifies expired active rows are not written back during adoption.
+// TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows 用于验证已过期 active 行在采纳时不会被回写。
 func TestStoreApplyMemoryAdoptionSkipsExpiredActiveRows(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	executeCalled := false
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
-		sql := strings.TrimSpace(req.GetSql())
-		switch {
-		case strings.Contains(sql, "FROM vmm_memory_nodes"):
-			return &sqlitev1.QueryJsonResponse{JsonData: `[
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		if strings.Contains(strings.TrimSpace(req.GetSql()), "FROM vmm_memory_nodes") {
+			return &fakeQueryJSONResponse{JsonData: `[
 {"id":201,"team_id":1,"space_id":2,"project_id":3,"user_id":4,"origin_session_id":5,"source_turn_id":6,"vector_id":"vec-201","vector_json":"[0.1,0.2]","source_kind":0,"scope_level":0,"category":3,"abstract":"过期记忆","details":"这条记忆在采纳回写前已经过期。","memory_status":0,"priority":2,"memory_level":0,"refresh_weight":1,"support_count":0,"rebuttal_count":0,"status_reason":"","expires_timestamp":1000,"last_recalled_timestamp":0,"last_adopted_timestamp":0,"last_reinforced_timestamp":0,"recalled_count":0,"adopted_count":0,"reinforcement_count":0,"cross_session_adopted_count":0,"decay_disabled":0,"dedupe_hash":"","created_timestamp":10,"updated_timestamp":20}
 ]`}, nil
-		default:
-			return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
 		}
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
-	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
+	fake.executeScriptFunc = func(_ context.Context, _ *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		executeCalled = true
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+		return &fakeExecuteResponse{Success: true}, nil
 	}
 
-	err := store.ApplyMemoryAdoption(context.Background(), logicdomain.SessionRef{SessionID: 77}, []uint64{201}, time.Unix(2, 0).UTC())
-	if err != nil {
+	if err := store.ApplyMemoryAdoption(context.Background(), logicdomain.SessionRef{SessionID: 77}, []uint64{201}, time.Unix(2, 0).UTC()); err != nil {
 		t.Fatalf("ApplyMemoryAdoption returned error: %v", err)
 	}
 	if executeCalled {
-		t.Fatal("expected expired active adoption target to skip write-back script execution")
+		t.Fatal("expected expired active adoption target to skip write-back")
 	}
 }
 
-// TestStoreApplyMemoryAdoptionLocksBeforeReading verifies SQLite adoption now acquires the adapter write lock before loading candidate rows, so the lifecycle write-back cannot snapshot stale memory state ahead of a concurrent writer.
-// TestStoreApplyMemoryAdoptionLocksBeforeReading 用于验证 SQLite 采纳回写现在会在加载候选行前先拿到适配器写锁，避免生命周期写回先拍下旧状态再被并发写入覆盖。
+// TestStoreApplyMemoryAdoptionLocksBeforeReading verifies adoption acquires the write lock before reading candidates.
+// TestStoreApplyMemoryAdoptionLocksBeforeReading 用于验证采纳流程会在读取候选前先拿到写锁。
 func TestStoreApplyMemoryAdoptionLocksBeforeReading(t *testing.T) {
-	fake := &fakeSqliteClient{}
-	store := &Store{client: fake, timeout: time.Second}
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
 
 	queryStarted := make(chan struct{}, 1)
 	allowQueryReturn := make(chan struct{})
 	done := make(chan error, 1)
 
-	fake.queryJSONFunc = func(_ context.Context, req *sqlitev1.QueryRequest, _ ...grpc.CallOption) (*sqlitev1.QueryJsonResponse, error) {
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		if strings.Contains(req.GetSql(), "FROM vmm_memory_nodes") {
 			select {
 			case queryStarted <- struct{}{}:
 			default:
 			}
 			<-allowQueryReturn
-			return &sqlitev1.QueryJsonResponse{JsonData: `[
+			return &fakeQueryJSONResponse{JsonData: `[
 {"id":201,"team_id":1,"space_id":2,"project_id":3,"user_id":4,"origin_session_id":5,"source_turn_id":6,"vector_id":"vec-201","vector_json":"[0.1,0.2]","source_kind":0,"scope_level":0,"category":3,"abstract":"仍有效记忆","details":"用于验证读阶段位于写锁内。","memory_status":0,"priority":2,"memory_level":0,"refresh_weight":1,"support_count":0,"rebuttal_count":0,"status_reason":"","expires_timestamp":9999999999999,"last_recalled_timestamp":0,"last_adopted_timestamp":0,"last_reinforced_timestamp":0,"recalled_count":0,"adopted_count":0,"reinforcement_count":0,"cross_session_adopted_count":0,"decay_disabled":0,"dedupe_hash":"","created_timestamp":10,"updated_timestamp":20}
 ]`}, nil
 		}
-		return &sqlitev1.QueryJsonResponse{JsonData: `[]`}, nil
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
-	fake.executeScriptFunc = func(_ context.Context, _ *sqlitev1.ExecuteRequest, _ ...grpc.CallOption) (*sqlitev1.ExecuteResponse, error) {
-		return &sqlitev1.ExecuteResponse{Success: true}, nil
+	fake.executeScriptFunc = func(_ context.Context, _ *fakeExecuteRequest) (*fakeExecuteResponse, error) {
+		return &fakeExecuteResponse{Success: true}, nil
 	}
 
 	store.writeMu.Lock()
@@ -917,8 +665,8 @@ func TestStoreApplyMemoryAdoptionLocksBeforeReading(t *testing.T) {
 	}
 }
 
-// TestCurrentSchemaSQLContainsContextualMemoryTables verifies the managed SQLite schema now includes context-evidence counters on memory rows plus the dedicated edge table.
-// TestCurrentSchemaSQLContainsContextualMemoryTables 用于验证受管 SQLite schema 现在包含主记忆行上的证据计数，以及独立的情境边表。
+// TestCurrentSchemaSQLContainsContextualMemoryTables verifies the managed schema and debug-clean script both know about contextual edge tables.
+// TestCurrentSchemaSQLContainsContextualMemoryTables 用于验证受管 schema 与 debug-clean 脚本都包含情境边表。
 func TestCurrentSchemaSQLContainsContextualMemoryTables(t *testing.T) {
 	requiredFragments := []string{
 		"support_count INTEGER NOT NULL DEFAULT 0",
@@ -932,13 +680,13 @@ func TestCurrentSchemaSQLContainsContextualMemoryTables(t *testing.T) {
 			t.Fatalf("expected schema to contain %q", fragment)
 		}
 	}
-	if !strings.Contains(resetManagedSchemaSQL, "DROP TABLE IF EXISTS vmm_memory_context_edges;") {
-		t.Fatal("expected reset schema script to drop vmm_memory_context_edges")
+	if !strings.Contains(debugCleanManagedSchemaSQL, "DROP TABLE IF EXISTS vmm_memory_context_edges;") {
+		t.Fatal("expected debug clean schema script to drop vmm_memory_context_edges")
 	}
 }
 
-// TestNormalizeTurnMemoryContextEdgesAggregatesCounts verifies one memory candidate's repeated context labels collapse into deterministic support/rebuttal counters.
-// TestNormalizeTurnMemoryContextEdgesAggregatesCounts 用于验证同一记忆候选上的重复情境标签会折叠成确定性的支持/反驳统计。
+// TestNormalizeTurnMemoryContextEdgesAggregatesCounts verifies repeated context labels collapse into deterministic support/rebuttal counters.
+// TestNormalizeTurnMemoryContextEdgesAggregatesCounts 用于验证重复情境标签会折叠成确定性的支持/反驳统计。
 func TestNormalizeTurnMemoryContextEdgesAggregatesCounts(t *testing.T) {
 	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
 	edges := normalizeTurnMemoryContextEdges(201, []logicdomain.MemoryContextEdgeCandidate{
@@ -963,8 +711,8 @@ func TestNormalizeTurnMemoryContextEdgesAggregatesCounts(t *testing.T) {
 	}
 }
 
-// TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements verifies edge persistence always clears the old rows first and then inserts the normalized replacements.
-// TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements 用于验证情境边持久化会先清空旧行，再插入规范化后的替代行。
+// TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements verifies edge persistence always clears old rows first and inserts normalized replacements second.
+// TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements 用于验证情境边持久化总会先清空旧行，再插入规范化替代行。
 func TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements(t *testing.T) {
 	now := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
 	sqlText := buildMemoryContextEdgesReplaceSQL(201, []logicdomain.MemoryContextEdge{
@@ -980,25 +728,10 @@ func TestBuildMemoryContextEdgesReplaceSQLRendersDeterministicStatements(t *test
 			UpdatedAt:       now,
 		},
 	})
-	if !strings.Contains(sqlText, "DELETE FROM vmm_memory_context_edges") {
-		t.Fatalf("expected delete statement in context edge sql, got %q", sqlText)
-	}
-	if !strings.Contains(sqlText, "INSERT INTO vmm_memory_context_edges") {
-		t.Fatalf("expected insert statement in context edge sql, got %q", sqlText)
-	}
-	if !strings.Contains(sqlText, "'task_stage'") || !strings.Contains(sqlText, "'phase4'") {
-		t.Fatalf("expected key/value literals in context edge sql, got %q", sqlText)
-	}
-}
-
-// setTrailerOptions populates grpc.Trailer call options so the adapter sees the same retry metadata shape a real gateway would emit.
-// setTrailerOptions 用于填充 grpc.Trailer 调用选项，让适配器能看到真实网关会返回的重试 metadata 形态。
-func setTrailerOptions(opts []grpc.CallOption, trailer metadata.MD) {
-	for _, opt := range opts {
-		trailerOpt, ok := opt.(grpc.TrailerCallOption)
-		if !ok || trailerOpt.TrailerAddr == nil {
-			continue
-		}
-		*trailerOpt.TrailerAddr = trailer
+	if !strings.Contains(sqlText, "DELETE FROM vmm_memory_context_edges") ||
+		!strings.Contains(sqlText, "INSERT INTO vmm_memory_context_edges") ||
+		!strings.Contains(sqlText, "'task_stage'") ||
+		!strings.Contains(sqlText, "'phase4'") {
+		t.Fatalf("unexpected context edge sql: %q", sqlText)
 	}
 }

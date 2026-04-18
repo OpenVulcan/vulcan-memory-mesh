@@ -44,7 +44,7 @@ func BuildMaintenanceDependencies(cfg config.Config) (MaintenanceDependencies, e
 // buildMaintenanceStorageDependencies 用于装配一次性维护工具需要的存储适配器，并避免在 split 模式下于真正进入破坏性流程前就提前创建 sidecar 表。
 func buildMaintenanceStorageDependencies(cfg config.Config) (storageDependencies, error) {
 	if cfg.UsesCombinedPostgres() {
-		return buildStorageDependencies(cfg)
+		return buildStorageDependencies(cfg, config.PromptLayout{})
 	}
 
 	relational, err := buildRelational(cfg)
@@ -65,9 +65,13 @@ func buildMaintenanceStorageDependencies(cfg config.Config) (storageDependencies
 // buildMaintenanceVector builds the split-mode sidecar adapter without eagerly creating the current-dimension LanceDB table so vector-rebuild can first finish its preparation and confirmation steps.
 // buildMaintenanceVector 用于在 split 模式下构建 sidecar 适配器，但不会提前创建当前维度的 LanceDB 表，让 vector-rebuild 可以先完成准备与确认流程。
 func buildMaintenanceVector(cfg config.Config) (appports.VectorStore, error) {
+	layout, err := ResolveLocalStorageLayout()
+	if err != nil {
+		return nil, err
+	}
 	switch normalizeProviderAlias(cfg.Vector.Provider) {
 	case "lancedb":
-		return vldb_lancedb.NewStoreWithoutInit(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
+		return vldb_lancedb.NewStoreWithoutInit(layout.LanceDBLibrary, layout.LanceDBDirectory, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
 	default:
 		return nil, fmt.Errorf("unsupported vector provider: %s", cfg.Vector.Provider)
 	}

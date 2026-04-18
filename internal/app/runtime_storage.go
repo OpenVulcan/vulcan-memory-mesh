@@ -45,8 +45,8 @@ type runtimeStorageCapabilities struct {
 
 // initRuntimeStorageCapabilities builds the configured storage adapters, resolves the runtime-facing capabilities, and runs vector schema synchronization when the selected mode requires it.
 // initRuntimeStorageCapabilities 用于构建当前配置下的存储适配器、解析运行时需要的能力集合，并在所选模式需要时执行向量 schema 同步。
-func initRuntimeStorageCapabilities(cfg config.Config, logger *logx.Logger) (runtimeStorageCapabilities, error) {
-	storageDeps, err := buildStorageDependencies(cfg)
+func initRuntimeStorageCapabilities(cfg config.Config, logger *logx.Logger, layout config.PromptLayout) (runtimeStorageCapabilities, error) {
+	storageDeps, err := buildStorageDependencies(cfg, layout)
 	if err != nil {
 		return runtimeStorageCapabilities{}, err
 	}
@@ -140,7 +140,7 @@ func normalizeProviderAlias(provider string) string {
 
 // buildStorageDependencies selects either the historical split stores or the unified PostgreSQL combined store and returns the matching runtime ports.
 // buildStorageDependencies 用于选择历史分离存储或统一 PostgreSQL 组合库，并返回对应的运行时端口集合。
-func buildStorageDependencies(cfg config.Config) (storageDependencies, error) {
+func buildStorageDependencies(cfg config.Config, layout config.PromptLayout) (storageDependencies, error) {
 	if cfg.UsesCombinedPostgres() {
 		combined, err := buildCombinedStore(cfg)
 		if err != nil {
@@ -152,11 +152,11 @@ func buildStorageDependencies(cfg config.Config) (storageDependencies, error) {
 			ManageVectorSchema: false,
 		}, nil
 	}
-	relational, err := buildRelational(cfg)
+	relational, err := buildRelationalForLayout(cfg, layout)
 	if err != nil {
 		return storageDependencies{}, err
 	}
-	vector, err := buildVector(cfg)
+	vector, err := buildVectorForLayout(cfg, layout)
 	if err != nil {
 		return storageDependencies{}, err
 	}
@@ -197,9 +197,19 @@ func buildCombinedStore(cfg config.Config) (*vldb_postgres.Store, error) {
 // buildVector selects the configured vector backend used by retrieval and destructive cleanup flows.
 // buildVector 用于选择当前配置的向量后端，服务检索和破坏性清理流程。
 func buildVector(cfg config.Config) (appports.VectorStore, error) {
+	return buildVectorForLayout(cfg, config.PromptLayout{})
+}
+
+// buildVectorForLayout selects the configured vector backend while allowing tests to pin a synthetic packaged layout instead of relying on the current process executable path.
+// buildVectorForLayout 用于选择当前配置的向量后端，同时允许测试显式固定一个打包布局，而不是依赖当前进程的可执行文件路径。
+func buildVectorForLayout(cfg config.Config, promptLayout config.PromptLayout) (appports.VectorStore, error) {
+	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	if err != nil {
+		return nil, err
+	}
 	switch normalizeProviderAlias(cfg.Vector.Provider) {
 	case "lancedb":
-		return vldb_lancedb.NewStore(cfg.LanceDB.Address, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
+		return vldb_lancedb.NewStore(layout.LanceDBLibrary, layout.LanceDBDirectory, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
 	default:
 		return nil, fmt.Errorf("unsupported vector provider: %s", cfg.Vector.Provider)
 	}
@@ -208,10 +218,20 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 // buildRelational selects the configured durable SQL backend used by workspace/session/turn persistence.
 // buildRelational 用于选择当前配置的长期 SQL 后端，服务层级、session 和 turn 持久化。
 func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
+	return buildRelationalForLayout(cfg, config.PromptLayout{})
+}
+
+// buildRelationalForLayout selects the configured relational backend while allowing tests to reuse their explicit packaged config root for database placement.
+// buildRelationalForLayout 用于选择当前配置的关系存储后端，同时允许测试复用显式的打包配置根目录来放置数据库文件。
+func buildRelationalForLayout(cfg config.Config, promptLayout config.PromptLayout) (appports.RelationalStore, error) {
+	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	if err != nil {
+		return nil, err
+	}
 	switch normalizeProviderAlias(cfg.Relational.Provider) {
 	case "sqlite":
-		return vldb_sqlite.NewStore(cfg.SQLite.Address, cfg.SQLite.Timeout.Duration, vldb_sqlite.StoreOptions{
-			LexicalPreTokenize: cfg.MemoryPipeline.LexicalPreTokenize,
+		return vldb_sqlite.NewStore(layout.SQLiteLibrary, layout.SQLiteDatabase, cfg.SQLite.Timeout.Duration, vldb_sqlite.StoreOptions{
+			TokenizerMode: cfg.SQLite.TokenizerMode,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported relational provider: %s", cfg.Relational.Provider)

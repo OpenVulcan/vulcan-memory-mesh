@@ -7,6 +7,7 @@ package domain
 type PostActionSimilarMemoryCandidate struct {
 	MemoryID     uint64
 	SourceTurnID uint64
+	CreatedDate  string
 	ScopeLevel   string
 	Category     int
 	Score        float64
@@ -19,6 +20,7 @@ type PostActionSimilarMemoryCandidate struct {
 // PostActionMemoryReviewCandidate 用于保存一条新记忆候选，以及其首轮准入元数据和用于去重评审的高相似长期记忆。
 type PostActionMemoryReviewCandidate struct {
 	CandidateIndex  int
+	CandidateDate   string
 	Category        int
 	Abstract        string
 	Details         string
@@ -31,6 +33,7 @@ type PostActionMemoryReviewCandidate struct {
 // PostActionCandidateReviewInput 用于打包当前轮摘要、首轮过滤后的记忆候选以及画像评审快照，供一次统一 reviewer 调用使用。
 type PostActionCandidateReviewInput struct {
 	UserInputKind     string
+	CurrentTurnDate   string
 	UserContent       string
 	AssistantContent  string
 	MemoryCandidates  []PostActionMemoryReviewCandidate

@@ -6,11 +6,13 @@
 # Input
 你会收到一个 json 对象，可能包含以下块：
 
+- `current_turn_date`
 - `memory`
 - `user`
 - `project`
 
 其中：
+- `current_turn_date` 是当前这轮候选对应的日期上下文，格式通常为 `YYYY-MM-DD`
 - `memory` 是本轮新记忆候选，以及每条候选对应的高相似历史记忆
 - `user` / `project` 是当前活跃画像节点与本轮新画像候选
 - 如果某个块没有候选，则该块可能不存在
@@ -18,6 +20,7 @@
 ## `memory`
 每条新记忆候选会包含：
 - `candidate_index`
+- `candidate_date`
 - `category`
 - `abstract`
 - `details`
@@ -28,6 +31,7 @@
 其中 `similar_memories` 里的每条旧记忆可能包含：
 - `memory_id`
 - `source_turn_id`
+- `created_date`
 - `scope_level`
 - `category`
 - `score`
@@ -98,6 +102,10 @@
 18. 如果新候选应被丢弃，且原因是“多条旧记忆合起来已完整覆盖该候选”，则优先填写最能代表该候选核心事实的那条 `memory_id` 作为 `dedupe_memory_id`。
 19. `dropped_candidates[].dedupe_memory_id` 只能引用该候选自己的 `similar_memories.memory_id`。
 20. 如果新候选应被丢弃，但并不存在可信旧记忆可复用，则 `dedupe_memory_id` 留空或省略。
+21. `current_turn_date`、`candidate_date`、`similar_memories[].created_date` 只是辅助时间维度，用来帮助你区分“语义重复”与“事实更新/阶段推进”。
+22. 不要仅因为某条新候选日期更近，就自动保留它或自动 supersede 旧记忆。
+23. 只有当新候选与旧记忆属于同一事实域，且明显体现了更新、纠正、版本推进或阶段变化时，日期才可以作为支持保留或 supersede 的辅助证据。
+24. 对长期稳定规则、长期偏好、长期约束，如果旧记忆仍然有效且语义更完整，不能仅因它更早就判定应被替代。
 
 # Profile Review Rules
 1. 不要把 `active_nodes` 当成最终画像文本，它们是独立事实节点。

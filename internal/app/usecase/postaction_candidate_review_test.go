@@ -209,6 +209,7 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 						Origin:         "vector",
 						Abstract:       "项目此前已经讨论过 Rust 主语言。",
 						DetailsPreview: "项目此前已经讨论过 Rust 主语言，但未形成明确规则。",
+						CreatedAt:      time.Date(2026, 4, 1, 10, 0, 0, 0, time.UTC),
 					},
 					{
 						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 502},
@@ -306,11 +307,20 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	if len(reviewer.inputs[0].MemoryCandidates) != 1 || len(reviewer.inputs[0].ProfileCandidates) != 1 {
 		t.Fatalf("expected one memory and one profile candidate, got %+v", reviewer.inputs[0])
 	}
+	if reviewer.inputs[0].CurrentTurnDate != "2026-04-04" {
+		t.Fatalf("expected reviewer to receive current turn date, got %+v", reviewer.inputs[0].CurrentTurnDate)
+	}
+	if reviewer.inputs[0].MemoryCandidates[0].CandidateDate != "2026-04-04" {
+		t.Fatalf("expected reviewer to receive candidate date, got %+v", reviewer.inputs[0].MemoryCandidates[0])
+	}
 	if len(reviewer.inputs[0].MemoryCandidates[0].SimilarMemories) != 1 {
 		t.Fatalf("expected only one high-similarity memory to survive thresholding, got %+v", reviewer.inputs[0].MemoryCandidates[0].SimilarMemories)
 	}
 	if reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0].ScopeLevel != logicdomain.MemoryScopeLevelLabel(logicdomain.MemoryScopeLevelProject) {
 		t.Fatalf("expected similar memory scope label to be normalized, got %+v", reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0])
+	}
+	if reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0].CreatedDate != "2026-04-01" {
+		t.Fatalf("expected reviewer to receive similar memory created date, got %+v", reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0])
 	}
 	if len(analysis.MemoryNodes) != 1 {
 		t.Fatalf("expected memory node to survive unified review, got %+v", analysis.MemoryNodes)
@@ -537,11 +547,11 @@ func TestApplyPostActionAdmissionFilterPreservesSurvivingCandidateSupersedes(t *
 				AdmissionReason: logicdomain.TurnAnalysisAdmissionReasonQAAnswerOnly,
 			},
 			{
-				Category:       logicdomain.MemoryNodeCategoryTechSpecAPI,
-				Abstract:       "当前项目阶段已经进入 B。",
-				Details:        "当前项目阶段已经进入 B。",
-				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
-				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+				Category:           logicdomain.MemoryNodeCategoryTechSpecAPI,
+				Abstract:           "当前项目阶段已经进入 B。",
+				Details:            "当前项目阶段已经进入 B。",
+				EvidenceSource:     logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+				Admission:          logicdomain.TurnAnalysisAdmissionKeep,
 				SupersedeMemoryIDs: []uint64{701},
 			},
 		},
@@ -652,6 +662,7 @@ func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
 						Origin:         "vector",
 						Abstract:       "旧阶段 B",
 						DetailsPreview: "旧阶段 B 详情",
+						CreatedAt:      time.Date(2026, 4, 2, 8, 0, 0, 0, time.UTC),
 					}},
 				},
 				{
@@ -666,6 +677,7 @@ func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
 						Origin:         "vector",
 						Abstract:       "旧阶段 A",
 						DetailsPreview: "旧阶段 A 详情",
+						CreatedAt:      time.Date(2026, 4, 1, 8, 0, 0, 0, time.UTC),
 					}},
 				},
 			},
@@ -704,8 +716,14 @@ func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
 	if len(candidates[0].SimilarMemories) != 1 || candidates[0].SimilarMemories[0].MemoryID != 801 {
 		t.Fatalf("expected query-index 0 result to attach to candidate 0, got %+v", candidates[0].SimilarMemories)
 	}
+	if candidates[0].SimilarMemories[0].CreatedDate != "2026-04-01" {
+		t.Fatalf("expected candidate 0 similar memory date to be normalized, got %+v", candidates[0].SimilarMemories[0])
+	}
 	if len(candidates[1].SimilarMemories) != 1 || candidates[1].SimilarMemories[0].MemoryID != 802 {
 		t.Fatalf("expected query-index 1 result to attach to candidate 1, got %+v", candidates[1].SimilarMemories)
+	}
+	if candidates[1].SimilarMemories[0].CreatedDate != "2026-04-02" {
+		t.Fatalf("expected candidate 1 similar memory date to be normalized, got %+v", candidates[1].SimilarMemories[0])
 	}
 }
 
@@ -992,6 +1010,7 @@ func (s *stubPostActionCandidateReviewer) Review(_ context.Context, input logicd
 	s.calls++
 	copied := logicdomain.PostActionCandidateReviewInput{
 		UserInputKind:     input.UserInputKind,
+		CurrentTurnDate:   input.CurrentTurnDate,
 		UserContent:       input.UserContent,
 		AssistantContent:  input.AssistantContent,
 		MemoryCandidates:  append([]logicdomain.PostActionMemoryReviewCandidate(nil), input.MemoryCandidates...),
