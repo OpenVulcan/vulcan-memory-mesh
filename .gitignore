@@ -13,3 +13,5 @@ configs/.env
 .qwen
 .claude
 third_party/
+docs/plan/
+docs/completed/
