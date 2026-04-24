@@ -16,6 +16,9 @@ type PreCheckMemoryCandidate struct {
 	CandidateNumber             int      `json:"candidate_number"`
 	MemoryID                    uint64   `json:"memory_id"`
 	SourceTurnID                uint64   `json:"source_turn_id,omitempty"`
+	CreatedTimestamp            int64    `json:"created_timestamp,omitempty"`
+	CreatedDateTime             string   `json:"created_datetime,omitempty"`
+	CreatedDate                 string   `json:"created_date,omitempty"`
 	SourceKind                  string   `json:"source_kind,omitempty"`
 	ScopeLevel                  string   `json:"scope_level,omitempty"`
 	Category                    int      `json:"category"`
@@ -38,10 +41,11 @@ type PreCheckMemoryCandidate struct {
 // PreCheckMemoryReviewInput carries the current user request, stage-one recall reasoning, and numbered candidates into the second-stage reviewer.
 // PreCheckMemoryReviewInput 用于把当前用户请求、第一层“为什么需要召回长期记忆”的推理结果，以及带编号候选送入第二层评审器。
 type PreCheckMemoryReviewInput struct {
-	UserContent   string
-	SearchQueries []string
-	IntentReason  string
-	Candidates    []PreCheckMemoryCandidate
+	CurrentTimestamp int64
+	UserContent      string
+	SearchQueries    []string
+	IntentReason     string
+	Candidates       []PreCheckMemoryCandidate
 }
 
 // PreCheckMemoryReviewResult stores the chosen candidate numbers returned by the second-stage reviewer together with its brief rationale.

@@ -88,6 +88,133 @@ func TestStoreLoadRenderedProfileUsesTypedSQLiteParams(t *testing.T) {
 	}
 }
 
+// TestStoreListActiveProfileNodesOmitsLimitWhenCallerRequestsFullSnapshot verifies active profile-node queries do not append a hidden LIMIT when the caller explicitly requests an unbounded snapshot.
+// TestStoreListActiveProfileNodesOmitsLimitWhenCallerRequestsFullSnapshot 用于验证当调用方显式请求不受限快照时，active 画像节点查询不会再偷偷追加隐藏 LIMIT。
+func TestStoreListActiveProfileNodesOmitsLimitWhenCallerRequestsFullSnapshot(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		captured = req
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+	}
+
+	nodes, err := store.ListActiveProfileNodes(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+	}, 0)
+	if err != nil {
+		t.Fatalf("ListActiveProfileNodes returned error: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("expected empty nodes slice, got %+v", nodes)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJSON request to be captured")
+	}
+	if strings.Contains(captured.GetSql(), "LIMIT ?") {
+		t.Fatalf("expected unbounded active profile query to omit LIMIT, got %q", captured.GetSql())
+	}
+	if len(captured.GetParams()) != 4 {
+		t.Fatalf("expected four typed params without limit, got %d", len(captured.GetParams()))
+	}
+}
+
+// TestStoreListActiveProfileNodesPreservesExplicitLargeLimit verifies callers can now request an explicit large active-node window without being silently capped to 256.
+// TestStoreListActiveProfileNodesPreservesExplicitLargeLimit 用于验证调用方现在可以显式请求较大的 active 节点窗口，而不会被静默裁成 256。
+func TestStoreListActiveProfileNodesPreservesExplicitLargeLimit(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		captured = req
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+	}
+
+	nodes, err := store.ListActiveProfileNodes(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+	}, 500)
+	if err != nil {
+		t.Fatalf("ListActiveProfileNodes returned error: %v", err)
+	}
+	if len(nodes) != 0 {
+		t.Fatalf("expected empty nodes slice, got %+v", nodes)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJSON request to be captured")
+	}
+	if !strings.Contains(captured.GetSql(), "LIMIT ?") {
+		t.Fatalf("expected bounded active profile query to keep LIMIT placeholder, got %q", captured.GetSql())
+	}
+	if len(captured.GetParams()) != 5 {
+		t.Fatalf("expected five typed params with explicit limit, got %d", len(captured.GetParams()))
+	}
+	value := captured.GetParams()[4]
+	if value.Kind != sqliteffi.SQLValueInt64 || value.Int64 != 500 {
+		t.Fatalf("expected explicit sqlite limit 500, got %#v", value)
+	}
+}
+
+// TestStoreListActiveProfileNodesOrdersByAnchorTimeline verifies public active-node queries now sort by the resolved profile-date anchor instead of the stale stored profile_date string or priority buckets.
+// TestStoreListActiveProfileNodesOrdersByAnchorTimeline 用于验证公开 active 节点查询现在会按解析后的画像日期锚点排序，而不是继续依赖旧的 profile_date 字符串或优先级桶。
+func TestStoreListActiveProfileNodesOrdersByAnchorTimeline(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		captured = req
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+	}
+
+	_, err := store.ListActiveProfileNodes(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeProject,
+		BindID:      9,
+	}, 10)
+	if err != nil {
+		t.Fatalf("ListActiveProfileNodes returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJSON request to be captured")
+	}
+	if !strings.Contains(captured.GetSql(), "ORDER BY profile_date_anchor_timestamp DESC, n.id ASC") {
+		t.Fatalf("expected public active-node query to sort by anchor timeline desc, got %q", captured.GetSql())
+	}
+	if strings.Contains(captured.GetSql(), "priority ASC") || strings.Contains(captured.GetSql(), "refresh_weight DESC") || strings.Contains(captured.GetSql(), "profile_date DESC") {
+		t.Fatalf("expected public active-node query to drop legacy priority/profile_date ordering, got %q", captured.GetSql())
+	}
+}
+
+// TestStoreLoadActiveProfileNodesOrdersByAnchorTimeline verifies reviewer/lifecycle snapshots use the same corrected date anchor in ascending timeline order instead of the raw stored profile_date string.
+// TestStoreLoadActiveProfileNodesOrdersByAnchorTimeline 用于验证 reviewer 与生命周期快照会按修正后的日期锚点正序排序，而不是继续依赖原始 profile_date 字符串。
+func TestStoreLoadActiveProfileNodesOrdersByAnchorTimeline(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	var captured *fakeQueryRequest
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		captured = req
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+	}
+
+	_, err := store.loadActiveProfileNodes(context.Background(), logicdomain.ProfileTypeProject, 9, time.Now().UTC().UnixMilli())
+	if err != nil {
+		t.Fatalf("loadActiveProfileNodes returned error: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("expected QueryJSON request to be captured")
+	}
+	if !strings.Contains(captured.GetSql(), "ORDER BY profile_date_anchor_timestamp ASC, n.id ASC") {
+		t.Fatalf("expected internal active snapshot query to sort by anchor timeline asc, got %q", captured.GetSql())
+	}
+	if strings.Contains(captured.GetSql(), "priority ASC") || strings.Contains(captured.GetSql(), "refresh_weight DESC") || strings.Contains(captured.GetSql(), "profile_date ASC") {
+		t.Fatalf("expected internal active snapshot query to drop legacy priority/profile_date ordering, got %q", captured.GetSql())
+	}
+}
+
 // TestStoreExecRetriesRetryableSQLiteErrors verifies SQLITE_BUSY style errors are retried inside the adapter before surfacing.
 // TestStoreExecRetriesRetryableSQLiteErrors 用于验证 SQLITE_BUSY 这类错误会先在适配器内部重试，而不是立刻向外暴露。
 func TestStoreExecRetriesRetryableSQLiteErrors(t *testing.T) {

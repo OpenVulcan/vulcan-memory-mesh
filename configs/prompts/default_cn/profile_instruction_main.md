@@ -16,6 +16,7 @@
 - `instruction` 是用户显式提交的画像修改意图
 - `authority_floor` 说明这次手工指令最低不能低于什么级别
 - `active_nodes` 是当前仍然有效的原子化画像节点事实，不是最终画像 Blob
+  - 每条 `active_nodes` 都会附带单一 `datetime` 时间锚点，供你判断新旧、替代和刷新关系
 
 # Legend
 你必须正确理解以下标记：

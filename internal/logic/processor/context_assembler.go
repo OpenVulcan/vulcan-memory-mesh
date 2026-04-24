@@ -54,12 +54,14 @@ func memoryHitsToItems(hits []logicdomain.MemoryHit) []logicdomain.ContextItem {
 	for _, hit := range hits {
 		if text := strings.TrimSpace(hit.Text); text != "" {
 			items = append(items, logicdomain.ContextItem{
-				Kind:   "memory",
-				Title:  "混合召回记忆",
-				Text:   text,
-				Source: "memory",
-				Score:  hit.Score,
-				TurnID: logicdomain.MemoryHitTurnID(hit),
+				Kind:             "memory",
+				Title:            "混合召回记忆",
+				Text:             text,
+				Source:           "memory",
+				Score:            hit.Score,
+				TurnID:           logicdomain.MemoryHitTurnID(hit),
+				CreatedTimestamp: logicdomain.MemoryHitCreatedTimestamp(hit),
+				CreatedDateTime:  logicdomain.MemoryHitCreatedDateTime(hit),
 			})
 		}
 	}

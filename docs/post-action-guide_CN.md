@@ -121,6 +121,17 @@ message PostActionTimelineItem {
 - `assistant_content` 一定是最后回答
 - `timeline` 是中间被插入的补充提问、追问或中断回答
 
+## 时间契约
+
+当前 `PostAction` 链路关于时间的统一约定如下：
+
+- 数据库中的 Unix 时间戳是唯一基准时间。
+- 给分析型 LLM 的可读时间统一使用 `datetime`，并按“当前运行环境系统本地时间”展开。
+- 对外返回与最终画像组合会按场景给出可读时间；最终画像组合只显示日期。
+- 当前不会额外持久化“原始时区 / 用户时区 / 会话时区”这类独立时区元数据。
+- 因此，如果宿主机系统时区后续发生变化，历史 turn、历史记忆和历史画像重新展开出来的可读时间可能出现几小时偏移，甚至跨自然日变化；这属于当前产品契约下的预期行为。
+- 这不会改变底层时间戳本身，也不会改变以时间戳为基础的排序、锚点和存储真值。
+
 ## 完整执行顺序
 
 当前 `PostAction` 的完整链路如下：
@@ -180,13 +191,15 @@ message PostActionTimelineItem {
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
 15. turn 写入成功后，会由后台队列异步发起一次单轮 `postaction_l1_main`
 16. `postaction_l1_main` 请求会包含：
+    - 服务端当前时间锚点（按当前运行系统本地时间展开、且不显示时区后缀的 `datetime`，不再传原始毫秒时间戳）
     - 最近若干条已提炼历史 `details`
-    - 当前 turn 的原始脱水 JSON
-    - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
+    - 当前 turn 的原始脱水 JSON 与目标 turn 创建时间（`created_datetime`）
+    - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`（只提供 `created_datetime`）
     - 其中：
       - 历史部分只用于参考
       - 当前 turn 是唯一允许输出新 `details / memory_nodes / profile_nodes` 的目标
       - `recent_grpc_memory_writes` 用于排斥已经由工具链主动写入的重复事实
+      - 所有 `datetime` 都是基于当前运行系统时区展开的可读值，不是独立持久化的时区真值
 17. `postaction_l1_main` 会返回：
     - 当前 turn 的 `user_input_kind`
     - 当前 turn 的 `turn_id`
@@ -216,6 +229,15 @@ message PostActionTimelineItem {
     - 如果外部结果只是临时态、瞬时运行态或短期观测值，例如天气、当前 CPU 温度、当前系统负载：
       - 仍应标记为 `admission="drop"`
       - `admission_reason` 应为 `non_durable`
+    - 如果当前轮文本里出现“昨天 / 前天 / 上周 / 最近 / 当时”等相对时间表达，且可以稳定解析：
+      - `details`
+      - `memory_nodes[].abstract`
+      - `memory_nodes[].details`
+      - `profile_nodes[].content`
+      应优先以目标 turn 的 `created_datetime` 作为主锚点、以服务端当前 `datetime` 作为兜底或校验锚点，转换成明确的绝对日期或日期区间
+    - 如果相对时间无法稳定解析：
+      - 不要臆造错误日期
+      - 可以保留原表达
     - 如果当前 turn 只是“用户询问 AI 自己的喜好/习惯/画像是什么”，而回答只是助手基于上下文做的复述、猜测或迎合性总结：
       - 不应提炼成长期记忆
       - 也不应提炼成画像节点
@@ -244,11 +266,14 @@ message PostActionTimelineItem {
     - 如果当前 turn 有画像候选：
       - 会先加载当前仍然 `active` 且未过期的 user/project 画像节点
     - 然后把：
+      - 服务端当前 `datetime` 时间锚点
       - 本轮新记忆候选
       - 每条记忆候选对应的高相似旧记忆
       - 当前 user/project 活跃画像节点
       - 本轮新画像候选
       一起送入一次统一的 `postaction_l2_main`
+    - 这里的候选 `candidate_datetime` 和相似旧记忆 `created_datetime`，只表示条目写入系统的创建时间锚点，不能直接等同于事实真实发生时间
+    - 如果宿主机系统时区后续变化，这些可读 `datetime` 的展示值也可能跟着变化；统一 reviewer 的底层顺序与最终持久化真值仍以时间戳为基准
     - 这个统一 reviewer 会同时输出：
       - 哪些记忆候选应保留
         - 通过 `memory.accepted_candidates[]`
@@ -373,10 +398,11 @@ message PostActionTimelineItem {
 4. `L2` 再结合：
    - 当前轮候选
    - 实际召回到的 `similar_memories`
-   - 当前 turn 日期以及旧记忆轻量创建日期
-   - 画像活跃节点
-   - 新画像候选
-   做最终决策
+      - 当前 turn 的 `datetime` 以及旧记忆轻量创建 `datetime`
+      - 服务端当前 `datetime` 时间锚点
+      - 画像活跃节点
+      - 新画像候选
+      做最终决策
 
 这样做的原因是：
 

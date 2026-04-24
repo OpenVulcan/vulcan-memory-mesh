@@ -12,6 +12,7 @@ import (
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestProfileUseCaseGetNodesReturnsActiveSlice verifies the query flow resolves the requested target and returns the active node slice unchanged.
@@ -42,10 +43,10 @@ func TestProfileUseCaseGetNodesReturnsActiveSlice(t *testing.T) {
 	}
 }
 
-// TestProfileUseCaseGetBundleBuildsCombinedPrompt verifies the bundle flow reuses the rendered scope profiles,
-// strips any legacy legend wrapper, and emits the deterministic TEAM/PROJECT/USER combined text.
-// TestProfileUseCaseGetBundleBuildsCombinedPrompt 用于验证 bundle 流程会复用已渲染的 scope 画像，
-// 去掉遗留 legend 包装，并输出确定性的 TEAM/PROJECT/USER 组合文本。
+// TestProfileUseCaseGetBundleBuildsCombinedPrompt verifies the bundle flow rebuilds scope profiles from active nodes,
+// ignores stale stored rendered blobs, and emits the deterministic TEAM/PROJECT/USER combined text.
+// TestProfileUseCaseGetBundleBuildsCombinedPrompt 用于验证 bundle 流程会基于 active 节点重建 scope 画像，
+// 忽略陈旧的已存 rendered blob，并输出确定性的 TEAM/PROJECT/USER 组合文本。
 func TestProfileUseCaseGetBundleBuildsCombinedPrompt(t *testing.T) {
 	store := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
@@ -72,10 +73,43 @@ func TestProfileUseCaseGetBundleBuildsCombinedPrompt(t *testing.T) {
 - P = Priority
 
 [Profile Timeline]
-2026-03-29:
-[P0][L3][W1] 团队统一使用英文提交信息。`,
-			profileRenderKey(logicdomain.ProfileTypeProject, 9): "2026-03-30:\n[P0][L3][W0] 项目必须支持多种 AI 编程工具。",
-			profileRenderKey(logicdomain.ProfileTypeUser, 7):    "2026-03-31:\n[P1][L2][W2] 用户偏好使用 Rust。",
+2025-01-01:
+[P0][L3][W9] 过期的旧渲染，不应该再被读取。`,
+		},
+		nodesByTarget: map[string][]logicdomain.ProfileNodeRecord{
+			profileRenderKey(logicdomain.ProfileTypeTeam, 3): {{
+				ID:            11,
+				ProfileType:   logicdomain.ProfileTypeTeam,
+				BindID:        3,
+				Content:       "团队统一使用英文提交信息。",
+				Status:        logicdomain.ProfileStatusActive,
+				Priority:      logicdomain.ProfilePriorityP0,
+				ProfileLevel:  logicdomain.ProfileLevelPersistent,
+				RefreshWeight: 1,
+				ProfileDate:   "2026-03-29",
+			}},
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): {{
+				ID:            21,
+				ProfileType:   logicdomain.ProfileTypeProject,
+				BindID:        9,
+				Content:       "项目必须支持多种 AI 编程工具。",
+				Status:        logicdomain.ProfileStatusActive,
+				Priority:      logicdomain.ProfilePriorityP0,
+				ProfileLevel:  logicdomain.ProfileLevelPersistent,
+				RefreshWeight: 0,
+				ProfileDate:   "2026-03-30",
+			}},
+			profileRenderKey(logicdomain.ProfileTypeUser, 7): {{
+				ID:            31,
+				ProfileType:   logicdomain.ProfileTypeUser,
+				BindID:        7,
+				Content:       "用户偏好使用 Rust。",
+				Status:        logicdomain.ProfileStatusActive,
+				Priority:      logicdomain.ProfilePriorityP1,
+				ProfileLevel:  logicdomain.ProfileLevelStable,
+				RefreshWeight: 2,
+				ProfileDate:   "2026-03-31",
+			}},
 		},
 	}
 	uc := NewProfileUseCase(store, nil, nil)
@@ -97,6 +131,9 @@ func TestProfileUseCaseGetBundleBuildsCombinedPrompt(t *testing.T) {
 	}
 	if strings.Contains(result.CombinedText, "[SPACE]：") {
 		t.Fatalf("did not expect explanation text for empty space scope, got %q", result.CombinedText)
+	}
+	if strings.Contains(result.CombinedText, "过期的旧渲染") {
+		t.Fatalf("expected stale stored rendered blob to be ignored, got %q", result.CombinedText)
 	}
 	if !strings.Contains(result.CombinedText, "[TEAM]\n2026-03-29:\n[P0][L3][W1] 团队统一使用英文提交信息。") {
 		t.Fatalf("expected team section in combined bundle, got %q", result.CombinedText)
@@ -121,8 +158,10 @@ func TestProfileUseCaseGetBundleBuildsCombinedPrompt(t *testing.T) {
 	}
 }
 
-// TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing verifies full mode returns an empty string instead of a legend-only prompt when every scope profile is empty.
-// TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing 用于验证当所有 scope 画像都为空时，full 模式会直接返回空字符串，而不是只返回说明文案。
+// TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing verifies full mode returns an empty string when every scope has no active nodes,
+// even if stale rendered blobs still exist in storage.
+// TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing 用于验证当所有 scope 都没有 active 节点时，full 模式会直接返回空字符串，
+// 即使存储里还残留陈旧 rendered blob 也不会被复用。
 func TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing(t *testing.T) {
 	store := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
@@ -140,7 +179,10 @@ func TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing(t *testing.T) {
 				ProjectID:   9,
 			},
 		},
-		renderedProfiles: map[string]string{},
+		renderedProfiles: map[string]string{
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): "2025-01-01:\n[P0][L3][W9] 过期的旧项目画像。",
+			profileRenderKey(logicdomain.ProfileTypeUser, 7):    "2025-01-02:\n[P1][L2][W9] 过期的旧用户画像。",
+		},
 	}
 	uc := NewProfileUseCase(store, nil, nil)
 
@@ -164,8 +206,8 @@ func TestProfileUseCaseGetBundleReturnsEmptyWhenAllScopesMissing(t *testing.T) {
 	}
 }
 
-// TestProfileUseCaseGetBundleReturnsSplitSections verifies split mode returns the body-only scope texts without forcing one combined prompt string.
-// TestProfileUseCaseGetBundleReturnsSplitSections 用于验证 split 模式会返回仅正文的 scope 文本，而不会强制组装成一段完整提示词。
+// TestProfileUseCaseGetBundleReturnsSplitSections verifies split mode returns the body-only texts rebuilt from active nodes without reusing stale stored blobs.
+// TestProfileUseCaseGetBundleReturnsSplitSections 用于验证 split 模式会返回基于 active 节点重建的正文文本，而不会复用陈旧的已存 blob。
 func TestProfileUseCaseGetBundleReturnsSplitSections(t *testing.T) {
 	store := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
@@ -184,10 +226,56 @@ func TestProfileUseCaseGetBundleReturnsSplitSections(t *testing.T) {
 			},
 		},
 		renderedProfiles: map[string]string{
-			profileRenderKey(logicdomain.ProfileTypeTeam, 3):    "2026-03-29:\n[P0][L3][W1] 团队统一使用英文提交信息。",
-			profileRenderKey(logicdomain.ProfileTypeSpace, 5):   "2026-03-29:\n[P0][L3][W0] 空间默认开启严格审查。",
-			profileRenderKey(logicdomain.ProfileTypeProject, 9): "2026-03-30:\n[P0][L3][W0] 项目必须支持多种 AI 编程工具。",
-			profileRenderKey(logicdomain.ProfileTypeUser, 7):    "2026-03-31:\n[P1][L2][W2] 用户偏好使用 Rust。",
+			profileRenderKey(logicdomain.ProfileTypeTeam, 3):    "2025-01-01:\n[P0][L3][W9] 旧团队画像。",
+			profileRenderKey(logicdomain.ProfileTypeSpace, 5):   "2025-01-01:\n[P0][L3][W9] 旧空间画像。",
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): "2025-01-01:\n[P0][L3][W9] 旧项目画像。",
+			profileRenderKey(logicdomain.ProfileTypeUser, 7):    "2025-01-01:\n[P1][L2][W9] 旧用户画像。",
+		},
+		nodesByTarget: map[string][]logicdomain.ProfileNodeRecord{
+			profileRenderKey(logicdomain.ProfileTypeTeam, 3): {{
+				ID:            41,
+				ProfileType:   logicdomain.ProfileTypeTeam,
+				BindID:        3,
+				Content:       "团队统一使用英文提交信息。",
+				Status:        logicdomain.ProfileStatusActive,
+				Priority:      logicdomain.ProfilePriorityP0,
+				ProfileLevel:  logicdomain.ProfileLevelPersistent,
+				RefreshWeight: 1,
+				ProfileDate:   "2026-03-29",
+			}},
+			profileRenderKey(logicdomain.ProfileTypeSpace, 5): {{
+				ID:            51,
+				ProfileType:   logicdomain.ProfileTypeSpace,
+				BindID:        5,
+				Content:       "空间默认开启严格审查。",
+				Status:        logicdomain.ProfileStatusActive,
+				Priority:      logicdomain.ProfilePriorityP0,
+				ProfileLevel:  logicdomain.ProfileLevelPersistent,
+				RefreshWeight: 0,
+				ProfileDate:   "2026-03-29",
+			}},
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): {{
+				ID:            61,
+				ProfileType:   logicdomain.ProfileTypeProject,
+				BindID:        9,
+				Content:       "项目必须支持多种 AI 编程工具。",
+				Status:        logicdomain.ProfileStatusActive,
+				Priority:      logicdomain.ProfilePriorityP0,
+				ProfileLevel:  logicdomain.ProfileLevelPersistent,
+				RefreshWeight: 0,
+				ProfileDate:   "2026-03-30",
+			}},
+			profileRenderKey(logicdomain.ProfileTypeUser, 7): {{
+				ID:            71,
+				ProfileType:   logicdomain.ProfileTypeUser,
+				BindID:        7,
+				Content:       "用户偏好使用 Rust。",
+				Status:        logicdomain.ProfileStatusActive,
+				Priority:      logicdomain.ProfilePriorityP1,
+				ProfileLevel:  logicdomain.ProfileLevelStable,
+				RefreshWeight: 2,
+				ProfileDate:   "2026-03-31",
+			}},
 		},
 	}
 	uc := NewProfileUseCase(store, nil, nil)
@@ -212,6 +300,58 @@ func TestProfileUseCaseGetBundleReturnsSplitSections(t *testing.T) {
 	}
 	if result.TeamProfile == "" || result.SpaceProfile == "" || result.ProjectProfile == "" || result.UserProfile == "" {
 		t.Fatalf("expected all split scope texts, got %+v", result)
+	}
+	if strings.Contains(result.TeamProfile, "旧团队画像") || strings.Contains(result.ProjectProfile, "旧项目画像") || strings.Contains(result.UserProfile, "旧用户画像") {
+		t.Fatalf("expected split bundle to ignore stale stored rendered blobs, got %+v", result)
+	}
+}
+
+// TestProfileUseCaseGetBundleRequestsFullActiveSnapshots verifies bundle reconstruction requests one unlimited active-node snapshot per scope instead of silently applying the legacy 256 cap.
+// TestProfileUseCaseGetBundleRequestsFullActiveSnapshots 用于验证 bundle 重建会为每个 scope 请求一次不受限的 active 节点快照，而不是继续静默套用旧的 256 上限。
+func TestProfileUseCaseGetBundleRequestsFullActiveSnapshots(t *testing.T) {
+	store := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser: {
+				ProfileType: logicdomain.ProfileTypeUser,
+				BindID:      7,
+				UserID:      7,
+			},
+			logicdomain.ProfileTypeProject: {
+				ProfileType: logicdomain.ProfileTypeProject,
+				BindID:      9,
+				UserID:      7,
+				TeamID:      3,
+				SpaceID:     5,
+				ProjectID:   9,
+			},
+		},
+		nodesByTarget: map[string][]logicdomain.ProfileNodeRecord{
+			profileRenderKey(logicdomain.ProfileTypeTeam, 3):    {{ID: 11, ProfileType: logicdomain.ProfileTypeTeam, BindID: 3, Content: "team", Status: logicdomain.ProfileStatusActive, Priority: logicdomain.ProfilePriorityP0, ProfileLevel: logicdomain.ProfileLevelPersistent}},
+			profileRenderKey(logicdomain.ProfileTypeSpace, 5):   {{ID: 21, ProfileType: logicdomain.ProfileTypeSpace, BindID: 5, Content: "space", Status: logicdomain.ProfileStatusActive, Priority: logicdomain.ProfilePriorityP0, ProfileLevel: logicdomain.ProfileLevelPersistent}},
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): {{ID: 31, ProfileType: logicdomain.ProfileTypeProject, BindID: 9, Content: "project", Status: logicdomain.ProfileStatusActive, Priority: logicdomain.ProfilePriorityP0, ProfileLevel: logicdomain.ProfileLevelPersistent}},
+			profileRenderKey(logicdomain.ProfileTypeUser, 7):    {{ID: 41, ProfileType: logicdomain.ProfileTypeUser, BindID: 7, Content: "user", Status: logicdomain.ProfileStatusActive, Priority: logicdomain.ProfilePriorityP1, ProfileLevel: logicdomain.ProfileLevelStable}},
+		},
+	}
+	uc := NewProfileUseCase(store, nil, nil)
+
+	_, err := uc.GetBundle(context.Background(), ProfileBundleCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Mode:      ProfileBundleModeFull,
+	})
+	if err != nil {
+		t.Fatalf("get profile bundle: %v", err)
+	}
+	for _, key := range []string{
+		profileRenderKey(logicdomain.ProfileTypeTeam, 3),
+		profileRenderKey(logicdomain.ProfileTypeSpace, 5),
+		profileRenderKey(logicdomain.ProfileTypeProject, 9),
+		profileRenderKey(logicdomain.ProfileTypeUser, 7),
+	} {
+		limits := store.requestedLimitsForTarget(key)
+		if len(limits) != 1 || limits[0] != 0 {
+			t.Fatalf("expected bundle scope %s to request unlimited active snapshot, got %+v", key, limits)
+		}
 	}
 }
 
@@ -285,6 +425,20 @@ func TestProfileUseCaseApplyInstructionRaisesTeamAuthority(t *testing.T) {
 	}
 	if result.InstructionID == 0 || result.ReviewReason == "" {
 		t.Fatalf("unexpected apply result: %+v", result)
+	}
+	limits := store.requestedLimitsForTarget(profileRenderKey(logicdomain.ProfileTypeTeam, 3))
+	if len(limits) != 1 || limits[0] != 0 {
+		t.Fatalf("expected manual instruction review to request unlimited active snapshot, got %+v", limits)
+	}
+}
+
+// TestManualInstructionProfileDateUsesLocalCalendarDay verifies manual profile-instruction nodes derive their profile_date from the shared local calendar day instead of a UTC-truncated day.
+// TestManualInstructionProfileDateUsesLocalCalendarDay 用于验证手工画像指令节点会从共享本地自然日推导 profile_date，而不是使用 UTC 截断后的日期。
+func TestManualInstructionProfileDateUsesLocalCalendarDay(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	date := manualInstructionProfileDate(time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC))
+	if date != "2026-04-02" {
+		t.Fatalf("expected local calendar day 2026-04-02, got %q", date)
 	}
 }
 
@@ -576,6 +730,8 @@ type stubProfileStore struct {
 	target             logicdomain.ProfileTargetRef
 	targets            map[int]logicdomain.ProfileTargetRef
 	nodes              []logicdomain.ProfileNodeRecord
+	nodesByTarget      map[string][]logicdomain.ProfileNodeRecord
+	requestedLimits    map[string][]int
 	renderedProfiles   map[string]string
 	createdInstruction logicdomain.ProfileInstructionRecord
 	nextInstructionID  uint64
@@ -601,10 +757,28 @@ func (s *stubProfileStore) ResolveProfileTarget(_ context.Context, profileType i
 
 // ListActiveProfileNodes returns the canned active node slice for deterministic test assertions.
 // ListActiveProfileNodes 用于返回预设 active 节点切片，保证测试断言稳定。
-func (s *stubProfileStore) ListActiveProfileNodes(context.Context, logicdomain.ProfileTargetRef, int) ([]logicdomain.ProfileNodeRecord, error) {
+func (s *stubProfileStore) ListActiveProfileNodes(_ context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.requestedLimits == nil {
+		s.requestedLimits = map[string][]int{}
+	}
+	key := profileRenderKey(target.ProfileType, target.BindID)
+	s.requestedLimits[key] = append(s.requestedLimits[key], limit)
+	if s.nodesByTarget != nil {
+		if nodes, ok := s.nodesByTarget[key]; ok {
+			return append([]logicdomain.ProfileNodeRecord(nil), nodes...), nil
+		}
+	}
 	return append([]logicdomain.ProfileNodeRecord(nil), s.nodes...), nil
+}
+
+// requestedLimitsForTarget returns the captured ListActiveProfileNodes limits for one target key so tests can assert whether a caller requested a bounded or unbounded snapshot.
+// requestedLimitsForTarget 用于返回某个目标 key 捕获到的 ListActiveProfileNodes limit，方便测试断言调用方请求的是受限还是不受限快照。
+func (s *stubProfileStore) requestedLimitsForTarget(key string) []int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]int(nil), s.requestedLimits[key]...)
 }
 
 // LoadRenderedProfile returns the canned rendered scope text so bundle tests can assert composition behavior without touching SQL adapters.

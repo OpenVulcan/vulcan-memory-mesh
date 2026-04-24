@@ -6,14 +6,17 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestPostActionCandidateReviewerBuildsUnifiedRequest verifies one review call carries memory dedupe evidence and profile candidates together.
 // TestPostActionCandidateReviewerBuildsUnifiedRequest 用于验证一次评审调用会同时携带记忆去重证据与画像候选。
 func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
 	llm := &stubProfileMergerLLM{
 		response: logicports.LLMResponse{
 			Content: `{
@@ -49,28 +52,30 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	reviewer := NewPostActionCandidateReviewer(llm, prompts, "qwen-test")
 
 	result, err := reviewer.Review(context.Background(), logicdomain.PostActionCandidateReviewInput{
-		UserInputKind:    logicdomain.TurnAnalysisUserInputMixed,
-		CurrentTurnDate:  "2026-04-04",
-		UserContent:      "以后主要用 Rust，帮我记住。",
-		AssistantContent: "我会把它整理成长期规则。",
+		UserInputKind:       logicdomain.TurnAnalysisUserInputMixed,
+		CurrentTimestamp:    1775000007000,
+		CurrentTurnDateTime: "2026-04-04 10:00:00",
+		CurrentTurnDate:     "2026-04-04",
+		UserContent:         "以后主要用 Rust，帮我记住。",
+		AssistantContent:    "我会把它整理成长期规则。",
 		MemoryCandidates: []logicdomain.PostActionMemoryReviewCandidate{{
-			CandidateIndex:  0,
-			CandidateDate:   "2026-04-04",
-			Category:        logicdomain.MemoryNodeCategoryArchitectureDecision,
-			Abstract:        "团队默认使用 Rust 作为主要开发语言。",
-			Details:         "用户确认团队默认使用 Rust 作为主要开发语言。",
-			EvidenceSource:  logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
-			AdmissionReason: "",
+			CandidateIndex:    0,
+			CandidateDateTime: "2026-04-04 10:00:00",
+			Category:          logicdomain.MemoryNodeCategoryArchitectureDecision,
+			Abstract:          "团队默认使用 Rust 作为主要开发语言。",
+			Details:           "用户确认团队默认使用 Rust 作为主要开发语言。",
+			EvidenceSource:    logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			AdmissionReason:   "",
 			SimilarMemories: []logicdomain.PostActionSimilarMemoryCandidate{{
-				MemoryID:     501,
-				SourceTurnID: 88,
-				CreatedDate:  "2026-04-01",
-				ScopeLevel:   "project",
-				Category:     logicdomain.MemoryNodeCategoryArchitectureDecision,
-				Score:        0.97,
-				Origin:       "vector",
-				Abstract:     "项目之前提过 Rust。",
-				Details:      "项目之前提过 Rust，但还没有形成明确规则。",
+				MemoryID:        501,
+				SourceTurnID:    88,
+				CreatedDateTime: "2026-04-01 10:00:00",
+				ScopeLevel:      "project",
+				Category:        logicdomain.MemoryNodeCategoryArchitectureDecision,
+				Score:           0.97,
+				Origin:          "vector",
+				Abstract:        "项目之前提过 Rust。",
+				Details:         "项目之前提过 Rust，但还没有形成明确规则。",
 			}},
 		}},
 		ProfileTargets: logicdomain.ProfileReviewTargetsSnapshot{
@@ -105,9 +110,14 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	if !strings.Contains(llm.request.UserPrompt, `"similar_memories"`) || !strings.Contains(llm.request.UserPrompt, `"new_candidates"`) {
 		t.Fatalf("expected memory dedupe and profile candidate sections, got %s", llm.request.UserPrompt)
 	}
-	for _, fragment := range []string{`"current_turn_date": "2026-04-04"`, `"candidate_date": "2026-04-04"`, `"created_date": "2026-04-01"`} {
+	for _, fragment := range []string{`"current_datetime": "2026-04-01 07:33:27"`, `"current_turn_datetime": "2026-04-04 10:00:00"`, `"candidate_datetime": "2026-04-04 10:00:00"`, `"created_datetime": "2026-04-01 10:00:00"`} {
 		if !strings.Contains(llm.request.UserPrompt, fragment) {
 			t.Fatalf("expected request to contain %s, got %s", fragment, llm.request.UserPrompt)
+		}
+	}
+	for _, removed := range []string{`"current_date":`, `"current_turn_date":`, `"candidate_date":`, `"created_date":`} {
+		if strings.Contains(llm.request.UserPrompt, removed) {
+			t.Fatalf("expected request to stop exposing %s, got %s", removed, llm.request.UserPrompt)
 		}
 	}
 	if result.Memory == nil || len(result.Memory.AcceptedCandidateIndexes) != 1 || result.Memory.AcceptedCandidateIndexes[0] != 0 {
@@ -215,5 +225,109 @@ func TestPostActionCandidateReviewerAllowsProfileOnlyReview(t *testing.T) {
 	}
 	if result.Project == nil || len(result.Project.AcceptedCandidates) != 1 {
 		t.Fatalf("unexpected project review result: %+v", result)
+	}
+}
+
+// TestPostActionCandidateReviewerUsesLocalFallbackDateForActiveNodes verifies active profile-node fallback dates in the unified reviewer request follow the shared local calendar-day contract.
+// TestPostActionCandidateReviewerUsesLocalFallbackDateForActiveNodes 用于验证统一 reviewer 请求里的活跃画像节点 fallback 日期会遵循共享本地自然日契约。
+func TestPostActionCandidateReviewerUsesLocalFallbackDateForActiveNodes(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	llm := &stubProfileMergerLLM{
+		response: logicports.LLMResponse{
+			Content: `{
+  "user": {
+    "accepted_candidates": [],
+    "invalid_candidate_indexes": [0],
+    "retire_only_node_ids": [],
+    "reason": "no-op"
+  }
+}`,
+		},
+	}
+	reviewer := NewPostActionCandidateReviewer(llm, &stubProfilePromptSource{prompt: "return json only"}, "qwen-test")
+
+	_, err := reviewer.Review(context.Background(), logicdomain.PostActionCandidateReviewInput{
+		CurrentTimestamp: 1775000007000,
+		ProfileTargets: logicdomain.ProfileReviewTargetsSnapshot{
+			UserNodes: []logicdomain.ProfileActiveNodeRecord{{
+				ID:            12,
+				ProfileType:   logicdomain.ProfileTypeUser,
+				Content:       "用户之前偏好本地部署。",
+				Priority:      logicdomain.ProfilePriorityP1,
+				ProfileLevel:  logicdomain.ProfileLevelStable,
+				RefreshWeight: 2,
+				CreatedAt:     time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC),
+			}},
+		},
+		ProfileCandidates: []logicdomain.ProfileNodeCandidate{{
+			ProfileType:    logicdomain.ProfileTypeUser,
+			Content:        "以后继续本地部署。",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			ProfileDate:    "2026-04-04",
+			SourceTurnID:   102,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("review post-action candidates: %v", err)
+	}
+	if !strings.Contains(llm.request.UserPrompt, `"latest_active_datetime": "2026-04-02 00:30:00"`) {
+		t.Fatalf("expected latest_active_datetime to use local datetime anchor, got %s", llm.request.UserPrompt)
+	}
+	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+		t.Fatalf("expected active-node fallback datetime to use local datetime anchor, got %s", llm.request.UserPrompt)
+	}
+}
+
+// TestPostActionCandidateReviewerCorrectsLegacyUTCProfileDate verifies unified reviewer requests repair stored UTC-derived profile_date values before asking the LLM to reason about freshness and replacement.
+// TestPostActionCandidateReviewerCorrectsLegacyUTCProfileDate 用于验证统一 reviewer 会先修正历史上按 UTC 推导的 profile_date，再让 LLM 基于正确自然日判断新旧与替换关系。
+func TestPostActionCandidateReviewerCorrectsLegacyUTCProfileDate(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	llm := &stubProfileMergerLLM{
+		response: logicports.LLMResponse{
+			Content: `{
+  "user": {
+    "accepted_candidates": [],
+    "invalid_candidate_indexes": [0],
+    "retire_only_node_ids": [],
+    "reason": "no-op"
+  }
+}`,
+		},
+	}
+	reviewer := NewPostActionCandidateReviewer(llm, &stubProfilePromptSource{prompt: "return json only"}, "qwen-test")
+
+	_, err := reviewer.Review(context.Background(), logicdomain.PostActionCandidateReviewInput{
+		CurrentTimestamp: 1775000007000,
+		ProfileTargets: logicdomain.ProfileReviewTargetsSnapshot{
+			UserNodes: []logicdomain.ProfileActiveNodeRecord{{
+				ID:                  32,
+				ProfileType:         logicdomain.ProfileTypeUser,
+				Content:             "用户长期偏好本地部署。",
+				Priority:            logicdomain.ProfilePriorityP1,
+				ProfileLevel:        logicdomain.ProfileLevelStable,
+				RefreshWeight:       3,
+				ProfileDate:         "2026-04-01",
+				ProfileDateAnchorAt: time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC),
+				CreatedAt:           time.Date(2026, 4, 2, 3, 0, 0, 0, time.UTC),
+			}},
+		},
+		ProfileCandidates: []logicdomain.ProfileNodeCandidate{{
+			ProfileType:    logicdomain.ProfileTypeUser,
+			Content:        "以后继续保留本地部署。",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			ProfileDate:    "2026-04-04",
+			SourceTurnID:   103,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("review post-action candidates: %v", err)
+	}
+	if strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-01`) {
+		t.Fatalf("expected legacy UTC-derived datetime to be corrected, got %s", llm.request.UserPrompt)
+	}
+	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+		t.Fatalf("expected corrected local datetime in reviewer request, got %s", llm.request.UserPrompt)
 	}
 }

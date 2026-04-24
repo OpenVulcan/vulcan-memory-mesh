@@ -279,7 +279,7 @@ func toProfileNodeEntry(node logicdomain.ProfileNodeRecord) *vmmv1.ProfileNodeEn
 		Priority:         profilePriorityLabel(node.Priority),
 		Level:            profileLevelLabel(node.ProfileLevel),
 		RefreshWeight:    uint32(maxInt(node.RefreshWeight, 0)),
-		ProfileDate:      node.ProfileDate,
+		ProfileDate:      logicdomain.NormalizeLegacyDisplayDateWithFallback(node.ProfileDate, node.ProfileDateAnchorAt, node.CreatedAt),
 		ExpiresTimestamp: expiresTimestamp,
 		LevelReason:      node.LevelReason,
 		SourceKind:       toProtoProfileSourceKind(node.SourceKind),

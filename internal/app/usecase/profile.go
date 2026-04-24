@@ -189,7 +189,7 @@ func (u *ProfileUseCase) ApplyInstruction(ctx context.Context, cmd ProfileInstru
 // applyInstructionLocked 用于在调用方已经持有目标级串行闸门后执行手工画像指令写回，
 // 确保该目标在一次评审期间看到的 active 节点快照保持稳定。
 func (u *ProfileUseCase) applyInstructionLocked(ctx context.Context, target logicdomain.ProfileTargetRef, instruction string) (ProfileInstructionResult, error) {
-	activeNodes, err := u.store.ListActiveProfileNodes(ctx, target, 256)
+	activeNodes, err := u.store.ListActiveProfileNodes(ctx, target, 0)
 	if err != nil {
 		return ProfileInstructionResult{}, err
 	}
@@ -314,7 +314,7 @@ func (u *ProfileUseCase) materializeManualInstructionReview(target logicdomain.P
 	}
 
 	now := time.Now().UTC()
-	profileDate := now.Format("2006-01-02")
+	profileDate := manualInstructionProfileDate(now)
 	candidates := make([]logicdomain.ProfileNodeCandidate, 0, len(review.AcceptedNodes))
 	retired := make([]logicdomain.ProfileRetireDecision, 0, len(review.RetiredNodes))
 	retiredSet := map[uint64]struct{}{}
@@ -349,19 +349,20 @@ func (u *ProfileUseCase) materializeManualInstructionReview(target logicdomain.P
 		}
 		refreshWeight := computeProfileRefreshWeight(activeByID, supersedeIDs)
 		candidates = append(candidates, logicdomain.ProfileNodeCandidate{
-			ProfileType:      target.ProfileType,
-			Content:          content,
-			Status:           logicdomain.ProfileStatusActive,
-			Priority:         priority,
-			ProfileLevel:     level,
-			LevelReason:      levelReason,
-			RefreshWeight:    refreshWeight,
-			ProfileDate:      profileDate,
-			SourceKind:       logicdomain.ProfileSourceKindManualInstruction,
-			SourceID:         instructionID,
-			StatusReason:     statusReason,
-			ExpiresAt:        computeProfileExpiry(now, level, refreshWeight),
-			SupersedeNodeIDs: supersedeIDs,
+			ProfileType:         target.ProfileType,
+			Content:             content,
+			Status:              logicdomain.ProfileStatusActive,
+			Priority:            priority,
+			ProfileLevel:        level,
+			LevelReason:         levelReason,
+			RefreshWeight:       refreshWeight,
+			ProfileDate:         profileDate,
+			ProfileDateAnchorAt: now,
+			SourceKind:          logicdomain.ProfileSourceKindManualInstruction,
+			SourceID:            instructionID,
+			StatusReason:        statusReason,
+			ExpiresAt:           computeProfileExpiry(now, level, refreshWeight),
+			SupersedeNodeIDs:    supersedeIDs,
 		})
 	}
 
@@ -384,6 +385,12 @@ func (u *ProfileUseCase) materializeManualInstructionReview(target logicdomain.P
 
 	renderedProfile := renderProfileTimeline(existing, candidates, extractRetiredProfileNodeIDs(retired))
 	return candidates, retired, renderedProfile, nil
+}
+
+// manualInstructionProfileDate renders one manual-instruction node date with the shared local calendar contract so explicit profile edits stay aligned with post-action generated nodes.
+// manualInstructionProfileDate 用于按共享本地自然日契约渲染手工指令节点日期，确保显式画像编辑与 post-action 生成的节点保持一致。
+func manualInstructionProfileDate(now time.Time) string {
+	return logicdomain.FormatDisplayDate(now)
 }
 
 // failProfileInstruction best-effort marks one manual instruction as failed without hiding the original reviewer or persistence error.
@@ -497,24 +504,25 @@ func enforceManualInstructionFloor(profileType, priority, level int, levelReason
 // toActiveProfileNodeRecord 用于把查询返回的画像节点转换成 refresh 与渲染辅助逻辑复用的 active-node 结构。
 func toActiveProfileNodeRecord(node logicdomain.ProfileNodeRecord) logicdomain.ProfileActiveNodeRecord {
 	return logicdomain.ProfileActiveNodeRecord{
-		ID:             node.ID,
-		TurnID:         node.TurnID,
-		ProfileType:    node.ProfileType,
-		BindID:         node.BindID,
-		Content:        node.Content,
-		Status:         node.Status,
-		Priority:       node.Priority,
-		ProfileLevel:   node.ProfileLevel,
-		LevelReason:    node.LevelReason,
-		RefreshWeight:  node.RefreshWeight,
-		ProfileDate:    node.ProfileDate,
-		SourceKind:     node.SourceKind,
-		SourceID:       node.SourceID,
-		StatusReason:   node.StatusReason,
-		ExpiresAt:      node.ExpiresAt,
-		SupersededByID: node.SupersededByID,
-		CreatedAt:      node.CreatedAt,
-		UpdatedAt:      node.UpdatedAt,
+		ID:                  node.ID,
+		TurnID:              node.TurnID,
+		ProfileType:         node.ProfileType,
+		BindID:              node.BindID,
+		Content:             node.Content,
+		Status:              node.Status,
+		Priority:            node.Priority,
+		ProfileLevel:        node.ProfileLevel,
+		LevelReason:         node.LevelReason,
+		RefreshWeight:       node.RefreshWeight,
+		ProfileDate:         node.ProfileDate,
+		SourceKind:          node.SourceKind,
+		SourceID:            node.SourceID,
+		StatusReason:        node.StatusReason,
+		ExpiresAt:           node.ExpiresAt,
+		SupersededByID:      node.SupersededByID,
+		ProfileDateAnchorAt: node.ProfileDateAnchorAt,
+		CreatedAt:           node.CreatedAt,
+		UpdatedAt:           node.UpdatedAt,
 	}
 }
 

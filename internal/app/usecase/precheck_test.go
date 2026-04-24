@@ -305,6 +305,7 @@ func TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems(t *testing.T)
 								Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
 								Score:          0.96,
 								Origin:         "hybrid_rrf",
+								CreatedAt:      time.UnixMilli(1775000004000),
 							},
 						},
 					},
@@ -361,6 +362,9 @@ func TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems(t *testing.T)
 	}
 	if result.ContextItems[0].TurnID != 8 {
 		t.Fatalf("expected fallback items to preserve source turn id for downstream transport, got %#v", result.ContextItems)
+	}
+	if result.ContextItems[0].CreatedTimestamp != 1775000004000 {
+		t.Fatalf("expected fallback items to preserve created timestamp for downstream transport, got %#v", result.ContextItems)
 	}
 }
 
@@ -524,6 +528,7 @@ func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.
 							Category:       logicdomain.MemoryNodeCategoryProjectContext,
 							Score:          0.96,
 							Origin:         "hybrid_rrf",
+							CreatedAt:      time.UnixMilli(1775000005000),
 						},
 						{
 							MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 21},
@@ -535,6 +540,7 @@ func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.
 							Category:       logicdomain.MemoryNodeCategoryProjectContext,
 							Score:          0.91,
 							Origin:         "hybrid_rrf",
+							CreatedAt:      time.UnixMilli(1775000005000),
 						},
 					},
 				},
@@ -584,6 +590,9 @@ func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.
 	}
 	if result.ContextItems[0].TurnID != 93 {
 		t.Fatalf("expected final retained item to keep source turn id, got %#v", result.ContextItems)
+	}
+	if result.ContextItems[0].CreatedTimestamp != 1775000005000 {
+		t.Fatalf("expected final retained item to keep created timestamp, got %#v", result.ContextItems)
 	}
 	if !strings.Contains(result.ContextItems[0].Text, "结构化信息存储") {
 		t.Fatalf("expected higher-scored same-turn summary to survive, got %#v", result.ContextItems)

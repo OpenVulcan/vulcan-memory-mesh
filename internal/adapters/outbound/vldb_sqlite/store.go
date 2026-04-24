@@ -1115,7 +1115,7 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 			bindID = session.UserID
 		}
 		if strings.TrimSpace(node.ProfileDate) == "" {
-			node.ProfileDate = turn.CreatedAt.UTC().Format("2006-01-02")
+			node.ProfileDate = logicdomain.FormatDisplayDate(turn.CreatedAt)
 		}
 		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), uint64Ptr(turn.ID), node.ProfileType, bindID, node, nowMs)
 	}
@@ -1231,8 +1231,8 @@ func (s *Store) ResolveProfileTarget(ctx context.Context, profileType int, userI
 	}
 }
 
-// ListActiveProfileNodes returns only the current active nodes for one resolved target in a bounded, deterministic order.
-// ListActiveProfileNodes 用于按确定性且受限的顺序返回某个已解析目标当前 active 的画像节点。
+// ListActiveProfileNodes returns only the current active nodes for one resolved target in a deterministic order, while respecting the caller's explicit limit when provided.
+// ListActiveProfileNodes 用于按确定性顺序返回某个已解析目标当前 active 的画像节点，并在调用方显式提供 limit 时尊重该限制。
 func (s *Store) ListActiveProfileNodes(ctx context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error) {
 	if !logicdomain.ValidProfileType(target.ProfileType) {
 		return nil, logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
@@ -1240,24 +1240,25 @@ func (s *Store) ListActiveProfileNodes(ctx context.Context, target logicdomain.P
 	if target.BindID == 0 {
 		return nil, logicdomain.ValidationError{Field: "bind_id", Message: "must resolve to one persisted target"}
 	}
-	if limit <= 0 {
-		limit = 128
-	}
-	if limit > 256 {
-		limit = 256
-	}
 	nowMs := time.Now().UTC().UnixMilli()
-	rows, err := queryRows[profileNodeRow](s, ctx, `
-SELECT id, turn_id, profile_type, bind_id, content, profile_status,
-       priority, profile_level, level_reason, refresh_weight,
-       source_kind, source_id, status_reason,
-       expires_timestamp, superseded_by_id, profile_date,
-       created_timestamp, updated_timestamp
-FROM vmm_profile_nodes
-WHERE profile_type = ? AND bind_id = ? AND profile_status = ? AND (expires_timestamp <= 0 OR expires_timestamp > ?)
-ORDER BY priority ASC, refresh_weight DESC, profile_date DESC, id ASC
-LIMIT ?
-`, target.ProfileType, target.BindID, logicdomain.ProfileStatusActive, nowMs, limit)
+	sqlText := `
+SELECT n.id, n.turn_id, n.profile_type, n.bind_id, n.content, n.profile_status,
+       n.priority, n.profile_level, n.level_reason, n.refresh_weight,
+       n.source_kind, n.source_id, n.status_reason,
+       n.expires_timestamp, n.superseded_by_id, n.profile_date,
+       n.created_timestamp, n.updated_timestamp,
+       COALESCE(t.created_timestamp, n.created_timestamp) AS profile_date_anchor_timestamp
+FROM vmm_profile_nodes AS n
+LEFT JOIN vmm_turn_records AS t ON t.id = n.turn_id
+WHERE n.profile_type = ? AND n.bind_id = ? AND n.profile_status = ? AND (n.expires_timestamp <= 0 OR n.expires_timestamp > ?)
+ORDER BY profile_date_anchor_timestamp DESC, n.id ASC
+`
+	args := []any{target.ProfileType, target.BindID, logicdomain.ProfileStatusActive, nowMs}
+	if limit > 0 {
+		sqlText += "LIMIT ?\n"
+		args = append(args, limit)
+	}
+	rows, err := queryRows[profileNodeRow](s, ctx, sqlText, args...)
 	if err != nil {
 		return nil, fmt.Errorf("query active profile nodes: %w", err)
 	}
@@ -1265,24 +1266,25 @@ LIMIT ?
 	for _, row := range rows {
 		node := row.toDomain()
 		out = append(out, logicdomain.ProfileNodeRecord{
-			ID:             node.ID,
-			TurnID:         node.TurnID,
-			ProfileType:    node.ProfileType,
-			BindID:         node.BindID,
-			Content:        node.Content,
-			Status:         node.Status,
-			Priority:       node.Priority,
-			ProfileLevel:   node.ProfileLevel,
-			LevelReason:    node.LevelReason,
-			RefreshWeight:  node.RefreshWeight,
-			ProfileDate:    node.ProfileDate,
-			SourceKind:     node.SourceKind,
-			SourceID:       node.SourceID,
-			StatusReason:   node.StatusReason,
-			ExpiresAt:      node.ExpiresAt,
-			SupersededByID: node.SupersededByID,
-			CreatedAt:      node.CreatedAt,
-			UpdatedAt:      node.UpdatedAt,
+			ID:                  node.ID,
+			TurnID:              node.TurnID,
+			ProfileType:         node.ProfileType,
+			BindID:              node.BindID,
+			Content:             node.Content,
+			Status:              node.Status,
+			Priority:            node.Priority,
+			ProfileLevel:        node.ProfileLevel,
+			LevelReason:         node.LevelReason,
+			RefreshWeight:       node.RefreshWeight,
+			ProfileDate:         node.ProfileDate,
+			SourceKind:          node.SourceKind,
+			SourceID:            node.SourceID,
+			StatusReason:        node.StatusReason,
+			ExpiresAt:           node.ExpiresAt,
+			SupersededByID:      node.SupersededByID,
+			ProfileDateAnchorAt: node.ProfileDateAnchorAt,
+			CreatedAt:           node.CreatedAt,
+			UpdatedAt:           node.UpdatedAt,
 		})
 	}
 	return out, nil
@@ -1323,13 +1325,15 @@ LIMIT 1
 // loadProfileNodeByID 用于按 id 读取一条长期画像节点，让手工画像持久化能判断一个“看似失败”的插入是否其实已经落库。
 func (s *Store) loadProfileNodeByID(ctx context.Context, nodeID uint64) (logicdomain.ProfileNodeRecord, bool, error) {
 	rows, err := queryRows[profileNodeRow](s, ctx, fmt.Sprintf(`
-SELECT id, turn_id, profile_type, bind_id, content, profile_status,
-       priority, profile_level, level_reason, refresh_weight,
-       source_kind, source_id, status_reason,
-       expires_timestamp, superseded_by_id, profile_date,
-       created_timestamp, updated_timestamp
-FROM vmm_profile_nodes
-WHERE id = %d
+SELECT n.id, n.turn_id, n.profile_type, n.bind_id, n.content, n.profile_status,
+       n.priority, n.profile_level, n.level_reason, n.refresh_weight,
+       n.source_kind, n.source_id, n.status_reason,
+       n.expires_timestamp, n.superseded_by_id, n.profile_date,
+       n.created_timestamp, n.updated_timestamp,
+       COALESCE(t.created_timestamp, n.created_timestamp) AS profile_date_anchor_timestamp
+FROM vmm_profile_nodes AS n
+LEFT JOIN vmm_turn_records AS t ON t.id = n.turn_id
+WHERE n.id = %d
 LIMIT 1
 `, nodeID))
 	if err != nil {
@@ -1623,7 +1627,7 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 			return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.ValidationError{Field: "nodes[" + strconv.Itoa(idx) + "].refresh_weight", Message: "must be >= 0"}
 		}
 		if strings.TrimSpace(node.ProfileDate) == "" {
-			node.ProfileDate = now.Format("2006-01-02")
+			node.ProfileDate = logicdomain.FormatDisplayDate(now)
 		}
 		insertedID := profileStartID + uint64(idx)
 		acceptedRecord := logicdomain.ProfileNodeRecord{
@@ -1904,14 +1908,16 @@ func (s *Store) replaceRenderedProfileBatch(ctx context.Context, sql string, ids
 // loadActiveProfileNodes 用于作为画像评审和过期收敛共用查询助手，只加载当前仍可渲染的 active 节点。
 func (s *Store) loadActiveProfileNodes(ctx context.Context, profileType int, bindID uint64, nowMs int64) ([]logicdomain.ProfileActiveNodeRecord, error) {
 	rows, err := queryRows[profileNodeRow](s, ctx, `
-SELECT id, turn_id, profile_type, bind_id, content, profile_status,
-       priority, profile_level, level_reason, refresh_weight,
-       source_kind, source_id, status_reason,
-       expires_timestamp, superseded_by_id, profile_date,
-       created_timestamp, updated_timestamp
-FROM vmm_profile_nodes
-WHERE profile_type = ? AND bind_id = ? AND profile_status = ? AND (expires_timestamp <= 0 OR expires_timestamp > ?)
-ORDER BY profile_date ASC, priority ASC, refresh_weight DESC, id ASC
+SELECT n.id, n.turn_id, n.profile_type, n.bind_id, n.content, n.profile_status,
+       n.priority, n.profile_level, n.level_reason, n.refresh_weight,
+       n.source_kind, n.source_id, n.status_reason,
+       n.expires_timestamp, n.superseded_by_id, n.profile_date,
+       n.created_timestamp, n.updated_timestamp,
+       COALESCE(t.created_timestamp, n.created_timestamp) AS profile_date_anchor_timestamp
+FROM vmm_profile_nodes AS n
+LEFT JOIN vmm_turn_records AS t ON t.id = n.turn_id
+WHERE n.profile_type = ? AND n.bind_id = ? AND n.profile_status = ? AND (n.expires_timestamp <= 0 OR n.expires_timestamp > ?)
+ORDER BY profile_date_anchor_timestamp ASC, n.id ASC
 `, profileType, bindID, logicdomain.ProfileStatusActive, nowMs)
 	if err != nil {
 		return nil, err
@@ -4844,71 +4850,82 @@ func (r memoryNodeRow) toMemoryNodeRecord() logicdomain.MemoryNodeRecord {
 }
 
 type profileNodeRow struct {
-	ID               uint64  `json:"id"`
-	TurnID           *uint64 `json:"turn_id"`
-	ProfileType      int     `json:"profile_type"`
-	BindID           uint64  `json:"bind_id"`
-	Content          string  `json:"content"`
-	ProfileStatus    int     `json:"profile_status"`
-	Priority         int     `json:"priority"`
-	ProfileLevel     int     `json:"profile_level"`
-	LevelReason      string  `json:"level_reason"`
-	RefreshWeight    int     `json:"refresh_weight"`
-	SourceKind       int     `json:"source_kind"`
-	SourceID         uint64  `json:"source_id"`
-	StatusReason     string  `json:"status_reason"`
-	ExpiresTimestamp int64   `json:"expires_timestamp"`
-	SupersededByID   uint64  `json:"superseded_by_id"`
-	ProfileDate      string  `json:"profile_date"`
-	CreatedTimestamp int64   `json:"created_timestamp"`
-	UpdatedTimestamp int64   `json:"updated_timestamp"`
+	ID                         uint64  `json:"id"`
+	TurnID                     *uint64 `json:"turn_id"`
+	ProfileType                int     `json:"profile_type"`
+	BindID                     uint64  `json:"bind_id"`
+	Content                    string  `json:"content"`
+	ProfileStatus              int     `json:"profile_status"`
+	Priority                   int     `json:"priority"`
+	ProfileLevel               int     `json:"profile_level"`
+	LevelReason                string  `json:"level_reason"`
+	RefreshWeight              int     `json:"refresh_weight"`
+	SourceKind                 int     `json:"source_kind"`
+	SourceID                   uint64  `json:"source_id"`
+	StatusReason               string  `json:"status_reason"`
+	ExpiresTimestamp           int64   `json:"expires_timestamp"`
+	SupersededByID             uint64  `json:"superseded_by_id"`
+	ProfileDate                string  `json:"profile_date"`
+	CreatedTimestamp           int64   `json:"created_timestamp"`
+	UpdatedTimestamp           int64   `json:"updated_timestamp"`
+	ProfileDateAnchorTimestamp int64   `json:"profile_date_anchor_timestamp"`
 }
 
 // toRecord converts one SQL row into the public profile-node record shape returned by query RPCs and manual profile writebacks.
 // toRecord 用于把一条 SQL 行转换成查询 RPC 与手工画像写回返回的公开画像节点结构。
 func (r profileNodeRow) toRecord() logicdomain.ProfileNodeRecord {
+	profileDateAnchorAt := unixMilliToTime(r.ProfileDateAnchorTimestamp)
+	if profileDateAnchorAt.IsZero() {
+		profileDateAnchorAt = unixMilliToTime(r.CreatedTimestamp)
+	}
 	return logicdomain.ProfileNodeRecord{
-		ID:             r.ID,
-		TurnID:         optionalUint64Value(r.TurnID),
-		ProfileType:    r.ProfileType,
-		BindID:         r.BindID,
-		Content:        r.Content,
-		Status:         r.ProfileStatus,
-		Priority:       r.Priority,
-		ProfileLevel:   r.ProfileLevel,
-		LevelReason:    r.LevelReason,
-		RefreshWeight:  r.RefreshWeight,
-		ProfileDate:    r.ProfileDate,
-		SourceKind:     r.SourceKind,
-		SourceID:       r.SourceID,
-		StatusReason:   r.StatusReason,
-		ExpiresAt:      unixMilliToTime(r.ExpiresTimestamp),
-		SupersededByID: r.SupersededByID,
-		CreatedAt:      unixMilliToTime(r.CreatedTimestamp),
-		UpdatedAt:      unixMilliToTime(r.UpdatedTimestamp),
+		ID:                  r.ID,
+		TurnID:              optionalUint64Value(r.TurnID),
+		ProfileType:         r.ProfileType,
+		BindID:              r.BindID,
+		Content:             r.Content,
+		Status:              r.ProfileStatus,
+		Priority:            r.Priority,
+		ProfileLevel:        r.ProfileLevel,
+		LevelReason:         r.LevelReason,
+		RefreshWeight:       r.RefreshWeight,
+		ProfileDate:         r.ProfileDate,
+		SourceKind:          r.SourceKind,
+		SourceID:            r.SourceID,
+		StatusReason:        r.StatusReason,
+		ExpiresAt:           unixMilliToTime(r.ExpiresTimestamp),
+		SupersededByID:      r.SupersededByID,
+		ProfileDateAnchorAt: profileDateAnchorAt,
+		CreatedAt:           unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:           unixMilliToTime(r.UpdatedTimestamp),
 	}
 }
 
 func (r profileNodeRow) toDomain() logicdomain.ProfileActiveNodeRecord {
+	profileDateAnchorAt := unixMilliToTime(r.ProfileDateAnchorTimestamp)
+	if profileDateAnchorAt.IsZero() {
+		profileDateAnchorAt = unixMilliToTime(r.CreatedTimestamp)
+	}
 	return logicdomain.ProfileActiveNodeRecord{
-		ID:             r.ID,
-		TurnID:         optionalUint64Value(r.TurnID),
-		ProfileType:    r.ProfileType,
-		BindID:         r.BindID,
-		Content:        r.Content,
-		Status:         r.ProfileStatus,
-		Priority:       r.Priority,
-		ProfileLevel:   r.ProfileLevel,
-		LevelReason:    r.LevelReason,
-		RefreshWeight:  r.RefreshWeight,
-		ProfileDate:    r.ProfileDate,
-		SourceKind:     r.SourceKind,
-		SourceID:       r.SourceID,
-		StatusReason:   r.StatusReason,
-		ExpiresAt:      unixMilliToTime(r.ExpiresTimestamp),
-		SupersededByID: r.SupersededByID,
-		CreatedAt:      unixMilliToTime(r.CreatedTimestamp),
-		UpdatedAt:      unixMilliToTime(r.UpdatedTimestamp),
+		ID:                  r.ID,
+		TurnID:              optionalUint64Value(r.TurnID),
+		ProfileType:         r.ProfileType,
+		BindID:              r.BindID,
+		Content:             r.Content,
+		Status:              r.ProfileStatus,
+		Priority:            r.Priority,
+		ProfileLevel:        r.ProfileLevel,
+		LevelReason:         r.LevelReason,
+		RefreshWeight:       r.RefreshWeight,
+		ProfileDate:         r.ProfileDate,
+		SourceKind:          r.SourceKind,
+		SourceID:            r.SourceID,
+		StatusReason:        r.StatusReason,
+		ExpiresAt:           unixMilliToTime(r.ExpiresTimestamp),
+		SupersededByID:      r.SupersededByID,
+		ProfileDateAnchorAt: profileDateAnchorAt,
+		CreatedAt:           unixMilliToTime(r.CreatedTimestamp),
+		UpdatedAt:           unixMilliToTime(r.UpdatedTimestamp),
 	}
 }
 

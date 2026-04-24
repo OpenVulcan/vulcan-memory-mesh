@@ -75,8 +75,8 @@ type ProfileBundleResult struct {
 	UserProfile         string
 }
 
-// GetBundle resolves the user/project pair, loads the current rendered scope profiles, strips any legacy legend text, and returns either one full bundle or split sections.
-// GetBundle 用于解析 user/project 组合、加载当前渲染后的 scope 画像、去掉遗留说明头，并按 full 或 split 形式返回组合结果。
+// GetBundle resolves the user/project pair, rebuilds the current scope profiles from active nodes, and returns either one full bundle or split sections.
+// GetBundle 用于解析 user/project 组合、基于 active 节点重建当前 scope 画像，并按 full 或 split 形式返回组合结果。
 func (u *ProfileUseCase) GetBundle(ctx context.Context, cmd ProfileBundleCommand) (ProfileBundleResult, error) {
 	if u == nil || u.store == nil {
 		return ProfileBundleResult{}, fmt.Errorf("profile store is nil")
@@ -173,21 +173,28 @@ func (u *ProfileUseCase) GetBundle(ctx context.Context, cmd ProfileBundleCommand
 	return result, nil
 }
 
-// loadBundleProfileBody reads one rendered scope profile and normalizes it into the body-only format expected by bundle assembly.
-// loadBundleProfileBody 用于读取单个已渲染 scope 画像，并把它规范成组合接口所需的“仅正文”格式。
+// loadBundleProfileBody rebuilds one scope profile directly from the current active nodes so bundle reads always follow the current runtime-local date contract instead of stale stored blobs.
+// loadBundleProfileBody 用于直接基于当前 active 节点重建单个 scope 画像，确保 bundle 读取始终遵循当前运行时本地日期契约，而不是复用陈旧渲染 blob。
 func (u *ProfileUseCase) loadBundleProfileBody(ctx context.Context, target logicdomain.ProfileTargetRef) (string, error) {
 	if target.BindID == 0 {
 		return "", nil
 	}
-	stored, err := u.store.LoadRenderedProfile(ctx, target)
+	nodes, err := u.store.ListActiveProfileNodes(ctx, target, 0)
 	if err != nil {
 		return "", err
 	}
-	return stripLegacyProfileLegend(stored), nil
+	if len(nodes) == 0 {
+		return "", nil
+	}
+	active := make([]logicdomain.ProfileActiveNodeRecord, 0, len(nodes))
+	for _, node := range nodes {
+		active = append(active, toActiveProfileNodeRecord(node))
+	}
+	return renderProfileTimeline(active, nil, nil), nil
 }
 
-// validateProfileBundleCommand checks the bundle request before it resolves the hierarchy and rendered profile blobs.
-// validateProfileBundleCommand 用于在解析层级和读取渲染画像之前校验组合请求。
+// validateProfileBundleCommand checks the bundle request before it resolves the hierarchy and rebuilds scope profiles.
+// validateProfileBundleCommand 用于在解析层级并重建 scope 画像之前校验组合请求。
 func validateProfileBundleCommand(cmd ProfileBundleCommand) error {
 	if cmd.UserID == 0 {
 		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}

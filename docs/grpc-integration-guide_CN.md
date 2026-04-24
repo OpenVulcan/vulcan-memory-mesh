@@ -182,6 +182,16 @@
 
 ## 七、业务接口约束
 
+### 时间展示契约
+
+当前 gRPC 对外返回中的可读时间字段，统一遵循以下规则：
+
+- 数据库中的 Unix 时间戳是唯一基准时间。
+- 所有 `datetime/date` 字段都按“当前运行环境的系统本地时间”展开。
+- 当前不会额外返回“原始时区 / 用户时区 / 会话时区”这类独立时区上下文。
+- 因此，如果宿主机系统时区后来发生变化，历史记录再次查询出来的可读 `datetime/date` 可能出现几小时偏移，甚至跨自然日变化；这属于当前产品契约下的预期行为。
+- 如果调用方需要稳定排序、稳定比较或跨时区一致性，请优先使用时间戳字段，而不是仅依赖可读 `datetime/date` 字符串。
+
 ### 0. Profile 接口
 
 当前画像相关能力拆成三条独立 RPC：
@@ -280,6 +290,8 @@
   - `score`
   - `has_dialogue`
   - `turn_id`
+  - `created_datetime`
+  - `created_timestamp`（兼容字段，已废弃）
 - 当 `context_items[].turn_id > 0` 时，客户端可继续调用 `GetTurnDetails`
 - 同时更新 `last_compacted_timestamp`
 - 如果当前 session 没有 turn，允许返回成功但不更新 compact 边界
@@ -669,6 +681,8 @@
 - `abstract`
 - `details_preview`
 - `category`
+- `created_datetime`
+- `created_timestamp`（兼容字段，已废弃）
 
 字段说明：
 
@@ -683,6 +697,11 @@
   - 详情预览，不是完整 details
 - `category`
   - 直接返回稳定英文标签，而不是内部数字
+- `created_datetime`
+  - 该条长期记忆按当前运行系统本地时间展开的可读创建时间，格式为 `YYYY-MM-DD HH:mm:ss`
+  - 如果宿主机系统时区变化，历史记录再次查询时这里的显示值也可能随之变化
+- `created_timestamp`
+  - 该条长期记忆的创建毫秒时间戳（兼容字段，已废弃）
 
 `category` 当前标签：
 
@@ -931,6 +950,7 @@
 - 检索范围由服务端解析出的 `team / space / project` 决定，并附带 `user_id = 0 OR current_user_id` 过滤
 - 默认不会再额外按 `session_id` 收窄长期记忆检索
 - 第二层 `precheck_l2_main` 负责在统一记忆召回结果里按候选编号选择真正要注入的条目
+- 第二层 `precheck_l2_main` 同时会参考服务端当前时间与候选创建时间，帮助区分时间相关问题下哪条历史记忆更贴近当前语义
 - 只有被第二层采纳的 memory id 才会刷新生命周期
 - `PreCheck` 不再混入画像 bundle；画像读取继续通过 `GetProfileNodes / GetProfileBundle`
 

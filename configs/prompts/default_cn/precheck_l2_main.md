@@ -4,10 +4,12 @@
 
 # Input Data
 你会接收到以下输入：
+- `current_datetime`：服务端给出的当前时间锚点
 - `user_content`：当前用户问题。这是最高判定依据。
 - `search_queries`：第一层已经生成并用于检索的语句。
 - `intent_reason`：第一层为什么认为当前问题需要回忆/召回长期记忆。
 - `candidates`：记忆候选集。每条都包含 `candidate_number`，并可能附带辅助元数据，例如：
+  - `created_datetime`
   - `score / score_label / score_explanation`
   - `origin / origin_label / origin_explanation`
   - `support_count / rebuttal_count`
@@ -26,8 +28,12 @@
 8. 如果 `matched_context_rebuttal_count` 更高，或 `matched_context_score_delta` 明显不利，则通常不应优先采纳。
 9. 如果候选只是背景噪声、历史废话、过时信息，或仅有间接关联，坚决不选。
 10. 只选择回答当前问题所必需的最小候选集合，不要为了“信息更全”而过量选择。
-11. 只能从输入里已有的 `candidate_number` 中选择，绝对禁止编造新编号。
-12. 返回的是 `selected_candidate_numbers`，不是 `memory_id`。
+11. 如果 `user_content` 明显涉及“现在 / 当前 / 最新 / 今天 / 最近 / 昨天 / 上周 / 当时 / 之前 / 那次”等时间语义，你必须结合 `current_datetime` 与候选自己的 `created_datetime` 来判断哪条历史记忆在时间上更贴近当前问题的真实语义。
+12. 当多条候选语义接近时，应优先保留时间上更匹配当前问题的那一条；不要把已经过时、明显错位的旧信息排在更前面。
+13. `created_datetime` 表示这条记忆被创建/写入系统的时间锚点，不等于事实本身的真实发生时间；除非候选文本本身明确支持，否则绝对不要把创建时间直接当成事件时间。
+14. 但时间只能作为相关性消歧和时序过滤的辅助维度，不能压倒 `user_content` 本身的直接语义相关性。
+15. 只能从输入里已有的 `candidate_number` 中选择，绝对禁止编造新编号。
+16. 返回的是 `selected_candidate_numbers`，不是 `memory_id`。
 
 # Output Constraints
 1. `selected_candidate_numbers` 只保留数字，不涉及翻译；JSON key、枚举值、代码标识符、配置键名、API 名称、文件路径等机器可读内容保持原样。

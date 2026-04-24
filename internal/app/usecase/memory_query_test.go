@@ -1917,6 +1917,75 @@ func TestMemoryUseCaseWriteSemanticDedupeReturnsExistingMemory(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseWriteSemanticReviewerReceivesCurrentTimestamp verifies direct-write semantic review now passes the same current-time anchor as the turn-driven post-action path, so both reviewer entry points share the same temporal contract.
+// TestMemoryUseCaseWriteSemanticReviewerReceivesCurrentTimestamp 用于验证主动写记忆的语义评审现在会传入与 turn 驱动 post-action 相同的当前时间锚点，确保两条 reviewer 入口共享一致的时序契约。
+func TestMemoryUseCaseWriteSemanticReviewerReceivesCurrentTimestamp(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:         1201,
+				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel: logicdomain.MemoryScopeLevelProject,
+				Abstract:   "记录一条新的工程规则。",
+				Details:    "记录一条新的工程规则。",
+				VectorID:   "vec-new",
+			},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	reviewer := &stubPostActionCandidateReviewer{
+		result: logicdomain.PostActionCandidateReviewResult{
+			Memory: &logicdomain.PostActionMemoryReviewSection{
+				AcceptedCandidateIndexes: []int{0},
+				Reason:                   "候选可作为新的长期记忆保留。",
+			},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
+
+	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  47,
+			SessionKey: "sess-direct-review-timestamp",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "记录一条新的工程规则。",
+			Details:    "记录一条新的工程规则。",
+			Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories: %v", err)
+	}
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1201 {
+		t.Fatalf("expected accepted direct write to create a new row, got %+v", result.Items)
+	}
+	if reviewer.calls != 1 || len(reviewer.inputs) != 1 {
+		t.Fatalf("expected one reviewer call with captured input, got calls=%d inputs=%+v", reviewer.calls, reviewer.inputs)
+	}
+	if reviewer.inputs[0].CurrentTimestamp <= 0 {
+		t.Fatalf("expected direct-write reviewer to receive current timestamp, got %+v", reviewer.inputs[0])
+	}
+	if reviewer.inputs[0].CurrentTurnDate == "" {
+		t.Fatalf("expected direct-write reviewer to receive current review date, got %+v", reviewer.inputs[0])
+	}
+}
+
 // TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory verifies real-cosine hard dedupe can reuse an existing durable memory from the dedicated pre-MMR pool before reviewer execution, even when the reviewer-visible top hit is a different memory.
 // TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory 用于验证真实 cosine 硬排重可以在 reviewer 执行前，从专用的 MMR 前候选池里复用已有长期记忆；即使 reviewer 可见的 top 命中是另一条记忆也同样生效。
 func TestMemoryUseCaseWriteHardDedupeReturnsExistingMemory(t *testing.T) {

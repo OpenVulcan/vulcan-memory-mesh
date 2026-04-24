@@ -11,6 +11,7 @@ import (
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestApplyPostActionAdmissionFilterDropsQAEchoAndNonDurableCandidates verifies first-pass admission removes QA echoes and ephemeral external results, while still keeping durable research-derived facts.
@@ -179,6 +180,7 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredMemoryReplaceScope(t
 // TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAndProfile verifies one LLM review call jointly handles memory dedupe and profile acceptance when both candidate families exist.
 // TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAndProfile 用于验证当记忆与画像候选同时存在时，会用一次统一 LLM 评审同时处理二者。
 func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAndProfile(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
 	store := &testRelationalStore{
 		profileReviewTargets: logicdomain.ProfileReviewTargetsSnapshot{
 			UserNodes: []logicdomain.ProfileActiveNodeRecord{{
@@ -310,8 +312,17 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	if reviewer.inputs[0].CurrentTurnDate != "2026-04-04" {
 		t.Fatalf("expected reviewer to receive current turn date, got %+v", reviewer.inputs[0].CurrentTurnDate)
 	}
+	if reviewer.inputs[0].CurrentTurnDateTime == "" {
+		t.Fatalf("expected reviewer to receive current turn datetime, got %+v", reviewer.inputs[0].CurrentTurnDateTime)
+	}
+	if reviewer.inputs[0].CurrentTimestamp <= 0 {
+		t.Fatalf("expected reviewer to receive current timestamp, got %+v", reviewer.inputs[0])
+	}
 	if reviewer.inputs[0].MemoryCandidates[0].CandidateDate != "2026-04-04" {
 		t.Fatalf("expected reviewer to receive candidate date, got %+v", reviewer.inputs[0].MemoryCandidates[0])
+	}
+	if reviewer.inputs[0].MemoryCandidates[0].CandidateDateTime == "" {
+		t.Fatalf("expected reviewer to receive candidate datetime, got %+v", reviewer.inputs[0].MemoryCandidates[0])
 	}
 	if len(reviewer.inputs[0].MemoryCandidates[0].SimilarMemories) != 1 {
 		t.Fatalf("expected only one high-similarity memory to survive thresholding, got %+v", reviewer.inputs[0].MemoryCandidates[0].SimilarMemories)
@@ -321,6 +332,9 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 	}
 	if reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0].CreatedDate != "2026-04-01" {
 		t.Fatalf("expected reviewer to receive similar memory created date, got %+v", reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0])
+	}
+	if reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0].CreatedDateTime == "" {
+		t.Fatalf("expected reviewer to receive similar memory created datetime, got %+v", reviewer.inputs[0].MemoryCandidates[0].SimilarMemories[0])
 	}
 	if len(analysis.MemoryNodes) != 1 {
 		t.Fatalf("expected memory node to survive unified review, got %+v", analysis.MemoryNodes)
@@ -647,6 +661,7 @@ func TestPostActionUseCaseReviewTurnCandidatesKeepsAcceptedCandidateLocalSuperse
 // TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping verifies similar-memory hits are reattached by QueryIndex instead of raw slice position so out-of-order grouped results cannot bind to the wrong candidate.
 // TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping 用于验证 similar-memory 结果会按 QueryIndex 回贴，而不是按切片顺序绑定，避免乱序分组把旧记忆挂错到别的候选上。
 func TestBuildScopedMemoryReviewCandidatesUsesQueryIndexMapping(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
 	searcher := &stubPostActionMemorySearcher{
 		result: MemoryQueryResult{
 			Results: []MemoryQueryGroupResult{
@@ -1009,13 +1024,15 @@ type stubPostActionCandidateReviewer struct {
 func (s *stubPostActionCandidateReviewer) Review(_ context.Context, input logicdomain.PostActionCandidateReviewInput) (logicdomain.PostActionCandidateReviewResult, error) {
 	s.calls++
 	copied := logicdomain.PostActionCandidateReviewInput{
-		UserInputKind:     input.UserInputKind,
-		CurrentTurnDate:   input.CurrentTurnDate,
-		UserContent:       input.UserContent,
-		AssistantContent:  input.AssistantContent,
-		MemoryCandidates:  append([]logicdomain.PostActionMemoryReviewCandidate(nil), input.MemoryCandidates...),
-		ProfileTargets:    input.ProfileTargets,
-		ProfileCandidates: append([]logicdomain.ProfileNodeCandidate(nil), input.ProfileCandidates...),
+		UserInputKind:       input.UserInputKind,
+		CurrentTimestamp:    input.CurrentTimestamp,
+		CurrentTurnDateTime: input.CurrentTurnDateTime,
+		CurrentTurnDate:     input.CurrentTurnDate,
+		UserContent:         input.UserContent,
+		AssistantContent:    input.AssistantContent,
+		MemoryCandidates:    append([]logicdomain.PostActionMemoryReviewCandidate(nil), input.MemoryCandidates...),
+		ProfileTargets:      input.ProfileTargets,
+		ProfileCandidates:   append([]logicdomain.ProfileNodeCandidate(nil), input.ProfileCandidates...),
 	}
 	s.inputs = append(s.inputs, copied)
 	if s.err != nil {

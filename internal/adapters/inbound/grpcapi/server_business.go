@@ -75,10 +75,12 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	items := make([]*vmmv1.ContextItem, 0, len(result.ContextItems))
 	for _, item := range result.ContextItems {
 		items = append(items, &vmmv1.ContextItem{
-			Text:        item.Text,
-			Score:       item.Score,
-			TurnId:      item.TurnID,
-			HasDialogue: item.TurnID > 0,
+			Text:             item.Text,
+			Score:            item.Score,
+			TurnId:           item.TurnID,
+			HasDialogue:      item.TurnID > 0,
+			CreatedTimestamp: item.CreatedTimestamp,
+			CreatedDatetime:  item.CreatedDateTime,
 		})
 	}
 	return &vmmv1.PreCheckResponse{
@@ -143,10 +145,12 @@ func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckR
 // preCheckContextItemTransportLogPayload keeps pre-check response payload logs aligned with the trimmed gRPC response contract so operators see the same fields as callers.
 // preCheckContextItemTransportLogPayload 用于让 pre-check 响应载荷日志与裁剪后的 gRPC 返回契约保持一致，确保运维看到的字段和调用方一致。
 type preCheckContextItemTransportLogPayload struct {
-	Text        string  `json:"text"`
-	Score       float64 `json:"score"`
-	HasDialogue bool    `json:"has_dialogue"`
-	TurnID      uint64  `json:"turn_id"`
+	Text             string  `json:"text"`
+	Score            float64 `json:"score"`
+	HasDialogue      bool    `json:"has_dialogue"`
+	TurnID           uint64  `json:"turn_id"`
+	CreatedTimestamp int64   `json:"created_timestamp,omitempty"`
+	CreatedDateTime  string  `json:"created_datetime,omitempty"`
 }
 
 // summarizePreCheckContextItemsForTransportLog projects internal context items into the minimal transport shape expected by the updated pre-check response contract.
@@ -155,10 +159,12 @@ func summarizePreCheckContextItemsForTransportLog(items []logicdomain.ContextIte
 	out := make([]preCheckContextItemTransportLogPayload, 0, len(items))
 	for _, item := range items {
 		out = append(out, preCheckContextItemTransportLogPayload{
-			Text:        item.Text,
-			Score:       item.Score,
-			HasDialogue: item.TurnID > 0,
-			TurnID:      item.TurnID,
+			Text:             item.Text,
+			Score:            item.Score,
+			HasDialogue:      item.TurnID > 0,
+			TurnID:           item.TurnID,
+			CreatedTimestamp: item.CreatedTimestamp,
+			CreatedDateTime:  item.CreatedDateTime,
 		})
 	}
 	return out

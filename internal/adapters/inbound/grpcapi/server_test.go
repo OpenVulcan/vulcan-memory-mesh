@@ -17,6 +17,7 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 	"github.com/openvulcan/vmm/internal/platform/xid"
+	"github.com/openvulcan/vmm/internal/testutil"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -215,6 +216,91 @@ func TestGetProfileNodesReturnsActiveNodes(t *testing.T) {
 	}
 }
 
+// TestGetProfileNodesNormalizesLegacyProfileDate verifies profile query responses expose the anchored local profile date instead of the raw legacy UTC-truncated stored value.
+// TestGetProfileNodesNormalizesLegacyProfileDate 用于验证画像查询响应会返回基于锚点修正后的本地 profile 日期，而不是原始存储的 legacy UTC 截断值。
+func TestGetProfileNodesNormalizesLegacyProfileDate(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		Profiles: &stubProfileExecutor{
+			queryResult: usecase.ProfileQueryResult{
+				Target: logicdomain.ProfileTargetRef{ProfileType: logicdomain.ProfileTypeProject, BindID: 9},
+				Nodes: []logicdomain.ProfileNodeRecord{
+					{
+						ID:                  102,
+						ProfileType:         logicdomain.ProfileTypeProject,
+						BindID:              9,
+						Content:             "项目必须优先支持多种 AI 编程工具。",
+						Priority:            logicdomain.ProfilePriorityP0,
+						ProfileLevel:        logicdomain.ProfileLevelPersistent,
+						RefreshWeight:       2,
+						ProfileDate:         "2026-04-01",
+						ProfileDateAnchorAt: time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC),
+						CreatedAt:           time.Date(2026, 4, 2, 3, 0, 0, 0, time.UTC),
+						SourceKind:          logicdomain.ProfileSourceKindTurnExtract,
+						SourceID:            88,
+					},
+				},
+			},
+		},
+	}, testBufSize)
+
+	resp, err := fixture.client.GetProfileNodes(context.Background(), &vmmv1.GetProfileNodesRequest{
+		Target:    vmmv1.ProfileTarget_PROFILE_TARGET_PROJECT,
+		ProjectId: 9,
+		Limit:     10,
+	})
+	if err != nil {
+		t.Fatalf("get profile nodes: %v", err)
+	}
+	if len(resp.GetNodes()) != 1 {
+		t.Fatalf("nodes len = %d", len(resp.GetNodes()))
+	}
+	if resp.GetNodes()[0].GetProfileDate() != "2026-04-02" {
+		t.Fatalf("expected normalized anchored profile date 2026-04-02, got %+v", resp.GetNodes()[0])
+	}
+}
+
+// TestGetProfileNodesKeepsUnlimitedLimitWhenOmitted verifies transport normalization does not inject a hidden cap when callers omit limit.
+// TestGetProfileNodesKeepsUnlimitedLimitWhenOmitted 用于验证当调用方省略 limit 时，传输层不会偷偷注入隐藏上限。
+func TestGetProfileNodesKeepsUnlimitedLimitWhenOmitted(t *testing.T) {
+	profiles := &stubProfileExecutor{
+		queryResult: usecase.ProfileQueryResult{
+			Target: logicdomain.ProfileTargetRef{ProfileType: logicdomain.ProfileTypeProject, BindID: 9},
+			Nodes: []logicdomain.ProfileNodeRecord{{
+				ID:            103,
+				ProfileType:   logicdomain.ProfileTypeProject,
+				BindID:        9,
+				Content:       "项目统一使用 Go。",
+				Priority:      logicdomain.ProfilePriorityP0,
+				ProfileLevel:  logicdomain.ProfileLevelPersistent,
+				RefreshWeight: 1,
+				ProfileDate:   "2026-04-02",
+				SourceKind:    logicdomain.ProfileSourceKindManualInstruction,
+				SourceID:      66,
+			}},
+		},
+	}
+	fixture := newTestFixture(t, Dependencies{
+		IDs:      xid.NewGenerator(),
+		Profiles: profiles,
+	}, testBufSize)
+
+	resp, err := fixture.client.GetProfileNodes(context.Background(), &vmmv1.GetProfileNodesRequest{
+		Target:    vmmv1.ProfileTarget_PROFILE_TARGET_PROJECT,
+		ProjectId: 9,
+	})
+	if err != nil {
+		t.Fatalf("get profile nodes: %v", err)
+	}
+	if len(resp.GetNodes()) != 1 {
+		t.Fatalf("nodes len = %d", len(resp.GetNodes()))
+	}
+	if profiles.queryCmd.Limit != 0 {
+		t.Fatalf("expected omitted limit to stay unlimited (0), got %+v", profiles.queryCmd)
+	}
+}
+
 // TestApplyProfileInstructionReturnsAcceptedAndRetired verifies the manual profile instruction RPC returns the synchronous reviewed writeback result.
 // TestApplyProfileInstructionReturnsAcceptedAndRetired 用于验证手工画像指令 RPC 会返回同步评审后的写回结果。
 func TestApplyProfileInstructionReturnsAcceptedAndRetired(t *testing.T) {
@@ -287,6 +373,7 @@ func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 								DetailsPreview: "来自近期饮食偏好提炼。",
 								Category:       3,
 								Score:          0.91,
+								CreatedAt:      time.UnixMilli(1775000002000),
 							},
 						},
 					},
@@ -319,6 +406,9 @@ func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 	}
 	if hit.GetCategory() != "business_logic" {
 		t.Fatalf("unexpected category label: %+v", hit)
+	}
+	if hit.GetCreatedTimestamp() != 1775000002000 {
+		t.Fatalf("unexpected created timestamp: %+v", hit)
 	}
 }
 
@@ -768,7 +858,7 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 				ShouldInject: true,
 				ContextText:  "项目画像：SQLite schema 13 已迁移",
 				ContextItems: []logicdomain.ContextItem{
-					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92, TurnID: 41},
+					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92, TurnID: 41, CreatedTimestamp: 1775000003000},
 				},
 				Degraded: true,
 			}, nil
@@ -795,6 +885,9 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 	if resp.GetContextItems()[0].GetTurnId() != 41 || !resp.GetContextItems()[0].GetHasDialogue() {
 		t.Fatalf("expected grpc context item to expose turn linkage, got %+v", resp.GetContextItems()[0])
 	}
+	if resp.GetContextItems()[0].GetCreatedTimestamp() != 1775000003000 {
+		t.Fatalf("expected grpc context item to expose created timestamp, got %+v", resp.GetContextItems()[0])
+	}
 	if resp.GetContextItems()[0].GetTitle() != "" || resp.GetContextItems()[0].GetSource() != "" || resp.GetContextItems()[0].GetKind() != "" {
 		t.Fatalf("expected grpc context item to omit deprecated title/source/kind fields, got %+v", resp.GetContextItems()[0])
 	}
@@ -808,7 +901,7 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 	if strings.Contains(logs, "项目画像：SQLite schema 13 已迁移") || strings.Contains(logs, `混合召回记忆`) || strings.Contains(logs, `"title":`) || strings.Contains(logs, `"source":`) || strings.Contains(logs, `"kind":`) {
 		t.Fatalf("expected debug response payload to omit deprecated pre-check fields, got %s", logs)
 	}
-	if !strings.Contains(logs, `"has_dialogue": true`) || !strings.Contains(logs, `"turn_id": 41`) {
+	if !strings.Contains(logs, `"has_dialogue": true`) || !strings.Contains(logs, `"turn_id": 41`) || !strings.Contains(logs, `"created_timestamp": 1775000003000`) {
 		t.Fatalf("expected debug response payload to expose transport turn linkage fields, got %s", logs)
 	}
 	if !strings.Contains(logs, `user_content_present`) || !strings.Contains(logs, `context_text_present`) {
@@ -1411,6 +1504,7 @@ func (s *stubWorkspaceExecutor) DeleteUser(_ context.Context, _ string, _ string
 type stubProfileExecutor struct {
 	queryResult  usecase.ProfileQueryResult
 	queryErr     error
+	queryCmd     usecase.ProfileQueryCommand
 	bundleResult usecase.ProfileBundleResult
 	bundleErr    error
 	bundleCmd    usecase.ProfileBundleCommand
@@ -1420,7 +1514,8 @@ type stubProfileExecutor struct {
 
 // GetNodes returns the canned profile query result for deterministic transport assertions.
 // GetNodes 用于返回预设画像查询结果，保证传输层断言稳定。
-func (s *stubProfileExecutor) GetNodes(_ context.Context, _ usecase.ProfileQueryCommand) (usecase.ProfileQueryResult, error) {
+func (s *stubProfileExecutor) GetNodes(_ context.Context, cmd usecase.ProfileQueryCommand) (usecase.ProfileQueryResult, error) {
+	s.queryCmd = cmd
 	return s.queryResult, s.queryErr
 }
 

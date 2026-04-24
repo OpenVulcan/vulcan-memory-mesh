@@ -97,11 +97,15 @@ func prepareSessionBatchProfileNodes(turns []logicdomain.SessionTurnRecord, anal
 	}
 	for turnIdx := range analysis.Turns {
 		turn := turnByID[analysis.Turns[turnIdx].TurnID]
-		profileDate := profileDateFromTurn(turn)
+		profileAnchor := profileBaseTime(turn)
+		profileDate := logicdomain.FormatDisplayDate(profileAnchor)
 		for nodeIdx := range analysis.Turns[turnIdx].ProfileNodes {
 			node := &analysis.Turns[turnIdx].ProfileNodes[nodeIdx]
 			node.Status = logicdomain.ProfileStatusPending
 			node.SourceTurnID = analysis.Turns[turnIdx].TurnID
+			if node.ProfileDateAnchorAt.IsZero() {
+				node.ProfileDateAnchorAt = profileAnchor
+			}
 			if strings.TrimSpace(node.ProfileDate) == "" {
 				node.ProfileDate = profileDate
 			}
@@ -252,7 +256,7 @@ func renderProfileTimeline(existing []logicdomain.ProfileActiveNodeRecord, fresh
 			continue
 		}
 		renderNodes = append(renderNodes, profileRenderNode{
-			Date:          normalizeRenderDate(node.ProfileDate, node.CreatedAt),
+			Date:          logicdomain.NormalizeLegacyDisplayDateWithFallback(node.ProfileDate, node.ProfileDateAnchorAt, node.CreatedAt),
 			Priority:      node.Priority,
 			ProfileLevel:  node.ProfileLevel,
 			RefreshWeight: node.RefreshWeight,
@@ -265,7 +269,7 @@ func renderProfileTimeline(existing []logicdomain.ProfileActiveNodeRecord, fresh
 			continue
 		}
 		renderNodes = append(renderNodes, profileRenderNode{
-			Date:          normalizeRenderDate(node.ProfileDate, node.ExpiresAt),
+			Date:          normalizeRenderDate(node.ProfileDate, node.ProfileDateAnchorAt, time.Time{}),
 			Priority:      node.Priority,
 			ProfileLevel:  node.ProfileLevel,
 			RefreshWeight: node.RefreshWeight,
@@ -375,25 +379,25 @@ func profileBaseTime(turn logicdomain.SessionTurnRecord) time.Time {
 // profileDateFromTurn renders the profile date string from one persisted turn so new profile nodes can be grouped on the final timeline.
 // profileDateFromTurn 用于从一条已持久化 turn 生成画像日期字符串，让新画像节点能在最终时间轴中按日期分组。
 func profileDateFromTurn(turn logicdomain.SessionTurnRecord) string {
-	return profileBaseTime(turn).Format("2006-01-02")
+	return logicdomain.FormatDisplayDate(profileBaseTime(turn))
 }
 
-// normalizeRenderDate falls back to one timestamp-derived YYYY-MM-DD string when the stored profile_date is absent.
-// normalizeRenderDate 用于在 profile_date 缺失时回退到时间戳推导出的 YYYY-MM-DD 字符串。
-func normalizeRenderDate(profileDate string, fallback time.Time) string {
-	date := strings.TrimSpace(profileDate)
+// normalizeRenderDate resolves one profile date onto the shared runtime-local calendar contract by preferring an explicit date anchor and only falling back when the caller has no better timestamp source.
+// normalizeRenderDate 用于把画像日期解析到共享的运行时本地自然日契约，优先使用显式日期锚点，只有在调用方缺少更可靠时间源时才使用回退时间。
+func normalizeRenderDate(profileDate string, anchor, fallback time.Time) string {
+	date := logicdomain.NormalizeLegacyDisplayDateWithFallback(profileDate, anchor, fallback)
 	if date != "" {
 		return date
 	}
-	if fallback.IsZero() {
-		return "unknown"
-	}
-	return fallback.UTC().Format("2006-01-02")
+	return "unknown"
 }
 
 // profileRenderCreatedAt derives a stable sort timestamp for one fresh profile node when the final rendered profile is rebuilt.
 // profileRenderCreatedAt 用于在重建最终画像时，为一条新的画像节点推导稳定的排序时间戳。
 func profileRenderCreatedAt(node logicdomain.ProfileNodeCandidate) time.Time {
+	if !node.ProfileDateAnchorAt.IsZero() {
+		return node.ProfileDateAnchorAt
+	}
 	if parsed, err := time.Parse("2006-01-02", strings.TrimSpace(node.ProfileDate)); err == nil {
 		return parsed.UTC()
 	}

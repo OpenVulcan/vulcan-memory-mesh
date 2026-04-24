@@ -392,6 +392,8 @@ message MemorySearchHit {
   string abstract = 3;
   string details_preview = 4;
   string category = 5;
+  int64 created_timestamp = 6 [deprecated = true];
+  string created_datetime = 7;
 }
 
 // MemorySearchGroupResult echoes one normalized query string and returns the hit list produced for that query.
@@ -625,6 +627,8 @@ message ContextItem {
   double score = 5;
   uint64 turn_id = 6;
   bool has_dialogue = 7;
+  int64 created_timestamp = 8 [deprecated = true];
+  string created_datetime = 9;
 }
 
 // PreCheckResponse returns the injection decision and assembled context payload.

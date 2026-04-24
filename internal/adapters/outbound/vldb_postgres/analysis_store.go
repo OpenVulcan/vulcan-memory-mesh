@@ -393,7 +393,7 @@ WHERE profile_status = $5
 		}
 		profileDate := strings.TrimSpace(node.ProfileDate)
 		if profileDate == "" {
-			profileDate = turn.CreatedAt.UTC().Format("2006-01-02")
+			profileDate = logicdomain.FormatDisplayDate(turn.CreatedAt)
 		}
 		insertProfileSQL := fmt.Sprintf(`
 INSERT INTO %s (

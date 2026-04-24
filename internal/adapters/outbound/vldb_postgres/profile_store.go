@@ -76,8 +76,8 @@ func (r *profileRepository) LoadProfileReviewTargets(ctx context.Context, sessio
 	}, nil
 }
 
-// ListActiveProfileNodes returns only the current active nodes for one resolved target in a bounded, deterministic order.
-// ListActiveProfileNodes 用于按确定性且受限的顺序返回某个已解析目标当前 active 的画像节点。
+// ListActiveProfileNodes returns only the current active nodes for one resolved target in a deterministic order, while respecting the caller's explicit limit when provided.
+// ListActiveProfileNodes 用于按确定性顺序返回某个已解析目标当前 active 的画像节点，并在调用方显式提供 limit 时尊重该限制。
 func (r *profileRepository) ListActiveProfileNodes(ctx context.Context, target logicdomain.ProfileTargetRef, limit int) ([]logicdomain.ProfileNodeRecord, error) {
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
@@ -87,12 +87,6 @@ func (r *profileRepository) ListActiveProfileNodes(ctx context.Context, target l
 	}
 	if target.BindID == 0 {
 		return nil, logicdomain.ValidationError{Field: "bind_id", Message: "must resolve to one persisted target"}
-	}
-	if limit <= 0 {
-		limit = 128
-	}
-	if limit > 256 {
-		limit = 256
 	}
 	now := time.Now().UTC()
 	rows, err := r.queryProfileNodes(ctx, r.shared.pool, target.ProfileType, target.BindID, now, limit, true)
@@ -251,7 +245,7 @@ func (r *profileRepository) ApplyManualProfileInstruction(ctx context.Context, t
 		}
 		profileDate := strings.TrimSpace(node.ProfileDate)
 		if profileDate == "" {
-			profileDate = now.Format("2006-01-02")
+			profileDate = logicdomain.FormatDisplayDate(now)
 		}
 
 		insertSQL := fmt.Sprintf(`
@@ -394,15 +388,16 @@ func (r *profileRepository) ConvergeExpiredProfileNodes(ctx context.Context, lim
 	}()
 
 	expiredSQL := fmt.Sprintf(`
-SELECT id, turn_id, profile_type, bind_id, content, profile_status, priority, profile_level, level_reason, refresh_weight,
-       source_kind, source_id, status_reason, expires_at, superseded_by_id, profile_date, created_at, updated_at
-FROM %s
-WHERE profile_status = $1
-  AND expires_at IS NOT NULL
-  AND expires_at <= $2
-ORDER BY expires_at ASC, id ASC
+SELECT p.id, p.turn_id, p.profile_type, p.bind_id, p.content, p.profile_status, p.priority, p.profile_level, p.level_reason, p.refresh_weight,
+       p.source_kind, p.source_id, p.status_reason, p.expires_at, p.superseded_by_id, p.profile_date, COALESCE(t.created_at, p.created_at) AS profile_date_anchor_at, p.created_at, p.updated_at
+FROM %s AS p
+LEFT JOIN %s AS t ON t.id = p.turn_id
+WHERE p.profile_status = $1
+  AND p.expires_at IS NOT NULL
+  AND p.expires_at <= $2
+ORDER BY p.expires_at ASC, p.id ASC
 LIMIT $3
-`, r.profileNodesTable())
+`, r.profileNodesTable(), r.turnsTable())
 	rows, err := tx.Query(callCtx, strings.TrimSpace(expiredSQL), logicdomain.ProfileStatusActive, now, limit)
 	if err != nil {
 		return nil, fmt.Errorf("query postgres expired profile nodes: %w", err)
@@ -502,19 +497,20 @@ func (r *profileRepository) ReplaceRenderedProfiles(ctx context.Context, updates
 // queryProfileNodes loads profile rows for one target and keeps the row order aligned with the calling workflow's needs.
 // queryProfileNodes 用于按目标加载画像行，并保持返回顺序与调用场景一致。
 func (r *profileRepository) queryProfileNodes(ctx context.Context, q profileQueryer, profileType int, bindID uint64, now time.Time, limit int, profileListOrder bool) ([]profileNodeScanRow, error) {
-	orderBy := "profile_date ASC, priority ASC, refresh_weight DESC, id ASC"
+	orderBy := "COALESCE(t.created_at, p.created_at) ASC, p.id ASC"
 	if profileListOrder {
-		orderBy = "priority ASC, refresh_weight DESC, profile_date DESC, id ASC"
+		orderBy = "COALESCE(t.created_at, p.created_at) DESC, p.id ASC"
 	}
 	sqlText := fmt.Sprintf(`
-SELECT id, turn_id, profile_type, bind_id, content, profile_status, priority, profile_level, level_reason, refresh_weight,
-       source_kind, source_id, status_reason, expires_at, superseded_by_id, profile_date, created_at, updated_at
-FROM %s
-WHERE profile_type = $1
-  AND bind_id = $2
-  AND profile_status = $3
-  AND (expires_at IS NULL OR expires_at > $4)
-`, r.profileNodesTable())
+SELECT p.id, p.turn_id, p.profile_type, p.bind_id, p.content, p.profile_status, p.priority, p.profile_level, p.level_reason, p.refresh_weight,
+       p.source_kind, p.source_id, p.status_reason, p.expires_at, p.superseded_by_id, p.profile_date, COALESCE(t.created_at, p.created_at) AS profile_date_anchor_at, p.created_at, p.updated_at
+FROM %s AS p
+LEFT JOIN %s AS t ON t.id = p.turn_id
+WHERE p.profile_type = $1
+  AND p.bind_id = $2
+  AND p.profile_status = $3
+  AND (p.expires_at IS NULL OR p.expires_at > $4)
+`, r.profileNodesTable(), r.turnsTable())
 	args := []any{profileType, int64(bindID), logicdomain.ProfileStatusActive, now}
 	if limit > 0 {
 		sqlText += fmt.Sprintf("\nORDER BY %s\nLIMIT $5", orderBy)
@@ -632,6 +628,12 @@ func (r *profileRepository) profileInstructionsTable() string {
 	return r.profileQualifiedTable("vmm_profile_instructions")
 }
 
+// turnsTable returns the fully-qualified durable turn table name so profile queries can reuse source-turn timestamps as stable profile-date anchors.
+// turnsTable 用于返回长期 turn 表的完整限定名称，让画像查询可以复用源 turn 时间作为稳定的 profile 日期锚点。
+func (r *profileRepository) turnsTable() string {
+	return r.profileQualifiedTable("vmm_turn_records")
+}
+
 // usersTable returns the fully-qualified durable user table name for profile review lookups.
 // usersTable 用于返回画像评审查找所需的长期用户表完整限定名称。
 func (r *profileRepository) usersTable() string {
@@ -696,6 +698,7 @@ func scanProfileNodeRows(rows pgx.Rows) ([]profileNodeScanRow, error) {
 			&row.ExpiresAt,
 			&row.SupersededByID,
 			&row.ProfileDate,
+			&row.ProfileDateAnchorAt,
 			&row.CreatedAt,
 			&row.UpdatedAt,
 		); err != nil {

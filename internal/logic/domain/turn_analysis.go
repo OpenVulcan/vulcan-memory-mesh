@@ -286,8 +286,9 @@ type TurnAnalysisReferenceTurn struct {
 // TurnAnalysisTargetTurn stores the only raw turn that the single-turn analyzer is allowed to extract into fresh details, memory nodes, and profile nodes.
 // TurnAnalysisTargetTurn 用于保存单轮分析器唯一允许重新提炼的目标 turn 原文，让输出始终只绑定这一轮。
 type TurnAnalysisTargetTurn struct {
-	TurnID  uint64
-	RawTurn string
+	TurnID           uint64
+	CreatedTimestamp int64
+	RawTurn          string
 }
 
 // TurnAnalysisDirectWrite stores one recently accepted direct-write memory so the single-turn analyzer can avoid extracting facts that the tool path has already persisted.
@@ -303,6 +304,7 @@ type TurnAnalysisDirectWrite struct {
 // TurnAnalysisInput bundles the contextual inputs required by the reference-aware single-turn analyzer.
 // TurnAnalysisInput 用于打包参考感知型单轮分析器所需的上下文输入。
 type TurnAnalysisInput struct {
+	CurrentTimestamp       int64
 	ReferenceTurns         []TurnAnalysisReferenceTurn
 	TargetTurn             TurnAnalysisTargetTurn
 	RecentGRPCMemoryWrites []TurnAnalysisDirectWrite
@@ -341,23 +343,24 @@ type MemoryContextEdgeCandidate struct {
 // ProfileNodeCandidate stores one profile feature extracted from a turn before it is bound to a user or project row.
 // ProfileNodeCandidate 用于保存一条从 turn 中提炼出的画像特征，等待绑定到用户或项目。
 type ProfileNodeCandidate struct {
-	ProfileType      int
-	Content          string
-	EvidenceSource   string
-	Admission        string
-	AdmissionReason  string
-	Status           int
-	Priority         int
-	ProfileLevel     int
-	LevelReason      string
-	RefreshWeight    int
-	ProfileDate      string
-	SourceTurnID     uint64
-	SourceKind       int
-	SourceID         uint64
-	StatusReason     string
-	ExpiresAt        time.Time
-	SupersedeNodeIDs []uint64
+	ProfileType         int
+	Content             string
+	EvidenceSource      string
+	Admission           string
+	AdmissionReason     string
+	Status              int
+	Priority            int
+	ProfileLevel        int
+	LevelReason         string
+	RefreshWeight       int
+	ProfileDate         string
+	ProfileDateAnchorAt time.Time
+	SourceTurnID        uint64
+	SourceKind          int
+	SourceID            uint64
+	StatusReason        string
+	ExpiresAt           time.Time
+	SupersedeNodeIDs    []uint64
 }
 
 // ValidMemoryNodeCategory reports whether one category id belongs to the supported memory-node enum set.

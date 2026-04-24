@@ -61,7 +61,7 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 func buildManualProfileReviewRequest(target logicdomain.ProfileTargetRef, activeNodes []logicdomain.ProfileNodeRecord, instruction string, floorPriority, floorLevel int) (string, error) {
 	type activeNodeInput struct {
 		ID            uint64 `json:"id"`
-		Date          string `json:"date"`
+		DateTime      string `json:"datetime,omitempty"`
 		Priority      string `json:"priority"`
 		Level         string `json:"level"`
 		RefreshWeight int    `json:"refresh_weight"`
@@ -94,13 +94,15 @@ func buildManualProfileReviewRequest(target logicdomain.ProfileTargetRef, active
 		ActiveNodes: make([]activeNodeInput, 0, len(activeNodes)),
 	}
 	for _, node := range activeNodes {
-		date := strings.TrimSpace(node.ProfileDate)
-		if date == "" && !node.CreatedAt.IsZero() {
-			date = node.CreatedAt.UTC().Format("2006-01-02")
+		dateTime := ""
+		if !node.ProfileDateAnchorAt.IsZero() {
+			dateTime = logicdomain.FormatDisplayDateTime(node.ProfileDateAnchorAt)
+		} else if !node.CreatedAt.IsZero() {
+			dateTime = logicdomain.FormatDisplayDateTime(node.CreatedAt)
 		}
 		out.ActiveNodes = append(out.ActiveNodes, activeNodeInput{
 			ID:            node.ID,
-			Date:          date,
+			DateTime:      dateTime,
 			Priority:      profilePriorityLabel(node.Priority),
 			Level:         profileLevelLabel(node.ProfileLevel),
 			RefreshWeight: node.RefreshWeight,

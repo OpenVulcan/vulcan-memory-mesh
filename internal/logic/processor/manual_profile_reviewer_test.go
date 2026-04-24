@@ -6,9 +6,11 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestManualProfileReviewerBuildsSingleTargetRequest verifies one manual instruction review request carries active nodes, one explicit instruction, and the authority floor.
@@ -96,5 +98,86 @@ func TestManualProfileReviewerRejectsUnknownRetireNode(t *testing.T) {
 	})
 	if err == nil || !strings.Contains(err.Error(), "was not present in active nodes") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestManualProfileReviewerUsesLocalFallbackDateForActiveNodes verifies active-node fallback dates follow the shared local calendar-day contract instead of truncating to UTC.
+// TestManualProfileReviewerUsesLocalFallbackDateForActiveNodes 用于验证 active 节点缺失显式日期时，会按共享本地自然日契约回退，而不是直接截断成 UTC 日期。
+func TestManualProfileReviewerUsesLocalFallbackDateForActiveNodes(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	llm := &stubProfileMergerLLM{
+		response: logicports.LLMResponse{
+			Content: `{
+  "accepted_nodes": [],
+  "retired_nodes": [],
+  "reason": "no-op"
+}`,
+		},
+	}
+	reviewer := NewManualProfileReviewer(llm, &stubProfilePromptSource{prompt: "return json only"}, "qwen-test")
+
+	_, err := reviewer.Review(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeUser,
+		BindID:      7,
+	}, []logicdomain.ProfileNodeRecord{{
+		ID:            21,
+		ProfileType:   logicdomain.ProfileTypeUser,
+		BindID:        7,
+		Priority:      logicdomain.ProfilePriorityP1,
+		ProfileLevel:  logicdomain.ProfileLevelStable,
+		RefreshWeight: 1,
+		SourceKind:    logicdomain.ProfileSourceKindTurnExtract,
+		SourceID:      101,
+		Content:       "用户偏好使用本地部署。",
+		CreatedAt:     time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC),
+	}}, "以后继续保留这个偏好。", logicdomain.ProfilePriorityP1, logicdomain.ProfileLevelStable)
+	if err != nil {
+		t.Fatalf("review manual profile instruction: %v", err)
+	}
+	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+		t.Fatalf("expected fallback active-node datetime to use local datetime anchor, got %s", llm.request.UserPrompt)
+	}
+}
+
+// TestManualProfileReviewerCorrectsLegacyUTCProfileDate verifies manual profile review requests repair stored UTC-derived profile_date values before the LLM compares them with the explicit instruction.
+// TestManualProfileReviewerCorrectsLegacyUTCProfileDate 用于验证手工画像评审请求会先修正历史上按 UTC 推导的 profile_date，再让 LLM 与显式指令进行比较。
+func TestManualProfileReviewerCorrectsLegacyUTCProfileDate(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	llm := &stubProfileMergerLLM{
+		response: logicports.LLMResponse{
+			Content: `{
+  "accepted_nodes": [],
+  "retired_nodes": [],
+  "reason": "no-op"
+}`,
+		},
+	}
+	reviewer := NewManualProfileReviewer(llm, &stubProfilePromptSource{prompt: "return json only"}, "qwen-test")
+
+	_, err := reviewer.Review(context.Background(), logicdomain.ProfileTargetRef{
+		ProfileType: logicdomain.ProfileTypeUser,
+		BindID:      7,
+	}, []logicdomain.ProfileNodeRecord{{
+		ID:                  22,
+		ProfileType:         logicdomain.ProfileTypeUser,
+		BindID:              7,
+		ProfileDate:         "2026-04-01",
+		Priority:            logicdomain.ProfilePriorityP1,
+		ProfileLevel:        logicdomain.ProfileLevelStable,
+		RefreshWeight:       1,
+		SourceKind:          logicdomain.ProfileSourceKindTurnExtract,
+		SourceID:            101,
+		Content:             "用户偏好使用本地部署。",
+		ProfileDateAnchorAt: time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC),
+		CreatedAt:           time.Date(2026, 4, 2, 3, 0, 0, 0, time.UTC),
+	}}, "以后继续保留这个偏好。", logicdomain.ProfilePriorityP1, logicdomain.ProfileLevelStable)
+	if err != nil {
+		t.Fatalf("review manual profile instruction: %v", err)
+	}
+	if strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-01`) {
+		t.Fatalf("expected legacy UTC-derived datetime to be corrected, got %s", llm.request.UserPrompt)
+	}
+	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+		t.Fatalf("expected corrected local datetime in reviewer request, got %s", llm.request.UserPrompt)
 	}
 }

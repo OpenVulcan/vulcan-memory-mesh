@@ -13,6 +13,7 @@ import (
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestPostActionExecuteRejectsNilReceiver verifies the exported post-action use case returns one stable error instead of panicking when direct tests or manual integrations accidentally invoke Execute on a nil receiver.
@@ -602,11 +603,11 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 		Details:       "当前轮确认保持异步提炼链路。",
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{
-				Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
-				Abstract:       "当前项目确认改用 channel 管理并发。",
-				Details:        "这是新的并发决策。",
-				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
-				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+				Category:           logicdomain.MemoryNodeCategoryArchitectureDecision,
+				Abstract:           "当前项目确认改用 channel 管理并发。",
+				Details:            "这是新的并发决策。",
+				EvidenceSource:     logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+				Admission:          logicdomain.TurnAnalysisAdmissionKeep,
 				SupersedeMemoryIDs: []uint64{701},
 			},
 		},
@@ -1129,6 +1130,63 @@ func TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock(t *testing.T) {
 	}
 }
 
+// TestProfileDateFromTurnUsesLocalCalendarDay verifies fresh profile nodes inherit their profile_date from the shared local calendar day instead of a UTC-truncated day.
+// TestProfileDateFromTurnUsesLocalCalendarDay 用于验证新画像节点继承的 profile_date 来自共享本地自然日，而不是 UTC 截断后的日期。
+func TestProfileDateFromTurnUsesLocalCalendarDay(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	date := profileDateFromTurn(logicdomain.SessionTurnRecord{
+		CreatedAt: time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC),
+	})
+	if date != "2026-04-02" {
+		t.Fatalf("expected local calendar day 2026-04-02, got %q", date)
+	}
+}
+
+// TestNormalizeRenderDateUsesLocalCalendarDayFallback verifies rendered profile timelines use the shared local calendar-day fallback when one node has no stored profile_date.
+// TestNormalizeRenderDateUsesLocalCalendarDayFallback 用于验证当画像节点缺失 profile_date 时，最终渲染时间线会使用共享本地自然日 fallback。
+func TestNormalizeRenderDateUsesLocalCalendarDayFallback(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	date := normalizeRenderDate("", time.Time{}, time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC))
+	if date != "2026-04-02" {
+		t.Fatalf("expected local calendar day 2026-04-02, got %q", date)
+	}
+}
+
+// TestNormalizeRenderDateCorrectsLegacyUTCProfileDate verifies rendered profile timelines transparently repair legacy UTC-derived profile_date values when node creation time proves the local natural day is different.
+// TestNormalizeRenderDateCorrectsLegacyUTCProfileDate 用于验证当节点创建时间明确表明本地自然日不同，最终画像渲染会自动修正历史上按 UTC 推导出的 legacy profile_date。
+func TestNormalizeRenderDateCorrectsLegacyUTCProfileDate(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	date := normalizeRenderDate("2026-04-01", time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC), time.Time{})
+	if date != "2026-04-02" {
+		t.Fatalf("expected legacy UTC-derived date to be corrected to 2026-04-02, got %q", date)
+	}
+}
+
+// TestRenderProfileTimelineCorrectsLegacyUTCProfileDateUsingAnchor verifies the renderer uses the explicit profile-date anchor instead of the delayed node write time when repairing legacy UTC-derived dates.
+// TestRenderProfileTimelineCorrectsLegacyUTCProfileDateUsingAnchor 用于验证渲染器在修正历史 UTC 日期时会使用显式 profile 日期锚点，而不是延迟入库后的节点写入时间。
+func TestRenderProfileTimelineCorrectsLegacyUTCProfileDateUsingAnchor(t *testing.T) {
+	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
+	rendered := renderProfileTimeline([]logicdomain.ProfileActiveNodeRecord{{
+		ID:                  301,
+		ProfileType:         logicdomain.ProfileTypeProject,
+		BindID:              9,
+		Content:             "项目保持本地优先部署。",
+		Status:              logicdomain.ProfileStatusActive,
+		Priority:            logicdomain.ProfilePriorityP1,
+		ProfileLevel:        logicdomain.ProfileLevelStable,
+		RefreshWeight:       2,
+		ProfileDate:         "2026-04-01",
+		ProfileDateAnchorAt: time.Date(2026, 4, 1, 16, 30, 0, 0, time.UTC),
+		CreatedAt:           time.Date(2026, 4, 2, 3, 0, 0, 0, time.UTC),
+	}}, nil, nil)
+	if !strings.Contains(rendered, "2026-04-02:") {
+		t.Fatalf("expected rendered timeline to use corrected anchored date, got %q", rendered)
+	}
+	if strings.Contains(rendered, "2026-04-01:") {
+		t.Fatalf("expected legacy UTC-derived date to be removed from rendered timeline, got %q", rendered)
+	}
+}
+
 // assertPersistedTurn keeps turn-level persistence assertions compact and readable.
 // assertPersistedTurn 用于让 turn 级持久化断言保持紧凑和易读。
 func assertPersistedTurn(t *testing.T, turn logicdomain.TurnRecord, userContent, assistantContent string, timeline []logicdomain.TurnTimelineItem) {
@@ -1365,6 +1423,7 @@ type stubPostActionTurnAnalyzer struct {
 func (s *stubPostActionTurnAnalyzer) Analyze(_ context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error) {
 	s.calls++
 	s.input = logicdomain.TurnAnalysisInput{
+		CurrentTimestamp:       input.CurrentTimestamp,
 		ReferenceTurns:         append([]logicdomain.TurnAnalysisReferenceTurn(nil), input.ReferenceTurns...),
 		TargetTurn:             input.TargetTurn,
 		RecentGRPCMemoryWrites: append([]logicdomain.TurnAnalysisDirectWrite(nil), input.RecentGRPCMemoryWrites...),

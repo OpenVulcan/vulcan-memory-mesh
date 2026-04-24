@@ -106,9 +106,15 @@ func applyPostActionAdmissionFilter(analysis *logicdomain.TurnAnalysis, stats *p
 	analysis.ProfileNodes = filteredProfiles
 }
 
-// reviewTurnCandidates runs the main unified candidate-review path so memory dedupe and profile acceptance can reuse one LLM call and one turn-level reasoning context.
-// reviewTurnCandidates 用于执行统一候选评审主路径，让记忆去重与画像接纳共享一次 LLM 调用和同一轮语义上下文。
+// reviewTurnCandidates keeps the historical helper signature used by tests while delegating runtime execution to the resolved-time variant that prevents fallback-anchor drift.
+// reviewTurnCandidates 用于保留测试仍在使用的历史辅助函数签名，同时把运行时执行委托给可防止兜底时间漂移的 resolved-time 版本。
 func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord, analysis *logicdomain.TurnAnalysis, stats *postActionCompactionStats) error {
+	return u.reviewTurnCandidatesWithResolvedTime(ctx, session, turn, rawTurn, choosePostActionCreatedAt(turn, time.Now().UTC()), analysis, stats)
+}
+
+// reviewTurnCandidatesWithResolvedTime runs the main unified candidate-review path so memory dedupe and profile acceptance can reuse one LLM call and one turn-level reasoning context.
+// reviewTurnCandidatesWithResolvedTime 用于执行统一候选评审主路径，让记忆去重与画像接纳共享一次 LLM 调用和同一轮语义上下文。
+func (u *PostActionUseCase) reviewTurnCandidatesWithResolvedTime(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord, resolvedTurnCreatedAt time.Time, analysis *logicdomain.TurnAnalysis, stats *postActionCompactionStats) error {
 	if u == nil || analysis == nil {
 		return nil
 	}
@@ -134,7 +140,7 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 		ID:        turn.ID,
 		SessionID: turn.SessionID,
 		ProjectID: turn.ProjectID,
-		CreatedAt: choosePostActionCreatedAt(turn),
+		CreatedAt: resolvedTurnCreatedAt,
 		UpdatedAt: turn.UpdatedAt,
 	}}
 	turnByID, stampedProfiles, userRefs, projectRefs := prepareSessionBatchProfileNodes(turnRows, &batch)
@@ -155,8 +161,11 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 	if err != nil {
 		return err
 	}
-	currentTurnDate := formatPostActionReviewerDate(choosePostActionCreatedAt(turn))
+	reviewTimestamp := time.Now().UTC()
+	currentTurnDateTime := formatPostActionReviewerDateTime(resolvedTurnCreatedAt)
+	currentTurnDate := formatPostActionReviewerDate(resolvedTurnCreatedAt)
 	for idx := range memoryReviewBuild.Candidates {
+		memoryReviewBuild.Candidates[idx].CandidateDateTime = currentTurnDateTime
 		memoryReviewBuild.Candidates[idx].CandidateDate = currentTurnDate
 	}
 	if stats != nil {
@@ -170,13 +179,15 @@ func (u *PostActionUseCase) reviewTurnCandidates(ctx context.Context, session lo
 			return fmt.Errorf("post-action candidate reviewer is nil")
 		}
 		reviewed, err = u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
-			UserInputKind:     strings.TrimSpace(analysis.UserInputKind),
-			CurrentTurnDate:   currentTurnDate,
-			UserContent:       strings.TrimSpace(rawTurn.UserContent),
-			AssistantContent:  strings.TrimSpace(rawTurn.AssistantContent),
-			MemoryCandidates:  memoryReviewPartition.ReviewerCandidates,
-			ProfileTargets:    snapshot,
-			ProfileCandidates: stampedProfiles,
+			UserInputKind:       strings.TrimSpace(analysis.UserInputKind),
+			CurrentTimestamp:    reviewTimestamp.UnixMilli(),
+			CurrentTurnDateTime: currentTurnDateTime,
+			CurrentTurnDate:     currentTurnDate,
+			UserContent:         strings.TrimSpace(rawTurn.UserContent),
+			AssistantContent:    strings.TrimSpace(rawTurn.AssistantContent),
+			MemoryCandidates:    memoryReviewPartition.ReviewerCandidates,
+			ProfileTargets:      snapshot,
+			ProfileCandidates:   stampedProfiles,
 		})
 		if err != nil {
 			return err
@@ -602,15 +613,16 @@ func buildPostActionSimilarMemoryCandidates(hits []MemoryQueryHit, minSimilarity
 			details = abstract
 		}
 		candidate := logicdomain.PostActionSimilarMemoryCandidate{
-			MemoryID:     hit.MemoryRef.ID,
-			SourceTurnID: hit.SourceRef.ID,
-			CreatedDate:  formatPostActionReviewerDate(hit.CreatedAt),
-			ScopeLevel:   logicdomain.MemoryScopeLevelLabel(hit.ScopeLevel),
-			Category:     hit.Category,
-			Score:        score,
-			Origin:       strings.TrimSpace(hit.Origin),
-			Abstract:     abstract,
-			Details:      details,
+			MemoryID:        hit.MemoryRef.ID,
+			SourceTurnID:    hit.SourceRef.ID,
+			CreatedDateTime: formatPostActionReviewerDateTime(hit.CreatedAt),
+			CreatedDate:     formatPostActionReviewerDate(hit.CreatedAt),
+			ScopeLevel:      logicdomain.MemoryScopeLevelLabel(hit.ScopeLevel),
+			Category:        hit.Category,
+			Score:           score,
+			Origin:          strings.TrimSpace(hit.Origin),
+			Abstract:        abstract,
+			Details:         details,
 		}
 		if existing, ok := bestByMemoryID[candidate.MemoryID]; ok {
 			if candidate.Score <= existing.Score {
@@ -634,11 +646,14 @@ func buildPostActionSimilarMemoryCandidates(hits []MemoryQueryHit, minSimilarity
 
 // formatPostActionReviewerDate normalizes one timestamp into the lightweight YYYY-MM-DD string sent to the post-action L2 reviewer so it can reason about recency without paying full timestamp token cost.
 // formatPostActionReviewerDate 用于把时间戳归一成发送给 post-action L2 reviewer 的轻量 YYYY-MM-DD 字符串，让模型感知先后关系时无需承担完整时间戳的 token 成本。
+func formatPostActionReviewerDateTime(ts time.Time) string {
+	return logicdomain.FormatDisplayDateTime(ts)
+}
+
+// formatPostActionReviewerDate normalizes one timestamp into the local YYYY-MM-DD string sent to the post-action L2 reviewer so date-only reasoning stays aligned with the shared local-time contract.
+// formatPostActionReviewerDate 用于把时间归一成本地 YYYY-MM-DD 字符串，发送给 post-action L2 reviewer，确保日期级推理与共享本地时间契约保持一致。
 func formatPostActionReviewerDate(ts time.Time) string {
-	if ts.IsZero() {
-		return ""
-	}
-	return ts.UTC().Format("2006-01-02")
+	return logicdomain.FormatDisplayDate(ts)
 }
 
 // applyPostActionMemoryReviewResult keeps only accepted memory candidates in original order and merges reviewer-approved supersede ids back onto each surviving node so later persistence can safely re-derive the final retirement set after any additional filtering.

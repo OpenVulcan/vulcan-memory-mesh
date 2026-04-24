@@ -2279,8 +2279,11 @@ type MemorySearchHit struct {
 	Abstract       string                 `protobuf:"bytes,3,opt,name=abstract,proto3" json:"abstract,omitempty"`
 	DetailsPreview string                 `protobuf:"bytes,4,opt,name=details_preview,json=detailsPreview,proto3" json:"details_preview,omitempty"`
 	Category       string                 `protobuf:"bytes,5,opt,name=category,proto3" json:"category,omitempty"`
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+	CreatedTimestamp int64  `protobuf:"varint,6,opt,name=created_timestamp,json=createdTimestamp,proto3" json:"created_timestamp,omitempty"`
+	CreatedDatetime  string `protobuf:"bytes,7,opt,name=created_datetime,json=createdDatetime,proto3" json:"created_datetime,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *MemorySearchHit) Reset() {
@@ -2344,6 +2347,21 @@ func (x *MemorySearchHit) GetDetailsPreview() string {
 func (x *MemorySearchHit) GetCategory() string {
 	if x != nil {
 		return x.Category
+	}
+	return ""
+}
+
+// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+func (x *MemorySearchHit) GetCreatedTimestamp() int64 {
+	if x != nil {
+		return x.CreatedTimestamp
+	}
+	return 0
+}
+
+func (x *MemorySearchHit) GetCreatedDatetime() string {
+	if x != nil {
+		return x.CreatedDatetime
 	}
 	return ""
 }
@@ -3934,12 +3952,15 @@ type ContextItem struct {
 	Title string `protobuf:"bytes,2,opt,name=title,proto3" json:"title,omitempty"`
 	Text  string `protobuf:"bytes,3,opt,name=text,proto3" json:"text,omitempty"`
 	// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
-	Source        string  `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
-	Score         float64 `protobuf:"fixed64,5,opt,name=score,proto3" json:"score,omitempty"`
-	TurnId        uint64  `protobuf:"varint,6,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
-	HasDialogue   bool    `protobuf:"varint,7,opt,name=has_dialogue,json=hasDialogue,proto3" json:"has_dialogue,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Source      string  `protobuf:"bytes,4,opt,name=source,proto3" json:"source,omitempty"`
+	Score       float64 `protobuf:"fixed64,5,opt,name=score,proto3" json:"score,omitempty"`
+	TurnId      uint64  `protobuf:"varint,6,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
+	HasDialogue bool    `protobuf:"varint,7,opt,name=has_dialogue,json=hasDialogue,proto3" json:"has_dialogue,omitempty"`
+	// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+	CreatedTimestamp int64  `protobuf:"varint,8,opt,name=created_timestamp,json=createdTimestamp,proto3" json:"created_timestamp,omitempty"`
+	CreatedDatetime  string `protobuf:"bytes,9,opt,name=created_datetime,json=createdDatetime,proto3" json:"created_datetime,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *ContextItem) Reset() {
@@ -4022,6 +4043,21 @@ func (x *ContextItem) GetHasDialogue() bool {
 		return x.HasDialogue
 	}
 	return false
+}
+
+// Deprecated: Marked as deprecated in internal/adapters/inbound/grpcapi/proto/v1/vmm.proto.
+func (x *ContextItem) GetCreatedTimestamp() int64 {
+	if x != nil {
+		return x.CreatedTimestamp
+	}
+	return 0
+}
+
+func (x *ContextItem) GetCreatedDatetime() string {
+	if x != nil {
+		return x.CreatedDatetime
+	}
+	return ""
 }
 
 // PreCheckResponse returns the injection decision and assembled context payload.
@@ -4466,13 +4502,15 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\n" +
 	"project_id\x18\x02 \x01(\x04R\tprojectId\x12\x18\n" +
 	"\aqueries\x18\x03 \x03(\tR\aqueries\x12\x13\n" +
-	"\x05top_k\x18\x04 \x01(\rR\x04topK\"\xb5\x01\n" +
+	"\x05top_k\x18\x04 \x01(\rR\x04topK\"\x91\x02\n" +
 	"\x0fMemorySearchHit\x12\x1b\n" +
 	"\tmemory_id\x18\x01 \x01(\x04R\bmemoryId\x12$\n" +
 	"\x0esource_turn_id\x18\x02 \x01(\x04R\fsourceTurnId\x12\x1a\n" +
 	"\babstract\x18\x03 \x01(\tR\babstract\x12'\n" +
 	"\x0fdetails_preview\x18\x04 \x01(\tR\x0edetailsPreview\x12\x1a\n" +
-	"\bcategory\x18\x05 \x01(\tR\bcategory\"}\n" +
+	"\bcategory\x18\x05 \x01(\tR\bcategory\x12/\n" +
+	"\x11created_timestamp\x18\x06 \x01(\x03B\x02\x18\x01R\x10createdTimestamp\x12)\n" +
+	"\x10created_datetime\x18\a \x01(\tR\x0fcreatedDatetime\"}\n" +
 	"\x17MemorySearchGroupResult\x12\x1f\n" +
 	"\vquery_index\x18\x01 \x01(\rR\n" +
 	"queryIndex\x12\x14\n" +
@@ -4606,7 +4644,7 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
 	"\aupdated\x18\x02 \x01(\bR\aupdated\x12*\n" +
 	"\x11compacted_turn_id\x18\x03 \x01(\x04R\x0fcompactedTurnId\x12\x19\n" +
-	"\btrace_id\x18\x04 \x01(\tR\atraceId\"\xc1\x01\n" +
+	"\btrace_id\x18\x04 \x01(\tR\atraceId\"\x9d\x02\n" +
 	"\vContextItem\x12\x16\n" +
 	"\x04kind\x18\x01 \x01(\tB\x02\x18\x01R\x04kind\x12\x18\n" +
 	"\x05title\x18\x02 \x01(\tB\x02\x18\x01R\x05title\x12\x12\n" +
@@ -4614,7 +4652,9 @@ const file_internal_adapters_inbound_grpcapi_proto_v1_vmm_proto_rawDesc = "" +
 	"\x06source\x18\x04 \x01(\tB\x02\x18\x01R\x06source\x12\x14\n" +
 	"\x05score\x18\x05 \x01(\x01R\x05score\x12\x17\n" +
 	"\aturn_id\x18\x06 \x01(\x04R\x06turnId\x12!\n" +
-	"\fhas_dialogue\x18\a \x01(\bR\vhasDialogue\"\xcf\x01\n" +
+	"\fhas_dialogue\x18\a \x01(\bR\vhasDialogue\x12/\n" +
+	"\x11created_timestamp\x18\b \x01(\x03B\x02\x18\x01R\x10createdTimestamp\x12)\n" +
+	"\x10created_datetime\x18\t \x01(\tR\x0fcreatedDatetime\"\xcf\x01\n" +
 	"\x10PreCheckResponse\x12#\n" +
 	"\rshould_inject\x18\x01 \x01(\bR\fshouldInject\x12%\n" +
 	"\fcontext_text\x18\x02 \x01(\tB\x02\x18\x01R\vcontextText\x128\n" +

@@ -36,24 +36,25 @@ type ProfileTargetRef struct {
 // ProfileNodeRecord stores one durable profile node row returned by query APIs and manual instruction writebacks.
 // ProfileNodeRecord 用于保存一条长期画像节点记录，并返回给查询接口与手工画像写回流程。
 type ProfileNodeRecord struct {
-	ID             uint64
-	TurnID         uint64
-	ProfileType    int
-	BindID         uint64
-	Content        string
-	Status         int
-	Priority       int
-	ProfileLevel   int
-	LevelReason    string
-	RefreshWeight  int
-	ProfileDate    string
-	SourceKind     int
-	SourceID       uint64
-	StatusReason   string
-	ExpiresAt      time.Time
-	SupersededByID uint64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                  uint64
+	TurnID              uint64
+	ProfileType         int
+	BindID              uint64
+	Content             string
+	Status              int
+	Priority            int
+	ProfileLevel        int
+	LevelReason         string
+	RefreshWeight       int
+	ProfileDate         string
+	SourceKind          int
+	SourceID            uint64
+	StatusReason        string
+	ExpiresAt           time.Time
+	SupersededByID      uint64
+	ProfileDateAnchorAt time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // ProfileInstructionRecord stores one explicit manual profile instruction before or after review persistence.

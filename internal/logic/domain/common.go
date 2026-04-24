@@ -131,11 +131,12 @@ type MemoryRecord struct {
 // MemoryHit represents one recalled memory candidate returned by the vector backend.
 // MemoryHit 用于表示向量后端返回的一条召回记忆候选项。
 type MemoryHit struct {
-	ID       string
-	Text     string
-	Score    float64
-	Filter   SearchFilter
-	Metadata map[string]string
+	ID        string
+	Text      string
+	Score     float64
+	CreatedAt time.Time
+	Filter    SearchFilter
+	Metadata  map[string]string
 }
 
 // UserRecord stores one durable user row that can be resolved by numeric id or unique name during admin RPCs.
@@ -214,10 +215,12 @@ type SessionRecord struct {
 // ContextItem represents one final context fragment returned to plugins after assembly.
 // ContextItem 用于表示上下文组装完成后返回给插件的一条最终上下文片段。
 type ContextItem struct {
-	Kind   string
-	Title  string
-	Text   string
-	Source string
-	Score  float64
-	TurnID uint64
+	Kind             string
+	Title            string
+	Text             string
+	Source           string
+	Score            float64
+	TurnID           uint64
+	CreatedTimestamp int64
+	CreatedDateTime  string
 }

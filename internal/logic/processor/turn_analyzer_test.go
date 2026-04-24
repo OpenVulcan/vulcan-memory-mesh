@@ -64,15 +64,17 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	analyzer := NewTurnAnalyzer(llm, prompts, "qwen3.5-flash")
 
 	analysis, err := analyzer.Analyze(context.Background(), logicdomain.TurnAnalysisInput{
+		CurrentTimestamp: 1775000009000,
 		ReferenceTurns: []logicdomain.TurnAnalysisReferenceTurn{
 			{TurnID: 91, Details: "上一轮已经明确要给出 AI 记忆子项目设计建议。"},
 		},
 		TargetTurn: logicdomain.TurnAnalysisTargetTurn{
-			TurnID:  92,
-			RawTurn: `{"user":"你好","assistant":"收到"}`,
+			TurnID:           92,
+			CreatedTimestamp: 1775000000000,
+			RawTurn:          `{"user":"你好","assistant":"收到"}`,
 		},
 		RecentGRPCMemoryWrites: []logicdomain.TurnAnalysisDirectWrite{
-			{MemoryID: 301, ScopeLevel: "PROJECT", Abstract: "已主动写入的记忆", Details: "这条记忆已经由工具写入"},
+			{MemoryID: 301, ScopeLevel: "PROJECT", Abstract: "已主动写入的记忆", Details: "这条记忆已经由工具写入", CreatedTimestamp: 1774990000000},
 		},
 	})
 	if err != nil {
@@ -86,6 +88,27 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"reference_turns"`) || !strings.Contains(llm.request.UserPrompt, `"recent_grpc_memory_writes"`) {
 		t.Fatalf("expected structured turn-analysis request body, got %s", llm.request.UserPrompt)
+	}
+	currentDateTime, _ := logicdomain.FormatDisplayTimeFromUnixMillis(1775000009000)
+	targetDateTime, _ := logicdomain.FormatDisplayTimeFromUnixMillis(1775000000000)
+	writeDateTime, _ := logicdomain.FormatDisplayTimeFromUnixMillis(1774990000000)
+	for _, fragment := range []string{
+		`"current_time"`,
+		`"datetime": "` + currentDateTime + `"`,
+		`"created_datetime": "` + targetDateTime + `"`,
+		`"created_datetime": "` + writeDateTime + `"`,
+	} {
+		if !strings.Contains(llm.request.UserPrompt, fragment) {
+			t.Fatalf("expected structured turn-analysis request body to contain %s, got %s", fragment, llm.request.UserPrompt)
+		}
+	}
+	for _, removed := range []string{`"date": "`, `"created_date": "`} {
+		if strings.Contains(llm.request.UserPrompt, removed) {
+			t.Fatalf("expected structured turn-analysis request body to stop exposing %s, got %s", removed, llm.request.UserPrompt)
+		}
+	}
+	if strings.Contains(llm.request.UserPrompt, `"timestamp":`) || strings.Contains(llm.request.UserPrompt, `"created_timestamp":`) {
+		t.Fatalf("expected structured turn-analysis request body to stop exposing raw timestamps, got %s", llm.request.UserPrompt)
 	}
 	if strings.Contains(llm.request.UserPrompt, `"active_memory_nodes"`) {
 		t.Fatalf("expected active memory nodes to be removed from turn-analysis request body, got %s", llm.request.UserPrompt)

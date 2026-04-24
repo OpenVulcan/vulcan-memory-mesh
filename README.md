@@ -154,6 +154,17 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 ## 核心约束
 
+### 时间展示契约
+
+当前主线关于时间的统一约定如下：
+
+- 数据库中的 Unix 时间戳是唯一基准时间。
+- 给分析型 LLM 的可读时间统一使用 `datetime`，并按“当前运行环境的系统本地时间”展开。
+- 对外返回与最终画像组合会按场景提供可读时间：需要精确时间的场景返回 `datetime`，最终画像组合只显示日期。
+- 当前不会额外保存 `user timezone`、`session timezone` 或“历史写入时原始时区”这类独立时区元数据。
+- 因此，如果宿主机系统时区后来发生变化，历史记录重新展开出来的可读时间可能出现几小时偏移，甚至跨自然日变化；这属于当前产品契约下的预期行为。
+- 对调用方与提示词来说，可读时间字段只是展示与推理辅助字段，不是底层真值；真正稳定的基准仍然是时间戳。
+
 ### 业务入参
 
 `PreCheck`、`ChatCompact` 和 `PostAction` 现在都接受：
@@ -190,12 +201,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 若当前 session 尚未 compact，会排除当前 session 的 turn-extract 记忆
     - 若当前 session 已 compact，只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
   - 当 `recall_mode` 为未来新增的非零值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
-- 第二层 `precheck_l2_main` 会结合候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
+- 第二层 `precheck_l2_main` 会结合按当前运行系统本地时间展开、且不显示时区后缀的当前 `datetime`、候选创建 `datetime`、候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
 - 只把被采纳的记忆组装为 `context_text / context_items`
   - `PreCheckResponse.context_text` 已废弃，gRPC 返回中固定留空
   - 调用方应直接消费 `context_items[]`
-  - 每条 `context_items[]` 仅保留记忆正文、分数、`has_dialogue` 与 `turn_id`
+  - 每条 `context_items[]` 仅保留记忆正文、分数、`has_dialogue`、`turn_id` 与 `created_datetime`
+  - `created_timestamp` 仍保留为兼容字段，但新接入应优先消费 `created_datetime`
+  - 这里的 `created_datetime` 是按当前运行环境系统本地时间展开的可读显示值；底层基准仍然是时间戳
   - 当 `turn_id > 0` 时，可继续调用 `GetTurnDetails`
 - 画像读取仍走独立接口：`GetProfileNodes / GetProfileBundle`
 - 当某一步降级且没有任何记忆最终被采纳时，会返回空上下文，并把 `degraded=true`
@@ -238,9 +251,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 9. turn 写入成功后，立即返回 `accepted=true`
 10. 后台工作器异步读取 pending turn，并发起单轮 `postaction_l1_main`
 11. 单轮分析输入会包含：
+    - 服务端当前时间锚点（按当前运行系统本地时间展开、且不显示时区后缀的 `datetime`，不再传原始毫秒时间戳）
     - 最近若干条已提炼完成的历史 `details`
-    - 当前 turn 的原始脱水 JSON
-    - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`
+    - 当前 turn 的原始脱水 JSON 与其创建时间（`created_datetime`）
+    - 当前 session 在上次提炼观察之后新增的 `recent_grpc_memory_writes`（只提供可读的 `created_datetime`）
+    - 上述 `datetime` 全都属于“当前运行系统时区下的展开结果”；底层排序、锚点与持久化仍以时间戳为准
 12. `postaction_l1_main` 会返回：
     - 当前 turn 的 `user_input_kind`
     - 当前 turn 的 `turn_id`
@@ -261,13 +276,15 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 用户提问后，助手只是回显既有记忆、既有画像或通识答案时，会优先标记为 `drop`
     - 通过外部检索、访问网站、资料归纳、工具调用发现的新长期事实，仍然允许标记为 `keep`
     - 但实时天气、当前 CPU 温度、当前系统负载等临时态结果，仍会按 `non_durable` 拒绝
+    - 当当前轮文本里出现“昨天 / 上周 / 最近 / 当时”等相对时间表达，且能稳定解析时，`postaction_l1_main` 会优先以目标 turn 的 `created_datetime` 作为主锚点、以服务端当前 `datetime` 作为兜底或校验锚点，把它们转换成明确的绝对日期或日期区间
     - 如果用户明确补充、确认或纠正自己的稳定画像，`postaction_l1_main` 仍应产出画像候选；助手口头更正不等于系统画像已经完成替换，最终仍交由后续画像评审链路决定
 14. 如果当前 turn 有新的 `memory_nodes[]` 或 `profile_nodes[]`：
     - 服务端会按与 `PreCheck` 对等的检索作用域召回高相似旧记忆
       - 默认 `space`
       - 支持显式 `team / project`
     - 同时加载当前 user/project 下仍然 `active` 且未过期的画像节点
-    - 然后把记忆候选、相似旧记忆、画像活跃节点和新画像候选，一起送入一次 `postaction_l2_main`
+    - 然后把当前 `datetime`、记忆候选、相似旧记忆、画像活跃节点和新画像候选，一起送入一次 `postaction_l2_main`
+    - 其中候选日期与相似旧记忆创建日期只表示条目写入系统的创建时间锚点，不能直接等同于事实真实发生时间
     - 自动提炼与统一评审都要求按领域拆分节点，不能把饮食偏好、生活习惯、编程语言偏好、项目技术栈等无关主题揉成一条综合画像
 15. 对统一评审后保留下来的新 `memory_nodes[].abstract` 生成 embedding，并先写入 LanceDB
 16. 只有向量侧写入成功后，才会回写当前启用的关系库存储：
@@ -426,6 +443,9 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `abstract`
   - `details_preview`
   - `category`
+  - `created_datetime`
+  - `created_timestamp`（兼容字段，已废弃）
+  - 这里的 `created_datetime` 是按当前运行环境系统本地时间展开的可读值；如果宿主机系统时区变化，历史命中的 `created_datetime` 重新展示时也可能发生对应偏移，这属于预期行为
 - 如果 `source_turn_id > 0`：
   - 可以继续调用 `GetTurnDetails`
   - 读取对应 turn 的结构化对话详情
@@ -890,11 +910,12 @@ AI 容灾边界当前统一为：
 当前主线的行为是：
 
 - `PostAction` 成功写入 turn 并完成入队后，后台会尽快发起一次 `postaction_l1_main`
-- `postaction_l1_main` 会基于“历史精要 + 当前原始 turn + recent_grpc_memory_writes”返回当前这一轮的结构化结果
+- `postaction_l1_main` 会基于“当前 `datetime` 时间锚点 + 历史精要 + 当前原始 turn + recent_grpc_memory_writes”返回当前这一轮的结构化结果
 - 如果本轮有新的 `memory_nodes` 或 `profile_nodes`，会统一走一次 `postaction_l2_main`
 - 这次统一评审会同时处理：
   - 记忆候选的高重复去重
   - user/project 两侧画像候选的接纳、无效、替代与 retire-only 决策
+  - 当前时间与候选/历史条目时间的时序判断
 - 如果有新的 `memory_nodes`，会先写入 LanceDB
 - SQLite 成功回写后，会更新：
   - `vmm_turn_records.details / details_budget / extracted_status`

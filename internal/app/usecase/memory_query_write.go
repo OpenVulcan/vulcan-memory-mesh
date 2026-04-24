@@ -210,7 +210,9 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 		return nil, err
 	}
 	currentReviewDate := formatPostActionReviewerDate(reviewTime)
+	currentReviewDateTime := formatPostActionReviewerDateTime(reviewTime)
 	for idx := range reviewBuild.Candidates {
+		reviewBuild.Candidates[idx].CandidateDateTime = currentReviewDateTime
 		reviewBuild.Candidates[idx].CandidateDate = currentReviewDate
 	}
 	if u.candidateReviewer == nil {
@@ -221,9 +223,11 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 		return buildDirectWriteFallbackDecisionsWithHardDedupe(len(pending), reviewBuild.HardDropped), nil
 	}
 	reviewed, err := u.candidateReviewer.Review(ctx, logicdomain.PostActionCandidateReviewInput{
-		UserInputKind:    logicdomain.TurnAnalysisUserInputStatement,
-		CurrentTurnDate:  currentReviewDate,
-		MemoryCandidates: reviewPartition.ReviewerCandidates,
+		UserInputKind:       logicdomain.TurnAnalysisUserInputStatement,
+		CurrentTimestamp:    reviewTime.UnixMilli(),
+		CurrentTurnDateTime: currentReviewDateTime,
+		CurrentTurnDate:     currentReviewDate,
+		MemoryCandidates:    reviewPartition.ReviewerCandidates,
 	})
 	if err != nil {
 		return nil, err

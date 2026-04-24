@@ -6,13 +6,15 @@
 # Input
 你会收到一个 json 对象，可能包含以下块：
 
-- `current_turn_date`
+- `current_turn_datetime`
+- `current_datetime`
 - `memory`
 - `user`
 - `project`
 
 其中：
-- `current_turn_date` 是当前这轮候选对应的日期上下文，格式通常为 `YYYY-MM-DD`
+- `current_datetime` 是服务端给出的“现在”时间锚点
+- `current_turn_datetime` 是当前这轮候选对应的创建时间上下文
 - `memory` 是本轮新记忆候选，以及每条候选对应的高相似历史记忆
 - `user` / `project` 是当前活跃画像节点与本轮新画像候选
 - 如果某个块没有候选，则该块可能不存在
@@ -20,7 +22,7 @@
 ## `memory`
 每条新记忆候选会包含：
 - `candidate_index`
-- `candidate_date`
+- `candidate_datetime`
 - `category`
 - `abstract`
 - `details`
@@ -31,7 +33,7 @@
 其中 `similar_memories` 里的每条旧记忆可能包含：
 - `memory_id`
 - `source_turn_id`
-- `created_date`
+- `created_datetime`
 - `scope_level`
 - `category`
 - `score`
@@ -41,7 +43,7 @@
 
 ## `user` / `project`
 每个块都包含：
-- `latest_active_date`
+- `latest_active_datetime`
 - `active_nodes`
 - `new_candidates`
 
@@ -102,10 +104,13 @@
 18. 如果新候选应被丢弃，且原因是“多条旧记忆合起来已完整覆盖该候选”，则优先填写最能代表该候选核心事实的那条 `memory_id` 作为 `dedupe_memory_id`。
 19. `dropped_candidates[].dedupe_memory_id` 只能引用该候选自己的 `similar_memories.memory_id`。
 20. 如果新候选应被丢弃，但并不存在可信旧记忆可复用，则 `dedupe_memory_id` 留空或省略。
-21. `current_turn_date`、`candidate_date`、`similar_memories[].created_date` 只是辅助时间维度，用来帮助你区分“语义重复”与“事实更新/阶段推进”。
-22. 不要仅因为某条新候选日期更近，就自动保留它或自动 supersede 旧记忆。
-23. 只有当新候选与旧记忆属于同一事实域，且明显体现了更新、纠正、版本推进或阶段变化时，日期才可以作为支持保留或 supersede 的辅助证据。
-24. 对长期稳定规则、长期偏好、长期约束，如果旧记忆仍然有效且语义更完整，不能仅因它更早就判定应被替代。
+21. `current_datetime` 是判断“现在”的最高时间锚点；`current_turn_datetime`、`candidate_datetime`、`similar_memories[].created_datetime`、`user.latest_active_datetime`、`project.latest_active_datetime` 以及画像节点自己的 `datetime` 只是辅助时间维度，用来帮助你区分“语义重复”与“事实更新 / 阶段推进 / 纠偏替换”。
+22. `candidate_datetime`、`similar_memories[].created_datetime`、`user.latest_active_datetime`、`project.latest_active_datetime` 以及画像节点自己的 `datetime` 表示条目写入系统或被当前系统追踪到的创建时间锚点，不等于事实真实发生时间；除非候选、旧记忆或画像文本本身已经明确支持，否则绝对不要把创建时间直接当成事件时间。
+23. 不要仅因为某条新候选日期更近，就自动保留它或自动 supersede 旧记忆。
+24. 只有当新候选与旧记忆属于同一事实域，且明显体现了更新、纠正、版本推进、阶段变化，或更贴近当前时间锚点下的“最新状态”时，时间才可以作为支持保留或 supersede 的辅助证据。
+25. 对长期稳定规则、长期偏好、长期约束，如果旧记忆仍然有效且语义更完整，不能仅因它更早就判定应被替代。
+26. 如果候选或相似记忆明显涉及“当前 / 最新 / 现在 / 今天 / 最近 / 昨天 / 上周 / 当时”等时间语义，你应结合 `current_datetime` 与 `candidate_datetime`、`similar_memories[].created_datetime`，以及画像评审场景中的 `user.latest_active_datetime`、`project.latest_active_datetime` 和画像节点自己的 `datetime`，判断它是“仍然有效的当前事实”“已经过时的旧事实”，还是“对旧事实的更新纠正”。
+27. 当历史记忆已经过时，而新候选提供了同一事实域下更晚且更准确的长期信息时，应优先保留新候选，并在合适时填写 `supersede_memory_ids`。
 
 # Profile Review Rules
 1. 不要把 `active_nodes` 当成最终画像文本，它们是独立事实节点。

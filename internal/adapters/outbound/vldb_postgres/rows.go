@@ -337,48 +337,54 @@ func (r memoryContextEdgeScanRow) toDomain() logicdomain.MemoryContextEdge {
 // profileNodeScanRow stores one durable profile node row returned by PostgreSQL profile and lifecycle queries.
 // profileNodeScanRow 用于保存 PostgreSQL 画像与生命周期查询返回的一条长期画像节点行。
 type profileNodeScanRow struct {
-	ID             uint64
-	TurnID         sql.NullInt64
-	ProfileType    int
-	BindID         uint64
-	Content        string
-	ProfileStatus  int
-	Priority       int
-	ProfileLevel   int
-	LevelReason    string
-	RefreshWeight  int
-	SourceKind     int
-	SourceID       uint64
-	StatusReason   string
-	ExpiresAt      sql.NullTime
-	SupersededByID uint64
-	ProfileDate    string
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                  uint64
+	TurnID              sql.NullInt64
+	ProfileType         int
+	BindID              uint64
+	Content             string
+	ProfileStatus       int
+	Priority            int
+	ProfileLevel        int
+	LevelReason         string
+	RefreshWeight       int
+	SourceKind          int
+	SourceID            uint64
+	StatusReason        string
+	ExpiresAt           sql.NullTime
+	SupersededByID      uint64
+	ProfileDate         string
+	ProfileDateAnchorAt time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // toRecord converts one scanned profile row into the shared query/manual-write profile-node model.
 // toRecord 用于把扫描得到的画像行转换成查询与手工写回共享的 profile-node 模型。
 func (r profileNodeScanRow) toRecord() logicdomain.ProfileNodeRecord {
+	profileDateAnchorAt := r.ProfileDateAnchorAt
+	if profileDateAnchorAt.IsZero() {
+		profileDateAnchorAt = r.CreatedAt
+	}
 	return logicdomain.ProfileNodeRecord{
-		ID:             r.ID,
-		TurnID:         optionalUint64Value(r.TurnID),
-		ProfileType:    r.ProfileType,
-		BindID:         r.BindID,
-		Content:        strings.TrimSpace(r.Content),
-		Status:         r.ProfileStatus,
-		Priority:       r.Priority,
-		ProfileLevel:   r.ProfileLevel,
-		LevelReason:    r.LevelReason,
-		RefreshWeight:  r.RefreshWeight,
-		ProfileDate:    strings.TrimSpace(r.ProfileDate),
-		SourceKind:     r.SourceKind,
-		SourceID:       r.SourceID,
-		StatusReason:   r.StatusReason,
-		ExpiresAt:      optionalTimeValue(r.ExpiresAt),
-		SupersededByID: r.SupersededByID,
-		CreatedAt:      r.CreatedAt.UTC(),
-		UpdatedAt:      r.UpdatedAt.UTC(),
+		ID:                  r.ID,
+		TurnID:              optionalUint64Value(r.TurnID),
+		ProfileType:         r.ProfileType,
+		BindID:              r.BindID,
+		Content:             strings.TrimSpace(r.Content),
+		Status:              r.ProfileStatus,
+		Priority:            r.Priority,
+		ProfileLevel:        r.ProfileLevel,
+		LevelReason:         r.LevelReason,
+		RefreshWeight:       r.RefreshWeight,
+		ProfileDate:         strings.TrimSpace(r.ProfileDate),
+		SourceKind:          r.SourceKind,
+		SourceID:            r.SourceID,
+		StatusReason:        r.StatusReason,
+		ExpiresAt:           optionalTimeValue(r.ExpiresAt),
+		SupersededByID:      r.SupersededByID,
+		ProfileDateAnchorAt: profileDateAnchorAt.UTC(),
+		CreatedAt:           r.CreatedAt.UTC(),
+		UpdatedAt:           r.UpdatedAt.UTC(),
 	}
 }
 
@@ -387,24 +393,25 @@ func (r profileNodeScanRow) toRecord() logicdomain.ProfileNodeRecord {
 func (r profileNodeScanRow) toActiveNode() logicdomain.ProfileActiveNodeRecord {
 	record := r.toRecord()
 	return logicdomain.ProfileActiveNodeRecord{
-		ID:             record.ID,
-		TurnID:         record.TurnID,
-		ProfileType:    record.ProfileType,
-		BindID:         record.BindID,
-		Content:        record.Content,
-		Status:         record.Status,
-		Priority:       record.Priority,
-		ProfileLevel:   record.ProfileLevel,
-		LevelReason:    record.LevelReason,
-		RefreshWeight:  record.RefreshWeight,
-		ProfileDate:    record.ProfileDate,
-		SourceKind:     record.SourceKind,
-		SourceID:       record.SourceID,
-		StatusReason:   record.StatusReason,
-		ExpiresAt:      record.ExpiresAt,
-		SupersededByID: record.SupersededByID,
-		CreatedAt:      record.CreatedAt,
-		UpdatedAt:      record.UpdatedAt,
+		ID:                  record.ID,
+		TurnID:              record.TurnID,
+		ProfileType:         record.ProfileType,
+		BindID:              record.BindID,
+		Content:             record.Content,
+		Status:              record.Status,
+		Priority:            record.Priority,
+		ProfileLevel:        record.ProfileLevel,
+		LevelReason:         record.LevelReason,
+		RefreshWeight:       record.RefreshWeight,
+		ProfileDate:         record.ProfileDate,
+		SourceKind:          record.SourceKind,
+		SourceID:            record.SourceID,
+		StatusReason:        record.StatusReason,
+		ExpiresAt:           record.ExpiresAt,
+		SupersededByID:      record.SupersededByID,
+		ProfileDateAnchorAt: record.ProfileDateAnchorAt,
+		CreatedAt:           record.CreatedAt,
+		UpdatedAt:           record.UpdatedAt,
 	}
 }
 

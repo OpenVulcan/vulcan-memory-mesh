@@ -229,6 +229,15 @@ grpcurl -plaintext `
 - 省略 `recallMode` 或传 `PRE_CHECK_RECALL_MODE_LEGACY` 时，服务端保持旧版召回行为
 - 传 `PRE_CHECK_RECALL_MODE_SESSION_COMPACT` 时，服务端按当前 session 的 compact 边界过滤同 session 的 turn-extract 记忆
 - 当前版本如果收到未来新增的非零枚举值，也会回退到 compact-aware 基线，而不是重新开放整个当前 session
+- `PreCheckResponse.context_text` 已废弃，当前固定返回空字符串
+- `PreCheckResponse.context_items[]` 当前会返回：
+  - `text`
+  - `score`
+  - `turn_id`
+  - `has_dialogue`
+  - `created_datetime`
+  - `created_timestamp`（兼容字段，已废弃）
+  - 其中 `created_datetime` 是按当前运行环境系统本地时间展开的可读值；如果宿主机系统时区变化，历史记录再次测试时这里的显示值也可能跟着变化
 
 ## 十一、ChatCompact
 
@@ -357,6 +366,15 @@ grpcurl -plaintext `
 - `queries` 是简单字符串数组
 - 不再使用 `query_json`
 - 不再使用 `background`
+- 每条 `results[].hits[]` 当前会返回：
+  - `memory_id`
+  - `source_turn_id`
+  - `abstract`
+  - `details_preview`
+  - `category`
+  - `created_datetime`
+  - `created_timestamp`（兼容字段，已废弃）
+  - 其中 `created_datetime` 是按当前运行环境系统本地时间展开的可读值；如果宿主机系统时区变化，历史记录再次测试时这里的显示值也可能跟着变化
 
 ## 十七、GetTurnDetails
 

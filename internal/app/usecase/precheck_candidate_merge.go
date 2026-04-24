@@ -30,6 +30,15 @@ func mergePreCheckCandidate(existing, incoming logicdomain.PreCheckMemoryCandida
 	if merged.SourceTurnID == 0 && secondary.SourceTurnID > 0 {
 		merged.SourceTurnID = secondary.SourceTurnID
 	}
+	if merged.CreatedTimestamp == 0 && secondary.CreatedTimestamp > 0 {
+		merged.CreatedTimestamp = secondary.CreatedTimestamp
+	}
+	if strings.TrimSpace(merged.CreatedDateTime) == "" && strings.TrimSpace(secondary.CreatedDateTime) != "" {
+		merged.CreatedDateTime = secondary.CreatedDateTime
+	}
+	if strings.TrimSpace(merged.CreatedDate) == "" && strings.TrimSpace(secondary.CreatedDate) != "" {
+		merged.CreatedDate = secondary.CreatedDate
+	}
 	if merged.Category == 0 && secondary.Category != 0 {
 		merged.Category = secondary.Category
 	}

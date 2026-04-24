@@ -16,6 +16,7 @@ Where:
 - `instruction` is the user's explicitly submitted profile modification intent
 - `authority_floor` indicates the minimum level that this manual instruction must not fall below
 - `active_nodes` are the currently valid atomic profile fact nodes, not the final profile blob
+  - each `active_nodes` item also carries one `datetime` anchor so you can judge recency, replacement, and refresh relationships
 
 # Legend
 You must correctly understand the following markers:

@@ -107,21 +107,27 @@ func renderContextSectionTitle(defaultTitle string, section []logicdomain.Contex
 // renderTurnAnalysisRequest serializes one reference-aware single-turn analysis input into the stable JSON body consumed by the postaction_l1_main scene.
 // renderTurnAnalysisRequest 用于把一份参考感知型单轮分析输入序列化成 postaction_l1_main 场景消费的稳定 JSON 请求体。
 func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, error) {
+	type promptTimeInput struct {
+		DateTime string `json:"datetime,omitempty"`
+	}
 	type referenceTurnInput struct {
 		TurnID  uint64 `json:"turn_id"`
 		Details string `json:"details"`
 	}
 	type targetTurnInput struct {
-		TurnID  uint64          `json:"turn_id"`
-		RawTurn json.RawMessage `json:"raw_turn"`
+		TurnID          uint64          `json:"turn_id"`
+		CreatedDateTime string          `json:"created_datetime,omitempty"`
+		RawTurn         json.RawMessage `json:"raw_turn"`
 	}
 	type recentDirectWriteInput struct {
-		MemoryID   uint64 `json:"memory_id"`
-		ScopeLevel string `json:"scope_level,omitempty"`
-		Abstract   string `json:"abstract"`
-		Details    string `json:"details"`
+		MemoryID        uint64 `json:"memory_id"`
+		ScopeLevel      string `json:"scope_level,omitempty"`
+		Abstract        string `json:"abstract"`
+		Details         string `json:"details"`
+		CreatedDateTime string `json:"created_datetime,omitempty"`
 	}
 	type requestBody struct {
+		CurrentTime            *promptTimeInput         `json:"current_time,omitempty"`
 		ReferenceTurns         []referenceTurnInput     `json:"reference_turns"`
 		TargetTurn             targetTurnInput          `json:"target_turn"`
 		RecentGRPCMemoryWrites []recentDirectWriteInput `json:"recent_grpc_memory_writes,omitempty"`
@@ -135,10 +141,21 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 		return "", fmt.Errorf("target turn raw_turn is not valid json")
 	}
 
+	currentDateTime, _ := formatPromptTimestampMillis(input.CurrentTimestamp)
+	targetCreatedDateTime, _ := formatPromptTimestampMillis(input.TargetTurn.CreatedTimestamp)
 	body := requestBody{
-		ReferenceTurns:         make([]referenceTurnInput, 0, len(input.ReferenceTurns)),
-		TargetTurn:             targetTurnInput{TurnID: input.TargetTurn.TurnID, RawTurn: rawTurn},
+		ReferenceTurns: make([]referenceTurnInput, 0, len(input.ReferenceTurns)),
+		TargetTurn: targetTurnInput{
+			TurnID:          input.TargetTurn.TurnID,
+			CreatedDateTime: targetCreatedDateTime,
+			RawTurn:         rawTurn,
+		},
 		RecentGRPCMemoryWrites: make([]recentDirectWriteInput, 0, len(input.RecentGRPCMemoryWrites)),
+	}
+	if input.CurrentTimestamp > 0 {
+		body.CurrentTime = &promptTimeInput{
+			DateTime: currentDateTime,
+		}
 	}
 	for _, turn := range input.ReferenceTurns {
 		if turn.TurnID == 0 {
@@ -157,11 +174,13 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 		if details == "" {
 			details = strings.TrimSpace(memory.Abstract)
 		}
+		createdDateTime, _ := formatPromptTimestampMillis(memory.CreatedTimestamp)
 		body.RecentGRPCMemoryWrites = append(body.RecentGRPCMemoryWrites, recentDirectWriteInput{
-			MemoryID:   memory.MemoryID,
-			ScopeLevel: strings.TrimSpace(memory.ScopeLevel),
-			Abstract:   strings.TrimSpace(memory.Abstract),
-			Details:    details,
+			MemoryID:        memory.MemoryID,
+			ScopeLevel:      strings.TrimSpace(memory.ScopeLevel),
+			Abstract:        strings.TrimSpace(memory.Abstract),
+			Details:         details,
+			CreatedDateTime: createdDateTime,
 		})
 	}
 	rendered, err := json.MarshalIndent(body, "", "  ")
@@ -225,4 +244,10 @@ func collapseBlankLines(lines []string) string {
 		lastBlank = isBlank
 	}
 	return b.String()
+}
+
+// formatPromptTimestampMillis converts one millisecond timestamp into the shared local datetime/date prompt strings while keeping zero-values empty.
+// formatPromptTimestampMillis 用于把毫秒时间戳转换成共享的本地 datetime/date 提示词字符串，并在零值时保持为空。
+func formatPromptTimestampMillis(timestamp int64) (string, string) {
+	return logicdomain.FormatDisplayTimeFromUnixMillis(timestamp)
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
@@ -61,29 +62,29 @@ func (r *PostActionCandidateReviewer) Review(ctx context.Context, input logicdom
 // renderPostActionCandidateReviewRequest 用于把当前轮上下文、记忆去重证据和画像评审快照序列化成一份稳定 JSON 请求体。
 func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidateReviewInput) (string, int, int, int, error) {
 	type memoryMatchInput struct {
-		MemoryID     uint64  `json:"memory_id"`
-		SourceTurnID uint64  `json:"source_turn_id,omitempty"`
-		CreatedDate  string  `json:"created_date,omitempty"`
-		ScopeLevel   string  `json:"scope_level,omitempty"`
-		Category     int     `json:"category"`
-		Score        float64 `json:"score"`
-		Origin       string  `json:"origin,omitempty"`
-		Abstract     string  `json:"abstract"`
-		Details      string  `json:"details"`
+		MemoryID        uint64  `json:"memory_id"`
+		SourceTurnID    uint64  `json:"source_turn_id,omitempty"`
+		CreatedDateTime string  `json:"created_datetime,omitempty"`
+		ScopeLevel      string  `json:"scope_level,omitempty"`
+		Category        int     `json:"category"`
+		Score           float64 `json:"score"`
+		Origin          string  `json:"origin,omitempty"`
+		Abstract        string  `json:"abstract"`
+		Details         string  `json:"details"`
 	}
 	type memoryCandidateInput struct {
-		CandidateIndex  int                `json:"candidate_index"`
-		CandidateDate   string             `json:"candidate_date,omitempty"`
-		Category        int                `json:"category"`
-		Abstract        string             `json:"abstract"`
-		Details         string             `json:"details"`
-		EvidenceSource  string             `json:"evidence_source,omitempty"`
-		AdmissionReason string             `json:"admission_reason,omitempty"`
-		SimilarMemories []memoryMatchInput `json:"similar_memories,omitempty"`
+		CandidateIndex    int                `json:"candidate_index"`
+		CandidateDateTime string             `json:"candidate_datetime,omitempty"`
+		Category          int                `json:"category"`
+		Abstract          string             `json:"abstract"`
+		Details           string             `json:"details"`
+		EvidenceSource    string             `json:"evidence_source,omitempty"`
+		AdmissionReason   string             `json:"admission_reason,omitempty"`
+		SimilarMemories   []memoryMatchInput `json:"similar_memories,omitempty"`
 	}
 	type activeNodeInput struct {
 		ID            uint64 `json:"id"`
-		Date          string `json:"date"`
+		DateTime      string `json:"datetime,omitempty"`
 		Priority      string `json:"priority"`
 		Level         string `json:"level"`
 		RefreshWeight int    `json:"refresh_weight"`
@@ -92,54 +93,70 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 	type profileCandidateInput struct {
 		CandidateIndex  int    `json:"candidate_index"`
 		TurnID          uint64 `json:"turn_id"`
-		Date            string `json:"date"`
+		DateTime        string `json:"datetime,omitempty"`
 		Content         string `json:"content"`
 		EvidenceSource  string `json:"evidence_source,omitempty"`
 		AdmissionReason string `json:"admission_reason,omitempty"`
 	}
 	type targetInput struct {
-		LatestActiveDate string                  `json:"latest_active_date,omitempty"`
-		ActiveNodes      []activeNodeInput       `json:"active_nodes,omitempty"`
-		NewCandidates    []profileCandidateInput `json:"new_candidates,omitempty"`
+		LatestActiveDateTime string                  `json:"latest_active_datetime,omitempty"`
+		ActiveNodes          []activeNodeInput       `json:"active_nodes,omitempty"`
+		NewCandidates        []profileCandidateInput `json:"new_candidates,omitempty"`
 	}
 	type requestBody struct {
-		UserInputKind    string                 `json:"user_input_kind,omitempty"`
-		CurrentTurnDate  string                 `json:"current_turn_date,omitempty"`
-		UserContent      string                 `json:"user_content,omitempty"`
-		AssistantContent string                 `json:"assistant_content,omitempty"`
-		Memory           []memoryCandidateInput `json:"memory,omitempty"`
-		User             *targetInput           `json:"user,omitempty"`
-		Project          *targetInput           `json:"project,omitempty"`
+		UserInputKind       string                 `json:"user_input_kind,omitempty"`
+		CurrentDateTime     string                 `json:"current_datetime,omitempty"`
+		CurrentTurnDateTime string                 `json:"current_turn_datetime,omitempty"`
+		UserContent         string                 `json:"user_content,omitempty"`
+		AssistantContent    string                 `json:"assistant_content,omitempty"`
+		Memory              []memoryCandidateInput `json:"memory,omitempty"`
+		User                *targetInput           `json:"user,omitempty"`
+		Project             *targetInput           `json:"project,omitempty"`
+	}
+
+	resolveProfileReviewDateTime := func(anchor, fallback time.Time) string {
+		// Prefer the explicit profile-date anchor so review-time ordering stays aligned with
+		// the same durable timestamp source used by replacement and freshness decisions.
+		// 优先使用显式画像日期锚点，让评审阶段的先后判断与替代/新鲜度逻辑共享同一稳定时间来源。
+		if !anchor.IsZero() {
+			return logicdomain.FormatDisplayDateTime(anchor)
+		}
+		if !fallback.IsZero() {
+			return logicdomain.FormatDisplayDateTime(fallback)
+		}
+		return ""
 	}
 
 	buildActiveNodes := func(records []logicdomain.ProfileActiveNodeRecord) ([]activeNodeInput, string) {
 		out := make([]activeNodeInput, 0, len(records))
-		latestDate := ""
+		var latestTime time.Time
 		for _, node := range records {
-			date := strings.TrimSpace(node.ProfileDate)
-			if date == "" && !node.CreatedAt.IsZero() {
-				date = node.CreatedAt.UTC().Format("2006-01-02")
+			anchor := node.ProfileDateAnchorAt
+			if anchor.IsZero() {
+				anchor = node.CreatedAt
 			}
-			if latestDate == "" || (date != "" && date > latestDate) {
-				latestDate = date
+			if latestTime.IsZero() || (!anchor.IsZero() && anchor.After(latestTime)) {
+				latestTime = anchor
 			}
 			out = append(out, activeNodeInput{
 				ID:            node.ID,
-				Date:          date,
+				DateTime:      resolveProfileReviewDateTime(node.ProfileDateAnchorAt, node.CreatedAt),
 				Priority:      profilePriorityLabel(node.Priority),
 				Level:         profileLevelLabel(node.ProfileLevel),
 				RefreshWeight: node.RefreshWeight,
 				Content:       strings.TrimSpace(node.Content),
 			})
 		}
-		return out, latestDate
+		return out, resolveProfileReviewDateTime(latestTime, time.Time{})
 	}
 
+	currentDateTime, _ := formatPromptTimestampMillis(input.CurrentTimestamp)
 	body := requestBody{
-		UserInputKind:    strings.TrimSpace(input.UserInputKind),
-		CurrentTurnDate:  strings.TrimSpace(input.CurrentTurnDate),
-		UserContent:      strings.TrimSpace(input.UserContent),
-		AssistantContent: strings.TrimSpace(input.AssistantContent),
+		UserInputKind:       strings.TrimSpace(input.UserInputKind),
+		CurrentDateTime:     currentDateTime,
+		CurrentTurnDateTime: strings.TrimSpace(input.CurrentTurnDateTime),
+		UserContent:         strings.TrimSpace(input.UserContent),
+		AssistantContent:    strings.TrimSpace(input.AssistantContent),
 	}
 	for _, candidate := range input.MemoryCandidates {
 		if candidate.CandidateIndex < 0 {
@@ -154,14 +171,14 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 			details = abstract
 		}
 		item := memoryCandidateInput{
-			CandidateIndex:  candidate.CandidateIndex,
-			CandidateDate:   strings.TrimSpace(candidate.CandidateDate),
-			Category:        candidate.Category,
-			Abstract:        abstract,
-			Details:         details,
-			EvidenceSource:  strings.TrimSpace(candidate.EvidenceSource),
-			AdmissionReason: strings.TrimSpace(candidate.AdmissionReason),
-			SimilarMemories: make([]memoryMatchInput, 0, len(candidate.SimilarMemories)),
+			CandidateIndex:    candidate.CandidateIndex,
+			CandidateDateTime: strings.TrimSpace(candidate.CandidateDateTime),
+			Category:          candidate.Category,
+			Abstract:          abstract,
+			Details:           details,
+			EvidenceSource:    strings.TrimSpace(candidate.EvidenceSource),
+			AdmissionReason:   strings.TrimSpace(candidate.AdmissionReason),
+			SimilarMemories:   make([]memoryMatchInput, 0, len(candidate.SimilarMemories)),
 		}
 		for _, similar := range candidate.SimilarMemories {
 			similarAbstract := strings.TrimSpace(similar.Abstract)
@@ -173,15 +190,15 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 				similarDetails = similarAbstract
 			}
 			item.SimilarMemories = append(item.SimilarMemories, memoryMatchInput{
-				MemoryID:     similar.MemoryID,
-				SourceTurnID: similar.SourceTurnID,
-				CreatedDate:  strings.TrimSpace(similar.CreatedDate),
-				ScopeLevel:   strings.TrimSpace(similar.ScopeLevel),
-				Category:     similar.Category,
-				Score:        similar.Score,
-				Origin:       strings.TrimSpace(similar.Origin),
-				Abstract:     similarAbstract,
-				Details:      similarDetails,
+				MemoryID:        similar.MemoryID,
+				SourceTurnID:    similar.SourceTurnID,
+				CreatedDateTime: strings.TrimSpace(similar.CreatedDateTime),
+				ScopeLevel:      strings.TrimSpace(similar.ScopeLevel),
+				Category:        similar.Category,
+				Score:           similar.Score,
+				Origin:          strings.TrimSpace(similar.Origin),
+				Abstract:        similarAbstract,
+				Details:         similarDetails,
 			})
 		}
 		body.Memory = append(body.Memory, item)
@@ -197,13 +214,10 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 		item := profileCandidateInput{
 			CandidateIndex:  0,
 			TurnID:          candidate.SourceTurnID,
-			Date:            strings.TrimSpace(candidate.ProfileDate),
+			DateTime:        resolveProfileReviewDateTime(candidate.ProfileDateAnchorAt, time.Time{}),
 			Content:         content,
 			EvidenceSource:  strings.TrimSpace(candidate.EvidenceSource),
 			AdmissionReason: strings.TrimSpace(candidate.AdmissionReason),
-		}
-		if item.Date == "" {
-			item.Date = "unknown"
 		}
 		switch candidate.ProfileType {
 		case logicdomain.ProfileTypeUser:
@@ -215,19 +229,19 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 		}
 	}
 	if len(userCandidates) > 0 {
-		activeNodes, latestDate := buildActiveNodes(input.ProfileTargets.UserNodes)
+		activeNodes, latestDateTime := buildActiveNodes(input.ProfileTargets.UserNodes)
 		body.User = &targetInput{
-			LatestActiveDate: latestDate,
-			ActiveNodes:      activeNodes,
-			NewCandidates:    userCandidates,
+			LatestActiveDateTime: latestDateTime,
+			ActiveNodes:          activeNodes,
+			NewCandidates:        userCandidates,
 		}
 	}
 	if len(projectCandidates) > 0 {
-		activeNodes, latestDate := buildActiveNodes(input.ProfileTargets.ProjectNodes)
+		activeNodes, latestDateTime := buildActiveNodes(input.ProfileTargets.ProjectNodes)
 		body.Project = &targetInput{
-			LatestActiveDate: latestDate,
-			ActiveNodes:      activeNodes,
-			NewCandidates:    projectCandidates,
+			LatestActiveDateTime: latestDateTime,
+			ActiveNodes:          activeNodes,
+			NewCandidates:        projectCandidates,
 		}
 	}
 

@@ -5,6 +5,7 @@ package domain
 import (
 	"strconv"
 	"strings"
+	"time"
 )
 
 // MemoryHitTurnID resolves the source turn id carried by one recalled memory hit so downstream assembly can expose tool-callable references without leaking storage-only ids.
@@ -19,4 +20,34 @@ func MemoryHitTurnID(hit MemoryHit) uint64 {
 		return 0
 	}
 	return turnID
+}
+
+// MemoryHitCreatedTimestamp resolves the durable creation time carried by one recalled memory hit into a millisecond timestamp suitable for caller-facing context payloads.
+// MemoryHitCreatedTimestamp 用于把一条召回记忆命中携带的长期创建时间解析成毫秒时间戳，供面向调用方的上下文载荷直接使用。
+func MemoryHitCreatedTimestamp(hit MemoryHit) int64 {
+	if hit.CreatedAt.IsZero() {
+		return 0
+	}
+	return hit.CreatedAt.UTC().UnixMilli()
+}
+
+// MemoryHitCreatedDateTime resolves the durable creation time carried by one recalled memory hit into the shared caller-facing local datetime string.
+// MemoryHitCreatedDateTime 用于把一条召回记忆命中的长期创建时间解析成统一的本地 datetime 字符串，供面向调用方的载荷直接使用。
+func MemoryHitCreatedDateTime(hit MemoryHit) string {
+	return FormatDisplayDateTime(hit.CreatedAt)
+}
+
+// MemoryHitCreatedDate resolves the durable creation time carried by one recalled memory hit into the shared caller-facing local date string.
+// MemoryHitCreatedDate 用于把一条召回记忆命中的长期创建时间解析成统一的本地日期字符串，供面向调用方的辅助推理使用。
+func MemoryHitCreatedDate(hit MemoryHit) string {
+	return FormatDisplayDate(hit.CreatedAt)
+}
+
+// MemoryHitCreatedAtFromUnixMillis restores one millisecond timestamp back into time.Time so callers can rebuild stable memory-hit timestamps during fallback assembly.
+// MemoryHitCreatedAtFromUnixMillis 用于把毫秒时间戳恢复成 time.Time，方便调用方在回退组装阶段重建稳定的记忆创建时间。
+func MemoryHitCreatedAtFromUnixMillis(timestamp int64) time.Time {
+	if timestamp <= 0 {
+		return time.Time{}
+	}
+	return time.UnixMilli(timestamp)
 }

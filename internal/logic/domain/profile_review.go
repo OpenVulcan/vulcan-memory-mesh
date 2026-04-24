@@ -7,24 +7,25 @@ import "time"
 // ProfileActiveNodeRecord stores one active profile node row that can be shown to the LLM reviewer before newer evidence is applied.
 // ProfileActiveNodeRecord 用于保存一条当前活跃的画像节点记录，供 LLM 在接纳新证据前进行对照评审。
 type ProfileActiveNodeRecord struct {
-	ID             uint64
-	TurnID         uint64
-	ProfileType    int
-	BindID         uint64
-	Content        string
-	Status         int
-	Priority       int
-	ProfileLevel   int
-	LevelReason    string
-	RefreshWeight  int
-	ProfileDate    string
-	SourceKind     int
-	SourceID       uint64
-	StatusReason   string
-	ExpiresAt      time.Time
-	SupersededByID uint64
-	CreatedAt      time.Time
-	UpdatedAt      time.Time
+	ID                  uint64
+	TurnID              uint64
+	ProfileType         int
+	BindID              uint64
+	Content             string
+	Status              int
+	Priority            int
+	ProfileLevel        int
+	LevelReason         string
+	RefreshWeight       int
+	ProfileDate         string
+	SourceKind          int
+	SourceID            uint64
+	StatusReason        string
+	ExpiresAt           time.Time
+	SupersededByID      uint64
+	ProfileDateAnchorAt time.Time
+	CreatedAt           time.Time
+	UpdatedAt           time.Time
 }
 
 // ProfileReviewTargetsSnapshot carries the active user/project profile-node sets that one review call should inspect.

@@ -453,9 +453,20 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				bestBelowThresholdHit = choosePreferredPreCheckThresholdHit(bestBelowThresholdHit, logHit)
 				continue
 			}
+			createdTimestamp := int64(0)
+			createdDateTime := ""
+			createdDate := ""
+			if !hit.CreatedAt.IsZero() {
+				createdTimestamp = hit.CreatedAt.UTC().UnixMilli()
+				createdDateTime = logicdomain.FormatDisplayDateTime(hit.CreatedAt)
+				createdDate = logicdomain.FormatDisplayDate(hit.CreatedAt)
+			}
 			candidate := logicdomain.PreCheckMemoryCandidate{
 				MemoryID:                    hit.MemoryRef.ID,
 				SourceTurnID:                hit.SourceRef.ID,
+				CreatedTimestamp:            createdTimestamp,
+				CreatedDateTime:             createdDateTime,
+				CreatedDate:                 createdDate,
 				SourceKind:                  logicdomain.MemorySourceKindLabel(hit.SourceKind),
 				ScopeLevel:                  logicdomain.MemoryScopeLevelLabel(hit.ScopeLevel),
 				Category:                    hit.Category,
@@ -654,10 +665,11 @@ func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreChe
 	}
 	searchQueries := normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent)
 	review, err := u.reviewer.Review(ctx, logicdomain.PreCheckMemoryReviewInput{
-		UserContent:   cmd.UserContent,
-		SearchQueries: searchQueries,
-		IntentReason:  intent.Reason,
-		Candidates:    append([]logicdomain.PreCheckMemoryCandidate(nil), candidates...),
+		CurrentTimestamp: time.Now().UTC().UnixMilli(),
+		UserContent:      cmd.UserContent,
+		SearchQueries:    searchQueries,
+		IntentReason:     intent.Reason,
+		Candidates:       append([]logicdomain.PreCheckMemoryCandidate(nil), candidates...),
 	})
 	if err != nil {
 		return nil, "", err
@@ -733,11 +745,16 @@ func (u *PreCheckUseCase) finalizePreCheck(ctx context.Context, traceID string, 
 				"turn_id": strconv.FormatUint(candidate.SourceTurnID, 10),
 			}
 		}
+		var createdAt time.Time
+		if candidate.CreatedTimestamp > 0 {
+			createdAt = logicdomain.MemoryHitCreatedAtFromUnixMillis(candidate.CreatedTimestamp)
+		}
 		memoryHits = appendUniquePreCheckMemoryHit(memoryHits, logicdomain.MemoryHit{
-			ID:       fmt.Sprintf("%d", candidate.MemoryID),
-			Text:     text,
-			Score:    candidate.Score,
-			Metadata: metadata,
+			ID:        fmt.Sprintf("%d", candidate.MemoryID),
+			Text:      text,
+			Score:     candidate.Score,
+			CreatedAt: createdAt,
+			Metadata:  metadata,
 		})
 	}
 	if len(memoryHits) == 0 {
@@ -862,12 +879,14 @@ func buildFallbackContextItems(hits []logicdomain.MemoryHit) []logicdomain.Conte
 	for _, hit := range hits {
 		if text := strings.TrimSpace(hit.Text); text != "" {
 			items = append(items, logicdomain.ContextItem{
-				Kind:   "memory",
-				Title:  "混合召回记忆",
-				Text:   text,
-				Source: "memory",
-				Score:  hit.Score,
-				TurnID: logicdomain.MemoryHitTurnID(hit),
+				Kind:             "memory",
+				Title:            "混合召回记忆",
+				Text:             text,
+				Source:           "memory",
+				Score:            hit.Score,
+				TurnID:           logicdomain.MemoryHitTurnID(hit),
+				CreatedTimestamp: logicdomain.MemoryHitCreatedTimestamp(hit),
+				CreatedDateTime:  logicdomain.MemoryHitCreatedDateTime(hit),
 			})
 		}
 	}

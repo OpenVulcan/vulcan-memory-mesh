@@ -20,6 +20,32 @@ type PreCheckMemoryReviewer struct {
 	model   string
 }
 
+// preCheckMemoryReviewCandidateInput keeps the LLM-facing candidate payload on readable datetime fields while preserving the internal richer review metadata.
+// preCheckMemoryReviewCandidateInput 用于让面向 LLM 的候选载荷保留可读 datetime 字段，同时继续携带内部较丰富的评审元数据。
+type preCheckMemoryReviewCandidateInput struct {
+	CandidateNumber             int      `json:"candidate_number"`
+	MemoryID                    uint64   `json:"memory_id"`
+	SourceTurnID                uint64   `json:"source_turn_id,omitempty"`
+	CreatedDateTime             string   `json:"created_datetime,omitempty"`
+	SourceKind                  string   `json:"source_kind,omitempty"`
+	ScopeLevel                  string   `json:"scope_level,omitempty"`
+	Category                    int      `json:"category"`
+	Abstract                    string   `json:"abstract,omitempty"`
+	Details                     string   `json:"details,omitempty"`
+	Score                       float64  `json:"score"`
+	ScoreLabel                  string   `json:"score_label,omitempty"`
+	ScoreExplanation            string   `json:"score_explanation,omitempty"`
+	Origin                      string   `json:"origin,omitempty"`
+	OriginLabel                 string   `json:"origin_label,omitempty"`
+	OriginExplanation           string   `json:"origin_explanation,omitempty"`
+	SupportCount                int      `json:"support_count,omitempty"`
+	RebuttalCount               int      `json:"rebuttal_count,omitempty"`
+	MatchedContextValues        []string `json:"matched_context_values,omitempty"`
+	MatchedContextSupportCount  int      `json:"matched_context_support_count,omitempty"`
+	MatchedContextRebuttalCount int      `json:"matched_context_rebuttal_count,omitempty"`
+	MatchedContextScoreDelta    float64  `json:"matched_context_score_delta,omitempty"`
+}
+
 // NewPreCheckMemoryReviewer creates a PreCheckMemoryReviewer instance.
 // NewPreCheckMemoryReviewer 用于创建 PreCheckMemoryReviewer 实例。
 func NewPreCheckMemoryReviewer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *PreCheckMemoryReviewer {
@@ -59,22 +85,61 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 // renderPreCheckMemoryReviewRequest 用于把第二层评审输入序列化成稳定的 JSON 请求体。
 func renderPreCheckMemoryReviewRequest(input logicdomain.PreCheckMemoryReviewInput) (string, error) {
 	type requestBody struct {
-		UserContent   string                                `json:"user_content"`
-		SearchQueries []string                              `json:"search_queries,omitempty"`
-		IntentReason  string                                `json:"intent_reason,omitempty"`
-		Candidates    []logicdomain.PreCheckMemoryCandidate `json:"candidates,omitempty"`
+		CurrentDateTime string                               `json:"current_datetime,omitempty"`
+		UserContent     string                               `json:"user_content"`
+		SearchQueries   []string                             `json:"search_queries,omitempty"`
+		IntentReason    string                               `json:"intent_reason,omitempty"`
+		Candidates      []preCheckMemoryReviewCandidateInput `json:"candidates,omitempty"`
 	}
+	currentDateTime, _ := formatPromptTimestampMillis(input.CurrentTimestamp)
 	body := requestBody{
-		UserContent:   strings.TrimSpace(input.UserContent),
-		SearchQueries: normalizeStringValues(input.SearchQueries),
-		IntentReason:  strings.TrimSpace(input.IntentReason),
-		Candidates:    normalizePreCheckReviewCandidates(input.Candidates),
+		CurrentDateTime: currentDateTime,
+		UserContent:     strings.TrimSpace(input.UserContent),
+		SearchQueries:   normalizeStringValues(input.SearchQueries),
+		IntentReason:    strings.TrimSpace(input.IntentReason),
+		Candidates:      renderPreCheckReviewCandidates(input.Candidates),
 	}
 	rendered, err := json.MarshalIndent(body, "", "  ")
 	if err != nil {
 		return "", fmt.Errorf("marshal precheck_l2_main request: %w", err)
 	}
 	return string(rendered), nil
+}
+
+// renderPreCheckReviewCandidates projects normalized review candidates onto the LLM-facing JSON shape so the model receives readable datetime fields instead of raw timestamps.
+// renderPreCheckReviewCandidates 用于把归一后的评审候选投影到面向 LLM 的 JSON 结构，让模型看到可读 datetime 字段而不是原始时间戳。
+func renderPreCheckReviewCandidates(values []logicdomain.PreCheckMemoryCandidate) []preCheckMemoryReviewCandidateInput {
+	normalized := normalizePreCheckReviewCandidates(values)
+	if len(normalized) == 0 {
+		return nil
+	}
+	out := make([]preCheckMemoryReviewCandidateInput, 0, len(normalized))
+	for _, value := range normalized {
+		out = append(out, preCheckMemoryReviewCandidateInput{
+			CandidateNumber:             value.CandidateNumber,
+			MemoryID:                    value.MemoryID,
+			SourceTurnID:                value.SourceTurnID,
+			CreatedDateTime:             value.CreatedDateTime,
+			SourceKind:                  value.SourceKind,
+			ScopeLevel:                  value.ScopeLevel,
+			Category:                    value.Category,
+			Abstract:                    value.Abstract,
+			Details:                     value.Details,
+			Score:                       value.Score,
+			ScoreLabel:                  value.ScoreLabel,
+			ScoreExplanation:            value.ScoreExplanation,
+			Origin:                      value.Origin,
+			OriginLabel:                 value.OriginLabel,
+			OriginExplanation:           value.OriginExplanation,
+			SupportCount:                value.SupportCount,
+			RebuttalCount:               value.RebuttalCount,
+			MatchedContextValues:        append([]string(nil), value.MatchedContextValues...),
+			MatchedContextSupportCount:  value.MatchedContextSupportCount,
+			MatchedContextRebuttalCount: value.MatchedContextRebuttalCount,
+			MatchedContextScoreDelta:    value.MatchedContextScoreDelta,
+		})
+	}
+	return out
 }
 
 // parsePreCheckMemoryReviewResponse validates the reviewer output and rejects candidate numbers that do not belong to the current request.
@@ -194,6 +259,12 @@ func normalizePreCheckReviewCandidates(values []logicdomain.PreCheckMemoryCandid
 		seen[value.CandidateNumber] = struct{}{}
 		value.SourceKind = strings.TrimSpace(value.SourceKind)
 		value.ScopeLevel = strings.TrimSpace(value.ScopeLevel)
+		if value.CreatedDateTime == "" {
+			createdDateTime, _ := formatPromptTimestampMillis(value.CreatedTimestamp)
+			if value.CreatedDateTime == "" {
+				value.CreatedDateTime = createdDateTime
+			}
+		}
 		value.Abstract = strings.TrimSpace(value.Abstract)
 		value.Details = strings.TrimSpace(value.Details)
 		value.ScoreLabel = strings.TrimSpace(value.ScoreLabel)

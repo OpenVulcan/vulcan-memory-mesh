@@ -85,13 +85,15 @@ func TestParsePreCheckMemoryReviewResponseRecoversFromMixedNumberAndMemoryIDOutp
 // TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence 用于验证第二层 reviewer 请求会保留用于解释候选为何命中当前 query 的 matched context 摘要。
 func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *testing.T) {
 	rendered, err := renderPreCheckMemoryReviewRequest(logicdomain.PreCheckMemoryReviewInput{
-		UserContent:   "在 local oss 的 phase4 下应该继续用哪个方案？",
-		SearchQueries: []string{"local oss 下的 phase4 当前方案"},
-		IntentReason:  "needs environment-specific architecture memory",
+		CurrentTimestamp: 1775000008000,
+		UserContent:      "在 local oss 的 phase4 下应该继续用哪个方案？",
+		SearchQueries:    []string{"local oss 下的 phase4 当前方案"},
+		IntentReason:     "needs environment-specific architecture memory",
 		Candidates: []logicdomain.PreCheckMemoryCandidate{
 			{
 				CandidateNumber:            1,
 				MemoryID:                   15,
+				CreatedTimestamp:           1775000001000,
 				Abstract:                   "phase4 新方案",
 				Details:                    "适用于 local oss 当前环境。",
 				Score:                      0.96,
@@ -118,8 +120,24 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 	if strings.Contains(rendered, "\"CandidateNumber\"") || !strings.Contains(rendered, "\"candidate_number\"") {
 		t.Fatalf("expected snake_case candidate keys in rendered payload, got %s", rendered)
 	}
+	for _, fragment := range []string{`"current_datetime": "2026-04-01 07:33:28"`, `"created_datetime": "2026-04-01 07:33:21"`} {
+		if !strings.Contains(rendered, fragment) {
+			t.Fatalf("expected rendered request to expose %s, got %s", fragment, rendered)
+		}
+	}
+	for _, removed := range []string{`"current_date"`, `"created_date"`} {
+		if strings.Contains(rendered, removed) {
+			t.Fatalf("expected rendered request to stop exposing %s, got %s", removed, rendered)
+		}
+	}
+	if strings.Contains(rendered, `"current_timestamp"`) || strings.Contains(rendered, `"created_timestamp"`) {
+		t.Fatalf("expected rendered request to stop exposing raw timestamps, got %s", rendered)
+	}
 	if len(payload.Candidates) != 1 {
 		t.Fatalf("unexpected candidates: %#v", payload.Candidates)
+	}
+	if payload.Candidates[0].CreatedDateTime != "2026-04-01 07:33:21" {
+		t.Fatalf("expected candidate created datetime to be derived from timestamp, got %#v", payload.Candidates[0])
 	}
 	if len(payload.Candidates[0].MatchedContextValues) != 2 {
 		t.Fatalf("expected duplicate matched context values to be deduplicated, got %#v", payload.Candidates[0].MatchedContextValues)

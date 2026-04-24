@@ -48,7 +48,7 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	if u == nil {
 		return nil
 	}
-	input, analysisCutoff, err := u.buildTurnAnalysisInput(ctx, session, turn, rawTurn)
+	input, analysisCutoff, resolvedTurnCreatedAt, err := u.buildTurnAnalysisInputWithResolvedTime(ctx, session, turn, rawTurn)
 	if err != nil {
 		return err
 	}
@@ -73,7 +73,7 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 
 	// Apply one unified post-action review so memory dedupe and profile acceptance can share the same turn-level reasoning context.
 	// 执行一次统一的 post-action 评审，让记忆去重与画像接纳共享同一轮语义上下文。
-	if err := u.reviewTurnCandidates(ctx, session, turn, rawTurn, &analysis, &compaction); err != nil {
+	if err := u.reviewTurnCandidatesWithResolvedTime(ctx, session, turn, rawTurn, resolvedTurnCreatedAt, &analysis, &compaction); err != nil {
 		if u.logger != nil {
 			u.logger.Warn(
 				"post-action candidate review degraded to analyzer output",
@@ -90,7 +90,7 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	compaction.FinalMemoryNodes = len(analysis.MemoryNodes)
 	compaction.FinalProfileNodes = len(analysis.ProfileNodes)
 
-	vectorIDs, err := u.persistMemoryNodeVectors(ctx, session, turn, &analysis)
+	vectorIDs, err := u.persistMemoryNodeVectors(ctx, session, turn, resolvedTurnCreatedAt, &analysis)
 	if err != nil {
 		return err
 	}
@@ -323,21 +323,31 @@ func marshalTurnAnalysisForLog(analysis logicdomain.TurnAnalysis) ([]byte, error
 
 // buildTurnAnalysisInput loads refined reference turns and recent direct-write exclusions, then builds the structured request consumed by the reference-aware single-turn analyzer.
 // buildTurnAnalysisInput 用于加载已提炼的参考 turn 与最近直写排斥项，并构建参考感知型单轮分析器需要的结构化请求。
+// buildTurnAnalysisInput keeps the historical test-facing signature while delegating the actual time resolution to the resolved-time helper used by the runtime path.
+// buildTurnAnalysisInput 用于保留历史测试入口的函数签名，同时把真实时间解析逻辑委托给运行时主路径使用的 resolved-time helper。
 func (u *PostActionUseCase) buildTurnAnalysisInput(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord) (logicdomain.TurnAnalysisInput, time.Time, error) {
+	input, analysisCutoff, _, err := u.buildTurnAnalysisInputWithResolvedTime(ctx, session, turn, rawTurn)
+	return input, analysisCutoff, err
+}
+
+// buildTurnAnalysisInputWithResolvedTime builds the analyzer input together with the single resolved turn-created timestamp reused across the whole immediate post-action pipeline.
+// buildTurnAnalysisInputWithResolvedTime 用于构建分析器输入，并同时返回整条即时 post-action 流水线复用的唯一 turn 创建时间。
+func (u *PostActionUseCase) buildTurnAnalysisInputWithResolvedTime(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord) (logicdomain.TurnAnalysisInput, time.Time, time.Time, error) {
 	if u == nil || u.store == nil {
-		return logicdomain.TurnAnalysisInput{}, time.Time{}, fmt.Errorf("post-action relational store is nil")
+		return logicdomain.TurnAnalysisInput{}, time.Time{}, time.Time{}, fmt.Errorf("post-action relational store is nil")
 	}
 	analysisCutoff := time.Now().UTC()
+	resolvedTurnCreatedAt := choosePostActionCreatedAt(turn, analysisCutoff)
 
 	// Serialize the raw turn into the compact JSON payload used by the analyzer and reuse the same token-budget heuristic to trim reference history.
 	// 先把原始 turn 序列化成分析器使用的紧凑 JSON 载荷，并复用同一套 token 预算规则裁剪参考历史。
 	targetBody, targetBudget, err := buildPostActionTurnPayload(rawTurn)
 	if err != nil {
-		return logicdomain.TurnAnalysisInput{}, time.Time{}, err
+		return logicdomain.TurnAnalysisInput{}, time.Time{}, time.Time{}, err
 	}
 	historyTurns, err := u.store.LoadRecentSessionHistory(ctx, session, u.analysisCfg.HistoryTurns)
 	if err != nil {
-		return logicdomain.TurnAnalysisInput{}, time.Time{}, fmt.Errorf("load recent session history: %w", err)
+		return logicdomain.TurnAnalysisInput{}, time.Time{}, time.Time{}, fmt.Errorf("load recent session history: %w", err)
 	}
 	selectedHistory := historyTurns
 	if u.analysisCfg.MaxInputTokens > 0 {
@@ -349,14 +359,15 @@ func (u *PostActionUseCase) buildTurnAnalysisInput(ctx context.Context, session 
 	}
 	recentDirectWrites, err := u.store.LoadRecentDirectMemoryWrites(ctx, session, session.LastExtractObservedAt, analysisCutoff)
 	if err != nil {
-		return logicdomain.TurnAnalysisInput{}, time.Time{}, fmt.Errorf("load recent direct memory writes: %w", err)
+		return logicdomain.TurnAnalysisInput{}, time.Time{}, time.Time{}, fmt.Errorf("load recent direct memory writes: %w", err)
 	}
 
 	// Convert storage rows into the narrower analyzer input model so the prompt only sees the fields relevant to single-turn context and direct-write exclusion.
 	// 把存储行转换成更窄的分析器输入模型，让提示词只看到单轮上下文与直写排斥真正需要的字段。
 	input := logicdomain.TurnAnalysisInput{
+		CurrentTimestamp:       analysisCutoff.UnixMilli(),
 		ReferenceTurns:         make([]logicdomain.TurnAnalysisReferenceTurn, 0, len(selectedHistory)),
-		TargetTurn:             logicdomain.TurnAnalysisTargetTurn{TurnID: turn.ID, RawTurn: targetBody},
+		TargetTurn:             logicdomain.TurnAnalysisTargetTurn{TurnID: turn.ID, CreatedTimestamp: resolvedTurnCreatedAt.UnixMilli(), RawTurn: targetBody},
 		RecentGRPCMemoryWrites: make([]logicdomain.TurnAnalysisDirectWrite, 0, len(recentDirectWrites)),
 	}
 	for _, historyTurn := range selectedHistory {
@@ -374,7 +385,7 @@ func (u *PostActionUseCase) buildTurnAnalysisInput(ctx context.Context, session 
 			CreatedTimestamp: item.CreatedTimestamp,
 		})
 	}
-	return input, analysisCutoff, nil
+	return input, analysisCutoff, resolvedTurnCreatedAt, nil
 }
 
 // validateTurnAnalysis validates the analyzer metadata contract before later review and persistence start.
@@ -418,7 +429,7 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 
 // persistMemoryNodeVectors embeds the extracted memory-node abstracts, writes them to LanceDB, and attaches the resulting vector ids back onto the analysis payload.
 // persistMemoryNodeVectors 用于对提炼出的记忆节点摘要生成向量、写入 LanceDB，并把得到的 vector_id 回填到分析结果中。
-func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis *logicdomain.TurnAnalysis) ([]string, error) {
+func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, createdAt time.Time, analysis *logicdomain.TurnAnalysis) ([]string, error) {
 	if analysis == nil || len(analysis.MemoryNodes) == 0 {
 		return nil, nil
 	}
@@ -508,7 +519,7 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 				"category": strconv.Itoa(node.Category),
 				"details":  strings.TrimSpace(node.Details),
 			},
-			CreatedAt: choosePostActionCreatedAt(turn),
+			CreatedAt: createdAt,
 		}
 		if err := u.vector.Upsert(ctx, record); err != nil {
 			rollbackInsertedVectors()
@@ -590,11 +601,11 @@ func buildPostActionMemoryFilter(session logicdomain.SessionRef) logicdomain.Sea
 
 // choosePostActionCreatedAt prefers the persisted turn timestamp so vector rows and SQLite memory nodes share the same approximate origin time.
 // choosePostActionCreatedAt 用于优先复用已落库 turn 的时间戳，让向量行和 SQLite 记忆节点共享接近的产生时间。
-func choosePostActionCreatedAt(turn logicdomain.PersistedTurnRecord) time.Time {
+func choosePostActionCreatedAt(turn logicdomain.PersistedTurnRecord, fallback time.Time) time.Time {
 	if !turn.CreatedAt.IsZero() {
 		return turn.CreatedAt
 	}
-	return time.Now().UTC()
+	return fallback
 }
 
 // generatePostActionUUID creates one random UUID string for the LanceDB row id and SQLite memory-node vector_id link.
@@ -608,5 +619,3 @@ func generatePostActionUUID() (string, error) {
 	buf[8] = (buf[8] & 0x3f) | 0x80
 	return fmt.Sprintf("%x-%x-%x-%x-%x", buf[0:4], buf[4:6], buf[6:8], buf[8:10], buf[10:16]), nil
 }
-
-

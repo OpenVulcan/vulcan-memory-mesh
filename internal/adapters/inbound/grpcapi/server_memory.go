@@ -7,6 +7,7 @@ import (
 
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
 	"github.com/openvulcan/vmm/internal/app/usecase"
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
@@ -39,11 +40,13 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 		hits := make([]*vmmv1.MemorySearchHit, 0, len(group.Hits))
 		for _, hit := range group.Hits {
 			hits = append(hits, &vmmv1.MemorySearchHit{
-				MemoryId:       hit.MemoryRef.ID,
-				SourceTurnId:   hit.SourceRef.ID,
-				Abstract:       hit.Abstract,
-				DetailsPreview: hit.DetailsPreview,
-				Category:       memoryCategoryLabel(hit.Category),
+				MemoryId:         hit.MemoryRef.ID,
+				SourceTurnId:     hit.SourceRef.ID,
+				Abstract:         hit.Abstract,
+				DetailsPreview:   hit.DetailsPreview,
+				Category:         memoryCategoryLabel(hit.Category),
+				CreatedTimestamp: toUnixMillis(hit.CreatedAt),
+				CreatedDatetime:  logicdomain.FormatDisplayDateTime(hit.CreatedAt),
 			})
 		}
 		groups = append(groups, &vmmv1.MemorySearchGroupResult{
