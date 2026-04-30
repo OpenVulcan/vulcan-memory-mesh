@@ -123,7 +123,9 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 	if params == nil {
 		return
 	}
-	extraFields := map[string]any{}
+	extraFields := map[string]any{
+		"include_reasoning": false,
+	}
 	for rawKey, rawValue := range hints {
 		originalKey := strings.TrimSpace(rawKey)
 		key := strings.ToLower(originalKey)
@@ -207,6 +209,10 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 		case "enable_thinking":
 			if value, ok := boolHint(rawValue); ok {
 				extraFields["enable_thinking"] = value
+			}
+		case "include_reasoning":
+			if value, ok := boolHint(rawValue); ok {
+				extraFields["include_reasoning"] = value
 			}
 		default:
 			if rawValue != nil {

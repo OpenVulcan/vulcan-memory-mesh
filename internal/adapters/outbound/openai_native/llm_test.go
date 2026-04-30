@@ -109,6 +109,9 @@ func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 	if gotBody["enable_thinking"] != false {
 		t.Fatalf("enable_thinking = %#v", gotBody["enable_thinking"])
 	}
+	if gotBody["include_reasoning"] != false {
+		t.Fatalf("include_reasoning = %#v", gotBody["include_reasoning"])
+	}
 	responseFormat, ok := gotBody["response_format"].(map[string]any)
 	if !ok || responseFormat["type"] != "json_object" {
 		t.Fatalf("response_format = %#v", gotBody["response_format"])
