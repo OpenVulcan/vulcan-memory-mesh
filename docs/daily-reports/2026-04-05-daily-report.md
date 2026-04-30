@@ -2,9 +2,9 @@
 
 ## 总结
 
-2026 年 4 月 5 日，仓库共完成并归档了 38 份计划，工作密度明显高于前一日，主要集中在四个方向：长期记忆替代与 retention 治理闭环、全局代码审查后的稳定性加固、session scratchpad 独立链路落地，以及 AI Key 级容灾体系从设计到实现的完整推进。
+2026 年 4 月 5 日，仓库共完成并归档了 38 份计划，工作密度明显高于前一日，主要集中在四个方向：长期记忆替代与 retention 治理闭环、全局代码审查后的稳定性加固、临时执行上下文支线实验，以及 AI Key 级容灾体系从设计到实现的完整推进。
 
-这一天的工作从“记忆何时替代旧数据、何时退出热主表、何时进入回收站、何时清理向量与垃圾元数据”一路推进到“PreCheck 证据规范化、召回去重、查询与生命周期一致性”层面，同时补齐了 scratchpad 的独立 gRPC/存储支线，并正式让 `llm / embedding / rerank` 具备 key 级 failover 能力。整体成果更偏向底层能力收束与系统稳定性加固。
+这一天的工作从“记忆何时替代旧数据、何时退出热主表、何时进入回收站、何时清理向量与垃圾元数据”一路推进到“PreCheck 证据规范化、召回去重、查询与生命周期一致性”层面，同时推进了后续已移除的临时支线实验，并正式让 `llm / embedding / rerank` 具备 key 级 failover 能力。整体成果更偏向底层能力收束与系统稳定性加固。
 
 ## 主要产出
 
@@ -22,11 +22,11 @@
 - 修复了最终注入文本去重、采纳候选与最终注入一致性、检索 rerank 分数钳制、非有限值处理、召回阶段过期记忆保护等细节问题。
 - 对 retention 剩余问题做了集中收尾，使冷回收、共享记忆保护、空闲 session 判定、向量 GC 重试与批次元数据清理更加可靠。
 
-### 3. Session Scratchpad 独立能力链正式建立
+### 3. 临时执行上下文支线实验完成
 
-- 设计并落地了独立于长期记忆体系的 session scratchpad 能力，新增 `ScratchpadUpsert`、`ScratchpadDelete`、`ScratchpadGet`、`ScratchpadClean` 四个 gRPC 接口。
-- 新增独立存储结构，保持 scratchpad 与 `memory_nodes / turn_records / retention / vector` 主链解耦，不混入长期记忆语义。
-- 对 DWM scratchpad 契约、gRPC 校验、存储结构、自动迁移和 review findings 做了成套修正，使其可以作为 AI 临时执行上下文的稳定侧链存在。
+- 当日曾完成一条独立于长期记忆体系的临时执行上下文支线实验。
+- 该实验后续已从当前主线移除，不再作为当前 gRPC 能力或存储模型参考。
+- 当前能力边界以 README、gRPC 对接文档和 proto 文件为准。
 
 ### 4. AI Key 容灾体系从方案走向实现
 
@@ -38,21 +38,21 @@
 ### 5. 文档整理与运行时约束同步推进
 
 - 基于前一天 completed 记录补齐了 `2026-04-04` 的日报。
-- 对 README、post-action/retention/scratchpad/AI failover 等文档进行了同步整理，减少文档与运行时行为漂移。
+- 对 README、post-action、retention、AI failover 等文档进行了同步整理，减少文档与运行时行为漂移。
 - 额外完成一次 retention 向量 GC 测试口径核对，明确以当前实际 `go test` 结果为准，不再依赖过期描述做判断。
 
 ## 验证情况
 
 - 当天大量任务按仓库规则执行了最小测试集：
   - `go test ./internal/adapters/inbound/grpcapi ./internal/app/usecase ./internal/logic/processor ./internal/platform/textutil ./internal/platform/pii ./internal/config`
-- retention、SQLite/PostgreSQL 适配层、scratchpad、AI failover 等主题任务补充执行了大量定向测试。
+- retention、SQLite/PostgreSQL 适配层、AI failover 等主题任务补充执行了大量定向测试。
 - 多个任务明确完成了 `go test ./...` 全量回归，部分 PreCheck 修复还额外执行了 `go vet ./...`。
 - 文档型任务未统一执行构建命令，但当天核心代码任务均伴随测试闭环。
 
 ## 后续关注点
 
 - retention 已具备冷状态回收、回收站与向量 GC 元数据治理，但 `turn` 冷归档与完整产品级恢复能力仍未落地。
-- scratchpad 已有独立 gRPC 和存储支线，后续还需要继续观察与现有 session 生命周期、清理节奏之间的长期边界。
+- 后续已移除的临时支线不再纳入当前 session 生命周期、清理节奏或存储模型评估。
 - AI key failover 已经成型，但当日实现仍聚焦“固定 provider + endpoint + model”的 key 级容灾，尚未扩展到更复杂的多 provider 选路语义。
 
 ## 覆盖的归档计划
@@ -85,10 +85,10 @@
 26. `20260405-26-RETENTION_REMAINING_ISSUES_REMEDIATION`
 27. `20260405-27-PLAN26_COMPLETION_VERIFICATION_AND_REMEDIATION`
 28. `20260405-28-DOCUMENTATION_SYNC_AND_RUNTIME_ALIGNMENT`
-29. `20260405-29-SESSION_SCRATCHPAD_GRPC_AND_STORAGE_PLAN`
-30. `20260405-30-DWM_SCRATCHPAD_CONTRACT_ALIGNMENT`
-31. `20260405-31-POSTGRES_SCRATCHPAD_AUTO_MIGRATION`
-32. `20260405-32-SCRATCHPAD_REVIEW_FINDINGS_FIX`
+29. `20260405-29-REMOVED_TEMP_CONTEXT_GRPC_AND_STORAGE_PLAN`
+30. `20260405-30-REMOVED_TEMP_CONTEXT_CONTRACT_ALIGNMENT`
+31. `20260405-31-REMOVED_TEMP_CONTEXT_POSTGRES_MIGRATION`
+32. `20260405-32-REMOVED_TEMP_CONTEXT_REVIEW_FINDINGS_FIX`
 33. `20260405-33-AI_KEY_ONLY_FAILOVER_DESIGN`
 34. `20260405-34-AI_KEY_FAILOVER_IMPLEMENTATION`
 35. `20260405-35-LLM_KEY_FAILOVER_SELF_REVIEW`

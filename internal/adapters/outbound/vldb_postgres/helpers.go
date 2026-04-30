@@ -94,18 +94,6 @@ func (s *Store) sessionsTable() string {
 	return s.qualifiedTable("vmm_sessions")
 }
 
-// scratchpadPlansTable returns the fully-qualified isolated DWM plan-lock table name.
-// scratchpadPlansTable 用于返回隔离 DWM 计划锁表的完整限定名称。
-func (s *Store) scratchpadPlansTable() string {
-	return s.qualifiedTable("vmm_scratchpad_plans")
-}
-
-// scratchpadNodesTable returns the fully-qualified isolated DWM key/value node table name.
-// scratchpadNodesTable 用于返回隔离 DWM key/value 节点表的完整限定名称。
-func (s *Store) scratchpadNodesTable() string {
-	return s.qualifiedTable("vmm_scratchpad_nodes")
-}
-
 // noiseEmbeddingsTable returns the fully-qualified semantic cache table name.
 // noiseEmbeddingsTable 用于返回语义缓存表的完整限定名称。
 func (s *Store) noiseEmbeddingsTable() string {

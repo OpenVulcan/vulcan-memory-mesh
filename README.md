@@ -6,10 +6,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `ChatCompact`
 - `PostAction`
 
-另外当前还提供一条与主长期记忆体系隔离的 DWM 支线：
-
-- `ScratchpadUpsert / ScratchpadDelete / ScratchpadGet / ScratchpadListKeys / ScratchpadClean`
-
 当前运行时的定位是：
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
@@ -53,8 +49,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - [PII Validator Developer Guide (English)](./docs/pii-validator-developer_EN.md)
 - [PII 国家与地区规则矩阵（中文）](./docs/pii-country-matrix_CN.md)
 - [冷数据回收治理说明（中文）](./docs/retention-governance-guide_CN.md)
-- [DWM 确定性工作记忆说明（中文）](./docs/dwm-working-memory-guide_CN.md)
-- [DWM Deterministic Working Memory Guide (English)](./docs/dwm-working-memory-guide_EN.md)
 - [当前未接入主运行时的配置参数清单（中文）](./docs/unused-config-parameters_CN.md)
 - [画像节点生命周期与渲染方案（中文）](./docs/profile-node-lifecycle_CN.md)
 - [画像 gRPC 查询与手工指令接口（中文）](./docs/profile-grpc-interfaces_CN.md)
@@ -113,11 +107,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `SearchMemoryEvents`
 - `GetTurnDetails`
 - `WriteMemories`
-- `ScratchpadUpsert`
-- `ScratchpadDelete`
-- `ScratchpadGet`
-- `ScratchpadListKeys`
-- `ScratchpadClean`
 - `ChatCompact`
 - `PreCheck`
 - `PostAction`
@@ -131,10 +120,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 运行时通过本地 `vldb-sqlite` 动态库接入，不再依赖外部 gRPC 网关
     - 数据文件固定为 `output/database/sqlite.db`
     - FTS 与中文分词由库内能力负责，分词模式通过 `sqlite.tokenizer_mode` 控制
-    - 当前 schema 基线固定为 `19`，空库会直接 bootstrap 到该版本
+    - 当前 schema 基线固定为 `20`，空库会直接 bootstrap 到该版本
     - 当前版本信息只写入 `vmm_schema_versions`
     - 低于 `19` 的旧本地库不再自动 reset 或自动迁移，需要手工重建后再运行
-    - 未来 schema 升级仍沿用组件版本框架，后续可直接追加 `19 -> 20` 这类增量迁移
+    - `19 -> 20` 迁移只负责删除已移除的工作记忆旧表
+    - 未来 schema 升级仍沿用组件版本框架，后续可直接追加 `20 -> 21` 这类增量迁移
   - LanceDB：向量写入、检索和删除
     - 运行时通过本地 `vldb-lancedb` 动态库接入，不再依赖外部 gRPC 网关
     - 数据目录固定为 `output/database/lancedb/`
@@ -143,7 +133,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `combined`（显式启用）
   - PostgreSQL：统一承载关系数据、检索索引与向量能力
   - 该模式只在 `storage.mode=combined` 且 `storage.combined_provider=postgres` 时启用
-  - PostgreSQL 组合库现在支持受控的 tracked schema 自动升级；当前已覆盖共享 schema `1 -> 2` 的 scratchpad 升级
+  - PostgreSQL 组合库现在支持受控的 tracked schema 自动升级；当前共享 schema 基线为 `3`
+  - 共享 schema `1` 或 `2` 会升级到 `3`，升级过程只负责删除已移除的工作记忆旧表
 
 运行时已经移除：
 
@@ -486,101 +477,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 返回只保留最小结果字段：
   - `items[].memory_id`
   - `items[].deduped`
-
-### DWM / Scratchpad 接口
-
-当前还提供一组独立于长期记忆体系的 DWM 接口：
-
-- `ScratchpadUpsert`
-- `ScratchpadDelete`
-- `ScratchpadGet`
-- `ScratchpadListKeys`
-- `ScratchpadClean`
-
-这组接口的定位不是长期记忆，也不是 turn 提炼结果，而是给 AI Agent 保存“当前任务计划、关键步骤、关键文件摘要、关键约束”的确定性工作态。
-
-核心约束：
-
-- 固定定位字段：
-  - `project_id`
-  - `user_id`
-  - `session_id`
-- `session_id` 在这条链路里只是字符串定位键：
-  - 不会自动创建 `vmm_sessions`
-  - 不依赖主 session 生命周期
-- 每个 `project_id + user_id + session_id` 只允许存在一个 canonical `plan_name`
-- `ScratchpadUpsert`：
-  - 允许 `key + value` 单项写入
-  - 也允许 `items[]` 批量写入
-  - 但两种形式不能混传；一旦混传直接返回校验错误
-- `ScratchpadDelete`：
-  - 允许 `key` 单键删除
-  - 也允许 `keys[]` 批量删除
-  - 但两种形式不能混传；一旦混传直接返回校验错误
-- `Delete` 在空范围下不会锁定新计划：
-  - 直接返回成功
-  - `msg = "No scratchpad plan exists for the current session. Create records first."`
-- `Get` 在无数据时不会报错：
-  - 返回成功
-  - `items = []`
-  - `msg = "No scratchpad records found for the current session."`
-- `Get` 支持：
-  - `keys[]` 为空或不传时，读取当前范围全部 item
-  - `keys[]` 非空时，批量读取命中的多条 item
-- `ListKeys` 支持：
-  - 直接返回当前 canonical `plan_name`
-  - 返回当前范围完整且有序的 `keys[]`
-  - 不返回任何 `value`
-- `Get` 返回 metadata：
-  - `plan_name`
-  - `item_count`
-  - `updated_timestamp`
-- `ListKeys` 返回 metadata：
-  - `plan_name`
-  - `key_count`
-  - `updated_timestamp`
-- `Upsert / Delete` 返回稳定计数字段：
-  - `affected_count`
-  - `inserted_count`
-  - `updated_count`（仅 `Upsert`）
-- `Get` 返回的 `plan_name` 永远是当前 canonical 值
-- `ListKeys` 返回的 `plan_name` 也永远是当前 canonical 值
-- scratchpad 的批量写入/删除采用整批原子语义：
-  - 任一 item 非法则整批失败
-- scratchpad 不参与 `MigrateProject`
-  - 仅参与 `DeleteProject / DeleteUser` 的级联清理
-
-计划守卫规则：
-
-- 完全不一致：
-  - 拦截写入
-  - 返回英文自然语言提示，要求检查拼写或先执行 `Clean`
-- 忽略大小写后一致，但原始拼写不一致：
-  - 允许写入
-  - 返回消息前缀强插：
-    - `[FORMAT DRIFT WARNING] ...`
-
-接口返回约束：
-
-- `status` 使用 proto enum
-- `msg` 固定英文
-- 如果上层直接把结果暴露给 AI Agent：
-  - 调用方应先把 `status enum` 转译成模型更容易理解的文本语义
-
-当前 DWM 持久化模型：
-
-- `vmm_scratchpad_plans`
-  - 锁定唯一 `plan_name`
-  - `updated_timestamp` 作为整个 scratchpad session 的最后活动时间
-- `vmm_scratchpad_nodes`
-  - 保存具体 `key/value` 锚点
-
-当前过期治理：
-
-- 超过 `15` 天未更新的 scratchpad session 会被硬删除
-- 直接删 `nodes`，再删 `plans`
-- 不进入 recycle trash
-- 这条清理 pass 复用系统现有的半小时维护时钟
 
 ## 构建与运行
 
@@ -1042,7 +938,6 @@ AI 容灾边界当前统一为：
   - idle-session recycle
   - vector GC retry
   - trash purge
-  - scratchpad 过期硬删除
 - 当前维护器会周期性回收 `superseded / expired / deleted` 的终态记忆，并把对应 `memory_context_edges` 一并迁入回收站
 - 独立冷 `turn` 回收现在使用持久化 `recycle_jobs` 队列做 scan / claim / execute 分离：
   - 扫描阶段只为确实存在可回收旧 `turn` 的 session 入队

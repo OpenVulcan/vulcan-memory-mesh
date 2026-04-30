@@ -27,7 +27,6 @@ type runtimeUseCaseSet struct {
 	Workspace   *usecase.WorkspaceUseCase
 	Profiles    *usecase.ProfileUseCase
 	Memory      *usecase.MemoryUseCase
-	Scratchpad  *usecase.ScratchpadUseCase
 	ChatCompact *usecase.ChatCompactUseCase
 	PreCheck    *usecase.PreCheckUseCase
 	PostAction  *usecase.PostActionUseCase
@@ -63,7 +62,6 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 	profiles := usecase.NewProfileUseCase(storage.ProfileStore, processor.NewManualProfileReviewer(processorLLM, prompts, reservePromptModel), logger)
 	memory := usecase.NewMemoryUseCase(storage.ProfileStore, storage.MemoryStore, ai.Embedding, storage.Vector, logger)
 	memory.ConfigurePIIScrubber(piiScrubber)
-	scratchpad := usecase.NewScratchpadUseCase(storage.ScratchpadStore)
 	chatCompact := usecase.NewChatCompactUseCase(storage.ChatCompactStore)
 	candidateReviewer := processor.NewPostActionCandidateReviewer(processorLLM, prompts, postActionL2PromptModel)
 	memory.ConfigureHybrid(cfg.MemoryPipeline.HybridEnabled, cfg.MemoryPipeline.LexicalTopK, cfg.MemoryPipeline.RRFK)
@@ -139,13 +137,11 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 		ProtectMemoryLevelFloor:     cfg.Retention.ProtectMemoryLevelFloor,
 		SkipProtectedSharedMemories: cfg.Retention.SkipProtectedSharedMemories,
 	}, logger)
-	retention.ConfigureScratchpadMaintenanceStore(storage.ScratchpadMaintenanceStore)
 
 	useCases := runtimeUseCaseSet{
 		Workspace:   workspace,
 		Profiles:    profiles,
 		Memory:      memory,
-		Scratchpad:  scratchpad,
 		ChatCompact: chatCompact,
 		PreCheck:    pre,
 		PostAction:  post,
@@ -156,7 +152,6 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 		Workspace:         workspace,
 		Profiles:          profiles,
 		Memory:            memory,
-		Scratchpad:        scratchpad,
 		ChatCompact:       chatCompact,
 		PreCheck:          pre,
 		PostAction:        post,

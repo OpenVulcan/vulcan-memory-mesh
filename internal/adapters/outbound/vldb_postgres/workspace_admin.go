@@ -179,13 +179,6 @@ func (r *workspaceRepository) DeleteProjectPath(ctx context.Context, projectPath
 	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.memoryNodesTable()), int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project memory nodes: %w", err)
 	}
-	deleteProjectScratchpadNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id IN (SELECT id FROM %s WHERE project_id = $1)`, r.scratchpadNodesTable(), r.scratchpadPlansTable())
-	if _, err := tx.Exec(callCtx, deleteProjectScratchpadNodesSQL, int64(project.ID)); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project scratchpad nodes: %w", err)
-	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.scratchpadPlansTable()), int64(project.ID)); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project scratchpad plans: %w", err)
-	}
 	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.turnsTable()), int64(project.ID)); err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project turn records: %w", err)
 	}
@@ -395,13 +388,6 @@ WHERE profile_type <> $5
 	}
 	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.memoryNodesTable()), int64(currentUser.ID)); err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user memory nodes: %w", err)
-	}
-	deleteUserScratchpadNodesSQL := fmt.Sprintf(`DELETE FROM %s WHERE plan_id IN (SELECT id FROM %s WHERE user_id = $1)`, r.scratchpadNodesTable(), r.scratchpadPlansTable())
-	if _, err := tx.Exec(callCtx, deleteUserScratchpadNodesSQL, int64(currentUser.ID)); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user scratchpad nodes: %w", err)
-	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.scratchpadPlansTable()), int64(currentUser.ID)); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user scratchpad plans: %w", err)
 	}
 	deleteTurnsSQL := fmt.Sprintf(`DELETE FROM %s WHERE session_id IN (SELECT id FROM %s WHERE user_id = $1)`, r.turnsTable(), r.sessionsTable())
 	if _, err := tx.Exec(callCtx, deleteTurnsSQL, int64(currentUser.ID)); err != nil {

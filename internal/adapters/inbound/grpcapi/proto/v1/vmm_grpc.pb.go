@@ -2,7 +2,7 @@
 // versions:
 // - protoc-gen-go-grpc v1.5.1
 // - protoc             v7.34.1
-// source: internal/adapters/inbound/grpcapi/proto/v1/vmm.proto
+// source: vmm.proto
 
 package vmmv1
 
@@ -35,11 +35,6 @@ const (
 	VMMService_SearchMemoryEvents_FullMethodName      = "/vmm.v1.VMMService/SearchMemoryEvents"
 	VMMService_GetTurnDetails_FullMethodName          = "/vmm.v1.VMMService/GetTurnDetails"
 	VMMService_WriteMemories_FullMethodName           = "/vmm.v1.VMMService/WriteMemories"
-	VMMService_ScratchpadUpsert_FullMethodName        = "/vmm.v1.VMMService/ScratchpadUpsert"
-	VMMService_ScratchpadDelete_FullMethodName        = "/vmm.v1.VMMService/ScratchpadDelete"
-	VMMService_ScratchpadGet_FullMethodName           = "/vmm.v1.VMMService/ScratchpadGet"
-	VMMService_ScratchpadListKeys_FullMethodName      = "/vmm.v1.VMMService/ScratchpadListKeys"
-	VMMService_ScratchpadClean_FullMethodName         = "/vmm.v1.VMMService/ScratchpadClean"
 	VMMService_ChatCompact_FullMethodName             = "/vmm.v1.VMMService/ChatCompact"
 	VMMService_PreCheck_FullMethodName                = "/vmm.v1.VMMService/PreCheck"
 	VMMService_PostAction_FullMethodName              = "/vmm.v1.VMMService/PostAction"
@@ -97,21 +92,6 @@ type VMMServiceClient interface {
 	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
 	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
 	WriteMemories(ctx context.Context, in *WriteMemoriesRequest, opts ...grpc.CallOption) (*WriteMemoriesResponse, error)
-	// ScratchpadUpsert writes one deterministic working-memory batch into the isolated DWM scratchpad guarded by the current plan name.
-	// ScratchpadUpsert 用于把一批确定性工作记忆写入由当前计划名守护的隔离 DWM scratchpad。
-	ScratchpadUpsert(ctx context.Context, in *ScratchpadUpsertRequest, opts ...grpc.CallOption) (*ScratchpadUpsertResponse, error)
-	// ScratchpadDelete removes one or more keys from the isolated DWM scratchpad without fabricating a new plan lock for empty sessions.
-	// ScratchpadDelete 用于从隔离 DWM scratchpad 中删除一个或多个 key，并且不会为当前空 session 伪造新的计划锁。
-	ScratchpadDelete(ctx context.Context, in *ScratchpadDeleteRequest, opts ...grpc.CallOption) (*ScratchpadDeleteResponse, error)
-	// ScratchpadGet reloads either one filtered key batch or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
-	// ScratchpadGet 用于重新读取一批过滤 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
-	ScratchpadGet(ctx context.Context, in *ScratchpadGetRequest, opts ...grpc.CallOption) (*ScratchpadGetResponse, error)
-	// ScratchpadListKeys reloads the canonical plan name plus the full ordered scratchpad key list for the current isolated scope without fetching values.
-	// ScratchpadListKeys 用于在不拉取 value 的前提下，重新读取当前隔离范围的 canonical 计划名和完整有序 key 列表。
-	ScratchpadListKeys(ctx context.Context, in *ScratchpadListKeysRequest, opts ...grpc.CallOption) (*ScratchpadListKeysResponse, error)
-	// ScratchpadClean clears the whole isolated DWM scratchpad for the current project/user/session scope.
-	// ScratchpadClean 用于清空当前 project/user/session 范围下的整个隔离 DWM scratchpad。
-	ScratchpadClean(ctx context.Context, in *ScratchpadCleanRequest, opts ...grpc.CallOption) (*ScratchpadCleanResponse, error)
 	// ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
 	// ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
 	ChatCompact(ctx context.Context, in *ChatCompactRequest, opts ...grpc.CallOption) (*ChatCompactResponse, error)
@@ -281,56 +261,6 @@ func (c *vMMServiceClient) WriteMemories(ctx context.Context, in *WriteMemoriesR
 	return out, nil
 }
 
-func (c *vMMServiceClient) ScratchpadUpsert(ctx context.Context, in *ScratchpadUpsertRequest, opts ...grpc.CallOption) (*ScratchpadUpsertResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ScratchpadUpsertResponse)
-	err := c.cc.Invoke(ctx, VMMService_ScratchpadUpsert_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *vMMServiceClient) ScratchpadDelete(ctx context.Context, in *ScratchpadDeleteRequest, opts ...grpc.CallOption) (*ScratchpadDeleteResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ScratchpadDeleteResponse)
-	err := c.cc.Invoke(ctx, VMMService_ScratchpadDelete_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *vMMServiceClient) ScratchpadGet(ctx context.Context, in *ScratchpadGetRequest, opts ...grpc.CallOption) (*ScratchpadGetResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ScratchpadGetResponse)
-	err := c.cc.Invoke(ctx, VMMService_ScratchpadGet_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *vMMServiceClient) ScratchpadListKeys(ctx context.Context, in *ScratchpadListKeysRequest, opts ...grpc.CallOption) (*ScratchpadListKeysResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ScratchpadListKeysResponse)
-	err := c.cc.Invoke(ctx, VMMService_ScratchpadListKeys_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
-func (c *vMMServiceClient) ScratchpadClean(ctx context.Context, in *ScratchpadCleanRequest, opts ...grpc.CallOption) (*ScratchpadCleanResponse, error) {
-	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	out := new(ScratchpadCleanResponse)
-	err := c.cc.Invoke(ctx, VMMService_ScratchpadClean_FullMethodName, in, out, cOpts...)
-	if err != nil {
-		return nil, err
-	}
-	return out, nil
-}
-
 func (c *vMMServiceClient) ChatCompact(ctx context.Context, in *ChatCompactRequest, opts ...grpc.CallOption) (*ChatCompactResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ChatCompactResponse)
@@ -413,21 +343,6 @@ type VMMServiceServer interface {
 	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
 	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
 	WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error)
-	// ScratchpadUpsert writes one deterministic working-memory batch into the isolated DWM scratchpad guarded by the current plan name.
-	// ScratchpadUpsert 用于把一批确定性工作记忆写入由当前计划名守护的隔离 DWM scratchpad。
-	ScratchpadUpsert(context.Context, *ScratchpadUpsertRequest) (*ScratchpadUpsertResponse, error)
-	// ScratchpadDelete removes one or more keys from the isolated DWM scratchpad without fabricating a new plan lock for empty sessions.
-	// ScratchpadDelete 用于从隔离 DWM scratchpad 中删除一个或多个 key，并且不会为当前空 session 伪造新的计划锁。
-	ScratchpadDelete(context.Context, *ScratchpadDeleteRequest) (*ScratchpadDeleteResponse, error)
-	// ScratchpadGet reloads either one filtered key batch or the full isolated DWM scratchpad so the host agent can recover task anchors after context compaction.
-	// ScratchpadGet 用于重新读取一批过滤 key 或完整隔离 DWM scratchpad，让宿主 Agent 在上下文压缩后恢复任务锚点。
-	ScratchpadGet(context.Context, *ScratchpadGetRequest) (*ScratchpadGetResponse, error)
-	// ScratchpadListKeys reloads the canonical plan name plus the full ordered scratchpad key list for the current isolated scope without fetching values.
-	// ScratchpadListKeys 用于在不拉取 value 的前提下，重新读取当前隔离范围的 canonical 计划名和完整有序 key 列表。
-	ScratchpadListKeys(context.Context, *ScratchpadListKeysRequest) (*ScratchpadListKeysResponse, error)
-	// ScratchpadClean clears the whole isolated DWM scratchpad for the current project/user/session scope.
-	// ScratchpadClean 用于清空当前 project/user/session 范围下的整个隔离 DWM scratchpad。
-	ScratchpadClean(context.Context, *ScratchpadCleanRequest) (*ScratchpadCleanResponse, error)
 	// ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
 	// ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
 	ChatCompact(context.Context, *ChatCompactRequest) (*ChatCompactResponse, error)
@@ -491,21 +406,6 @@ func (UnimplementedVMMServiceServer) GetTurnDetails(context.Context, *GetTurnDet
 }
 func (UnimplementedVMMServiceServer) WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method WriteMemories not implemented")
-}
-func (UnimplementedVMMServiceServer) ScratchpadUpsert(context.Context, *ScratchpadUpsertRequest) (*ScratchpadUpsertResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadUpsert not implemented")
-}
-func (UnimplementedVMMServiceServer) ScratchpadDelete(context.Context, *ScratchpadDeleteRequest) (*ScratchpadDeleteResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadDelete not implemented")
-}
-func (UnimplementedVMMServiceServer) ScratchpadGet(context.Context, *ScratchpadGetRequest) (*ScratchpadGetResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadGet not implemented")
-}
-func (UnimplementedVMMServiceServer) ScratchpadListKeys(context.Context, *ScratchpadListKeysRequest) (*ScratchpadListKeysResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadListKeys not implemented")
-}
-func (UnimplementedVMMServiceServer) ScratchpadClean(context.Context, *ScratchpadCleanRequest) (*ScratchpadCleanResponse, error) {
-	return nil, status.Errorf(codes.Unimplemented, "method ScratchpadClean not implemented")
 }
 func (UnimplementedVMMServiceServer) ChatCompact(context.Context, *ChatCompactRequest) (*ChatCompactResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ChatCompact not implemented")
@@ -807,96 +707,6 @@ func _VMMService_WriteMemories_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
-func _VMMService_ScratchpadUpsert_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ScratchpadUpsertRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(VMMServiceServer).ScratchpadUpsert(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: VMMService_ScratchpadUpsert_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(VMMServiceServer).ScratchpadUpsert(ctx, req.(*ScratchpadUpsertRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _VMMService_ScratchpadDelete_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ScratchpadDeleteRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(VMMServiceServer).ScratchpadDelete(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: VMMService_ScratchpadDelete_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(VMMServiceServer).ScratchpadDelete(ctx, req.(*ScratchpadDeleteRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _VMMService_ScratchpadGet_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ScratchpadGetRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(VMMServiceServer).ScratchpadGet(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: VMMService_ScratchpadGet_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(VMMServiceServer).ScratchpadGet(ctx, req.(*ScratchpadGetRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _VMMService_ScratchpadListKeys_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ScratchpadListKeysRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(VMMServiceServer).ScratchpadListKeys(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: VMMService_ScratchpadListKeys_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(VMMServiceServer).ScratchpadListKeys(ctx, req.(*ScratchpadListKeysRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
-func _VMMService_ScratchpadClean_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
-	in := new(ScratchpadCleanRequest)
-	if err := dec(in); err != nil {
-		return nil, err
-	}
-	if interceptor == nil {
-		return srv.(VMMServiceServer).ScratchpadClean(ctx, in)
-	}
-	info := &grpc.UnaryServerInfo{
-		Server:     srv,
-		FullMethod: VMMService_ScratchpadClean_FullMethodName,
-	}
-	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
-		return srv.(VMMServiceServer).ScratchpadClean(ctx, req.(*ScratchpadCleanRequest))
-	}
-	return interceptor(ctx, in, info, handler)
-}
-
 func _VMMService_ChatCompact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ChatCompactRequest)
 	if err := dec(in); err != nil {
@@ -1019,26 +829,6 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _VMMService_WriteMemories_Handler,
 		},
 		{
-			MethodName: "ScratchpadUpsert",
-			Handler:    _VMMService_ScratchpadUpsert_Handler,
-		},
-		{
-			MethodName: "ScratchpadDelete",
-			Handler:    _VMMService_ScratchpadDelete_Handler,
-		},
-		{
-			MethodName: "ScratchpadGet",
-			Handler:    _VMMService_ScratchpadGet_Handler,
-		},
-		{
-			MethodName: "ScratchpadListKeys",
-			Handler:    _VMMService_ScratchpadListKeys_Handler,
-		},
-		{
-			MethodName: "ScratchpadClean",
-			Handler:    _VMMService_ScratchpadClean_Handler,
-		},
-		{
 			MethodName: "ChatCompact",
 			Handler:    _VMMService_ChatCompact_Handler,
 		},
@@ -1052,5 +842,5 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 		},
 	},
 	Streams:  []grpc.StreamDesc{},
-	Metadata: "internal/adapters/inbound/grpcapi/proto/v1/vmm.proto",
+	Metadata: "vmm.proto",
 }

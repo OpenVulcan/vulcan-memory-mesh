@@ -106,18 +106,6 @@ func (r *workspaceRepository) memoryNodesTable() string {
 	return r.workspaceQualifiedTable("vmm_memory_nodes")
 }
 
-// scratchpadNodesTable returns the fully-qualified scratchpad nodes table name.
-// scratchpadNodesTable 用于返回 scratchpad 节点表的完整限定名称。
-func (r *workspaceRepository) scratchpadNodesTable() string {
-	return r.workspaceQualifiedTable("vmm_scratchpad_nodes")
-}
-
-// scratchpadPlansTable returns the fully-qualified scratchpad plans table name.
-// scratchpadPlansTable 用于返回 scratchpad 计划表的完整限定名称。
-func (r *workspaceRepository) scratchpadPlansTable() string {
-	return r.workspaceQualifiedTable("vmm_scratchpad_plans")
-}
-
 // turnsTable returns the fully-qualified durable turn table name.
 // turnsTable 用于返回长期 turn 表的完整限定名称。
 func (r *workspaceRepository) turnsTable() string {
@@ -343,12 +331,6 @@ func (r *retentionRepository) retentionMaintenanceWriteContext(ctx context.Conte
 	return context.WithTimeout(ctx, timeout)
 }
 
-// scratchpadRepository marks the scratchpad persistence and cleanup slice inside the PostgreSQL combined store.
-// scratchpadRepository 用于标记 PostgreSQL 组合库中的 scratchpad 持久化与清理切面。
-type scratchpadRepository struct {
-	shared *storeShared
-}
-
 // vectorRepository marks the vector-facing persistence slice inside the PostgreSQL combined store.
 // vectorRepository 用于标记 PostgreSQL 组合库中的向量侧持久化切面。
 type vectorRepository struct {
@@ -519,18 +501,6 @@ func (r *maintenanceRepository) turnsTable() string {
 	return r.maintenanceQualifiedTable("vmm_turn_records")
 }
 
-// scratchpadPlansTable returns the fully-qualified scratchpad plans table name.
-// scratchpadPlansTable 用于返回 scratchpad 计划表的完整限定名称。
-func (r *maintenanceRepository) scratchpadPlansTable() string {
-	return r.maintenanceQualifiedTable("vmm_scratchpad_plans")
-}
-
-// scratchpadNodesTable returns the fully-qualified scratchpad nodes table name.
-// scratchpadNodesTable 用于返回 scratchpad 节点表的完整限定名称。
-func (r *maintenanceRepository) scratchpadNodesTable() string {
-	return r.maintenanceQualifiedTable("vmm_scratchpad_nodes")
-}
-
 // noiseEmbeddingsTable returns the fully-qualified noise embeddings cache table name.
 // noiseEmbeddingsTable 用于返回噪声嵌入缓存表的完整限定名称。
 func (r *maintenanceRepository) noiseEmbeddingsTable() string {
@@ -592,7 +562,6 @@ type storeRepositories struct {
 	memory      memoryRepository
 	profile     profileRepository
 	retention   retentionRepository
-	scratchpad  scratchpadRepository
 	vector      vectorRepository
 	maintenance maintenanceRepository
 }
@@ -601,14 +570,13 @@ type storeRepositories struct {
 // newStoreRepositories 用于把全部内部 repository 切面统一绑定到同一个 PostgreSQL 共享运行时核心。
 func newStoreRepositories(shared *storeShared) storeRepositories {
 	repos := storeRepositories{
-		workspace:   workspaceRepository{shared: shared},
-		turns:       turnRepository{shared: shared},
-		analysis:    analysisRepository{shared: shared},
-		memory:      memoryRepository{shared: shared},
-		profile:     profileRepository{shared: shared},
-		retention:   retentionRepository{shared: shared},
-		scratchpad:  scratchpadRepository{shared: shared},
-		vector:      vectorRepository{shared: shared},
+		workspace: workspaceRepository{shared: shared},
+		turns:     turnRepository{shared: shared},
+		analysis:  analysisRepository{shared: shared},
+		memory:    memoryRepository{shared: shared},
+		profile:   profileRepository{shared: shared},
+		retention: retentionRepository{shared: shared},
+		vector:    vectorRepository{shared: shared},
 		maintenance: maintenanceRepository{
 			shared: shared,
 		},
@@ -692,8 +660,8 @@ func (r *analysisRepository) queryMemoryNodesWithContextBuilder(ctx context.Cont
 	return scanMemoryNodeRows(callCtx, q, sqlText, args...)
 }
 
-// loadUserByQueryer executes one id-bounded user lookup through the given queryer so workspace, profile, and scratchpad repositories share a single scan contract.
-// loadUserByQueryer 用于通过给定 queryer 执行按 id 查找用户的操作，让 workspace、profile 与 scratchpad 仓储共享同一套扫描逻辑。
+// loadUserByQueryer executes one id-bounded user lookup through the given queryer so workspace and profile repositories share a single scan contract.
+// loadUserByQueryer 用于通过给定 queryer 执行按 id 查找用户的操作，让 workspace 与 profile 仓储共享同一套扫描逻辑。
 func loadUserByQueryer(ctx context.Context, q profileQueryer, userID uint64, userTable string, lockClause string) (logicdomain.UserRecord, error) {
 	sqlText := fmt.Sprintf(`
 SELECT id, name, profile, delete_confirm_code, created_at, updated_at

@@ -10,11 +10,6 @@
 2. 让长期空闲 session 中已经脱离热窗口、且不再被主表引用的旧 `turn` 退出热主表。
 3. 在不提供产品级恢复接口的前提下，为数据库层保留一个有限期的防灾缓冲窗口。
 
-另外要额外说明：
-
-- 当前共享半小时维护时钟还会顺带执行一次独立的 scratchpad 过期硬删除。
-- 但 scratchpad 不进入 recycle trash，因此它不属于本文档的主治理语义。
-
 当前不做的事情也需要明确：
 
 - 不提供面向产品用户的“恢复回收内容”接口。
@@ -31,7 +26,6 @@
 4. idle-session recycle
 5. vector GC retry
 6. trash purge
-7. scratchpad 过期硬删除
 
 这样安排的原因是：
 
@@ -39,7 +33,6 @@
 - 冷 `turn` 先扫描再执行，避免扫描和归档共用一条耦合事务路径。
 - vector GC retry 必须晚于关系回收成功之后，防止冷热状态不一致。
 - purge 最后执行，确保 `trash_retention` 代表的是“进入回收站后的保留窗口”。
-- scratchpad 过期硬删除最后执行，因为它不依赖 recycle trash，也不应干扰主 retention 统计语义。
 
 ## 3. 热窗口规则
 

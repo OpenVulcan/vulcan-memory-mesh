@@ -218,15 +218,13 @@
 - `VulcanMemoryMesh/internal/app/usecase/retention_test.go`
 
 ### 🛠️ 修复方案与执行细节（How）
-- 将维护职责拆成三个独立判断：
+- 将维护职责拆成两个独立判断：
   - `retentionMaintenanceEnabled()`
   - `vectorGCMaintenanceEnabled()`
-  - `scratchpadMaintenanceEnabled()`
-- `maintenanceEnabled()` 改为只要三者任意一个成立，就启动共享 worker
+- `maintenanceEnabled()` 改为只要二者任意一个成立，就启动共享 worker
 - `runScheduledMaintenance()` 改为：
   - retention recycle：按原配置决定是否执行
   - vector GC retry：只要 store + vector 可用，就始终执行
-  - scratchpad GC：按原逻辑独立执行
 - 新增 `runVectorGCMaintenance(ctx)`，专门负责 `retryPendingVectorGCJobs`
 - 补充测试：
   - 验证 **retention disabled 但 vector GC 存在时 worker 仍会启动**

@@ -11,7 +11,7 @@ import (
 const (
 	// currentCombinedSchemaVersion tracks the shared PostgreSQL physical table layout used by every flavor.
 	// currentCombinedSchemaVersion 用于跟踪所有 flavor 共用的 PostgreSQL 物理表结构版本。
-	currentCombinedSchemaVersion = 2
+	currentCombinedSchemaVersion = 3
 
 	// currentCombinedSearchSchemaVersion tracks the active lexical-search layout generation for the current flavor.
 	// currentCombinedSearchSchemaVersion 用于跟踪当前 flavor 的词法检索布局版本。

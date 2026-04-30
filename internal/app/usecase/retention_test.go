@@ -160,23 +160,6 @@ type fakeVectorStore struct {
 	deleteErrs []error
 }
 
-// fakeScratchpadMaintenanceStore captures scratchpad GC calls so retention scheduling tests can assert the isolated DWM cleanup piggybacks on the shared maintenance ticker.
-// fakeScratchpadMaintenanceStore 用于捕获 scratchpad GC 调用，让 retention 调度测试可以断言隔离 DWM 清理会复用共享维护 ticker。
-type fakeScratchpadMaintenanceStore struct {
-	before time.Time
-	limit  int
-	result logicdomain.ScratchpadGCResult
-	err    error
-}
-
-// DeleteExpiredScratchpadSessions records the latest hard-delete threshold and returns the configured fake result.
-// DeleteExpiredScratchpadSessions 用于记录最近一次硬删除阈值，并返回预设的 fake 结果。
-func (f *fakeScratchpadMaintenanceStore) DeleteExpiredScratchpadSessions(_ context.Context, before time.Time, limit int) (logicdomain.ScratchpadGCResult, error) {
-	f.before = before
-	f.limit = limit
-	return f.result, f.err
-}
-
 // Upsert is unused in these maintenance tests and intentionally succeeds as a no-op.
 // Upsert 在这些维护测试中不会被使用，因此有意作为 no-op 成功返回。
 func (*fakeVectorStore) Upsert(context.Context, logicdomain.MemoryRecord) error { return nil }
@@ -213,7 +196,6 @@ func (*fakeVectorStore) Shutdown(context.Context) error { return nil }
 
 var _ appports.RetentionStore = (*fakeRetentionStore)(nil)
 var _ appports.VectorStore = (*fakeVectorStore)(nil)
-var _ appports.ScratchpadMaintenanceStore = (*fakeScratchpadMaintenanceStore)(nil)
 
 // TestRetentionUseCaseRunMaintenanceRecyclesAndPurges verifies one maintenance pass forwards the normalized protection floors, runs idle-session recycle with the configured hot window, bridges vector cleanup, and computes the trash purge threshold from config.
 // TestRetentionUseCaseRunMaintenanceRecyclesAndPurges 用于验证一次维护会透传规范化后的保护阈值、按配置热窗口执行 idle-session 回收、衔接向量清理，并根据配置计算回收站 purge 阈值。
@@ -312,40 +294,6 @@ func TestRetentionUseCaseRunMaintenanceRecyclesAndPurges(t *testing.T) {
 	}
 }
 
-// TestRetentionUseCaseRunScheduledMaintenanceStillCleansExpiredScratchpads verifies the shared half-hour ticker still executes scratchpad expiry cleanup even when classic retention governance is disabled.
-// TestRetentionUseCaseRunScheduledMaintenanceStillCleansExpiredScratchpads 用于验证即使传统 retention 治理被关闭，共享半小时 ticker 仍会执行 scratchpad 过期清理。
-func TestRetentionUseCaseRunScheduledMaintenanceStillCleansExpiredScratchpads(t *testing.T) {
-	scratchpad := &fakeScratchpadMaintenanceStore{
-		result: logicdomain.ScratchpadGCResult{
-			DeletedPlanCount: 2,
-			DeletedNodeCount: 5,
-		},
-	}
-	uc := &RetentionUseCase{
-		cfg: RetentionConfig{
-			Enabled:             false,
-			RecycleScanInterval: 30 * time.Minute,
-		},
-		scratchpad: scratchpad,
-	}
-
-	beforeCall := time.Now().UTC()
-	uc.runScheduledMaintenance(context.Background())
-	afterCall := time.Now().UTC()
-
-	if scratchpad.limit != defaultScratchpadGCBatchSize {
-		t.Fatalf("scratchpad gc limit = %d, want %d", scratchpad.limit, defaultScratchpadGCBatchSize)
-	}
-	if scratchpad.before.IsZero() {
-		t.Fatalf("scratchpad gc before timestamp is zero")
-	}
-	oldestExpected := beforeCall.Add(-defaultScratchpadRetention).Add(-2 * time.Second)
-	newestExpected := afterCall.Add(-defaultScratchpadRetention).Add(2 * time.Second)
-	if scratchpad.before.Before(oldestExpected) || scratchpad.before.After(newestExpected) {
-		t.Fatalf("scratchpad gc before = %v, want within [%v, %v]", scratchpad.before, oldestExpected, newestExpected)
-	}
-}
-
 // TestNewRetentionUseCaseStartsWorkerForVectorGCRetriesEvenWhenRetentionDisabled verifies the shared maintenance loop still starts when vector-gc retry work exists, even if classical retention recycle is disabled.
 // TestNewRetentionUseCaseStartsWorkerForVectorGCRetriesEvenWhenRetentionDisabled 用于验证即使经典 retention recycle 被禁用，只要仍存在 vector-gc 重试工作，共享维护循环也会启动。
 func TestNewRetentionUseCaseStartsWorkerForVectorGCRetriesEvenWhenRetentionDisabled(t *testing.T) {
@@ -364,8 +312,8 @@ func TestNewRetentionUseCaseStartsWorkerForVectorGCRetriesEvenWhenRetentionDisab
 	}
 }
 
-// TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets verifies the shared worker still stays stopped when neither recycle, vector-gc retry, nor scratchpad maintenance has any usable backing store.
-// TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets 用于验证当 recycle、vector-gc 重试和 scratchpad 维护都没有可用存储支撑时，共享工作器仍会保持停止。
+// TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets verifies the shared worker stays stopped when neither recycle nor vector-gc retry has any usable backing store.
+// TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets 用于验证当 recycle 与 vector-gc 重试都没有可用存储支撑时，共享工作器仍会保持停止。
 func TestNewRetentionUseCaseSkipsWorkerWithoutMaintenanceTargets(t *testing.T) {
 	useCase := NewRetentionUseCase(nil, nil, RetentionConfig{
 		Enabled:             false,

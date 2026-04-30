@@ -28,19 +28,17 @@ type storageDependencies struct {
 // runtimeStorageCapabilities stores the narrowed storage-facing capabilities that the runtime needs after the selected adapters are built and validated.
 // runtimeStorageCapabilities 用于保存运行时在构建并校验完选中存储适配器后所需的收窄能力集合。
 type runtimeStorageCapabilities struct {
-	Relational                 appports.RelationalStore
-	Vector                     appports.VectorStore
-	NoiseCache                 appports.NoiseEmbeddingCache
-	ScopeResolver              appports.RequestScopeResolver
-	WorkspaceStore             appports.WorkspaceStore
-	SchemaVersions             appports.SchemaVersionStore
-	ProfileStore               appports.ProfileStore
-	MemoryStore                appports.MemoryStore
-	ChatCompactStore           usecase.ChatCompactStore
-	ScratchpadStore            appports.ScratchpadStore
-	ScratchpadMaintenanceStore appports.ScratchpadMaintenanceStore
-	RetentionStore             appports.RetentionStore
-	ManageVectorSchema         bool
+	Relational         appports.RelationalStore
+	Vector             appports.VectorStore
+	NoiseCache         appports.NoiseEmbeddingCache
+	ScopeResolver      appports.RequestScopeResolver
+	WorkspaceStore     appports.WorkspaceStore
+	SchemaVersions     appports.SchemaVersionStore
+	ProfileStore       appports.ProfileStore
+	MemoryStore        appports.MemoryStore
+	ChatCompactStore   usecase.ChatCompactStore
+	RetentionStore     appports.RetentionStore
+	ManageVectorSchema bool
 }
 
 // initRuntimeStorageCapabilities builds the configured storage adapters, resolves the runtime-facing capabilities, and runs vector schema synchronization when the selected mode requires it.
@@ -103,32 +101,22 @@ func resolveRuntimeStorageCapabilities(storageDeps storageDependencies) (runtime
 	if !ok {
 		return runtimeStorageCapabilities{}, fmt.Errorf("relational store does not support session compact updates")
 	}
-	scratchpadStore, ok := relational.(appports.ScratchpadStore)
-	if !ok {
-		return runtimeStorageCapabilities{}, fmt.Errorf("relational store does not support scratchpad management")
-	}
-	scratchpadMaintenanceStore, ok := relational.(appports.ScratchpadMaintenanceStore)
-	if !ok {
-		return runtimeStorageCapabilities{}, fmt.Errorf("relational store does not support scratchpad maintenance")
-	}
 	retentionStore, err := usecase.EnsureRetentionStore(relational)
 	if err != nil {
 		return runtimeStorageCapabilities{}, err
 	}
 	return runtimeStorageCapabilities{
-		Relational:                 relational,
-		Vector:                     vector,
-		NoiseCache:                 noiseCache,
-		ScopeResolver:              scopeResolver,
-		WorkspaceStore:             workspaceStore,
-		SchemaVersions:             schemaVersions,
-		ProfileStore:               profileStore,
-		MemoryStore:                memoryStore,
-		ChatCompactStore:           chatCompactStore,
-		ScratchpadStore:            scratchpadStore,
-		ScratchpadMaintenanceStore: scratchpadMaintenanceStore,
-		RetentionStore:             retentionStore,
-		ManageVectorSchema:         storageDeps.ManageVectorSchema,
+		Relational:         relational,
+		Vector:             vector,
+		NoiseCache:         noiseCache,
+		ScopeResolver:      scopeResolver,
+		WorkspaceStore:     workspaceStore,
+		SchemaVersions:     schemaVersions,
+		ProfileStore:       profileStore,
+		MemoryStore:        memoryStore,
+		ChatCompactStore:   chatCompactStore,
+		RetentionStore:     retentionStore,
+		ManageVectorSchema: storageDeps.ManageVectorSchema,
 	}, nil
 }
 

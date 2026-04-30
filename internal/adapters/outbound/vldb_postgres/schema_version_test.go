@@ -49,9 +49,9 @@ func TestValidateTrackedSchemaVersionAllowsBootstrapAndMigratableOlderVersions(t
 		current   int
 		wantError bool
 	}{
-		{name: "missing bootstrap row is allowed", stored: 0, current: 2, wantError: false},
-		{name: "matching version is allowed", stored: 2, current: 2, wantError: false},
-		{name: "older version is allowed for migration", stored: 1, current: 2, wantError: false},
+		{name: "missing bootstrap row is allowed", stored: 0, current: 3, wantError: false},
+		{name: "matching version is allowed", stored: 3, current: 3, wantError: false},
+		{name: "older version is allowed for migration", stored: 2, current: 3, wantError: false},
 		{name: "newer version fails", stored: 2, current: 1, wantError: true},
 	}
 	for _, tc := range testCases {
@@ -67,19 +67,25 @@ func TestValidateTrackedSchemaVersionAllowsBootstrapAndMigratableOlderVersions(t
 	}
 }
 
-// TestTrackedSchemaMigrationStepsIncludesScratchpadUpgrade verifies the current runtime exposes one explicit combined-schema step for the scratchpad rollout.
-// TestTrackedSchemaMigrationStepsIncludesScratchpadUpgrade 用于验证当前运行时为 scratchpad rollout 暴露了一步显式的组合库 schema 升级。
-func TestTrackedSchemaMigrationStepsIncludesScratchpadUpgrade(t *testing.T) {
+// TestTrackedSchemaMigrationStepsIncludeRemovedWorkMemoryCleanup verifies older combined-schema versions can upgrade to the current cleanup baseline.
+// TestTrackedSchemaMigrationStepsIncludeRemovedWorkMemoryCleanup 用于验证较旧组合库 schema 版本可以升级到当前清理基线。
+func TestTrackedSchemaMigrationStepsIncludeRemovedWorkMemoryCleanup(t *testing.T) {
 	steps := trackedSchemaMigrationSteps("standard")
-	found := false
+	foundFromOne := false
+	foundFromTwo := false
 	for _, step := range steps {
-		if step.Component == defaultSchemaVersionComponent && step.FromVersion == 1 && step.ToVersion == 2 {
-			found = true
-			break
+		if step.Component != defaultSchemaVersionComponent {
+			continue
+		}
+		if step.FromVersion == 1 && step.ToVersion == 3 {
+			foundFromOne = true
+		}
+		if step.FromVersion == 2 && step.ToVersion == 3 {
+			foundFromTwo = true
 		}
 	}
-	if !found {
-		t.Fatalf("trackedSchemaMigrationSteps() missing postgres_combined 1 -> 2 scratchpad upgrade step")
+	if !foundFromOne || !foundFromTwo {
+		t.Fatalf("trackedSchemaMigrationSteps() missing postgres_combined cleanup paths: from1=%t from2=%t", foundFromOne, foundFromTwo)
 	}
 }
 
@@ -87,15 +93,31 @@ func TestTrackedSchemaMigrationStepsIncludesScratchpadUpgrade(t *testing.T) {
 // TestResolveTrackedSchemaMigrationPathBuildsSequentialUpgrade 用于验证较旧 PostgreSQL 版本会被解析成声明好的顺序迁移路径。
 func TestResolveTrackedSchemaMigrationPathBuildsSequentialUpgrade(t *testing.T) {
 	steps := trackedSchemaMigrationSteps("standard")
-	path, err := resolveTrackedSchemaMigrationPath(defaultSchemaVersionComponent, 1, 2, steps)
+	path, err := resolveTrackedSchemaMigrationPath(defaultSchemaVersionComponent, 1, 3, steps)
 	if err != nil {
 		t.Fatalf("resolveTrackedSchemaMigrationPath error = %v, want nil", err)
 	}
 	if len(path) != 1 {
 		t.Fatalf("resolveTrackedSchemaMigrationPath length = %d, want 1", len(path))
 	}
-	if path[0].FromVersion != 1 || path[0].ToVersion != 2 {
-		t.Fatalf("resolveTrackedSchemaMigrationPath[0] = %+v, want 1 -> 2", path[0])
+	if path[0].FromVersion != 1 || path[0].ToVersion != 3 {
+		t.Fatalf("resolveTrackedSchemaMigrationPath[0] = %+v, want 1 -> 3", path[0])
+	}
+}
+
+// TestResolveTrackedSchemaMigrationPathBuildsCurrentCleanupUpgrade verifies version-2 stores receive the current cleanup step.
+// TestResolveTrackedSchemaMigrationPathBuildsCurrentCleanupUpgrade 用于验证 2 版本库存会执行当前清理升级步骤。
+func TestResolveTrackedSchemaMigrationPathBuildsCurrentCleanupUpgrade(t *testing.T) {
+	steps := trackedSchemaMigrationSteps("standard")
+	path, err := resolveTrackedSchemaMigrationPath(defaultSchemaVersionComponent, 2, 3, steps)
+	if err != nil {
+		t.Fatalf("resolveTrackedSchemaMigrationPath error = %v, want nil", err)
+	}
+	if len(path) != 1 {
+		t.Fatalf("resolveTrackedSchemaMigrationPath length = %d, want 1", len(path))
+	}
+	if path[0].FromVersion != 2 || path[0].ToVersion != 3 {
+		t.Fatalf("resolveTrackedSchemaMigrationPath[0] = %+v, want 2 -> 3", path[0])
 	}
 }
 
@@ -105,5 +127,25 @@ func TestResolveTrackedSchemaMigrationPathRejectsMissingStep(t *testing.T) {
 	_, err := resolveTrackedSchemaMigrationPath("postgres_combined_search_standard", 1, 2, trackedSchemaMigrationSteps("standard"))
 	if err == nil {
 		t.Fatalf("resolveTrackedSchemaMigrationPath error = nil, want non-nil")
+	}
+}
+
+// TestPostgresManagedTableNamesForDebugCleanIncludesLegacyWorkMemoryTables verifies debug-clean still removes historical tables that are no longer created by the current schema.
+// TestPostgresManagedTableNamesForDebugCleanIncludesLegacyWorkMemoryTables 用于验证 debug-clean 仍会删除当前 schema 不再创建的历史表。
+func TestPostgresManagedTableNamesForDebugCleanIncludesLegacyWorkMemoryTables(t *testing.T) {
+	legacyNodesTable := "vmm_" + "scratch" + "pad_nodes"
+	legacyPlansTable := "vmm_" + "scratch" + "pad_plans"
+	foundNodes := false
+	foundPlans := false
+	for _, tableName := range postgresManagedTableNamesForDebugClean() {
+		if tableName == legacyNodesTable {
+			foundNodes = true
+		}
+		if tableName == legacyPlansTable {
+			foundPlans = true
+		}
+	}
+	if !foundNodes || !foundPlans {
+		t.Fatalf("postgres debug-clean legacy work-memory tables: nodes=%t plans=%t", foundNodes, foundPlans)
 	}
 }

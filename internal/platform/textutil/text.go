@@ -17,6 +17,8 @@ var (
 		regexp.MustCompile(`(?is)<think>.*?</think>`),
 		regexp.MustCompile(`(?is)<analysis>.*?</analysis>`),
 		regexp.MustCompile(`(?is)<reasoning>.*?</reasoning>`),
+		// Keep <scratchpad> stripping as generic hidden-thought hygiene, not as the removed work-memory feature.
+		// 保留 <scratchpad> 清洗作为通用隐藏思考卫生处理，而不是已移除的工作记忆功能。
 		regexp.MustCompile(`(?is)<scratchpad>.*?</scratchpad>`),
 		regexp.MustCompile(`(?is)<reflection>.*?</reflection>`),
 	}

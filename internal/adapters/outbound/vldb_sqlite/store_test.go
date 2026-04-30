@@ -382,7 +382,7 @@ func TestStoreGetSchemaComponentVersionReadsComponentTable(t *testing.T) {
 
 	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
 		if strings.Contains(strings.TrimSpace(req.GetSql()), "FROM vmm_schema_versions") {
-			return &fakeQueryJSONResponse{JsonData: `[{"component":"sqlite","schema_version":19}]`}, nil
+			return &fakeQueryJSONResponse{JsonData: `[{"component":"sqlite","schema_version":20}]`}, nil
 		}
 		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
@@ -391,8 +391,8 @@ func TestStoreGetSchemaComponentVersionReadsComponentTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSchemaComponentVersion returned error: %v", err)
 	}
-	if version != 19 {
-		t.Fatalf("schema version = %d, want 19", version)
+	if version != 20 {
+		t.Fatalf("schema version = %d, want 20", version)
 	}
 }
 
@@ -452,8 +452,8 @@ func TestStoreEnsureSQLiteSchemaRejectsUnsupportedPre19Version(t *testing.T) {
 	}
 }
 
-// TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline verifies an empty database still bootstraps straight to version 19.
-// TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline 用于验证空数据库仍会直接初始化到 19 基线。
+// TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline verifies an empty database still bootstraps straight to version 20.
+// TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline 用于验证空数据库仍会直接初始化到 20 基线。
 func TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline(t *testing.T) {
 	fake := &fakeSQLiteDatabase{}
 	store := &Store{database: fake, timeout: time.Second}
@@ -488,14 +488,13 @@ func TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline(t *test
 	}
 }
 
-// TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step verifies future upgrades can still chain from the frozen 19 baseline.
-// TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step 用于验证未来升级仍能从冻结后的 19 基线继续向上衔接。
-func TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step(t *testing.T) {
+// TestStoreEnsureSQLiteSchemaMigratesNineteenToCurrentBaseline verifies existing version-19 databases drop removed work-memory tables.
+// TestStoreEnsureSQLiteSchemaMigratesNineteenToCurrentBaseline 用于验证既有 19 版本数据库会删除已移除的工作记忆表。
+func TestStoreEnsureSQLiteSchemaMigratesNineteenToCurrentBaseline(t *testing.T) {
 	fake := &fakeSQLiteDatabase{}
 	store := &Store{database: fake, timeout: time.Second}
 
 	executedSQL := make([]string, 0)
-	stepApplied := false
 	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
 		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
 		return &fakeExecuteResponse{Success: true}, nil
@@ -507,14 +506,46 @@ func TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step(t *testing.T) {
 		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
 	}
 
+	if err := store.ensureSQLiteSchema(context.Background()); err != nil {
+		t.Fatalf("ensureSQLiteSchema returned error: %v", err)
+	}
+	oldNodesTable := "vmm_" + "scratch" + "pad_nodes"
+	oldPlansTable := "vmm_" + "scratch" + "pad_plans"
+	joined := strings.Join(executedSQL, "\n")
+	if !strings.Contains(joined, "DROP TABLE IF EXISTS "+oldNodesTable) ||
+		!strings.Contains(joined, "DROP TABLE IF EXISTS "+oldPlansTable) ||
+		!strings.Contains(joined, "INSERT INTO vmm_schema_versions") {
+		t.Fatalf("expected old work-memory table drops plus version persistence, got %q", joined)
+	}
+}
+
+// TestStoreApplySchemaMigrationPlanSupportsFuture20To21Step verifies future upgrades can still chain from the current 20 baseline.
+// TestStoreApplySchemaMigrationPlanSupportsFuture20To21Step 用于验证未来升级仍能从当前 20 基线继续向上衔接。
+func TestStoreApplySchemaMigrationPlanSupportsFuture20To21Step(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	executedSQL := make([]string, 0)
+	stepApplied := false
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
+		executedSQL = append(executedSQL, strings.TrimSpace(req.GetSql()))
+		return &fakeExecuteResponse{Success: true}, nil
+	}
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		if strings.Contains(strings.TrimSpace(req.GetSql()), "FROM vmm_schema_versions") {
+			return &fakeQueryJSONResponse{JsonData: `[{"component":"sqlite","schema_version":20}]`}, nil
+		}
+		return &fakeQueryJSONResponse{JsonData: `[]`}, nil
+	}
+
 	err := store.applySchemaMigrationPlan(context.Background(), schemaMigrationPlan{
 		Component:               schemaComponentSQLite,
-		MinimumSupportedVersion: 19,
-		TargetVersion:           20,
+		MinimumSupportedVersion: 20,
+		TargetVersion:           21,
 		Bootstrap:               bootstrapCurrentSQLiteSchema,
 		Steps: []schemaMigrationStep{{
-			FromVersion: 19,
-			ToVersion:   20,
+			FromVersion: 20,
+			ToVersion:   21,
 			Name:        "future migration",
 			Up: func(ctx context.Context, s *Store) error {
 				stepApplied = true
@@ -526,7 +557,7 @@ func TestStoreApplySchemaMigrationPlanSupportsFuture19To20Step(t *testing.T) {
 		t.Fatalf("applySchemaMigrationPlan returned error: %v", err)
 	}
 	if !stepApplied {
-		t.Fatal("expected 19->20 migration step to run")
+		t.Fatal("expected 20->21 migration step to run")
 	}
 	joined := strings.Join(executedSQL, "\n")
 	if !strings.Contains(joined, "CREATE TABLE IF NOT EXISTS vmm_future_upgrade_marker") ||
@@ -809,6 +840,16 @@ func TestCurrentSchemaSQLContainsContextualMemoryTables(t *testing.T) {
 	}
 	if !strings.Contains(debugCleanManagedSchemaSQL, "DROP TABLE IF EXISTS vmm_memory_context_edges;") {
 		t.Fatal("expected debug clean schema script to drop vmm_memory_context_edges")
+	}
+	legacyTablePrefix := "vmm_" + "scratch" + "pad"
+	if strings.Contains(currentSchemaSQL, legacyTablePrefix) {
+		t.Fatalf("expected current sqlite schema to omit removed work-memory tables")
+	}
+	legacyNodesTable := legacyTablePrefix + "_nodes"
+	legacyPlansTable := legacyTablePrefix + "_plans"
+	if !strings.Contains(debugCleanManagedSchemaSQL, "DROP TABLE IF EXISTS "+legacyNodesTable+";") ||
+		!strings.Contains(debugCleanManagedSchemaSQL, "DROP TABLE IF EXISTS "+legacyPlansTable+";") {
+		t.Fatalf("expected debug-clean script to keep legacy work-memory table drops")
 	}
 }
 

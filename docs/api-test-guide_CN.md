@@ -418,153 +418,7 @@ grpcurl -plaintext `
   - `3 = user`
 - 返回只保留 `memoryId` 与 `deduped`
 
-## 十九、ScratchpadUpsert
-
-```powershell
-grpcurl -plaintext `
-  -d '{
-    "sessionId": "sess_001",
-    "userId": 7,
-    "projectId": 9,
-    "planName": "USER_AUTH_PLAN",
-    "items": [
-      {
-        "key": "方案",
-        "value": "先补登录鉴权链路，再回填接口联调步骤。"
-      },
-      {
-        "key": "关键文件",
-        "value": "auth/service.go 负责令牌校验，grpc/server.go 负责请求接线。"
-      }
-    ]
-  }' `
-  127.0.0.1:17625 `
-  vmm.v1.VMMService/ScratchpadUpsert
-```
-
-说明：
-
-- `status` 返回枚举
-- `msg` 固定英文
-- 返回计数字段：
-  - `affected_count`
-  - `inserted_count`
-  - `updated_count`
-- 如果宿主框架要把结果转交给 AI Agent：
-  - 先把枚举转译成模型更容易理解的文本状态
-- `key + value` 与 `items[]` 不能混传
-
-## 二十、ScratchpadDelete
-
-```powershell
-grpcurl -plaintext `
-  -d '{
-    "sessionId": "sess_001",
-    "userId": 7,
-    "projectId": 9,
-    "planName": "USER_AUTH_PLAN",
-    "keys": ["关键文件", "阻塞项"]
-  }' `
-  127.0.0.1:17625 `
-  vmm.v1.VMMService/ScratchpadDelete
-```
-
-说明：
-
-- 当前 session 还没有 plan 时：
-  - 返回成功
-  - `msg = "No scratchpad plan exists for the current session. Create records first."`
-- `Delete` 不会在空范围下自动锁定新计划
-- 返回 `affected_count`
-- `key` 与 `keys[]` 不能混传
-
-## 二十一、ScratchpadGet
-
-```powershell
-grpcurl -plaintext `
-  -d '{
-    "sessionId": "sess_001",
-    "userId": 7,
-    "projectId": 9
-  }' `
-  127.0.0.1:17625 `
-  vmm.v1.VMMService/ScratchpadGet
-```
-
-按多键读取：
-
-```powershell
-grpcurl -plaintext `
-  -d '{
-    "sessionId": "sess_001",
-    "userId": 7,
-    "projectId": 9,
-    "keys": ["方案", "关键文件"]
-  }' `
-  127.0.0.1:17625 `
-  vmm.v1.VMMService/ScratchpadGet
-```
-
-说明：
-
-- `keys` 为空或不传：返回全部
-- `keys` 非空：返回命中的多条 item
-- 无数据时不报错
-- 返回：
-  - `status = SCRATCHPAD_STATUS_SUCCESS`
-  - `items = []`
-  - `msg = "No scratchpad records found for the current session."`
-- 有数据时还会返回：
-  - `plan_name`
-  - `item_count`
-  - `updated_timestamp`
-
-## 二十二、ScratchpadListKeys
-
-```powershell
-grpcurl -plaintext `
-  -d '{
-    "sessionId": "sess_001",
-    "userId": 7,
-    "projectId": 9
-  }' `
-  127.0.0.1:17625 `
-  vmm.v1.VMMService/ScratchpadListKeys
-```
-
-说明：
-
-- 直接返回当前 scope 的 canonical `plan_name` 与完整 `keys[]`
-- 不返回任何 value
-- 无数据时不报错
-- 返回：
-  - `status = SCRATCHPAD_STATUS_SUCCESS`
-  - `keys = []`
-  - `msg = "No scratchpad records found for the current session."`
-- 有数据时还会返回：
-  - `plan_name`
-  - `key_count`
-  - `updated_timestamp`
-
-## 二十三、ScratchpadClean
-
-```powershell
-grpcurl -plaintext `
-  -d '{
-    "sessionId": "sess_001",
-    "userId": 7,
-    "projectId": 9
-  }' `
-  127.0.0.1:17625 `
-  vmm.v1.VMMService/ScratchpadClean
-```
-
-说明：
-
-- 用于任务结束后显式清空当前 DWM scratchpad
-- 当前已经为空时仍返回成功
-
-## 二十四、常见错误
+## 十九、常见错误
 
 ### 参数错误
 
@@ -585,7 +439,7 @@ grpcurl -plaintext `
 
 - gRPC code：`ResourceExhausted`
 
-## 二十五、推荐测试顺序
+## 二十、推荐测试顺序
 
 建议按这个顺序联调：
 
@@ -601,5 +455,4 @@ grpcurl -plaintext `
 10. `GetProfileNodes / GetProfileBundle`
 11. `ApplyProfileInstruction`
 12. `WriteMemories`
-13. `ScratchpadUpsert / ScratchpadGet / ScratchpadDelete / ScratchpadListKeys / ScratchpadClean`
-14. `DeleteProject / DeleteUser / MigrateProject`
+13. `DeleteProject / DeleteUser / MigrateProject`

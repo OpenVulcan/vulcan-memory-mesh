@@ -35,3 +35,14 @@ func TestCleanConversationTextStripsThoughtAndRawResourceURL(t *testing.T) {
 		t.Fatalf("got %q want %q", got, want)
 	}
 }
+
+// TestCleanConversationTextStripsScratchpadThoughtTag verifies the generic hidden-thought tag remains filtered after the work-memory feature removal.
+// TestCleanConversationTextStripsScratchpadThoughtTag 用于验证工作记忆功能移除后，通用隐藏思考标签仍会被过滤。
+func TestCleanConversationTextStripsScratchpadThoughtTag(t *testing.T) {
+	input := "<scratchpad>hidden plan</scratchpad> 公开内容"
+	got := CleanConversationText(input)
+	want := "公开内容"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}

@@ -28,7 +28,6 @@ type Dependencies struct {
 	Workspace         usecase.WorkspaceExecutor
 	Profiles          usecase.ProfileExecutor
 	Memory            usecase.MemoryExecutor
-	Scratchpad        usecase.ScratchpadExecutor
 	ChatCompact       usecase.ChatCompactExecutor
 	PreCheck          usecase.PreCheckExecutor
 	PostAction        usecase.PostActionExecutor
@@ -50,7 +49,6 @@ type Server struct {
 	workspace        usecase.WorkspaceExecutor
 	profiles         usecase.ProfileExecutor
 	memory           usecase.MemoryExecutor
-	scratchpad       usecase.ScratchpadExecutor
 	chatCompact      usecase.ChatCompactExecutor
 	preCheck         usecase.PreCheckExecutor
 	postAction       usecase.PostActionExecutor
@@ -80,7 +78,6 @@ func NewServer(deps Dependencies) *Server {
 		workspace:        deps.Workspace,
 		profiles:         deps.Profiles,
 		memory:           deps.Memory,
-		scratchpad:       deps.Scratchpad,
 		chatCompact:      deps.ChatCompact,
 		preCheck:         deps.PreCheck,
 		postAction:       deps.PostAction,
@@ -196,69 +193,6 @@ func toUserEntry(user logicdomain.UserRecord) *vmmv1.UserEntry {
 		UserId:   user.ID,
 		UserName: user.Name,
 	}
-}
-
-// toProtoScratchpadStatus converts the internal DWM business status into the transport enum exposed by gRPC callers.
-// toProtoScratchpadStatus 用于把内部 DWM 业务状态转换成 gRPC 调用方可见的传输层枚举。
-func toProtoScratchpadStatus(status logicdomain.ScratchpadStatus) vmmv1.ScratchpadStatus {
-	switch status {
-	case logicdomain.ScratchpadStatusSuccess:
-		return vmmv1.ScratchpadStatus_SCRATCHPAD_STATUS_SUCCESS
-	case logicdomain.ScratchpadStatusFailed:
-		return vmmv1.ScratchpadStatus_SCRATCHPAD_STATUS_FAILED
-	default:
-		return vmmv1.ScratchpadStatus_SCRATCHPAD_STATUS_UNSPECIFIED
-	}
-}
-
-// toProtoScratchpadItems converts isolated DWM key/value anchors into the compact protobuf transport shape returned by the scratchpad get RPC.
-// toProtoScratchpadItems 用于把隔离 DWM key/value 锚点转换成 scratchpad get RPC 返回的紧凑 protobuf 结构。
-func toProtoScratchpadItems(items []logicdomain.ScratchpadItem) []*vmmv1.ScratchpadItem {
-	out := make([]*vmmv1.ScratchpadItem, 0, len(items))
-	for _, item := range items {
-		out = append(out, &vmmv1.ScratchpadItem{
-			Key:   item.Key,
-			Value: item.Value,
-		})
-	}
-	return out
-}
-
-// collectScratchpadUpsertItems reconstructs the deterministic DWM item batch from either the explicit batch payload or the validated single-item shorthand.
-// collectScratchpadUpsertItems 用于从显式批量载荷或已校验的单项简写中重建确定性的 DWM item 批次。
-func collectScratchpadUpsertItems(req *vmmv1.ScratchpadUpsertRequest) []logicdomain.ScratchpadItem {
-	if req == nil {
-		return nil
-	}
-	if len(req.GetItems()) > 0 {
-		items := make([]logicdomain.ScratchpadItem, 0, len(req.GetItems()))
-		for _, item := range req.GetItems() {
-			if item == nil {
-				continue
-			}
-			items = append(items, logicdomain.ScratchpadItem{
-				Key:   item.GetKey(),
-				Value: item.GetValue(),
-			})
-		}
-		return items
-	}
-	return []logicdomain.ScratchpadItem{{
-		Key:   req.GetKey(),
-		Value: req.GetValue(),
-	}}
-}
-
-// collectScratchpadDeleteKeys reconstructs the deterministic DWM delete batch from either the explicit key list or the validated single-key shorthand.
-// collectScratchpadDeleteKeys 用于从显式 key 列表或已校验的单键简写中重建确定性的 DWM 删除批次。
-func collectScratchpadDeleteKeys(req *vmmv1.ScratchpadDeleteRequest) []string {
-	if req == nil {
-		return nil
-	}
-	if len(req.GetKeys()) > 0 {
-		return append([]string(nil), req.GetKeys()...)
-	}
-	return []string{req.GetKey()}
 }
 
 // toProfileNodeEntry converts one active profile node into the protobuf transport shape used by profile query and manual instruction RPCs.
