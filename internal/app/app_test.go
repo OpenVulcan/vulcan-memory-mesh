@@ -615,8 +615,9 @@ func TestSelectProcessorLLMModelUsesSelectionLevelWeights(t *testing.T) {
 			APIKeys:  []string{"llm-a"},
 			Model:    "qwen3.5-flash",
 			Weights: config.LLMRouteWeightConfig{
-				PreCheckL1:   intPtrForAppTest(200),
-				PostActionL1: intPtrForAppTest(40),
+				PreCheckL1:         intPtrForAppTest(200),
+				PostActionL1:       intPtrForAppTest(40),
+				ProfileInstruction: intPtrForAppTest(50),
 			},
 		},
 		{
@@ -626,8 +627,21 @@ func TestSelectProcessorLLMModelUsesSelectionLevelWeights(t *testing.T) {
 			APIKeys:  []string{"llm-b"},
 			Model:    "qwen3.5-base",
 			Weights: config.LLMRouteWeightConfig{
-				PreCheckL1:   intPtrForAppTest(50),
-				PostActionL1: intPtrForAppTest(220),
+				PreCheckL1:         intPtrForAppTest(50),
+				PostActionL1:       intPtrForAppTest(220),
+				ProfileInstruction: intPtrForAppTest(60),
+			},
+		},
+		{
+			Name:     "profile",
+			Provider: "openai",
+			Endpoint: "https://profile.example/v1",
+			APIKeys:  []string{"llm-c"},
+			Model:    "qwen3.5-profile",
+			Weights: config.LLMRouteWeightConfig{
+				PreCheckL1:         intPtrForAppTest(40),
+				PostActionL1:       intPtrForAppTest(50),
+				ProfileInstruction: intPtrForAppTest(230),
 			},
 		},
 	}
@@ -637,6 +651,9 @@ func TestSelectProcessorLLMModelUsesSelectionLevelWeights(t *testing.T) {
 	}
 	if got, want := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL1), "qwen3.5-base"; got != want {
 		t.Fatalf("postaction llm model = %q, want %q", got, want)
+	}
+	if got, want := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelProfileInstruction), "qwen3.5-profile"; got != want {
+		t.Fatalf("profile instruction llm model = %q, want %q", got, want)
 	}
 }
 

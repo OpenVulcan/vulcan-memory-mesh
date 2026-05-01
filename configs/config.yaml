@@ -4,6 +4,7 @@ x-llm-bailian: &llm_bailian
     precheck_l2: 100
     postaction_l1: 100
     postaction_l2: 100
+    profile_instruction: 100
     reserve: 100
   provider: "openai"
   endpoint: "${BAILIAN_BASE_URL}"
@@ -104,6 +105,7 @@ llm:
         precheck_l2: 130
         postaction_l1: 145
         postaction_l2: 130
+        profile_instruction: 125
         reserve: 100
 
     - <<: *llm_bailian
@@ -116,6 +118,7 @@ llm:
         precheck_l2: 155
         postaction_l1: 140
         postaction_l2: 140
+        profile_instruction: 145
         reserve: 100
 
     - <<: *llm_bailian
@@ -128,6 +131,7 @@ llm:
         precheck_l2: 140
         postaction_l1: 140
         postaction_l2: 155
+        profile_instruction: 160
         reserve: 100
 
     - <<: *llm_bailian
@@ -140,6 +144,7 @@ llm:
         precheck_l2: 120
         postaction_l1: 139
         postaction_l2: 120
+        profile_instruction: 120
         reserve: 100
 
     - <<: *llm_bailian
@@ -152,6 +157,7 @@ llm:
         precheck_l2: 139
         postaction_l1: 119
         postaction_l2: 139
+        profile_instruction: 135
         reserve: 100
 
     - <<: *llm_bailian
@@ -164,6 +170,7 @@ llm:
         precheck_l2: 120
         postaction_l1: 130
         postaction_l2: 120
+        profile_instruction: 120
         reserve: 100
 
 embedding:

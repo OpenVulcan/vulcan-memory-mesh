@@ -25,6 +25,7 @@ x-llm-siliconflow: &llm_siliconflow
     precheck_l2: 100
     postaction_l1: 100
     postaction_l2: 100
+    profile_instruction: 100
     reserve: 100
   provider: "openai"
   endpoint: "${SILICONFLOW_BASE_URL}"
@@ -117,6 +118,7 @@ llm:
     #     precheck_l2: 150
     #     postaction_l1: 140
     #     postaction_l2: 110
+    #     profile_instruction: 120
     #     reserve: 100
     - <<: *llm_siliconflow
       name: "MiniMaxM2.5"
@@ -128,6 +130,7 @@ llm:
         precheck_l2: 150
         postaction_l1: 140
         postaction_l2: 110
+        profile_instruction: 120
         reserve: 100
 
     - <<: *llm_siliconflow
@@ -140,6 +143,7 @@ llm:
         precheck_l2: 110
         postaction_l1: 130
         postaction_l2: 150
+        profile_instruction: 155
         reserve: 100
 
     - <<: *llm_siliconflow
@@ -152,6 +156,7 @@ llm:
         precheck_l2: 100
         postaction_l1: 100
         postaction_l2: 100
+        profile_instruction: 110
         reserve: 100
 
     # - <<: *llm_siliconflow

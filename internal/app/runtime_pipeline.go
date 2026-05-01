@@ -52,14 +52,14 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 	// Build the application-facing use cases on top of the selected storage capabilities and AI processors so the composition root can remain a thin coordinator.
 	// 基于选中的存储能力与 AI 处理器构建应用层用例，让组合根本身保持为薄协调器。
 	workspace := usecase.NewWorkspaceUseCase(storage.WorkspaceStore, storage.Vector)
-	reservePromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelReserve)
+	profileInstructionPromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelProfileInstruction)
 	preCheckL1PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPreCheckL1)
 	preCheckL2PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPreCheckL2)
 	postActionL1PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL1)
 	postActionL2PromptModel := selectProcessorLLMModel(cfg, appports.LLMRouteSelectionLevelPostActionL2)
 	processorLLM := adaptLLMForProcessorRoutes(cfg, ai.LLM)
 	processorLLM = wrapLLMWithOutputLogger(processorLLM, llmOutputLogger)
-	profiles := usecase.NewProfileUseCase(storage.ProfileStore, processor.NewManualProfileReviewer(processorLLM, prompts, reservePromptModel), logger)
+	profiles := usecase.NewProfileUseCase(storage.ProfileStore, processor.NewManualProfileReviewer(processorLLM, prompts, profileInstructionPromptModel), logger)
 	memory := usecase.NewMemoryUseCase(storage.ProfileStore, storage.MemoryStore, ai.Embedding, storage.Vector, logger)
 	memory.ConfigurePIIScrubber(piiScrubber)
 	chatCompact := usecase.NewChatCompactUseCase(storage.ChatCompactStore)

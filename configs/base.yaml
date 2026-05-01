@@ -324,6 +324,10 @@ llm:
         # PostAction 第二层候选评审使用的权重。
         postaction_l2: 100
 
+        # Weight used by manual profile-instruction review.
+        # 手工画像指令评审使用的权重。
+        profile_instruction: 100
+
         # Reserved slot for non-mainline or future LLM chains.
         # 为非主链路或未来 LLM 链路保留的槽位。
         reserve: 100

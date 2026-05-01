@@ -48,7 +48,7 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 		SystemPrompt:        prompt,
 		UserPrompt:          requestBody,
 		ResponseFormat:      logicports.LLMResponseFormatJSON,
-		RouteSelectionLevel: logicports.LLMRouteSelectionLevelReserve,
+		RouteSelectionLevel: logicports.LLMRouteSelectionLevelProfileInstruction,
 	})
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err

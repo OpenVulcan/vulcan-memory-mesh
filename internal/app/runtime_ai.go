@@ -61,7 +61,7 @@ func (c routeFailoverAwareLLMClient) Generate(ctx context.Context, req appports.
 		return appports.LLMResponse{}, fmt.Errorf("route failover aware llm client is nil")
 	}
 	// Clear the model field so the downstream multi-route failover wrapper can pick the correct model
-	// from the route pool based on the active selection level (precheck/postaction/reserve).
+	// from the route pool based on the active selection level (precheck/postaction/profile-instruction/reserve).
 	// 清空 model 字段，让下游多路由容灾包装器能根据当前选择层级从路由池中选出正确模型。
 	req.Model = ""
 	return c.upstream.Generate(ctx, req)
@@ -90,11 +90,12 @@ func buildLLM(cfg config.Config) (appports.LLMClient, error) {
 		routeOptions = append(routeOptions, ai_key_failover.LLMRouteOptions{
 			Name: buildRouteName("llm", idx, route.Name),
 			SelectionWeights: ai_key_failover.LLMRouteSelectionWeights{
-				PreCheckL1:   resolvedWeights.PreCheckL1,
-				PreCheckL2:   resolvedWeights.PreCheckL2,
-				PostActionL1: resolvedWeights.PostActionL1,
-				PostActionL2: resolvedWeights.PostActionL2,
-				Reserve:      resolvedWeights.Reserve,
+				PreCheckL1:         resolvedWeights.PreCheckL1,
+				PreCheckL2:         resolvedWeights.PreCheckL2,
+				PostActionL1:       resolvedWeights.PostActionL1,
+				PostActionL2:       resolvedWeights.PostActionL2,
+				ProfileInstruction: resolvedWeights.ProfileInstruction,
+				Reserve:            resolvedWeights.Reserve,
 			},
 			Provider:     route.Provider,
 			Endpoint:     route.Endpoint,

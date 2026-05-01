@@ -26,7 +26,10 @@ const (
 	LLMRouteSelectionLevelPreCheckL2   = logicports.LLMRouteSelectionLevelPreCheckL2
 	LLMRouteSelectionLevelPostActionL1 = logicports.LLMRouteSelectionLevelPostActionL1
 	LLMRouteSelectionLevelPostActionL2 = logicports.LLMRouteSelectionLevelPostActionL2
-	LLMRouteSelectionLevelReserve      = logicports.LLMRouteSelectionLevelReserve
+	// LLMRouteSelectionLevelProfileInstruction exposes the manual profile-instruction route slot to app-layer adapters.
+	// LLMRouteSelectionLevelProfileInstruction 用于向应用层适配器暴露手工画像指令的独立路由槽位。
+	LLMRouteSelectionLevelProfileInstruction = logicports.LLMRouteSelectionLevelProfileInstruction
+	LLMRouteSelectionLevelReserve            = logicports.LLMRouteSelectionLevelReserve
 )
 
 // LLMRequest carries the provider-neutral generation payload built by processors and use cases.

@@ -35,7 +35,10 @@ type LLMRouteSelectionWeights struct {
 	PreCheckL2   int
 	PostActionL1 int
 	PostActionL2 int
-	Reserve      int
+	// ProfileInstruction weights manual profile-instruction review calls independently from post-action review.
+	// ProfileInstruction 用于让手工画像指令评审调用独立于 post-action 评审配置权重。
+	ProfileInstruction int
+	Reserve            int
 }
 
 // WeightFor returns the concrete route weight for the requested business call tier and falls back to the reserve slot for unknown callers.
@@ -50,6 +53,8 @@ func (w LLMRouteSelectionWeights) WeightFor(level appports.LLMRouteSelectionLeve
 		return w.PostActionL1
 	case appports.LLMRouteSelectionLevelPostActionL2:
 		return w.PostActionL2
+	case appports.LLMRouteSelectionLevelProfileInstruction:
+		return w.ProfileInstruction
 	default:
 		return w.Reserve
 	}

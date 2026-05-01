@@ -67,6 +67,9 @@ func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	if llm.request.SystemPrompt != "return json only" {
 		t.Fatalf("expected runtime to preserve prompt file content without shared injection, got %s", llm.request.SystemPrompt)
 	}
+	if llm.request.RouteSelectionLevel != logicports.LLMRouteSelectionLevelProfileInstruction {
+		t.Fatalf("expected profile instruction route selection level, got %q", llm.request.RouteSelectionLevel)
+	}
 	if !strings.Contains(llm.request.UserPrompt, `"target": "TEAM"`) {
 		t.Fatalf("expected TEAM target in request body, got %s", llm.request.UserPrompt)
 	}

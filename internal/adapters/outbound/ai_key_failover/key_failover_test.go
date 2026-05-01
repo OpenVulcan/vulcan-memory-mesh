@@ -877,20 +877,28 @@ func TestLLMMultiRouteClientGeneratePrefersHigherWeight(t *testing.T) {
 func TestLLMMultiRouteClientGenerateUsesPerSceneWeights(t *testing.T) {
 	precheck := &stubLLMClient{response: appports.LLMResponse{Content: "precheck"}}
 	postaction := &stubLLMClient{response: appports.LLMResponse{Content: "postaction"}}
+	profile := &stubLLMClient{response: appports.LLMResponse{Content: "profile"}}
 	client := &LLMMultiRouteClient{
 		routes: []llmMultiRouteEntry{
 			{
 				name:             "precheck",
-				selectionWeights: LLMRouteSelectionWeights{PreCheckL1: 200, PostActionL1: 50, Reserve: 100},
+				selectionWeights: LLMRouteSelectionWeights{PreCheckL1: 200, PostActionL1: 50, ProfileInstruction: 40, Reserve: 100},
 				model:            "model-precheck",
 				client:           precheck,
 				classify:         func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} },
 			},
 			{
 				name:             "postaction",
-				selectionWeights: LLMRouteSelectionWeights{PreCheckL1: 60, PostActionL1: 220, Reserve: 100},
+				selectionWeights: LLMRouteSelectionWeights{PreCheckL1: 60, PostActionL1: 220, ProfileInstruction: 50, Reserve: 100},
 				model:            "model-postaction",
 				client:           postaction,
+				classify:         func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} },
+			},
+			{
+				name:             "profile",
+				selectionWeights: LLMRouteSelectionWeights{PreCheckL1: 50, PostActionL1: 60, ProfileInstruction: 230, Reserve: 100},
+				model:            "model-profile",
+				client:           profile,
 				classify:         func(error, time.Time) failureDecision { return failureDecision{Class: errorClassUnknown} },
 			},
 		},
@@ -907,8 +915,8 @@ func TestLLMMultiRouteClientGenerateUsesPerSceneWeights(t *testing.T) {
 	if resp.Content != "precheck" {
 		t.Fatalf("precheck_l1 llm response = %q", resp.Content)
 	}
-	if precheck.calls != 1 || postaction.calls != 0 {
-		t.Fatalf("unexpected precheck_l1 llm call counts: precheck=%d postaction=%d", precheck.calls, postaction.calls)
+	if precheck.calls != 1 || postaction.calls != 0 || profile.calls != 0 {
+		t.Fatalf("unexpected precheck_l1 llm call counts: precheck=%d postaction=%d profile=%d", precheck.calls, postaction.calls, profile.calls)
 	}
 
 	resp, err = client.Generate(context.Background(), appports.LLMRequest{
@@ -922,8 +930,23 @@ func TestLLMMultiRouteClientGenerateUsesPerSceneWeights(t *testing.T) {
 	if resp.Content != "postaction" {
 		t.Fatalf("postaction_l1 llm response = %q", resp.Content)
 	}
-	if precheck.calls != 1 || postaction.calls != 1 {
-		t.Fatalf("unexpected postaction_l1 llm call counts: precheck=%d postaction=%d", precheck.calls, postaction.calls)
+	if precheck.calls != 1 || postaction.calls != 1 || profile.calls != 0 {
+		t.Fatalf("unexpected postaction_l1 llm call counts: precheck=%d postaction=%d profile=%d", precheck.calls, postaction.calls, profile.calls)
+	}
+
+	resp, err = client.Generate(context.Background(), appports.LLMRequest{
+		SystemPrompt:        "system",
+		UserPrompt:          "user",
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelProfileInstruction,
+	})
+	if err != nil {
+		t.Fatalf("generate with profile_instruction weights: %v", err)
+	}
+	if resp.Content != "profile" {
+		t.Fatalf("profile_instruction llm response = %q", resp.Content)
+	}
+	if precheck.calls != 1 || postaction.calls != 1 || profile.calls != 1 {
+		t.Fatalf("unexpected profile_instruction llm call counts: precheck=%d postaction=%d profile=%d", precheck.calls, postaction.calls, profile.calls)
 	}
 }
 
@@ -1207,15 +1230,16 @@ func (s *stubEmbeddingClient) Embed(_ context.Context, req appports.EmbeddingReq
 	return s.responses[s.calls-1], nil
 }
 
-// llmSelectionWeightsForTest mirrors one legacy shared route weight into all five LLM selection slots so compatibility-focused tests stay concise.
-// llmSelectionWeightsForTest 用于把一份旧版共享路由权重镜像到 5 个 LLM 选择槽位，让兼容性测试保持简洁。
+// llmSelectionWeightsForTest mirrors one legacy shared route weight into all six LLM selection slots so compatibility-focused tests stay concise.
+// llmSelectionWeightsForTest 用于把一份旧版共享路由权重镜像到 6 个 LLM 选择槽位，让兼容性测试保持简洁。
 func llmSelectionWeightsForTest(weight int) LLMRouteSelectionWeights {
 	return LLMRouteSelectionWeights{
-		PreCheckL1:   weight,
-		PreCheckL2:   weight,
-		PostActionL1: weight,
-		PostActionL2: weight,
-		Reserve:      weight,
+		PreCheckL1:         weight,
+		PreCheckL2:         weight,
+		PostActionL1:       weight,
+		PostActionL2:       weight,
+		ProfileInstruction: weight,
+		Reserve:            weight,
 	}
 }
 

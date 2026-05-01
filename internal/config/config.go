@@ -299,17 +299,23 @@ type LLMRouteWeightConfig struct {
 	PreCheckL2   *int `json:"precheck_l2,omitempty"`
 	PostActionL1 *int `json:"postaction_l1,omitempty"`
 	PostActionL2 *int `json:"postaction_l2,omitempty"`
-	Reserve      *int `json:"reserve,omitempty"`
+	// ProfileInstruction weights the profile_instruction_main manual profile review chain separately from post-action review.
+	// ProfileInstruction 用于为 profile_instruction_main 手工画像评审链路设置独立于 post-action 评审的权重。
+	ProfileInstruction *int `json:"profile_instruction,omitempty"`
+	Reserve            *int `json:"reserve,omitempty"`
 }
 
-// LLMRouteResolvedWeights keeps one fully materialized five-slot weight view so runtime callers do not need to repeat default-value merging on every selection.
-// LLMRouteResolvedWeights 用于保存一份已经补齐默认值的五槽位权重视图，让运行时调用方无需在每次选路时重复做默认值合并。
+// LLMRouteResolvedWeights keeps one fully materialized six-slot weight view so runtime callers do not need to repeat default-value merging on every selection.
+// LLMRouteResolvedWeights 用于保存一份已经补齐默认值的六槽位权重视图，让运行时调用方无需在每次选路时重复做默认值合并。
 type LLMRouteResolvedWeights struct {
 	PreCheckL1   int
 	PreCheckL2   int
 	PostActionL1 int
 	PostActionL2 int
-	Reserve      int
+	// ProfileInstruction is the resolved weight for profile_instruction_main manual profile reviews.
+	// ProfileInstruction 是 profile_instruction_main 手工画像评审使用的补齐后权重。
+	ProfileInstruction int
+	Reserve            int
 }
 
 // LLMRouteConfig describes one concrete LLM route that owns its provider, endpoint, model, key pool, and node budget policy.

@@ -61,6 +61,7 @@ llm:
         precheck_l2: 100
         postaction_l1: 100
         postaction_l2: 100
+        profile_instruction: 100
         reserve: 100
       provider: "google_ai_studio"
 

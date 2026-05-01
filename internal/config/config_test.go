@@ -317,14 +317,21 @@ func TestConfigPrimaryModelForSelectionUsesPerSceneWeights(t *testing.T) {
 			Endpoint: "https://precheck.example/v1",
 			APIKeys:  []string{"precheck-key"},
 			Model:    "precheck-model",
-			Weights:  LLMRouteWeightConfig{PreCheckL1: intPtr(180), PostActionL2: intPtr(40)},
+			Weights:  LLMRouteWeightConfig{PreCheckL1: intPtr(180), PostActionL2: intPtr(40), ProfileInstruction: intPtr(50)},
 		},
 		{
 			Provider: "openai",
 			Endpoint: "https://postaction.example/v1",
 			APIKeys:  []string{"postaction-key"},
 			Model:    "postaction-model",
-			Weights:  LLMRouteWeightConfig{PreCheckL1: intPtr(60), PostActionL2: intPtr(220)},
+			Weights:  LLMRouteWeightConfig{PreCheckL1: intPtr(60), PostActionL2: intPtr(220), ProfileInstruction: intPtr(70)},
+		},
+		{
+			Provider: "openai",
+			Endpoint: "https://profile.example/v1",
+			APIKeys:  []string{"profile-key"},
+			Model:    "profile-model",
+			Weights:  LLMRouteWeightConfig{PreCheckL1: intPtr(50), PostActionL2: intPtr(60), ProfileInstruction: intPtr(240)},
 		},
 	}
 
@@ -336,6 +343,9 @@ func TestConfigPrimaryModelForSelectionUsesPerSceneWeights(t *testing.T) {
 	if got, want := cfg.LLM.PrimaryModelForSelection("postaction_l2"), "postaction-model"; got != want {
 		t.Fatalf("postaction_l2 primary model = %q, want %q", got, want)
 	}
+	if got, want := cfg.LLM.PrimaryModelForSelection("profile_instruction"), "profile-model"; got != want {
+		t.Fatalf("profile_instruction primary model = %q, want %q", got, want)
+	}
 }
 
 // TestLLMRouteResolvedWeightsDefaultTo100 verifies unspecified per-scene weights always fall back to 100, while explicit overrides replace only their own slots.
@@ -343,17 +353,18 @@ func TestConfigPrimaryModelForSelectionUsesPerSceneWeights(t *testing.T) {
 func TestLLMRouteResolvedWeightsDefaultTo100(t *testing.T) {
 	route := LLMRouteConfig{}
 	weights := route.ResolvedWeights()
-	if weights.PreCheckL1 != 100 || weights.PreCheckL2 != 100 || weights.PostActionL1 != 100 || weights.PostActionL2 != 100 || weights.Reserve != 100 {
+	if weights.PreCheckL1 != 100 || weights.PreCheckL2 != 100 || weights.PostActionL1 != 100 || weights.PostActionL2 != 100 || weights.ProfileInstruction != 100 || weights.Reserve != 100 {
 		t.Fatalf("default resolved llm route weights = %#v", weights)
 	}
 
 	route = LLMRouteConfig{
 		Weights: LLMRouteWeightConfig{
-			PostActionL2: intPtr(160),
+			PostActionL2:       intPtr(160),
+			ProfileInstruction: intPtr(175),
 		},
 	}
 	weights = route.ResolvedWeights()
-	if weights.PreCheckL1 != 100 || weights.PreCheckL2 != 100 || weights.PostActionL1 != 100 || weights.PostActionL2 != 160 || weights.Reserve != 100 {
+	if weights.PreCheckL1 != 100 || weights.PreCheckL2 != 100 || weights.PostActionL1 != 100 || weights.PostActionL2 != 160 || weights.ProfileInstruction != 175 || weights.Reserve != 100 {
 		t.Fatalf("resolved llm route weights = %#v", weights)
 	}
 }
@@ -440,9 +451,9 @@ func TestConfigValidateRejectsMissingLLMRoutes(t *testing.T) {
 // TestConfigValidateRejectsNegativeLLMRouteWeight 用于验证格式错误的负数分场景 LLM 权重会在启动校验阶段被拒绝。
 func TestConfigValidateRejectsNegativeLLMRouteWeight(t *testing.T) {
 	cfg := newValidConfigForTest()
-	cfg.LLM.Routes[0].Weights.PostActionL1 = intPtr(-1)
+	cfg.LLM.Routes[0].Weights.ProfileInstruction = intPtr(-1)
 	cfg.Normalize()
-	if err := cfg.Validate(); err == nil || err.Error() != "llm.routes[0].weights.postaction_l1 must be >= 0" {
+	if err := cfg.Validate(); err == nil || err.Error() != "llm.routes[0].weights.profile_instruction must be >= 0" {
 		t.Fatalf("unexpected llm route weight validate error: %v", err)
 	}
 }

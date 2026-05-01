@@ -99,15 +99,16 @@ func primaryLLMRouteForSelection(routes []LLMRouteConfig, selectionLevel string)
 	return best, true
 }
 
-// ResolvedWeights expands one LLM route's optional per-scene overrides into a full five-slot weight table backed by the shared default weight.
-// ResolvedWeights 用于把单条 LLM 路由的可选分场景覆盖项展开成完整的五槽位权重表；未声明槽位统一回退到共享默认权重。
+// ResolvedWeights expands one LLM route's optional per-scene overrides into a full six-slot weight table backed by the shared default weight.
+// ResolvedWeights 用于把单条 LLM 路由的可选分场景覆盖项展开成完整的六槽位权重表；未声明槽位统一回退到共享默认权重。
 func (c LLMRouteConfig) ResolvedWeights() LLMRouteResolvedWeights {
 	return LLMRouteResolvedWeights{
-		PreCheckL1:   resolveLLMRouteWeight(c.Weights.PreCheckL1, defaultLLMRouteSelectionWeight),
-		PreCheckL2:   resolveLLMRouteWeight(c.Weights.PreCheckL2, defaultLLMRouteSelectionWeight),
-		PostActionL1: resolveLLMRouteWeight(c.Weights.PostActionL1, defaultLLMRouteSelectionWeight),
-		PostActionL2: resolveLLMRouteWeight(c.Weights.PostActionL2, defaultLLMRouteSelectionWeight),
-		Reserve:      resolveLLMRouteWeight(c.Weights.Reserve, defaultLLMRouteSelectionWeight),
+		PreCheckL1:         resolveLLMRouteWeight(c.Weights.PreCheckL1, defaultLLMRouteSelectionWeight),
+		PreCheckL2:         resolveLLMRouteWeight(c.Weights.PreCheckL2, defaultLLMRouteSelectionWeight),
+		PostActionL1:       resolveLLMRouteWeight(c.Weights.PostActionL1, defaultLLMRouteSelectionWeight),
+		PostActionL2:       resolveLLMRouteWeight(c.Weights.PostActionL2, defaultLLMRouteSelectionWeight),
+		ProfileInstruction: resolveLLMRouteWeight(c.Weights.ProfileInstruction, defaultLLMRouteSelectionWeight),
+		Reserve:            resolveLLMRouteWeight(c.Weights.Reserve, defaultLLMRouteSelectionWeight),
 	}
 }
 
@@ -124,6 +125,8 @@ func (c LLMRouteConfig) SelectionWeight(selectionLevel string) int {
 		return weights.PostActionL1
 	case "postaction_l2":
 		return weights.PostActionL2
+	case "profile_instruction":
+		return weights.ProfileInstruction
 	default:
 		return weights.Reserve
 	}
@@ -417,6 +420,9 @@ func validateLLMRouteWeightConfig(label string, weights LLMRouteWeightConfig) er
 	}
 	if weights.PostActionL2 != nil && *weights.PostActionL2 < 0 {
 		return fmt.Errorf("%s.weights.postaction_l2 must be >= 0", label)
+	}
+	if weights.ProfileInstruction != nil && *weights.ProfileInstruction < 0 {
+		return fmt.Errorf("%s.weights.profile_instruction must be >= 0", label)
 	}
 	if weights.Reserve != nil && *weights.Reserve < 0 {
 		return fmt.Errorf("%s.weights.reserve must be >= 0", label)

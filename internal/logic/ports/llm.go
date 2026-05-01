@@ -30,7 +30,10 @@ const (
 	LLMRouteSelectionLevelPreCheckL2   LLMRouteSelectionLevel = "precheck_l2"
 	LLMRouteSelectionLevelPostActionL1 LLMRouteSelectionLevel = "postaction_l1"
 	LLMRouteSelectionLevelPostActionL2 LLMRouteSelectionLevel = "postaction_l2"
-	LLMRouteSelectionLevelReserve      LLMRouteSelectionLevel = "reserve"
+	// LLMRouteSelectionLevelProfileInstruction routes manual profile-instruction reviews independently from post-action candidate review.
+	// LLMRouteSelectionLevelProfileInstruction 用于让手工画像指令评审独立于 post-action 候选评审进行选路。
+	LLMRouteSelectionLevelProfileInstruction LLMRouteSelectionLevel = "profile_instruction"
+	LLMRouteSelectionLevelReserve            LLMRouteSelectionLevel = "reserve"
 )
 
 // LLMRequest carries the provider-neutral generation payload built by processors and use cases.
