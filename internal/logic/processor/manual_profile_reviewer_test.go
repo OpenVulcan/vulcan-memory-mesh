@@ -70,7 +70,8 @@ func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	if llm.request.RouteSelectionLevel != logicports.LLMRouteSelectionLevelProfileInstruction {
 		t.Fatalf("expected profile instruction route selection level, got %q", llm.request.RouteSelectionLevel)
 	}
-	if !strings.Contains(llm.request.UserPrompt, `"target": "TEAM"`) {
+	assertCompactJSONPrompt(t, llm.request.UserPrompt)
+	if !strings.Contains(llm.request.UserPrompt, `"target":"TEAM"`) {
 		t.Fatalf("expected TEAM target in request body, got %s", llm.request.UserPrompt)
 	}
 	if !strings.Contains(llm.request.UserPrompt, `"authority_floor"`) {
@@ -137,7 +138,8 @@ func TestManualProfileReviewerUsesLocalFallbackDateForActiveNodes(t *testing.T) 
 	if err != nil {
 		t.Fatalf("review manual profile instruction: %v", err)
 	}
-	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+	assertCompactJSONPrompt(t, llm.request.UserPrompt)
+	if !strings.Contains(llm.request.UserPrompt, `"datetime":"2026-04-02 00:30:00"`) {
 		t.Fatalf("expected fallback active-node datetime to use local datetime anchor, got %s", llm.request.UserPrompt)
 	}
 }
@@ -177,10 +179,11 @@ func TestManualProfileReviewerCorrectsLegacyUTCProfileDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("review manual profile instruction: %v", err)
 	}
-	if strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-01`) {
+	assertCompactJSONPrompt(t, llm.request.UserPrompt)
+	if strings.Contains(llm.request.UserPrompt, `"datetime":"2026-04-01`) {
 		t.Fatalf("expected legacy UTC-derived datetime to be corrected, got %s", llm.request.UserPrompt)
 	}
-	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+	if !strings.Contains(llm.request.UserPrompt, `"datetime":"2026-04-02 00:30:00"`) {
 		t.Fatalf("expected corrected local datetime in reviewer request, got %s", llm.request.UserPrompt)
 	}
 }

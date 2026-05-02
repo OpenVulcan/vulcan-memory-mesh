@@ -44,7 +44,7 @@ func renderIntentUserPrompt(turns []logicdomain.PreCheckTurnContext, current str
 			Content:     content,
 		})
 	}
-	rendered, err := json.MarshalIndent(body, "", "  ")
+	rendered, err := json.Marshal(body)
 	if err != nil {
 		return fmt.Sprintf("{\"current_user_input\":%q,\"max_search_queries\":%d}", strings.TrimSpace(current), maxQueries)
 	}
@@ -183,7 +183,7 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 			CreatedDateTime: createdDateTime,
 		})
 	}
-	rendered, err := json.MarshalIndent(body, "", "  ")
+	rendered, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("marshal postaction_l1_main request: %w", err)
 	}

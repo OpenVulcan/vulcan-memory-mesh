@@ -66,18 +66,31 @@ type languageRules struct {
 	excludes map[string]struct{}
 }
 
+// ruleDirLoadResult carries both the concrete merged language rules and source-layer metadata that is lost after common rules are expanded.
+// ruleDirLoadResult 用于同时承载合并后的具体语言规则，以及 common 规则展开后会丢失的来源层元信息。
+type ruleDirLoadResult struct {
+	// languages contains the final concrete language rules used by runtime scrubbing.
+	// languages 保存运行时脱敏实际使用的最终具体语言规则。
+	languages map[string]languageRules
+
+	// hasCommon reports whether either system or user layer provided a common rule bundle before merging.
+	// hasCommon 表示系统层或用户层在合并前是否提供过 common 规则包。
+	hasCommon bool
+}
+
 const commonLanguage = "common"
 
 // Engine keeps precompiled language rules and serves concurrent scrub requests safely.
 // Engine 用于保存预编译好的多语言规则，并为并发 Scrub 请求提供线程安全访问。
 type Engine struct {
-	mu          sync.RWMutex
-	defaultLang string
-	languages   map[string]languageRules
-	logger      *logx.Logger
-	vm          evaluator
-	DebugMode   bool
-	debugOutput io.Writer
+	mu             sync.RWMutex
+	defaultLang    string
+	languages      map[string]languageRules
+	hasCommonRules bool
+	logger         *logx.Logger
+	vm             evaluator
+	DebugMode      bool
+	debugOutput    io.Writer
 }
 
 // NewEngine loads system pii_rules first and then applies the optional user override directory using the default logger.
@@ -102,7 +115,7 @@ func NewEngineWithLogger(systemDir, userDir, defaultLang string, logger *logx.Lo
 	}
 	// Warn when common.json is missing so operators know that universal PII rules (emails, credit cards, API keys) are not active.
 	// 当 common.json 缺失时发出警告，让运维知道通用 PII 规则（邮箱、信用卡、API Key）未生效。
-	if _, ok := engine.languages[commonLanguage]; !ok {
+	if !engine.hasCommonRuleBundle() {
 		logger.Warn("pii engine common.json not found, universal PII rules will be missing", "system_dir", systemDir, "user_dir", userDir)
 	}
 	if engine.defaultLang == "" {
@@ -158,14 +171,23 @@ func (e *Engine) LoadDirs(systemDir, userDir string) error {
 	}
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	e.languages = loaded
+	e.languages = loaded.languages
+	e.hasCommonRules = loaded.hasCommon
 	if e.defaultLang == "" {
-		for lang := range loaded {
+		for lang := range loaded.languages {
 			e.defaultLang = lang
 			break
 		}
 	}
 	return nil
+}
+
+// hasCommonRuleBundle reports whether the last directory load saw a common rule bundle before language merging removed the common key.
+// hasCommonRuleBundle 用于报告最近一次目录加载是否在语言合并前看到了 common 规则包。
+func (e *Engine) hasCommonRuleBundle() bool {
+	e.mu.RLock()
+	defer e.mu.RUnlock()
+	return e.hasCommonRules
 }
 
 // Scrub masks PII in one text according to the requested language, falling back when necessary.
@@ -370,21 +392,24 @@ func compileRuleEntries(entries []ruleEntry, language, source string) ([]compile
 
 // loadRuleDirs selects one common bundle and one language bundle per language, then overlays language rules on top of common rules.
 // loadRuleDirs 用于为每种语言分别选择一个公共规则包和一个语言规则包，再把语言规则按名称覆盖到公共规则之上。
-func loadRuleDirs(systemDir, userDir string) (map[string]languageRules, error) {
+func loadRuleDirs(systemDir, userDir string) (ruleDirLoadResult, error) {
 	systemDir = strings.TrimSpace(systemDir)
 	if systemDir == "" {
-		return nil, fmt.Errorf("system pii rules dir is required")
+		return ruleDirLoadResult{}, fmt.Errorf("system pii rules dir is required")
 	}
 
 	systemRules, err := loadRuleDir(systemDir, true)
 	if err != nil {
-		return nil, err
+		return ruleDirLoadResult{}, err
 	}
 	userRules, err := loadRuleDir(userDir, false)
 	if err != nil {
-		return nil, err
+		return ruleDirLoadResult{}, err
 	}
-	return selectRuleLayers(systemRules, userRules), nil
+	return ruleDirLoadResult{
+		languages: selectRuleLayers(systemRules, userRules),
+		hasCommon: pickBundle(systemRules[commonLanguage], userRules[commonLanguage]).language != "",
+	}, nil
 }
 
 // loadRuleDir loads and compiles one rule directory, optionally requiring at least one JSON file.

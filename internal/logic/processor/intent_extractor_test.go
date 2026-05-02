@@ -64,6 +64,7 @@ func TestRenderIntentUserPromptIncludesContextHints(t *testing.T) {
 	if err := json.Unmarshal([]byte(rendered), &payload); err != nil {
 		t.Fatalf("unmarshal rendered prompt: %v", err)
 	}
+	assertCompactJSONPrompt(t, rendered)
 	if payload.CurrentUserInput != "这个改动会不会影响 SQLite schema 13 的兼容性？" {
 		t.Fatalf("unexpected current input: %q", payload.CurrentUserInput)
 	}

@@ -99,7 +99,7 @@ func renderPreCheckMemoryReviewRequest(input logicdomain.PreCheckMemoryReviewInp
 		IntentReason:    strings.TrimSpace(input.IntentReason),
 		Candidates:      renderPreCheckReviewCandidates(input.Candidates),
 	}
-	rendered, err := json.MarshalIndent(body, "", "  ")
+	rendered, err := json.Marshal(body)
 	if err != nil {
 		return "", fmt.Errorf("marshal precheck_l2_main request: %w", err)
 	}

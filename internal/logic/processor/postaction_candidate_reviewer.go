@@ -245,7 +245,7 @@ func renderPostActionCandidateReviewRequest(input logicdomain.PostActionCandidat
 		}
 	}
 
-	rendered, err := json.MarshalIndent(body, "", "  ")
+	rendered, err := json.Marshal(body)
 	if err != nil {
 		return "", 0, 0, 0, fmt.Errorf("marshal postaction_l2_main request: %w", err)
 	}

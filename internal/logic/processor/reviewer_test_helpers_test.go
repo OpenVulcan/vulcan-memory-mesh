@@ -4,6 +4,8 @@ package processor
 
 import (
 	"context"
+	"strings"
+	"testing"
 
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
@@ -40,4 +42,13 @@ func (s *stubProfileMergerLLM) Generate(_ context.Context, req logicports.LLMReq
 		return logicports.LLMResponse{}, s.err
 	}
 	return s.response, nil
+}
+
+// assertCompactJSONPrompt verifies LLM-facing JSON is emitted as one transport-friendly line.
+// assertCompactJSONPrompt 用于验证提交给 LLM 的 JSON 以便于传输的单行形式输出。
+func assertCompactJSONPrompt(t *testing.T, rendered string) {
+	t.Helper()
+	if strings.ContainsAny(rendered, "\r\n") {
+		t.Fatalf("expected compact single-line JSON prompt, got %s", rendered)
+	}
 }

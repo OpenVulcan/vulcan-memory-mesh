@@ -92,17 +92,18 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	currentDateTime, _ := logicdomain.FormatDisplayTimeFromUnixMillis(1775000009000)
 	targetDateTime, _ := logicdomain.FormatDisplayTimeFromUnixMillis(1775000000000)
 	writeDateTime, _ := logicdomain.FormatDisplayTimeFromUnixMillis(1774990000000)
+	assertCompactJSONPrompt(t, llm.request.UserPrompt)
 	for _, fragment := range []string{
 		`"current_time"`,
-		`"datetime": "` + currentDateTime + `"`,
-		`"created_datetime": "` + targetDateTime + `"`,
-		`"created_datetime": "` + writeDateTime + `"`,
+		`"datetime":"` + currentDateTime + `"`,
+		`"created_datetime":"` + targetDateTime + `"`,
+		`"created_datetime":"` + writeDateTime + `"`,
 	} {
 		if !strings.Contains(llm.request.UserPrompt, fragment) {
 			t.Fatalf("expected structured turn-analysis request body to contain %s, got %s", fragment, llm.request.UserPrompt)
 		}
 	}
-	for _, removed := range []string{`"date": "`, `"created_date": "`} {
+	for _, removed := range []string{`"date":"`, `"created_date":"`} {
 		if strings.Contains(llm.request.UserPrompt, removed) {
 			t.Fatalf("expected structured turn-analysis request body to stop exposing %s, got %s", removed, llm.request.UserPrompt)
 		}

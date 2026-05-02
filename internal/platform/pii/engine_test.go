@@ -102,6 +102,81 @@ func TestEngineFallsBackToDefaultLanguage(t *testing.T) {
 	}
 }
 
+// TestEngineCommonRuleWarningReflectsRawRuleLayers verifies the startup warning is based on source rule files instead of the merged runtime language map.
+// TestEngineCommonRuleWarningReflectsRawRuleLayers 用于验证启动告警基于原始规则文件判断，而不是基于合并后的运行时语言 map。
+func TestEngineCommonRuleWarningReflectsRawRuleLayers(t *testing.T) {
+	cases := []struct {
+		name       string
+		setup      func(t *testing.T, systemRulesDir, userRulesDir string)
+		wantWarn   bool
+		wantMasked string
+	}{
+		{
+			name: "system common suppresses warning",
+			setup: func(t *testing.T, systemRulesDir, _ string) {
+				t.Helper()
+				writeRuleFile(t, filepath.Join(systemRulesDir, "common.json"), `{
+				  "language": "common",
+				  "version": "1.0.0",
+				  "rules": [
+				    { "name": "Bearer_Token", "pattern": "Bearer\\s+([A-Za-z0-9._+=-]{10,})", "replacement": "Bearer [SYSTEM_TOKEN_MASKED]" }
+				  ]
+				}`)
+			},
+			wantWarn:   false,
+			wantMasked: "Bearer [SYSTEM_TOKEN_MASKED]",
+		},
+		{
+			name: "user common suppresses warning",
+			setup: func(t *testing.T, _, userRulesDir string) {
+				t.Helper()
+				writeRuleFile(t, filepath.Join(userRulesDir, "common.json"), `{
+				  "language": "common",
+				  "version": "1.0.0",
+				  "rules": [
+				    { "name": "Bearer_Token", "pattern": "Bearer\\s+([A-Za-z0-9._+=-]{10,})", "replacement": "Bearer [USER_TOKEN_MASKED]" }
+				  ]
+				}`)
+			},
+			wantWarn:   false,
+			wantMasked: "Bearer [USER_TOKEN_MASKED]",
+		},
+		{
+			name:       "missing common keeps warning",
+			setup:      func(t *testing.T, _, _ string) { t.Helper() },
+			wantWarn:   true,
+			wantMasked: "Bearer abcdefghijklmnop",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			systemRulesDir := filepath.Join(root, "system", "pii_rules")
+			userRulesDir := filepath.Join(root, "user", "pii_rules")
+			writeRuleFile(t, filepath.Join(systemRulesDir, "zh-CN.json"), `{
+			  "language": "zh-CN",
+			  "version": "1.0.0",
+			  "rules": [
+			    { "name": "Mobile", "pattern": "1[3-9]\\d{9}", "replacement": "[MOBILE_MASKED]" }
+			  ]
+			}`)
+			tc.setup(t, systemRulesDir, userRulesDir)
+			var logBuf bytes.Buffer
+			engine, err := NewEngineWithLogger(systemRulesDir, userRulesDir, "zh-CN", logx.New(&logBuf, logx.Config{Level: "warn", Format: "text"}))
+			if err != nil {
+				t.Fatal(err)
+			}
+			hasWarn := strings.Contains(logBuf.String(), "pii engine common.json not found")
+			if hasWarn != tc.wantWarn {
+				t.Fatalf("common warning presence = %v, want %v; logs: %s", hasWarn, tc.wantWarn, logBuf.String())
+			}
+			if got := engine.Scrub("Bearer abcdefghijklmnop", "zh-CN"); got != tc.wantMasked {
+				t.Fatalf("scrubbed common text = %q, want %q", got, tc.wantMasked)
+			}
+		})
+	}
+}
+
 // TestEngineUserRulesOverrideSystemRules verifies the TestEngineUserRulesOverrideSystemRules behavior.
 // TestEngineUserRulesOverrideSystemRules 用于验证 TestEngineUserRulesOverrideSystemRules 行为。
 func TestEngineUserRulesOverrideSystemRules(t *testing.T) {

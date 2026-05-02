@@ -111,7 +111,7 @@ func buildManualProfileReviewRequest(target logicdomain.ProfileTargetRef, active
 			Content:       strings.TrimSpace(node.Content),
 		})
 	}
-	body, err := json.MarshalIndent(out, "", "  ")
+	body, err := json.Marshal(out)
 	if err != nil {
 		return "", fmt.Errorf("marshal manual profile review request: %w", err)
 	}

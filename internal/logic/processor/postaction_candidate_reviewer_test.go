@@ -110,7 +110,8 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	if !strings.Contains(llm.request.UserPrompt, `"similar_memories"`) || !strings.Contains(llm.request.UserPrompt, `"new_candidates"`) {
 		t.Fatalf("expected memory dedupe and profile candidate sections, got %s", llm.request.UserPrompt)
 	}
-	for _, fragment := range []string{`"current_datetime": "2026-04-01 07:33:27"`, `"current_turn_datetime": "2026-04-04 10:00:00"`, `"candidate_datetime": "2026-04-04 10:00:00"`, `"created_datetime": "2026-04-01 10:00:00"`} {
+	assertCompactJSONPrompt(t, llm.request.UserPrompt)
+	for _, fragment := range []string{`"current_datetime":"2026-04-01 07:33:27"`, `"current_turn_datetime":"2026-04-04 10:00:00"`, `"candidate_datetime":"2026-04-04 10:00:00"`, `"created_datetime":"2026-04-01 10:00:00"`} {
 		if !strings.Contains(llm.request.UserPrompt, fragment) {
 			t.Fatalf("expected request to contain %s, got %s", fragment, llm.request.UserPrompt)
 		}
@@ -271,10 +272,11 @@ func TestPostActionCandidateReviewerUsesLocalFallbackDateForActiveNodes(t *testi
 	if err != nil {
 		t.Fatalf("review post-action candidates: %v", err)
 	}
-	if !strings.Contains(llm.request.UserPrompt, `"latest_active_datetime": "2026-04-02 00:30:00"`) {
+	assertCompactJSONPrompt(t, llm.request.UserPrompt)
+	if !strings.Contains(llm.request.UserPrompt, `"latest_active_datetime":"2026-04-02 00:30:00"`) {
 		t.Fatalf("expected latest_active_datetime to use local datetime anchor, got %s", llm.request.UserPrompt)
 	}
-	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+	if !strings.Contains(llm.request.UserPrompt, `"datetime":"2026-04-02 00:30:00"`) {
 		t.Fatalf("expected active-node fallback datetime to use local datetime anchor, got %s", llm.request.UserPrompt)
 	}
 }
@@ -324,10 +326,11 @@ func TestPostActionCandidateReviewerCorrectsLegacyUTCProfileDate(t *testing.T) {
 	if err != nil {
 		t.Fatalf("review post-action candidates: %v", err)
 	}
-	if strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-01`) {
+	assertCompactJSONPrompt(t, llm.request.UserPrompt)
+	if strings.Contains(llm.request.UserPrompt, `"datetime":"2026-04-01`) {
 		t.Fatalf("expected legacy UTC-derived datetime to be corrected, got %s", llm.request.UserPrompt)
 	}
-	if !strings.Contains(llm.request.UserPrompt, `"datetime": "2026-04-02 00:30:00"`) {
+	if !strings.Contains(llm.request.UserPrompt, `"datetime":"2026-04-02 00:30:00"`) {
 		t.Fatalf("expected corrected local datetime in reviewer request, got %s", llm.request.UserPrompt)
 	}
 }

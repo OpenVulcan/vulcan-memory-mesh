@@ -120,7 +120,8 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 	if strings.Contains(rendered, "\"CandidateNumber\"") || !strings.Contains(rendered, "\"candidate_number\"") {
 		t.Fatalf("expected snake_case candidate keys in rendered payload, got %s", rendered)
 	}
-	for _, fragment := range []string{`"current_datetime": "2026-04-01 07:33:28"`, `"created_datetime": "2026-04-01 07:33:21"`} {
+	assertCompactJSONPrompt(t, rendered)
+	for _, fragment := range []string{`"current_datetime":"2026-04-01 07:33:28"`, `"created_datetime":"2026-04-01 07:33:21"`} {
 		if !strings.Contains(rendered, fragment) {
 			t.Fatalf("expected rendered request to expose %s, got %s", fragment, rendered)
 		}
