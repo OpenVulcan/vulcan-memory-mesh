@@ -12,8 +12,8 @@
 #   机密信息应继续保存在环境变量中，不建议直接把占位符替换为明文。
 # - Read base.yaml first if you need the full baseline meaning of each field.
 #   如果需要理解每个字段的完整底座语义，请先阅读 base.yaml。
-# - The runtime also supports google_ai_studio for LLM and embedding, but this file intentionally demonstrates the OpenAI-compatible path only.
-#   运行时同时支持 google_ai_studio 作为 LLM 和 embedding provider，但本文件刻意只展示 OpenAI-compatible 路径。
+# - The runtime also supports google_ai_studio and openrouter, but this file intentionally demonstrates the OpenAI-compatible path only.
+#   运行时同时支持 google_ai_studio 与 openrouter，但本文件刻意只展示 OpenAI-compatible 路径。
 
 grpc:
   # Example local listen address used by the OpenAI-compatible deployment template.
@@ -109,12 +109,16 @@ llm:
       # - openai_go：会映射到同一适配器的兼容别名。
       # - google_ai_studio: native Google AI Studio / Gemini API adapter built on google.golang.org/genai.
       # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini API 原生适配器。
+      # - openrouter: native OpenRouter SDK adapter supporting chat, embeddings, and rerank.
+      # - openrouter：基于 OpenRouter 官方 Go SDK 的原生适配器，可支持 chat、embedding 与 rerank。
       provider: "openai"
 
       # Base endpoint placeholder for the chat/completions-compatible API.
       # chat/completions-compatible API 的接口根地址占位符。
       # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
       # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
+      # If you switch provider to openrouter, this field may be left empty to use https://openrouter.ai/api/v1.
+      # 如果把 provider 切到 openrouter，该字段可以留空，直接使用 https://openrouter.ai/api/v1。
       endpoint: "${OPENAI_BASE_URL}"
 
       # API key pool placeholder.
@@ -175,9 +179,13 @@ embedding:
   # - openai_go：会映射到同一适配器的兼容别名。
   # - google_ai_studio: native Google AI Studio / Gemini embedding adapter built on google.golang.org/genai.
   # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini 原生向量适配器。
+  # - openrouter: native OpenRouter SDK embedding adapter.
+  # - openrouter：基于 OpenRouter 官方 Go SDK 的原生向量适配器。
   provider: "openai"
   # If you switch provider to google_ai_studio, this field may be left empty to use the SDK default Gemini API base URL.
   # 如果把 provider 切到 google_ai_studio，该字段可以留空，直接使用 SDK 默认的 Gemini API 基础地址。
+  # If you switch provider to openrouter, this field may be left empty to use https://openrouter.ai/api/v1.
+  # 如果把 provider 切到 openrouter，该字段可以留空，直接使用 https://openrouter.ai/api/v1。
   endpoint: "${OPENAI_EMBEDDING_URL}"
   api_keys:
     - "${OPENAI_API_KEY}"
@@ -190,10 +198,14 @@ embedding:
   # Embedding 维度必须与底层向量存储 schema 一致。
   # When provider=google_ai_studio, this value is sent as Gemini output_dimensionality and should match a dimension supported by the selected model.
   # 当 provider=google_ai_studio 时，该值会作为 Gemini 的 output_dimensionality 发送，并应与所选模型支持的维度保持一致。
+  # When provider=openrouter, this value is sent as embeddings dimensions when the selected model supports it.
+  # 当 provider=openrouter 时，若所选模型支持，该值会作为 embeddings dimensions 发送。
   dimension: 1024
   max_batch_size: 10
   # These two fields are ignored when provider=google_ai_studio.
   # 当 provider=google_ai_studio 时，这两个字段会被忽略。
+  # They are also ignored when provider=openrouter.
+  # 当 provider=openrouter 时也会忽略这两个字段。
   organization: "${OPENAI_ORGANIZATION}"
   project: "${OPENAI_PROJECT}"
   params: {}
@@ -233,6 +245,8 @@ rerank:
       # - dashscope：当前实现内置支持的 rerank provider。
       # - siliconflow: built-in rerank provider using SiliconFlow's official /v1/rerank API.
       # - siliconflow：当前实现内置支持的硅基流动 rerank provider，走官方 /v1/rerank 接口。
+      # - openrouter: native OpenRouter SDK rerank provider using https://openrouter.ai/api/v1 as the API root.
+      # - openrouter：基于 OpenRouter 官方 Go SDK 的 rerank provider，使用 https://openrouter.ai/api/v1 作为 API 根地址。
       provider: "dashscope"
 
       # Example rerank endpoint.

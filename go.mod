@@ -3,6 +3,7 @@ module github.com/openvulcan/vmm
 go 1.26.1
 
 require (
+	github.com/OpenRouterTeam/go-sdk v0.4.1
 	github.com/ebitengine/purego v0.8.2
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/joho/godotenv v1.5.1
@@ -28,6 +29,7 @@ require (
 	github.com/jackc/puddle/v2 v2.2.2 // indirect
 	github.com/kr/text v0.2.0 // indirect
 	github.com/rogpeppe/go-internal v1.14.1 // indirect
+	github.com/spyzhov/ajson v0.8.0 // indirect
 	github.com/tidwall/gjson v1.18.0 // indirect
 	github.com/tidwall/match v1.1.1 // indirect
 	github.com/tidwall/pretty v1.2.1 // indirect

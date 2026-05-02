@@ -385,7 +385,7 @@ func validateLLMRouteConfigs(routes []LLMRouteConfig) error {
 			return fmt.Errorf("%s.provider is required", label)
 		}
 		if !isSupportedAIProvider(route.Provider) {
-			return fmt.Errorf("%s.provider must be one of openai, openai_native, openai_go, or google_ai_studio", label)
+			return fmt.Errorf("%s.provider must be one of openai, openai_native, openai_go, google_ai_studio, or openrouter", label)
 		}
 		if providerRequiresEndpoint(route.Provider) && strings.TrimSpace(route.Endpoint) == "" {
 			return fmt.Errorf("%s.endpoint is required", label)
@@ -439,9 +439,9 @@ func validateRerankRouteConfigs(routes []RerankRouteConfig) error {
 	for idx, route := range routes {
 		label := fmt.Sprintf("rerank.routes[%d]", idx)
 		switch normalizeRerankProviderValue(route.Provider) {
-		case "dashscope", "siliconflow":
+		case "dashscope", "siliconflow", "openrouter":
 		default:
-			return fmt.Errorf("%s.provider must be one of dashscope, siliconflow", label)
+			return fmt.Errorf("%s.provider must be one of dashscope, siliconflow, openrouter", label)
 		}
 		if strings.TrimSpace(route.Endpoint) == "" {
 			return fmt.Errorf("%s.endpoint is required", label)
@@ -473,6 +473,8 @@ func normalizeRerankProviderValue(provider string) string {
 		return "dashscope"
 	case "siliconflow":
 		return "siliconflow"
+	case "openrouter":
+		return "openrouter"
 	default:
 		return strings.ToLower(strings.TrimSpace(provider))
 	}
@@ -484,6 +486,8 @@ func rerankProviderDefaultEndpoint(provider string) string {
 	switch normalizeRerankProviderValue(provider) {
 	case "siliconflow":
 		return defaultSiliconFlowRerankEndpoint
+	case "openrouter":
+		return defaultOpenRouterRerankEndpoint
 	default:
 		return defaultDashScopeRerankEndpoint
 	}
@@ -495,6 +499,8 @@ func rerankProviderDefaultModel(provider string) string {
 	switch normalizeRerankProviderValue(provider) {
 	case "siliconflow":
 		return defaultSiliconFlowRerankModel
+	case "openrouter":
+		return defaultOpenRouterRerankModel
 	default:
 		return defaultDashScopeRerankModel
 	}

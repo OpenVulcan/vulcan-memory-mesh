@@ -189,7 +189,7 @@ flowchart TD
 4. 第二层 `precheck_l2_main` 决定最终采纳项
 5. 仅对最终采纳的 memory 写回生命周期
 6. 只返回 `context_items[]`
-   - `context_text` 已废弃，固定留空
+   - `PreCheckResponse` 已移除旧 `context_text` 字段
 
 ### 2. `ChatCompact`
 
@@ -260,9 +260,9 @@ flowchart TD
 
 - 冷 `turn` 回收优先保证契约稳定，而不是最大化归档率
 
-### 2. `context_text` 已废弃
+### 2. PreCheck 只返回结构化上下文项
 
-- `PreCheckResponse.context_text` 当前固定留空
+- `PreCheckResponse` 已移除旧 `context_text` 字段
 - 上游应直接消费 `context_items[]`
 
 ### 3. Team / Space 自动画像仍不来自 `PostAction`

@@ -11,6 +11,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/joho/godotenv"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -100,6 +101,11 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 
 	// Reuse the resolved config chain so tests hit the same endpoint, model, and prompt files as the local runtime.
 	// 复用解析出的配置链，让测试和本地运行时使用同一套 endpoint、model 与提示词文件。
+	cleanupEnvFallback, err := ensureRealRuntimeFixtureEnvFallback(layout.ConfigPaths(), "OPENROUTER_KEY", "test-openrouter-key")
+	if err != nil {
+		return nil, err
+	}
+	defer cleanupEnvFallback()
 	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
 	if err != nil {
 		return nil, err
@@ -206,6 +212,83 @@ func firstRoutingAPIKey(apiKeys []string, nodes []config.AIRoutingNodeConfig) (s
 		}
 	}
 	return "", false
+}
+
+// ensureRealRuntimeFixtureEnvFallback supplies a non-secret test fallback when a packaged fixture references an unrelated provider key that local tests do not exercise.
+// ensureRealRuntimeFixtureEnvFallback 用于在打包测试夹具引用了本地测试不实际调用的 provider key 时，补入非密钥测试兜底值。
+func ensureRealRuntimeFixtureEnvFallback(configPaths []string, key, fallback string) (func(), error) {
+	if value, exists := os.LookupEnv(key); exists && strings.TrimSpace(value) != "" {
+		return func() {}, nil
+	}
+	hasDotEnvValue, err := realRuntimeDotEnvHasValue(configPaths, key)
+	if err != nil {
+		return nil, err
+	}
+	if hasDotEnvValue {
+		return func() {}, nil
+	}
+	previousValue, previousExists := os.LookupEnv(key)
+	if err := os.Setenv(key, fallback); err != nil {
+		return nil, fmt.Errorf("set test env fallback %q: %w", key, err)
+	}
+	return func() {
+		if previousExists {
+			_ = os.Setenv(key, previousValue)
+			return
+		}
+		_ = os.Unsetenv(key)
+	}, nil
+}
+
+// realRuntimeDotEnvHasValue checks the same adjacent .env locations used by config loading without mutating the process environment.
+// realRuntimeDotEnvHasValue 用于检查配置加载同样会读取的相邻 .env 位置，但不会修改进程环境。
+func realRuntimeDotEnvHasValue(configPaths []string, key string) (bool, error) {
+	for _, configPath := range configPaths {
+		for _, candidate := range realRuntimeDotEnvCandidates(configPath) {
+			envMap, err := godotenv.Read(candidate)
+			if err != nil {
+				if os.IsNotExist(err) {
+					continue
+				}
+				return false, fmt.Errorf("read test .env %q: %w", candidate, err)
+			}
+			if strings.TrimSpace(envMap[key]) != "" {
+				return true, nil
+			}
+		}
+	}
+	return false, nil
+}
+
+// realRuntimeDotEnvCandidates mirrors the config loader's packaged-config .env search order for test-only fixture bootstrapping.
+// realRuntimeDotEnvCandidates 用于在测试夹具启动时镜像配置加载器的打包配置 .env 搜索顺序。
+func realRuntimeDotEnvCandidates(configPath string) []string {
+	candidates := make([]string, 0, 2)
+	seen := map[string]struct{}{}
+	addCandidate := func(path string) {
+		cleaned := filepath.Clean(strings.TrimSpace(path))
+		if cleaned == "." {
+			return
+		}
+		if _, ok := seen[cleaned]; ok {
+			return
+		}
+		seen[cleaned] = struct{}{}
+		candidates = append(candidates, cleaned)
+	}
+	if strings.TrimSpace(configPath) == "" {
+		return candidates
+	}
+	absPath, err := filepath.Abs(configPath)
+	if err != nil {
+		return candidates
+	}
+	configDir := filepath.Dir(absPath)
+	if strings.EqualFold(filepath.Base(configDir), "configs") {
+		addCandidate(filepath.Join(configDir, "..", ".env"))
+	}
+	addCandidate(filepath.Join(configDir, ".env"))
+	return candidates
 }
 
 // findRepoRoot walks upward until it finds the repository root that contains go.mod plus either packaged or workspace base YAML configuration roots.

@@ -172,14 +172,16 @@ func buildReranker(cfg config.Config) (appports.RerankerClient, error) {
 	routeOptions := make([]ai_key_failover.RerankRouteOptions, 0, len(routes))
 	for idx, route := range routes {
 		routeOptions = append(routeOptions, ai_key_failover.RerankRouteOptions{
-			Name:     buildRouteName("rerank", idx, route.Name),
-			Priority: route.Priority,
-			Provider: route.Provider,
-			Endpoint: route.Endpoint,
-			Model:    route.Model,
-			Timeout:  route.Timeout.Duration,
-			APIKeys:  append([]string(nil), route.APIKeys...),
-			Options:  buildKeyFailoverOptions(buildRouteName("rerank", idx, route.Name), route.Nodes, route.KeyFailover),
+			Name:        buildRouteName("rerank", idx, route.Name),
+			Priority:    route.Priority,
+			Provider:    route.Provider,
+			Endpoint:    route.Endpoint,
+			Model:       route.Model,
+			Timeout:     route.Timeout.Duration,
+			APIKeys:     append([]string(nil), route.APIKeys...),
+			Params:      route.Params,
+			ModelParams: route.ModelParams,
+			Options:     buildKeyFailoverOptions(buildRouteName("rerank", idx, route.Name), route.Nodes, route.KeyFailover),
 		})
 	}
 	return ai_key_failover.NewRerankMultiRouteClient(routeOptions)
@@ -194,6 +196,8 @@ func buildOneRerankRouteClient(route config.RerankRouteConfig, routeIndex int) (
 		route.Model,
 		route.Timeout.Duration,
 		route.APIKeys,
+		route.Params,
+		route.ModelParams,
 		buildKeyFailoverOptions(buildRouteName("rerank", routeIndex, route.Name), route.Nodes, route.KeyFailover),
 	)
 }

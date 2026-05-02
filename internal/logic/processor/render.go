@@ -190,60 +190,11 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 	return string(rendered), nil
 }
 
-// renderTurnAnalysisSystemPrompt applies the optional postaction_l1_main TAG blocks so direct-write exclusion and active-memory instructions only appear when the corresponding inputs exist.
-// renderTurnAnalysisSystemPrompt 用于对 postaction_l1_main 的可选 TAG 块做替换，让主动写入排斥和活跃记忆规则只在对应输入存在时出现。
+// renderTurnAnalysisSystemPrompt keeps the postaction_l1_main system prompt static so provider prompt caches can reuse the same prefix across different input shapes.
+// renderTurnAnalysisSystemPrompt 用于保持 postaction_l1_main 系统提示词静态，便于 provider prompt cache 在不同输入形态之间复用同一前缀。
 func renderTurnAnalysisSystemPrompt(template string, input logicdomain.TurnAnalysisInput) string {
-	replacements := map[string]string{
-		"REFERENCE_RULE":              "",
-		"DIRECT_WRITE_EXCLUSION_RULE": "",
-	}
-	if len(input.ReferenceTurns) > 0 {
-		replacements["REFERENCE_RULE"] = "- 如果 `reference_turns` 非空，它们只用于帮助你理解 `target_turn` 的上下文；绝对禁止把这些历史摘要重新提炼成当前 turn 的新增记忆或画像。"
-	}
-	if len(input.RecentGRPCMemoryWrites) > 0 {
-		replacements["DIRECT_WRITE_EXCLUSION_RULE"] = "- 如果 `recent_grpc_memory_writes` 非空，它们属于绝对排斥区；这些事实已经由工具链主动写入，禁止再次提炼入库。若当前 turn 的有效信息已经被它们完全覆盖，必须返回空 `details`、空 `memory_nodes`、空 `profile_nodes`。"
-	}
-	return renderTaggedPrompt(template, replacements)
-}
-
-// renderTaggedPrompt replaces known {#TAG NAME#} placeholders line-by-line and drops the whole line when one placeholder resolves to an empty string.
-// renderTaggedPrompt 用于按行替换 {#TAG NAME#} 占位符，并在占位符结果为空时删除整行，避免模板结构被空块打乱。
-func renderTaggedPrompt(template string, replacements map[string]string) string {
-	lines := strings.Split(strings.ReplaceAll(template, "\r\n", "\n"), "\n")
-	rendered := make([]string, 0, len(lines))
-	for _, line := range lines {
-		current := line
-		for tag, value := range replacements {
-			current = strings.ReplaceAll(current, "{#TAG "+tag+"#}", strings.TrimSpace(value))
-		}
-		if strings.TrimSpace(current) == "" {
-			if strings.TrimSpace(line) == "" {
-				rendered = append(rendered, "")
-			}
-			continue
-		}
-		rendered = append(rendered, strings.TrimRight(current, " \t"))
-	}
-	return strings.TrimSpace(collapseBlankLines(rendered))
-}
-
-// collapseBlankLines keeps at most one empty line between rendered prompt blocks so optional TAG removal does not leave large gaps.
-// collapseBlankLines 用于在渲染后的提示词块之间最多保留一行空行，避免可选 TAG 被删除后留下大段空白。
-func collapseBlankLines(lines []string) string {
-	var b strings.Builder
-	lastBlank := false
-	for idx, line := range lines {
-		isBlank := strings.TrimSpace(line) == ""
-		if isBlank && lastBlank {
-			continue
-		}
-		if idx > 0 && (!isBlank || !lastBlank) {
-			b.WriteString("\n")
-		}
-		b.WriteString(line)
-		lastBlank = isBlank
-	}
-	return b.String()
+	_ = input
+	return strings.TrimSpace(strings.ReplaceAll(template, "\r\n", "\n"))
 }
 
 // formatPromptTimestampMillis converts one millisecond timestamp into the shared local datetime/date prompt strings while keeping zero-values empty.

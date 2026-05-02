@@ -407,8 +407,8 @@ func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 	if hit.GetCategory() != "business_logic" {
 		t.Fatalf("unexpected category label: %+v", hit)
 	}
-	if hit.GetCreatedTimestamp() != 1775000002000 {
-		t.Fatalf("unexpected created timestamp: %+v", hit)
+	if hit.GetCreatedDatetime() != logicdomain.FormatDisplayDateTime(time.UnixMilli(1775000002000)) {
+		t.Fatalf("unexpected created datetime: %+v", hit)
 	}
 }
 
@@ -840,7 +840,7 @@ func TestPreCheckKeepsPayloadLogsRedactedByDefault(t *testing.T) {
 	if strings.Contains(logs, `继续昨天关于 SQLite schema 13 的排查`) || strings.Contains(logs, `项目画像：SQLite schema 13 已迁移`) {
 		t.Fatalf("expected pre-check payloads to stay out of default logs, got %s", logs)
 	}
-	if !strings.Contains(logs, `user_content_present`) || !strings.Contains(logs, `context_text_present`) || !strings.Contains(logs, `context_nonempty_items`) {
+	if !strings.Contains(logs, `user_content_present`) || !strings.Contains(logs, `context_nonempty_items`) {
 		t.Fatalf("expected redacted pre-check payload metadata, got %s", logs)
 	}
 	if strings.Contains(logs, `context_items_json`) {
@@ -858,7 +858,7 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 				ShouldInject: true,
 				ContextText:  "项目画像：SQLite schema 13 已迁移",
 				ContextItems: []logicdomain.ContextItem{
-					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92, TurnID: 41, CreatedTimestamp: 1775000003000},
+					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92, TurnID: 41, CreatedTimestamp: 1775000003000, CreatedDateTime: logicdomain.FormatDisplayDateTime(time.UnixMilli(1775000003000))},
 				},
 				Degraded: true,
 			}, nil
@@ -876,20 +876,14 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 	if err != nil {
 		t.Fatalf("pre-check with debug payload logs: %v", err)
 	}
-	if resp.GetContextText() != "" {
-		t.Fatalf("expected grpc pre-check response to stop returning context_text, got %+v", resp)
-	}
 	if len(resp.GetContextItems()) != 1 {
 		t.Fatalf("expected one grpc context item, got %+v", resp)
 	}
 	if resp.GetContextItems()[0].GetTurnId() != 41 || !resp.GetContextItems()[0].GetHasDialogue() {
 		t.Fatalf("expected grpc context item to expose turn linkage, got %+v", resp.GetContextItems()[0])
 	}
-	if resp.GetContextItems()[0].GetCreatedTimestamp() != 1775000003000 {
-		t.Fatalf("expected grpc context item to expose created timestamp, got %+v", resp.GetContextItems()[0])
-	}
-	if resp.GetContextItems()[0].GetTitle() != "" || resp.GetContextItems()[0].GetSource() != "" || resp.GetContextItems()[0].GetKind() != "" {
-		t.Fatalf("expected grpc context item to omit deprecated title/source/kind fields, got %+v", resp.GetContextItems()[0])
+	if resp.GetContextItems()[0].GetCreatedDatetime() != logicdomain.FormatDisplayDateTime(time.UnixMilli(1775000003000)) {
+		t.Fatalf("expected grpc context item to expose created datetime, got %+v", resp.GetContextItems()[0])
 	}
 	logs := fixture.logs.String()
 	if !strings.Contains(logs, "JSON(request_payload)：") || !strings.Contains(logs, "继续昨天关于 SQLite schema 13 的排查") {
@@ -901,10 +895,10 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 	if strings.Contains(logs, "项目画像：SQLite schema 13 已迁移") || strings.Contains(logs, `混合召回记忆`) || strings.Contains(logs, `"title":`) || strings.Contains(logs, `"source":`) || strings.Contains(logs, `"kind":`) {
 		t.Fatalf("expected debug response payload to omit deprecated pre-check fields, got %s", logs)
 	}
-	if !strings.Contains(logs, `"has_dialogue": true`) || !strings.Contains(logs, `"turn_id": 41`) || !strings.Contains(logs, `"created_timestamp": 1775000003000`) {
+	if !strings.Contains(logs, `"has_dialogue": true`) || !strings.Contains(logs, `"turn_id": 41`) || !strings.Contains(logs, `"created_datetime":`) {
 		t.Fatalf("expected debug response payload to expose transport turn linkage fields, got %s", logs)
 	}
-	if !strings.Contains(logs, `user_content_present`) || !strings.Contains(logs, `context_text_present`) {
+	if !strings.Contains(logs, `user_content_present`) || strings.Contains(logs, `context_text_present`) {
 		t.Fatalf("expected debug logs to keep safe summary fields alongside payloads, got %s", logs)
 	}
 }

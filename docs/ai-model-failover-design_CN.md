@@ -7,18 +7,18 @@
 - `llm`
   - 只允许 `llm.routes[]`
   - 支持多 provider / 多 endpoint / 多 model / 多 route
-  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio / openrouter`
   - route 之间按“当前调用层级对应的 weight”做有序容灾
   - `weights.*` 未声明时默认回退到 `100`
 - `rerank`
   - 只允许 `rerank.routes[]`
-  - 当前内置 provider 包含 `dashscope / siliconflow`
+  - 当前内置 provider 包含 `dashscope / siliconflow / openrouter`
   - route 之间按 `priority` 做有序容灾
 - `embedding`
   - 不允许 `routes`
   - 只允许固定 `provider + endpoint + model + dimension`
   - 只支持多 key 与 `nodes` 吞吐配置
-  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio / openrouter`
   - 不支持跨 provider / 跨 model / 跨维度容灾
 
 这意味着：
@@ -202,6 +202,21 @@
         "model": "BAAI/bge-reranker-v2-m3",
         "timeout": "8s",
         "api_keys": ["key-d"]
+      },
+      {
+        "name": "openrouter-rerank",
+        "priority": 5,
+        "provider": "openrouter",
+        "endpoint": "https://openrouter.ai/api/v1",
+        "model": "cohere/rerank-v3.5",
+        "timeout": "8s",
+        "api_keys": ["key-e"],
+        "params": {
+          "provider": {
+            "only": ["Cohere"],
+            "allow_fallbacks": false
+          }
+        }
       }
     ]
   }
@@ -211,7 +226,8 @@
 说明：
 
 - `top_n` 始终留在顶层
-- route 级 provider 当前支持 `dashscope / siliconflow`
+- route 级 provider 当前支持 `dashscope / siliconflow / openrouter`
+- `params.provider` 当前仅由 `openrouter` rerank 消费，用于 OpenRouter 上游供应商偏好；`dashscope / siliconflow` 会自动忽略
 - 所有 route 都失败时，检索链会按 `rerank=false` 语义降级
 
 ## 6. `embedding` 配置契约
@@ -291,7 +307,7 @@
 
 - `llm` 顶层单路由字段：
   - `provider`
-  - `endpoint`
+  - `endpoint`（`google_ai_studio / openrouter` 可省略，使用 SDK 默认根地址）
   - `api_keys`
   - `rpm / tpm / rpd`
   - `nodes`
@@ -303,7 +319,7 @@
   - `key_failover`
 - `rerank` 顶层单路由字段：
   - `provider`
-  - `endpoint`
+  - `endpoint`（可显式配置，也可由 provider 默认值归一化补齐）
   - `api_keys`
   - `rpm / tpm / rpd`
   - `nodes`
@@ -341,20 +357,21 @@
 - `llm.routes` 必须至少有一条 route
 - `llm.routes[*]` 必须声明：
   - `provider`
-  - `endpoint`
+  - `endpoint`（`google_ai_studio / openrouter` 可省略，使用 SDK 默认根地址）
   - `model`
   - `api_keys` 或 `nodes`
 - `rerank.enabled=true` 时，`rerank.routes` 必须至少有一条 route
 - `rerank.routes[*]` 必须声明：
   - `provider`
-  - `endpoint`
+  - `endpoint`（可显式配置，也可由 provider 默认值归一化补齐）
   - `model`
   - `timeout`
   - `api_keys` 或 `nodes`
   - `priority` 为可选字段（默认 `0`，数值越大优先级越高，按降序排序）
+  - `params.provider` 为可选字段，当前只对 `openrouter` rerank 生效
 - `embedding` 必须声明：
   - `provider`
-  - `endpoint`
+  - `endpoint`（`google_ai_studio / openrouter` 可省略，使用 SDK 默认根地址）
   - `model`
   - `dimension`
   - `api_keys` 或 `nodes`

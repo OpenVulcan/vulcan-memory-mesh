@@ -1,0 +1,207 @@
+# OpenRouter scenario adapter example file.
+# OpenRouter 场景化适配演示文件。
+#
+# This file is a copy-and-paste scenario library rather than a recommended one-shot production override.
+# 本文件是用于复制粘贴的场景库，不建议原样作为生产覆盖配置一次性启用全部路由。
+#
+# Usage:
+# 使用方式：
+# - Copy one LLM route block, the embedding block, or the rerank block into your config.yaml override as needed.
+#   按需将某个 LLM 路由块、embedding 块或 rerank 块复制到 config.yaml 覆盖配置中。
+# - Keep the provider field as "openrouter" so VMM uses the native OpenRouter SDK adapter.
+#   provider 字段保持为 "openrouter"，这样 VMM 才会使用 OpenRouter 原生 SDK 适配器。
+# - Put upstream vendor routing under params.provider, not the route-level provider field.
+#   上游供应商选择放在 params.provider 下，不要和路由级 provider 字段混用。
+# - OpenRouter app attribution headers are fixed in the adapter code and do not need config entries.
+#   OpenRouter 应用归因 header 已在适配器代码中固定注入，不需要在配置中重复声明。
+#
+# Common provider names include OpenAI, Anthropic, Google, Google AI Studio, DeepInfra, Fireworks, Together, Groq, Cerebras, and Novita.
+# 常见供应商名称包括 OpenAI、Anthropic、Google、Google AI Studio、DeepInfra、Fireworks、Together、Groq、Cerebras、Novita。
+
+llm:
+  routes:
+    - # Scenario 1: let OpenRouter choose providers automatically while allowing fallback.
+      # 场景 1：允许 OpenRouter 自动选择供应商，并开启供应商降级。
+      name: "openrouter-auto-fallback"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "${OPENROUTER_LLM_MODEL}"
+      params:
+        temperature: 0.2
+        provider:
+          allow_fallbacks: true
+
+    - # Scenario 2: disable reasoning and force one OpenAI upstream provider.
+      # 场景 2：关闭 reasoning，并强制只使用 OpenAI 上游供应商。
+      name: "openrouter-openai-thinking-off"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "openai/gpt-5-mini"
+      params:
+        temperature: 0.1
+        reasoning_effort: "none"
+        provider:
+          only:
+            - "OpenAI"
+          allow_fallbacks: false
+          require_parameters: true
+
+    - # Scenario 3: use the lowest reasoning level and force Google AI Studio.
+      # 场景 3：使用最低 reasoning 档位，并强制只使用 Google AI Studio。
+      name: "openrouter-google-minimal-thinking"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "google/gemini-2.5-flash"
+      params:
+        temperature: 0.15
+        reasoning_effort: "minimal"
+        provider:
+          only:
+            - "Google AI Studio"
+          allow_fallbacks: false
+          require_parameters: true
+
+    - # Scenario 4: prefer vendors in a fixed order and allow OpenRouter to fall through.
+      # 场景 4：按固定顺序优先选择供应商，并允许 OpenRouter 继续降级。
+      name: "openrouter-provider-order"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "${OPENROUTER_LLM_MODEL}"
+      params:
+        temperature: 0.2
+        provider:
+          order:
+            - "Anthropic"
+            - "OpenAI"
+            - "Google"
+          allow_fallbacks: true
+
+    - # Scenario 5: exclude specific vendors while keeping normal OpenRouter routing.
+      # 场景 5：排除指定供应商，同时保留 OpenRouter 的常规路由能力。
+      name: "openrouter-ignore-vendors"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "${OPENROUTER_LLM_MODEL}"
+      params:
+        temperature: 0.2
+        provider:
+          ignore:
+            - "Together"
+            - "DeepInfra"
+            - "Fireworks"
+          allow_fallbacks: true
+
+    - # Scenario 6: prefer privacy-constrained providers and disable data collection where supported.
+      # 场景 6：偏向隐私约束供应商，并在支持时关闭数据收集。
+      name: "openrouter-privacy-constrained"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "${OPENROUTER_LLM_MODEL}"
+      params:
+        temperature: 0.2
+        provider:
+          data_collection: "deny"
+          zdr: true
+          allow_fallbacks: true
+
+    - # Scenario 7: deprioritize slow endpoints and keep the lowest-cost provider sorting.
+      # 场景 7：降低慢端点优先级，并按低成本倾向排序供应商。
+      name: "openrouter-cost-latency-filter"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "${OPENROUTER_LLM_MODEL}"
+      params:
+        temperature: 0.2
+        provider:
+          sort: "price"
+          preferred_max_latency: 3.0
+          max_price:
+            prompt: "0.50"
+            completion: "2.00"
+          allow_fallbacks: true
+
+    - # Scenario 8: set default behavior at route level and override specific models separately.
+      # 场景 8：在路由级设置默认行为，再针对具体模型单独覆盖。
+      name: "openrouter-model-specific-overrides"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "${OPENROUTER_LLM_MODEL}"
+      params:
+        temperature: 0.2
+        reasoning_effort: "none"
+        provider:
+          allow_fallbacks: true
+      model_params:
+        openai/gpt-5-mini:
+          reasoning_effort: "minimal"
+          provider:
+            only:
+              - "OpenAI"
+            allow_fallbacks: false
+            require_parameters: true
+        anthropic/claude-sonnet-4:
+          reasoning_effort: "low"
+          reasoning_summary: "concise"
+          provider:
+            only:
+              - "Anthropic"
+            allow_fallbacks: false
+
+embedding:
+  # OpenRouter embeddings can use provider preferences too when the chosen embedding model has multiple upstream endpoints.
+  # 当所选 embedding 模型存在多个上游端点时，OpenRouter embeddings 也可以使用 provider 偏好。
+  provider: "openrouter"
+  endpoint: "https://openrouter.ai/api/v1"
+  api_keys:
+    - "${OPENROUTER_KEY}"
+  model: "${OPENROUTER_EMBEDDING_MODEL}"
+  dimension: 1024
+  max_batch_size: 10
+  params:
+    encoding_format: "float"
+    provider:
+      only:
+        - "OpenAI"
+      allow_fallbacks: false
+  model_params:
+    text-embedding-3-large:
+      dimensions: 1024
+      provider:
+        only:
+          - "OpenAI"
+        allow_fallbacks: false
+
+rerank:
+  # OpenRouter rerank uses a fixed model route in VMM and may also carry provider preferences when the SDK/model supports them.
+  # VMM 中的 OpenRouter rerank 使用固定模型路由；当 SDK/模型支持时，也可以携带 provider 偏好。
+  enabled: true
+  top_n: 8
+  routes:
+    - name: "openrouter-cohere-rerank"
+      provider: "openrouter"
+      endpoint: "https://openrouter.ai/api/v1"
+      api_keys:
+        - "${OPENROUTER_KEY}"
+      model: "cohere/rerank-v3.5"
+      timeout: "8s"
+      params:
+        provider:
+          only:
+            - "Cohere"
+          allow_fallbacks: false

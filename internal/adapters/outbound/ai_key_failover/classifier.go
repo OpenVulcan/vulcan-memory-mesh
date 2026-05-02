@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	orsdkerrors "github.com/OpenRouterTeam/go-sdk/models/sdkerrors"
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/siliconflow_rerank"
@@ -169,6 +170,144 @@ func classifyGoogleAIStudioError(err error, options Options, now time.Time) fail
 	return failureDecision{Class: errorClassUnknown}
 }
 
+// classifyOpenRouterError maps OpenRouter SDK typed and generic HTTP errors into the shared key-failover decision contract.
+// classifyOpenRouterError 用于把 OpenRouter SDK 的强类型与通用 HTTP 错误映射到统一的 Key 容灾决策契约。
+func classifyOpenRouterError(err error, options Options, now time.Time) failureDecision {
+	if err == nil {
+		return failureDecision{Class: errorClassNone}
+	}
+	if isNetworkError(err) {
+		return failureDecision{Class: errorClassPublicFault}
+	}
+	var apiErr *orsdkerrors.APIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		return classifyOpenRouterStatus(apiErr.StatusCode, apiErr.RawResponse, apiErr.Error()+" "+apiErr.Body, options, now)
+	}
+	if status := openRouterTypedStatus(err); status > 0 {
+		return classifyOpenRouterStatus(status, nil, err.Error(), options, now)
+	}
+	return failureDecision{Class: errorClassUnknown}
+}
+
+// classifyOpenRouterStatus applies provider-specific status semantics while preserving Retry-After handling when the SDK exposes a raw response.
+// classifyOpenRouterStatus 用于应用 OpenRouter 专属状态码语义，并在 SDK 暴露原始响应时保留 Retry-After 处理。
+func classifyOpenRouterStatus(statusCode int, response *http.Response, message string, options Options, now time.Time) failureDecision {
+	header := http.Header(nil)
+	if response != nil {
+		header = response.Header
+	}
+	body := strings.ToLower(strings.TrimSpace(message))
+	switch statusCode {
+	case http.StatusBadRequest, http.StatusNotFound, http.StatusRequestEntityTooLarge, http.StatusUnprocessableEntity:
+		return failureDecision{Class: errorClassInvalidRequest}
+	case http.StatusUnauthorized:
+		return failureDecision{
+			Class:     errorClassAuth,
+			SwitchKey: true,
+			Cooldown:  chooseCooldownFromHeader(header, now, options.RespectRetryAfter, options.AuthCooldown),
+		}
+	case http.StatusForbidden:
+		if shouldSwitchKeyOnOpenRouterForbidden(body) {
+			return failureDecision{
+				Class:     errorClassAuth,
+				SwitchKey: true,
+				Cooldown:  chooseCooldownFromHeader(header, now, options.RespectRetryAfter, options.AuthCooldown),
+			}
+		}
+		return failureDecision{Class: errorClassPublicFault}
+	case http.StatusPaymentRequired:
+		return failureDecision{
+			Class:     errorClassQuota,
+			SwitchKey: true,
+			Cooldown:  chooseCooldownFromHeader(header, now, options.RespectRetryAfter, options.QuotaCooldown),
+		}
+	case http.StatusTooManyRequests:
+		if containsAny(body, "insufficient_quota", "quota", "credits", "insufficient credits", "balance", "insufficient balance", "insufficient_balance") {
+			return failureDecision{
+				Class:     errorClassQuota,
+				SwitchKey: true,
+				Cooldown:  chooseCooldownFromHeader(header, now, options.RespectRetryAfter, options.QuotaCooldown),
+			}
+		}
+		return failureDecision{
+			Class:     errorClassRateLimit,
+			SwitchKey: true,
+			Cooldown:  chooseCooldownFromHeader(header, now, options.RespectRetryAfter, options.RateLimitCooldown),
+		}
+	default:
+		if statusCode == http.StatusRequestTimeout || statusCode == http.StatusConflict || statusCode >= http.StatusInternalServerError {
+			return failureDecision{Class: errorClassPublicFault}
+		}
+	}
+	return failureDecision{Class: errorClassUnknown}
+}
+
+// openRouterTypedStatus extracts the HTTP status represented by OpenRouter SDK's generated typed error structs.
+// openRouterTypedStatus 用于提取 OpenRouter SDK 生成式强类型错误结构所代表的 HTTP 状态码。
+func openRouterTypedStatus(err error) int {
+	var badRequest *orsdkerrors.BadRequestResponseError
+	if errors.As(err, &badRequest) {
+		return http.StatusBadRequest
+	}
+	var unauthorized *orsdkerrors.UnauthorizedResponseError
+	if errors.As(err, &unauthorized) {
+		return http.StatusUnauthorized
+	}
+	var paymentRequired *orsdkerrors.PaymentRequiredResponseError
+	if errors.As(err, &paymentRequired) {
+		return http.StatusPaymentRequired
+	}
+	var forbidden *orsdkerrors.ForbiddenResponseError
+	if errors.As(err, &forbidden) {
+		return http.StatusForbidden
+	}
+	var notFound *orsdkerrors.NotFoundResponseError
+	if errors.As(err, &notFound) {
+		return http.StatusNotFound
+	}
+	var tooManyRequests *orsdkerrors.TooManyRequestsResponseError
+	if errors.As(err, &tooManyRequests) {
+		return http.StatusTooManyRequests
+	}
+	var requestTimeout *orsdkerrors.RequestTimeoutResponseError
+	if errors.As(err, &requestTimeout) {
+		return http.StatusRequestTimeout
+	}
+	var conflict *orsdkerrors.ConflictResponseError
+	if errors.As(err, &conflict) {
+		return http.StatusConflict
+	}
+	var payloadTooLarge *orsdkerrors.PayloadTooLargeResponseError
+	if errors.As(err, &payloadTooLarge) {
+		return http.StatusRequestEntityTooLarge
+	}
+	var unprocessable *orsdkerrors.UnprocessableEntityResponseError
+	if errors.As(err, &unprocessable) {
+		return http.StatusUnprocessableEntity
+	}
+	var internalServer *orsdkerrors.InternalServerResponseError
+	if errors.As(err, &internalServer) {
+		return http.StatusInternalServerError
+	}
+	var badGateway *orsdkerrors.BadGatewayResponseError
+	if errors.As(err, &badGateway) {
+		return http.StatusBadGateway
+	}
+	var serviceUnavailable *orsdkerrors.ServiceUnavailableResponseError
+	if errors.As(err, &serviceUnavailable) {
+		return http.StatusServiceUnavailable
+	}
+	var edgeTimeout *orsdkerrors.EdgeNetworkTimeoutResponseError
+	if errors.As(err, &edgeTimeout) {
+		return http.StatusGatewayTimeout
+	}
+	var providerOverloaded *orsdkerrors.ProviderOverloadedResponseError
+	if errors.As(err, &providerOverloaded) {
+		return http.StatusServiceUnavailable
+	}
+	return 0
+}
+
 // shouldSwitchKeyOnOpenAIForbidden only returns true for 403 payloads that explicitly point to one bad or revoked credential instead of one shared permission problem.
 // shouldSwitchKeyOnOpenAIForbidden 仅在 403 载荷明确指向单个坏掉或被吊销的凭据时返回 true，而不会把共享权限问题误判为切 Key 场景。
 func shouldSwitchKeyOnOpenAIForbidden(body string) bool {
@@ -183,6 +322,24 @@ func shouldSwitchKeyOnOpenAIForbidden(body string) bool {
 		"key disabled",
 		"revoked api key",
 		"api key has been revoked",
+	)
+}
+
+// shouldSwitchKeyOnOpenRouterForbidden only treats 403 responses as key-scoped when the payload explicitly names one bad, disabled, or revoked credential.
+// shouldSwitchKeyOnOpenRouterForbidden 仅在 403 载荷明确指向单个错误、停用或吊销的凭据时，才把 OpenRouter 响应视为 Key 级故障。
+func shouldSwitchKeyOnOpenRouterForbidden(body string) bool {
+	return containsAny(
+		body,
+		"invalid_api_key",
+		"invalid api key",
+		"incorrect_api_key",
+		"incorrect api key",
+		"bad api key",
+		"api key is disabled",
+		"key disabled",
+		"revoked api key",
+		"api key has been revoked",
+		"authentication credentials",
 	)
 }
 
@@ -464,7 +621,7 @@ func isEmbeddingInputTooLargeError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if isOpenAIEmbeddingInputTooLargeError(err) || isGoogleAIStudioEmbeddingInputTooLargeError(err) {
+	if isOpenAIEmbeddingInputTooLargeError(err) || isGoogleAIStudioEmbeddingInputTooLargeError(err) || isOpenRouterEmbeddingInputTooLargeError(err) {
 		return true
 	}
 	return containsAny(strings.ToLower(strings.TrimSpace(err.Error())),
@@ -477,6 +634,48 @@ func isEmbeddingInputTooLargeError(err error) bool {
 		"max input tokens",
 		"token count exceeds",
 		"request payload size exceeds",
+		"prompt too long",
+		"content too large",
+		"please reduce the length",
+		"please reduce the size",
+	)
+}
+
+// isOpenRouterEmbeddingInputTooLargeError checks OpenRouter SDK errors for payload-size or token-length markers that should trigger embedding batch shrinkage.
+// isOpenRouterEmbeddingInputTooLargeError 用于检查 OpenRouter SDK 错误中表示载荷过大或 token 过长的标记，从而触发 embedding 批次缩小。
+func isOpenRouterEmbeddingInputTooLargeError(err error) bool {
+	var payloadTooLarge *orsdkerrors.PayloadTooLargeResponseError
+	if errors.As(err, &payloadTooLarge) {
+		return true
+	}
+	var apiErr *orsdkerrors.APIError
+	if errors.As(err, &apiErr) && apiErr != nil {
+		if apiErr.StatusCode == http.StatusRequestEntityTooLarge {
+			return true
+		}
+		if apiErr.StatusCode != http.StatusBadRequest && apiErr.StatusCode != http.StatusUnprocessableEntity {
+			return false
+		}
+		return openRouterInputTooLargeMessage(apiErr.Message + " " + apiErr.Body)
+	}
+	return openRouterInputTooLargeMessage(err.Error())
+}
+
+// openRouterInputTooLargeMessage matches OpenRouter and upstream-provider text markers that mean the embedding payload must be split before retrying.
+// openRouterInputTooLargeMessage 用于匹配 OpenRouter 与其上游 provider 文本中表示 embedding 载荷必须拆分后重试的标记。
+func openRouterInputTooLargeMessage(message string) bool {
+	body := strings.ToLower(strings.TrimSpace(message))
+	return containsAny(body,
+		"maximum context length",
+		"context_length_exceeded",
+		"too many tokens",
+		"input is too long",
+		"input too long",
+		"maximum input length",
+		"max input tokens",
+		"token count exceeds",
+		"request payload size exceeds",
+		"payload too large",
 		"prompt too long",
 		"content too large",
 		"please reduce the length",

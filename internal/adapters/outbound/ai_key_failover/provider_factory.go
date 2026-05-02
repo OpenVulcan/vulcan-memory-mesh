@@ -9,6 +9,7 @@ import (
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/google_ai_studio"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/openai_native"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/openrouter"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -27,6 +28,12 @@ func newLLMProviderFactory(provider, endpoint, model, organization, project stri
 				return google_ai_studio.NewLLMClient(endpoint, apiKey, model, params, modelParams)
 			}, func(err error, now time.Time) failureDecision {
 				return classifyGoogleAIStudioError(err, options, now)
+			}, nil
+	case "openrouter":
+		return func(apiKey string) appports.LLMClient {
+				return openrouter.NewLLMClient(endpoint, apiKey, model, params, modelParams)
+			}, func(err error, now time.Time) failureDecision {
+				return classifyOpenRouterError(err, options, now)
 			}, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported llm provider: %s", provider)
@@ -48,6 +55,12 @@ func newEmbeddingProviderFactory(provider, endpoint, model string, dimension int
 				return google_ai_studio.NewEmbeddingClient(endpoint, apiKey, model, dimension, params, modelParams)
 			}, func(err error, now time.Time) failureDecision {
 				return classifyGoogleAIStudioError(err, options, now)
+			}, nil
+	case "openrouter":
+		return func(apiKey string) appports.EmbeddingClient {
+				return openrouter.NewEmbeddingClient(endpoint, apiKey, model, dimension, params, modelParams)
+			}, func(err error, now time.Time) failureDecision {
+				return classifyOpenRouterError(err, options, now)
 			}, nil
 	default:
 		return nil, nil, fmt.Errorf("unsupported embedding provider: %s", provider)

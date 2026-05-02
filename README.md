@@ -194,11 +194,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 当 `recall_mode` 为未来新增的非零值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
 - 第二层 `precheck_l2_main` 会结合按当前运行系统本地时间展开、且不显示时区后缀的当前 `datetime`、候选创建 `datetime`、候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
-- 只把被采纳的记忆组装为 `context_text / context_items`
-  - `PreCheckResponse.context_text` 已废弃，gRPC 返回中固定留空
+- 只把被采纳的记忆通过 gRPC `context_items[]` 返回给调用方
+  - `PreCheckResponse` 已移除旧 `context_text` 字段
   - 调用方应直接消费 `context_items[]`
   - 每条 `context_items[]` 仅保留记忆正文、分数、`has_dialogue`、`turn_id` 与 `created_datetime`
-  - `created_timestamp` 仍保留为兼容字段，但新接入应优先消费 `created_datetime`
   - 这里的 `created_datetime` 是按当前运行环境系统本地时间展开的可读显示值；底层基准仍然是时间戳
   - 当 `turn_id > 0` 时，可继续调用 `GetTurnDetails`
 - 画像读取仍走独立接口：`GetProfileNodes / GetProfileBundle`
@@ -435,7 +434,6 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `details_preview`
   - `category`
   - `created_datetime`
-  - `created_timestamp`（兼容字段，已废弃）
   - 这里的 `created_datetime` 是按当前运行环境系统本地时间展开的可读值；如果宿主机系统时区变化，历史命中的 `created_datetime` 重新展示时也可能发生对应偏移，这属于预期行为
 - 如果 `source_turn_id > 0`：
   - 可以继续调用 `GetTurnDetails`
@@ -554,6 +552,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 - `base.yaml` 只随项目或打包产物分发，不放到用户目录。
 - 用户目录只负责提供覆盖层 `config.yaml`。
+- 当前随包 `base.yaml` 保留完整字段说明、节点样例和通用默认参数，但不携带真实或占位 API Key。
+- 当前项目级 `configs/config.yaml` 用作 OpenRouter LLM 测试覆盖，并通过 `OPENROUTER_KEY` 读取 API Key。
+- 当前测试覆盖中的 embedding 与 rerank 仍使用百炼变量 `BAILIAN_API_KEY`、`BAILIAN_BASE_URL`、`BAILIAN_RERANK_URL`。
+- `configs/bailian.config.example.yaml` 保留了此前的百炼 LLM、embedding、rerank 覆盖示例。
+- 必填运行字段中的 `${ENV_NAME}` 占位符如果缺失或为空，会在展开前直接报出变量名与配置路径，避免被归一化为空节点后产生误导性的路由错误。
 
 ### 维护工具
 
@@ -749,10 +752,11 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 每个 query group 最多送多少条首轮向量命中进入 rerank
 - `routes`
   - 当前只认 `rerank.routes[]`
-  - 每条 route 必须自包含 `provider + endpoint + model + api_keys/nodes + timeout`
+  - 每条 route 必须自包含 `provider + endpoint（或 provider 默认值） + model + api_keys/nodes + timeout`
   - 如果不拆 `nodes`，可以直接在 route 上配置 `rpm / tpm / rpd`
   - route 间按 `priority` 做有序容灾，route 内部继续执行 `nodes + key_failover`
-  - 当前内置 provider 包含 `dashscope / siliconflow`
+  - 当前内置 provider 包含 `dashscope / siliconflow / openrouter`
+  - `params.provider` 目前仅由 `openrouter` rerank 消费，用于 OpenRouter 上游供应商偏好；其他 provider 会自动忽略
   - route 全部失败时，检索链会按 `rerank=false` 语义降级回首轮排序
 
 AI 容灾边界当前统一为：
@@ -760,21 +764,22 @@ AI 容灾边界当前统一为：
 - `llm`
   - 只支持 `llm.routes[]`
   - 支持多 provider / 多 model / 多 route 的有序容灾
-  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio / openrouter`
   - 不再支持 `llm.routes[].priority`
   - `llm.routes[]` 示例现已包含 `rpm / tpm / rpd / weights`
-  - `llm.routes[].weights` 目前包含 `precheck_l1 / precheck_l2 / postaction_l1 / postaction_l2 / reserve`
+  - `llm.routes[].weights` 目前包含 `precheck_l1 / precheck_l2 / postaction_l1 / postaction_l2 / profile_instruction / reserve`
   - 未声明的 `weights.*` 默认都是 `100`
   - LLM route 会按“当前调用层级对应的 weight”排序；route 内部再做 `nodes + key_failover`
 - `rerank`
   - 只支持 `rerank.routes[]`
   - 顶层只保留 `enabled / top_n / routes`
   - `rerank.routes[]` 示例现已包含 `rpm / tpm / rpd`
+  - `rerank.routes[].params.provider` 只对 `openrouter` 生效，不支持该参数的 provider 会忽略
   - 所有 route 都失败时检索链退回首轮排序
 - `embedding`
   - 不支持 `routes`
-  - 只支持固定 `provider + endpoint + model + dimension` 下的多 key 与 `nodes + key_failover`
-  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio`
+  - 只支持固定 `provider + endpoint（或 SDK 默认值） + model + dimension` 下的多 key 与 `nodes + key_failover`
+  - 当前内置 provider 包含 `openai / openai_native / openai_go / google_ai_studio / openrouter`
   - `embedding` 示例现已包含顶层 `rpm / tpm / rpd`
   - `nodes` 只负责吞吐分档，不允许跨模型或跨 provider 混用向量空间
 

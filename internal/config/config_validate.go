@@ -134,7 +134,7 @@ func (c Config) Validate() error {
 		return errors.New("embedding.provider is required")
 	}
 	if !isSupportedAIProvider(c.Embedding.Provider) {
-		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, or google_ai_studio")
+		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, google_ai_studio, or openrouter")
 	}
 	if normalizeStorageModeValue(c.Storage.Mode) == "split" {
 		if strings.TrimSpace(c.LanceDB.TableName) == "" {
@@ -588,16 +588,27 @@ func isGoogleAIStudioProvider(provider string) bool {
 	}
 }
 
+// isOpenRouterProvider reports whether one provider alias resolves to the native OpenRouter SDK adapter.
+// isOpenRouterProvider 用于判断某个 provider 别名是否会落到 OpenRouter SDK 原生适配器。
+func isOpenRouterProvider(provider string) bool {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "openrouter":
+		return true
+	default:
+		return false
+	}
+}
+
 // isSupportedAIProvider reports whether one provider alias resolves to any currently supported LLM/embedding adapter.
 // isSupportedAIProvider 用于判断某个 provider 别名是否会落到当前支持的任一 LLM/embedding 适配器。
 func isSupportedAIProvider(provider string) bool {
-	return isOpenAIProvider(provider) || isGoogleAIStudioProvider(provider)
+	return isOpenAIProvider(provider) || isGoogleAIStudioProvider(provider) || isOpenRouterProvider(provider)
 }
 
 // providerRequiresEndpoint reports whether the provider expects callers to supply an explicit endpoint instead of relying on the SDK default service root.
 // providerRequiresEndpoint 用于判断某个 provider 是否要求调用方显式提供 endpoint，而不是依赖 SDK 默认服务根地址。
 func providerRequiresEndpoint(provider string) bool {
-	return !isGoogleAIStudioProvider(provider)
+	return !isGoogleAIStudioProvider(provider) && !isOpenRouterProvider(provider)
 }
 
 // validatePayloadEncryptionKey checks the optional protected-log key format so startup can fail fast instead of silently dropping encrypted payload logging.

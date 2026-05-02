@@ -1,23 +1,33 @@
-x-llm-bailian: &llm_bailian
-  weights:
-    precheck_l1: 100
-    precheck_l2: 100
-    postaction_l1: 100
-    postaction_l2: 100
-    profile_instruction: 100
-    reserve: 100
-  provider: "openai"
-  endpoint: "${BAILIAN_BASE_URL}"
+# OpenRouter test override configuration file.
+# OpenRouter 测试覆盖配置文件。
+#
+# This file keeps the project-local runtime overrides and switches only the LLM test routes to OpenRouter.
+# 本文件保留项目本地运行覆盖，仅将 LLM 测试路由切换到 OpenRouter。
+#
+# Bailian embedding and rerank intentionally stay unchanged so existing vector and ranking test data remains stable.
+# embedding 与 rerank 有意保持百炼不变，确保现有向量与排序测试数据稳定。
+
+x-llm-openrouter: &llm_openrouter
+  # Shared OpenRouter LLM route defaults used by the scene-weighted test routes below.
+  # 下方分场景测试路由共用的 OpenRouter LLM 默认配置。
+  provider: "openrouter"
+  endpoint: "https://openrouter.ai/api/v1"
   api_keys:
-    - "${BAILIAN_API_KEY}"
-  rpm: 30000
-  tpm: 5000000
+    - "${OPENROUTER_KEY}"
+  rpm: 0
+  tpm: 0
   rpd: 0
+  nodes: []
+  organization: ""
+  project: ""
   params:
-    enable_thinking: false
-    stream: false
-    response_format: { type: "json_object" }
-  key_failover:
+    # Disable reasoning for all configured OpenRouter test requests.
+    # 为当前 OpenRouter 测试请求统一关闭 reasoning。
+    reasoning_effort: "none"
+    provider:
+      allow_fallbacks: true
+  model_params: {}
+  key_failover: &ai_key_failover
     enabled: true
     policy: "ordered_failover"
     respect_retry_after: true
@@ -25,9 +35,10 @@ x-llm-bailian: &llm_bailian
     quota_cooldown: "10m"
     auth_cooldown: "12h"
     probe_after_cooldown: true
-    
+
 x-rerank-bailian: &rerank_bailian
-  priority: 100
+  # Shared Bailian rerank defaults retained for comparable recall ordering tests.
+  # 保留共用百炼 rerank 默认配置，确保召回排序测试可比。
   provider: "dashscope"
   endpoint: "${BAILIAN_RERANK_URL}"
   api_keys:
@@ -35,15 +46,12 @@ x-rerank-bailian: &rerank_bailian
   rpm: 5400
   tpm: 5000000000
   rpd: 0
+  nodes: []
   timeout: "8s"
+  params: {}
+  model_params: {}
   key_failover:
-    enabled: true
-    policy: "ordered_failover"
-    respect_retry_after: true
-    rate_limit_cooldown: "5m"
-    quota_cooldown: "10m"
-    auth_cooldown: "12h"
-    probe_after_cooldown: true
+    <<: *ai_key_failover
 
 grpc:
   # Listen address used by the local runtime in this project setup.
@@ -55,35 +63,27 @@ logging:
   # 本地调试时是否输出更完整的 RPC 载荷。
   debug_rpc_payloads: true
 
+  # Whether LLM output is logged during local model-routing tests.
+  # 本地模型路由测试时是否记录 LLM 输出。
   llm_output_enabled: true
 
 storage:
-  # This project overrides the topology to combined, which means relational and vector storage both go through PostgreSQL.
-  # 本项目将存储拓扑覆盖为 combined，表示关系与向量能力统一经由 PostgreSQL 组合库存储。
-  # Allowed values:
-  # 支持取值：
-  # - split: relational storage uses sqlite and vector storage uses lancedb.
-  # - split：关系存储使用 sqlite，向量存储使用 lancedb。
-  # - combined: relational and vector capabilities both use the unified PostgreSQL combined store.
-  # - combined：关系与向量能力统一走 PostgreSQL 组合库存储。
+  # This project override keeps the local combined PostgreSQL topology used by the existing test setup.
+  # 本项目覆盖层保留现有测试环境使用的本地 PostgreSQL combined 拓扑。
   mode: "combined"
 
 sqlite:
-  # Legacy compatibility field kept only for older split-mode experiments.
-  # 仅为旧 split 模式实验保留的兼容字段。
-  # Current split mode uses the bundled local SQLite FFI library and ignores this address.
-  # 当前 split 模式使用随包分发的本地 SQLite FFI 动态库，因此会忽略这个地址。
+  # Split-mode SQLite address placeholder kept for test configurations that switch storage.mode back to split.
+  # 为切回 split 的测试配置保留 SQLite 地址占位。
   address: "${VMM_SQLITE_ADDRESS}"
 
-  # Built-in tokenizer mode used by the local SQLite FTS integration when split mode is enabled.
-  # split 模式启用时，本地 SQLite FTS 集成使用的内建分词模式。
-  tokenizer_mode: "${VMM_SQLITE_TOKENIZER_MODE}"
+  # Split-mode SQLite tokenizer default kept literal because this OpenRouter test file runs in combined mode.
+  # split 模式 SQLite 分词器默认值保持字面量，因为当前 OpenRouter 测试文件运行在 combined 模式。
+  tokenizer_mode: "jieba"
 
 lancedb:
-  # Legacy compatibility field kept only for older split-mode experiments.
-  # 仅为旧 split 模式实验保留的兼容字段。
-  # Current split mode uses the bundled local LanceDB FFI library and ignores this address.
-  # 当前 split 模式使用随包分发的本地 LanceDB FFI 动态库，因此会忽略这个地址。
+  # Split-mode LanceDB address placeholder kept for test configurations that switch storage.mode back to split.
+  # 为切回 split 的测试配置保留 LanceDB 地址占位。
   address: "${VMM_LANCEDB_ADDRESS}"
 
 postgres:
@@ -92,146 +92,98 @@ postgres:
   dsn: "${VMM_POSTGRES_DSN}"
 
 llm:
-  # Project-local LLM route overrides.
-  # 项目本地使用的 LLM 路由覆盖。
+  # Project-local OpenRouter LLM test routes.
+  # 项目本地 OpenRouter LLM 测试路由。
   routes:
-    - <<: *llm_bailian
-      name: "qwen3.5-flash"
-      model: "qwen3.5-flash-2026-02-23"
-      rpm: 600
-      tpm: 1000000
+    - <<: *llm_openrouter
+      # Qwen flash is preferred for light extraction, first-pass post-action analysis, and profile instruction review.
+      # Qwen flash 优先承接轻量提取、PostAction 一层分析与手工画像指令评审。
+      name: "openrouter-qwen3.5-flash-main"
+      model: "qwen/qwen3.5-flash-02-23"
       weights:
-        precheck_l1: 145
-        precheck_l2: 130
-        postaction_l1: 145
-        postaction_l2: 130
-        profile_instruction: 125
-        reserve: 100
+        precheck_l1: 180
+        precheck_l2: 80
+        postaction_l1: 180
+        postaction_l2: 80
+        profile_instruction: 180
+        reserve: 80
 
-    - <<: *llm_bailian
-      name: "qwen3.5-plus"
-      model: "qwen3.5-plus"
-      rpm: 30000
-      tpm: 5000000
+    - <<: *llm_openrouter
+      # Qwen plus is reserved for the heavier PostAction L2 review path and kept as a low-priority fallback elsewhere.
+      # Qwen plus 主要服务较重的 PostAction L2 评审链路，在其他场景仅作为低权重兜底。
+      name: "openrouter-qwen3.6-plus-postaction-l2"
+      model: "qwen/qwen3.6-plus"
       weights:
-        precheck_l1: 140
-        precheck_l2: 155
-        postaction_l1: 140
-        postaction_l2: 140
-        profile_instruction: 145
-        reserve: 100
+        precheck_l1: 10
+        precheck_l2: 10
+        postaction_l1: 10
+        postaction_l2: 180
+        profile_instruction: 10
+        reserve: 10
 
-    - <<: *llm_bailian
-      name: "qwen3.6-plus"
-      model: "qwen3.6-plus"
-      rpm: 30000
-      tpm: 5000000
+    - <<: *llm_openrouter
+      # DeepSeek flash is pinned to Novita and preferred for PreCheck L2 memory review.
+      # DeepSeek flash 固定走 Novita，并优先承接 PreCheck L2 记忆评审。
+      name: "openrouter-deepseek-v4-flash-novita-precheck-l2"
+      model: "deepseek/deepseek-v4-flash"
       weights:
-        precheck_l1: 140
-        precheck_l2: 140
-        postaction_l1: 140
-        postaction_l2: 155
-        profile_instruction: 160
-        reserve: 100
-
-    - <<: *llm_bailian
-      name: "qwen-flash"
-      model: "qwen-flash"
-      rpm: 30000
-      tpm: 10000000
-      weights:
-        precheck_l1: 139
-        precheck_l2: 120
-        postaction_l1: 139
+        precheck_l1: 120
+        precheck_l2: 180
+        postaction_l1: 120
         postaction_l2: 120
         profile_instruction: 120
-        reserve: 100
-
-    - <<: *llm_bailian
-      name: "qwen-flash-2025-07-28"
-      model: "qwen-flash-2025-07-28"
-      rpm: 60
-      tpm: 1000000
-      weights:
-        precheck_l1: 119
-        precheck_l2: 139
-        postaction_l1: 119
-        postaction_l2: 139
-        profile_instruction: 135
-        reserve: 100
-
-    - <<: *llm_bailian
-      name: "tongyi-xiaomi-analysis-flash"
-      model: "tongyi-xiaomi-analysis-flash"
-      rpm: 600
-      tpm: 1000000
-      weights:
-        precheck_l1: 130
-        precheck_l2: 120
-        postaction_l1: 130
-        postaction_l2: 120
-        profile_instruction: 120
-        reserve: 100
+        reserve: 120
+      params:
+        reasoning_effort: "none"
+        provider:
+          only:
+            - "novita"
+          allow_fallbacks: false
 
 embedding:
+  # Bailian embedding stays enabled to keep the existing vector-space contract stable.
+  # embedding 保持百炼配置，以维持现有向量空间契约稳定。
   provider: "openai"
   endpoint: "${BAILIAN_BASE_URL}"
   api_keys:
     - "${BAILIAN_API_KEY}"
-
   rpm: 1800
   tpm: 1200000
   rpd: 0
-
+  nodes: []
   model: "text-embedding-v4"
   dimension: 1024
   max_batch_size: 10
-
   organization: ""
   project: ""
-
   params: {}
   model_params: {}
-
   key_failover:
-    enabled: true
-    policy: "ordered_failover"
-    respect_retry_after: true
-    rate_limit_cooldown: "5m"
-    quota_cooldown: "10m"
-    auth_cooldown: "12h"
-    probe_after_cooldown: true
+    <<: *ai_key_failover
 
 rerank:
+  # Bailian rerank stays enabled so recall ordering behavior remains aligned with current fixtures.
+  # rerank 保持百炼启用状态，确保召回排序行为继续与当前夹具对齐。
   enabled: true
-
   top_n: 8
-
   routes:
     - <<: *rerank_bailian
       name: "qwen3-rerank"
-      model: "qwen3-rerank"
       priority: 100
-
+      model: "qwen3-rerank"
     - <<: *rerank_bailian
       name: "qwen3-vl-rerank"
-      model: "qwen3-vl-rerank"
       priority: 90
-
+      model: "qwen3-vl-rerank"
     - <<: *rerank_bailian
       name: "gte-rerank-v2"
-      model: "gte-rerank-v2"
       priority: 80
-      
-vector:
-  # Placeholder vector backend provider, mainly relevant when switching back to split mode.
-  # 向量后端提供方占位，主要在切回 split 模式时生效。
-  # Currently supported values:
-  # 当前支持取值：
-  # - lancedb: use LanceDB as the split-mode vector backend.
-  # - lancedb：在 split 模式下使用 LanceDB 作为向量后端。
-  provider: "${VMM_VECTOR_PROVIDER}"
+      model: "gte-rerank-v2"
 
+vector:
+  # Split-mode vector backend default kept literal because this OpenRouter test file runs in combined mode.
+  # split 模式向量后端默认值保持字面量，因为当前 OpenRouter 测试文件运行在 combined 模式。
+  provider: "lancedb"
 
 maintenance_tool:
   # Logical batch size used while materializing vector-rebuild snapshots before destructive maintenance rewrites begin.
@@ -241,12 +193,4 @@ maintenance_tool:
 prompts:
   # Prompt bundle selector used by the runtime.
   # 运行时使用的提示词包选择器。
-  # Supported values:
-  # 支持取值：
-  # - default_en / en / english / default: use the built-in English prompt bundle, which is also the runtime default.
-  # - default_en / en / english / default：使用内建英文提示词包，这也是当前运行时默认值。
-  # - default_cn / zh / zh-cn / chinese / cn: use the built-in Chinese prompt bundle.
-  # - default_cn / zh / zh-cn / chinese / cn：使用内建中文提示词包。
-  # - custom folder name: directly select one prompt bundle directory under prompts/.
-  # - 自定义目录名：直接选择 prompts/ 下的某个提示词包目录。
   prompt_language: "default_cn"

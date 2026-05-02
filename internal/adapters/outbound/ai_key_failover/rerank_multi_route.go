@@ -21,7 +21,13 @@ type RerankRouteOptions struct {
 	Model    string
 	Timeout  time.Duration
 	APIKeys  []string
-	Options  Options
+	// Params carries provider-specific rerank request hints and is only consumed by providers that explicitly support them.
+	// Params 用于携带 provider 专属的 rerank 请求参数，并且只会被明确支持这些参数的 provider 消费。
+	Params map[string]any
+	// ModelParams carries model-scoped rerank request hints for provider adapters that can safely apply them.
+	// ModelParams 用于携带模型粒度的 rerank 请求参数，供能够安全应用这些参数的 provider 适配器使用。
+	ModelParams map[string]map[string]any
+	Options     Options
 }
 
 // rerankMultiRouteEntry stores one compiled rerank route so the outer wrapper can iterate providers/models without rebuilding fixed-model key pools on every request.
@@ -98,7 +104,7 @@ func buildRerankMultiRouteEntry(route RerankRouteOptions) (appports.RerankerClie
 	if err != nil {
 		return nil, nil, err
 	}
-	client, err := NewProviderRerankerClient(route.Provider, route.Endpoint, route.Model, route.Timeout, route.APIKeys, route.Options)
+	client, err := NewProviderRerankerClient(route.Provider, route.Endpoint, route.Model, route.Timeout, route.APIKeys, route.Params, route.ModelParams, route.Options)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 
 	"github.com/joho/godotenv"
@@ -28,7 +29,7 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	cfg := fallback
 	normalizedPaths := normalizeConfigPaths(paths)
 	layerBodies := make(map[string][]byte, len(normalizedPaths))
-	referencedEnvKeys, err := collectReferencedEnvKeysFromConfigPaths(normalizedPaths)
+	referencedEnvKeys, envReferences, err := collectReferencedEnvKeysFromConfigPaths(normalizedPaths)
 	if err != nil {
 		return Config{}, fmt.Errorf("parse config: %w", err)
 	}
@@ -40,6 +41,9 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 		layerBodies[path] = body
 	}
 	if err := loadDotEnv(normalizedPaths, referencedEnvKeys); err != nil {
+		return Config{}, err
+	}
+	if err := validateRequiredEnvReferences(envReferences); err != nil {
 		return Config{}, err
 	}
 
@@ -152,6 +156,14 @@ type aiKeyFieldPresence struct {
 	HasAPIKey  bool
 	HasAPIKeys bool
 	HasNodes   bool
+}
+
+// envReference records one explicit ${ENV_NAME} placeholder that appears in a real config value.
+// envReference 用于记录真实配置值中出现的一处显式 ${ENV_NAME} 占位符。
+type envReference struct {
+	Key        string
+	ConfigPath string
+	ValuePath  string
 }
 
 // applyLayeredAIKeyOverrideReset validates removed AI config modes early and clears stale lower-priority embedding key shapes before one higher-priority config layer is unmarshaled.
@@ -411,20 +423,21 @@ func normalizeConfigPaths(paths []string) []string {
 
 // collectReferencedEnvKeysFromConfigPaths walks every raw config layer and records which ${ENV_NAME} placeholders were explicitly referenced in values.
 // collectReferencedEnvKeysFromConfigPaths 用于扫描所有原始配置层中的值，记录哪些 ${ENV_NAME} 占位符被显式引用。
-func collectReferencedEnvKeysFromConfigPaths(paths []string) (map[string]struct{}, error) {
+func collectReferencedEnvKeysFromConfigPaths(paths []string) (map[string]struct{}, []envReference, error) {
 	referenced := map[string]struct{}{}
+	references := []envReference{}
 	for _, path := range paths {
 		body, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("read config: %w", err)
+			return nil, nil, fmt.Errorf("read config: %w", err)
 		}
 		layerValue, err := decodeRawConfigLayer(path, body)
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
-		collectEnvReferencesInValue(layerValue, referenced)
+		collectEnvReferencesInValue(layerValue, referenced, &references, path, "")
 	}
-	return referenced, nil
+	return referenced, references, nil
 }
 
 // decodeRawConfigLayer decodes one raw JSON/YAML config layer without environment expansion so placeholder discovery can inspect only real config values, not comments.
@@ -448,27 +461,39 @@ func decodeRawConfigLayer(path string, body []byte) (any, error) {
 
 // collectEnvReferencesInValue recursively visits config values so only placeholders that appear in actual scalar content can opt a field into environment-backed loading.
 // collectEnvReferencesInValue 用于递归遍历配置值，让只有真实标量内容里出现的占位符才能把对应字段显式加入环境变量加载白名单。
-func collectEnvReferencesInValue(value any, referenced map[string]struct{}) {
+func collectEnvReferencesInValue(value any, referenced map[string]struct{}, references *[]envReference, configPath, valuePath string) {
 	switch typed := value.(type) {
 	case map[string]any:
-		for _, child := range typed {
-			collectEnvReferencesInValue(child, referenced)
+		keys := make([]string, 0, len(typed))
+		for key := range typed {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			collectEnvReferencesInValue(typed[key], referenced, references, configPath, joinConfigValuePath(valuePath, key))
 		}
 	case []any:
-		for _, child := range typed {
-			collectEnvReferencesInValue(child, referenced)
+		for idx, child := range typed {
+			collectEnvReferencesInValue(child, referenced, references, configPath, appendConfigValueIndex(valuePath, idx))
 		}
 	case string:
-		collectEnvReferencesInString(typed, referenced)
+		for _, key := range collectEnvReferencesInString(typed, referenced) {
+			*references = append(*references, envReference{
+				Key:        key,
+				ConfigPath: configPath,
+				ValuePath:  valuePath,
+			})
+		}
 	}
 }
 
 // collectEnvReferencesInString extracts ${ENV_NAME} markers from one string so environment participation becomes an explicit opt-in in config values.
 // collectEnvReferencesInString 用于从单个字符串中提取 ${ENV_NAME} 标记，使环境变量参与配置解析变成显式 opt-in 行为。
-func collectEnvReferencesInString(raw string, referenced map[string]struct{}) {
+func collectEnvReferencesInString(raw string, referenced map[string]struct{}) []string {
 	if referenced == nil || strings.TrimSpace(raw) == "" {
-		return
+		return nil
 	}
+	keys := []string{}
 	for idx := 0; idx < len(raw); idx++ {
 		if raw[idx] != '$' || idx+1 >= len(raw) || raw[idx+1] != '{' {
 			continue
@@ -484,8 +509,80 @@ func collectEnvReferencesInString(raw string, referenced map[string]struct{}) {
 		key := strings.TrimSpace(raw[start:end])
 		if key != "" {
 			referenced[key] = struct{}{}
+			keys = append(keys, key)
 		}
 		idx = end
+	}
+	return keys
+}
+
+// joinConfigValuePath appends a map key to one human-readable config value path.
+// joinConfigValuePath 用于把 map key 追加到一条便于排障阅读的配置值路径上。
+func joinConfigValuePath(prefix, key string) string {
+	if strings.TrimSpace(prefix) == "" {
+		return key
+	}
+	return prefix + "." + key
+}
+
+// appendConfigValueIndex appends a list index to one human-readable config value path.
+// appendConfigValueIndex 用于把列表下标追加到一条便于排障阅读的配置值路径上。
+func appendConfigValueIndex(prefix string, idx int) string {
+	return fmt.Sprintf("%s[%d]", prefix, idx)
+}
+
+// validateRequiredEnvReferences fails before os.ExpandEnv can turn required placeholders into empty runtime values.
+// validateRequiredEnvReferences 用于在 os.ExpandEnv 把必填占位符变成空运行值之前提前失败。
+func validateRequiredEnvReferences(references []envReference) error {
+	if len(references) == 0 {
+		return nil
+	}
+	problems := []string{}
+	seen := map[string]struct{}{}
+	for _, ref := range references {
+		if !envReferenceRequiresValue(ref.ValuePath) {
+			continue
+		}
+		value, exists := os.LookupEnv(ref.Key)
+		if exists && strings.TrimSpace(value) != "" {
+			continue
+		}
+		reason := "is not set"
+		if exists {
+			reason = "is empty"
+		}
+		label := fmt.Sprintf("%s at %s:%s %s", ref.Key, ref.ConfigPath, ref.ValuePath, reason)
+		if _, duplicate := seen[label]; duplicate {
+			continue
+		}
+		seen[label] = struct{}{}
+		problems = append(problems, label)
+	}
+	if len(problems) == 0 {
+		return nil
+	}
+	sort.Strings(problems)
+	return fmt.Errorf("config environment variable placeholder error: %s", strings.Join(problems, "; "))
+}
+
+// envReferenceRequiresValue reports whether a placeholder is feeding a field that cannot safely collapse to an empty value.
+// envReferenceRequiresValue 用于判断某个占位符是否写入了不能安全折叠为空值的配置字段。
+func envReferenceRequiresValue(valuePath string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(valuePath))
+	if normalized == "" {
+		return false
+	}
+	switch {
+	case strings.HasSuffix(normalized, ".organization"):
+		return false
+	case strings.HasSuffix(normalized, ".project"):
+		return false
+	case strings.HasSuffix(normalized, ".address"):
+		return false
+	case strings.HasSuffix(normalized, ".payload_encryption_key"):
+		return false
+	default:
+		return true
 	}
 }
 

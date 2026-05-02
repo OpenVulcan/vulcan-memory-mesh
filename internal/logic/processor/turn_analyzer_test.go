@@ -58,8 +58,8 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	prompts := &stubTurnAnalyzerPromptSource{prompt: strings.Join([]string{
 		"# Role",
 		"prompt-body",
-		"{#TAG REFERENCE_RULE#}",
-		"{#TAG DIRECT_WRITE_EXCLUSION_RULE#}",
+		"`reference_turns` 只帮助理解语境，不能作为新事实来源。",
+		"`recent_grpc_memory_writes` 只用于排除重复。",
 	}, "\n")}
 	analyzer := NewTurnAnalyzer(llm, prompts, "qwen3.5-flash")
 
@@ -113,11 +113,14 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if strings.Contains(llm.request.UserPrompt, `"active_memory_nodes"`) {
 		t.Fatalf("expected active memory nodes to be removed from turn-analysis request body, got %s", llm.request.UserPrompt)
 	}
-	if !strings.Contains(llm.request.SystemPrompt, "绝对禁止把这些历史摘要重新提炼成当前 turn 的新增记忆或画像") {
-		t.Fatalf("expected rendered reference rule in system prompt, got %s", llm.request.SystemPrompt)
+	if !strings.Contains(llm.request.SystemPrompt, "`reference_turns` 只帮助理解语境，不能作为新事实来源。") {
+		t.Fatalf("expected static reference rule in system prompt, got %s", llm.request.SystemPrompt)
 	}
-	if !strings.Contains(llm.request.SystemPrompt, "这些事实已经由工具链主动写入") {
-		t.Fatalf("expected direct-write exclusion rule in system prompt, got %s", llm.request.SystemPrompt)
+	if !strings.Contains(llm.request.SystemPrompt, "`recent_grpc_memory_writes` 只用于排除重复。") {
+		t.Fatalf("expected static direct-write exclusion rule in system prompt, got %s", llm.request.SystemPrompt)
+	}
+	if strings.Contains(llm.request.SystemPrompt, "{#TAG") {
+		t.Fatalf("expected static system prompt without tag placeholders, got %s", llm.request.SystemPrompt)
 	}
 	if strings.Contains(llm.request.SystemPrompt, "Unified Output Language Rule") {
 		t.Fatalf("expected shared language policy injection to be removed, got %s", llm.request.SystemPrompt)
@@ -272,25 +275,37 @@ func TestRenderTurnAnalysisRequestRejectsInvalidRawTurn(t *testing.T) {
 	}
 }
 
-// TestRenderTurnAnalysisSystemPromptDropsUnusedTags verifies optional TAG lines disappear cleanly when the corresponding input sections are absent.
-// TestRenderTurnAnalysisSystemPromptDropsUnusedTags 用于验证当对应输入区块不存在时，可选 TAG 行会被干净删除，不会把模板结构打乱。
-func TestRenderTurnAnalysisSystemPromptDropsUnusedTags(t *testing.T) {
+// TestRenderTurnAnalysisSystemPromptStaysStatic verifies contextual inputs no longer mutate the system prompt, keeping provider cache prefixes stable.
+// TestRenderTurnAnalysisSystemPromptStaysStatic 用于验证上下文输入不再改变系统提示词，从而保持 provider cache 前缀稳定。
+func TestRenderTurnAnalysisSystemPromptStaysStatic(t *testing.T) {
+	template := strings.Join([]string{
+		"head",
+		"`reference_turns` 只帮助理解语境，不能作为新事实来源。",
+		"`recent_grpc_memory_writes` 只用于排除重复。",
+		"tail",
+	}, "\r\n")
 	rendered := renderTurnAnalysisSystemPrompt(strings.Join([]string{
 		"head",
-		"{#TAG REFERENCE_RULE#}",
-		"{#TAG DIRECT_WRITE_EXCLUSION_RULE#}",
+		"`reference_turns` 只帮助理解语境，不能作为新事实来源。",
+		"`recent_grpc_memory_writes` 只用于排除重复。",
 		"tail",
-	}, "\n"), logicdomain.TurnAnalysisInput{
+	}, "\r\n"), logicdomain.TurnAnalysisInput{
+		ReferenceTurns: []logicdomain.TurnAnalysisReferenceTurn{
+			{TurnID: 2, Details: "历史摘要"},
+		},
 		TargetTurn: logicdomain.TurnAnalysisTargetTurn{
 			TurnID:  1,
 			RawTurn: `{"user":"你好","assistant":"收到"}`,
 		},
+		RecentGRPCMemoryWrites: []logicdomain.TurnAnalysisDirectWrite{
+			{MemoryID: 3, Abstract: "已写入事实"},
+		},
 	})
 	if strings.Contains(rendered, "{#TAG") {
-		t.Fatalf("expected tags to be removed, got %s", rendered)
+		t.Fatalf("expected static prompt without tags, got %s", rendered)
 	}
-	if strings.Contains(rendered, "绝对禁止把这些历史摘要重新提炼成当前 turn 的新增记忆或画像") {
-		t.Fatalf("expected reference rule to be absent, got %s", rendered)
+	if rendered != strings.ReplaceAll(template, "\r\n", "\n") {
+		t.Fatalf("expected prompt to stay static, got %q", rendered)
 	}
 }
 

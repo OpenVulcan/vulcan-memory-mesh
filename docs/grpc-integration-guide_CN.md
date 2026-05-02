@@ -278,14 +278,13 @@
 
 - 用于显式告诉服务端“当前 session 已执行一次上下文压缩”
 - 服务端会把该 session 当前最新已持久化的 turn 记录为 `last_compacted_turn_id`
-- `PreCheckResponse.context_text` 已废弃，当前 gRPC 返回固定为空字符串
+- `PreCheckResponse` 已移除旧 `context_text` 字段
 - `PreCheckResponse.context_items[]` 仅保留：
   - 记忆正文
   - `score`
   - `has_dialogue`
   - `turn_id`
   - `created_datetime`
-  - `created_timestamp`（兼容字段，已废弃）
 - 当 `context_items[].turn_id > 0` 时，客户端可继续调用 `GetTurnDetails`
 - 同时更新 `last_compacted_timestamp`
 - 如果当前 session 没有 turn，允许返回成功但不更新 compact 边界
@@ -580,7 +579,6 @@
 - `details_preview`
 - `category`
 - `created_datetime`
-- `created_timestamp`（兼容字段，已废弃）
 
 字段说明：
 
@@ -598,8 +596,6 @@
 - `created_datetime`
   - 该条长期记忆按当前运行系统本地时间展开的可读创建时间，格式为 `YYYY-MM-DD HH:mm:ss`
   - 如果宿主机系统时区变化，历史记录再次查询时这里的显示值也可能随之变化
-- `created_timestamp`
-  - 该条长期记忆的创建毫秒时间戳（兼容字段，已废弃）
 
 `category` 当前标签：
 

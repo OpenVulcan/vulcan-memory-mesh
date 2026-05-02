@@ -344,6 +344,8 @@ llm:
       # - openai_go：会映射到同一适配器的兼容别名。
       # - google_ai_studio: native Google AI Studio / Gemini API adapter built on google.golang.org/genai.
       # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini API 原生适配器。
+      # - openrouter: native OpenRouter SDK adapter with app metadata headers and provider routing hints.
+      # - openrouter：基于 OpenRouter 官方 SDK 的原生适配器，内置应用元数据请求头并支持供应商路由提示。
       provider: "openai"
 
       # Base endpoint for the current route.
@@ -352,6 +354,8 @@ llm:
       # 对 openai/openai_native/openai_go 来说，通常应显式填写该地址。
       # For google_ai_studio this field is optional; leaving it empty uses the SDK default Gemini API base URL.
       # 对 google_ai_studio 来说该字段是可选的；留空时将使用 SDK 默认的 Gemini API 基础地址。
+      # For openrouter this field is optional; leaving it empty uses https://openrouter.ai/api/v1.
+      # 对 openrouter 来说该字段是可选的；留空时将使用 https://openrouter.ai/api/v1。
       endpoint: ""
 
       # API key pool for this route.
@@ -380,18 +384,20 @@ llm:
 
       # Optional organization identifier for OpenAI-compatible providers.
       # OpenAI-compatible provider 的可选 organization 标识。
-      # google_ai_studio currently ignores this field.
-      # google_ai_studio 当前会忽略该字段。
+      # google_ai_studio and openrouter currently ignore this field.
+      # google_ai_studio 与 openrouter 当前会忽略该字段。
       organization: ""
 
       # Optional project identifier for OpenAI-compatible providers.
       # OpenAI-compatible provider 的可选 project 标识。
-      # google_ai_studio currently ignores this field.
-      # google_ai_studio 当前会忽略该字段。
+      # google_ai_studio and openrouter currently ignore this field.
+      # google_ai_studio 与 openrouter 当前会忽略该字段。
       project: ""
 
       # Route-level extra request parameters.
       # 路由级附加请求参数。
+      # OpenRouter routes may use this field for reasoning controls and provider routing preferences.
+      # OpenRouter 路由可通过该字段传递思考控制与供应商路由偏好。
       params: {}
 
       # Model-specific parameter map keyed by model name.
@@ -446,12 +452,16 @@ embedding:
   # - openai_go：会映射到同一适配器的兼容别名。
   # - google_ai_studio: native Google AI Studio / Gemini embedding adapter built on google.golang.org/genai.
   # - google_ai_studio：基于 google.golang.org/genai 实现的 Google AI Studio / Gemini 原生向量适配器。
+  # - openrouter: native OpenRouter SDK embedding adapter.
+  # - openrouter：基于 OpenRouter 官方 SDK 的原生向量适配器。
   provider: "openai"
 
   # Base endpoint for embedding requests.
   # Embedding 请求的接口根地址。
   # For google_ai_studio this field is optional; leaving it empty uses the SDK default Gemini API base URL.
   # 对 google_ai_studio 来说该字段是可选的；留空时将使用 SDK 默认的 Gemini API 基础地址。
+  # For openrouter this field is optional; leaving it empty uses https://openrouter.ai/api/v1.
+  # 对 openrouter 来说该字段是可选的；留空时将使用 https://openrouter.ai/api/v1。
   endpoint: ""
 
   # API key pool for embedding requests.
@@ -492,14 +502,14 @@ embedding:
 
   # Optional organization identifier.
   # 可选的 organization 标识。
-  # google_ai_studio currently ignores this field.
-  # google_ai_studio 当前会忽略该字段。
+  # google_ai_studio and openrouter currently ignore this field.
+  # google_ai_studio 与 openrouter 当前会忽略该字段。
   organization: ""
 
   # Optional project identifier.
   # 可选的 project 标识。
-  # google_ai_studio currently ignores this field.
-  # google_ai_studio 当前会忽略该字段。
+  # google_ai_studio and openrouter currently ignore this field.
+  # google_ai_studio 与 openrouter 当前会忽略该字段。
   project: ""
 
   # Embedding-level extra request parameters.
@@ -555,10 +565,14 @@ rerank:
       # - dashscope：当前实现内置支持的 rerank provider。
       # - siliconflow: built-in rerank provider using SiliconFlow's official /v1/rerank API.
       # - siliconflow：当前实现内置支持的硅基流动 rerank provider，走官方 /v1/rerank 接口。
+      # - openrouter: native OpenRouter SDK rerank adapter.
+      # - openrouter：基于 OpenRouter 官方 SDK 的原生 rerank 适配器。
       provider: "dashscope"
 
       # Endpoint for rerank requests.
       # rerank 请求使用的接口地址。
+      # For openrouter this field is optional; leaving it empty uses https://openrouter.ai/api/v1.
+      # 对 openrouter 来说该字段是可选的；留空时将使用 https://openrouter.ai/api/v1。
       endpoint: "https://dashscope.aliyuncs.com/api/v1/services/rerank/text-rerank/text-rerank"
 
       # API key pool for this rerank route.
@@ -584,6 +598,16 @@ rerank:
       # Rerank model name.
       # rerank 模型名。
       model: "qwen3-vl-rerank"
+
+      # Route-level extra rerank request parameters.
+      # rerank 路由级附加请求参数。
+      # OpenRouter routes may use params.provider for upstream provider preferences; unsupported providers ignore it.
+      # OpenRouter 路由可通过 params.provider 指定上游供应商偏好；不支持该参数的 provider 会忽略它。
+      params: {}
+
+      # Model-specific rerank parameter map keyed by model name.
+      # 以模型名为 key 的 rerank 模型级参数映射。
+      model_params: {}
 
       # HTTP timeout budget for the current rerank route.
       # 当前 rerank 路由的 HTTP 超时预算。

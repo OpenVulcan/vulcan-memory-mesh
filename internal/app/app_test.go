@@ -684,6 +684,9 @@ func TestBuildRerankerSupportsSiliconFlowProvider(t *testing.T) {
 	cfg.Rerank.Routes = []config.RerankRouteConfig{{
 		Provider: "siliconflow",
 		APIKeys:  []string{"silicon-key"},
+		Params: map[string]any{
+			"provider": map[string]any{"only": []any{"Cohere"}},
+		},
 	}}
 
 	cfg.Normalize()
@@ -776,6 +779,52 @@ func TestBuildGoogleAIStudioAdapters(t *testing.T) {
 	}
 	if _, err := buildEmbedding(cfg); err != nil {
 		t.Fatalf("build google ai studio embedding: %v", err)
+	}
+}
+
+// TestBuildOpenRouterAdapters verifies runtime composition accepts OpenRouter for LLM, embedding, and rerank while relying on SDK-default endpoints.
+// TestBuildOpenRouterAdapters 用于验证运行时装配支持 OpenRouter 同时作为 LLM、embedding 与 rerank provider，并允许使用 SDK 默认 endpoint。
+func TestBuildOpenRouterAdapters(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.LLM.Routes = []config.LLMRouteConfig{
+		{
+			Provider: "openrouter",
+			APIKeys:  []string{"openrouter-llm-key"},
+			Model:    "openai/gpt-4.1-mini",
+		},
+	}
+	cfg.Embedding.Provider = "openrouter"
+	cfg.Embedding.APIKeys = []string{"openrouter-embed-key"}
+	cfg.Embedding.Model = "openai/text-embedding-3-small"
+	cfg.Embedding.Dimension = 1024
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Routes = []config.RerankRouteConfig{{
+		Provider: "openrouter",
+		APIKeys:  []string{"openrouter-rerank-key"},
+		Params: map[string]any{
+			"provider": map[string]any{
+				"only":            []any{"Cohere"},
+				"allow_fallbacks": false,
+			},
+		},
+	}}
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("config validation should accept openrouter: %v", err)
+	}
+	if _, err := buildLLM(cfg); err != nil {
+		t.Fatalf("build openrouter llm: %v", err)
+	}
+	if _, err := buildEmbedding(cfg); err != nil {
+		t.Fatalf("build openrouter embedding: %v", err)
+	}
+	client, err := buildReranker(cfg)
+	if err != nil {
+		t.Fatalf("build openrouter reranker: %v", err)
+	}
+	if _, ok := client.(*ai_key_failover.RerankerClient); !ok {
+		t.Fatalf("expected fixed-route openrouter reranker wrapper, got %T", client)
 	}
 }
 

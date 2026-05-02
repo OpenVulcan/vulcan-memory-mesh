@@ -400,15 +400,6 @@ func normalizeTransportMemoryLevel(level int32) int {
 	}
 }
 
-// toUnixMillis converts one UTC time into transport milliseconds and keeps zero-values empty on the wire.
-// toUnixMillis 用于把 UTC 时间转换成传输层毫秒时间戳，并保持零值时间在传输层为空。
-func toUnixMillis(value time.Time) int64 {
-	if value.IsZero() {
-		return 0
-	}
-	return value.UTC().UnixMilli()
-}
-
 // fromUnixMillis converts one transport millisecond timestamp into UTC time, preserving zero as the empty time.
 // fromUnixMillis 用于把传输层毫秒时间戳转换成 UTC 时间，并把零值保留为空时间。
 func fromUnixMillis(value int64) time.Time {

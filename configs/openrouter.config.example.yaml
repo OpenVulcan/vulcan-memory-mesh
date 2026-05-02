@@ -1,0 +1,210 @@
+# OpenRouter native SDK example override configuration file.
+# OpenRouter 原生 SDK 示例覆盖配置文件。
+#
+# This file demonstrates the OpenRouter Go SDK path for LLM, embedding, and rerank.
+# 本文件演示通过 OpenRouter Go SDK 同时接入 LLM、embedding 与 rerank 的配置路径。
+#
+# Typical usage:
+# 典型用法：
+# - Copy selected entries into config.yaml or another environment-specific override file.
+#   按需将其中的条目复制到 config.yaml 或其他环境专用覆盖文件中。
+# - Keep secrets in environment variables instead of replacing placeholders with plaintext values.
+#   机密信息应继续保存在环境变量中，不建议直接把占位符替换为明文。
+# - Read base.yaml first if you need the full baseline meaning of each field.
+#   如果需要理解每个字段的完整底座语义，请先阅读 base.yaml。
+# - See openrouter.scenarios.example.yaml for provider routing, reasoning-effort, embedding, and rerank scenario snippets.
+#   如需查看供应商路由、reasoning 档位、embedding 与 rerank 的组合场景片段，请参考 openrouter.scenarios.example.yaml。
+
+grpc:
+  # Example local listen address used by the OpenRouter deployment template.
+  # OpenRouter 部署模板示例中使用的本地监听地址。
+  listen_addr: "127.0.0.1:17625"
+
+logging:
+  # Example log level for a practical deployment template.
+  # 实际部署模板示例中使用的日志级别。
+  level: "info"
+
+  # Example log format.
+  # 示例日志格式。
+  format: "text"
+
+storage:
+  # This example keeps split storage mode so relational and vector services stay separated.
+  # 本示例保持 split 存储模式，使关系与向量服务继续分离。
+  mode: "split"
+
+sqlite:
+  # SQLite service endpoint placeholder for split relational storage.
+  # split 关系存储使用的 SQLite 服务地址占位符。
+  address: "${VMM_SQLITE_ADDRESS}"
+
+lancedb:
+  # LanceDB service endpoint placeholder for split vector storage.
+  # split 向量存储使用的 LanceDB 服务地址占位符。
+  address: "${VMM_LANCEDB_ADDRESS}"
+
+postgres:
+  # PostgreSQL connection placeholder kept for deployments that may later switch to combined mode.
+  # 为未来可能切换 combined 模式的部署保留的 PostgreSQL 连接占位符。
+  dsn: "${VMM_POSTGRES_DSN}"
+
+llm:
+  # Example LLM route configured for the native OpenRouter SDK adapter.
+  # 针对 OpenRouter SDK 原生适配器配置的示例 LLM 路由。
+  routes:
+    - # Stable route name for logs and failover tracking.
+      # 用于日志与 failover 跟踪的稳定路由名。
+      name: "primary-openrouter"
+
+      # Per-scene route weights. Omitted slots default to 100.
+      # 分场景路由权重。未声明的槽位默认都是 100。
+      weights:
+        precheck_l1: 100
+        precheck_l2: 100
+        postaction_l1: 100
+        postaction_l2: 100
+        profile_instruction: 100
+        reserve: 100
+
+      # OpenRouter native SDK provider identifier.
+      # OpenRouter 原生 SDK provider 标识。
+      provider: "openrouter"
+
+      # Optional OpenRouter API root; leave empty to use https://openrouter.ai/api/v1.
+      # 可选的 OpenRouter API 根地址；留空时使用 https://openrouter.ai/api/v1。
+      endpoint: "https://openrouter.ai/api/v1"
+
+      # API key pool placeholder.
+      # API Key 池占位符。
+      api_keys:
+        - "${OPENROUTER_KEY}"
+
+      rpm: 0
+      tpm: 0
+      rpd: 0
+
+      # Active OpenRouter model placeholder, for example openai/gpt-4.1-mini or anthropic/claude-sonnet-4.
+      # 当前 OpenRouter 模型占位符，例如 openai/gpt-4.1-mini 或 anthropic/claude-sonnet-4。
+      model: "${OPENROUTER_LLM_MODEL}"
+
+      # OpenRouter route-level parameters accepted by the generated SDK.
+      # OpenRouter 生成式 SDK 接受的路由级参数。
+      params:
+        temperature: 0.2
+        provider:
+          allow_fallbacks: true
+
+      model_params: {}
+
+      key_failover:
+        # Example key-level failover policy for the OpenRouter route.
+        # OpenRouter 路由的 key 级容灾策略示例。
+        enabled: true
+        policy: "ordered_failover"
+        respect_retry_after: true
+        rate_limit_cooldown: "5m"
+        quota_cooldown: "10m"
+        auth_cooldown: "12h"
+        probe_after_cooldown: true
+
+embedding:
+  # Example embedding configuration targeting OpenRouter embeddings.
+  # 指向 OpenRouter embeddings 的示例配置。
+  provider: "openrouter"
+
+  # Optional OpenRouter API root; leave empty to use https://openrouter.ai/api/v1.
+  # 可选的 OpenRouter API 根地址；留空时使用 https://openrouter.ai/api/v1。
+  endpoint: "https://openrouter.ai/api/v1"
+
+  api_keys:
+    - "${OPENROUTER_KEY}"
+
+  rpm: 0
+  tpm: 0
+  rpd: 0
+
+  # Embedding model placeholder.
+  # Embedding 模型占位符。
+  model: "${OPENROUTER_EMBEDDING_MODEL}"
+
+  # Embedding dimension must match the backing vector store schema and the selected model capability.
+  # Embedding 维度必须同时匹配底层向量存储 schema 与所选模型能力。
+  dimension: 1024
+  max_batch_size: 10
+
+  params:
+    encoding_format: "float"
+  model_params: {}
+
+  key_failover:
+    # Example key-level failover policy for OpenRouter embedding requests.
+    # OpenRouter embedding 请求的 key 级容灾策略示例。
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+
+rerank:
+  # Example rerank configuration targeting OpenRouter rerank.
+  # 指向 OpenRouter rerank 的示例配置。
+  enabled: true
+  top_n: 8
+
+  routes:
+    - # Stable route name for logs and failover tracking.
+      # 用于日志与 failover 跟踪的稳定路由名。
+      name: "primary-openrouter-rerank"
+      priority: 100
+
+      # OpenRouter native SDK rerank provider identifier.
+      # OpenRouter 原生 SDK rerank provider 标识。
+      provider: "openrouter"
+
+      # Use the API root because the SDK appends /rerank internally.
+      # 这里使用 API 根地址，因为 SDK 会在内部追加 /rerank。
+      endpoint: "https://openrouter.ai/api/v1"
+
+      api_keys:
+        - "${OPENROUTER_KEY}"
+
+      rpm: 0
+      tpm: 0
+      rpd: 0
+
+      # OpenRouter rerank model placeholder; cohere/rerank-v3.5 is the SDK documentation example.
+      # OpenRouter rerank 模型占位符；cohere/rerank-v3.5 是 SDK 文档示例模型。
+      model: "${OPENROUTER_RERANK_MODEL}"
+      timeout: "8s"
+
+      # OpenRouter provider preferences for rerank; non-OpenRouter rerank providers ignore this block.
+      # OpenRouter rerank 使用的供应商偏好；非 OpenRouter rerank provider 会忽略本配置块。
+      params:
+        provider:
+          only:
+            - "Cohere"
+          allow_fallbacks: false
+
+      key_failover:
+        # Example key-level failover policy for OpenRouter rerank requests.
+        # OpenRouter rerank 请求的 key 级容灾策略示例。
+        enabled: true
+        policy: "ordered_failover"
+        respect_retry_after: true
+        rate_limit_cooldown: "5m"
+        quota_cooldown: "10m"
+        auth_cooldown: "12h"
+        probe_after_cooldown: true
+
+vector:
+  # Placeholder vector backend, mainly relevant when storage.mode stays split.
+  # 向量后端占位，主要在 storage.mode 保持 split 时生效。
+  provider: "${VMM_VECTOR_PROVIDER}"
+
+relational:
+  # Placeholder relational backend, mainly relevant when storage.mode stays split.
+  # 关系后端占位，主要在 storage.mode 保持 split 时生效。
+  provider: "${VMM_RELATIONAL_PROVIDER}"

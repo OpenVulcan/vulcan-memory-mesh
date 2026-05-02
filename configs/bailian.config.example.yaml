@@ -1,0 +1,265 @@
+# Bailian example override configuration file.
+# 百炼示例覆盖配置文件。
+#
+# This file preserves the project-local Bailian LLM, embedding, and rerank setup that previously lived in config.yaml.
+# 本文件保留此前位于 config.yaml 中的项目本地百炼 LLM、embedding 与 rerank 配置。
+#
+# Typical usage:
+# 典型用法：
+# - Copy selected entries into config.yaml or another environment-specific override file.
+#   按需将其中的条目复制到 config.yaml 或其他环境专用覆盖文件中。
+# - Keep BAILIAN_API_KEY, BAILIAN_BASE_URL, and BAILIAN_RERANK_URL in environment variables.
+#   请将 BAILIAN_API_KEY、BAILIAN_BASE_URL 与 BAILIAN_RERANK_URL 保存在环境变量中。
+
+x-llm-bailian: &llm_bailian
+  weights:
+    precheck_l1: 100
+    precheck_l2: 100
+    postaction_l1: 100
+    postaction_l2: 100
+    profile_instruction: 100
+    reserve: 100
+  provider: "openai"
+  endpoint: "${BAILIAN_BASE_URL}"
+  api_keys:
+    - "${BAILIAN_API_KEY}"
+  rpm: 30000
+  tpm: 5000000
+  rpd: 0
+  params:
+    enable_thinking: false
+    stream: false
+    response_format: { type: "json_object" }
+  key_failover:
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+
+x-rerank-bailian: &rerank_bailian
+  priority: 100
+  provider: "dashscope"
+  endpoint: "${BAILIAN_RERANK_URL}"
+  api_keys:
+    - "${BAILIAN_API_KEY}"
+  rpm: 5400
+  tpm: 5000000000
+  rpd: 0
+  timeout: "8s"
+  key_failover:
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+
+grpc:
+  # Listen address used by the local runtime in this project setup.
+  # 本项目运行时在本地环境下使用的监听地址。
+  listen_addr: "127.0.0.1:17625"
+
+logging:
+  # Whether local debugging prints more verbose RPC payloads.
+  # 本地调试时是否输出更完整的 RPC 载荷。
+  debug_rpc_payloads: true
+
+  llm_output_enabled: true
+
+storage:
+  # This project overrides the topology to combined, which means relational and vector storage both go through PostgreSQL.
+  # 本项目将存储拓扑覆盖为 combined，表示关系与向量能力统一经由 PostgreSQL 组合库存储。
+  # Allowed values:
+  # 支持取值：
+  # - split: relational storage uses sqlite and vector storage uses lancedb.
+  # - split：关系存储使用 sqlite，向量存储使用 lancedb。
+  # - combined: relational and vector capabilities both use the unified PostgreSQL combined store.
+  # - combined：关系与向量能力统一走 PostgreSQL 组合库存储。
+  mode: "combined"
+
+sqlite:
+  # Legacy compatibility field kept only for older split-mode experiments.
+  # 仅为旧 split 模式实验保留的兼容字段。
+  # Current split mode uses the bundled local SQLite FFI library and ignores this address.
+  # 当前 split 模式使用随包分发的本地 SQLite FFI 动态库，因此会忽略这个地址。
+  address: "${VMM_SQLITE_ADDRESS}"
+
+  # Built-in tokenizer mode used by the local SQLite FTS integration when split mode is enabled.
+  # split 模式启用时，本地 SQLite FTS 集成使用的内建分词模式。
+  tokenizer_mode: "${VMM_SQLITE_TOKENIZER_MODE}"
+
+lancedb:
+  # Legacy compatibility field kept only for older split-mode experiments.
+  # 仅为旧 split 模式实验保留的兼容字段。
+  # Current split mode uses the bundled local LanceDB FFI library and ignores this address.
+  # 当前 split 模式使用随包分发的本地 LanceDB FFI 动态库，因此会忽略这个地址。
+  address: "${VMM_LANCEDB_ADDRESS}"
+
+postgres:
+  # Main PostgreSQL connection string used by the combined storage mode.
+  # combined 存储模式实际使用的 PostgreSQL 主连接串。
+  dsn: "${VMM_POSTGRES_DSN}"
+
+llm:
+  # Project-local LLM route overrides.
+  # 项目本地使用的 LLM 路由覆盖。
+  routes:
+    - <<: *llm_bailian
+      name: "qwen3.5-flash"
+      model: "qwen3.5-flash-2026-02-23"
+      rpm: 600
+      tpm: 1000000
+      weights:
+        precheck_l1: 145
+        precheck_l2: 130
+        postaction_l1: 145
+        postaction_l2: 130
+        profile_instruction: 125
+        reserve: 100
+
+    - <<: *llm_bailian
+      name: "qwen3.5-plus"
+      model: "qwen3.5-plus"
+      rpm: 30000
+      tpm: 5000000
+      weights:
+        precheck_l1: 140
+        precheck_l2: 155
+        postaction_l1: 140
+        postaction_l2: 140
+        profile_instruction: 145
+        reserve: 100
+
+    - <<: *llm_bailian
+      name: "qwen3.6-plus"
+      model: "qwen3.6-plus"
+      rpm: 30000
+      tpm: 5000000
+      weights:
+        precheck_l1: 140
+        precheck_l2: 140
+        postaction_l1: 140
+        postaction_l2: 155
+        profile_instruction: 160
+        reserve: 100
+
+    - <<: *llm_bailian
+      name: "qwen-flash"
+      model: "qwen-flash"
+      rpm: 30000
+      tpm: 10000000
+      weights:
+        precheck_l1: 139
+        precheck_l2: 120
+        postaction_l1: 139
+        postaction_l2: 120
+        profile_instruction: 120
+        reserve: 100
+
+    - <<: *llm_bailian
+      name: "qwen-flash-2025-07-28"
+      model: "qwen-flash-2025-07-28"
+      rpm: 60
+      tpm: 1000000
+      weights:
+        precheck_l1: 119
+        precheck_l2: 139
+        postaction_l1: 119
+        postaction_l2: 139
+        profile_instruction: 135
+        reserve: 100
+
+    - <<: *llm_bailian
+      name: "tongyi-xiaomi-analysis-flash"
+      model: "tongyi-xiaomi-analysis-flash"
+      rpm: 600
+      tpm: 1000000
+      weights:
+        precheck_l1: 130
+        precheck_l2: 120
+        postaction_l1: 130
+        postaction_l2: 120
+        profile_instruction: 120
+        reserve: 100
+
+embedding:
+  provider: "openai"
+  endpoint: "${BAILIAN_BASE_URL}"
+  api_keys:
+    - "${BAILIAN_API_KEY}"
+
+  rpm: 1800
+  tpm: 1200000
+  rpd: 0
+
+  model: "text-embedding-v4"
+  dimension: 1024
+  max_batch_size: 10
+
+  organization: ""
+  project: ""
+
+  params: {}
+  model_params: {}
+
+  key_failover:
+    enabled: true
+    policy: "ordered_failover"
+    respect_retry_after: true
+    rate_limit_cooldown: "5m"
+    quota_cooldown: "10m"
+    auth_cooldown: "12h"
+    probe_after_cooldown: true
+
+rerank:
+  enabled: true
+
+  top_n: 8
+
+  routes:
+    - <<: *rerank_bailian
+      name: "qwen3-rerank"
+      model: "qwen3-rerank"
+      priority: 100
+
+    - <<: *rerank_bailian
+      name: "qwen3-vl-rerank"
+      model: "qwen3-vl-rerank"
+      priority: 90
+
+    - <<: *rerank_bailian
+      name: "gte-rerank-v2"
+      model: "gte-rerank-v2"
+      priority: 80
+
+vector:
+  # Placeholder vector backend provider, mainly relevant when switching back to split mode.
+  # 向量后端提供方占位，主要在切回 split 模式时生效。
+  # Currently supported values:
+  # 当前支持取值：
+  # - lancedb: use LanceDB as the split-mode vector backend.
+  # - lancedb：在 split 模式下使用 LanceDB 作为向量后端。
+  provider: "${VMM_VECTOR_PROVIDER}"
+
+
+maintenance_tool:
+  # Logical batch size used while materializing vector-rebuild snapshots before destructive maintenance rewrites begin.
+  # 向量重建在进入破坏性维护写入前，用于准备内存快照的逻辑批次大小。
+  vector_rebuild_batch_size: 32
+
+prompts:
+  # Prompt bundle selector used by the runtime.
+  # 运行时使用的提示词包选择器。
+  # Supported values:
+  # 支持取值：
+  # - default_en / en / english / default: use the built-in English prompt bundle, which is also the runtime default.
+  # - default_en / en / english / default：使用内建英文提示词包，这也是当前运行时默认值。
+  # - default_cn / zh / zh-cn / chinese / cn: use the built-in Chinese prompt bundle.
+  # - default_cn / zh / zh-cn / chinese / cn：使用内建中文提示词包。
+  # - custom folder name: directly select one prompt bundle directory under prompts/.
+  # - 自定义目录名：直接选择 prompts/ 下的某个提示词包目录。
+  prompt_language: "default_cn"

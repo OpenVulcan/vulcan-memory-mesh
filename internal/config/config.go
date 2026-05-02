@@ -24,6 +24,18 @@ const (
 	// defaultSiliconFlowRerankModel 用于保持仓库内建的 SiliconFlow rerank 模型与当前采用的官方示例一致。
 	defaultSiliconFlowRerankModel = "BAAI/bge-reranker-v2-m3"
 
+	// defaultOpenRouterAPIEndpoint keeps all native OpenRouter SDK adapters on the same API root.
+	// defaultOpenRouterAPIEndpoint 用于让所有 OpenRouter 原生 SDK 适配器共享同一个 API 根地址。
+	defaultOpenRouterAPIEndpoint = "https://openrouter.ai/api/v1"
+
+	// defaultOpenRouterRerankEndpoint keeps OpenRouter rerank routes pointed at the SDK server root because the SDK appends /rerank internally.
+	// defaultOpenRouterRerankEndpoint 用于让 OpenRouter rerank 路由指向 SDK server root，因为 SDK 会在内部追加 /rerank。
+	defaultOpenRouterRerankEndpoint = defaultOpenRouterAPIEndpoint
+
+	// defaultOpenRouterRerankModel keeps OpenRouter rerank examples aligned with the model shown in the official SDK documentation.
+	// defaultOpenRouterRerankModel 用于让 OpenRouter rerank 示例与官方 SDK 文档中展示的模型保持一致。
+	defaultOpenRouterRerankModel = "cohere/rerank-v3.5"
+
 	// defaultLLMRouteSelectionWeight keeps every LLM route slot stable when callers omit the new per-scene weights.
 	// defaultLLMRouteSelectionWeight 用于在调用方省略新的分场景权重时，为每个 LLM 路由槽位提供稳定默认值。
 	defaultLLMRouteSelectionWeight = 100
@@ -341,18 +353,24 @@ type LLMRouteConfig struct {
 // RerankRouteConfig describes one concrete rerank route that switches provider, endpoint, model, and key pool as one ordered failover step.
 // RerankRouteConfig 用于描述一条具体的 rerank 路由：它把 provider、endpoint、model 与 Key 池作为一个有序容灾单元进行切换。
 type RerankRouteConfig struct {
-	Name        string                `json:"name,omitempty"`
-	Priority    int                   `json:"priority,omitempty"`
-	Provider    string                `json:"provider,omitempty"`
-	Endpoint    string                `json:"endpoint,omitempty"`
-	APIKeys     []string              `json:"api_keys,omitempty"`
-	RPM         int                   `json:"rpm,omitempty"`
-	TPM         int                   `json:"tpm,omitempty"`
-	RPD         int                   `json:"rpd,omitempty"`
-	Nodes       []AIRoutingNodeConfig `json:"nodes,omitempty"`
-	Model       string                `json:"model,omitempty"`
-	Timeout     Duration              `json:"timeout,omitempty"`
-	KeyFailover KeyFailoverConfig     `json:"key_failover,omitempty"`
+	Name     string                `json:"name,omitempty"`
+	Priority int                   `json:"priority,omitempty"`
+	Provider string                `json:"provider,omitempty"`
+	Endpoint string                `json:"endpoint,omitempty"`
+	APIKeys  []string              `json:"api_keys,omitempty"`
+	RPM      int                   `json:"rpm,omitempty"`
+	TPM      int                   `json:"tpm,omitempty"`
+	RPD      int                   `json:"rpd,omitempty"`
+	Nodes    []AIRoutingNodeConfig `json:"nodes,omitempty"`
+	Model    string                `json:"model,omitempty"`
+	// Params stores provider-specific rerank request hints; unsupported providers intentionally ignore it.
+	// Params 用于保存 provider 专属的 rerank 请求参数；不支持的 provider 会有意忽略它。
+	Params map[string]any `json:"params,omitempty"`
+	// ModelParams stores model-scoped rerank request hints for providers that support model-specific request tuning.
+	// ModelParams 用于保存模型粒度的 rerank 请求参数，供支持模型级请求调优的 provider 使用。
+	ModelParams map[string]map[string]any `json:"model_params,omitempty"`
+	Timeout     Duration                  `json:"timeout,omitempty"`
+	KeyFailover KeyFailoverConfig         `json:"key_failover,omitempty"`
 }
 
 // VectorConfig selects the vector backend used by recall and long-term memory indexing.

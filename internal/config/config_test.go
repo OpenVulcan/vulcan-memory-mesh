@@ -5,6 +5,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,90 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 }
 
+// TestLoadShippedOpenRouterTestConfig verifies the checked-in base/config pair keeps base generic while config.yaml supplies the OpenRouter test override and local deployment settings.
+// TestLoadShippedOpenRouterTestConfig 用于验证仓库内置 base/config 组合会保持 base 通用，并由 config.yaml 提供 OpenRouter 测试覆盖与本地部署设置。
+func TestLoadShippedOpenRouterTestConfig(t *testing.T) {
+	t.Setenv("OPENROUTER_KEY", "test-openrouter-key")
+	t.Setenv("BAILIAN_API_KEY", "test-bailian-key")
+	t.Setenv("BAILIAN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
+	t.Setenv("BAILIAN_RERANK_URL", defaultDashScopeRerankEndpoint)
+	t.Setenv("VMM_POSTGRES_DSN", "postgres://postgres:postgres@127.0.0.1:5432/vmm?sslmode=disable")
+
+	configDir := filepath.Join("..", "..", "configs")
+	cfg, err := LoadPaths([]string{
+		filepath.Join(configDir, "base.yaml"),
+		filepath.Join(configDir, "config.yaml"),
+	}, Config{})
+	if err != nil {
+		t.Fatalf("load shipped openrouter base config: %v", err)
+	}
+	if got, want := cfg.GRPC.ListenAddr, "127.0.0.1:17625"; got != want {
+		t.Fatalf("grpc listen addr = %q, want %q", got, want)
+	}
+	if got, want := cfg.Storage.Mode, "combined"; got != want {
+		t.Fatalf("storage mode = %q, want %q", got, want)
+	}
+	if got, want := cfg.Prompts.PromptLanguage, "default_cn"; got != want {
+		t.Fatalf("prompt language = %q, want %q", got, want)
+	}
+	if got, want := cfg.MaintenanceTool.VectorRebuildBatchSize, 32; got != want {
+		t.Fatalf("vector rebuild batch size = %d, want %d", got, want)
+	}
+	if got, want := len(cfg.LLM.Routes), 3; got != want {
+		t.Fatalf("llm route count = %d, want %d", got, want)
+	}
+	if got, want := cfg.LLM.Routes[0].Provider, "openrouter"; got != want {
+		t.Fatalf("llm route provider = %q, want %q", got, want)
+	}
+	if got, want := cfg.LLM.Routes[0].APIKeys, []string{"test-openrouter-key"}; !slices.Equal(got, want) {
+		t.Fatalf("openrouter api keys = %#v, want %#v", got, want)
+	}
+	if got, want := cfg.LLM.Routes[0].Model, "qwen/qwen3.5-flash-02-23"; got != want {
+		t.Fatalf("primary openrouter model = %q, want %q", got, want)
+	}
+	if got, want := cfg.LLM.Routes[1].Model, "qwen/qwen3.6-plus"; got != want {
+		t.Fatalf("postaction l2 model = %q, want %q", got, want)
+	}
+	if got, want := cfg.LLM.Routes[2].Model, "deepseek/deepseek-v4-flash"; got != want {
+		t.Fatalf("precheck l2 model = %q, want %q", got, want)
+	}
+	providerPrefs, ok := cfg.LLM.Routes[2].Params["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("novita provider preferences = %#v", cfg.LLM.Routes[2].Params["provider"])
+	}
+	only, ok := providerPrefs["only"].([]any)
+	if !ok || len(only) != 1 || only[0] != "novita" {
+		t.Fatalf("novita provider only = %#v", providerPrefs["only"])
+	}
+	if got, want := cfg.Embedding.Model, "text-embedding-v4"; got != want {
+		t.Fatalf("embedding model = %q, want %q", got, want)
+	}
+	if got, want := cfg.Embedding.APIKeys, []string{"test-bailian-key"}; !slices.Equal(got, want) {
+		t.Fatalf("embedding api keys = %#v, want %#v", got, want)
+	}
+	if !cfg.Rerank.Enabled {
+		t.Fatal("expected rerank to stay enabled")
+	}
+	if got, want := len(cfg.Rerank.Routes), 3; got != want {
+		t.Fatalf("rerank route count = %d, want %d", got, want)
+	}
+}
+
+// TestDefaultBaseKeepsAIKeysEmpty verifies baked-in defaults never treat YAML environment placeholders as real API keys.
+// TestDefaultBaseKeepsAIKeysEmpty 用于验证内建默认值不会把 YAML 环境变量占位符当作真实 API Key。
+func TestDefaultBaseKeepsAIKeysEmpty(t *testing.T) {
+	cfg := DefaultBase()
+	if got := cfg.LLM.Routes[0].APIKeys; len(got) != 0 {
+		t.Fatalf("default llm api keys = %#v, want empty", got)
+	}
+	if got := cfg.Embedding.APIKeys; len(got) != 0 {
+		t.Fatalf("default embedding api keys = %#v, want empty", got)
+	}
+	if got := cfg.Rerank.Routes[0].APIKeys; len(got) != 0 {
+		t.Fatalf("default rerank api keys = %#v, want empty", got)
+	}
+}
+
 // TestConfigNormalizeAppliesGRPCKeepaliveDefaults verifies Normalize restores the server-side keepalive defaults and clamps negative connection-age values back to the disabled baseline.
 // TestConfigNormalizeAppliesGRPCKeepaliveDefaults 用于验证 Normalize 会恢复服务端 keepalive 默认值，并把负数连接年龄配置钳制回“关闭该限制”的基线。
 func TestConfigNormalizeAppliesGRPCKeepaliveDefaults(t *testing.T) {
@@ -228,6 +313,32 @@ func TestConfigNormalizeAppliesSiliconFlowRerankDefaults(t *testing.T) {
 		t.Fatalf("rerank endpoint = %q, want %q", got, want)
 	}
 	if got, want := route.Model, defaultSiliconFlowRerankModel; got != want {
+		t.Fatalf("rerank model = %q, want %q", got, want)
+	}
+	if got, want := route.Timeout.Duration, 8*time.Second; got != want {
+		t.Fatalf("rerank timeout = %v, want %v", got, want)
+	}
+}
+
+// TestConfigNormalizeAppliesOpenRouterRerankDefaults verifies OpenRouter rerank routes receive the SDK API root and documentation-aligned model defaults.
+// TestConfigNormalizeAppliesOpenRouterRerankDefaults 用于验证 OpenRouter rerank 路由会拿到 SDK API 根地址和与文档一致的模型默认值。
+func TestConfigNormalizeAppliesOpenRouterRerankDefaults(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Rerank.Routes = []RerankRouteConfig{{
+		Provider: " openrouter ",
+		APIKeys:  []string{"openrouter-key"},
+	}}
+
+	cfg.Normalize()
+
+	route := cfg.Rerank.Routes[0]
+	if got, want := route.Provider, "openrouter"; got != want {
+		t.Fatalf("rerank provider = %q, want %q", got, want)
+	}
+	if got, want := route.Endpoint, defaultOpenRouterRerankEndpoint; got != want {
+		t.Fatalf("rerank endpoint = %q, want %q", got, want)
+	}
+	if got, want := route.Model, defaultOpenRouterRerankModel; got != want {
 		t.Fatalf("rerank model = %q, want %q", got, want)
 	}
 	if got, want := route.Timeout.Duration, 8*time.Second; got != want {
@@ -415,6 +526,38 @@ func TestConfigValidateAcceptsGoogleAIStudioProviders(t *testing.T) {
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("validate config with google ai studio: %v", err)
+	}
+}
+
+// TestConfigValidateAcceptsOpenRouterProviders verifies OpenRouter can be used for LLM routes, embedding, and rerank with SDK-default endpoints.
+// TestConfigValidateAcceptsOpenRouterProviders 用于验证 OpenRouter 可在使用 SDK 默认 endpoint 的情况下同时用于 LLM 路由、embedding 与 rerank。
+func TestConfigValidateAcceptsOpenRouterProviders(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.LLM.Routes = []LLMRouteConfig{{
+		Provider: "openrouter",
+		APIKeys:  []string{"openrouter-llm-key"},
+		Model:    "openai/gpt-4.1-mini",
+	}}
+	cfg.Embedding.Provider = "openrouter"
+	cfg.Embedding.Endpoint = ""
+	cfg.Embedding.APIKeys = []string{"openrouter-embed-key"}
+	cfg.Embedding.Model = "openai/text-embedding-3-small"
+	cfg.Embedding.Dimension = 1024
+	cfg.Rerank.Enabled = true
+	cfg.Rerank.Routes = []RerankRouteConfig{{
+		Provider: "openrouter",
+		APIKeys:  []string{"openrouter-rerank-key"},
+		Params: map[string]any{
+			"provider": map[string]any{
+				"only":            []any{"Cohere"},
+				"allow_fallbacks": false,
+			},
+		},
+	}}
+
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate config with openrouter: %v", err)
 	}
 }
 
@@ -1150,6 +1293,94 @@ post_action:
 	}
 	if got, want := cfg.PreCheck.IntentTimeout.Duration, 10*time.Second; got != want {
 		t.Fatalf("intent timeout = %v, want %v", got, want)
+	}
+}
+
+// TestLoadPathsReportsRequiredEnvPlaceholderProblems verifies missing or empty required placeholders fail before API-key normalization can hide the root cause.
+// TestLoadPathsReportsRequiredEnvPlaceholderProblems 用于验证缺失或空白的必填占位符会在 API Key 归一化掩盖根因前直接失败。
+func TestLoadPathsReportsRequiredEnvPlaceholderProblems(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		key        string
+		value      string
+		setEnv     bool
+		wantReason string
+	}{
+		{
+			name:       "missing",
+			key:        "VMM_TEST_MISSING_OPENROUTER_KEY",
+			wantReason: "is not set",
+		},
+		{
+			name:       "empty",
+			key:        "VMM_TEST_EMPTY_OPENROUTER_KEY",
+			value:      "  ",
+			setEnv:     true,
+			wantReason: "is empty",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			clearRemovedAIEnvVars(t)
+			restoreEnv(t, tc.key)
+			if tc.setEnv {
+				t.Setenv(tc.key, tc.value)
+			}
+			rootDir := t.TempDir()
+			configPath := filepath.Join(rootDir, "config.yaml")
+			configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+  request_timeout:
+    pre_check: "15s"
+    post_action: "15s"
+pre_check:
+  intent_timeout: "10s"
+  top_k: 5
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["${` + tc.key + `}"]
+      model: "base-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+post_action:
+  input_mode: "strict"
+  session_analysis_turn_threshold: 2
+  session_analysis_token_threshold: 12000
+  session_analysis_idle_timeout: "15m"
+  session_analysis_history_turns: 3
+  session_analysis_max_input_tokens: 6000
+  max_queue_workers: 4
+`
+			if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+				t.Fatal(err)
+			}
+
+			_, err := LoadPaths([]string{configPath}, Config{})
+			if err == nil {
+				t.Fatal("expected required env placeholder to fail")
+			}
+			message := err.Error()
+			for _, want := range []string{tc.key, "llm.routes[0].api_keys[0]", tc.wantReason} {
+				if !strings.Contains(message, want) {
+					t.Fatalf("error %q does not contain %q", message, want)
+				}
+			}
+			if strings.Contains(message, "api_keys or") {
+				t.Fatalf("expected env-specific error, got generic routing error: %q", message)
+			}
+		})
 	}
 }
 

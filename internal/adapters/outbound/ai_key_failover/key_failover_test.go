@@ -12,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	orsdkerrors "github.com/OpenRouterTeam/go-sdk/models/sdkerrors"
 	openai "github.com/openai/openai-go/v3"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/dashscope_rerank"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/siliconflow_rerank"
@@ -243,6 +244,78 @@ func TestGoogleAIStudioLLMClientGenerateSwitchesKeyOnKeyScopedForbidden(t *testi
 	}
 }
 
+// TestOpenRouterLLMClientGenerateSwitchesKeyOnPaymentRequired verifies OpenRouter credit exhaustion rotates to the next key instead of stopping the request.
+// TestOpenRouterLLMClientGenerateSwitchesKeyOnPaymentRequired 用于验证 OpenRouter 余额耗尽会切换到下一把 Key，而不是直接终止请求。
+func TestOpenRouterLLMClientGenerateSwitchesKeyOnPaymentRequired(t *testing.T) {
+	client, err := NewProviderLLMClient("openrouter", "", "fixed-model", "", "", []string{"key-a", "key-b"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new openrouter llm failover client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {err: &orsdkerrors.PaymentRequiredResponseError{}},
+		"key-b": {response: appports.LLMResponse{Content: "ok"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err != nil {
+		t.Fatalf("generate with openrouter payment-required failover: %v", err)
+	}
+	if resp.Content != "ok" {
+		t.Fatalf("llm response content = %q", resp.Content)
+	}
+	if fakes["key-a"].calls != 1 || fakes["key-b"].calls != 1 {
+		t.Fatalf("unexpected call counts: key-a=%d key-b=%d", fakes["key-a"].calls, fakes["key-b"].calls)
+	}
+}
+
+// TestOpenRouterLLMClientGenerateStopsOnSharedForbidden verifies OpenRouter shared 403 permission failures do not quarantine every key in the pool.
+// TestOpenRouterLLMClientGenerateStopsOnSharedForbidden 用于验证 OpenRouter 的共享 403 权限失败不会把整个 Key 池都打入冷却。
+func TestOpenRouterLLMClientGenerateStopsOnSharedForbidden(t *testing.T) {
+	client, err := NewProviderLLMClient("openrouter", "", "fixed-model", "", "", []string{"key-a", "key-b"}, nil, nil, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new openrouter llm failover client: %v", err)
+	}
+	fakes := map[string]*stubLLMClient{
+		"key-a": {err: &orsdkerrors.ForbiddenResponseError{}},
+		"key-b": {response: appports.LLMResponse{Content: "should-not-run"}},
+	}
+	client.factory = func(apiKey string) appports.LLMClient { return fakes[apiKey] }
+
+	_, err = client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})
+	if err == nil {
+		t.Fatal("expected openrouter forbidden permission error")
+	}
+	if fakes["key-a"].calls != 1 {
+		t.Fatalf("key-a calls = %d", fakes["key-a"].calls)
+	}
+	if fakes["key-b"].calls != 0 {
+		t.Fatalf("expected key-b to stay unused, got %d calls", fakes["key-b"].calls)
+	}
+}
+
+// TestOpenRouterEmbeddingInputTooLargeDetection verifies OpenRouter payload-size SDK errors trigger the embedding batch shrink path.
+// TestOpenRouterEmbeddingInputTooLargeDetection 用于验证 OpenRouter 载荷过大 SDK 错误会触发 embedding 批次缩小路径。
+func TestOpenRouterEmbeddingInputTooLargeDetection(t *testing.T) {
+	if !isEmbeddingInputTooLargeError(&orsdkerrors.PayloadTooLargeResponseError{}) {
+		t.Fatal("expected openrouter payload-too-large error to be detected")
+	}
+}
+
 // TestEmbeddingClientEmbedRejectsDifferentModelOrDimension verifies the fixed-model embedding wrapper rejects cross-model or cross-dimension requests before any key rotation starts.
 // TestEmbeddingClientEmbedRejectsDifferentModelOrDimension 用于验证固定模型 embedding 包装器会在 Key 轮换开始前拒绝跨模型或跨维度请求。
 func TestEmbeddingClientEmbedRejectsDifferentModelOrDimension(t *testing.T) {
@@ -443,10 +516,38 @@ func TestRerankerClientRerankSwitchesKeyOnQuota(t *testing.T) {
 	}
 }
 
+// TestRerankerClientIgnoresProviderParamsForUnsupportedProvider verifies provider-specific rerank hints do not leak into adapters that cannot safely apply them.
+// TestRerankerClientIgnoresProviderParamsForUnsupportedProvider 用于验证 provider 专属 rerank 参数不会泄漏到无法安全应用它们的适配器中。
+func TestRerankerClientIgnoresProviderParamsForUnsupportedProvider(t *testing.T) {
+	client, err := NewProviderRerankerClient("siliconflow", "https://api.siliconflow.cn/v1/rerank", "BAAI/bge-reranker-v2-m3", 8*time.Second, []string{"key-a"}, map[string]any{
+		"provider": map[string]any{
+			"only":            []any{"Cohere"},
+			"allow_fallbacks": false,
+		},
+	}, map[string]map[string]any{
+		"BAAI/bge-reranker-v2-m3": {
+			"provider": map[string]any{"only": []any{"Cohere"}},
+		},
+	}, Options{
+		Enabled:            true,
+		Policy:             "ordered_failover",
+		RateLimitCooldown:  5 * time.Minute,
+		QuotaCooldown:      10 * time.Minute,
+		AuthCooldown:       12 * time.Hour,
+		ProbeAfterCooldown: true,
+	})
+	if err != nil {
+		t.Fatalf("new siliconflow rerank failover client: %v", err)
+	}
+	if client.params != nil || client.modelParams != nil {
+		t.Fatalf("unsupported rerank provider retained params: params=%#v model_params=%#v", client.params, client.modelParams)
+	}
+}
+
 // TestProviderRerankerClientRerankSwitchesKeyOnSiliconFlowQuota verifies the provider-aware rerank wrapper uses SiliconFlow-specific classification so key failover still rotates on quota failures.
 // TestProviderRerankerClientRerankSwitchesKeyOnSiliconFlowQuota 用于验证 provider 感知的 rerank 包装器会使用 SiliconFlow 专属分类逻辑，确保额度故障时仍能正常切 Key。
 func TestProviderRerankerClientRerankSwitchesKeyOnSiliconFlowQuota(t *testing.T) {
-	client, err := NewProviderRerankerClient("siliconflow", "https://api.siliconflow.cn/v1/rerank", "BAAI/bge-reranker-v2-m3", 8*time.Second, []string{"key-a", "key-b"}, Options{
+	client, err := NewProviderRerankerClient("siliconflow", "https://api.siliconflow.cn/v1/rerank", "BAAI/bge-reranker-v2-m3", 8*time.Second, []string{"key-a", "key-b"}, nil, nil, Options{
 		Enabled:            true,
 		Policy:             "ordered_failover",
 		RateLimitCooldown:  5 * time.Minute,
