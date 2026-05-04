@@ -44,7 +44,7 @@ const (
 
 	// debugSeedDefaultName is reused across the default debug user/team/space/project rows so the initial hierarchy is predictable after every reset.
 	// debugSeedDefaultName 用于复用默认调试 user/team/space/project 的名称，保证每次重置后的初始层级可预测。
-	debugSeedDefaultName = "default"
+	debugSeedDefaultName = logicdomain.DefaultWorkspaceResourceName
 
 	// sqliteRetryMaxAttempts keeps retryable SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA responses bounded so callers do not spin forever.
 	// sqliteRetryMaxAttempts 用于限制 SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA 这类可重试响应的最大重试次数，避免调用方无限自旋。

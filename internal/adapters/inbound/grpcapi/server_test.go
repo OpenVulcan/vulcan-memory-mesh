@@ -1441,8 +1441,12 @@ func (stubScopeResolver) ResolveRequestScope(_ context.Context, sessionKey strin
 // stubWorkspaceExecutor supplies just enough admin behavior for gRPC transport tests.
 // stubWorkspaceExecutor 用于为 gRPC 传输测试提供最小但足够的管理行为。
 type stubWorkspaceExecutor struct {
-	projects        []logicdomain.ProjectRecord
-	resolvedProject logicdomain.ProjectRecord
+	projects            []logicdomain.ProjectRecord
+	resolvedProject     logicdomain.ProjectRecord
+	deleteProjectResult logicdomain.ProjectDeleteResult
+	deleteProjectErr    error
+	deleteUserResult    logicdomain.UserDeleteResult
+	deleteUserErr       error
 }
 
 // ListProjects returns the canned project list for deterministic transport assertions.
@@ -1466,7 +1470,7 @@ func (s *stubWorkspaceExecutor) EnsureProject(_ context.Context, _ string, _ boo
 // DeleteProject keeps the test double interface-complete while focused tests only cover project deletion.
 // DeleteProject 用于补齐测试替身接口，而当前聚焦测试只覆盖项目删除。
 func (s *stubWorkspaceExecutor) DeleteProject(_ context.Context, _ string, _ bool) (logicdomain.ProjectDeleteResult, error) {
-	return logicdomain.ProjectDeleteResult{}, nil
+	return s.deleteProjectResult, s.deleteProjectErr
 }
 
 // MigrateProject keeps the test double interface-complete while focused tests only cover project migration.
@@ -1490,7 +1494,83 @@ func (s *stubWorkspaceExecutor) ListUsers(_ context.Context) ([]logicdomain.User
 // DeleteUser keeps the test double interface-complete while focused tests only cover user deletion.
 // DeleteUser 用于补齐测试替身接口，而当前聚焦测试只覆盖用户删除。
 func (s *stubWorkspaceExecutor) DeleteUser(_ context.Context, _ string, _ string) (logicdomain.UserDeleteResult, error) {
-	return logicdomain.UserDeleteResult{}, nil
+	return s.deleteUserResult, s.deleteUserErr
+}
+
+// TestDeleteProjectMapsProtectedResourceError verifies the admin delete RPC converts the protected-default-project failure into one stable FailedPrecondition gRPC status.
+// TestDeleteProjectMapsProtectedResourceError 用于验证管理删除 RPC 会把“默认项目受保护”失败转换成稳定的 FailedPrecondition gRPC 状态。
+func TestDeleteProjectMapsProtectedResourceError(t *testing.T) {
+	server := &Server{
+		workspace: &stubWorkspaceExecutor{
+			deleteProjectErr: logicdomain.ProtectedResourceError{
+				Resource: "project",
+				Message:  "default project default/default/default cannot be deleted",
+			},
+		},
+	}
+
+	_, err := server.DeleteProject(context.Background(), &vmmv1.DeleteProjectRequest{
+		ProjectPath:   logicdomain.DefaultProjectPath(),
+		ConfirmDelete: true,
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status, got %v", err)
+	}
+	if st.Message() != "project: default project default/default/default cannot be deleted" {
+		t.Fatalf("unexpected status message: %s", st.Message())
+	}
+	if len(st.Details()) != 1 {
+		t.Fatalf("expected one status detail, got %d", len(st.Details()))
+	}
+	info, ok := st.Details()[0].(*errdetails.ErrorInfo)
+	if !ok {
+		t.Fatalf("expected ErrorInfo detail, got %T", st.Details()[0])
+	}
+	if info.Reason != "RESOURCE_PROTECTED" || info.Metadata["category"] != "protection" {
+		t.Fatalf("unexpected error info: %+v", info)
+	}
+}
+
+// TestDeleteUserMapsProtectedResourceError verifies the admin delete RPC converts the protected-default-user failure into one stable FailedPrecondition gRPC status.
+// TestDeleteUserMapsProtectedResourceError 用于验证管理删除 RPC 会把“默认用户受保护”失败转换成稳定的 FailedPrecondition gRPC 状态。
+func TestDeleteUserMapsProtectedResourceError(t *testing.T) {
+	server := &Server{
+		workspace: &stubWorkspaceExecutor{
+			deleteUserErr: logicdomain.ProtectedResourceError{
+				Resource: "user",
+				Message:  "default user default cannot be deleted",
+			},
+		},
+	}
+
+	_, err := server.DeleteUser(context.Background(), &vmmv1.DeleteUserRequest{
+		UserRef:          logicdomain.DefaultWorkspaceResourceName,
+		ConfirmationCode: "confirm-me",
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("status code = %s", status.Code(err))
+	}
+	st, ok := status.FromError(err)
+	if !ok {
+		t.Fatalf("expected grpc status, got %v", err)
+	}
+	if st.Message() != "user: default user default cannot be deleted" {
+		t.Fatalf("unexpected status message: %s", st.Message())
+	}
+	if len(st.Details()) != 1 {
+		t.Fatalf("expected one status detail, got %d", len(st.Details()))
+	}
+	info, ok := st.Details()[0].(*errdetails.ErrorInfo)
+	if !ok {
+		t.Fatalf("expected ErrorInfo detail, got %T", st.Details()[0])
+	}
+	if info.Reason != "RESOURCE_PROTECTED" || info.Metadata["category"] != "protection" {
+		t.Fatalf("unexpected error info: %+v", info)
+	}
 }
 
 // stubProfileExecutor supplies just enough profile behavior for gRPC transport tests.

@@ -51,7 +51,17 @@ func TestWorkspaceUseCaseListProjectsUsesStore(t *testing.T) {
 // stubWorkspaceStore supplies deterministic hierarchy and user records for workspace use-case tests.
 // stubWorkspaceStore 用于为 workspace 用例测试提供确定性的层级和用户记录。
 type stubWorkspaceStore struct {
-	projects []logicdomain.ProjectRecord
+	projects            []logicdomain.ProjectRecord
+	resolvedProject     logicdomain.ProjectRecord
+	resolvedProjectErr  error
+	resolvedUser        logicdomain.UserRecord
+	resolvedUserErr     error
+	deleteProjectResult logicdomain.ProjectDeleteResult
+	deleteProjectErr    error
+	deleteProjectCalls  int
+	deleteUserResult    logicdomain.UserDeleteResult
+	deleteUserErr       error
+	deleteUserCalls     int
 }
 
 // ListProjects returns canned project records for deterministic admin assertions.
@@ -63,7 +73,7 @@ func (s *stubWorkspaceStore) ListProjects(context.Context) ([]logicdomain.Projec
 // ResolveProjectRef keeps the test double interface-complete while current focused tests exercise nil-guard behavior and list reads.
 // ResolveProjectRef 用于补齐测试替身接口，而当前聚焦测试只覆盖 nil 保护和列表读取。
 func (s *stubWorkspaceStore) ResolveProjectRef(context.Context, string) (logicdomain.ProjectRecord, error) {
-	return logicdomain.ProjectRecord{}, nil
+	return s.resolvedProject, s.resolvedProjectErr
 }
 
 // ListProjectMemories keeps the test double interface-complete while current focused tests do not rebuild vectors.
@@ -81,7 +91,8 @@ func (s *stubWorkspaceStore) EnsureProjectPath(context.Context, string, bool) (l
 // DeleteProjectPath keeps the test double interface-complete while current focused tests do not cover project deletion.
 // DeleteProjectPath 用于补齐测试替身接口，而当前聚焦测试不覆盖项目删除流程。
 func (s *stubWorkspaceStore) DeleteProjectPath(context.Context, string, bool) (logicdomain.ProjectDeleteResult, error) {
-	return logicdomain.ProjectDeleteResult{}, nil
+	s.deleteProjectCalls++
+	return s.deleteProjectResult, s.deleteProjectErr
 }
 
 // MigrateProjectPath keeps the test double interface-complete while current focused tests do not cover project migration.
@@ -93,7 +104,7 @@ func (s *stubWorkspaceStore) MigrateProjectPath(context.Context, string, string,
 // ResolveUserRef keeps the test double interface-complete while current focused tests only verify the nil-store guard.
 // ResolveUserRef 用于补齐测试替身接口，而当前聚焦测试只验证 nil store guard。
 func (s *stubWorkspaceStore) ResolveUserRef(context.Context, string) (logicdomain.UserRecord, error) {
-	return logicdomain.UserRecord{}, nil
+	return s.resolvedUser, s.resolvedUserErr
 }
 
 // EnsureUserName keeps the test double interface-complete while current focused tests do not cover user creation.
@@ -111,5 +122,116 @@ func (s *stubWorkspaceStore) ListUsers(context.Context) ([]logicdomain.UserRecor
 // DeleteUserRef keeps the test double interface-complete while current focused tests do not cover user deletion.
 // DeleteUserRef 用于补齐测试替身接口，而当前聚焦测试不覆盖用户删除流程。
 func (s *stubWorkspaceStore) DeleteUserRef(context.Context, string, string) (logicdomain.UserDeleteResult, error) {
-	return logicdomain.UserDeleteResult{}, nil
+	s.deleteUserCalls++
+	return s.deleteUserResult, s.deleteUserErr
+}
+
+// TestWorkspaceUseCaseDeleteProjectRejectsProtectedDefaultProject verifies the admin delete entry blocks the bootstrap default project before confirmation or vector cleanup can start.
+// TestWorkspaceUseCaseDeleteProjectRejectsProtectedDefaultProject 用于验证管理删除入口会在确认和向量清理开始前拦截启动默认项目。
+func TestWorkspaceUseCaseDeleteProjectRejectsProtectedDefaultProject(t *testing.T) {
+	store := &stubWorkspaceStore{
+		resolvedProject: logicdomain.ProjectRecord{
+			ID:        1,
+			TeamID:    1,
+			SpaceID:   1,
+			TeamName:  logicdomain.DefaultWorkspaceResourceName,
+			SpaceName: logicdomain.DefaultWorkspaceResourceName,
+			Name:      logicdomain.DefaultWorkspaceResourceName,
+		},
+	}
+	vector := &stubVectorStore{}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	_, err := uc.DeleteProject(context.Background(), logicdomain.DefaultProjectPath(), false)
+	if !logicdomain.IsProtectedResourceError(err) {
+		t.Fatalf("expected protected resource error, got %v", err)
+	}
+	if err == nil || err.Error() != "project: default project default/default/default cannot be deleted" {
+		t.Fatalf("unexpected protected project error: %v", err)
+	}
+	if store.deleteProjectCalls != 0 {
+		t.Fatalf("delete project should not reach store delete, got %d calls", store.deleteProjectCalls)
+	}
+	if len(vector.deleteFilters) != 0 {
+		t.Fatalf("delete project should not touch vector store before rejection, got %+v", vector.deleteFilters)
+	}
+}
+
+// TestWorkspaceUseCaseDeleteProjectKeepsConfirmationNonDestructive verifies the first confirmation phase still returns the store response without deleting vectors early.
+// TestWorkspaceUseCaseDeleteProjectKeepsConfirmationNonDestructive 用于验证第一次确认阶段会直接返回 store 响应，而不会提前删除向量。
+func TestWorkspaceUseCaseDeleteProjectKeepsConfirmationNonDestructive(t *testing.T) {
+	project := logicdomain.ProjectRecord{ID: 9, TeamID: 3, SpaceID: 5, TeamName: "TeamA", SpaceName: "SpaceA", Name: "ProjectA"}
+	store := &stubWorkspaceStore{
+		resolvedProject:     project,
+		deleteProjectResult: logicdomain.ProjectDeleteResult{Project: project, Message: "confirm delete project TeamA/SpaceA/ProjectA", NeedsConfirm: true},
+	}
+	vector := &stubVectorStore{}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	result, err := uc.DeleteProject(context.Background(), project.Path(), false)
+	if err != nil {
+		t.Fatalf("delete project confirmation phase: %v", err)
+	}
+	if !result.NeedsConfirm {
+		t.Fatalf("expected confirmation response, got %+v", result)
+	}
+	if store.deleteProjectCalls != 1 {
+		t.Fatalf("delete project should delegate one confirmation call, got %d", store.deleteProjectCalls)
+	}
+	if len(vector.deleteFilters) != 0 {
+		t.Fatalf("delete project confirmation phase should not touch vectors, got %+v", vector.deleteFilters)
+	}
+}
+
+// TestWorkspaceUseCaseDeleteUserRejectsProtectedDefaultUser verifies the admin delete entry blocks the bootstrap default user before confirmation-code issuance or vector cleanup can start.
+// TestWorkspaceUseCaseDeleteUserRejectsProtectedDefaultUser 用于验证管理删除入口会在确认码签发和向量清理开始前拦截启动默认用户。
+func TestWorkspaceUseCaseDeleteUserRejectsProtectedDefaultUser(t *testing.T) {
+	store := &stubWorkspaceStore{
+		resolvedUser: logicdomain.UserRecord{
+			ID:   1,
+			Name: logicdomain.DefaultWorkspaceResourceName,
+		},
+	}
+	vector := &stubVectorStore{}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	_, err := uc.DeleteUser(context.Background(), logicdomain.DefaultWorkspaceResourceName, "")
+	if !logicdomain.IsProtectedResourceError(err) {
+		t.Fatalf("expected protected resource error, got %v", err)
+	}
+	if err == nil || err.Error() != "user: default user default cannot be deleted" {
+		t.Fatalf("unexpected protected user error: %v", err)
+	}
+	if store.deleteUserCalls != 0 {
+		t.Fatalf("delete user should not reach store delete, got %d calls", store.deleteUserCalls)
+	}
+	if len(vector.deleteFilters) != 0 {
+		t.Fatalf("delete user should not touch vector store before rejection, got %+v", vector.deleteFilters)
+	}
+}
+
+// TestWorkspaceUseCaseDeleteUserKeepsConfirmationNonDestructive verifies the confirmation-code handshake still returns the store response without deleting vectors early.
+// TestWorkspaceUseCaseDeleteUserKeepsConfirmationNonDestructive 用于验证确认码握手阶段会直接返回 store 响应，而不会提前删除向量。
+func TestWorkspaceUseCaseDeleteUserKeepsConfirmationNonDestructive(t *testing.T) {
+	user := logicdomain.UserRecord{ID: 7, Name: "alice"}
+	store := &stubWorkspaceStore{
+		resolvedUser:     user,
+		deleteUserResult: logicdomain.UserDeleteResult{User: user, Message: "confirm deletion of user alice with the provided confirmation code", RequiresConfirmation: true, ConfirmationCode: "confirm-me"},
+	}
+	vector := &stubVectorStore{}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	result, err := uc.DeleteUser(context.Background(), user.Name, "")
+	if err != nil {
+		t.Fatalf("delete user confirmation phase: %v", err)
+	}
+	if !result.RequiresConfirmation || result.ConfirmationCode != "confirm-me" {
+		t.Fatalf("expected confirmation response, got %+v", result)
+	}
+	if store.deleteUserCalls != 1 {
+		t.Fatalf("delete user should delegate one confirmation call, got %d", store.deleteUserCalls)
+	}
+	if len(vector.deleteFilters) != 0 {
+		t.Fatalf("delete user confirmation phase should not touch vectors, got %+v", vector.deleteFilters)
+	}
 }

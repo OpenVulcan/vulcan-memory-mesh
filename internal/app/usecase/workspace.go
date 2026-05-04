@@ -5,6 +5,7 @@ package usecase
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -75,22 +76,39 @@ func (u *WorkspaceUseCase) EnsureProject(ctx context.Context, projectPath string
 	return store.EnsureProjectPath(ctx, projectPath, confirmCreate)
 }
 
-// DeleteProject removes one project from the relational store and then clears all vector rows under the same flattened hierarchy filter.
-// DeleteProject 用于先清理同一扁平层级范围下的全部向量行，再从关系库存储删除单个项目，避免向量删除失败导致数据不一致。
+// DeleteProject blocks the protected bootstrap project, preserves the confirmation-first contract, and only then clears matching vector rows before the relational delete commits.
+// DeleteProject 用于拦截受保护的启动默认项目，保持“先确认再删除”的契约，然后才在关系删除提交前清理匹配的向量行。
 func (u *WorkspaceUseCase) DeleteProject(ctx context.Context, projectPath string, confirmDelete bool) (logicdomain.ProjectDeleteResult, error) {
 	store, err := u.workspaceStore()
 	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, err
 	}
-	// Delete vectors first; if it fails, relational data remains intact and the operation can be retried.
-	// 先删除向量：如果失败，关系数据保持完整，操作可重试。
-	if u.vector != nil {
-		// Resolve project to get vector filter fields before deleting relational data.
-		// 在删除关系数据之前解析项目以获取向量过滤字段。
-		project, err := store.ResolveProjectRef(ctx, projectPath)
-		if err != nil {
-			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("resolve project for vector cleanup: %w", err)
+
+	// Resolve the target once so protected default scopes are rejected before either confirmation branching
+	// or destructive vector cleanup can start.
+	// 先解析目标项目，确保受保护的默认范围会在确认分支和向量清理之前就被拒绝。
+	project, err := store.ResolveProjectRef(ctx, projectPath)
+	if err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
+	if logicdomain.IsProtectedDefaultProject(project) {
+		return logicdomain.ProjectDeleteResult{}, logicdomain.ProtectedResourceError{
+			Resource: "project",
+			Message:  fmt.Sprintf("default project %s cannot be deleted", project.Path()),
 		}
+	}
+
+	// Preserve the public confirmation contract so callers asking for the first confirmation step do not
+	// accidentally lose vectors before the relational delete is even approved.
+	// 保持对外确认契约，让仍处于第一次确认阶段的调用不会在关系删除获准前误删向量。
+	if !confirmDelete {
+		return store.DeleteProjectPath(ctx, projectPath, false)
+	}
+
+	// Delete vectors first only after the protected-resource and confirmation gates pass; this keeps
+	// relational rows intact when the vector backend fails during the actual destructive phase.
+	// 仅在受保护资源校验和确认门禁都通过后才先删向量，这样真正破坏性阶段若向量后端失败，关系行仍保持完整。
+	if u.vector != nil {
 		deletedRows, err := u.vector.DeleteByFilter(ctx, logicdomain.SearchFilter{
 			TeamID:    project.TeamID,
 			SpaceID:   project.SpaceID,
@@ -99,14 +117,14 @@ func (u *WorkspaceUseCase) DeleteProject(ctx context.Context, projectPath string
 		if err != nil {
 			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project vectors before relational delete: %w", err)
 		}
-		result, err := store.DeleteProjectPath(ctx, projectPath, confirmDelete)
+		result, err := store.DeleteProjectPath(ctx, projectPath, true)
 		if err != nil || result.NeedsConfirm {
 			return result, err
 		}
 		result.DeletedVectorRows = deletedRows
 		return result, nil
 	}
-	return store.DeleteProjectPath(ctx, projectPath, confirmDelete)
+	return store.DeleteProjectPath(ctx, projectPath, true)
 }
 
 // MigrateProject moves SQL rows first, then rebuilds target project vectors from the durable SQL-side memory entries.
@@ -177,32 +195,51 @@ func (u *WorkspaceUseCase) ListUsers(ctx context.Context) ([]logicdomain.UserRec
 	return store.ListUsers(ctx)
 }
 
-// DeleteUser removes one user from the relational store and then clears all vector rows associated with that user.
-// DeleteUser 用于先清理与用户关联的全部向量行，再从关系库存储删除用户，避免向量删除失败导致数据不一致。
+// DeleteUser blocks the protected bootstrap user, preserves the confirmation-code handshake, and only then clears that user's vector rows before the relational delete commits.
+// DeleteUser 用于拦截受保护的启动默认用户，保持确认码握手契约，然后才在关系删除提交前清理该用户的向量行。
 func (u *WorkspaceUseCase) DeleteUser(ctx context.Context, userRef, confirmationCode string) (logicdomain.UserDeleteResult, error) {
 	store, err := u.workspaceStore()
 	if err != nil {
 		return logicdomain.UserDeleteResult{}, err
 	}
-	// Delete vectors first; if it fails, relational data remains intact and the operation can be retried.
-	// 先删除向量：如果失败，关系数据保持完整，操作可重试。
-	if u.vector != nil {
-		// Resolve user to get vector filter fields before deleting relational data.
-		// 在删除关系数据之前解析用户以获取向量过滤字段。
-		user, err := store.ResolveUserRef(ctx, userRef)
-		if err != nil {
-			return logicdomain.UserDeleteResult{}, fmt.Errorf("resolve user for vector cleanup: %w", err)
+
+	// Resolve the user up front so protected default users and stale confirmation requests are stopped
+	// before any vector-side destructive work begins.
+	// 先解析用户，确保受保护的默认用户和陈旧确认请求都会在任何向量侧破坏性操作开始前被拦下。
+	user, err := store.ResolveUserRef(ctx, userRef)
+	if err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	if logicdomain.IsProtectedDefaultUser(user) {
+		return logicdomain.UserDeleteResult{}, logicdomain.ProtectedResourceError{
+			Resource: "user",
+			Message:  fmt.Sprintf("default user %s cannot be deleted", user.Name),
 		}
+	}
+	trimmedConfirmationCode := strings.TrimSpace(confirmationCode)
+
+	// Keep the confirmation handshake non-destructive until the caller presents the latest durable code.
+	// This prevents the first-step confirmation fetch and obvious stale-code retries from deleting vectors early.
+	// 在调用方提交最新持久确认码之前，保持确认握手阶段不具破坏性。
+	// 这样第一次获取确认码以及明显的陈旧确认码重试都不会提前删掉向量。
+	if trimmedConfirmationCode == "" || trimmedConfirmationCode != strings.TrimSpace(user.DeleteConfirmCode) {
+		return store.DeleteUserRef(ctx, userRef, trimmedConfirmationCode)
+	}
+
+	// Delete vectors first only after the protected-resource and confirmation gates pass; this keeps
+	// relational rows intact when the vector backend fails during the actual destructive phase.
+	// 仅在受保护资源校验和确认门禁都通过后才先删向量，这样真正破坏性阶段若向量后端失败，关系行仍保持完整。
+	if u.vector != nil {
 		deletedRows, err := u.vector.DeleteByFilter(ctx, logicdomain.SearchFilter{UserID: user.ID})
 		if err != nil {
 			return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user vectors before relational delete: %w", err)
 		}
-		result, err := store.DeleteUserRef(ctx, userRef, confirmationCode)
+		result, err := store.DeleteUserRef(ctx, userRef, trimmedConfirmationCode)
 		if err != nil || result.RequiresConfirmation {
 			return result, err
 		}
 		result.DeletedVectorRows = deletedRows
 		return result, nil
 	}
-	return store.DeleteUserRef(ctx, userRef, confirmationCode)
+	return store.DeleteUserRef(ctx, userRef, trimmedConfirmationCode)
 }

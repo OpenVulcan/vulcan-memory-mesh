@@ -29,6 +29,7 @@ var (
 	errRouteDisabled   = ErrorDescriptor{Code: codes.Unimplemented, ID: "GRPC_ROUTE_DISABLED", Category: "routing", Message: "rpc is disabled"}
 	errNotFound        = ErrorDescriptor{Code: codes.NotFound, ID: "RESOURCE_NOT_FOUND", Category: "lookup", Message: "requested resource was not found"}
 	errConflict        = ErrorDescriptor{Code: codes.AlreadyExists, ID: "RESOURCE_CONFLICT", Category: "conflict", Message: "requested resource conflicts with existing data"}
+	errProtected       = ErrorDescriptor{Code: codes.FailedPrecondition, ID: "RESOURCE_PROTECTED", Category: "protection", Message: "requested resource is protected"}
 	errConfirmation    = ErrorDescriptor{Code: codes.FailedPrecondition, ID: "CONFIRMATION_REQUIRED", Category: "confirmation", Message: "explicit confirmation is required"}
 	errOutcomeUnknown  = ErrorDescriptor{Code: codes.Aborted, ID: "STORAGE_OUTCOME_UNCERTAIN", Category: "storage", Message: "storage outcome is uncertain"}
 	errTimeout         = ErrorDescriptor{Code: codes.DeadlineExceeded, ID: "UPSTREAM_TIMEOUT", Category: "timeout", Message: "request timeout"}
@@ -48,6 +49,8 @@ func describeError(err error) ErrorDescriptor {
 		return withMessage(errNotFound, err.Error())
 	case logicdomain.IsConflictError(err):
 		return withMessage(errConflict, err.Error())
+	case logicdomain.IsProtectedResourceError(err):
+		return withMessage(errProtected, err.Error())
 	case logicdomain.IsConfirmationRequired(err):
 		return withMessage(errConfirmation, err.Error())
 	case logicdomain.IsOutcomeUncertain(err):

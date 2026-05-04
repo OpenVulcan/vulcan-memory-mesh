@@ -382,6 +382,7 @@
 - 返回真正删除的项目、画像、session、turn、memory 计数
 - 如果该项目删除后其 `space` 变空，会级联删除该 `space`
 - 如果级联删除 `space` 后其 `team` 也变空，会继续级联删除该 `team`
+- 启动默认项目 `default/default/default` 受保护，删除请求会返回明确失败原因
 
 ### MigrateProject
 
@@ -410,6 +411,7 @@
 - 返回真正删除的用户、画像、session、turn、memory 计数
 - 删除用户时只删除该用户自身画像节点
 - `project/team/space` 的共享画像节点不会被删；如果它们原本来自该用户的 turn，会先脱离旧 turn 来源再保留
+- 启动默认用户 `default` 受保护，删除请求会返回明确失败原因且不会下发确认码
 
 ### GetProfileNodes
 

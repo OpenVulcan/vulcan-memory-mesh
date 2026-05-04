@@ -2894,7 +2894,11 @@ func TestMemoryUseCaseWriteAcceptedCandidateSupersedesOldMemory(t *testing.T) {
 	if len(store.directWriteApplyCalls) != 1 || len(store.directWriteApplyCalls[0].SupersededMemoryIDs) != 1 || store.directWriteApplyCalls[0].SupersededMemoryIDs[0] != 901 {
 		t.Fatalf("expected atomic direct-write apply to receive supersede id 901, got %+v", store.directWriteApplyCalls)
 	}
-	expectedReviewDate := store.directWriteApplyCalls[0].Record.CreatedAt.UTC().Format("2006-01-02")
+	// Keep the assertion aligned with the shared caller-facing local-date contract used by reviewer payloads,
+	// so the test stays stable when the local calendar day differs from the same instant's UTC date.
+	// 让断言与 reviewer 载荷使用的共享本地日期契约保持一致，
+	// 避免本地自然日与同一时刻的 UTC 日期不一致时测试再次失稳。
+	expectedReviewDate := logicdomain.FormatDisplayDate(store.directWriteApplyCalls[0].Record.CreatedAt)
 	if reviewer.inputs[0].CurrentTurnDate != expectedReviewDate {
 		t.Fatalf("expected reviewer current_turn_date %q to match stable write time, got %+v", expectedReviewDate, reviewer.inputs[0].CurrentTurnDate)
 	}

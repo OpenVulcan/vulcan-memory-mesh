@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
 // ensureSchema creates the shared PostgreSQL tables, common indexes, dialect-specific lexical indexes, and deterministic debug seeds used by the combined runtime.
@@ -411,18 +413,18 @@ func (r *maintenanceRepository) ensureDebugSeedWorkspace(ctx context.Context) er
 		return nil
 	}
 	now := time.Now().UTC()
-	if _, err := r.upsertDebugSeedUser(ctx, r.shared.pool, debugSeedDefaultName, now); err != nil {
+	if _, err := r.upsertDebugSeedUser(ctx, r.shared.pool, logicdomain.DefaultWorkspaceResourceName, now); err != nil {
 		return err
 	}
-	teamID, err := r.upsertDebugSeedTeam(ctx, r.shared.pool, debugSeedDefaultName, now)
+	teamID, err := r.upsertDebugSeedTeam(ctx, r.shared.pool, logicdomain.DefaultWorkspaceResourceName, now)
 	if err != nil {
 		return err
 	}
-	spaceID, err := r.upsertDebugSeedSpace(ctx, r.shared.pool, teamID, debugSeedDefaultName, now)
+	spaceID, err := r.upsertDebugSeedSpace(ctx, r.shared.pool, teamID, logicdomain.DefaultWorkspaceResourceName, now)
 	if err != nil {
 		return err
 	}
-	if _, err := r.upsertDebugSeedProject(ctx, r.shared.pool, teamID, spaceID, debugSeedDefaultName, now); err != nil {
+	if _, err := r.upsertDebugSeedProject(ctx, r.shared.pool, teamID, spaceID, logicdomain.DefaultWorkspaceResourceName, now); err != nil {
 		return err
 	}
 	return nil

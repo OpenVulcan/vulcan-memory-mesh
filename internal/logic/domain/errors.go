@@ -15,6 +15,7 @@ var (
 	ErrTimeout           = errors.New("request timeout")
 	ErrNotFound          = errors.New("resource not found")
 	ErrConflict          = errors.New("resource conflict")
+	ErrProtectedResource = errors.New("protected resource")
 	ErrConfirm           = errors.New("confirmation required")
 	ErrOutcomeUncertain  = errors.New("storage outcome uncertain")
 	ErrInvalidLLMOutput  = errors.New("invalid llm output")
@@ -97,6 +98,33 @@ func (e ConflictError) Unwrap() error { return ErrConflict }
 // IsConflictError reports whether the condition is true.
 // IsConflictError 用于返回条件是否成立。
 func IsConflictError(err error) bool { return errors.Is(err, ErrConflict) }
+
+// ProtectedResourceError marks one built-in resource invariant that forbids destructive admin operations even when the caller supplied otherwise valid parameters.
+// ProtectedResourceError 用于标记某个内建资源不变量：即使调用方提供了合法参数，也禁止执行破坏性管理操作。
+type ProtectedResourceError struct {
+	Resource string
+	Message  string
+}
+
+// Error executes the Error logic.
+// Error 用于执行 Error 逻辑。
+func (e ProtectedResourceError) Error() string {
+	if e.Resource == "" {
+		return e.Message
+	}
+	if strings.TrimSpace(e.Message) == "" {
+		return fmt.Sprintf("%s is protected", e.Resource)
+	}
+	return fmt.Sprintf("%s: %s", e.Resource, e.Message)
+}
+
+// Unwrap executes the Unwrap logic.
+// Unwrap 用于执行 Unwrap 逻辑。
+func (e ProtectedResourceError) Unwrap() error { return ErrProtectedResource }
+
+// IsProtectedResourceError reports whether the condition is true.
+// IsProtectedResourceError 用于返回条件是否成立。
+func IsProtectedResourceError(err error) bool { return errors.Is(err, ErrProtectedResource) }
 
 // ConfirmationRequiredError marks one destructive or hierarchy-creating action that requires an explicit second confirmation.
 // ConfirmationRequiredError 用于标记需要显式二次确认的破坏性操作或层级创建动作。

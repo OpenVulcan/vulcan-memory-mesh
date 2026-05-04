@@ -88,6 +88,10 @@ grpcurl -plaintext `
 
 ## 五、DeleteProject
 
+注意：
+
+- 启动默认项目 `default/default/default` 不允许删除，接口会直接返回失败原因，不会进入确认删除阶段。
+
 ### 先拿确认结果
 
 ```powershell
@@ -176,6 +180,10 @@ grpcurl -plaintext `
 ```
 
 ## 九、DeleteUser
+
+注意：
+
+- 启动默认用户 `default` 不允许删除，接口会直接返回失败原因，不会下发确认码。
 
 ### 第一次调用，获取确认码
 
