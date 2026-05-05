@@ -4,6 +4,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -51,18 +52,68 @@ func TestWorkspaceUseCaseListProjectsUsesStore(t *testing.T) {
 // stubWorkspaceStore supplies deterministic hierarchy and user records for workspace use-case tests.
 // stubWorkspaceStore 用于为 workspace 用例测试提供确定性的层级和用户记录。
 type stubWorkspaceStore struct {
-	projects            []logicdomain.ProjectRecord
-	resolvedProject     logicdomain.ProjectRecord
-	resolvedProjectErr  error
-	resolvedUser        logicdomain.UserRecord
-	resolvedUserErr     error
-	deleteProjectResult logicdomain.ProjectDeleteResult
-	deleteProjectErr    error
-	deleteProjectCalls  int
-	deleteUserResult    logicdomain.UserDeleteResult
-	deleteUserErr       error
-	deleteUserCalls     int
+	projects             []logicdomain.ProjectRecord
+	resolvedProject      logicdomain.ProjectRecord
+	resolvedProjectErr   error
+	projectMemories      []logicdomain.MemoryRecord
+	projectMemoriesErr   error
+	resolvedUser         logicdomain.UserRecord
+	resolvedUserErr      error
+	deleteProjectResult  logicdomain.ProjectDeleteResult
+	deleteProjectErr     error
+	deleteProjectCalls   int
+	migrateProjectResult logicdomain.ProjectMigrationResult
+	migrateProjectErr    error
+	migrateProjectCalls  int
+	deleteUserResult     logicdomain.UserDeleteResult
+	deleteUserErr        error
+	deleteUserCalls      int
 }
+
+// stubWorkspaceVectorStore supplies one narrow vector-store double for workspace orchestration tests so local failure-path assertions do not affect broader shared vector test fixtures.
+// stubWorkspaceVectorStore 用于给 workspace 编排测试提供一个狭窄的向量库替身，避免本地失败路径断言影响更广泛复用的共享向量测试夹具。
+type stubWorkspaceVectorStore struct {
+	upserts       []logicdomain.MemoryRecord
+	deleteFilters []logicdomain.SearchFilter
+	deleteIDs     [][]string
+	upsertErr     error
+	deleteErr     error
+	deletedRows   uint64
+}
+
+// Upsert records one vector rebuild write and optionally returns the configured failure.
+// Upsert 用于记录一次向量重建写入，并按需返回预设失败。
+func (s *stubWorkspaceVectorStore) Upsert(_ context.Context, record logicdomain.MemoryRecord) error {
+	s.upserts = append(s.upserts, record)
+	return s.upsertErr
+}
+
+// Search keeps the vector port interface-complete for workspace tests that never exercise recall behavior.
+// Search 用于补齐 workspace 测试所需的向量端口接口，而这些测试本身不覆盖召回行为。
+func (*stubWorkspaceVectorStore) Search(context.Context, []float32, int, logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
+	return nil, nil
+}
+
+// DeleteByFilter records one destructive cleanup request and returns the configured row count or failure.
+// DeleteByFilter 用于记录一次破坏性清理请求，并返回预设删除行数或失败。
+func (s *stubWorkspaceVectorStore) DeleteByFilter(_ context.Context, filter logicdomain.SearchFilter) (uint64, error) {
+	s.deleteFilters = append(s.deleteFilters, filter)
+	if s.deleteErr != nil {
+		return 0, s.deleteErr
+	}
+	return s.deletedRows, nil
+}
+
+// DeleteByIDs records one explicit id-based cleanup request so the port stays interface-complete.
+// DeleteByIDs 用于记录一次按 id 清理请求，保证该端口在测试中保持接口完整。
+func (s *stubWorkspaceVectorStore) DeleteByIDs(_ context.Context, ids []string) (uint64, error) {
+	s.deleteIDs = append(s.deleteIDs, append([]string(nil), ids...))
+	return 0, nil
+}
+
+// Shutdown keeps the vector port interface-complete for direct workspace tests that never own background resources.
+// Shutdown 用于补齐 workspace 测试中的向量端口关闭接口，而这些测试本身不持有后台资源。
+func (*stubWorkspaceVectorStore) Shutdown(context.Context) error { return nil }
 
 // ListProjects returns canned project records for deterministic admin assertions.
 // ListProjects 用于返回预设项目记录，保证管理类断言稳定。
@@ -79,7 +130,7 @@ func (s *stubWorkspaceStore) ResolveProjectRef(context.Context, string) (logicdo
 // ListProjectMemories keeps the test double interface-complete while current focused tests do not rebuild vectors.
 // ListProjectMemories 用于补齐测试替身接口，而当前聚焦测试不覆盖向量重建。
 func (s *stubWorkspaceStore) ListProjectMemories(context.Context, uint64) ([]logicdomain.MemoryRecord, error) {
-	return nil, nil
+	return append([]logicdomain.MemoryRecord(nil), s.projectMemories...), s.projectMemoriesErr
 }
 
 // EnsureProjectPath keeps the test double interface-complete while current focused tests do not cover project creation.
@@ -98,7 +149,8 @@ func (s *stubWorkspaceStore) DeleteProjectPath(context.Context, string, bool) (l
 // MigrateProjectPath keeps the test double interface-complete while current focused tests do not cover project migration.
 // MigrateProjectPath 用于补齐测试替身接口，而当前聚焦测试不覆盖项目迁移流程。
 func (s *stubWorkspaceStore) MigrateProjectPath(context.Context, string, string, bool) (logicdomain.ProjectMigrationResult, error) {
-	return logicdomain.ProjectMigrationResult{}, nil
+	s.migrateProjectCalls++
+	return s.migrateProjectResult, s.migrateProjectErr
 }
 
 // ResolveUserRef keeps the test double interface-complete while current focused tests only verify the nil-store guard.
@@ -139,7 +191,7 @@ func TestWorkspaceUseCaseDeleteProjectRejectsProtectedDefaultProject(t *testing.
 			Name:      logicdomain.DefaultWorkspaceResourceName,
 		},
 	}
-	vector := &stubVectorStore{}
+	vector := &stubWorkspaceVectorStore{}
 	uc := NewWorkspaceUseCase(store, vector)
 
 	_, err := uc.DeleteProject(context.Background(), logicdomain.DefaultProjectPath(), false)
@@ -165,7 +217,7 @@ func TestWorkspaceUseCaseDeleteProjectKeepsConfirmationNonDestructive(t *testing
 		resolvedProject:     project,
 		deleteProjectResult: logicdomain.ProjectDeleteResult{Project: project, Message: "confirm delete project TeamA/SpaceA/ProjectA", NeedsConfirm: true},
 	}
-	vector := &stubVectorStore{}
+	vector := &stubWorkspaceVectorStore{}
 	uc := NewWorkspaceUseCase(store, vector)
 
 	result, err := uc.DeleteProject(context.Background(), project.Path(), false)
@@ -192,7 +244,7 @@ func TestWorkspaceUseCaseDeleteUserRejectsProtectedDefaultUser(t *testing.T) {
 			Name: logicdomain.DefaultWorkspaceResourceName,
 		},
 	}
-	vector := &stubVectorStore{}
+	vector := &stubWorkspaceVectorStore{}
 	uc := NewWorkspaceUseCase(store, vector)
 
 	_, err := uc.DeleteUser(context.Background(), logicdomain.DefaultWorkspaceResourceName, "")
@@ -218,7 +270,7 @@ func TestWorkspaceUseCaseDeleteUserKeepsConfirmationNonDestructive(t *testing.T)
 		resolvedUser:     user,
 		deleteUserResult: logicdomain.UserDeleteResult{User: user, Message: "confirm deletion of user alice with the provided confirmation code", RequiresConfirmation: true, ConfirmationCode: "confirm-me"},
 	}
-	vector := &stubVectorStore{}
+	vector := &stubWorkspaceVectorStore{}
 	uc := NewWorkspaceUseCase(store, vector)
 
 	result, err := uc.DeleteUser(context.Background(), user.Name, "")
@@ -233,5 +285,121 @@ func TestWorkspaceUseCaseDeleteUserKeepsConfirmationNonDestructive(t *testing.T)
 	}
 	if len(vector.deleteFilters) != 0 {
 		t.Fatalf("delete user confirmation phase should not touch vectors, got %+v", vector.deleteFilters)
+	}
+}
+
+// TestWorkspaceUseCaseDeleteProjectReturnsOutcomeUncertainAfterVectorCleanup verifies the delete flow surfaces one outcome-uncertain error when vectors are already gone but the relational delete fails afterwards.
+// TestWorkspaceUseCaseDeleteProjectReturnsOutcomeUncertainAfterVectorCleanup 用于验证当向量已删除、但关系删除随后失败时，项目删除流程会返回结果不确定错误。
+func TestWorkspaceUseCaseDeleteProjectReturnsOutcomeUncertainAfterVectorCleanup(t *testing.T) {
+	project := logicdomain.ProjectRecord{ID: 9, TeamID: 3, SpaceID: 5, TeamName: "TeamA", SpaceName: "SpaceA", Name: "ProjectA"}
+	store := &stubWorkspaceStore{
+		resolvedProject:  project,
+		deleteProjectErr: errors.New("sql timeout"),
+	}
+	vector := &stubWorkspaceVectorStore{deletedRows: 4}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	result, err := uc.DeleteProject(context.Background(), project.Path(), true)
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome uncertain error, got %v", err)
+	}
+	if result.DeletedVectorRows != 4 {
+		t.Fatalf("expected deleted vector rows to be preserved, got %+v", result)
+	}
+	if store.deleteProjectCalls != 1 {
+		t.Fatalf("expected one relational delete call, got %d", store.deleteProjectCalls)
+	}
+	if len(vector.deleteFilters) != 1 || vector.deleteFilters[0].ProjectID != project.ID {
+		t.Fatalf("expected one vector delete filter for project %d, got %+v", project.ID, vector.deleteFilters)
+	}
+}
+
+// TestWorkspaceUseCaseDeleteUserReturnsOutcomeUncertainAfterVectorCleanup verifies the delete flow surfaces one outcome-uncertain error when user vectors are already gone but the relational delete fails afterwards.
+// TestWorkspaceUseCaseDeleteUserReturnsOutcomeUncertainAfterVectorCleanup 用于验证当用户向量已删除、但关系删除随后失败时，用户删除流程会返回结果不确定错误。
+func TestWorkspaceUseCaseDeleteUserReturnsOutcomeUncertainAfterVectorCleanup(t *testing.T) {
+	user := logicdomain.UserRecord{ID: 7, Name: "alice", DeleteConfirmCode: "confirm-me"}
+	store := &stubWorkspaceStore{
+		resolvedUser:  user,
+		deleteUserErr: errors.New("commit timeout"),
+	}
+	vector := &stubWorkspaceVectorStore{deletedRows: 2}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	result, err := uc.DeleteUser(context.Background(), user.Name, user.DeleteConfirmCode)
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome uncertain error, got %v", err)
+	}
+	if result.DeletedVectorRows != 2 {
+		t.Fatalf("expected deleted vector rows to be preserved, got %+v", result)
+	}
+	if store.deleteUserCalls != 1 {
+		t.Fatalf("expected one relational delete call, got %d", store.deleteUserCalls)
+	}
+	if len(vector.deleteFilters) != 1 || vector.deleteFilters[0].UserID != user.ID {
+		t.Fatalf("expected one vector delete filter for user %d, got %+v", user.ID, vector.deleteFilters)
+	}
+}
+
+// TestWorkspaceUseCaseMigrateProjectReturnsOutcomeUncertainWhenTargetVectorRebuildFails verifies the migration flow reports one outcome-uncertain error once SQL migration has committed but target vector rebuild cannot finish.
+// TestWorkspaceUseCaseMigrateProjectReturnsOutcomeUncertainWhenTargetVectorRebuildFails 用于验证当 SQL 迁移已提交、但目标向量重建无法完成时，项目迁移流程会返回结果不确定错误。
+func TestWorkspaceUseCaseMigrateProjectReturnsOutcomeUncertainWhenTargetVectorRebuildFails(t *testing.T) {
+	source := logicdomain.ProjectRecord{ID: 9, TeamID: 3, SpaceID: 5, TeamName: "TeamA", SpaceName: "SpaceA", Name: "ProjectA"}
+	target := logicdomain.ProjectRecord{ID: 10, TeamID: 3, SpaceID: 5, TeamName: "TeamA", SpaceName: "SpaceA", Name: "ProjectB"}
+	store := &stubWorkspaceStore{
+		migrateProjectResult: logicdomain.ProjectMigrationResult{Source: source, Target: target, Message: "project migrated"},
+		projectMemories: []logicdomain.MemoryRecord{{
+			ID:     "vec-1",
+			Text:   "hello",
+			Vector: []float32{0.1, 0.2},
+			Filter: logicdomain.SearchFilter{ProjectID: target.ID},
+		}},
+	}
+	vector := &stubWorkspaceVectorStore{upsertErr: errors.New("lancedb down")}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	result, err := uc.MigrateProject(context.Background(), source.Path(), target.Path(), true)
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome uncertain error, got %v", err)
+	}
+	if store.migrateProjectCalls != 1 {
+		t.Fatalf("expected one relational migration call, got %d", store.migrateProjectCalls)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one attempted vector rebuild write, got %+v", vector.upserts)
+	}
+	if result.RebuiltVectorRows != 0 {
+		t.Fatalf("expected no completed vector rebuild rows, got %+v", result)
+	}
+	if len(vector.deleteFilters) != 0 {
+		t.Fatalf("source vector cleanup should not run after rebuild failure, got %+v", vector.deleteFilters)
+	}
+}
+
+// TestWorkspaceUseCaseMigrateProjectReturnsOutcomeUncertainWhenSourceVectorCleanupFails verifies the migration flow preserves the committed SQL result and rebuilt row count when only the final source-vector cleanup fails.
+// TestWorkspaceUseCaseMigrateProjectReturnsOutcomeUncertainWhenSourceVectorCleanupFails 用于验证当只有最后的源向量清理失败时，项目迁移流程仍会保留已提交 SQL 结果和已重建行数，并返回结果不确定错误。
+func TestWorkspaceUseCaseMigrateProjectReturnsOutcomeUncertainWhenSourceVectorCleanupFails(t *testing.T) {
+	source := logicdomain.ProjectRecord{ID: 9, TeamID: 3, SpaceID: 5, TeamName: "TeamA", SpaceName: "SpaceA", Name: "ProjectA"}
+	target := logicdomain.ProjectRecord{ID: 10, TeamID: 3, SpaceID: 5, TeamName: "TeamA", SpaceName: "SpaceA", Name: "ProjectB"}
+	store := &stubWorkspaceStore{
+		migrateProjectResult: logicdomain.ProjectMigrationResult{Source: source, Target: target, Message: "project migrated"},
+		projectMemories: []logicdomain.MemoryRecord{{
+			ID:     "vec-1",
+			Text:   "hello",
+			Vector: []float32{0.1, 0.2},
+			Filter: logicdomain.SearchFilter{ProjectID: target.ID},
+		}},
+	}
+	vector := &stubWorkspaceVectorStore{deleteErr: errors.New("delete source vectors failed")}
+	uc := NewWorkspaceUseCase(store, vector)
+
+	result, err := uc.MigrateProject(context.Background(), source.Path(), target.Path(), true)
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome uncertain error, got %v", err)
+	}
+	if result.RebuiltVectorRows != 1 {
+		t.Fatalf("expected one completed vector rebuild row before cleanup failure, got %+v", result)
+	}
+	if len(vector.deleteFilters) != 1 || vector.deleteFilters[0].ProjectID != source.ID {
+		t.Fatalf("expected one source vector cleanup filter for project %d, got %+v", source.ID, vector.deleteFilters)
 	}
 }

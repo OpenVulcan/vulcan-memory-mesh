@@ -211,6 +211,12 @@ type byteBufferPod struct {
 	Cap  uintptr
 }
 
+const (
+	// maxCStringReadBytes bounds how far the Go side will scan one FFI-owned C string before treating it as malformed and aborting the read.
+	// maxCStringReadBytes 用于限制 Go 侧扫描一条 FFI 持有 C 字符串的最大长度，超出后会判定其为畸形返回并中止读取。
+	maxCStringReadBytes = 64 * 1024
+)
+
 // Open loads the target dynamic library and binds the required FFI symbols.
 // Open 用于加载目标动态库并绑定所需的 FFI 符号。
 func Open(path string) (*Library, error) {
@@ -511,7 +517,7 @@ func (lib *Library) takeOwnedString(getter func() *byte) (string, error) {
 		return "", lib.lastError()
 	}
 	defer lib.stringFree(ptr)
-	return readCString(ptr), nil
+	return readCString(ptr)
 }
 
 // lastError reads the latest FFI error message from the dynamic library.
@@ -524,7 +530,11 @@ func (lib *Library) lastError() error {
 	if ptr == nil {
 		return errors.New("ffi call failed without error message / FFI 调用失败但未返回错误消息")
 	}
-	return errors.New(readCString(ptr))
+	message, err := readCString(ptr)
+	if err != nil {
+		return fmt.Errorf("ffi returned malformed error message / FFI 返回了畸形错误消息: %w", err)
+	}
+	return errors.New(message)
 }
 
 // makeCString creates a temporary C-style string buffer and returns a keep-alive closure.
@@ -573,21 +583,19 @@ func makeCStringArray(values []string) (**byte, func()) {
 	}
 }
 
-// readCString reads one NUL-terminated string from the provided pointer.
-// readCString 用于从给定指针读取一条 NUL 结尾字符串。
-func readCString(ptr *byte) string {
+// readCString reads one NUL-terminated string from the provided pointer but refuses to scan beyond one fixed audit-friendly limit when the FFI side returns malformed data.
+// readCString 用于从给定指针读取一条 NUL 结尾字符串；若 FFI 侧返回畸形数据，则会在固定且可审计的上界内停止扫描。
+func readCString(ptr *byte) (string, error) {
 	if ptr == nil {
-		return ""
+		return "", nil
 	}
-	base := uintptr(unsafe.Pointer(ptr))
-	length := 0
-	for {
-		if *(*byte)(unsafe.Pointer(base + uintptr(length))) == 0 {
-			break
+	bytes := unsafe.Slice(ptr, maxCStringReadBytes)
+	for idx, value := range bytes {
+		if value == 0 {
+			return string(bytes[:idx]), nil
 		}
-		length++
 	}
-	return string(unsafe.Slice(ptr, length))
+	return "", fmt.Errorf("ffi string exceeds %d bytes or is not NUL-terminated", maxCStringReadBytes)
 }
 
 // boolToUint8 converts one boolean into the 0/1 form expected by the FFI ABI.

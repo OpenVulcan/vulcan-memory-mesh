@@ -43,12 +43,12 @@ func newRuntimeConfigForTest() config.Config {
 func TestBuildGRPCKeepaliveConfigurationMapsConfigValues(t *testing.T) {
 	params, policy, ok := buildGRPCKeepaliveConfiguration(config.GRPCKeepaliveConfig{
 		Enabled:               true,
-		Time:                  config.Duration{45 * time.Second},
-		Timeout:               config.Duration{12 * time.Second},
-		MaxConnectionIdle:     config.Duration{3 * time.Minute},
-		MaxConnectionAge:      config.Duration{15 * time.Minute},
-		MaxConnectionAgeGrace: config.Duration{30 * time.Second},
-		MinPingInterval:       config.Duration{25 * time.Second},
+		Time:                  config.Duration{Duration: 45 * time.Second},
+		Timeout:               config.Duration{Duration: 12 * time.Second},
+		MaxConnectionIdle:     config.Duration{Duration: 3 * time.Minute},
+		MaxConnectionAge:      config.Duration{Duration: 15 * time.Minute},
+		MaxConnectionAgeGrace: config.Duration{Duration: 30 * time.Second},
+		MinPingInterval:       config.Duration{Duration: 25 * time.Second},
 		PermitWithoutStream:   false,
 	})
 	if !ok {

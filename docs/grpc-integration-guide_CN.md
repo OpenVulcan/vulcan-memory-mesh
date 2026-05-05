@@ -383,12 +383,14 @@
 - 如果该项目删除后其 `space` 变空，会级联删除该 `space`
 - 如果级联删除 `space` 后其 `team` 也变空，会继续级联删除该 `team`
 - 启动默认项目 `default/default/default` 受保护，删除请求会返回明确失败原因
+- 如果关系删除之后的向量清理阶段失败，请求会返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`，表示关系层状态可能已变化，调用方应先查询实际状态再决定是否重试
 
 ### MigrateProject
 
 用途：
 
 - 显式确认后，把源项目的数据迁移到目标项目
+- 如果关系迁移提交后，目标向量重建或源向量清理失败，请求会返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`，表示 SQL 迁移可能已完成，调用方应先查询实际状态再决定是否重试
 
 ### ResolveUser
 
@@ -412,6 +414,7 @@
 - 删除用户时只删除该用户自身画像节点
 - `project/team/space` 的共享画像节点不会被删；如果它们原本来自该用户的 turn，会先脱离旧 turn 来源再保留
 - 启动默认用户 `default` 受保护，删除请求会返回明确失败原因且不会下发确认码
+- 如果关系删除之后的向量清理阶段失败，请求会返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`，表示关系层状态可能已变化，调用方应先查询实际状态再决定是否重试
 
 ### GetProfileNodes
 

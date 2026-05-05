@@ -26,7 +26,15 @@ func (lib *Library) callRuntimeCreate(options runtimeOptionsPod) unsafe.Pointer 
 		return nil
 	}
 	result, _, _ := syscall.SyscallN(lib.runtimeCreateProc, uintptr(unsafe.Pointer(&options)))
-	return unsafe.Pointer(result)
+	return pointerFromSyscallResult(result)
+}
+
+// pointerFromSyscallResult converts one Windows syscall uintptr result into the opaque FFI handle type without relying on a direct uintptr-to-pointer cast at the call site.
+// pointerFromSyscallResult 用于把一次 Windows syscall 返回的 uintptr 结果转换成不透明 FFI 句柄类型，避免在调用点直接做 uintptr 到指针的强转。
+func pointerFromSyscallResult(result uintptr) unsafe.Pointer {
+	var handle unsafe.Pointer
+	*(*uintptr)(unsafe.Pointer(&handle)) = result
+	return handle
 }
 
 // freeBytes releases one FFI-owned byte buffer through the Windows syscall ABI path.

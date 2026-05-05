@@ -37,6 +37,29 @@ func NewWorkspaceUseCase(store appports.WorkspaceStore, vector appports.VectorSt
 	return &WorkspaceUseCase{store: store, vector: vector}
 }
 
+// workspaceOutcomeUncertainError converts one post-commit or post-cleanup failure into the shared outcome-uncertain contract so callers know side effects may already have partially happened.
+// workspaceOutcomeUncertainError 用于把一次提交后或清理后的失败转换成统一的结果不确定契约，让调用方明确知道副作用可能已经部分发生。
+func workspaceOutcomeUncertainError(operation, message string, cause error) error {
+	if logicdomain.IsOutcomeUncertain(cause) {
+		return cause
+	}
+	message = strings.TrimSpace(message)
+	if cause != nil {
+		causeMessage := strings.TrimSpace(cause.Error())
+		if causeMessage != "" {
+			if message == "" {
+				message = causeMessage
+			} else {
+				message = message + ": " + causeMessage
+			}
+		}
+	}
+	return logicdomain.OutcomeUncertainError{
+		Operation: operation,
+		Message:   message,
+	}
+}
+
 // workspaceStore returns the configured workspace store and fails fast with one stable error when direct tests or manual integrations call the exported admin use case through a nil or partially constructed receiver.
 // workspaceStore 用于返回当前配置的 workspace store；当直接测试或手工集成通过 nil 或部分装配的接收者调用导出管理用例时，会快速返回稳定错误。
 func (u *WorkspaceUseCase) workspaceStore() (appports.WorkspaceStore, error) {
@@ -118,10 +141,13 @@ func (u *WorkspaceUseCase) DeleteProject(ctx context.Context, projectPath string
 			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project vectors before relational delete: %w", err)
 		}
 		result, err := store.DeleteProjectPath(ctx, projectPath, true)
-		if err != nil || result.NeedsConfirm {
-			return result, err
-		}
 		result.DeletedVectorRows = deletedRows
+		if err != nil {
+			return result, workspaceOutcomeUncertainError("delete project", "vector cleanup already finished before relational delete completed", err)
+		}
+		if result.NeedsConfirm {
+			return result, workspaceOutcomeUncertainError("delete project", "vector cleanup already finished before relational delete completed and the store unexpectedly requested confirmation again", nil)
+		}
 		return result, nil
 	}
 	return store.DeleteProjectPath(ctx, projectPath, true)
@@ -145,14 +171,14 @@ func (u *WorkspaceUseCase) MigrateProject(ctx context.Context, sourcePath, targe
 	// 先从源项目记忆重建目标项目向量，确认全部成功后再删除源向量，避免中途失败导致数据丢失。
 	memories, err := store.ListProjectMemories(ctx, result.Target.ID)
 	if err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("list target project memories: %w", err)
+		return result, workspaceOutcomeUncertainError("migrate project", "relational project migration already committed before target memory enumeration completed", err)
 	}
 	for _, memory := range memories {
 		if len(memory.Vector) == 0 {
 			continue
 		}
 		if err := u.vector.Upsert(ctx, memory); err != nil {
-			return logicdomain.ProjectMigrationResult{}, fmt.Errorf("rebuild target project vector %s: %w", memory.ID, err)
+			return result, workspaceOutcomeUncertainError("migrate project", fmt.Sprintf("relational project migration already committed before rebuilding target vector %s completed", memory.ID), err)
 		}
 		result.RebuiltVectorRows++
 	}
@@ -163,7 +189,7 @@ func (u *WorkspaceUseCase) MigrateProject(ctx context.Context, sourcePath, targe
 		SpaceID:   result.Source.SpaceID,
 		ProjectID: result.Source.ID,
 	}); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("delete source project vectors after migration: %w", err)
+		return result, workspaceOutcomeUncertainError("migrate project", "relational project migration already committed before source vector cleanup completed", err)
 	}
 	return result, nil
 }
@@ -235,10 +261,13 @@ func (u *WorkspaceUseCase) DeleteUser(ctx context.Context, userRef, confirmation
 			return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user vectors before relational delete: %w", err)
 		}
 		result, err := store.DeleteUserRef(ctx, userRef, trimmedConfirmationCode)
-		if err != nil || result.RequiresConfirmation {
-			return result, err
-		}
 		result.DeletedVectorRows = deletedRows
+		if err != nil {
+			return result, workspaceOutcomeUncertainError("delete user", "vector cleanup already finished before relational delete completed", err)
+		}
+		if result.RequiresConfirmation {
+			return result, workspaceOutcomeUncertainError("delete user", "vector cleanup already finished before relational delete completed and the store unexpectedly requested confirmation again", nil)
+		}
 		return result, nil
 	}
 	return store.DeleteUserRef(ctx, userRef, trimmedConfirmationCode)

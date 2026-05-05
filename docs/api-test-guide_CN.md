@@ -91,6 +91,7 @@ grpcurl -plaintext `
 注意：
 
 - 启动默认项目 `default/default/default` 不允许删除，接口会直接返回失败原因，不会进入确认删除阶段。
+- 如果确认删除后返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`，表示关系层删除可能已经落地，但后续向量清理阶段失败；此时应先查询项目是否仍存在，再决定是否重试。
 
 ### 先拿确认结果
 
@@ -117,6 +118,10 @@ grpcurl -plaintext `
 ```
 
 ## 六、MigrateProject
+
+注意：
+
+- 如果确认迁移后返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`，表示 SQL 迁移可能已经落地，但后续目标向量重建或源向量清理阶段失败；此时应先查询源/目标项目状态，再决定是否重试。
 
 ### 先校验
 
@@ -184,6 +189,7 @@ grpcurl -plaintext `
 注意：
 
 - 启动默认用户 `default` 不允许删除，接口会直接返回失败原因，不会下发确认码。
+- 如果带确认码删除后返回 `Aborted / STORAGE_OUTCOME_UNCERTAIN`，表示关系层删除可能已经落地，但后续向量清理阶段失败；此时应先查询用户是否仍存在，再决定是否重试。
 
 ### 第一次调用，获取确认码
 
