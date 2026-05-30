@@ -7,13 +7,13 @@
 # Bailian embedding and rerank intentionally stay unchanged so existing vector and ranking test data remains stable.
 # embedding 与 rerank 有意保持百炼不变，确保现有向量与排序测试数据稳定。
 
-x-llm-openrouter: &llm_openrouter
+x-llm-deepseek: &llm_deepseek
   # Shared OpenRouter LLM route defaults used by the scene-weighted test routes below.
   # 下方分场景测试路由共用的 OpenRouter LLM 默认配置。
-  provider: "openrouter"
-  endpoint: "https://openrouter.ai/api/v1"
+  provider: "openai"
+  endpoint: "https://api.deepseek.com/v1"
   api_keys:
-    - "${OPENROUTER_KEY}"
+    - "sk-2734944e11264aec9a5dd54f0e306d7b"
   rpm: 0
   tpm: 0
   rpd: 0
@@ -23,7 +23,9 @@ x-llm-openrouter: &llm_openrouter
   params:
     # Disable reasoning for all configured OpenRouter test requests.
     # 为当前 OpenRouter 测试请求统一关闭 reasoning。
-    reasoning_effort: "none"
+    thinking:
+      type: disabled
+      
     provider:
       allow_fallbacks: true
   model_params: {}
@@ -95,50 +97,31 @@ llm:
   # Project-local OpenRouter LLM test routes.
   # 项目本地 OpenRouter LLM 测试路由。
   routes:
-    - <<: *llm_openrouter
+    - <<: *llm_deepseek
       # Qwen flash is preferred for light extraction, first-pass post-action analysis, and profile instruction review.
       # Qwen flash 优先承接轻量提取、PostAction 一层分析与手工画像指令评审。
-      name: "openrouter-qwen3.5-flash-main"
-      model: "qwen/qwen3.5-flash-02-23"
+      name: "deepseek-v4-pro"
+      model: "deepseek-v4-pro"
       weights:
-        precheck_l1: 180
-        precheck_l2: 80
-        postaction_l1: 180
-        postaction_l2: 80
-        profile_instruction: 180
+        precheck_l1: 100
+        precheck_l2: 150
+        postaction_l1: 150
+        postaction_l2: 150
+        profile_instruction: 150
         reserve: 80
 
-    - <<: *llm_openrouter
-      # Qwen plus is reserved for the heavier PostAction L2 review path and kept as a low-priority fallback elsewhere.
-      # Qwen plus 主要服务较重的 PostAction L2 评审链路，在其他场景仅作为低权重兜底。
-      name: "openrouter-qwen3.6-plus-postaction-l2"
-      model: "qwen/qwen3.6-plus"
-      weights:
-        precheck_l1: 10
-        precheck_l2: 10
-        postaction_l1: 10
-        postaction_l2: 180
-        profile_instruction: 10
-        reserve: 10
-
-    - <<: *llm_openrouter
+    - <<: *llm_deepseek
       # DeepSeek flash is pinned to Novita and preferred for PreCheck L2 memory review.
       # DeepSeek flash 固定走 Novita，并优先承接 PreCheck L2 记忆评审。
-      name: "openrouter-deepseek-v4-flash-novita-precheck-l2"
-      model: "deepseek/deepseek-v4-flash"
+      name: "deepseek-v4-flash"
+      model: "deepseek-v4-flash"
       weights:
-        precheck_l1: 120
-        precheck_l2: 180
-        postaction_l1: 120
-        postaction_l2: 120
-        profile_instruction: 120
+        precheck_l1: 150
+        precheck_l2: 100
+        postaction_l1: 100
+        postaction_l2: 100
+        profile_instruction: 100
         reserve: 120
-      params:
-        reasoning_effort: "none"
-        provider:
-          only:
-            - "novita"
-          allow_fallbacks: false
 
 embedding:
   # Bailian embedding stays enabled to keep the existing vector-space contract stable.

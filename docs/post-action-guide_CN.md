@@ -198,7 +198,7 @@ message PostActionTimelineItem {
     - 其中：
       - 历史部分只用于参考
       - 当前 turn 是唯一允许输出新 `details / memory_nodes / profile_nodes` 的目标
-      - `recent_grpc_memory_writes` 用于排斥已经由工具链主动写入的重复事实
+      - `recent_grpc_memory_writes` 用于排斥已经由工具链主动写入的重复记忆事实，但不阻止用户主动陈述、确认或纠正形成新的画像候选
       - 所有 `datetime` 都是基于当前运行系统时区展开的可读值，不是独立持久化的时区真值
 17. `postaction_l1_main` 会返回：
     - 当前 turn 的 `user_input_kind`
@@ -376,15 +376,15 @@ message PostActionTimelineItem {
 
 ### 2. 为什么 `recent_grpc_memory_writes` 仍然保留
 
-`recent_grpc_memory_writes` 不是去重候选池，而是绝对排斥区。
+`recent_grpc_memory_writes` 不是去重候选池，而是 `memory_nodes` 的确定性排斥区；它不能代表画像已经完成处理。
 
 保留它的原因是：
 
-1. 这部分数据来源确定，是工具链已经成功主动写入的事实。
-2. 它不需要 LLM 做模糊判断，就可以直接拦住明显重复提炼。
+1. 这部分数据来源确定，是工具链已经成功主动写入的记忆事实。
+2. 它不需要 LLM 做模糊判断，就可以直接拦住明显重复的 `memory_nodes` 提炼。
 3. 它的规模通常远小于 whole-session 的活跃旧记忆，不会像 `active_memory_nodes` 那样带来 prompt 膨胀。
 
-所以这次调整不是“`L1` 什么旧信息都不看”，而是“`L1` 只保留真正确定、便宜、必要的排斥信息”。
+所以这次调整不是“`L1` 什么旧信息都不看”，而是“`L1` 只保留真正确定、便宜、必要的记忆排斥信息”。如果同一事实来自当前 turn 中用户主动陈述、确认或纠正，并且适合作为稳定画像，`L1` 仍应输出 `profile_nodes`，让后续画像评审链路决定接纳、替代或退役。
 
 ### 3. 为什么记忆去重与 supersede 主责任下沉到检索层与 `L2`
 

@@ -19,7 +19,7 @@
 5. 提取 `profile_nodes`：稳定用户画像或项目画像候选。
 6. 每条候选都要标注 `evidence_source`、`admission`、`admission_reason`。
 
-如果 `target_turn` 没有任何候选，或有效信息已被 `recent_grpc_memory_writes` 完全覆盖，返回空 `details`、空 `memory_nodes`、空 `profile_nodes`。
+如果 `target_turn` 没有任何候选，返回空 `details`、空 `memory_nodes`、空 `profile_nodes`。如果有效信息已被 `recent_grpc_memory_writes` 覆盖，只能排除重复的 `memory_nodes`；不得因此排除用户主动陈述、确认或纠正产生的稳定 `profile_nodes` 候选。
 
 # Language
 自然语言字段必须跟随 `target_turn` 当前问答的主导语言，包括 `details`、`memory_nodes[].abstract`、`memory_nodes[].details`、`profile_nodes[].content`、`context_edges` 中的自由文本值。JSON key、枚举值、ID、数字、代码标识符、配置键名、API 名称和文件路径保持原样。
@@ -30,7 +30,7 @@
 按下面顺序判断每个候选：
 
 1. 是否来自 `target_turn`？不是则不要提取。
-2. 是否已被 `recent_grpc_memory_writes` 完全覆盖？是则不要重复提取。
+2. 是否已被 `recent_grpc_memory_writes` 覆盖？是则不要重复生成 `memory_nodes`；但如果同一事实来自 `target_turn` 中用户主动陈述、确认或纠正，并且适合作为稳定画像，仍应生成 `profile_nodes` 交给后续评审。
 3. 是否只是助手复述已有记忆、已有画像或通识回答？通常应 `drop`。
 4. 是否在未来跨 session 仍可能有用？只有长期事实、稳定偏好、长期约束、项目规则、业务规则、技术规格、历史决策、重要上下文才适合 `keep`。
 5. 它更适合放入 `memory_nodes` 还是 `profile_nodes`？同一事实可以同时形成记忆候选和画像候选，但画像只保留稳定事实。

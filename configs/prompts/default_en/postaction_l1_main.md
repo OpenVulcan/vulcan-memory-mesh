@@ -19,7 +19,7 @@ Return one JSON object that:
 5. Extracts `profile_nodes`: stable user or project profile candidates.
 6. Adds `evidence_source`, `admission`, and `admission_reason` to every candidate.
 
-If `target_turn` contains no meaningful candidate, or if all effective information is already covered by `recent_grpc_memory_writes`, return an empty `details`, `memory_nodes: []`, and `profile_nodes: []`.
+If `target_turn` contains no meaningful candidate, return an empty `details`, `memory_nodes: []`, and `profile_nodes: []`. If the effective information is already covered by `recent_grpc_memory_writes`, exclude only duplicate `memory_nodes`; do not exclude stable `profile_nodes` candidates that come from the user's active statement, confirmation, or correction.
 
 # Language
 All free-text output must follow the dominant language of the QA inside `target_turn`. This includes `details`, `memory_nodes[].abstract`, `memory_nodes[].details`, `profile_nodes[].content`, and free-text values inside `context_edges`. Keep JSON keys, enum values, IDs, numbers, code identifiers, config keys, API names, and file paths unchanged.
@@ -30,7 +30,7 @@ If the turn is mixed-language, follow the dominant language of the user's latest
 For each possible candidate, decide in this order:
 
 1. Did it come from `target_turn`? If not, do not extract it.
-2. Is it already fully covered by `recent_grpc_memory_writes`? If yes, do not extract it again.
+2. Is it already covered by `recent_grpc_memory_writes`? If yes, do not generate duplicate `memory_nodes`; however, if the same fact is actively stated, confirmed, or corrected by the user inside `target_turn` and is suitable as a stable profile fact, still emit it as a `profile_nodes` candidate for downstream review.
 3. Is it only an echo of existing memory, an echo of an existing profile, or a general answer? Usually drop it.
 4. Will it still be useful across future sessions? Keep only durable facts, stable preferences, durable constraints, project rules, business rules, technical specs, historical decisions, or important context.
 5. Should it be represented as a `memory_node`, a `profile_node`, or both?

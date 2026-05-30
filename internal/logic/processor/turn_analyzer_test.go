@@ -5,12 +5,52 @@ package processor
 import (
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
+
+// TestPostActionL1PromptKeepsUserProfileCandidatesDespiteDirectWrites verifies direct-write memory exclusions cannot suppress user-stated profile candidates.
+// TestPostActionL1PromptKeepsUserProfileCandidatesDespiteDirectWrites 用于验证主动写入记忆排斥规则不会压制用户主动陈述产生的画像候选。
+func TestPostActionL1PromptKeepsUserProfileCandidatesDespiteDirectWrites(t *testing.T) {
+	// Read the checked-in prompt files directly so the regression test protects the runtime prompt contract, not only a test stub.
+	// 直接读取仓库内置提示词文件，让回归测试保护运行时提示词契约，而不只是保护测试桩内容。
+	promptFiles := map[string]struct {
+		path      string
+		fragments []string
+	}{
+		"cn": {
+			path: filepath.Join("..", "..", "..", "configs", "prompts", "default_cn", "postaction_l1_main.md"),
+			fragments: []string{
+				"只能排除重复的 `memory_nodes`",
+				"不得因此排除用户主动陈述、确认或纠正产生的稳定 `profile_nodes` 候选",
+			},
+		},
+		"en": {
+			path: filepath.Join("..", "..", "..", "configs", "prompts", "default_en", "postaction_l1_main.md"),
+			fragments: []string{
+				"exclude only duplicate `memory_nodes`",
+				"do not exclude stable `profile_nodes` candidates",
+			},
+		},
+	}
+	for name, promptFile := range promptFiles {
+		body, err := os.ReadFile(filepath.Clean(promptFile.path))
+		if err != nil {
+			t.Fatalf("read %s postaction_l1_main prompt: %v", name, err)
+		}
+		prompt := string(body)
+		for _, fragment := range promptFile.fragments {
+			if !strings.Contains(prompt, fragment) {
+				t.Fatalf("expected %s prompt to contain %q, got %s", name, fragment, prompt)
+			}
+		}
+	}
+}
 
 // TestTurnAnalyzerAnalyze verifies the processor loads the dedicated prompt, calls the model, and parses the structured payload into canonical node candidates.
 // TestTurnAnalyzerAnalyze 用于验证处理器会加载专用提示词、调用模型，并把结构化载荷解析成规范节点候选。
