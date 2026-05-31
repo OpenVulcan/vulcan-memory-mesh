@@ -535,6 +535,30 @@ func TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction(t 
 	}
 }
 
+// TestProfileUseCaseApplyInstructionRejectsAllTarget verifies manual instructions return a validation failure for the query-only ALL sentinel even when callers bypass the gRPC validator.
+// TestProfileUseCaseApplyInstructionRejectsAllTarget 用于验证即使调用方绕过 gRPC 校验，手工画像指令遇到仅查询使用的 ALL 哨兵时也会返回校验失败。
+func TestProfileUseCaseApplyInstructionRejectsAllTarget(t *testing.T) {
+	store := &stubProfileStore{}
+	reviewer := &stubManualProfileReviewer{}
+	uc := NewProfileUseCase(store, reviewer, nil)
+
+	_, err := uc.ApplyInstruction(context.Background(), ProfileInstructionCommand{
+		ProfileType: ProfileQueryTypeAll,
+		UserID:      7,
+		ProjectID:   9,
+		Instruction: "更新全部画像。",
+	})
+	if err == nil {
+		t.Fatal("expected all-target manual instruction to be rejected")
+	}
+	if !strings.Contains(err.Error(), "single profile target") {
+		t.Fatalf("expected single-target validation failure, got %v", err)
+	}
+	if store.createInstructionCount() != 0 || store.applyInstructionCount() != 0 {
+		t.Fatalf("expected rejected all-target instruction to skip persistence, got create=%d apply=%d", store.createInstructionCount(), store.applyInstructionCount())
+	}
+}
+
 // TestProfileUseCaseApplyInstructionReusesSharedFlightWithNilContext verifies direct callers that accidentally pass a nil context still reuse an identical in-flight manual instruction instead of panicking on ctx.Done().
 // TestProfileUseCaseApplyInstructionReusesSharedFlightWithNilContext 用于验证直接调用方即使误传 nil context，也能复用相同的进行中手工画像指令，而不会因为 ctx.Done() 触发 panic。
 func TestProfileUseCaseApplyInstructionReusesSharedFlightWithNilContext(t *testing.T) {

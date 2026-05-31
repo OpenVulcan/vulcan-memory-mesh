@@ -470,6 +470,9 @@ func validateProfileQueryCommand(cmd ProfileQueryCommand) error {
 // validateProfileInstructionCommand checks the target selector and explicit manual instruction before LLM review begins.
 // validateProfileInstructionCommand 用于在 LLM 评审开始前校验目标选择参数和显式手工画像指令。
 func validateProfileInstructionCommand(cmd ProfileInstructionCommand) error {
+	if cmd.ProfileType == ProfileQueryTypeAll {
+		return logicdomain.ValidationError{Field: "target", Message: "must be one supported single profile target"}
+	}
 	if err := validateProfileQueryCommand(ProfileQueryCommand{
 		ProfileType: cmd.ProfileType,
 		UserID:      cmd.UserID,
