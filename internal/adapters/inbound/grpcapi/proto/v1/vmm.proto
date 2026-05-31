@@ -45,8 +45,8 @@ service VMMService {
   // DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
   rpc DeleteUser(DeleteUserRequest) returns (DeleteUserResponse);
 
-  // GetProfileNodes returns only active atomic profile nodes for one requested scope target.
-  // GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+  // GetProfileNodes returns active atomic profile nodes for one requested scope target or an explicit all-scope query.
+  // GetProfileNodes 用于返回单个目标范围，或显式全范围查询下当前 active 的原子化画像节点。
   rpc GetProfileNodes(GetProfileNodesRequest) returns (GetProfileNodesResponse);
 
   // GetProfileBundle assembles one deterministic TEAM/SPACE/PROJECT/USER prompt bundle for the requested user/project pair.
@@ -244,14 +244,15 @@ message DeleteUserResponse {
   int64 deleted_profiles = 11;
 }
 
-// ProfileTarget identifies the single scope whose profile nodes should be queried or updated.
-// ProfileTarget 用于标识应被查询或更新画像节点的单个目标 scope。
+// ProfileTarget identifies one scope for profile mutations or one/supported-all scopes for profile-node queries.
+// ProfileTarget 用于标识画像写入的单个 scope，或画像节点查询的单个/显式全量 scope。
 enum ProfileTarget {
   PROFILE_TARGET_UNSPECIFIED = 0;
   PROFILE_TARGET_USER = 1;
   PROFILE_TARGET_PROJECT = 2;
   PROFILE_TARGET_TEAM = 3;
   PROFILE_TARGET_SPACE = 4;
+  PROFILE_TARGET_ALL = 5;
 }
 
 // ProfileNodeSourceKind describes where one durable profile node came from.
@@ -288,8 +289,8 @@ message RetiredProfileNodeEntry {
   string reason = 2;
 }
 
-// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target.
-// GetProfileNodesRequest 用于请求服务端返回单个目标下当前 active 的原子化画像节点。
+// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target or all supported targets.
+// GetProfileNodesRequest 用于请求服务端返回单个目标或全部支持目标下当前 active 的原子化画像节点。
 message GetProfileNodesRequest {
   ProfileTarget target = 1;
   uint64 user_id = 2;

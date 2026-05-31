@@ -316,8 +316,8 @@ func (v *RequestValidator) ValidateDeleteUser(req *vmmv1.DeleteUserRequest) erro
 	return requireString("user_ref", req.GetUserRef(), 256)
 }
 
-// ValidateGetProfileNodes checks the single-target profile query contract and keeps the public RPC restricted to active-node lookups only.
-// ValidateGetProfileNodes 用于校验单目标画像查询契约，并保持公开 RPC 只暴露 active 节点查询能力。
+// ValidateGetProfileNodes checks the profile query contract and keeps the public RPC restricted to active-node lookups only.
+// ValidateGetProfileNodes 用于校验画像查询契约，并保持公开 RPC 只暴露 active 节点查询能力。
 func (v *RequestValidator) ValidateGetProfileNodes(req *vmmv1.GetProfileNodesRequest) error {
 	if req == nil {
 		return logicdomain.ValidationError{Field: "get_profile_nodes", Message: "is required"}
@@ -333,6 +333,13 @@ func (v *RequestValidator) ValidateGetProfileNodes(req *vmmv1.GetProfileNodesReq
 	case vmmv1.ProfileTarget_PROFILE_TARGET_PROJECT,
 		vmmv1.ProfileTarget_PROFILE_TARGET_TEAM,
 		vmmv1.ProfileTarget_PROFILE_TARGET_SPACE:
+		if req.GetProjectId() == 0 {
+			return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+		}
+	case vmmv1.ProfileTarget_PROFILE_TARGET_ALL:
+		if req.GetUserId() == 0 {
+			return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+		}
 		if req.GetProjectId() == 0 {
 			return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
 		}
@@ -368,6 +375,9 @@ func (v *RequestValidator) ValidateGetProfileBundle(req *vmmv1.GetProfileBundleR
 func (v *RequestValidator) ValidateApplyProfileInstruction(req *vmmv1.ApplyProfileInstructionRequest) error {
 	if req == nil {
 		return logicdomain.ValidationError{Field: "apply_profile_instruction", Message: "is required"}
+	}
+	if req.GetTarget() == vmmv1.ProfileTarget_PROFILE_TARGET_ALL {
+		return logicdomain.ValidationError{Field: "target", Message: "must be one supported single profile target"}
 	}
 	if err := v.ValidateGetProfileNodes(&vmmv1.GetProfileNodesRequest{
 		Target:    req.GetTarget(),

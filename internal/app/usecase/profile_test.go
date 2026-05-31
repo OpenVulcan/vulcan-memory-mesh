@@ -43,6 +43,55 @@ func TestProfileUseCaseGetNodesReturnsActiveSlice(t *testing.T) {
 	}
 }
 
+// TestProfileUseCaseGetNodesAggregatesAllScopes verifies the query-only ALL sentinel expands to TEAM/SPACE/PROJECT/USER while preserving each node's original target metadata.
+// TestProfileUseCaseGetNodesAggregatesAllScopes 用于验证仅查询使用的 ALL 哨兵会展开为 TEAM/SPACE/PROJECT/USER，并保留每条节点原始目标元数据。
+func TestProfileUseCaseGetNodesAggregatesAllScopes(t *testing.T) {
+	store := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeTeam:    {ProfileType: logicdomain.ProfileTypeTeam, BindID: 3, TeamID: 3, ProjectID: 9},
+			logicdomain.ProfileTypeSpace:   {ProfileType: logicdomain.ProfileTypeSpace, BindID: 5, SpaceID: 5, ProjectID: 9},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, ProjectID: 9},
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+		},
+		nodesByTarget: map[string][]logicdomain.ProfileNodeRecord{
+			profileRenderKey(logicdomain.ProfileTypeTeam, 3):    {{ID: 11, ProfileType: logicdomain.ProfileTypeTeam, BindID: 3, Content: "team", Status: logicdomain.ProfileStatusActive}},
+			profileRenderKey(logicdomain.ProfileTypeSpace, 5):   {{ID: 21, ProfileType: logicdomain.ProfileTypeSpace, BindID: 5, Content: "space", Status: logicdomain.ProfileStatusActive}},
+			profileRenderKey(logicdomain.ProfileTypeProject, 9): {{ID: 31, ProfileType: logicdomain.ProfileTypeProject, BindID: 9, Content: "project", Status: logicdomain.ProfileStatusActive}},
+			profileRenderKey(logicdomain.ProfileTypeUser, 7):    {{ID: 41, ProfileType: logicdomain.ProfileTypeUser, BindID: 7, Content: "user", Status: logicdomain.ProfileStatusActive}},
+		},
+	}
+	uc := NewProfileUseCase(store, nil, nil)
+
+	result, err := uc.GetNodes(context.Background(), ProfileQueryCommand{
+		ProfileType: ProfileQueryTypeAll,
+		UserID:      7,
+		ProjectID:   9,
+		Limit:       2,
+	})
+	if err != nil {
+		t.Fatalf("get all profile nodes: %v", err)
+	}
+	if len(result.Nodes) != 4 {
+		t.Fatalf("expected four aggregated nodes, got %+v", result.Nodes)
+	}
+	for idx, wantType := range []int{logicdomain.ProfileTypeTeam, logicdomain.ProfileTypeSpace, logicdomain.ProfileTypeProject, logicdomain.ProfileTypeUser} {
+		if result.Nodes[idx].ProfileType != wantType {
+			t.Fatalf("node %d profile_type = %d, want %d in deterministic all-scope order", idx, result.Nodes[idx].ProfileType, wantType)
+		}
+	}
+	for _, key := range []string{
+		profileRenderKey(logicdomain.ProfileTypeTeam, 3),
+		profileRenderKey(logicdomain.ProfileTypeSpace, 5),
+		profileRenderKey(logicdomain.ProfileTypeProject, 9),
+		profileRenderKey(logicdomain.ProfileTypeUser, 7),
+	} {
+		limits := store.requestedLimitsForTarget(key)
+		if len(limits) != 1 || limits[0] != 2 {
+			t.Fatalf("expected all-scope target %s to receive per-target limit 2, got %+v", key, limits)
+		}
+	}
+}
+
 // TestProfileUseCaseGetBundleBuildsCombinedPrompt verifies the bundle flow rebuilds scope profiles from active nodes,
 // ignores stale stored rendered blobs, and emits the deterministic TEAM/PROJECT/USER combined text.
 // TestProfileUseCaseGetBundleBuildsCombinedPrompt 用于验证 bundle 流程会基于 active 节点重建 scope 画像，

@@ -301,6 +301,64 @@ func TestGetProfileNodesKeepsUnlimitedLimitWhenOmitted(t *testing.T) {
 	}
 }
 
+// TestGetProfileNodesPassesAllTargetSentinel verifies the transport exposes an explicit ALL target without reusing the legacy zero-value target.
+// TestGetProfileNodesPassesAllTargetSentinel 用于验证传输层暴露显式 ALL 目标，并且不会复用旧有零值 target。
+func TestGetProfileNodesPassesAllTargetSentinel(t *testing.T) {
+	profiles := &stubProfileExecutor{
+		queryResult: usecase.ProfileQueryResult{
+			Nodes: []logicdomain.ProfileNodeRecord{
+				{
+					ID:            104,
+					ProfileType:   logicdomain.ProfileTypeTeam,
+					BindID:        3,
+					Content:       "团队统一使用中文提交信息。",
+					Priority:      logicdomain.ProfilePriorityP0,
+					ProfileLevel:  logicdomain.ProfileLevelPersistent,
+					RefreshWeight: 1,
+					ProfileDate:   "2026-05-31",
+					SourceKind:    logicdomain.ProfileSourceKindTurnExtract,
+					SourceID:      44,
+				},
+				{
+					ID:            105,
+					ProfileType:   logicdomain.ProfileTypeUser,
+					BindID:        7,
+					Content:       "用户偏好先给结论。",
+					Priority:      logicdomain.ProfilePriorityP1,
+					ProfileLevel:  logicdomain.ProfileLevelStable,
+					RefreshWeight: 2,
+					ProfileDate:   "2026-05-31",
+					SourceKind:    logicdomain.ProfileSourceKindManualInstruction,
+					SourceID:      45,
+				},
+			},
+		},
+	}
+	fixture := newTestFixture(t, Dependencies{
+		IDs:      xid.NewGenerator(),
+		Profiles: profiles,
+	}, testBufSize)
+
+	resp, err := fixture.client.GetProfileNodes(context.Background(), &vmmv1.GetProfileNodesRequest{
+		Target:    vmmv1.ProfileTarget_PROFILE_TARGET_ALL,
+		UserId:    7,
+		ProjectId: 9,
+		Limit:     20,
+	})
+	if err != nil {
+		t.Fatalf("get all profile nodes: %v", err)
+	}
+	if profiles.queryCmd.ProfileType != usecase.ProfileQueryTypeAll || profiles.queryCmd.UserID != 7 || profiles.queryCmd.ProjectID != 9 || profiles.queryCmd.Limit != 20 {
+		t.Fatalf("unexpected all target query command: %+v", profiles.queryCmd)
+	}
+	if len(resp.GetNodes()) != 2 {
+		t.Fatalf("nodes len = %d", len(resp.GetNodes()))
+	}
+	if resp.GetNodes()[0].GetTarget() != vmmv1.ProfileTarget_PROFILE_TARGET_TEAM || resp.GetNodes()[1].GetTarget() != vmmv1.ProfileTarget_PROFILE_TARGET_USER {
+		t.Fatalf("unexpected returned node targets: %+v", resp.GetNodes())
+	}
+}
+
 // TestApplyProfileInstructionReturnsAcceptedAndRetired verifies the manual profile instruction RPC returns the synchronous reviewed writeback result.
 // TestApplyProfileInstructionReturnsAcceptedAndRetired 用于验证手工画像指令 RPC 会返回同步评审后的写回结果。
 func TestApplyProfileInstructionReturnsAcceptedAndRetired(t *testing.T) {

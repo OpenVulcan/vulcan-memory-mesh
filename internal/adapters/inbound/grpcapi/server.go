@@ -255,8 +255,8 @@ func shortContentDigest(raw string) string {
 	return hex.EncodeToString(sum[:8])
 }
 
-// fromProtoProfileTarget converts the protobuf profile target enum into the internal profile-type enum.
-// fromProtoProfileTarget 用于把 protobuf 的画像目标枚举转换成内部画像类型枚举。
+// fromProtoProfileTarget converts the protobuf profile target enum into an internal profile-type id or the query-only all-scope sentinel.
+// fromProtoProfileTarget 用于把 protobuf 的画像目标枚举转换成内部画像类型 ID，或仅查询使用的全范围哨兵值。
 func fromProtoProfileTarget(target vmmv1.ProfileTarget) (int, error) {
 	switch target {
 	case vmmv1.ProfileTarget_PROFILE_TARGET_USER:
@@ -267,6 +267,8 @@ func fromProtoProfileTarget(target vmmv1.ProfileTarget) (int, error) {
 		return logicdomain.ProfileTypeTeam, nil
 	case vmmv1.ProfileTarget_PROFILE_TARGET_SPACE:
 		return logicdomain.ProfileTypeSpace, nil
+	case vmmv1.ProfileTarget_PROFILE_TARGET_ALL:
+		return usecase.ProfileQueryTypeAll, nil
 	default:
 		return 0, logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
 	}

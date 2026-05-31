@@ -420,13 +420,28 @@
 
 用途：
 
-- 读取单个目标下当前 `active` 的原子化画像节点
+- 读取单个目标，或显式 `ALL` 目标下当前 `active` 的原子化画像节点
+
+请求目标：
+
+- `PROFILE_TARGET_USER`
+  - 必须传 `user_id`
+- `PROFILE_TARGET_PROJECT / PROFILE_TARGET_TEAM / PROFILE_TARGET_SPACE`
+  - 必须传 `project_id`
+- `PROFILE_TARGET_ALL`
+  - 必须同时传 `user_id` 和 `project_id`
+  - 服务端按 `TEAM -> SPACE -> PROJECT -> USER` 展开
+  - `limit` 会分别作用到每个具体目标
+- `PROFILE_TARGET_UNSPECIFIED = 0`
+  - 继续表示未指定目标，仍会被拒绝
+  - 不会为了兼容旧请求而复用为全量查询
 
 返回内容特点：
 
 - 每条节点都带稳定 `id`
 - 返回 `content / priority / level / refresh_weight / profile_date`
 - 同时返回 `source_kind / source_id`
+- `ALL` 查询返回的每条节点仍保留自己的真实 `target / bind_id`
 - 方便插件按需挑选节点，再自行组织成大模型上下文
 
 ### GetProfileBundle

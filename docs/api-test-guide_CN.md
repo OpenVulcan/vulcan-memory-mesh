@@ -314,6 +314,23 @@ grpcurl -plaintext `
 
 - `USER` 目标必须传 `userId`
 - `PROJECT / TEAM / SPACE` 目标必须传 `projectId`
+- `ALL` 目标使用 `PROFILE_TARGET_ALL`，必须同时传 `userId` 和 `projectId`
+- `PROFILE_TARGET_UNSPECIFIED = 0` 继续表示未指定目标，仍会被拒绝，不会兼容复用为全量查询
+- `ALL` 查询按 `TEAM -> SPACE -> PROJECT -> USER` 展开，`limit` 会分别作用到每个具体目标
+
+全目标查询示例：
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "target": "PROFILE_TARGET_ALL",
+    "userId": 7,
+    "projectId": 9,
+    "limit": 50
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/GetProfileNodes
+```
 
 ## 十四、GetProfileBundle
 

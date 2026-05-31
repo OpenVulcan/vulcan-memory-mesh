@@ -28,6 +28,11 @@
 
 `GetProfileNodes` 只返回当前 `active` 的原子化画像节点。
 
+它支持两类读取方式：
+
+- 单目标读取：`USER / PROJECT / TEAM / SPACE`
+- 显式全目标读取：`ALL`
+
 它不提供：
 
 - `all` 状态过滤
@@ -48,6 +53,7 @@
 - `PROJECT`
 - `TEAM`
 - `SPACE`
+- `ALL`
 
 字段约束：
 
@@ -61,6 +67,16 @@
 - `SPACE`
   - 必须传 `project_id`
   - 服务端通过 `project_id -> space_id`
+- `ALL`
+  - 必须同时传 `user_id` 和 `project_id`
+  - 服务端按 `TEAM -> SPACE -> PROJECT -> USER` 的固定顺序展开查询
+  - `limit` 会作为每个具体目标的单独上限，而不是全局合并后的总上限
+
+兼容性约束：
+
+- `PROFILE_TARGET_UNSPECIFIED = 0` 继续表示未指定目标，仍会被校验拒绝
+- 全目标查询使用显式枚举 `PROFILE_TARGET_ALL`
+- 不把 `0` 复用为 `ALL`，避免旧客户端漏传 `target` 时意外触发全量画像读取
 
 ## GetProfileNodes 返回内容
 
@@ -81,6 +97,8 @@
 - `expires_timestamp`
 
 接口本身只返回事实节点，不返回最终渲染好的 `profile` Blob。
+
+当请求 `ALL` 时，返回列表中每条节点仍会携带自己的真实 `target` 与 `bind_id`，调用方可按需再次分组。
 
 ## GetProfileBundle 目标
 

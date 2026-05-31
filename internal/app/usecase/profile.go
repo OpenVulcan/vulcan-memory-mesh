@@ -21,8 +21,14 @@ type ManualProfileInstructionReviewer interface {
 	Review(ctx context.Context, target logicdomain.ProfileTargetRef, activeNodes []logicdomain.ProfileNodeRecord, instruction string, floorPriority, floorLevel int) (logicdomain.ManualProfileInstructionReview, error)
 }
 
+const (
+	// ProfileQueryTypeAll is a query-only sentinel that asks GetProfileNodes to aggregate all supported scope targets while keeping durable profile types unchanged.
+	// ProfileQueryTypeAll 是仅用于查询的哨兵值，用于让 GetProfileNodes 聚合全部支持的 scope 目标，同时不改变长期画像类型定义。
+	ProfileQueryTypeAll = -1
+)
+
 // ProfileQueryCommand carries one target selector for the active-profile query RPC.
-// ProfileQueryCommand 用于承载 active 画像查询 RPC 所需的单目标选择参数。
+// ProfileQueryCommand 用于承载 active 画像查询 RPC 所需的目标选择参数。
 type ProfileQueryCommand struct {
 	ProfileType int
 	UserID      uint64
@@ -127,8 +133,8 @@ type profileInstructionGate struct {
 	mu sync.Mutex
 }
 
-// GetNodes resolves the requested target and returns only its current active nodes in a bounded deterministic order.
-// GetNodes 用于解析请求目标，并按受限且确定性的顺序返回它当前 active 的画像节点。
+// GetNodes resolves the requested target or the explicit all-scope sentinel and returns current active nodes in a bounded deterministic order.
+// GetNodes 用于解析请求目标或显式全范围哨兵，并按受限且确定性的顺序返回当前 active 的画像节点。
 func (u *ProfileUseCase) GetNodes(ctx context.Context, cmd ProfileQueryCommand) (ProfileQueryResult, error) {
 	if u == nil || u.store == nil {
 		return ProfileQueryResult{}, fmt.Errorf("profile store is nil")
@@ -136,6 +142,9 @@ func (u *ProfileUseCase) GetNodes(ctx context.Context, cmd ProfileQueryCommand) 
 	ctx = normalizeProfileUseCaseContext(ctx)
 	if err := validateProfileQueryCommand(cmd); err != nil {
 		return ProfileQueryResult{}, err
+	}
+	if cmd.ProfileType == ProfileQueryTypeAll {
+		return u.getAllProfileNodes(ctx, cmd)
 	}
 	target, err := u.store.ResolveProfileTarget(ctx, cmd.ProfileType, cmd.UserID, cmd.ProjectID)
 	if err != nil {
@@ -146,6 +155,32 @@ func (u *ProfileUseCase) GetNodes(ctx context.Context, cmd ProfileQueryCommand) 
 		return ProfileQueryResult{}, err
 	}
 	return ProfileQueryResult{Target: target, Nodes: nodes}, nil
+}
+
+// getAllProfileNodes resolves the stable TEAM/SPACE/PROJECT/USER scope sequence and appends each scope's active nodes without changing node ownership metadata.
+// getAllProfileNodes 用于按稳定的 TEAM/SPACE/PROJECT/USER scope 顺序解析目标并追加各自 active 节点，同时不改变节点自身归属元数据。
+func (u *ProfileUseCase) getAllProfileNodes(ctx context.Context, cmd ProfileQueryCommand) (ProfileQueryResult, error) {
+	profileTypes := []int{
+		logicdomain.ProfileTypeTeam,
+		logicdomain.ProfileTypeSpace,
+		logicdomain.ProfileTypeProject,
+		logicdomain.ProfileTypeUser,
+	}
+	nodes := make([]logicdomain.ProfileNodeRecord, 0)
+	for _, profileType := range profileTypes {
+		// Resolve every concrete scope independently so storage adapters keep their existing single-target contract.
+		// 逐个解析具体 scope，确保存储适配器继续保持既有的单目标契约。
+		target, err := u.store.ResolveProfileTarget(ctx, profileType, cmd.UserID, cmd.ProjectID)
+		if err != nil {
+			return ProfileQueryResult{}, err
+		}
+		activeNodes, err := u.store.ListActiveProfileNodes(ctx, target, cmd.Limit)
+		if err != nil {
+			return ProfileQueryResult{}, err
+		}
+		nodes = append(nodes, activeNodes...)
+	}
+	return ProfileQueryResult{Nodes: nodes}, nil
 }
 
 // ApplyInstruction persists one explicit manual profile instruction by reviewing it against active nodes, enforcing scope-specific floors, and rebuilding the durable profile blob.
@@ -407,6 +442,15 @@ func (u *ProfileUseCase) failProfileInstruction(ctx context.Context, instruction
 // validateProfileQueryCommand checks the requested target selector before the query hits SQLite-backed persistence.
 // validateProfileQueryCommand 用于在查询命中 SQLite 持久化之前校验请求目标选择参数。
 func validateProfileQueryCommand(cmd ProfileQueryCommand) error {
+	if cmd.ProfileType == ProfileQueryTypeAll {
+		if cmd.UserID == 0 {
+			return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+		}
+		if cmd.ProjectID == 0 {
+			return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+		}
+		return nil
+	}
 	if !logicdomain.ValidProfileType(cmd.ProfileType) {
 		return logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
 	}

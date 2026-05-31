@@ -332,8 +332,10 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 `GetProfileNodes` 的特点：
 
-- 只返回单个目标下当前 `active` 的原子化画像节点
-- 不提供 `all` 过滤
+- 可返回单个目标，或显式 `PROFILE_TARGET_ALL` 下当前 `active` 的原子化画像节点
+- `PROFILE_TARGET_UNSPECIFIED = 0` 继续表示未指定目标，仍会被拒绝，不会被兼容性复用为全量查询
+- `PROFILE_TARGET_ALL` 需要同时传 `user_id + project_id`，并按 `TEAM -> SPACE -> PROJECT -> USER` 展开
+- 不提供 `all` 状态过滤
 - 不返回渲染后的 profile Blob
 - 返回内容以节点编号、内容、`P/L/W` 相关元数据和来源信息为主
 

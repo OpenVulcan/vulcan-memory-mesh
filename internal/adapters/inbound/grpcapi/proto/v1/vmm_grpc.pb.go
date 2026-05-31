@@ -74,8 +74,8 @@ type VMMServiceClient interface {
 	// DeleteUser removes one user and all SQL/vector data after the caller presents the generated confirmation code.
 	// DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
 	DeleteUser(ctx context.Context, in *DeleteUserRequest, opts ...grpc.CallOption) (*DeleteUserResponse, error)
-	// GetProfileNodes returns only active atomic profile nodes for one requested scope target.
-	// GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+	// GetProfileNodes returns active atomic profile nodes for one requested scope target or an explicit all-scope query.
+	// GetProfileNodes 用于返回单个目标范围，或显式全范围查询下当前 active 的原子化画像节点。
 	GetProfileNodes(ctx context.Context, in *GetProfileNodesRequest, opts ...grpc.CallOption) (*GetProfileNodesResponse, error)
 	// GetProfileBundle assembles one deterministic TEAM/SPACE/PROJECT/USER prompt bundle for the requested user/project pair.
 	// GetProfileBundle 用于为指定 user/project 组合组装一份确定性的 TEAM/SPACE/PROJECT/USER 提示词 bundle。
@@ -325,8 +325,8 @@ type VMMServiceServer interface {
 	// DeleteUser removes one user and all SQL/vector data after the caller presents the generated confirmation code.
 	// DeleteUser 用于在调用方提交生成的确认码后，删除单个用户及其全部 SQL/向量数据。
 	DeleteUser(context.Context, *DeleteUserRequest) (*DeleteUserResponse, error)
-	// GetProfileNodes returns only active atomic profile nodes for one requested scope target.
-	// GetProfileNodes 用于返回单个目标范围下当前 active 的原子化画像节点。
+	// GetProfileNodes returns active atomic profile nodes for one requested scope target or an explicit all-scope query.
+	// GetProfileNodes 用于返回单个目标范围，或显式全范围查询下当前 active 的原子化画像节点。
 	GetProfileNodes(context.Context, *GetProfileNodesRequest) (*GetProfileNodesResponse, error)
 	// GetProfileBundle assembles one deterministic TEAM/SPACE/PROJECT/USER prompt bundle for the requested user/project pair.
 	// GetProfileBundle 用于为指定 user/project 组合组装一份确定性的 TEAM/SPACE/PROJECT/USER 提示词 bundle。

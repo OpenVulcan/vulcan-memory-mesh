@@ -22,8 +22,8 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ProfileTarget identifies the single scope whose profile nodes should be queried or updated.
-// ProfileTarget 用于标识应被查询或更新画像节点的单个目标 scope。
+// ProfileTarget identifies one scope for profile mutations or one/supported-all scopes for profile-node queries.
+// ProfileTarget 用于标识画像写入的单个 scope，或画像节点查询的单个/显式全量 scope。
 type ProfileTarget int32
 
 const (
@@ -32,6 +32,7 @@ const (
 	ProfileTarget_PROFILE_TARGET_PROJECT     ProfileTarget = 2
 	ProfileTarget_PROFILE_TARGET_TEAM        ProfileTarget = 3
 	ProfileTarget_PROFILE_TARGET_SPACE       ProfileTarget = 4
+	ProfileTarget_PROFILE_TARGET_ALL         ProfileTarget = 5
 )
 
 // Enum value maps for ProfileTarget.
@@ -42,6 +43,7 @@ var (
 		2: "PROFILE_TARGET_PROJECT",
 		3: "PROFILE_TARGET_TEAM",
 		4: "PROFILE_TARGET_SPACE",
+		5: "PROFILE_TARGET_ALL",
 	}
 	ProfileTarget_value = map[string]int32{
 		"PROFILE_TARGET_UNSPECIFIED": 0,
@@ -49,6 +51,7 @@ var (
 		"PROFILE_TARGET_PROJECT":     2,
 		"PROFILE_TARGET_TEAM":        3,
 		"PROFILE_TARGET_SPACE":       4,
+		"PROFILE_TARGET_ALL":         5,
 	}
 )
 
@@ -1689,8 +1692,8 @@ func (x *RetiredProfileNodeEntry) GetReason() string {
 	return ""
 }
 
-// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target.
-// GetProfileNodesRequest 用于请求服务端返回单个目标下当前 active 的原子化画像节点。
+// GetProfileNodesRequest asks the server to return only active atomic profile nodes for one requested target or all supported targets.
+// GetProfileNodesRequest 用于请求服务端返回单个目标或全部支持目标下当前 active 的原子化画像节点。
 type GetProfileNodesRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Target        ProfileTarget          `protobuf:"varint,1,opt,name=target,proto3,enum=vmm.v1.ProfileTarget" json:"target,omitempty"`
@@ -3692,13 +3695,14 @@ const file_vmm_proto_rawDesc = "" +
 	"\btimeline\x18\x06 \x03(\v2\x1e.vmm.v1.PostActionTimelineItemR\btimeline\"K\n" +
 	"\x12PostActionResponse\x12\x1a\n" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId*\x97\x01\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId*\xaf\x01\n" +
 	"\rProfileTarget\x12\x1e\n" +
 	"\x1aPROFILE_TARGET_UNSPECIFIED\x10\x00\x12\x17\n" +
 	"\x13PROFILE_TARGET_USER\x10\x01\x12\x1a\n" +
 	"\x16PROFILE_TARGET_PROJECT\x10\x02\x12\x17\n" +
 	"\x13PROFILE_TARGET_TEAM\x10\x03\x12\x18\n" +
-	"\x14PROFILE_TARGET_SPACE\x10\x04*\x80\x02\n" +
+	"\x14PROFILE_TARGET_SPACE\x10\x04\x12\x16\n" +
+	"\x12PROFILE_TARGET_ALL\x10\x05*\x80\x02\n" +
 	"\x15ProfileNodeSourceKind\x12(\n" +
 	"$PROFILE_NODE_SOURCE_KIND_UNSPECIFIED\x10\x00\x12)\n" +
 	"%PROFILE_NODE_SOURCE_KIND_TURN_EXTRACT\x10\x01\x12/\n" +
