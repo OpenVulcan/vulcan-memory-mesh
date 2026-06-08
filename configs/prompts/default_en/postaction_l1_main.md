@@ -48,6 +48,7 @@ For each possible candidate, decide in this order:
 - The content is general knowledge, advice, explanation, or a generic recommendation.
 - The content only concerns one-off formatting, display, layout, quoting, escaping, footnotes, templates, sample text, debug output, or showing `memory_id` / `turn_id`.
 - The content is temporary state or an instant observation, such as weather, CPU temperature, system load, temporary inventory, or runtime state.
+- The content asks about or describes the assistant, agent, or model itself, including its capabilities, available tools, implicit skills, plugins, system prompts, sandbox, runtime environment, or interface list. This describes the current assistant runtime, not a durable user, project, or business fact. Do not generate `memory_nodes` or `profile_nodes` unless the user explicitly asks to save it as project documentation, a project constraint, or a durable runtime rule.
 - The user only asks what the assistant thinks the user's preferences or profile are, and the assistant is merely summarizing or guessing from existing context.
 
 # Node Meaning
@@ -77,7 +78,7 @@ Add `context_edges` only when a memory candidate is valid under a specific situa
 - `assistant_recalled_profile`: the assistant only echoed an existing profile.
 - `assistant_general_knowledge`: the assistant answered from general knowledge only.
 - `assistant_external_research`: the assistant found a new fact through websites, documents, multi-source search, or synthesis.
-- `assistant_tool_discovered`: the assistant found a new fact through tools, system queries, or structured interfaces.
+- `assistant_tool_discovered`: the assistant found a new fact through tools, system queries, or structured interfaces. Use it only for external business, project, or user-related facts; do not use it for the assistant's own tool capabilities, implicit skills, or runtime-environment descriptions.
 - `mixed`: the source is clearly mixed and cannot be reduced safely to one label.
 
 ## `admission`
@@ -90,7 +91,7 @@ When `admission="keep"`, this must be `""`. When `admission="drop"`, use one of:
 - `derived_from_existing_memory`: only repeats existing long-term memory.
 - `derived_from_profile_echo`: only echoes an existing profile.
 - `general_knowledge_answer`: only general knowledge, explanation, advice, or common sense.
-- `non_durable`: one-off, temporary, formatting-only, display-only, debugging-only, instant state, or short-lived context.
+- `non_durable`: one-off, temporary, formatting-only, display-only, debugging-only, instant state, short-lived context, or assistant tool-capability/runtime-environment description.
 
 ## `category`
 - `0`: General

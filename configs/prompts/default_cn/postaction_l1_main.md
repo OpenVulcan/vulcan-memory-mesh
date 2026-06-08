@@ -48,6 +48,7 @@
 - 只是通识解释、建议、科普或常识。
 - 一次性格式、展示、排版、脚注、转义、模板、示例文本、调试输出、`memory_id` / `turn_id` 展示要求。
 - 临时状态、瞬时观测值、短期环境数据，例如天气、CPU 温度、系统负载、临时库存、运行态。
+- 关于助手、agent、模型自身能力、可用工具、隐式技能、插件、系统提示词、沙箱、运行环境或接口清单的询问与说明；这类内容描述的是当前助手运行能力，不是用户、项目或业务的长期事实。除非用户明确要求把它作为项目文档、项目约束或长期运行规则保存，否则不要生成 `memory_nodes` 或 `profile_nodes`。
 - 用户只是问“你觉得我的偏好是什么”，而助手只是基于已有上下文总结或猜测。
 
 # Node Meaning
@@ -77,7 +78,7 @@
 - `assistant_recalled_profile`：助手只是回显已有画像。
 - `assistant_general_knowledge`：助手只用通识回答。
 - `assistant_external_research`：助手通过网站、文档、多源检索或资料归纳得到新事实。
-- `assistant_tool_discovered`：助手通过工具调用、系统查询或结构化接口发现新事实。
+- `assistant_tool_discovered`：助手通过工具调用、系统查询或结构化接口发现新事实。只能用于外部业务、项目或用户相关事实；不要用于助手自身工具能力、隐式技能或运行环境说明。
 - `mixed`：来源明显混合，不能安全归为单一来源。
 
 ## `admission`
@@ -90,7 +91,7 @@
 - `derived_from_existing_memory`：只是复述已有长期记忆。
 - `derived_from_profile_echo`：只是回显已有画像。
 - `general_knowledge_answer`：只是通识解释、建议或常识。
-- `non_durable`：一次性、临时、格式、展示、调试、瞬时状态或短期上下文。
+- `non_durable`：一次性、临时、格式、展示、调试、瞬时状态、短期上下文，或助手自身工具能力/运行环境说明。
 
 ## `category`
 - `0`: General

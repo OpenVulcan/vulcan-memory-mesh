@@ -12,6 +12,7 @@ configs/.env
 .gocache
 .qwen
 .claude
+.vulcan
 third_party/
 docs/plan/
 docs/completed/
