@@ -144,3 +144,35 @@ func (s *Server) WriteMemories(ctx context.Context, req *vmmv1.WriteMemoriesRequ
 		TraceId: trace.IDFromContext(ctx),
 	}, nil
 }
+
+// DeleteMemories marks explicit memory rows as deleted inside the caller-visible user/project scope while preserving source turn details.
+// DeleteMemories 用于在调用方可见的 user/project 范围内把明确指定的记忆行标记为 deleted，同时保留来源 turn 详情。
+func (s *Server) DeleteMemories(ctx context.Context, req *vmmv1.DeleteMemoriesRequest) (*vmmv1.DeleteMemoriesResponse, error) {
+	if err := s.requireReceiver(); err != nil {
+		return nil, err
+	}
+	if s.memory == nil {
+		return nil, toStatus(errRouteDisabled)
+	}
+	NormalizeDeleteMemoriesRequest(req)
+	if err := s.validator().ValidateDeleteMemories(req); err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
+	defer cancel()
+	result, err := s.memory.Delete(ctx, usecase.DeleteMemoriesCommand{
+		UserID:    req.GetUserId(),
+		ProjectID: req.GetProjectId(),
+		MemoryIDs: req.GetMemoryIds(),
+		Reason:    req.GetReason(),
+	})
+	if err != nil {
+		return nil, toStatus(describeError(err))
+	}
+	return &vmmv1.DeleteMemoriesResponse{
+		DeletedMemoryIds:  result.DeletedMemoryIDs,
+		NotFoundMemoryIds: result.NotFoundMemoryIDs,
+		DeletedVectorRows: result.DeletedVectorRows,
+		TraceId:           trace.IDFromContext(ctx),
+	}, nil
+}

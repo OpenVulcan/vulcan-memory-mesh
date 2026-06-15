@@ -80,6 +80,7 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 			TurnId:          item.TurnID,
 			HasDialogue:     item.TurnID > 0,
 			CreatedDatetime: item.CreatedDateTime,
+			MemoryId:        item.MemoryID,
 		})
 	}
 	return &vmmv1.PreCheckResponse{
@@ -144,6 +145,7 @@ func (s *Server) logPreCheckResult(traceID, message string, req *vmmv1.PreCheckR
 type preCheckContextItemTransportLogPayload struct {
 	Text            string  `json:"text"`
 	Score           float64 `json:"score"`
+	MemoryID        uint64  `json:"memory_id,omitempty"`
 	HasDialogue     bool    `json:"has_dialogue"`
 	TurnID          uint64  `json:"turn_id"`
 	CreatedDateTime string  `json:"created_datetime,omitempty"`
@@ -157,6 +159,7 @@ func summarizePreCheckContextItemsForTransportLog(items []logicdomain.ContextIte
 		out = append(out, preCheckContextItemTransportLogPayload{
 			Text:            item.Text,
 			Score:           item.Score,
+			MemoryID:        item.MemoryID,
 			HasDialogue:     item.TurnID > 0,
 			TurnID:          item.TurnID,
 			CreatedDateTime: item.CreatedDateTime,

@@ -2429,6 +2429,104 @@ func TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFail
 	}
 }
 
+// TestMemoryUseCaseDeleteMarksScopedMemoriesAndCleansVectors verifies manual deletion resolves hierarchy scope, flips relation rows, and removes sidecar vectors best-effort.
+// TestMemoryUseCaseDeleteMarksScopedMemoriesAndCleansVectors 用于验证手工删除会解析层级范围、切换关系行状态，并尽力删除旁路向量。
+func TestMemoryUseCaseDeleteMarksScopedMemoriesAndCleansVectors(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		deleteMemoryResult: logicdomain.MemoryDeleteResult{
+			DeletedMemoryIDs:  []uint64{301},
+			NotFoundMemoryIDs: []uint64{404},
+			DeletedVectorIDs:  []string{"vec-301"},
+		},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, nil, vector, nil)
+
+	result, err := uc.Delete(context.Background(), DeleteMemoriesCommand{
+		UserID:    7,
+		ProjectID: 9,
+		MemoryIDs: []uint64{301, 301, 404},
+		Reason:    "  无用记忆  ",
+	})
+	if err != nil {
+		t.Fatalf("delete memories: %v", err)
+	}
+	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != 301 {
+		t.Fatalf("unexpected deleted ids: %+v", result.DeletedMemoryIDs)
+	}
+	if len(result.NotFoundMemoryIDs) != 1 || result.NotFoundMemoryIDs[0] != 404 {
+		t.Fatalf("unexpected not-found ids: %+v", result.NotFoundMemoryIDs)
+	}
+	if result.DeletedVectorRows != 1 {
+		t.Fatalf("deleted vector rows = %d", result.DeletedVectorRows)
+	}
+	if len(store.deleteMemoryCalls) != 1 {
+		t.Fatalf("delete call count = %d", len(store.deleteMemoryCalls))
+	}
+	call := store.deleteMemoryCalls[0]
+	if got := call.MemoryIDs; len(got) != 2 || got[0] != 301 || got[1] != 404 {
+		t.Fatalf("unexpected memory ids passed to store: %+v", got)
+	}
+	if call.Filter.UserID != 7 || call.Filter.TeamID != 3 || call.Filter.SpaceID != 5 || call.Filter.ProjectID != 9 {
+		t.Fatalf("unexpected delete filter: %+v", call.Filter)
+	}
+	if call.Reason != "无用记忆" {
+		t.Fatalf("delete reason = %q", call.Reason)
+	}
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 || vector.deleteIDsCalls[0][0] != "vec-301" {
+		t.Fatalf("unexpected vector delete calls: %+v", vector.deleteIDsCalls)
+	}
+}
+
+// TestMemoryUseCaseDeleteEnqueuesVectorGCWhenCleanupFails verifies manual deletion remains successful after relational status changes and persists failed sidecar cleanup for retry.
+// TestMemoryUseCaseDeleteEnqueuesVectorGCWhenCleanupFails 用于验证关系状态变更成功后，即使旁路向量清理失败，手工删除仍成功并持久化重试任务。
+func TestMemoryUseCaseDeleteEnqueuesVectorGCWhenCleanupFails(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		deleteMemoryResult: logicdomain.MemoryDeleteResult{
+			DeletedMemoryIDs: []uint64{301},
+			DeletedVectorIDs: []string{"vec-301"},
+		},
+	}
+	vector := &stubVectorStore{deleteErr: errors.New("vector delete unavailable")}
+	uc := NewMemoryUseCase(profiles, store, nil, vector, nil)
+
+	result, err := uc.Delete(context.Background(), DeleteMemoriesCommand{
+		UserID:    7,
+		ProjectID: 9,
+		MemoryIDs: []uint64{301},
+	})
+	if err != nil {
+		t.Fatalf("delete memories: %v", err)
+	}
+	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != 301 {
+		t.Fatalf("unexpected deleted ids: %+v", result.DeletedMemoryIDs)
+	}
+	if result.DeletedVectorRows != 0 {
+		t.Fatalf("deleted vector rows = %d", result.DeletedVectorRows)
+	}
+	if store.vectorGCEnqueueQuery.JobType != logicdomain.VectorGCJobTypeManualMemoryDelete {
+		t.Fatalf("vector gc job type = %q, want %q", store.vectorGCEnqueueQuery.JobType, logicdomain.VectorGCJobTypeManualMemoryDelete)
+	}
+	if got := store.vectorGCEnqueueQuery.VectorIDs; len(got) != 1 || got[0] != "vec-301" {
+		t.Fatalf("vector gc ids = %+v", got)
+	}
+	if store.vectorGCEnqueueQuery.NextRunAt.IsZero() {
+		t.Fatal("expected manual-delete vector gc compensation to schedule a retry time")
+	}
+}
+
 // TestMemoryUseCaseWriteDoesNotCollapseDifferentSemanticAttributes verifies in-request duplicate collapse only applies to truly identical writes and keeps separate persistence paths when the caller changes category or lifecycle semantics.
 // TestMemoryUseCaseWriteDoesNotCollapseDifferentSemanticAttributes 用于验证单请求内的重复折叠只作用于真正相同的写入；当调用方改变 category 或生命周期语义时，仍应保留独立持久化路径。
 func TestMemoryUseCaseWriteDoesNotCollapseDifferentSemanticAttributes(t *testing.T) {
@@ -3158,8 +3256,20 @@ type stubTurnLookupStore struct {
 	directWriteApplyCalls    []stubDirectMemoryWriteApplyCall
 	directWriteApplyResult   logicdomain.DirectMemoryWriteApplyResult
 	directWriteApplyErr      error
+	deleteMemoryCalls        []stubDeleteMemoryCall
+	deleteMemoryResult       logicdomain.MemoryDeleteResult
+	deleteMemoryErr          error
 	vectorGCEnqueueQuery     logicdomain.VectorGCJobEnqueueQuery
 	err                      error
+}
+
+// stubDeleteMemoryCall records one manual memory delete request so use-case tests can assert scope and audit reason propagation.
+// stubDeleteMemoryCall 用于记录一次手工删除记忆请求，方便用例测试断言 scope 与审计原因传递。
+type stubDeleteMemoryCall struct {
+	MemoryIDs []uint64
+	Filter    logicdomain.SearchFilter
+	DeletedAt time.Time
+	Reason    string
 }
 
 // stubDirectMemoryWriteApplyCall records one atomic direct-memory write attempt so tests can assert the store sees the new row plus the intended supersede targets together.
@@ -3304,6 +3414,28 @@ func (s *stubTurnLookupStore) ApplyDirectMemoryWrite(_ context.Context, session 
 	result := s.directWriteApplyResult
 	result.InsertedMemoryNode.Vector = append([]float32(nil), result.InsertedMemoryNode.Vector...)
 	result.SupersededVectorIDs = append([]string(nil), result.SupersededVectorIDs...)
+	return result, nil
+}
+
+// DeleteMemoryNodes records one manual memory delete request and returns the canned relational delete outcome.
+// DeleteMemoryNodes 用于记录一次手工删除记忆请求，并返回预设的关系侧删除结果。
+func (s *stubTurnLookupStore) DeleteMemoryNodes(_ context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error) {
+	s.deleteMemoryCalls = append(s.deleteMemoryCalls, stubDeleteMemoryCall{
+		MemoryIDs: append([]uint64(nil), memoryIDs...),
+		Filter:    filter,
+		DeletedAt: deletedAt,
+		Reason:    reason,
+	})
+	if s.deleteMemoryErr != nil {
+		return logicdomain.MemoryDeleteResult{}, s.deleteMemoryErr
+	}
+	if s.err != nil {
+		return logicdomain.MemoryDeleteResult{}, s.err
+	}
+	result := s.deleteMemoryResult
+	result.DeletedMemoryIDs = append([]uint64(nil), result.DeletedMemoryIDs...)
+	result.NotFoundMemoryIDs = append([]uint64(nil), result.NotFoundMemoryIDs...)
+	result.DeletedVectorIDs = append([]string(nil), result.DeletedVectorIDs...)
 	return result, nil
 }
 

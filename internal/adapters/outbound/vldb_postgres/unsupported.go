@@ -170,6 +170,12 @@ func (unsupportedOperations) CreateDirectMemoryNode(context.Context, logicdomain
 	return logicdomain.MemoryNodeRecord{}, unsupportedOperationError("CreateDirectMemoryNode")
 }
 
+// DeleteMemoryNodes rejects PostgreSQL manual memory deletion until the unified memory workflow is fully ported.
+// DeleteMemoryNodes 用于在 PostgreSQL 统一记忆工作流完整迁移前，显式拒绝手工删除记忆节点。
+func (unsupportedOperations) DeleteMemoryNodes(context.Context, []uint64, logicdomain.SearchFilter, time.Time, string) (logicdomain.MemoryDeleteResult, error) {
+	return logicdomain.MemoryDeleteResult{}, unsupportedOperationError("DeleteMemoryNodes")
+}
+
 // ResolveProfileTarget rejects PostgreSQL profile target resolution until the profile workflow is fully ported.
 // ResolveProfileTarget 用于在 PostgreSQL 画像工作流完整迁移前，显式拒绝画像目标解析。
 func (unsupportedOperations) ResolveProfileTarget(context.Context, int, uint64, uint64) (logicdomain.ProfileTargetRef, error) {

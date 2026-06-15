@@ -52,6 +52,7 @@
 - `SearchMemoryEvents`
 - `GetTurnDetails`
 - `WriteMemories`
+- `DeleteMemories`
 
 ### 业务面
 
@@ -282,9 +283,11 @@
 - `PreCheckResponse.context_items[]` 仅保留：
   - 记忆正文
   - `score`
+  - `memory_id`
   - `has_dialogue`
   - `turn_id`
   - `created_datetime`
+- 当 `context_items[].memory_id > 0` 时，客户端可继续调用 `DeleteMemories` 移除误召回或无用的具体记忆条目
 - 当 `context_items[].turn_id > 0` 时，客户端可继续调用 `GetTurnDetails`
 - 同时更新 `last_compacted_timestamp`
 - 如果当前 session 没有 turn，允许返回成功但不更新 compact 边界
@@ -734,6 +737,47 @@
 - `deduped`
   - `true` 表示命中软幂等，复用了既有 memory
   - `false` 表示这次实际创建了新 memory
+
+### DeleteMemories
+
+用途：
+
+- 主动移除已经确认无用、错误或误写入的具体记忆条目
+- 只移除 memory node 的可召回状态，不会删除来源 `turn` / detail
+- 适合处理 AI 工具误写入的无价值长期记忆
+
+请求字段：
+
+- `user_id`
+- `project_id`
+- `memory_ids[]`
+- `reason`
+
+请求说明：
+
+- `memory_ids[]`
+  - 必填
+  - 最多 `256` 个
+  - 不允许包含 `0`
+- `reason`
+  - 可选
+  - 最长 `1024` 字符
+  - 未传时服务端会写入默认手工删除原因
+
+删除语义：
+
+- 关系侧将匹配范围内的 active memory row 标记为 `deleted`
+- 不会物理删除 `turn` / detail，因此仍可通过已有 turn 详情链路做审计回查
+- SQLite split 模式会同步删除内建 FTS 索引项，并尽力删除旁路向量；旁路向量删除失败时会进入 Vector GC 重试队列
+- PostgreSQL combined 模式由同一 memory row 持有向量列，状态切换后召回过滤立即生效，不需要额外删除旁路向量
+- 不存在、已删除、非 active 或不属于当前 `user_id/project_id` 可见层级的 id，都会进入 `not_found_memory_ids[]`
+
+返回字段：
+
+- `deleted_memory_ids[]`
+- `not_found_memory_ids[]`
+- `deleted_vector_rows`
+- `trace_id`
 
 ### PreCheck
 

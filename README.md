@@ -107,6 +107,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `SearchMemoryEvents`
 - `GetTurnDetails`
 - `WriteMemories`
+- `DeleteMemories`
 - `ChatCompact`
 - `PreCheck`
 - `PostAction`
@@ -197,7 +198,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 只把被采纳的记忆通过 gRPC `context_items[]` 返回给调用方
   - `PreCheckResponse` 已移除旧 `context_text` 字段
   - 调用方应直接消费 `context_items[]`
-  - 每条 `context_items[]` 仅保留记忆正文、分数、`has_dialogue`、`turn_id` 与 `created_datetime`
+  - 每条 `context_items[]` 仅保留记忆正文、分数、`memory_id`、`has_dialogue`、`turn_id` 与 `created_datetime`
+  - `memory_id` 可继续传给 `DeleteMemories`，用于移除误召回或无用的具体记忆条目
   - 这里的 `created_datetime` 是按当前运行环境系统本地时间展开的可读显示值；底层基准仍然是时间戳
   - 当 `turn_id > 0` 时，可继续调用 `GetTurnDetails`
 - 画像读取仍走独立接口：`GetProfileNodes / GetProfileBundle`
@@ -404,12 +406,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 手工指令直接视为最高权限规则
   - 后端会强制钳制到最高权威语义，不允许降级成普通偏好或短期上下文
 
-### 记忆查询接口
+### AI 工具记忆接口
 
-当前主动记忆查询相关 gRPC 能力拆成两条独立方法：
+当前 AI 工具记忆相关 gRPC 能力拆成四条独立方法：
 
 - `SearchMemoryEvents`
 - `GetTurnDetails`
+- `WriteMemories`
+- `DeleteMemories`
 
 `SearchMemoryEvents` 的特点：
 
@@ -478,6 +482,22 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 返回只保留最小结果字段：
   - `items[].memory_id`
   - `items[].deduped`
+
+`DeleteMemories` 的特点：
+
+- 输入固定是：
+  - `user_id`
+  - `project_id`
+  - `memory_ids[]`
+  - `reason`
+- 只删除具体 memory node，不会删除来源 `turn` / detail
+- 删除语义是把关系表中的 `memory_status` 标记为 `deleted`，后续召回不会再返回这些记忆
+- SQLite split 模式会同步移除内建 FTS 索引项，并尽力删除旁路向量；旁路向量删除失败时会进入 Vector GC 重试队列
+- PostgreSQL combined 模式同样更新关系行状态；向量列由同一 memory row 持有，不需要额外物理删除
+- 返回结果区分：
+  - `deleted_memory_ids[]`
+  - `not_found_memory_ids[]`
+  - `deleted_vector_rows`
 
 ## 构建与运行
 

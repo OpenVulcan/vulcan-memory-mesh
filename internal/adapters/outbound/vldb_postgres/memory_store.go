@@ -302,6 +302,107 @@ WHERE memory_status = $3
 	}, nil
 }
 
+// DeleteMemoryNodes marks active PostgreSQL memory rows as deleted inside the provided hierarchy filter while preserving immutable turn/detail rows.
+// DeleteMemoryNodes 用于在给定层级过滤范围内把 PostgreSQL active 记忆行标记为 deleted，同时保留不可变的 turn/detail 行。
+func (r *memoryRepository) DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error) {
+	if r == nil || r.shared.pool == nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("postgres store is not initialized")
+	}
+	memoryIDs = normalizeUint64List(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return logicdomain.MemoryDeleteResult{}, nil
+	}
+
+	// Keep row selection and status transition in one transaction so concurrent lifecycle work cannot delete or supersede a different active-row snapshot.
+	// 把行选择和状态切换放进同一个事务，避免并发生命周期任务基于不同 active 快照进行删除或替代。
+	callCtx, cancel := r.queryContext(ctx)
+	defer cancel()
+	tx, err := r.shared.pool.Begin(callCtx)
+	if err != nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("begin postgres memory delete tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+
+	args := &sqlArgsBuilder{}
+	whereClauses := []string{
+		"m.id = ANY(" + args.Add(toInt64List(memoryIDs)) + ")",
+		"m.memory_status = " + args.Add(logicdomain.MemoryStatusActive),
+	}
+	appendScopedMemoryFilter(&whereClauses, args, filter, "m")
+	selectSQL := fmt.Sprintf(`
+SELECT %s
+FROM %s AS m
+WHERE %s
+ORDER BY m.id ASC
+FOR UPDATE
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), strings.Join(whereClauses, " AND "))
+	rows, err := r.queryMemoryNodesWithQueryer(callCtx, tx, strings.TrimSpace(selectSQL), args.Args()...)
+	if err != nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("query postgres memory nodes for delete: %w", err)
+	}
+
+	eligible := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		record := row.toMemoryNodeRecord()
+		eligible[record.ID] = record
+	}
+	deletedMemoryIDs := make([]uint64, 0, len(eligible))
+	notFoundMemoryIDs := make([]uint64, 0, len(memoryIDs))
+	deletedVectorIDs := make([]string, 0, len(eligible))
+	for _, memoryID := range memoryIDs {
+		record, ok := eligible[memoryID]
+		if !ok {
+			notFoundMemoryIDs = append(notFoundMemoryIDs, memoryID)
+			continue
+		}
+		deletedMemoryIDs = append(deletedMemoryIDs, memoryID)
+		if strings.TrimSpace(record.VectorID) != "" {
+			deletedVectorIDs = append(deletedVectorIDs, strings.TrimSpace(record.VectorID))
+		}
+	}
+	if len(deletedMemoryIDs) == 0 {
+		if err := tx.Commit(callCtx); err != nil {
+			return logicdomain.MemoryDeleteResult{}, fmt.Errorf("commit postgres empty memory delete tx: %w", err)
+		}
+		return logicdomain.MemoryDeleteResult{
+			NotFoundMemoryIDs: notFoundMemoryIDs,
+		}, nil
+	}
+
+	// Flip active rows to deleted instead of physically removing them so source linkage, audit fields, and later retention governance stay intact.
+	// 将 active 行切换为 deleted 而不是物理删除，保留来源关联、审计字段和后续 retention 治理所需信息。
+	deletedAt = chooseNonZeroTime(deletedAt, time.Now().UTC()).UTC()
+	updateSQL := fmt.Sprintf(`
+UPDATE %s
+SET memory_status = $1,
+    status_reason = $2,
+    updated_at = $3
+WHERE memory_status = $4
+  AND id = ANY($5)
+`, r.memoryNodesTable())
+	if _, err := tx.Exec(
+		callCtx,
+		strings.TrimSpace(updateSQL),
+		logicdomain.MemoryStatusDeleted,
+		strings.TrimSpace(reason),
+		deletedAt,
+		logicdomain.MemoryStatusActive,
+		toInt64List(deletedMemoryIDs),
+	); err != nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("delete postgres memory nodes: %w", err)
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("commit postgres memory delete tx: %w", err)
+	}
+	return logicdomain.MemoryDeleteResult{
+		DeletedMemoryIDs:  deletedMemoryIDs,
+		NotFoundMemoryIDs: notFoundMemoryIDs,
+		DeletedVectorIDs:  normalizeStringList(deletedVectorIDs),
+	}, nil
+}
+
 // pgRowScanner captures the Scan method shared by pgx row implementations so direct-memory upsert helpers can work with both pool and transaction query paths.
 // pgRowScanner 用于抽象 pgx 行对象共享的 Scan 方法，让主动记忆 upsert 辅助函数同时适用于连接池和事务查询路径。
 type pgRowScanner interface {
@@ -682,6 +783,13 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
 	s.ensureMemoryRepo()
 	return s.repos.memory.ApplyDirectMemoryWrite(ctx, session, record, supersededMemoryIDs)
+}
+
+// DeleteMemoryNodes delegates explicit memory-node deletion to the memory repository so combined PostgreSQL storage updates the owning relational row.
+// DeleteMemoryNodes 用于把显式记忆条目删除委托给 memory repository，让 PostgreSQL 组合存储更新拥有该记忆的关系行。
+func (s *Store) DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error) {
+	s.ensureMemoryRepo()
+	return s.repos.memory.DeleteMemoryNodes(ctx, memoryIDs, filter, deletedAt, reason)
 }
 
 // ListProjectMemories delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.

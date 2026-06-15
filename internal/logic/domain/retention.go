@@ -52,6 +52,10 @@ const (
 	// VectorGCJobTypeDirectWriteSupersedeCleanup keeps the stable vector-GC job type used when one direct memory write committed supersede changes but could not delete the obsolete vectors immediately.
 	// VectorGCJobTypeDirectWriteSupersedeCleanup 用于保存主动写记忆已提交 supersede 变更、但无法立即删除旧向量时使用的稳定向量 GC 任务类型。
 	VectorGCJobTypeDirectWriteSupersedeCleanup = "direct_write_superseded_vector_delete"
+
+	// VectorGCJobTypeManualMemoryDelete keeps the stable vector-GC job type used when a manual memory delete committed relational removal but could not delete sidecar vectors immediately.
+	// VectorGCJobTypeManualMemoryDelete 用于保存手工删除记忆已提交关系侧移除、但无法立即删除旁路向量时使用的稳定向量 GC 任务类型。
+	VectorGCJobTypeManualMemoryDelete = "manual_memory_delete_vector_delete"
 )
 
 // MemoryRecycleQuery describes one cold-memory recycle pass, including batch size, timestamps, and protection knobs.

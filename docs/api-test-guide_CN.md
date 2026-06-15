@@ -247,9 +247,11 @@ grpcurl -plaintext `
 - `PreCheckResponse.context_items[]` 当前会返回：
   - `text`
   - `score`
+  - `memory_id`
   - `turn_id`
   - `has_dialogue`
   - `created_datetime`
+  - 其中 `memory_id` 可继续传给 `DeleteMemories`，用于移除误召回或无用的具体记忆条目
   - 其中 `created_datetime` 是按当前运行环境系统本地时间展开的可读值；如果宿主机系统时区变化，历史记录再次测试时这里的显示值也可能跟着变化
 
 ## 十一、ChatCompact
@@ -447,7 +449,29 @@ grpcurl -plaintext `
   - `3 = user`
 - 返回只保留 `memoryId` 与 `deduped`
 
-## 十九、常见错误
+## 十九、DeleteMemories
+
+```powershell
+grpcurl -plaintext `
+  -d '{
+    "userId": 7,
+    "projectId": 9,
+    "memoryIds": [301, 404],
+    "reason": "误写入的无用记忆"
+  }' `
+  127.0.0.1:17625 `
+  vmm.v1.VMMService/DeleteMemories
+```
+
+说明：
+
+- `memoryIds` 最多 `256` 个，且不允许包含 `0`
+- `DeleteMemories` 只把具体 memory node 标记为 `deleted`，不会删除来源 turn / detail
+- SQLite split 模式会同步清理 FTS 索引，并对旁路向量执行尽力删除；失败时进入 Vector GC 重试队列
+- PostgreSQL combined 模式通过关系行状态切换让召回立即不可见
+- 响应中的 `notFoundMemoryIds` 包含不存在、已删除、非 active 或不属于当前 `userId/projectId` 可见范围的 id
+
+## 二十、常见错误
 
 ### 参数错误
 
@@ -468,7 +492,7 @@ grpcurl -plaintext `
 
 - gRPC code：`ResourceExhausted`
 
-## 二十、推荐测试顺序
+## 二十一、推荐测试顺序
 
 建议按这个顺序联调：
 
@@ -484,4 +508,5 @@ grpcurl -plaintext `
 10. `GetProfileNodes / GetProfileBundle`
 11. `ApplyProfileInstruction`
 12. `WriteMemories`
-13. `DeleteProject / DeleteUser / MigrateProject`
+13. `DeleteMemories`
+14. `DeleteProject / DeleteUser / MigrateProject`

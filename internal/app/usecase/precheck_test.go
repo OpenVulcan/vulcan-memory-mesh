@@ -360,6 +360,9 @@ func TestPreCheckExecuteKeepsFallbackSummaryTitlesAlignedWithItems(t *testing.T)
 	if len(result.ContextItems) == 0 || result.ContextItems[0].Title != "混合召回记忆" {
 		t.Fatalf("expected fallback items to expose mixed memory title, got %#v", result.ContextItems)
 	}
+	if result.ContextItems[0].MemoryID != 20 {
+		t.Fatalf("expected fallback items to preserve memory id for downstream memory management, got %#v", result.ContextItems)
+	}
 	if result.ContextItems[0].TurnID != 8 {
 		t.Fatalf("expected fallback items to preserve source turn id for downstream transport, got %#v", result.ContextItems)
 	}
@@ -590,6 +593,9 @@ func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.
 	}
 	if result.ContextItems[0].TurnID != 93 {
 		t.Fatalf("expected final retained item to keep source turn id, got %#v", result.ContextItems)
+	}
+	if result.ContextItems[0].MemoryID != 20 {
+		t.Fatalf("expected final retained item to keep source memory id, got %#v", result.ContextItems)
 	}
 	if result.ContextItems[0].CreatedTimestamp != 1775000005000 {
 		t.Fatalf("expected final retained item to keep created timestamp, got %#v", result.ContextItems)
@@ -2011,6 +2017,12 @@ func (s *stubPreCheckMemories) GetDetails(context.Context, MemoryDetailCommand) 
 // Write 用于在仅测试 Search 的场景下保持桩对象接口完整。
 func (s *stubPreCheckMemories) Write(context.Context, WriteMemoriesCommand) (WriteMemoriesResult, error) {
 	return WriteMemoriesResult{}, nil
+}
+
+// Delete keeps the stub interface-complete for tests that only exercise Search.
+// Delete 用于在仅测试 Search 的场景下保持桩对象接口完整。
+func (s *stubPreCheckMemories) Delete(context.Context, DeleteMemoriesCommand) (DeleteMemoriesResult, error) {
+	return DeleteMemoriesResult{}, nil
 }
 
 // stubPreCheckStore is the relational store double used by pre-check tests.

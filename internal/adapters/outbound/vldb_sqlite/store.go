@@ -2321,6 +2321,93 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 	}, nil
 }
 
+// DeleteMemoryNodes marks active memory rows as deleted inside the provided hierarchy filter while leaving their source turn/detail rows untouched.
+// DeleteMemoryNodes 用于在给定层级过滤范围内把 active 记忆行标记为 deleted，同时保留其来源 turn/detail 行不变。
+func (s *Store) DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error) {
+	memoryIDs = normalizeUint64List(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return logicdomain.MemoryDeleteResult{}, nil
+	}
+	if s == nil || s.database == nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("sqlite memory delete requires one local ffi database")
+	}
+
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	// Load the candidate rows under the write lock so the subsequent status flip uses the same active-row snapshot and cannot race with lifecycle writes.
+	// 在写锁内加载候选行，让后续状态切换使用同一份 active 行快照，避免与生命周期写入发生竞态。
+	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
+SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
+       vector_id, vector_json, source_kind, scope_level, category, abstract, details,
+       memory_status, priority, memory_level, refresh_weight, support_count, rebuttal_count, status_reason,
+       expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
+       recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
+       created_timestamp, updated_timestamp
+FROM vmm_memory_nodes
+WHERE memory_status = ?
+  AND id IN (%s)
+ORDER BY id ASC
+`, sqlUint64List(memoryIDs)), logicdomain.MemoryStatusActive)
+	if err != nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("query sqlite memory nodes for delete: %w", err)
+	}
+
+	eligible := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		record := row.toMemoryNodeRecord()
+		if matchesLexicalMemoryFilter(record, filter) {
+			eligible[record.ID] = record
+		}
+	}
+	deletedMemoryIDs := make([]uint64, 0, len(eligible))
+	notFoundMemoryIDs := make([]uint64, 0, len(memoryIDs))
+	deletedVectorIDs := make([]string, 0, len(eligible))
+	for _, memoryID := range memoryIDs {
+		record, ok := eligible[memoryID]
+		if !ok {
+			notFoundMemoryIDs = append(notFoundMemoryIDs, memoryID)
+			continue
+		}
+		deletedMemoryIDs = append(deletedMemoryIDs, memoryID)
+		if strings.TrimSpace(record.VectorID) != "" {
+			deletedVectorIDs = append(deletedVectorIDs, strings.TrimSpace(record.VectorID))
+		}
+	}
+	if len(deletedMemoryIDs) == 0 {
+		return logicdomain.MemoryDeleteResult{
+			NotFoundMemoryIDs: notFoundMemoryIDs,
+		}, nil
+	}
+
+	// Mark only the scoped active rows as deleted so future recall/detail filters skip them while source turns remain available for audit.
+	// 只把范围内的 active 行标记为 deleted，让后续召回/详情过滤跳过这些记忆，同时保留来源轮次供审计查看。
+	deletedAt = chooseNonZeroTime(deletedAt, time.Now().UTC()).UTC()
+	if err := s.exec(ctx, fmt.Sprintf(`
+UPDATE vmm_memory_nodes
+SET memory_status = ?,
+    status_reason = ?,
+    updated_timestamp = ?
+WHERE memory_status = ?
+  AND id IN (%s)
+`, sqlUint64List(deletedMemoryIDs)),
+		logicdomain.MemoryStatusDeleted,
+		strings.TrimSpace(reason),
+		deletedAt.UnixMilli(),
+		logicdomain.MemoryStatusActive,
+	); err != nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("delete sqlite memory nodes: %w", err)
+	}
+	if err := s.syncMemoryFTSAfterWrite(ctx, nil, deletedMemoryIDs); err != nil {
+		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("sync memory fts after manual delete: %w", err)
+	}
+	return logicdomain.MemoryDeleteResult{
+		DeletedMemoryIDs:  deletedMemoryIDs,
+		NotFoundMemoryIDs: notFoundMemoryIDs,
+		DeletedVectorIDs:  normalizeStringList(deletedVectorIDs),
+	}, nil
+}
+
 // LoadRecentDirectMemoryWrites returns the direct AI-written memory rows created inside one exclusion window so the turn analyzer can avoid duplicate extraction.
 // LoadRecentDirectMemoryWrites 用于返回某个排斥窗口内新建的 AI 主动写记忆行，让 turn analyzer 避免重复提炼。
 func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicdomain.SessionRef, observedAfter, observedBefore time.Time) ([]logicdomain.TurnAnalysisDirectWrite, error) {

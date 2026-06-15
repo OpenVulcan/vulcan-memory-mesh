@@ -36,6 +36,10 @@ const (
 	// maxWriteMemoryItems 用于限制一次主动写入调用最多能写多少条记忆，避免单次工具调用扩散成无限 embedding 工作量。
 	maxWriteMemoryItems = 32
 
+	// maxDeleteMemoryIDs limits one manual delete call so relational locking, FTS cleanup, and vector cleanup stay bounded.
+	// maxDeleteMemoryIDs 用于限制一次手工删除调用最多处理多少条记忆，让关系锁定、FTS 清理和向量清理保持有界。
+	maxDeleteMemoryIDs = 256
+
 	// turnDetailContextRadius keeps three turns before and after each anchor so callers can continue finer follow-up lookups without fetching entire sessions.
 	// turnDetailContextRadius 用于固定返回每个锚点 turn 前后各三轮编号，让调用方无需拉取整条 session 也能继续做更细的后续查询。
 	turnDetailContextRadius = 3
@@ -207,13 +211,31 @@ type WriteMemoriesResult struct {
 	Items []WriteMemoryResultItem
 }
 
+// DeleteMemoriesCommand carries one explicit memory-id batch plus the user/project selectors used to keep deletion inside the caller-visible scope.
+// DeleteMemoriesCommand 用于承载一批明确的 memory id，以及把删除限制在调用方可见范围内所需的 user/project 选择参数。
+type DeleteMemoriesCommand struct {
+	UserID    uint64
+	ProjectID uint64
+	MemoryIDs []uint64
+	Reason    string
+}
+
+// DeleteMemoriesResult returns both successful manual deletes and ids that were missing or outside the resolved user/project scope.
+// DeleteMemoriesResult 用于返回手工删除成功的记忆 id，以及缺失或不属于解析后 user/project 范围的 id。
+type DeleteMemoriesResult struct {
+	DeletedMemoryIDs  []uint64
+	NotFoundMemoryIDs []uint64
+	DeletedVectorRows uint64
+}
+
 // MemoryExecutor groups the active memory-search, detail lookup, and direct-write flows exposed by the inbound gRPC adapter.
-// MemoryExecutor 用于聚合入站 gRPC 适配层对外暴露的主动记忆检索、详情查询和直接写入流程。
+// MemoryExecutor 用于聚合入站 gRPC 适配层对外暴露的主动记忆检索、详情查询、直接写入和显式删除流程。
 type MemoryExecutor interface {
 	Search(ctx context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error)
 	GetTurns(ctx context.Context, cmd TurnDetailCommand) (TurnDetailResult, error)
 	GetDetails(ctx context.Context, cmd MemoryDetailCommand) (MemoryDetailResult, error)
 	Write(ctx context.Context, cmd WriteMemoriesCommand) (WriteMemoriesResult, error)
+	Delete(ctx context.Context, cmd DeleteMemoriesCommand) (DeleteMemoriesResult, error)
 }
 
 // hybridVectorSearchStore defines the optional combined-store fast path that can fuse vector and lexical candidates inside one SQL query before the rest of the ranking pipeline runs.

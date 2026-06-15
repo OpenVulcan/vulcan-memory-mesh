@@ -590,6 +590,44 @@ func TestWriteMemoriesRejectsNilItem(t *testing.T) {
 	}
 }
 
+// TestDeleteMemoriesReturnsDeletedAndMissingIDs verifies the transport forwards manual memory deletes without requiring a session-scoped interceptor.
+// TestDeleteMemoriesReturnsDeletedAndMissingIDs 用于验证传输层会转发手工删除记忆请求，并且不要求走 session 范围拦截器。
+func TestDeleteMemoriesReturnsDeletedAndMissingIDs(t *testing.T) {
+	memory := &stubMemoryExecutor{
+		deleteResult: usecase.DeleteMemoriesResult{
+			DeletedMemoryIDs:  []uint64{301},
+			NotFoundMemoryIDs: []uint64{404},
+			DeletedVectorRows: 1,
+		},
+	}
+	fixture := newTestFixture(t, Dependencies{
+		IDs:    xid.NewGenerator(),
+		Memory: memory,
+	}, testBufSize)
+
+	resp, err := fixture.client.DeleteMemories(context.Background(), &vmmv1.DeleteMemoriesRequest{
+		UserId:    7,
+		ProjectId: 9,
+		MemoryIds: []uint64{301, 404},
+		Reason:    "  无用记忆  ",
+	})
+	if err != nil {
+		t.Fatalf("delete memories: %v", err)
+	}
+	if got := resp.GetDeletedMemoryIds(); len(got) != 1 || got[0] != 301 {
+		t.Fatalf("unexpected deleted ids: %+v", got)
+	}
+	if got := resp.GetNotFoundMemoryIds(); len(got) != 1 || got[0] != 404 {
+		t.Fatalf("unexpected not-found ids: %+v", got)
+	}
+	if resp.GetDeletedVectorRows() != 1 {
+		t.Fatalf("deleted vector rows = %d", resp.GetDeletedVectorRows())
+	}
+	if memory.deleteCmd.UserID != 7 || memory.deleteCmd.ProjectID != 9 || memory.deleteCmd.Reason != "无用记忆" {
+		t.Fatalf("unexpected delete command: %+v", memory.deleteCmd)
+	}
+}
+
 // TestGetProfileBundleReturnsCombinedPrompt verifies the bundle RPC returns the authoritative combined prompt text in full mode.
 // TestGetProfileBundleReturnsCombinedPrompt 用于验证 bundle RPC 在 full 模式下返回权威的组合提示词文本。
 func TestGetProfileBundleReturnsCombinedPrompt(t *testing.T) {
@@ -916,7 +954,7 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 				ShouldInject: true,
 				ContextText:  "项目画像：SQLite schema 13 已迁移",
 				ContextItems: []logicdomain.ContextItem{
-					{Kind: "memory", Title: "混合召回记忆", Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92, TurnID: 41, CreatedTimestamp: 1775000003000, CreatedDateTime: logicdomain.FormatDisplayDateTime(time.UnixMilli(1775000003000))},
+					{Kind: "memory", Title: "混合召回记忆", MemoryID: 201, Text: "请优先检查 FTS 表是否已重建", Source: "memory", Score: 0.92, TurnID: 41, CreatedTimestamp: 1775000003000, CreatedDateTime: logicdomain.FormatDisplayDateTime(time.UnixMilli(1775000003000))},
 				},
 				Degraded: true,
 			}, nil
@@ -939,6 +977,9 @@ func TestPreCheckLogsFullPayloadsWhenDebugSwitchEnabled(t *testing.T) {
 	}
 	if resp.GetContextItems()[0].GetTurnId() != 41 || !resp.GetContextItems()[0].GetHasDialogue() {
 		t.Fatalf("expected grpc context item to expose turn linkage, got %+v", resp.GetContextItems()[0])
+	}
+	if resp.GetContextItems()[0].GetMemoryId() != 201 {
+		t.Fatalf("expected grpc context item to expose memory id, got %+v", resp.GetContextItems()[0])
 	}
 	if resp.GetContextItems()[0].GetCreatedDatetime() != logicdomain.FormatDisplayDateTime(time.UnixMilli(1775000003000)) {
 		t.Fatalf("expected grpc context item to expose created datetime, got %+v", resp.GetContextItems()[0])
@@ -1676,6 +1717,9 @@ type stubMemoryExecutor struct {
 	writeResult  usecase.WriteMemoriesResult
 	writeErr     error
 	writeCmd     usecase.WriteMemoriesCommand
+	deleteResult usecase.DeleteMemoriesResult
+	deleteErr    error
+	deleteCmd    usecase.DeleteMemoriesCommand
 }
 
 // Search returns the canned grouped memory-query result for deterministic transport assertions.
@@ -1701,6 +1745,13 @@ func (s *stubMemoryExecutor) GetDetails(_ context.Context, _ usecase.MemoryDetai
 func (s *stubMemoryExecutor) Write(_ context.Context, cmd usecase.WriteMemoriesCommand) (usecase.WriteMemoriesResult, error) {
 	s.writeCmd = cmd
 	return s.writeResult, s.writeErr
+}
+
+// Delete captures the manual delete command and returns the canned delete result for deterministic transport assertions.
+// Delete 用于捕获手工删除命令，并返回预设删除结果，保证传输层断言稳定。
+func (s *stubMemoryExecutor) Delete(_ context.Context, cmd usecase.DeleteMemoriesCommand) (usecase.DeleteMemoriesResult, error) {
+	s.deleteCmd = cmd
+	return s.deleteResult, s.deleteErr
 }
 
 var _ appports.RequestScopeResolver = stubScopeResolver{}

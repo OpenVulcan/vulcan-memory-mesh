@@ -217,6 +217,7 @@ type SessionRecord struct {
 type ContextItem struct {
 	Kind             string
 	Title            string
+	MemoryID         uint64
 	Text             string
 	Source           string
 	Score            float64

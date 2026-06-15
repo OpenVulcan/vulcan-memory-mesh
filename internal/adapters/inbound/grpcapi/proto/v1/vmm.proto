@@ -69,6 +69,10 @@ service VMMService {
   // WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
   rpc WriteMemories(WriteMemoriesRequest) returns (WriteMemoriesResponse);
 
+  // DeleteMemories marks explicit memory rows as deleted inside the resolved user/project scope while keeping source turn details intact.
+  // DeleteMemories 用于在解析后的 user/project 范围内把明确指定的记忆行标记为 deleted，同时保留来源 turn 详情。
+  rpc DeleteMemories(DeleteMemoriesRequest) returns (DeleteMemoriesResponse);
+
   // ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
   // ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
   rpc ChatCompact(ChatCompactRequest) returns (ChatCompactResponse);
@@ -450,6 +454,24 @@ message WriteMemoriesResponse {
   string trace_id = 2;
 }
 
+// DeleteMemoriesRequest carries an explicit memory-id batch and the caller scope used to prevent cross-user/project deletion.
+// DeleteMemoriesRequest 用于承载一批明确 memory id，以及防止跨 user/project 删除的调用方范围。
+message DeleteMemoriesRequest {
+  uint64 user_id = 1;
+  uint64 project_id = 2;
+  repeated uint64 memory_ids = 3;
+  string reason = 4;
+}
+
+// DeleteMemoriesResponse returns ids that were deleted and ids that were absent or outside the resolved scope.
+// DeleteMemoriesResponse 用于返回已删除的 id，以及不存在或不属于解析范围的 id。
+message DeleteMemoriesResponse {
+  repeated uint64 deleted_memory_ids = 1;
+  repeated uint64 not_found_memory_ids = 2;
+  uint64 deleted_vector_rows = 3;
+  string trace_id = 4;
+}
+
 // PreCheckRecallMode defines which memory-recall strategy one pre-check request wants the server to apply.
 // PreCheckRecallMode 用于定义单次 pre-check 请求希望服务端采用哪一种记忆召回策略。
 enum PreCheckRecallMode {
@@ -495,6 +517,7 @@ message ContextItem {
   uint64 turn_id = 3;
   bool has_dialogue = 4;
   string created_datetime = 5;
+  uint64 memory_id = 6;
 }
 
 // PreCheckResponse returns the injection decision and assembled context payload.

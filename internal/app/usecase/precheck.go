@@ -881,6 +881,7 @@ func buildFallbackContextItems(hits []logicdomain.MemoryHit) []logicdomain.Conte
 			items = append(items, logicdomain.ContextItem{
 				Kind:             "memory",
 				Title:            "混合召回记忆",
+				MemoryID:         logicdomain.MemoryHitMemoryID(hit),
 				Text:             text,
 				Source:           "memory",
 				Score:            hit.Score,

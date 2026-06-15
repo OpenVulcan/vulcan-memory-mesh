@@ -173,6 +173,15 @@ func NormalizeWriteMemoriesRequest(req *vmmv1.WriteMemoriesRequest) {
 	}
 }
 
+// NormalizeDeleteMemoriesRequest trims the optional manual delete reason before validation and use-case dispatch.
+// NormalizeDeleteMemoriesRequest 用于在校验和用例分发前裁剪手工删除记忆的可选原因。
+func NormalizeDeleteMemoriesRequest(req *vmmv1.DeleteMemoriesRequest) {
+	if req == nil {
+		return
+	}
+	req.Reason = strings.TrimSpace(req.GetReason())
+}
+
 // NormalizeChatCompactRequest trims the compact acknowledgement payload before the scope resolver runs.
 // NormalizeChatCompactRequest 用于在范围解析执行前裁剪 compact 确认载荷。
 func NormalizeChatCompactRequest(req *vmmv1.ChatCompactRequest) {
@@ -483,6 +492,32 @@ func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest
 		}
 	}
 	return nil
+}
+
+// ValidateDeleteMemories checks the explicit memory deletion payload before hierarchy resolution and relational locking begin.
+// ValidateDeleteMemories 用于在层级解析和关系锁定开始前校验显式删除记忆载荷。
+func (v *RequestValidator) ValidateDeleteMemories(req *vmmv1.DeleteMemoriesRequest) error {
+	if req == nil {
+		return logicdomain.ValidationError{Field: "delete_memories", Message: "is required"}
+	}
+	if req.GetUserId() == 0 {
+		return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}
+	}
+	if req.GetProjectId() == 0 {
+		return logicdomain.ValidationError{Field: "project_id", Message: "must be a numeric id"}
+	}
+	if len(req.GetMemoryIds()) == 0 {
+		return logicdomain.ValidationError{Field: "memory_ids", Message: "must contain at least one id"}
+	}
+	if len(req.GetMemoryIds()) > 256 {
+		return logicdomain.ValidationError{Field: "memory_ids", Message: "must contain at most 256 ids"}
+	}
+	for idx, memoryID := range req.GetMemoryIds() {
+		if memoryID == 0 {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("memory_ids[%d]", idx), Message: "must be a numeric id"}
+		}
+	}
+	return maxString("reason", req.GetReason(), 1024)
 }
 
 // requireString enforces one non-empty bounded string field.

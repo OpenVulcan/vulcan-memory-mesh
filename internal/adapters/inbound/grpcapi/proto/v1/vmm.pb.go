@@ -2882,6 +2882,146 @@ func (x *WriteMemoriesResponse) GetTraceId() string {
 	return ""
 }
 
+// DeleteMemoriesRequest carries an explicit memory-id batch and the caller scope used to prevent cross-user/project deletion.
+// DeleteMemoriesRequest 用于承载一批明确 memory id，以及防止跨 user/project 删除的调用方范围。
+type DeleteMemoriesRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	UserId        uint64                 `protobuf:"varint,1,opt,name=user_id,json=userId,proto3" json:"user_id,omitempty"`
+	ProjectId     uint64                 `protobuf:"varint,2,opt,name=project_id,json=projectId,proto3" json:"project_id,omitempty"`
+	MemoryIds     []uint64               `protobuf:"varint,3,rep,packed,name=memory_ids,json=memoryIds,proto3" json:"memory_ids,omitempty"`
+	Reason        string                 `protobuf:"bytes,4,opt,name=reason,proto3" json:"reason,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *DeleteMemoriesRequest) Reset() {
+	*x = DeleteMemoriesRequest{}
+	mi := &file_vmm_proto_msgTypes[36]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteMemoriesRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteMemoriesRequest) ProtoMessage() {}
+
+func (x *DeleteMemoriesRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_vmm_proto_msgTypes[36]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteMemoriesRequest.ProtoReflect.Descriptor instead.
+func (*DeleteMemoriesRequest) Descriptor() ([]byte, []int) {
+	return file_vmm_proto_rawDescGZIP(), []int{36}
+}
+
+func (x *DeleteMemoriesRequest) GetUserId() uint64 {
+	if x != nil {
+		return x.UserId
+	}
+	return 0
+}
+
+func (x *DeleteMemoriesRequest) GetProjectId() uint64 {
+	if x != nil {
+		return x.ProjectId
+	}
+	return 0
+}
+
+func (x *DeleteMemoriesRequest) GetMemoryIds() []uint64 {
+	if x != nil {
+		return x.MemoryIds
+	}
+	return nil
+}
+
+func (x *DeleteMemoriesRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+// DeleteMemoriesResponse returns ids that were deleted and ids that were absent or outside the resolved scope.
+// DeleteMemoriesResponse 用于返回已删除的 id，以及不存在或不属于解析范围的 id。
+type DeleteMemoriesResponse struct {
+	state             protoimpl.MessageState `protogen:"open.v1"`
+	DeletedMemoryIds  []uint64               `protobuf:"varint,1,rep,packed,name=deleted_memory_ids,json=deletedMemoryIds,proto3" json:"deleted_memory_ids,omitempty"`
+	NotFoundMemoryIds []uint64               `protobuf:"varint,2,rep,packed,name=not_found_memory_ids,json=notFoundMemoryIds,proto3" json:"not_found_memory_ids,omitempty"`
+	DeletedVectorRows uint64                 `protobuf:"varint,3,opt,name=deleted_vector_rows,json=deletedVectorRows,proto3" json:"deleted_vector_rows,omitempty"`
+	TraceId           string                 `protobuf:"bytes,4,opt,name=trace_id,json=traceId,proto3" json:"trace_id,omitempty"`
+	unknownFields     protoimpl.UnknownFields
+	sizeCache         protoimpl.SizeCache
+}
+
+func (x *DeleteMemoriesResponse) Reset() {
+	*x = DeleteMemoriesResponse{}
+	mi := &file_vmm_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *DeleteMemoriesResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*DeleteMemoriesResponse) ProtoMessage() {}
+
+func (x *DeleteMemoriesResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_vmm_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use DeleteMemoriesResponse.ProtoReflect.Descriptor instead.
+func (*DeleteMemoriesResponse) Descriptor() ([]byte, []int) {
+	return file_vmm_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *DeleteMemoriesResponse) GetDeletedMemoryIds() []uint64 {
+	if x != nil {
+		return x.DeletedMemoryIds
+	}
+	return nil
+}
+
+func (x *DeleteMemoriesResponse) GetNotFoundMemoryIds() []uint64 {
+	if x != nil {
+		return x.NotFoundMemoryIds
+	}
+	return nil
+}
+
+func (x *DeleteMemoriesResponse) GetDeletedVectorRows() uint64 {
+	if x != nil {
+		return x.DeletedVectorRows
+	}
+	return 0
+}
+
+func (x *DeleteMemoriesResponse) GetTraceId() string {
+	if x != nil {
+		return x.TraceId
+	}
+	return ""
+}
+
 type PreCheckRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	SessionId     string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
@@ -2895,7 +3035,7 @@ type PreCheckRequest struct {
 
 func (x *PreCheckRequest) Reset() {
 	*x = PreCheckRequest{}
-	mi := &file_vmm_proto_msgTypes[36]
+	mi := &file_vmm_proto_msgTypes[38]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2907,7 +3047,7 @@ func (x *PreCheckRequest) String() string {
 func (*PreCheckRequest) ProtoMessage() {}
 
 func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[36]
+	mi := &file_vmm_proto_msgTypes[38]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2920,7 +3060,7 @@ func (x *PreCheckRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckRequest.ProtoReflect.Descriptor instead.
 func (*PreCheckRequest) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{36}
+	return file_vmm_proto_rawDescGZIP(), []int{38}
 }
 
 func (x *PreCheckRequest) GetSessionId() string {
@@ -2971,7 +3111,7 @@ type ChatCompactRequest struct {
 
 func (x *ChatCompactRequest) Reset() {
 	*x = ChatCompactRequest{}
-	mi := &file_vmm_proto_msgTypes[37]
+	mi := &file_vmm_proto_msgTypes[39]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -2983,7 +3123,7 @@ func (x *ChatCompactRequest) String() string {
 func (*ChatCompactRequest) ProtoMessage() {}
 
 func (x *ChatCompactRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[37]
+	mi := &file_vmm_proto_msgTypes[39]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -2996,7 +3136,7 @@ func (x *ChatCompactRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompactRequest.ProtoReflect.Descriptor instead.
 func (*ChatCompactRequest) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{37}
+	return file_vmm_proto_rawDescGZIP(), []int{39}
 }
 
 func (x *ChatCompactRequest) GetSessionId() string {
@@ -3034,7 +3174,7 @@ type ChatCompactResponse struct {
 
 func (x *ChatCompactResponse) Reset() {
 	*x = ChatCompactResponse{}
-	mi := &file_vmm_proto_msgTypes[38]
+	mi := &file_vmm_proto_msgTypes[40]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3046,7 +3186,7 @@ func (x *ChatCompactResponse) String() string {
 func (*ChatCompactResponse) ProtoMessage() {}
 
 func (x *ChatCompactResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[38]
+	mi := &file_vmm_proto_msgTypes[40]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3059,7 +3199,7 @@ func (x *ChatCompactResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ChatCompactResponse.ProtoReflect.Descriptor instead.
 func (*ChatCompactResponse) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{38}
+	return file_vmm_proto_rawDescGZIP(), []int{40}
 }
 
 func (x *ChatCompactResponse) GetAccepted() bool {
@@ -3099,13 +3239,14 @@ type ContextItem struct {
 	TurnId          uint64                 `protobuf:"varint,3,opt,name=turn_id,json=turnId,proto3" json:"turn_id,omitempty"`
 	HasDialogue     bool                   `protobuf:"varint,4,opt,name=has_dialogue,json=hasDialogue,proto3" json:"has_dialogue,omitempty"`
 	CreatedDatetime string                 `protobuf:"bytes,5,opt,name=created_datetime,json=createdDatetime,proto3" json:"created_datetime,omitempty"`
+	MemoryId        uint64                 `protobuf:"varint,6,opt,name=memory_id,json=memoryId,proto3" json:"memory_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache
 }
 
 func (x *ContextItem) Reset() {
 	*x = ContextItem{}
-	mi := &file_vmm_proto_msgTypes[39]
+	mi := &file_vmm_proto_msgTypes[41]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3117,7 +3258,7 @@ func (x *ContextItem) String() string {
 func (*ContextItem) ProtoMessage() {}
 
 func (x *ContextItem) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[39]
+	mi := &file_vmm_proto_msgTypes[41]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3130,7 +3271,7 @@ func (x *ContextItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ContextItem.ProtoReflect.Descriptor instead.
 func (*ContextItem) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{39}
+	return file_vmm_proto_rawDescGZIP(), []int{41}
 }
 
 func (x *ContextItem) GetText() string {
@@ -3168,6 +3309,13 @@ func (x *ContextItem) GetCreatedDatetime() string {
 	return ""
 }
 
+func (x *ContextItem) GetMemoryId() uint64 {
+	if x != nil {
+		return x.MemoryId
+	}
+	return 0
+}
+
 // PreCheckResponse returns the injection decision and assembled context payload.
 // PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
 type PreCheckResponse struct {
@@ -3182,7 +3330,7 @@ type PreCheckResponse struct {
 
 func (x *PreCheckResponse) Reset() {
 	*x = PreCheckResponse{}
-	mi := &file_vmm_proto_msgTypes[40]
+	mi := &file_vmm_proto_msgTypes[42]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3194,7 +3342,7 @@ func (x *PreCheckResponse) String() string {
 func (*PreCheckResponse) ProtoMessage() {}
 
 func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[40]
+	mi := &file_vmm_proto_msgTypes[42]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3207,7 +3355,7 @@ func (x *PreCheckResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PreCheckResponse.ProtoReflect.Descriptor instead.
 func (*PreCheckResponse) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{40}
+	return file_vmm_proto_rawDescGZIP(), []int{42}
 }
 
 func (x *PreCheckResponse) GetShouldInject() bool {
@@ -3250,7 +3398,7 @@ type PostActionTimelineItem struct {
 
 func (x *PostActionTimelineItem) Reset() {
 	*x = PostActionTimelineItem{}
-	mi := &file_vmm_proto_msgTypes[41]
+	mi := &file_vmm_proto_msgTypes[43]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3262,7 +3410,7 @@ func (x *PostActionTimelineItem) String() string {
 func (*PostActionTimelineItem) ProtoMessage() {}
 
 func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[41]
+	mi := &file_vmm_proto_msgTypes[43]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3275,7 +3423,7 @@ func (x *PostActionTimelineItem) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionTimelineItem.ProtoReflect.Descriptor instead.
 func (*PostActionTimelineItem) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{41}
+	return file_vmm_proto_rawDescGZIP(), []int{43}
 }
 
 func (x *PostActionTimelineItem) GetType() string {
@@ -3308,7 +3456,7 @@ type PostActionRequest struct {
 
 func (x *PostActionRequest) Reset() {
 	*x = PostActionRequest{}
-	mi := &file_vmm_proto_msgTypes[42]
+	mi := &file_vmm_proto_msgTypes[44]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3320,7 +3468,7 @@ func (x *PostActionRequest) String() string {
 func (*PostActionRequest) ProtoMessage() {}
 
 func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[42]
+	mi := &file_vmm_proto_msgTypes[44]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3333,7 +3481,7 @@ func (x *PostActionRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionRequest.ProtoReflect.Descriptor instead.
 func (*PostActionRequest) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{42}
+	return file_vmm_proto_rawDescGZIP(), []int{44}
 }
 
 func (x *PostActionRequest) GetSessionId() string {
@@ -3390,7 +3538,7 @@ type PostActionResponse struct {
 
 func (x *PostActionResponse) Reset() {
 	*x = PostActionResponse{}
-	mi := &file_vmm_proto_msgTypes[43]
+	mi := &file_vmm_proto_msgTypes[45]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3402,7 +3550,7 @@ func (x *PostActionResponse) String() string {
 func (*PostActionResponse) ProtoMessage() {}
 
 func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_vmm_proto_msgTypes[43]
+	mi := &file_vmm_proto_msgTypes[45]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3415,7 +3563,7 @@ func (x *PostActionResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use PostActionResponse.ProtoReflect.Descriptor instead.
 func (*PostActionResponse) Descriptor() ([]byte, []int) {
-	return file_vmm_proto_rawDescGZIP(), []int{43}
+	return file_vmm_proto_rawDescGZIP(), []int{45}
 }
 
 func (x *PostActionResponse) GetAccepted() bool {
@@ -3649,7 +3797,19 @@ const file_vmm_proto_rawDesc = "" +
 	"\adeduped\x18\x02 \x01(\bR\adeduped\"g\n" +
 	"\x15WriteMemoriesResponse\x123\n" +
 	"\x05items\x18\x01 \x03(\v2\x1d.vmm.v1.WriteMemoryResultItemR\x05items\x12\x19\n" +
-	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\xc8\x01\n" +
+	"\btrace_id\x18\x02 \x01(\tR\atraceId\"\x86\x01\n" +
+	"\x15DeleteMemoriesRequest\x12\x17\n" +
+	"\auser_id\x18\x01 \x01(\x04R\x06userId\x12\x1d\n" +
+	"\n" +
+	"project_id\x18\x02 \x01(\x04R\tprojectId\x12\x1d\n" +
+	"\n" +
+	"memory_ids\x18\x03 \x03(\x04R\tmemoryIds\x12\x16\n" +
+	"\x06reason\x18\x04 \x01(\tR\x06reason\"\xc2\x01\n" +
+	"\x16DeleteMemoriesResponse\x12,\n" +
+	"\x12deleted_memory_ids\x18\x01 \x03(\x04R\x10deletedMemoryIds\x12/\n" +
+	"\x14not_found_memory_ids\x18\x02 \x03(\x04R\x11notFoundMemoryIds\x12.\n" +
+	"\x13deleted_vector_rows\x18\x03 \x01(\x04R\x11deletedVectorRows\x12\x19\n" +
+	"\btrace_id\x18\x04 \x01(\tR\atraceId\"\xc8\x01\n" +
 	"\x0fPreCheckRequest\x12\x1d\n" +
 	"\n" +
 	"session_id\x18\x01 \x01(\tR\tsessionId\x12\x17\n" +
@@ -3669,13 +3829,14 @@ const file_vmm_proto_rawDesc = "" +
 	"\baccepted\x18\x01 \x01(\bR\baccepted\x12\x18\n" +
 	"\aupdated\x18\x02 \x01(\bR\aupdated\x12*\n" +
 	"\x11compacted_turn_id\x18\x03 \x01(\x04R\x0fcompactedTurnId\x12\x19\n" +
-	"\btrace_id\x18\x04 \x01(\tR\atraceId\"\x9e\x01\n" +
+	"\btrace_id\x18\x04 \x01(\tR\atraceId\"\xbb\x01\n" +
 	"\vContextItem\x12\x12\n" +
 	"\x04text\x18\x01 \x01(\tR\x04text\x12\x14\n" +
 	"\x05score\x18\x02 \x01(\x01R\x05score\x12\x17\n" +
 	"\aturn_id\x18\x03 \x01(\x04R\x06turnId\x12!\n" +
 	"\fhas_dialogue\x18\x04 \x01(\bR\vhasDialogue\x12)\n" +
-	"\x10created_datetime\x18\x05 \x01(\tR\x0fcreatedDatetime\"\xa8\x01\n" +
+	"\x10created_datetime\x18\x05 \x01(\tR\x0fcreatedDatetime\x12\x1b\n" +
+	"\tmemory_id\x18\x06 \x01(\x04R\bmemoryId\"\xa8\x01\n" +
 	"\x10PreCheckResponse\x12#\n" +
 	"\rshould_inject\x18\x01 \x01(\bR\fshouldInject\x128\n" +
 	"\rcontext_items\x18\x02 \x03(\v2\x13.vmm.v1.ContextItemR\fcontextItems\x12\x1a\n" +
@@ -3715,8 +3876,7 @@ const file_vmm_proto_rawDesc = "" +
 	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x02*a\n" +
 	"\x12PreCheckRecallMode\x12 \n" +
 	"\x1cPRE_CHECK_RECALL_MODE_LEGACY\x10\x00\x12)\n" +
-	"%PRE_CHECK_RECALL_MODE_SESSION_COMPACT\x10\x012\xf8\n" +
-	"\n" +
+	"%PRE_CHECK_RECALL_MODE_SESSION_COMPACT\x10\x012\xc9\v\n" +
 	"\n" +
 	"VMMService\x12:\n" +
 	"\aHealthz\x12\x16.google.protobuf.Empty\x1a\x17.vmm.v1.HealthzResponse\x12D\n" +
@@ -3734,7 +3894,8 @@ const file_vmm_proto_rawDesc = "" +
 	"\x17ApplyProfileInstruction\x12&.vmm.v1.ApplyProfileInstructionRequest\x1a'.vmm.v1.ApplyProfileInstructionResponse\x12[\n" +
 	"\x12SearchMemoryEvents\x12!.vmm.v1.SearchMemoryEventsRequest\x1a\".vmm.v1.SearchMemoryEventsResponse\x12O\n" +
 	"\x0eGetTurnDetails\x12\x1d.vmm.v1.GetTurnDetailsRequest\x1a\x1e.vmm.v1.GetTurnDetailsResponse\x12L\n" +
-	"\rWriteMemories\x12\x1c.vmm.v1.WriteMemoriesRequest\x1a\x1d.vmm.v1.WriteMemoriesResponse\x12F\n" +
+	"\rWriteMemories\x12\x1c.vmm.v1.WriteMemoriesRequest\x1a\x1d.vmm.v1.WriteMemoriesResponse\x12O\n" +
+	"\x0eDeleteMemories\x12\x1d.vmm.v1.DeleteMemoriesRequest\x1a\x1e.vmm.v1.DeleteMemoriesResponse\x12F\n" +
 	"\vChatCompact\x12\x1a.vmm.v1.ChatCompactRequest\x1a\x1b.vmm.v1.ChatCompactResponse\x12=\n" +
 	"\bPreCheck\x12\x17.vmm.v1.PreCheckRequest\x1a\x18.vmm.v1.PreCheckResponse\x12C\n" +
 	"\n" +
@@ -3753,7 +3914,7 @@ func file_vmm_proto_rawDescGZIP() []byte {
 }
 
 var file_vmm_proto_enumTypes = make([]protoimpl.EnumInfo, 4)
-var file_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 44)
+var file_vmm_proto_msgTypes = make([]protoimpl.MessageInfo, 46)
 var file_vmm_proto_goTypes = []any{
 	(ProfileTarget)(0),                      // 0: vmm.v1.ProfileTarget
 	(ProfileNodeSourceKind)(0),              // 1: vmm.v1.ProfileNodeSourceKind
@@ -3795,15 +3956,17 @@ var file_vmm_proto_goTypes = []any{
 	(*WriteMemoriesRequest)(nil),            // 37: vmm.v1.WriteMemoriesRequest
 	(*WriteMemoryResultItem)(nil),           // 38: vmm.v1.WriteMemoryResultItem
 	(*WriteMemoriesResponse)(nil),           // 39: vmm.v1.WriteMemoriesResponse
-	(*PreCheckRequest)(nil),                 // 40: vmm.v1.PreCheckRequest
-	(*ChatCompactRequest)(nil),              // 41: vmm.v1.ChatCompactRequest
-	(*ChatCompactResponse)(nil),             // 42: vmm.v1.ChatCompactResponse
-	(*ContextItem)(nil),                     // 43: vmm.v1.ContextItem
-	(*PreCheckResponse)(nil),                // 44: vmm.v1.PreCheckResponse
-	(*PostActionTimelineItem)(nil),          // 45: vmm.v1.PostActionTimelineItem
-	(*PostActionRequest)(nil),               // 46: vmm.v1.PostActionRequest
-	(*PostActionResponse)(nil),              // 47: vmm.v1.PostActionResponse
-	(*emptypb.Empty)(nil),                   // 48: google.protobuf.Empty
+	(*DeleteMemoriesRequest)(nil),           // 40: vmm.v1.DeleteMemoriesRequest
+	(*DeleteMemoriesResponse)(nil),          // 41: vmm.v1.DeleteMemoriesResponse
+	(*PreCheckRequest)(nil),                 // 42: vmm.v1.PreCheckRequest
+	(*ChatCompactRequest)(nil),              // 43: vmm.v1.ChatCompactRequest
+	(*ChatCompactResponse)(nil),             // 44: vmm.v1.ChatCompactResponse
+	(*ContextItem)(nil),                     // 45: vmm.v1.ContextItem
+	(*PreCheckResponse)(nil),                // 46: vmm.v1.PreCheckResponse
+	(*PostActionTimelineItem)(nil),          // 47: vmm.v1.PostActionTimelineItem
+	(*PostActionRequest)(nil),               // 48: vmm.v1.PostActionRequest
+	(*PostActionResponse)(nil),              // 49: vmm.v1.PostActionResponse
+	(*emptypb.Empty)(nil),                   // 50: google.protobuf.Empty
 }
 var file_vmm_proto_depIdxs = []int32{
 	5,  // 0: vmm.v1.ListProjectsResponse.projects:type_name -> vmm.v1.ProjectEntry
@@ -3826,21 +3989,21 @@ var file_vmm_proto_depIdxs = []int32{
 	22, // 17: vmm.v1.ApplyProfileInstructionResponse.retired_nodes:type_name -> vmm.v1.RetiredProfileNodeEntry
 	30, // 18: vmm.v1.MemorySearchGroupResult.hits:type_name -> vmm.v1.MemorySearchHit
 	31, // 19: vmm.v1.SearchMemoryEventsResponse.results:type_name -> vmm.v1.MemorySearchGroupResult
-	45, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	47, // 20: vmm.v1.TurnDetailEntry.timeline:type_name -> vmm.v1.PostActionTimelineItem
 	34, // 21: vmm.v1.GetTurnDetailsResponse.turns:type_name -> vmm.v1.TurnDetailEntry
 	36, // 22: vmm.v1.WriteMemoriesRequest.items:type_name -> vmm.v1.WriteMemoryItem
 	38, // 23: vmm.v1.WriteMemoriesResponse.items:type_name -> vmm.v1.WriteMemoryResultItem
 	3,  // 24: vmm.v1.PreCheckRequest.recall_mode:type_name -> vmm.v1.PreCheckRecallMode
-	43, // 25: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
-	45, // 26: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
-	48, // 27: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
-	48, // 28: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
+	45, // 25: vmm.v1.PreCheckResponse.context_items:type_name -> vmm.v1.ContextItem
+	47, // 26: vmm.v1.PostActionRequest.timeline:type_name -> vmm.v1.PostActionTimelineItem
+	50, // 27: vmm.v1.VMMService.Healthz:input_type -> google.protobuf.Empty
+	50, // 28: vmm.v1.VMMService.ListProjects:input_type -> google.protobuf.Empty
 	8,  // 29: vmm.v1.VMMService.ResolveProject:input_type -> vmm.v1.ResolveProjectRequest
 	10, // 30: vmm.v1.VMMService.EnsureProject:input_type -> vmm.v1.EnsureProjectRequest
 	12, // 31: vmm.v1.VMMService.DeleteProject:input_type -> vmm.v1.DeleteProjectRequest
 	14, // 32: vmm.v1.VMMService.MigrateProject:input_type -> vmm.v1.MigrateProjectRequest
 	16, // 33: vmm.v1.VMMService.ResolveUser:input_type -> vmm.v1.ResolveUserRequest
-	48, // 34: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
+	50, // 34: vmm.v1.VMMService.ListUsers:input_type -> google.protobuf.Empty
 	19, // 35: vmm.v1.VMMService.DeleteUser:input_type -> vmm.v1.DeleteUserRequest
 	23, // 36: vmm.v1.VMMService.GetProfileNodes:input_type -> vmm.v1.GetProfileNodesRequest
 	25, // 37: vmm.v1.VMMService.GetProfileBundle:input_type -> vmm.v1.GetProfileBundleRequest
@@ -3848,29 +4011,31 @@ var file_vmm_proto_depIdxs = []int32{
 	29, // 39: vmm.v1.VMMService.SearchMemoryEvents:input_type -> vmm.v1.SearchMemoryEventsRequest
 	33, // 40: vmm.v1.VMMService.GetTurnDetails:input_type -> vmm.v1.GetTurnDetailsRequest
 	37, // 41: vmm.v1.VMMService.WriteMemories:input_type -> vmm.v1.WriteMemoriesRequest
-	41, // 42: vmm.v1.VMMService.ChatCompact:input_type -> vmm.v1.ChatCompactRequest
-	40, // 43: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
-	46, // 44: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
-	4,  // 45: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
-	7,  // 46: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
-	9,  // 47: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
-	11, // 48: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
-	13, // 49: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
-	15, // 50: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
-	17, // 51: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
-	18, // 52: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
-	20, // 53: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
-	24, // 54: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
-	26, // 55: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
-	28, // 56: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
-	32, // 57: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
-	35, // 58: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
-	39, // 59: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
-	42, // 60: vmm.v1.VMMService.ChatCompact:output_type -> vmm.v1.ChatCompactResponse
-	44, // 61: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
-	47, // 62: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
-	45, // [45:63] is the sub-list for method output_type
-	27, // [27:45] is the sub-list for method input_type
+	40, // 42: vmm.v1.VMMService.DeleteMemories:input_type -> vmm.v1.DeleteMemoriesRequest
+	43, // 43: vmm.v1.VMMService.ChatCompact:input_type -> vmm.v1.ChatCompactRequest
+	42, // 44: vmm.v1.VMMService.PreCheck:input_type -> vmm.v1.PreCheckRequest
+	48, // 45: vmm.v1.VMMService.PostAction:input_type -> vmm.v1.PostActionRequest
+	4,  // 46: vmm.v1.VMMService.Healthz:output_type -> vmm.v1.HealthzResponse
+	7,  // 47: vmm.v1.VMMService.ListProjects:output_type -> vmm.v1.ListProjectsResponse
+	9,  // 48: vmm.v1.VMMService.ResolveProject:output_type -> vmm.v1.ResolveProjectResponse
+	11, // 49: vmm.v1.VMMService.EnsureProject:output_type -> vmm.v1.EnsureProjectResponse
+	13, // 50: vmm.v1.VMMService.DeleteProject:output_type -> vmm.v1.DeleteProjectResponse
+	15, // 51: vmm.v1.VMMService.MigrateProject:output_type -> vmm.v1.MigrateProjectResponse
+	17, // 52: vmm.v1.VMMService.ResolveUser:output_type -> vmm.v1.ResolveUserResponse
+	18, // 53: vmm.v1.VMMService.ListUsers:output_type -> vmm.v1.ListUsersResponse
+	20, // 54: vmm.v1.VMMService.DeleteUser:output_type -> vmm.v1.DeleteUserResponse
+	24, // 55: vmm.v1.VMMService.GetProfileNodes:output_type -> vmm.v1.GetProfileNodesResponse
+	26, // 56: vmm.v1.VMMService.GetProfileBundle:output_type -> vmm.v1.GetProfileBundleResponse
+	28, // 57: vmm.v1.VMMService.ApplyProfileInstruction:output_type -> vmm.v1.ApplyProfileInstructionResponse
+	32, // 58: vmm.v1.VMMService.SearchMemoryEvents:output_type -> vmm.v1.SearchMemoryEventsResponse
+	35, // 59: vmm.v1.VMMService.GetTurnDetails:output_type -> vmm.v1.GetTurnDetailsResponse
+	39, // 60: vmm.v1.VMMService.WriteMemories:output_type -> vmm.v1.WriteMemoriesResponse
+	41, // 61: vmm.v1.VMMService.DeleteMemories:output_type -> vmm.v1.DeleteMemoriesResponse
+	44, // 62: vmm.v1.VMMService.ChatCompact:output_type -> vmm.v1.ChatCompactResponse
+	46, // 63: vmm.v1.VMMService.PreCheck:output_type -> vmm.v1.PreCheckResponse
+	49, // 64: vmm.v1.VMMService.PostAction:output_type -> vmm.v1.PostActionResponse
+	46, // [46:65] is the sub-list for method output_type
+	27, // [27:46] is the sub-list for method input_type
 	27, // [27:27] is the sub-list for extension type_name
 	27, // [27:27] is the sub-list for extension extendee
 	0,  // [0:27] is the sub-list for field type_name
@@ -3888,7 +4053,7 @@ func file_vmm_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_vmm_proto_rawDesc), len(file_vmm_proto_rawDesc)),
 			NumEnums:      4,
-			NumMessages:   44,
+			NumMessages:   46,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

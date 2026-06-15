@@ -35,6 +35,7 @@ const (
 	VMMService_SearchMemoryEvents_FullMethodName      = "/vmm.v1.VMMService/SearchMemoryEvents"
 	VMMService_GetTurnDetails_FullMethodName          = "/vmm.v1.VMMService/GetTurnDetails"
 	VMMService_WriteMemories_FullMethodName           = "/vmm.v1.VMMService/WriteMemories"
+	VMMService_DeleteMemories_FullMethodName          = "/vmm.v1.VMMService/DeleteMemories"
 	VMMService_ChatCompact_FullMethodName             = "/vmm.v1.VMMService/ChatCompact"
 	VMMService_PreCheck_FullMethodName                = "/vmm.v1.VMMService/PreCheck"
 	VMMService_PostAction_FullMethodName              = "/vmm.v1.VMMService/PostAction"
@@ -92,6 +93,9 @@ type VMMServiceClient interface {
 	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
 	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
 	WriteMemories(ctx context.Context, in *WriteMemoriesRequest, opts ...grpc.CallOption) (*WriteMemoriesResponse, error)
+	// DeleteMemories marks explicit memory rows as deleted inside the resolved user/project scope while keeping source turn details intact.
+	// DeleteMemories 用于在解析后的 user/project 范围内把明确指定的记忆行标记为 deleted，同时保留来源 turn 详情。
+	DeleteMemories(ctx context.Context, in *DeleteMemoriesRequest, opts ...grpc.CallOption) (*DeleteMemoriesResponse, error)
 	// ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
 	// ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
 	ChatCompact(ctx context.Context, in *ChatCompactRequest, opts ...grpc.CallOption) (*ChatCompactResponse, error)
@@ -261,6 +265,16 @@ func (c *vMMServiceClient) WriteMemories(ctx context.Context, in *WriteMemoriesR
 	return out, nil
 }
 
+func (c *vMMServiceClient) DeleteMemories(ctx context.Context, in *DeleteMemoriesRequest, opts ...grpc.CallOption) (*DeleteMemoriesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteMemoriesResponse)
+	err := c.cc.Invoke(ctx, VMMService_DeleteMemories_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *vMMServiceClient) ChatCompact(ctx context.Context, in *ChatCompactRequest, opts ...grpc.CallOption) (*ChatCompactResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ChatCompactResponse)
@@ -343,6 +357,9 @@ type VMMServiceServer interface {
 	// WriteMemories persists one batch of direct AI-written memory rows inside the resolved scope and returns only the created or deduplicated memory ids.
 	// WriteMemories 用于在已解析范围内持久化一批 AI 主动写入的记忆行，并只返回新建或复用的 memory id。
 	WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error)
+	// DeleteMemories marks explicit memory rows as deleted inside the resolved user/project scope while keeping source turn details intact.
+	// DeleteMemories 用于在解析后的 user/project 范围内把明确指定的记忆行标记为 deleted，同时保留来源 turn 详情。
+	DeleteMemories(context.Context, *DeleteMemoriesRequest) (*DeleteMemoriesResponse, error)
 	// ChatCompact acknowledges that the current resolved session has been compacted, allowing later pre-check recall to reopen only the compacted-away turn history.
 	// ChatCompact 用于确认当前已解析 session 已执行压缩，让后续 pre-check 只重新开放被压缩掉的历史 turn 检索。
 	ChatCompact(context.Context, *ChatCompactRequest) (*ChatCompactResponse, error)
@@ -406,6 +423,9 @@ func (UnimplementedVMMServiceServer) GetTurnDetails(context.Context, *GetTurnDet
 }
 func (UnimplementedVMMServiceServer) WriteMemories(context.Context, *WriteMemoriesRequest) (*WriteMemoriesResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method WriteMemories not implemented")
+}
+func (UnimplementedVMMServiceServer) DeleteMemories(context.Context, *DeleteMemoriesRequest) (*DeleteMemoriesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteMemories not implemented")
 }
 func (UnimplementedVMMServiceServer) ChatCompact(context.Context, *ChatCompactRequest) (*ChatCompactResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ChatCompact not implemented")
@@ -707,6 +727,24 @@ func _VMMService_WriteMemories_Handler(srv interface{}, ctx context.Context, dec
 	return interceptor(ctx, in, info, handler)
 }
 
+func _VMMService_DeleteMemories_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteMemoriesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(VMMServiceServer).DeleteMemories(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: VMMService_DeleteMemories_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(VMMServiceServer).DeleteMemories(ctx, req.(*DeleteMemoriesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _VMMService_ChatCompact_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ChatCompactRequest)
 	if err := dec(in); err != nil {
@@ -827,6 +865,10 @@ var VMMService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "WriteMemories",
 			Handler:    _VMMService_WriteMemories_Handler,
+		},
+		{
+			MethodName: "DeleteMemories",
+			Handler:    _VMMService_DeleteMemories_Handler,
 		},
 		{
 			MethodName: "ChatCompact",

@@ -190,6 +190,14 @@ type DirectMemoryWriteApplyResult struct {
 	SupersededVectorIDs []string
 }
 
+// MemoryDeleteResult stores the relational outcome of one manual memory delete before the use case performs best-effort sidecar vector cleanup.
+// MemoryDeleteResult 用于保存一次手工删除具体记忆条目的关系侧结果，供用例随后执行旁路向量的尽力清理。
+type MemoryDeleteResult struct {
+	DeletedMemoryIDs  []uint64
+	NotFoundMemoryIDs []uint64
+	DeletedVectorIDs  []string
+}
+
 // MemorySearchRecord stores one unified search hit after vector recall has been enriched with relational memory metadata.
 // MemorySearchRecord 用于保存一条经过关系层补全后的统一记忆搜索命中。
 type MemorySearchRecord struct {

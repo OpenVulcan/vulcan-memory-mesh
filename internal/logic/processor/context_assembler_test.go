@@ -27,6 +27,9 @@ func TestContextAssemblerKeepsMemoryTitlesAligned(t *testing.T) {
 	if items[0].Title != "混合召回记忆" || items[0].Source != "memory" {
 		t.Fatalf("expected shared assembler memory item to expose mixed-memory title/source, got %#v", items[0])
 	}
+	if items[0].MemoryID != 20 {
+		t.Fatalf("expected shared assembler memory item to expose memory id, got %#v", items[0])
+	}
 	if items[0].TurnID != 88 {
 		t.Fatalf("expected shared assembler memory item to expose source turn id, got %#v", items[0])
 	}
