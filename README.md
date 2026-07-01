@@ -552,6 +552,46 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `output/bin/vmm-migrate.exe`：一次性维护工具
 - `output/bin/vmm-pii-tester.exe`：PII 规则测试器
 
+### 注册为系统服务
+
+`vmm-local` 支持自注册为 Windows / Linux / macOS 系统服务。服务注册命令只接受一个可选服务名，不传时默认使用 `VulcanMemoryMesh`；服务启动参数不会额外携带 `-config` 或其他运行时配置。
+
+```powershell
+.\make.ps1 build
+.\output\bin\vmm-local.exe service install
+.\output\bin\vmm-local.exe service start
+```
+
+如果需要自定义服务名，只把服务名作为最后一个参数传入：
+
+```powershell
+.\output\bin\vmm-local.exe service install VMMLocal
+.\output\bin\vmm-local.exe service start VMMLocal
+```
+
+服务生命周期命令：
+
+```text
+vmm-local service install [service-name]
+vmm-local service uninstall [service-name]
+vmm-local service start [service-name]
+vmm-local service stop [service-name]
+vmm-local service status [service-name]
+```
+
+平台行为：
+
+- Windows：通过 Windows Service Control Manager 注册，服务启动时会进入原生 SCM 托管模式。
+- Linux：写入 `/etc/systemd/system/<service-name>.service`，并执行 `systemctl daemon-reload` 与 `systemctl enable`。
+- macOS：写入 `/Library/LaunchDaemons/<service-name>.plist`，并通过 `launchctl` 注册为系统守护进程。
+
+注意：
+
+- 注册、卸载、启动和停止系统服务通常需要管理员 / root 权限。
+- 服务运行时会自动把工作目录切到 `output/bin/`，保持与正式手工启动规则一致。
+- 服务不传递 `-config`，因此配置加载顺序仍是：打包配置 `output/configs/` 加上服务运行账户的默认用户覆盖目录 `~/.vmm`。Windows 默认服务账户、Linux systemd system unit 和 macOS LaunchDaemon 往往不是当前交互式登录用户。
+- 如果配置文件中引用了 `OPENROUTER_KEY`、`BAILIAN_API_KEY` 等环境变量，需要确保服务运行账户能读取这些系统环境变量。
+
 ### 用户覆盖目录
 
 ```powershell

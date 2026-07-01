@@ -994,6 +994,56 @@ func TestApplicationRunDrainsShutdownsAfterExternalServerStop(t *testing.T) {
 	}
 }
 
+// TestApplicationRunWithReadySignalsAfterListen verifies service managers only receive readiness after the TCP listener is actually bound.
+// TestApplicationRunWithReadySignalsAfterListen 用于验证服务管理器只会在 TCP 监听器真实绑定后收到就绪信号。
+func TestApplicationRunWithReadySignalsAfterListen(t *testing.T) {
+	probe, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("reserve listen addr: %v", err)
+	}
+	addr := probe.Addr().String()
+	_ = probe.Close()
+
+	app := &Application{
+		Config: config.DefaultLocal(),
+		Logger: logx.Default(),
+		Server: grpc.NewServer(),
+	}
+	app.Config.GRPC.ListenAddr = addr
+
+	readyCh := make(chan struct{}, 1)
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- app.RunWithReady(context.Background(), func() {
+			readyCh <- struct{}{}
+		})
+	}()
+
+	select {
+	case <-readyCh:
+	case err := <-runErrCh:
+		t.Fatalf("run returned before readiness: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("ready callback was not invoked")
+	}
+
+	conn, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+	if err != nil {
+		t.Fatalf("expected listener to be reachable after ready callback: %v", err)
+	}
+	_ = conn.Close()
+
+	app.Server.Stop()
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("run after stop: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not return after stop")
+	}
+}
+
 // TestApplicationRunAllowsNilLogger verifies exported startup still remains usable when direct tests or partial runtime assembly omit the logger field.
 // TestApplicationRunAllowsNilLogger 用于验证当直接测试或部分运行时装配遗漏 logger 字段时，导出的启动入口仍然可用，不会因为记录启动日志而直接 panic。
 func TestApplicationRunAllowsNilLogger(t *testing.T) {

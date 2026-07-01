@@ -126,6 +126,12 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 // Run starts the gRPC server and coordinates graceful shutdown against context cancellation, OS signals, and serve failures.
 // Run 用于启动 gRPC 服务，并在上下文取消、系统信号和服务错误之间协调优雅停机。
 func (a *Application) Run(ctx context.Context) error {
+	return a.RunWithReady(ctx, nil)
+}
+
+// RunWithReady starts the gRPC server and invokes ready after the listener is bound so service managers can report accurate startup state.
+// RunWithReady 用于启动 gRPC 服务，并在监听器绑定成功后调用 ready，让服务管理器可以报告准确的启动状态。
+func (a *Application) RunWithReady(ctx context.Context, ready func()) error {
 	// Fail fast on obviously incomplete runtime state so callers receive one deterministic error instead of a goroutine panic from grpc.Server.
 	// 对明显不完整的运行时状态提前失败，让调用方拿到确定性错误，而不是在 goroutine 里被 grpc.Server 触发 panic。
 	if a == nil {
@@ -148,6 +154,9 @@ func (a *Application) Run(ctx context.Context) error {
 			return
 		}
 		a.Logger.Info("grpc server listening", "addr", listener.Addr().String())
+		if ready != nil {
+			ready()
+		}
 		if err := a.Server.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			errCh <- err
 			return
