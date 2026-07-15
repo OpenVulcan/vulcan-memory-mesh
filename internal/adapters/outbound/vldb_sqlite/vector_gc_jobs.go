@@ -113,7 +113,7 @@ func (s *Store) ClaimPendingVectorGCJobs(ctx context.Context, dueBefore, claimUn
 	if !s.hasSQLiteStore() {
 		return nil, fmt.Errorf("sqlite store is not initialized")
 	}
-	limit = normalizeSQLiteRetentionBatchLimit(limit, 128)
+	limit = storageutil.PositiveOrDefault(limit, 128)
 	dueBeforeMs := normalizeSQLiteRecycleTime(dueBefore).UnixMilli()
 	claimAtMs := time.Now().UTC().UnixMilli()
 	claimUntilMs := normalizeSQLiteRecycleTime(claimUntil).UnixMilli()

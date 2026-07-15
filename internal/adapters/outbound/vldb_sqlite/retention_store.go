@@ -38,7 +38,7 @@ func (s *Store) RecycleColdMemories(ctx context.Context, query logicdomain.Memor
 	if !s.hasSQLiteStore() {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
-	limit := normalizeSQLiteRetentionBatchLimit(query.Limit, 128)
+	limit := storageutil.PositiveOrDefault(query.Limit, 128)
 	recycledAt := normalizeSQLiteRecycleTime(query.RecycledAt)
 	recycledAtMillis := recycledAt.UnixMilli()
 	reason := strings.TrimSpace(query.RecycleReason)
@@ -220,12 +220,12 @@ func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.Sessi
 	if !s.hasSQLiteStore() {
 		return logicdomain.SessionIdleRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
-	limit := normalizeSQLiteRetentionBatchLimit(query.Limit, 32)
+	limit := storageutil.PositiveOrDefault(query.Limit, 32)
 	recycledAt := normalizeSQLiteRecycleTime(query.RecycledAt)
 	recycledAtMillis := recycledAt.UnixMilli()
 	idleBefore := normalizeSQLiteRecycleTime(query.IdleBefore)
 	idleBeforeMillis := idleBefore.UnixMilli()
-	turnHotWindowSize := normalizeSQLiteTurnHotWindowSize(query.TurnHotWindowSize)
+	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 	reason := strings.TrimSpace(query.RecycleReason)
 	if reason == "" {
 		reason = logicdomain.RecycleReasonIdleSessionCompact
@@ -296,7 +296,7 @@ func (s *Store) PurgeExpiredTrash(ctx context.Context, before time.Time, limit i
 	if !s.hasSQLiteStore() {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
-	limit = normalizeSQLiteRetentionBatchLimit(limit, 64)
+	limit = storageutil.PositiveOrDefault(limit, 64)
 	purgeBefore := normalizeSQLiteRecycleTime(before).UnixMilli()
 
 	s.writeMu.Lock()
@@ -771,27 +771,6 @@ func buildSQLiteIdleSessionTurnReferenceClause(recycledMemoryIDs []uint64) (stri
     WHERE mn.source_turn_id = tr.id
       AND mn.id NOT IN (%s)
   )`, sqlitePlaceholders(len(recycledMemoryIDs))), sqliteUint64Params(recycledMemoryIDs)
-}
-
-// normalizeSQLiteRetentionBatchLimit keeps recycle and purge limits positive even when callers pass zero or negative values.
-// normalizeSQLiteRetentionBatchLimit 用于在调用方传入零值或负值时，仍把 SQLite 回收与 purge 批量限制保持为正数。
-func normalizeSQLiteRetentionBatchLimit(limit, fallback int) int {
-	if limit > 0 {
-		return limit
-	}
-	if fallback > 0 {
-		return fallback
-	}
-	return 1
-}
-
-// normalizeSQLiteTurnHotWindowSize keeps the runtime hot-window size non-negative even when callers pass an invalid value.
-// normalizeSQLiteTurnHotWindowSize 用于在调用方传入非法值时，仍把运行时 turn 热窗口保持为非负数。
-func normalizeSQLiteTurnHotWindowSize(size int) int {
-	if size > 0 {
-		return size
-	}
-	return 0
 }
 
 // normalizeSQLiteRecycleTime preserves the caller-provided recycle timestamp when present, otherwise falls back to the current UTC time.

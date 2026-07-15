@@ -56,3 +56,22 @@ func TestProjectCreateConfirmationMessageListsMissingHierarchy(t *testing.T) {
 		t.Fatalf("ProjectCreateConfirmationMessage() = %q, want %q", got, want)
 	}
 }
+
+// TestPositiveOrDefaultPreservesExplicitValues verifies storage batch limits prefer explicit positive requests over defaults.
+// TestPositiveOrDefaultPreservesExplicitValues 用于验证存储批次上限会优先采用显式正数请求值而不是默认值。
+func TestPositiveOrDefaultPreservesExplicitValues(t *testing.T) {
+	tests := []struct {
+		value    int
+		fallback int
+		want     int
+	}{
+		{value: 2, fallback: 128, want: 2},
+		{value: 0, fallback: 64, want: 64},
+		{value: -1, fallback: 0, want: 1},
+	}
+	for _, test := range tests {
+		if got := PositiveOrDefault(test.value, test.fallback); got != test.want {
+			t.Fatalf("PositiveOrDefault(%d, %d) = %d, want %d", test.value, test.fallback, got, test.want)
+		}
+	}
+}

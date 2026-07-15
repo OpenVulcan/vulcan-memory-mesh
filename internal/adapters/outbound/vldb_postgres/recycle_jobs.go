@@ -56,10 +56,10 @@ func (r *retentionRepository) EnqueueColdTurnRecycleJobs(ctx context.Context, qu
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return 0, fmt.Errorf("postgres store is not initialized")
 	}
-	limit := normalizeRetentionBatchLimit(query.Limit, 64)
+	limit := storageutil.PositiveOrDefault(query.Limit, 64)
 	scannedAt := chooseNonZeroTime(query.ScannedAt, time.Now().UTC())
 	nextRunAt := chooseNonZeroTime(query.NextRunAt, scannedAt)
-	turnHotWindowSize := normalizeRetentionTurnHotWindowSize(query.TurnHotWindowSize)
+	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 
 	args := &sqlArgsBuilder{}
 	jobTypePlaceholder := args.Add(logicdomain.RecycleJobTypeColdTurn)
@@ -112,7 +112,7 @@ func (r *retentionRepository) ClaimPendingRecycleJobs(ctx context.Context, jobTy
 	if jobType == "" {
 		return nil, fmt.Errorf("recycle job type is required")
 	}
-	limit = normalizeRetentionBatchLimit(limit, 32)
+	limit = storageutil.PositiveOrDefault(limit, 32)
 	dueBefore = chooseNonZeroTime(dueBefore, time.Now().UTC())
 	claimAt := time.Now().UTC()
 	claimUntil = chooseNonZeroTime(claimUntil, claimAt)
@@ -173,7 +173,7 @@ func (r *retentionRepository) RecycleColdTurns(ctx context.Context, query logicd
 		return logicdomain.ColdTurnRecycleResult{}, nil
 	}
 	recycledAt := chooseNonZeroTime(query.RecycledAt, time.Now().UTC())
-	turnHotWindowSize := normalizeRetentionTurnHotWindowSize(query.TurnHotWindowSize)
+	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 	reason := strings.TrimSpace(query.RecycleReason)
 	if reason == "" {
 		reason = logicdomain.RecycleReasonColdTurnArchive

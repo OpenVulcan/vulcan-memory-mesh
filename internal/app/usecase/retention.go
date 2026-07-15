@@ -199,7 +199,7 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		Limit:             defaultRetentionTurnJobScanBatchSize,
 		ScannedAt:         now,
 		NextRunAt:         now,
-		TurnHotWindowSize: normalizeRetentionTurnHotWindowSize(u.cfg.TurnHotWindowSize),
+		TurnHotWindowSize: max(u.cfg.TurnHotWindowSize, 0),
 	})
 	if enqueueErr != nil {
 		u.logError("retention cold turn job enqueue failed", enqueueErr)
@@ -220,7 +220,7 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 		Limit:             defaultRetentionIdleSessionBatchSize,
 		RecycledAt:        now,
 		IdleBefore:        idleBefore,
-		TurnHotWindowSize: normalizeRetentionTurnHotWindowSize(u.cfg.TurnHotWindowSize),
+		TurnHotWindowSize: max(u.cfg.TurnHotWindowSize, 0),
 		RecycleReason:     logicdomain.RecycleReasonIdleSessionCompact,
 	})
 	if sessionErr != nil {
@@ -285,7 +285,7 @@ func (u *RetentionUseCase) runPendingColdTurnRecycleJobs(ctx context.Context, no
 		result, recycleErr := u.store.RecycleColdTurns(ctx, logicdomain.ColdTurnRecycleQuery{
 			SessionID:         job.SessionID,
 			RecycledAt:        now,
-			TurnHotWindowSize: normalizeRetentionTurnHotWindowSize(u.cfg.TurnHotWindowSize),
+			TurnHotWindowSize: max(u.cfg.TurnHotWindowSize, 0),
 			RecycleReason:     logicdomain.RecycleReasonColdTurnArchive,
 		})
 		if recycleErr != nil {
@@ -554,15 +554,6 @@ func retentionMemoryLevelFloorValue(level string) int {
 	default:
 		return logicdomain.MemoryLevelStable
 	}
-}
-
-// normalizeRetentionTurnHotWindowSize keeps the runtime hot-window size non-negative even when composition code passes an invalid value.
-// normalizeRetentionTurnHotWindowSize 用于在组合根传入非法值时，仍把运行时 turn 热窗口保持为非负数。
-func normalizeRetentionTurnHotWindowSize(size int) int {
-	if size > 0 {
-		return size
-	}
-	return 0
 }
 
 // chooseRetentionTimeOrNow keeps retention helpers on one non-zero UTC clock value even when callers intentionally pass zero time in tests or future refactors.

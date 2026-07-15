@@ -103,7 +103,7 @@ func (r *vectorRepository) ClaimPendingVectorGCJobs(ctx context.Context, dueBefo
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	limit = normalizeRetentionBatchLimit(limit, 128)
+	limit = storageutil.PositiveOrDefault(limit, 128)
 	dueBefore = chooseNonZeroTime(dueBefore, time.Now().UTC())
 	claimAt := time.Now().UTC()
 	claimUntil = chooseNonZeroTime(claimUntil, claimAt)

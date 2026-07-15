@@ -51,10 +51,10 @@ func (s *Store) EnqueueColdTurnRecycleJobs(ctx context.Context, query logicdomai
 	if !s.hasSQLiteStore() {
 		return 0, fmt.Errorf("sqlite store is not initialized")
 	}
-	limit := normalizeSQLiteRetentionBatchLimit(query.Limit, 64)
+	limit := storageutil.PositiveOrDefault(query.Limit, 64)
 	scannedAtMs := normalizeSQLiteRecycleTime(query.ScannedAt).UnixMilli()
 	nextRunMs := normalizeSQLiteRecycleTime(query.NextRunAt).UnixMilli()
-	turnHotWindowSize := normalizeSQLiteTurnHotWindowSize(query.TurnHotWindowSize)
+	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -145,7 +145,7 @@ func (s *Store) ClaimPendingRecycleJobs(ctx context.Context, jobType string, due
 	if jobType == "" {
 		return nil, fmt.Errorf("recycle job type is required")
 	}
-	limit = normalizeSQLiteRetentionBatchLimit(limit, 32)
+	limit = storageutil.PositiveOrDefault(limit, 32)
 	dueBeforeMs := normalizeSQLiteRecycleTime(dueBefore).UnixMilli()
 	claimAtMs := time.Now().UTC().UnixMilli()
 	claimUntilMs := normalizeSQLiteRecycleTime(claimUntil).UnixMilli()
@@ -196,7 +196,7 @@ func (s *Store) RecycleColdTurns(ctx context.Context, query logicdomain.ColdTurn
 		return logicdomain.ColdTurnRecycleResult{}, nil
 	}
 	recycledAtMillis := normalizeSQLiteRecycleTime(query.RecycledAt).UnixMilli()
-	turnHotWindowSize := normalizeSQLiteTurnHotWindowSize(query.TurnHotWindowSize)
+	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 	reason := strings.TrimSpace(query.RecycleReason)
 	if reason == "" {
 		reason = logicdomain.RecycleReasonColdTurnArchive

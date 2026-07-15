@@ -24,6 +24,15 @@ func ProjectCreateConfirmationMessage(teamName, spaceName, projectName string, t
 	return fmt.Sprintf("path %s/%s/%s is incomplete; missing %s, use confirm_create=1 to create them", teamName, spaceName, projectName, strings.Join(missing, ", "))
 }
 
+// PositiveOrDefault keeps a positive requested value, otherwise returns a positive fallback or the minimum valid value one.
+// PositiveOrDefault 用于保留正数请求值，否则返回正数兜底值或最小合法值一。
+func PositiveOrDefault(value, fallback int) int {
+	if value > 0 {
+		return value
+	}
+	return max(fallback, 1)
+}
+
 // NormalizeUint64List removes zero and duplicate identifiers, then sorts the result for deterministic storage operations.
 // NormalizeUint64List 用于移除零值与重复标识，并排序结果以保证存储操作的确定性。
 func NormalizeUint64List(values []uint64) []uint64 {
