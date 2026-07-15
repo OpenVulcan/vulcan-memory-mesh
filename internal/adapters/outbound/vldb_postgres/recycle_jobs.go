@@ -462,12 +462,6 @@ func buildPostgresColdTurnJobSessionAvailabilityClause(args *sqlArgsBuilder, r *
 )`, r.turnsTable(), turnHotWindowSize, r.turnsTable(), pendingStatusPlaceholder, r.memoryNodesTable(), (&workspaceRepository{shared: r.shared}).profileNodesTable())
 }
 
-// buildPostgresColdTurnJobSessionAvailabilityClauseForTest provides a Store-compatible wrapper for legacy unit tests.
-// buildPostgresColdTurnJobSessionAvailabilityClauseForTest 用于为旧单元测试提供 Store 兼容包装。
-func (s *Store) buildPostgresColdTurnJobSessionAvailabilityClauseForTest(args *sqlArgsBuilder, turnHotWindowSize int) string {
-	return buildPostgresColdTurnJobSessionAvailabilityClause(args, &retentionRepository{shared: &storeShared{cfg: s.cfg}}, turnHotWindowSize)
-}
-
 // buildPostgresClaimPendingRecycleJobsSQL renders the SKIP LOCKED claim statement used by the recycle-job queue so tests can assert multi-worker no-duplicate semantics without needing a live PostgreSQL instance.
 // buildPostgresClaimPendingRecycleJobsSQL 用于渲染回收任务队列的 SKIP LOCKED 领取语句，让测试无需真实 PostgreSQL 也能断言多工作器不重复消费语义。
 func buildPostgresClaimPendingRecycleJobsSQL(recycleJobsTable string) string {

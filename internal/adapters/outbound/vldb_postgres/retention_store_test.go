@@ -192,15 +192,15 @@ func TestPostgresIdleSessionInspectionBudgetAddsBoundedHeadroom(t *testing.T) {
 // TestBuildPostgresIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows 用于验证 session 预过滤会同时包含陈旧记忆和旧 turn 的存在性检查，避免 no-op idle session 阻塞后续有收益的回收工作。
 func TestBuildPostgresIdleSessionCandidateAvailabilityClauseRequiresRecyclableRows(t *testing.T) {
 	args := &sqlArgsBuilder{}
-	store := &Store{cfg: Config{Schema: "public"}}
-	clause := store.buildPostgresIdleSessionCandidateAvailabilityClauseForTest(args, time.Unix(120, 0).UTC(), 8)
-	if !strings.Contains(clause, "FROM "+store.memoryNodesTable()+" AS m") {
+	repository := &retentionRepository{shared: &storeShared{cfg: Config{Schema: "public"}}}
+	clause := buildPostgresIdleSessionCandidateAvailabilityClause(args, repository, time.Unix(120, 0).UTC(), 8)
+	if !strings.Contains(clause, "FROM "+repository.memoryNodesTable()+" AS m") {
 		t.Fatalf("candidate availability clause missing stale-memory branch: %q", clause)
 	}
-	if !strings.Contains(clause, "FROM "+store.turnsTable()+" AS tr") {
+	if !strings.Contains(clause, "FROM "+repository.turnsTable()+" AS tr") {
 		t.Fatalf("candidate availability clause missing old-turn branch: %q", clause)
 	}
-	if !strings.Contains(clause, "NOT EXISTS (SELECT 1 FROM "+store.profileNodesTable()+" pn WHERE pn.turn_id = tr.id)") {
+	if !strings.Contains(clause, "NOT EXISTS (SELECT 1 FROM "+repository.profileNodesTable()+" pn WHERE pn.turn_id = tr.id)") {
 		t.Fatalf("candidate availability clause missing profile reference guard: %q", clause)
 	}
 	if got := len(args.Args()); got != 5 {
@@ -432,15 +432,15 @@ func TestPostgresTrashPurgeCommitErrorMarksOutcomeUncertain(t *testing.T) {
 // TestBuildPostgresColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns 用于验证独立冷 turn 扫描只会为“超出热窗口且没有记忆/画像引用”的旧 turn 所在 session 入队。
 func TestBuildPostgresColdTurnJobSessionAvailabilityClauseRequiresUnreferencedTurns(t *testing.T) {
 	args := &sqlArgsBuilder{}
-	store := &Store{cfg: Config{Schema: "public"}}
-	clause := store.buildPostgresColdTurnJobSessionAvailabilityClauseForTest(args, 8)
+	repository := &retentionRepository{shared: &storeShared{cfg: Config{Schema: "public"}}}
+	clause := buildPostgresColdTurnJobSessionAvailabilityClause(args, repository, 8)
 	if !strings.Contains(clause, "LIMIT 8") {
 		t.Fatalf("cold-turn availability clause missing hot-window limit: %q", clause)
 	}
-	if !strings.Contains(clause, "FROM "+store.memoryNodesTable()+" mn WHERE mn.source_turn_id = tr.id") {
+	if !strings.Contains(clause, "FROM "+repository.memoryNodesTable()+" mn WHERE mn.source_turn_id = tr.id") {
 		t.Fatalf("cold-turn availability clause missing memory reference guard: %q", clause)
 	}
-	if !strings.Contains(clause, "FROM "+store.profileNodesTable()+" pn WHERE pn.turn_id = tr.id") {
+	if !strings.Contains(clause, "FROM "+repository.profileNodesTable()+" pn WHERE pn.turn_id = tr.id") {
 		t.Fatalf("cold-turn availability clause missing profile reference guard: %q", clause)
 	}
 	if got := len(args.Args()); got != 1 {

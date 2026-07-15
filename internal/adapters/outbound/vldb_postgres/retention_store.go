@@ -726,12 +726,6 @@ OR EXISTS (
  )`, r.memoryNodesTable(), staleMemoryScopePlaceholder, staleMemoryStatusPlaceholder, staleMemoryIdleBeforePlaceholder, staleMemoryFreshnessPlaceholder, r.turnsTable(), turnHotWindowSize, r.turnsTable(), oldTurnPendingStatusPlaceholder, r.memoryNodesTable(), r.profileNodesTable())
 }
 
-// buildPostgresIdleSessionCandidateAvailabilityClauseForTest provides a Store-compatible wrapper so legacy unit tests can still call the helper without constructing a repository literal.
-// buildPostgresIdleSessionCandidateAvailabilityClauseForTest 用于为旧单元测试提供 Store 兼容包装，让测试无需构造 repository 字面量即可调用该辅助函数。
-func (s *Store) buildPostgresIdleSessionCandidateAvailabilityClauseForTest(args *sqlArgsBuilder, idleBefore time.Time, turnHotWindowSize int) string {
-	return buildPostgresIdleSessionCandidateAvailabilityClause(args, &retentionRepository{shared: &storeShared{cfg: s.cfg}}, idleBefore, turnHotWindowSize)
-}
-
 // appendProtectedSharedMemoryRecycleFilter appends the shared-memory protection predicate so retention does not recycle important shared facts by default.
 // appendProtectedSharedMemoryRecycleFilter 用于追加共享记忆保护谓词，避免 retention 默认回收重要共享事实。
 func appendProtectedSharedMemoryRecycleFilter(whereClauses []string, args *sqlArgsBuilder, query logicdomain.MemoryRecycleQuery, alias string) []string {
