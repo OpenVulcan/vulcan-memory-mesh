@@ -46,3 +46,13 @@ func TestParseProjectPathValidatesCanonicalShape(t *testing.T) {
 		t.Fatalf("ParseProjectPath() error = %v, want validation error", err)
 	}
 }
+
+// TestProjectCreateConfirmationMessageListsMissingHierarchy verifies both storage engines expose the same confirmation text.
+// TestProjectCreateConfirmationMessageListsMissingHierarchy 用于验证两种存储引擎会暴露一致的层级缺失确认文案。
+func TestProjectCreateConfirmationMessageListsMissingHierarchy(t *testing.T) {
+	got := ProjectCreateConfirmationMessage("team", "space", "project", false, false)
+	want := "path team/space/project is incomplete; missing team, space, use confirm_create=1 to create them"
+	if got != want {
+		t.Fatalf("ProjectCreateConfirmationMessage() = %q, want %q", got, want)
+	}
+}

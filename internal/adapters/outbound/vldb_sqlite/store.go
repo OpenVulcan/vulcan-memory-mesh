@@ -4286,7 +4286,7 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 	}
 	if !confirmCreate && (!teamExists || !spaceExists) {
 		return logicdomain.ProjectMutationResult{
-			Message:      buildProjectConfirmMessage(teamName, spaceName, projectName, teamExists, spaceExists),
+			Message:      storageutil.ProjectCreateConfirmationMessage(teamName, spaceName, projectName, teamExists, spaceExists),
 			NeedsConfirm: true,
 			MissingTeam:  !teamExists,
 			MissingSpace: !spaceExists,
@@ -4313,7 +4313,7 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 	}
 	if !confirmCreate && (!teamExists || !spaceExists) {
 		return logicdomain.ProjectMutationResult{
-			Message:      buildProjectConfirmMessage(teamName, spaceName, projectName, teamExists, spaceExists),
+			Message:      storageutil.ProjectCreateConfirmationMessage(teamName, spaceName, projectName, teamExists, spaceExists),
 			NeedsConfirm: true,
 			MissingTeam:  !teamExists,
 			MissingSpace: !spaceExists,
@@ -5383,19 +5383,6 @@ func buildProjectProfileNodesDeleteWhere(projectID, spaceID, teamID uint64, dele
 		params = append(params, logicdomain.ProfileTypeTeam, teamID)
 	}
 	return strings.Join(conditions, " OR "), params
-}
-
-// buildProjectConfirmMessage generates the stable confirmation text returned when missing Team/Space nodes require explicit confirmation.
-// buildProjectConfirmMessage 用于生成稳定的确认提示文本，说明缺失 Team/Space 节点需要显式确认。
-func buildProjectConfirmMessage(teamName, spaceName, projectName string, teamExists, spaceExists bool) string {
-	missing := make([]string, 0, 2)
-	if !teamExists {
-		missing = append(missing, "team")
-	}
-	if !spaceExists {
-		missing = append(missing, "space")
-	}
-	return fmt.Sprintf("path %s/%s/%s is incomplete; missing %s, use confirm_create=1 to create them", teamName, spaceName, projectName, strings.Join(missing, ", "))
 }
 
 // encodeFloat32Slice stores one vector payload as JSON text so unified memory rows can be rebuilt into vector rows later.

@@ -3,12 +3,26 @@
 package storageutil
 
 import (
+	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
+
+// ProjectCreateConfirmationMessage explains which hierarchy levels are missing before a storage adapter performs a confirmed project-path creation.
+// ProjectCreateConfirmationMessage 用于说明存储适配器执行已确认的项目路径创建前仍缺少哪些层级。
+func ProjectCreateConfirmationMessage(teamName, spaceName, projectName string, teamExists, spaceExists bool) string {
+	missing := make([]string, 0, 2)
+	if !teamExists {
+		missing = append(missing, "team")
+	}
+	if !spaceExists {
+		missing = append(missing, "space")
+	}
+	return fmt.Sprintf("path %s/%s/%s is incomplete; missing %s, use confirm_create=1 to create them", teamName, spaceName, projectName, strings.Join(missing, ", "))
+}
 
 // NormalizeUint64List removes zero and duplicate identifiers, then sorts the result for deterministic storage operations.
 // NormalizeUint64List 用于移除零值与重复标识，并排序结果以保证存储操作的确定性。

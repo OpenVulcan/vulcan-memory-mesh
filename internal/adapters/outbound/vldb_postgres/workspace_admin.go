@@ -93,7 +93,7 @@ func (r *workspaceRepository) EnsureProjectPath(ctx context.Context, projectPath
 	}
 	if !confirmCreate && (!teamExists || !spaceExists) {
 		return logicdomain.ProjectMutationResult{
-			Message:      buildProjectConfirmMessage(teamName, spaceName, projectName, teamExists, spaceExists),
+			Message:      storageutil.ProjectCreateConfirmationMessage(teamName, spaceName, projectName, teamExists, spaceExists),
 			NeedsConfirm: true,
 			MissingTeam:  !teamExists,
 			MissingSpace: !spaceExists,
@@ -951,19 +951,6 @@ func (r *workspaceRepository) buildProjectProfileNodesWhere(projectID, spaceID, 
 	whereSQL := strings.Join(conditions, " OR ")
 	whereSQL = strings.ReplaceAll(whereSQL, "%TURN_TABLE%", r.turnsTable())
 	return whereSQL, args.Args()
-}
-
-// buildProjectConfirmMessage generates the stable confirmation text returned when missing Team/Space nodes require explicit confirmation.
-// buildProjectConfirmMessage 用于生成稳定的确认提示文本，说明缺失 Team/Space 节点需要显式确认。
-func buildProjectConfirmMessage(teamName, spaceName, projectName string, teamExists, spaceExists bool) string {
-	missing := make([]string, 0, 2)
-	if !teamExists {
-		missing = append(missing, "team")
-	}
-	if !spaceExists {
-		missing = append(missing, "space")
-	}
-	return fmt.Sprintf("path %s/%s/%s is incomplete; missing %s, use confirm_create=1 to create them", teamName, spaceName, projectName, strings.Join(missing, ", "))
 }
 
 // EnsureProjectPath delegates to the workspace repository for project path resolution or creation.
