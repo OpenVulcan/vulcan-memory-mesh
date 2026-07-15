@@ -11,6 +11,7 @@ import (
 
 	"github.com/OpenRouterTeam/go-sdk/models/operations"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerinput"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -69,7 +70,7 @@ func (c *RerankerClient) Rerank(ctx context.Context, query string, docs []apppor
 	if query == "" {
 		return nil, fmt.Errorf("openrouter rerank query is required")
 	}
-	normalizedDocs := normalizeDocuments(docs)
+	normalizedDocs := providerinput.NormalizeRerankerDocuments(docs)
 	if len(normalizedDocs) == 0 {
 		return []appports.RerankerResult{}, nil
 	}
@@ -135,22 +136,4 @@ func mapRerankResults(items []operations.Result, docs []appports.RerankerDocumen
 		})
 	}
 	return results, nil
-}
-
-// normalizeDocuments trims empty ids and text so the provider receives only meaningful rerank candidates.
-// normalizeDocuments 用于裁剪空 id 与空文本，确保 provider 只接收有意义的重排序候选。
-func normalizeDocuments(docs []appports.RerankerDocument) []appports.RerankerDocument {
-	normalized := make([]appports.RerankerDocument, 0, len(docs))
-	for _, doc := range docs {
-		id := strings.TrimSpace(doc.ID)
-		text := strings.TrimSpace(doc.Text)
-		if id == "" || text == "" {
-			continue
-		}
-		normalized = append(normalized, appports.RerankerDocument{
-			ID:   id,
-			Text: text,
-		})
-	}
-	return normalized
 }

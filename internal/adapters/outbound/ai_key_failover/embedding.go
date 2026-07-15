@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerinput"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -88,7 +89,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	}
 	req.Model = c.model
 	req.Dimension = c.dimension
-	req.Texts = normalizeEmbeddingTexts(req.Texts)
+	req.Texts = providerinput.NormalizeEmbeddingTexts(req.Texts)
 	if len(req.Texts) == 0 {
 		return appports.EmbeddingResponse{Vectors: [][]float32{}}, nil
 	}
@@ -229,18 +230,6 @@ func buildEmbeddingResponse(results []embeddingVectorResult, dropped []appports.
 		})
 	}
 	return resp
-}
-
-// normalizeEmbeddingTexts trims and drops blank inputs once so chunking and provider adapters always observe the same effective request payload.
-// normalizeEmbeddingTexts 用于统一裁剪并剔除空白输入，让拆批和 provider 适配器始终看到一致的实际请求载荷。
-func normalizeEmbeddingTexts(texts []string) []string {
-	normalized := make([]string, 0, len(texts))
-	for _, text := range texts {
-		if text = strings.TrimSpace(text); text != "" {
-			normalized = append(normalized, text)
-		}
-	}
-	return normalized
 }
 
 // clientForKey returns the cached concrete embedding adapter for one API key or builds it on first use.

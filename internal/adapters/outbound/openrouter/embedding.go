@@ -9,6 +9,7 @@ import (
 
 	"github.com/OpenRouterTeam/go-sdk/models/operations"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerinput"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -43,7 +44,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	if strings.TrimSpace(c.client.apiKey) == "" {
 		return appports.EmbeddingResponse{}, fmt.Errorf("openrouter api key is required")
 	}
-	texts := normalizeEmbeddingTexts(req.Texts)
+	texts := providerinput.NormalizeEmbeddingTexts(req.Texts)
 	if len(texts) == 0 {
 		return appports.EmbeddingResponse{Vectors: [][]float32{}}, nil
 	}
@@ -95,18 +96,6 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 		Vectors:       vectors,
 		ResultIndices: resultIndices,
 	}, nil
-}
-
-// normalizeEmbeddingTexts trims empty embedding inputs before the SDK call so callers can control higher-level invalid-input fallback.
-// normalizeEmbeddingTexts 用于在 SDK 调用前裁剪空 embedding 输入，让更高层继续负责非法输入的回退策略。
-func normalizeEmbeddingTexts(input []string) []string {
-	texts := make([]string, 0, len(input))
-	for _, text := range input {
-		if text = strings.TrimSpace(text); text != "" {
-			texts = append(texts, text)
-		}
-	}
-	return texts
 }
 
 // mapEmbeddingInput selects the single-string or string-array union branch expected by OpenRouter embeddings.

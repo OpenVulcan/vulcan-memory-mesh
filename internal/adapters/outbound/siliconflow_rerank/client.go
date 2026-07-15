@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerinput"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -91,7 +92,7 @@ func (c *Client) Rerank(ctx context.Context, query string, docs []appports.Reran
 	if query == "" {
 		return nil, fmt.Errorf("siliconflow rerank query is required")
 	}
-	normalizedDocs := normalizeDocuments(docs)
+	normalizedDocs := providerinput.NormalizeRerankerDocuments(docs)
 	if len(normalizedDocs) == 0 {
 		return []appports.RerankerResult{}, nil
 	}
@@ -193,22 +194,4 @@ func parseResponsePayload(body []byte, docs []appports.RerankerDocument) ([]appp
 		})
 	}
 	return results, nil
-}
-
-// normalizeDocuments trims empty ids and text so the provider call only receives meaningful candidates.
-// normalizeDocuments 用于裁剪空 id 和空文本，确保 provider 调用只接收有意义的候选。
-func normalizeDocuments(docs []appports.RerankerDocument) []appports.RerankerDocument {
-	if len(docs) == 0 {
-		return nil
-	}
-	normalized := make([]appports.RerankerDocument, 0, len(docs))
-	for _, doc := range docs {
-		doc.ID = strings.TrimSpace(doc.ID)
-		doc.Text = strings.TrimSpace(doc.Text)
-		if doc.ID == "" || doc.Text == "" {
-			continue
-		}
-		normalized = append(normalized, doc)
-	}
-	return normalized
 }
