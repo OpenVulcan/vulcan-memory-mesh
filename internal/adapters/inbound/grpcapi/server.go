@@ -212,7 +212,7 @@ func toProfileNodeEntry(node logicdomain.ProfileNodeRecord) *vmmv1.ProfileNodeEn
 		Content:          node.Content,
 		Priority:         profilePriorityLabel(node.Priority),
 		Level:            profileLevelLabel(node.ProfileLevel),
-		RefreshWeight:    uint32(maxInt(node.RefreshWeight, 0)),
+		RefreshWeight:    uint32(max(node.RefreshWeight, 0)),
 		ProfileDate:      logicdomain.NormalizeLegacyDisplayDateWithFallback(node.ProfileDate, node.ProfileDateAnchorAt, node.CreatedAt),
 		ExpiresTimestamp: expiresTimestamp,
 		LevelReason:      node.LevelReason,
@@ -457,13 +457,4 @@ func profileLevelLabel(level int) string {
 	default:
 		return "L3"
 	}
-}
-
-// maxInt keeps small transport conversions readable when wire-level numeric fields should never go below one fixed floor.
-// maxInt 用于在传输层数值字段不应低于某个固定下限时，让小范围转换保持清晰可读。
-func maxInt(value, floor int) int {
-	if value < floor {
-		return floor
-	}
-	return value
 }

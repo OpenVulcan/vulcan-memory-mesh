@@ -228,11 +228,11 @@ func EnforceTokenBudget(text string, cfg TokenBudgetConfig) string {
 	if len(runes) <= cfg.HeadRunes+cfg.TailRunes {
 		// For dense text, start shrinking from a reduced head/tail baseline.
 		// 对高密度文本，从缩减后的 head/tail 基线开始收缩。
-		headRunes = minTokenBudgetInt(cfg.HeadRunes, len(runes))
-		tailRunes = minTokenBudgetInt(cfg.TailRunes, maxTokenBudgetInt(0, len(runes)-headRunes))
+		headRunes = min(cfg.HeadRunes, len(runes))
+		tailRunes = min(cfg.TailRunes, max(0, len(runes)-headRunes))
 	} else {
-		headRunes = minTokenBudgetInt(cfg.HeadRunes, len(runes))
-		tailRunes = minTokenBudgetInt(cfg.TailRunes, len(runes)-headRunes)
+		headRunes = min(cfg.HeadRunes, len(runes))
+		tailRunes = min(cfg.TailRunes, len(runes)-headRunes)
 	}
 	clipped := string(runes[:headRunes]) + cfg.Marker + string(runes[len(runes)-tailRunes:])
 	if estimator.Estimate(clipped) <= cfg.MaxTokens {
@@ -243,10 +243,10 @@ func EnforceTokenBudget(text string, cfg TokenBudgetConfig) string {
 	// 当初始头尾预算在极高密度文本下仍超标时，继续渐进收缩，避免把超大文本原样写入存储。
 	for headRunes > 80 || tailRunes > 40 {
 		if headRunes > 80 {
-			headRunes = maxTokenBudgetInt(80, int(float64(headRunes)*0.8))
+			headRunes = max(80, int(float64(headRunes)*0.8))
 		}
 		if tailRunes > 40 {
-			tailRunes = maxTokenBudgetInt(40, int(float64(tailRunes)*0.8))
+			tailRunes = max(40, int(float64(tailRunes)*0.8))
 		}
 		clipped = string(runes[:headRunes]) + cfg.Marker + string(runes[len(runes)-tailRunes:])
 		if estimator.Estimate(clipped) <= cfg.MaxTokens {
@@ -348,24 +348,6 @@ func isTokenEstimatorCJK(r rune) bool {
 // isTokenEstimatorLatinLetter 用于判断一个 rune 是否是按单词段统计的 Latin 字母。
 func isTokenEstimatorLatinLetter(r rune) bool {
 	return unicode.IsLetter(r) && unicode.In(r, unicode.Latin)
-}
-
-// minTokenBudgetInt returns the smaller integer used by token clipping math.
-// minTokenBudgetInt 用于在 token 裁剪计算中返回较小整数。
-func minTokenBudgetInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// maxTokenBudgetInt returns the larger integer used by token clipping math.
-// maxTokenBudgetInt 用于在 token 裁剪计算中返回较大整数。
-func maxTokenBudgetInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // runeCount returns the rune length of one string while keeping call sites explicit and readable.

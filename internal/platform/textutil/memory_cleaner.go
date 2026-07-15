@@ -3,6 +3,7 @@
 package textutil
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 	"unicode/utf8"
@@ -347,7 +348,7 @@ func compressRun(run []lineInfo, rules MemoryCleanerRules) compression {
 		return compression{}
 	}
 
-	headEnd := minInt(rules.HeadLines, len(run))
+	headEnd := min(rules.HeadLines, len(run))
 	tailStart := len(run) - rules.TailLines
 	if tailStart < headEnd {
 		tailStart = headEnd
@@ -402,7 +403,7 @@ func writeFoldMarker(b *strings.Builder, omitted int, label, newline string) {
 		return
 	}
 	b.WriteString("... [")
-	b.WriteString(itoa(omitted))
+	b.WriteString(strconv.Itoa(omitted))
 	b.WriteString(" lines of ")
 	b.WriteString(label)
 	b.WriteString(" folded by policy to save context] ...")
@@ -421,7 +422,7 @@ func shouldCompress(stats blockStats, rules MemoryCleanerRules) bool {
 
 	machineRatio := float64(stats.machineLines) / float64(stats.nonBlank)
 	naturalRatio := float64(stats.naturalLines) / float64(stats.nonBlank)
-	symbolRatio := float64(stats.symbolCount) / float64(maxInt(stats.runeCount, 1))
+	symbolRatio := float64(stats.symbolCount) / float64(max(stats.runeCount, 1))
 	if dominantStructured(stats) {
 		return true
 	}
@@ -450,7 +451,7 @@ func shouldCompress(stats blockStats, rules MemoryCleanerRules) bool {
 	if stats.jsonSignals >= 4 {
 		strongSignals++
 	}
-	if stats.codeSignals >= maxInt(4, stats.lineCount/3) {
+	if stats.codeSignals >= max(4, stats.lineCount/3) {
 		strongSignals++
 	}
 
@@ -465,7 +466,7 @@ func shouldCompress(stats blockStats, rules MemoryCleanerRules) bool {
 		return true
 	case stats.jsonSignals >= 6 && machineRatio >= 0.50:
 		return true
-	case stats.codeSignals >= maxInt(6, stats.lineCount/2) && machineRatio >= 0.60 && symbolRatio >= 0.16:
+	case stats.codeSignals >= max(6, stats.lineCount/2) && machineRatio >= 0.60 && symbolRatio >= 0.16:
 		return true
 	default:
 		return false
@@ -475,7 +476,7 @@ func shouldCompress(stats blockStats, rules MemoryCleanerRules) bool {
 // dominantStructured fast-tracks heavily structured JSON or log blocks even when language ratio heuristics are ambiguous.
 // dominantStructured 用于在语言比例判断不明确时，对明显结构化的 JSON 或日志块快速放行折叠。
 func dominantStructured(stats blockStats) bool {
-	denom := maxInt(stats.nonBlank, 1)
+	denom := max(stats.nonBlank, 1)
 	return stats.jsonSignals*100 >= denom*60 || stats.logSignals*100 >= denom*60
 }
 
@@ -529,8 +530,8 @@ func classifyLine(raw string, cfg MemoryCleanerConfig) lineInfo {
 	}
 
 	runes, han, symbols, asciiLetters, digits, spaces := countChars(trimmed)
-	symbolRatio := float64(symbols) / float64(maxInt(runes, 1))
-	hanRatio := float64(han) / float64(maxInt(runes, 1))
+	symbolRatio := float64(symbols) / float64(max(runes, 1))
+	hanRatio := float64(han) / float64(max(runes, 1))
 	words := countNaturalWords(trimmed)
 	indent := hasIndent(text)
 	anchorSignal := hasAnchorSignal(trimmed)
@@ -543,7 +544,7 @@ func classifyLine(raw string, cfg MemoryCleanerConfig) lineInfo {
 
 	naturalChinese := !structuredMachine && (han >= 4 || (hanRatio >= 0.15 && runes >= 20))
 	englishRich := han == 0 && words >= 8 && asciiLetters >= 24 && !stackSignal && !logSignal && !jsonSignal
-	englishVeryRich := han == 0 && words >= 12 && asciiLetters >= maxInt(30, runes/3) && !stackSignal && !logSignal && !jsonSignal
+	englishVeryRich := han == 0 && words >= 12 && asciiLetters >= max(30, runes/3) && !stackSignal && !logSignal && !jsonSignal
 	naturalEnglish := (words >= 6 && symbolRatio < 0.18 && !stackSignal && !logSignal && !jsonSignal) ||
 		(englishRich && symbolRatio < 0.32) ||
 		(englishVeryRich && symbolRatio < 0.40)
@@ -605,8 +606,8 @@ func shouldHorizontallyTruncate(trimmed string, cfg MemoryCleanerConfig, runes, 
 		return true
 	}
 
-	symbolRatio := float64(symbols) / float64(maxInt(runes, 1))
-	machineDensity := float64(asciiLetters+digits+symbols) / float64(maxInt(runes, 1))
+	symbolRatio := float64(symbols) / float64(max(runes, 1))
+	machineDensity := float64(asciiLetters+digits+symbols) / float64(max(runes, 1))
 	noSpaces := spaces == 0
 	switch {
 	case noSpaces && looksLikeBase64OrToken(trimmed):
@@ -652,8 +653,8 @@ func truncateLongLine(raw string, cfg MemoryCleanerConfig) string {
 	if totalRunes <= cfg.MaxLineRunes {
 		return raw
 	}
-	headRunes := minInt(cfg.LongLineHeadRunes, totalRunes)
-	tailRunes := minInt(cfg.LongLineTailRunes, totalRunes-headRunes)
+	headRunes := min(cfg.LongLineHeadRunes, totalRunes)
+	tailRunes := min(cfg.LongLineTailRunes, totalRunes-headRunes)
 	headByte := byteIndexAtRune(text, headRunes)
 	tailByte := byteIndexAtRune(text, totalRunes-tailRunes)
 
@@ -874,11 +875,11 @@ func hasCodeSignal(s string, indent bool, hanRatio float64) bool {
 // inferLabel 用于根据机器文本块的主导形态选择省略标记中的说明标签。
 func inferLabel(stats blockStats) string {
 	switch {
-	case stats.stackSignals >= maxInt(stats.logSignals, maxInt(stats.jsonSignals, stats.codeSignals)) && stats.stackSignals >= 1:
+	case stats.stackSignals >= max(stats.logSignals, max(stats.jsonSignals, stats.codeSignals)) && stats.stackSignals >= 1:
 		return "long error logs"
-	case stats.jsonSignals >= maxInt(stats.logSignals, stats.codeSignals) && stats.jsonSignals >= 2:
+	case stats.jsonSignals >= max(stats.logSignals, stats.codeSignals) && stats.jsonSignals >= 2:
 		return "long structured data"
-	case stats.logSignals >= maxInt(stats.jsonSignals, stats.codeSignals) && stats.logSignals >= 2:
+	case stats.logSignals >= max(stats.jsonSignals, stats.codeSignals) && stats.logSignals >= 2:
 		return "long runtime logs"
 	case stats.codeSignals >= 1:
 		return "long code"
@@ -899,38 +900,4 @@ func detectNewline(run []lineInfo) string {
 		}
 	}
 	return "\n"
-}
-
-// itoa converts one positive integer into ASCII digits without pulling in heavier formatting helpers.
-// itoa 用于在不引入更重格式化助手的前提下，把正整数转成 ASCII 数字。
-func itoa(v int) string {
-	if v == 0 {
-		return "0"
-	}
-	var buf [20]byte
-	i := len(buf)
-	for v > 0 {
-		i--
-		buf[i] = byte('0' + v%10)
-		v /= 10
-	}
-	return string(buf[i:])
-}
-
-// minInt returns the smaller of two ints inside the cleaner's threshold math.
-// minInt 用于在清洗器阈值计算中返回较小的整数。
-func minInt(a, b int) int {
-	if a < b {
-		return a
-	}
-	return b
-}
-
-// maxInt returns the larger of two ints inside the cleaner's threshold math.
-// maxInt 用于在清洗器阈值计算中返回较大的整数。
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }

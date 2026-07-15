@@ -5,6 +5,7 @@ package ai_key_failover
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -121,9 +122,5 @@ func cloneHintMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return map[string]any{}
 	}
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
-	return cloned
+	return maps.Clone(input)
 }

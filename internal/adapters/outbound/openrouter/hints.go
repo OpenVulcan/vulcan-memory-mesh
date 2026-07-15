@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/OpenRouterTeam/go-sdk/models/components"
@@ -35,11 +36,7 @@ func cloneHintMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return map[string]any{}
 	}
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
-	return cloned
+	return maps.Clone(input)
 }
 
 // cloneNestedHintMap copies model-specific provider hints and normalizes model keys to keep lookup behavior deterministic.

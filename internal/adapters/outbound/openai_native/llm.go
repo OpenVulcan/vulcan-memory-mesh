@@ -5,6 +5,7 @@ package openai_native
 import (
 	"context"
 	"fmt"
+	"maps"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
@@ -248,11 +249,7 @@ func cloneHintMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return map[string]any{}
 	}
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
-	return cloned
+	return maps.Clone(input)
 }
 
 // cloneNestedHintMap copies one nested model-parameter map so model defaults stay immutable at runtime.

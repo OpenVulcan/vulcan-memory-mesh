@@ -659,9 +659,9 @@ func (u *MemoryUseCase) weibullDecayMultiplier(hit MemoryQueryHit, now time.Time
 	scaleHours *= memoryLevelDecayScale(hit.MemoryLevel)
 	scaleHours *= memoryPriorityDecayScale(hit.Priority)
 	scaleHours *= memoryScopeDecayScale(hit.ScopeLevel)
-	scaleHours *= 1 + 0.08*float64(maxInt(hit.RefreshWeight, 0))
-	scaleHours *= 1 + u.weibullReinforceWeight*math.Log1p(float64(maxInt(hit.ReinforcementCount, 0)))
-	scaleHours *= 1 + u.weibullCrossSessionBoost*float64(maxInt(hit.CrossSessionAdoptedCount, 0))
+	scaleHours *= 1 + 0.08*float64(max(hit.RefreshWeight, 0))
+	scaleHours *= 1 + u.weibullReinforceWeight*math.Log1p(float64(max(hit.ReinforcementCount, 0)))
+	scaleHours *= 1 + u.weibullCrossSessionBoost*float64(max(hit.CrossSessionAdoptedCount, 0))
 	if scaleHours <= 0 {
 		return 1
 	}
@@ -1034,15 +1034,6 @@ func clampUnitScore(value float64) float64 {
 		return 1
 	}
 	return value
-}
-
-// maxInt keeps small lifecycle-weight helpers readable without repeatedly inlining zero-floor arithmetic.
-// maxInt 用于让小型生命周期权重辅助逻辑保持可读，避免反复内联零值下限计算。
-func maxInt(a, b int) int {
-	if a > b {
-		return a
-	}
-	return b
 }
 
 // applyMMRSearchHits diversifies the already-ranked candidate pool so highly similar memories do not monopolize the final top-k.

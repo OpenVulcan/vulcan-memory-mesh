@@ -4,6 +4,7 @@ package google_ai_studio
 
 import (
 	"fmt"
+	"maps"
 	"strconv"
 	"strings"
 )
@@ -29,11 +30,7 @@ func cloneHintMap(input map[string]any) map[string]any {
 	if len(input) == 0 {
 		return map[string]any{}
 	}
-	cloned := make(map[string]any, len(input))
-	for key, value := range input {
-		cloned[key] = value
-	}
-	return cloned
+	return maps.Clone(input)
 }
 
 // cloneNestedHintMap copies model-scoped defaults so runtime requests cannot mutate the configuration-derived nested map.

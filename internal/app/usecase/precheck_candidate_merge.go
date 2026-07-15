@@ -3,6 +3,7 @@
 package usecase
 
 import (
+	"math"
 	"sort"
 	"strings"
 
@@ -61,11 +62,11 @@ func mergePreCheckCandidate(existing, incoming logicdomain.PreCheckMemoryCandida
 	// Preserve the broadest reviewer-facing context view by unioning matched values while avoiding count inflation across repeated groups.
 	// 通过合并命中的 context 值来保留最广的 reviewer 视图，同时避免跨重复 group 直接累加计数导致夸大。
 	merged.MatchedContextValues = appendSortedUniquePreCheckValues(existing.MatchedContextValues, incoming.MatchedContextValues...)
-	merged.MatchedContextSupportCount = maxPreCheckCount(existing.MatchedContextSupportCount, incoming.MatchedContextSupportCount)
-	merged.MatchedContextRebuttalCount = maxPreCheckCount(existing.MatchedContextRebuttalCount, incoming.MatchedContextRebuttalCount)
+	merged.MatchedContextSupportCount = max(existing.MatchedContextSupportCount, incoming.MatchedContextSupportCount)
+	merged.MatchedContextRebuttalCount = max(existing.MatchedContextRebuttalCount, incoming.MatchedContextRebuttalCount)
 	merged.MatchedContextScoreDelta = chooseStrongerSignedDelta(existing.MatchedContextScoreDelta, incoming.MatchedContextScoreDelta)
-	merged.SupportCount = maxPreCheckCount(existing.SupportCount, incoming.SupportCount)
-	merged.RebuttalCount = maxPreCheckCount(existing.RebuttalCount, incoming.RebuttalCount)
+	merged.SupportCount = max(existing.SupportCount, incoming.SupportCount)
+	merged.RebuttalCount = max(existing.RebuttalCount, incoming.RebuttalCount)
 	return merged
 }
 
@@ -75,8 +76,8 @@ func shouldPreferIncomingPreCheckCandidate(existing, incoming logicdomain.PreChe
 	if incoming.Score != existing.Score {
 		return incoming.Score > existing.Score
 	}
-	if absFloat64(incoming.MatchedContextScoreDelta) != absFloat64(existing.MatchedContextScoreDelta) {
-		return absFloat64(incoming.MatchedContextScoreDelta) > absFloat64(existing.MatchedContextScoreDelta)
+	if math.Abs(incoming.MatchedContextScoreDelta) != math.Abs(existing.MatchedContextScoreDelta) {
+		return math.Abs(incoming.MatchedContextScoreDelta) > math.Abs(existing.MatchedContextScoreDelta)
 	}
 	if len(incoming.MatchedContextValues) != len(existing.MatchedContextValues) {
 		return len(incoming.MatchedContextValues) > len(existing.MatchedContextValues)
@@ -161,28 +162,10 @@ func appendSortedUniquePreCheckValues(base []string, extra ...string) []string {
 	return out
 }
 
-// absFloat64 keeps candidate merge heuristics readable when choosing the strongest matched-context delta explanation.
-// absFloat64 用于在选择最强 matched-context delta 说明时保持合并启发式可读。
-func absFloat64(value float64) float64 {
-	if value < 0 {
-		return -value
-	}
-	return value
-}
-
 // chooseStrongerSignedDelta keeps the signed delta whose absolute value is larger so merged candidates retain the strongest contextual boost or penalty seen across repeated hits.
 // chooseStrongerSignedDelta 用于保留绝对值更大的带符号 delta，让合并后的候选继续体现重复命中里最强的情境增益或惩罚。
 func chooseStrongerSignedDelta(left, right float64) float64 {
-	if absFloat64(right) > absFloat64(left) {
-		return right
-	}
-	return left
-}
-
-// maxPreCheckCount keeps candidate merge code readable when taking the stronger reviewer-facing count across repeated hits.
-// maxPreCheckCount 用于在重复命中里选择更强 reviewer 计数时保持合并代码可读。
-func maxPreCheckCount(left, right int) int {
-	if right > left {
+	if math.Abs(right) > math.Abs(left) {
 		return right
 	}
 	return left
