@@ -11,6 +11,7 @@ import (
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/timeutil"
 )
 
 // sqliteRecycleJobRow stores one SQLite recycle-job row before it is converted into the shared retention domain shape.
@@ -52,8 +53,8 @@ func (s *Store) EnqueueColdTurnRecycleJobs(ctx context.Context, query logicdomai
 		return 0, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit := storageutil.PositiveOrDefault(query.Limit, 64)
-	scannedAtMs := normalizeSQLiteRecycleTime(query.ScannedAt).UnixMilli()
-	nextRunMs := normalizeSQLiteRecycleTime(query.NextRunAt).UnixMilli()
+	scannedAtMs := timeutil.UTCOrNow(query.ScannedAt).UnixMilli()
+	nextRunMs := timeutil.UTCOrNow(query.NextRunAt).UnixMilli()
 	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 
 	s.writeMu.Lock()
@@ -146,9 +147,9 @@ func (s *Store) ClaimPendingRecycleJobs(ctx context.Context, jobType string, due
 		return nil, fmt.Errorf("recycle job type is required")
 	}
 	limit = storageutil.PositiveOrDefault(limit, 32)
-	dueBeforeMs := normalizeSQLiteRecycleTime(dueBefore).UnixMilli()
+	dueBeforeMs := timeutil.UTCOrNow(dueBefore).UnixMilli()
 	claimAtMs := time.Now().UTC().UnixMilli()
-	claimUntilMs := normalizeSQLiteRecycleTime(claimUntil).UnixMilli()
+	claimUntilMs := timeutil.UTCOrNow(claimUntil).UnixMilli()
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -195,7 +196,7 @@ func (s *Store) RecycleColdTurns(ctx context.Context, query logicdomain.ColdTurn
 	if query.SessionID == 0 {
 		return logicdomain.ColdTurnRecycleResult{}, nil
 	}
-	recycledAtMillis := normalizeSQLiteRecycleTime(query.RecycledAt).UnixMilli()
+	recycledAtMillis := timeutil.UTCOrNow(query.RecycledAt).UnixMilli()
 	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 	reason := strings.TrimSpace(query.RecycleReason)
 	if reason == "" {
@@ -397,7 +398,7 @@ func (s *Store) RetryRecycleJobs(ctx context.Context, jobIDs []uint64, nextRunAt
 		return nil
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	nextRunMs := normalizeSQLiteRecycleTime(nextRunAt).UnixMilli()
+	nextRunMs := timeutil.UTCOrNow(nextRunAt).UnixMilli()
 	lastError = strings.TrimSpace(lastError)
 
 	s.writeMu.Lock()

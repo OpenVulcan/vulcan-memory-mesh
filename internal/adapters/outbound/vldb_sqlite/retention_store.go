@@ -10,6 +10,7 @@ import (
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/timeutil"
 )
 
 // recycleBatchIDRow stores one recycle-batch identifier selected for one SQLite trash purge pass.
@@ -39,7 +40,7 @@ func (s *Store) RecycleColdMemories(ctx context.Context, query logicdomain.Memor
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit := storageutil.PositiveOrDefault(query.Limit, 128)
-	recycledAt := normalizeSQLiteRecycleTime(query.RecycledAt)
+	recycledAt := timeutil.UTCOrNow(query.RecycledAt)
 	recycledAtMillis := recycledAt.UnixMilli()
 	reason := strings.TrimSpace(query.RecycleReason)
 	if reason == "" {
@@ -221,9 +222,9 @@ func (s *Store) RecycleIdleSessions(ctx context.Context, query logicdomain.Sessi
 		return logicdomain.SessionIdleRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit := storageutil.PositiveOrDefault(query.Limit, 32)
-	recycledAt := normalizeSQLiteRecycleTime(query.RecycledAt)
+	recycledAt := timeutil.UTCOrNow(query.RecycledAt)
 	recycledAtMillis := recycledAt.UnixMilli()
-	idleBefore := normalizeSQLiteRecycleTime(query.IdleBefore)
+	idleBefore := timeutil.UTCOrNow(query.IdleBefore)
 	idleBeforeMillis := idleBefore.UnixMilli()
 	turnHotWindowSize := max(query.TurnHotWindowSize, 0)
 	reason := strings.TrimSpace(query.RecycleReason)
@@ -297,7 +298,7 @@ func (s *Store) PurgeExpiredTrash(ctx context.Context, before time.Time, limit i
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit = storageutil.PositiveOrDefault(limit, 64)
-	purgeBefore := normalizeSQLiteRecycleTime(before).UnixMilli()
+	purgeBefore := timeutil.UTCOrNow(before).UnixMilli()
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -771,15 +772,6 @@ func buildSQLiteIdleSessionTurnReferenceClause(recycledMemoryIDs []uint64) (stri
     WHERE mn.source_turn_id = tr.id
       AND mn.id NOT IN (%s)
   )`, sqlitePlaceholders(len(recycledMemoryIDs))), sqliteUint64Params(recycledMemoryIDs)
-}
-
-// normalizeSQLiteRecycleTime preserves the caller-provided recycle timestamp when present, otherwise falls back to the current UTC time.
-// normalizeSQLiteRecycleTime 用于在调用方给出回收时间时保留原值，否则回退到当前 UTC 时间。
-func normalizeSQLiteRecycleTime(value time.Time) time.Time {
-	if value.IsZero() {
-		return time.Now().UTC()
-	}
-	return value.UTC()
 }
 
 // sharedSQLiteRecycleProjectID keeps one batch-level project id only when every recycled memory row belongs to the same project.

@@ -12,6 +12,7 @@ import (
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/timeutil"
 )
 
 const (
@@ -267,7 +268,7 @@ func (u *RetentionUseCase) runPendingColdTurnRecycleJobs(ctx context.Context, no
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	now = chooseRetentionTimeOrNow(now)
+	now = timeutil.UTCOrNow(now)
 	claimUntil := now.Add(defaultRetentionRecycleJobClaimLease)
 	jobs, err := u.store.ClaimPendingRecycleJobs(ctx, logicdomain.RecycleJobTypeColdTurn, now, claimUntil, defaultRetentionRecycleJobBatchSize)
 	if err != nil {
@@ -352,7 +353,7 @@ func (u *RetentionUseCase) enqueueVectorGCJobs(ctx context.Context, batchID uint
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	nextRunAt := chooseRetentionTimeOrNow(now).Add(defaultRetentionVectorGCRetryDelay)
+	nextRunAt := timeutil.UTCOrNow(now).Add(defaultRetentionVectorGCRetryDelay)
 	if err := u.store.EnqueueVectorGCJobs(ctx, logicdomain.VectorGCJobEnqueueQuery{
 		BatchID:   batchID,
 		JobType:   logicdomain.VectorGCJobTypeRetentionRecycle,
@@ -373,7 +374,7 @@ func (u *RetentionUseCase) retryPendingVectorGCJobs(ctx context.Context, now tim
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	now = chooseRetentionTimeOrNow(now)
+	now = timeutil.UTCOrNow(now)
 	claimUntil := now.Add(defaultRetentionVectorGCClaimLease)
 	jobs, err := u.store.ClaimPendingVectorGCJobs(ctx, now, claimUntil, defaultRetentionVectorGCBatchSize)
 	if err != nil {
@@ -554,15 +555,6 @@ func retentionMemoryLevelFloorValue(level string) int {
 	default:
 		return logicdomain.MemoryLevelStable
 	}
-}
-
-// chooseRetentionTimeOrNow keeps retention helpers on one non-zero UTC clock value even when callers intentionally pass zero time in tests or future refactors.
-// chooseRetentionTimeOrNow 用于让 retention 辅助逻辑总能拿到一个非零 UTC 时间值，避免测试或后续重构传入零时间时出现异常调度。
-func chooseRetentionTimeOrNow(value time.Time) time.Time {
-	if value.IsZero() {
-		return time.Now().UTC()
-	}
-	return value.UTC()
 }
 
 // retentionVectorGCBatchID keeps retry-queue batch references explicit while still allowing zero when one recycle result aggregated multiple batch sources.

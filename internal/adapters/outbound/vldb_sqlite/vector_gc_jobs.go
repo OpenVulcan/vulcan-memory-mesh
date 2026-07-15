@@ -11,6 +11,7 @@ import (
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/timeutil"
 )
 
 // sqliteVectorGCJobRow stores one SQLite vector-GC job row before it is converted into the shared retention domain shape.
@@ -62,7 +63,7 @@ func (s *Store) EnqueueVectorGCJobs(ctx context.Context, query logicdomain.Vecto
 		jobType = logicdomain.VectorGCJobTypeRetentionRecycle
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	nextRunMs := normalizeSQLiteRecycleTime(query.NextRunAt).UnixMilli()
+	nextRunMs := timeutil.UTCOrNow(query.NextRunAt).UnixMilli()
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -114,9 +115,9 @@ func (s *Store) ClaimPendingVectorGCJobs(ctx context.Context, dueBefore, claimUn
 		return nil, fmt.Errorf("sqlite store is not initialized")
 	}
 	limit = storageutil.PositiveOrDefault(limit, 128)
-	dueBeforeMs := normalizeSQLiteRecycleTime(dueBefore).UnixMilli()
+	dueBeforeMs := timeutil.UTCOrNow(dueBefore).UnixMilli()
 	claimAtMs := time.Now().UTC().UnixMilli()
-	claimUntilMs := normalizeSQLiteRecycleTime(claimUntil).UnixMilli()
+	claimUntilMs := timeutil.UTCOrNow(claimUntil).UnixMilli()
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -199,7 +200,7 @@ func (s *Store) RetryVectorGCJobs(ctx context.Context, jobIDs []uint64, nextRunA
 		return nil
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	nextRunMs := normalizeSQLiteRecycleTime(nextRunAt).UnixMilli()
+	nextRunMs := timeutil.UTCOrNow(nextRunAt).UnixMilli()
 	lastError = strings.TrimSpace(lastError)
 
 	s.writeMu.Lock()

@@ -9,6 +9,7 @@ import (
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/logx"
+	"github.com/openvulcan/vmm/internal/platform/timeutil"
 )
 
 const (
@@ -41,7 +42,7 @@ func enqueueVectorGCCompensation(ctx context.Context, store any, logger *logx.Lo
 		BatchID:   0,
 		JobType:   jobType,
 		VectorIDs: append([]string(nil), vectorIDs...),
-		NextRunAt: chooseRetentionTimeOrNow(now).Add(defaultRetentionVectorGCRetryDelay),
+		NextRunAt: timeutil.UTCOrNow(now).Add(defaultRetentionVectorGCRetryDelay),
 	}); err != nil {
 		if logger != nil {
 			fields := append([]any{"job_type", jobType, "vector_count", len(vectorIDs), "err", err}, logFields...)
