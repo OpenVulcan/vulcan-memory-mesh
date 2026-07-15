@@ -17,10 +17,9 @@ type ContextAssembler struct{}
 // NewContextAssembler 用于创建 ContextAssembler 实例。
 func NewContextAssembler() *ContextAssembler { return &ContextAssembler{} }
 
-// Assemble executes the Assemble logic.
-// Assemble 用于执行 Assemble 逻辑。
-func (a *ContextAssembler) Assemble(ctx context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, error) {
-	_ = ctx
+// Assemble satisfies the cancellable pre-check assembler contract while this deterministic local implementation performs no blocking work.
+// Assemble 用于满足可取消的 pre-check 组装器契约；当前确定性本地实现不执行阻塞操作。
+func (a *ContextAssembler) Assemble(_ context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, error) {
 	items := append(personaToItems(persona), memoryHitsToItems(hits)...)
 	return renderContextSummary(items), items, nil
 }

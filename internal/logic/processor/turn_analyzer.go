@@ -51,7 +51,7 @@ func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalys
 	if err != nil {
 		return logicdomain.TurnAnalysis{}, fmt.Errorf("load postaction_l1_main prompt: %w", err)
 	}
-	prompt = renderTurnAnalysisSystemPrompt(prompt, input)
+	prompt = renderTurnAnalysisSystemPrompt(prompt)
 	resp, err := a.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               a.model,
 		SystemPrompt:        prompt,

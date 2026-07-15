@@ -106,7 +106,7 @@ func resolveCurrentPromptLayout() (config.PromptLayout, error) {
 	if err != nil {
 		return config.PromptLayout{}, fmt.Errorf("resolve working directory: %w", err)
 	}
-	layout, err := config.ResolvePromptLayout(executablePath, cwd, "", "local")
+	layout, err := config.ResolvePromptLayout(executablePath, cwd, "")
 	if err != nil {
 		return config.PromptLayout{}, fmt.Errorf("resolve packaged config layout: %w", err)
 	}

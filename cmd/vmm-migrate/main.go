@@ -67,7 +67,7 @@ func run(ctx context.Context, argv0, cfgPath, cleanTarget, migrateTarget string,
 		return fmt.Errorf("resolve working directory: %w", err)
 	}
 
-	layout, err := config.ResolvePromptLayout(exePath, wd, cfgPath, "config")
+	layout, err := config.ResolvePromptLayout(exePath, wd, cfgPath)
 	if err != nil {
 		return fmt.Errorf("resolve config layout: %w", err)
 	}

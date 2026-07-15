@@ -20,6 +20,15 @@ var RequiredScenes = []string{
 	"profile_instruction_main.md",
 }
 
+const (
+	// defaultBaseConfigFileName identifies the packaged baseline configuration shared by every local runtime entrypoint.
+	// defaultBaseConfigFileName 用于标识所有本地运行入口共享的打包基础配置文件。
+	defaultBaseConfigFileName = "base.yaml"
+	// defaultAppConfigFileName identifies the packaged and user-overridable application configuration file.
+	// defaultAppConfigFileName 用于标识打包层与用户覆盖层共用的应用配置文件。
+	defaultAppConfigFileName = "config.yaml"
+)
+
 // PromptLayout captures the resolved system/user prompt roots and the final configuration chain.
 // PromptLayout 用于保存解析后的系统/用户提示词根目录以及最终配置链。
 type PromptLayout struct {
@@ -94,9 +103,9 @@ func (e *ValidationErrors) Error() string {
 	return "prompt validation failed:\n - " + strings.Join(e.Items, "\n - ")
 }
 
-// ResolvePromptLayout resolves the target value.
-// ResolvePromptLayout 用于解析目标值。
-func ResolvePromptLayout(executablePath, cwd, configArg, mode string) (PromptLayout, error) {
+// ResolvePromptLayout resolves packaged and user configuration roots from the executable path, working directory, and optional override argument.
+// ResolvePromptLayout 根据可执行文件路径、工作目录和可选覆盖参数解析打包层与用户层配置根目录。
+func ResolvePromptLayout(executablePath, cwd, configArg string) (PromptLayout, error) {
 	// Resolve the system prompt/config base from the executable layout first.
 	// 先从可执行文件布局中解析系统提示词与配置底座。
 	systemDir, err := resolveSystemDir(executablePath, cwd)
@@ -113,9 +122,9 @@ func ResolvePromptLayout(executablePath, cwd, configArg, mode string) (PromptLay
 
 	// Build the final config chain with project base first, packaged config second, and user override last.
 	// 构建最终配置链，保证项目 base 在前、项目 config 在中、用户覆盖层在后。
-	baseConfigPath := filepath.Join(systemDir, defaultBaseConfigName(mode))
-	systemConfigPath := resolveBundledConfigPath(systemDir, defaultAppConfigName(mode))
-	overrideConfigPath := resolveOverrideConfigPath(userDir, explicitConfigPath, mode)
+	baseConfigPath := filepath.Join(systemDir, defaultBaseConfigFileName)
+	systemConfigPath := resolveBundledConfigPath(systemDir, defaultAppConfigFileName)
+	overrideConfigPath := resolveOverrideConfigPath(userDir, explicitConfigPath)
 	appConfigPath := systemConfigPath
 	if strings.TrimSpace(appConfigPath) == "" {
 		appConfigPath = baseConfigPath
@@ -323,20 +332,6 @@ func looksLikeGoRunExecutable(path string) bool {
 	return strings.Contains(slashPath, "/go-build")
 }
 
-// defaultBaseConfigName returns the immutable project-owned base config file name.
-// defaultBaseConfigName 用于返回仅由项目目录持有的基础配置文件名。
-func defaultBaseConfigName(mode string) string {
-	_ = mode
-	return "base.yaml"
-}
-
-// defaultAppConfigName executes the defaultAppConfigName logic.
-// defaultAppConfigName 用于执行 defaultAppConfigName 逻辑。
-func defaultAppConfigName(mode string) string {
-	_ = mode
-	return "config.yaml"
-}
-
 // resolveBundledConfigPath returns the packaged project-level config path only when the file actually exists.
 // resolveBundledConfigPath 用于仅在文件真实存在时返回打包后的项目级 config 路径。
 func resolveBundledConfigPath(systemDir, name string) string {
@@ -353,7 +348,7 @@ func resolveBundledConfigPath(systemDir, name string) string {
 
 // resolveOverrideConfigPath resolves the target value.
 // resolveOverrideConfigPath 用于解析目标值。
-func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string {
+func resolveOverrideConfigPath(userDir, explicitConfigPath string) string {
 	// Prefer the explicit config file when the caller passed one.
 	// 当调用方显式传入配置文件时优先使用该文件。
 	if strings.TrimSpace(explicitConfigPath) != "" {
@@ -365,7 +360,7 @@ func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string 
 
 	// Otherwise look for the conventional config.yaml inside the resolved user directory.
 	// 否则在解析出的用户目录下查找约定的 config.yaml。
-	candidate := filepath.Join(userDir, defaultAppConfigName(mode))
+	candidate := filepath.Join(userDir, defaultAppConfigFileName)
 	info, err := os.Stat(candidate)
 	if err != nil || info.IsDir() {
 		return ""
@@ -376,7 +371,7 @@ func resolveOverrideConfigPath(userDir, explicitConfigPath, mode string) string 
 // hasSystemConfigBase reports whether one directory is a usable system config root before prompt selection is loaded from config.
 // hasSystemConfigBase 用于在提示词选择尚未从配置加载前，判断一个目录是否可作为系统配置根目录。
 func hasSystemConfigBase(systemDir string) bool {
-	info, err := os.Stat(filepath.Join(systemDir, defaultBaseConfigName("config")))
+	info, err := os.Stat(filepath.Join(systemDir, defaultBaseConfigFileName))
 	return err == nil && !info.IsDir()
 }
 

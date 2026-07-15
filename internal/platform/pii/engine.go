@@ -143,7 +143,7 @@ func NewEngineWithRules(language string, logger *logx.Logger, rules []RuleDefini
 	if lang == "" {
 		lang = "adhoc"
 	}
-	compiled, err := compileRuleEntries(ruleEntriesFromDefinitions(rules), lang, "in-memory rules")
+	compiled, err := compileRuleEntries(ruleEntriesFromDefinitions(rules), "in-memory rules")
 	if err != nil {
 		return nil, err
 	}
@@ -315,7 +315,7 @@ func loadRuleFile(path string) (languageRules, error) {
 	if lang == "" {
 		return languageRules{}, fmt.Errorf("pii rule file %s missing language", path)
 	}
-	compiled, err := compileRuleEntries(file.Rules, lang, path)
+	compiled, err := compileRuleEntries(file.Rules, path)
 	if err != nil {
 		return languageRules{}, err
 	}
@@ -350,10 +350,9 @@ func ruleEntriesFromDefinitions(rules []RuleDefinition) []ruleEntry {
 	return entries
 }
 
-// compileRuleEntries compiles one list of rule entries and rejects invalid names, regexes, and DSL.
-// compileRuleEntries 用于编译一组规则条目，并拒绝非法名称、正则和 DSL。
-func compileRuleEntries(entries []ruleEntry, language, source string) ([]compiledRule, error) {
-	_ = language
+// compileRuleEntries compiles rule entries from one named source and rejects invalid names, regexes, and DSL.
+// compileRuleEntries 用于编译一个具名来源中的规则条目，并拒绝非法名称、正则和 DSL。
+func compileRuleEntries(entries []ruleEntry, source string) ([]compiledRule, error) {
 	compiled := make([]compiledRule, 0, len(entries))
 	seenNames := make(map[string]struct{}, len(entries))
 	for _, item := range entries {

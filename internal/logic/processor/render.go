@@ -192,8 +192,7 @@ func renderTurnAnalysisRequest(input logicdomain.TurnAnalysisInput) (string, err
 
 // renderTurnAnalysisSystemPrompt keeps the postaction_l1_main system prompt static so provider prompt caches can reuse the same prefix across different input shapes.
 // renderTurnAnalysisSystemPrompt 用于保持 postaction_l1_main 系统提示词静态，便于 provider prompt cache 在不同输入形态之间复用同一前缀。
-func renderTurnAnalysisSystemPrompt(template string, input logicdomain.TurnAnalysisInput) string {
-	_ = input
+func renderTurnAnalysisSystemPrompt(template string) string {
 	return strings.TrimSpace(strings.ReplaceAll(template, "\r\n", "\n"))
 }
 

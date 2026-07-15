@@ -408,23 +408,7 @@ func TestRenderTurnAnalysisSystemPromptStaysStatic(t *testing.T) {
 		"`recent_grpc_memory_writes` 只用于排除重复。",
 		"tail",
 	}, "\r\n")
-	rendered := renderTurnAnalysisSystemPrompt(strings.Join([]string{
-		"head",
-		"`reference_turns` 只帮助理解语境，不能作为新事实来源。",
-		"`recent_grpc_memory_writes` 只用于排除重复。",
-		"tail",
-	}, "\r\n"), logicdomain.TurnAnalysisInput{
-		ReferenceTurns: []logicdomain.TurnAnalysisReferenceTurn{
-			{TurnID: 2, Details: "历史摘要"},
-		},
-		TargetTurn: logicdomain.TurnAnalysisTargetTurn{
-			TurnID:  1,
-			RawTurn: `{"user":"你好","assistant":"收到"}`,
-		},
-		RecentGRPCMemoryWrites: []logicdomain.TurnAnalysisDirectWrite{
-			{MemoryID: 3, Abstract: "已写入事实"},
-		},
-	})
+	rendered := renderTurnAnalysisSystemPrompt(template)
 	if strings.Contains(rendered, "{#TAG") {
 		t.Fatalf("expected static prompt without tags, got %s", rendered)
 	}

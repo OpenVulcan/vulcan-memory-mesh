@@ -81,7 +81,7 @@ func parseRuntimeConfigPath(args []string) (string, error) {
 func runRuntime(ctx context.Context, exePath string, wd string, cfgPath string, ready func()) error {
 	// Build the prompt/config layout before any application dependency is created.
 	// 在创建任何应用依赖之前先构建提示词与配置布局。
-	layout, err := config.ResolvePromptLayout(exePath, wd, cfgPath, "config")
+	layout, err := config.ResolvePromptLayout(exePath, wd, cfgPath)
 	if err != nil {
 		return fmt.Errorf("resolve prompt layout: %w", err)
 	}

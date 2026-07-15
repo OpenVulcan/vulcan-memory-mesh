@@ -193,7 +193,7 @@ func resolveRealRuntimeLayout(repoRoot string) (config.PromptLayout, error) {
 	if fileExists(filepath.Join(repoRoot, "output", "configs", "base.yaml")) {
 		executablePath = filepath.Join(repoRoot, "output", "bin", "vmm-local.exe")
 	}
-	return config.ResolvePromptLayout(executablePath, filepath.Join(repoRoot, "cmd", "vmm-local"), "", "config")
+	return config.ResolvePromptLayout(executablePath, filepath.Join(repoRoot, "cmd", "vmm-local"), "")
 }
 
 // firstRoutingAPIKey returns the first usable API key from either one top-level key pool or one normalized node list so fixtures accept every supported key declaration shape.

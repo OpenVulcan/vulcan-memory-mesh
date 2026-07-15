@@ -157,7 +157,6 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 		filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"),
 		filepath.Join(root, "cmd", "vmm-local"),
 		"",
-		"config",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -217,7 +216,6 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 		filepath.Join(root, "output", "bin", "vmm-local.exe"),
 		filepath.Join(root, "cmd", "vmm-local"),
 		"",
-		"config",
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -263,7 +261,6 @@ func TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled(t *testing.T) {
 		filepath.Join(root, "output", "bin", "vmm-local.exe"),
 		filepath.Join(root, "cmd", "vmm-local"),
 		"",
-		"config",
 	)
 	if err != nil {
 		t.Fatal(err)

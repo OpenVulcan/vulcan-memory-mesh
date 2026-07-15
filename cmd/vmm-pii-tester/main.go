@@ -86,7 +86,7 @@ func runFileMode(text, lang, configArg string) error {
 		return fmt.Errorf("resolve working dir: %w", err)
 	}
 
-	layout, err := config.ResolvePromptLayout(exePath, wd, configArg, "local")
+	layout, err := config.ResolvePromptLayout(exePath, wd, configArg)
 	if err != nil {
 		return fmt.Errorf("resolve config layout: %w", err)
 	}

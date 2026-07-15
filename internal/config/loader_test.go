@@ -21,7 +21,7 @@ func TestResolvePromptLayoutDefaultsToHomeVMM(t *testing.T) {
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "configs", "config.yaml"))
 
-	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, "", "config")
+	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -60,7 +60,7 @@ func TestResolvePromptLayoutUsesOutputConfigsForBuiltBinary(t *testing.T) {
 	writeConfigStub(t, filepath.Join(root, "output", "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "output", "configs", "config.yaml"))
 
-	layout, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "", "config")
+	layout, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -81,7 +81,7 @@ func TestResolvePromptLayoutUsesOutputConfigsWithoutDefaultEnglish(t *testing.T)
 	writeConfigStub(t, filepath.Join(root, "output", "configs", "base.yaml"))
 	writeConfigStub(t, filepath.Join(root, "output", "configs", "config.yaml"))
 
-	layout, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "", "config")
+	layout, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -101,7 +101,7 @@ func TestResolvePromptLayoutFallsBackToProjectConfigsForGoRun(t *testing.T) {
 	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "project-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 
-	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), filepath.Join(root, "cmd", "vmm-local"), "", "config")
+	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), filepath.Join(root, "cmd", "vmm-local"), "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -125,7 +125,7 @@ func TestResolvePromptLayoutAcceptsExplicitUserDir(t *testing.T) {
 	userConfigPath := filepath.Join(userDir, "config.yaml")
 	writeConfigStub(t, userConfigPath)
 
-	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, userDir, "config")
+	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, userDir)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -155,7 +155,7 @@ func TestResolvePromptLayoutSupportsExplicitYAMLConfigFilePath(t *testing.T) {
 	configFile := filepath.Join(userBundleDir, "custom.override.yaml")
 	writeConfigStub(t, configFile)
 
-	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, configFile, "config")
+	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, configFile)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -198,7 +198,7 @@ func TestResolvePromptLayoutRejectsExplicitNonYAMLConfigFilePath(t *testing.T) {
 				}
 			}
 
-			_, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, tc.path, "config")
+			_, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, tc.path)
 			if err == nil {
 				t.Fatal("expected error")
 			}
@@ -226,7 +226,7 @@ func TestResolvePromptLayoutUsesUserConfigYAMLAsOverrideWhenPresent(t *testing.T
 	}
 	writeConfigStub(t, userConfigPath)
 
-	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, "", "config")
+	layout, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "go-build", "vmm-local.exe"), root, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -257,7 +257,7 @@ func TestPromptLayoutExposesFixedPIIRuleDirs(t *testing.T) {
 // TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound verifies the TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound behavior.
 // TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound 用于验证 TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound 行为。
 func TestResolvePromptLayoutFailsWhenSystemDirCannotBeFound(t *testing.T) {
-	_, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "bin", "vmm-local.exe"), t.TempDir(), "", "config")
+	_, err := ResolvePromptLayout(filepath.Join(t.TempDir(), "bin", "vmm-local.exe"), t.TempDir(), "")
 	if err == nil {
 		t.Fatal("expected error")
 	}
@@ -270,7 +270,7 @@ func TestResolvePromptLayoutFailsForBuiltBinaryWithoutSiblingConfigs(t *testing.
 	writeRequiredScenes(t, filepath.Join(root, "configs", "prompts", "default_en"), "project-default")
 	writeConfigStub(t, filepath.Join(root, "configs", "base.yaml"))
 
-	_, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "", "config")
+	_, err := ResolvePromptLayout(filepath.Join(root, "output", "bin", "vmm-local.exe"), root, "")
 	if err == nil {
 		t.Fatal("expected error")
 	}
