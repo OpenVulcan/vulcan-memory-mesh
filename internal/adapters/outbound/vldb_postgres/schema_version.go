@@ -74,7 +74,7 @@ func (r *maintenanceRepository) validateTrackedSchemaVersions(ctx context.Contex
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
-		stored, err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).GetSchemaComponentVersion(ctx, component.component)
+		stored, err := r.getSchemaComponentVersion(ctx, component.component)
 		if err != nil {
 			return err
 		}
@@ -92,14 +92,14 @@ func (r *maintenanceRepository) backfillTrackedSchemaVersions(ctx context.Contex
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
-		stored, err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).GetSchemaComponentVersion(ctx, component.component)
+		stored, err := r.getSchemaComponentVersion(ctx, component.component)
 		if err != nil {
 			return err
 		}
 		if stored != 0 {
 			continue
 		}
-		if err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).SetSchemaComponentVersion(ctx, component.component, component.version); err != nil {
+		if err := r.setSchemaComponentVersion(ctx, component.component, component.version); err != nil {
 			return err
 		}
 	}
@@ -113,7 +113,7 @@ func (r *maintenanceRepository) writeTrackedSchemaVersions(ctx context.Context) 
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
-		if err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).SetSchemaComponentVersion(ctx, component.component, component.version); err != nil {
+		if err := r.setSchemaComponentVersion(ctx, component.component, component.version); err != nil {
 			return err
 		}
 	}

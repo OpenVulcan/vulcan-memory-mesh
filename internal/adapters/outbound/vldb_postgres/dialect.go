@@ -16,7 +16,7 @@ import (
 type searchDialect interface {
 	Name() string
 	EnsureSearchExtensions(ctx context.Context, pool *pgxpool.Pool, autoCreate bool) error
-	EnsureSearchIndexes(ctx context.Context, store *Store) error
+	EnsureSearchIndexes(ctx context.Context, repository *maintenanceRepository) error
 	BuildLexicalSearchSQL(r memoryTableResolver, query string, topK int, filter logicdomain.SearchFilter) (string, []any)
 	BuildHybridSearchSQL(r memoryTableResolver, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) (string, []any)
 }

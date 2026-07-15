@@ -27,12 +27,12 @@ func (standardDialect) EnsureSearchExtensions(ctx context.Context, pool *pgxpool
 
 // EnsureSearchIndexes creates the trigram GIN indexes used by the standard PostgreSQL fallback flavor for Chinese-friendly fuzzy lexical recall.
 // EnsureSearchIndexes 用于创建 trigram GIN 索引，服务 standard PostgreSQL 兜底 flavor 的中文友好模糊 lexical 召回。
-func (standardDialect) EnsureSearchIndexes(ctx context.Context, store *Store) error {
-	if store == nil || store.pool == nil {
+func (standardDialect) EnsureSearchIndexes(ctx context.Context, repository *maintenanceRepository) error {
+	if repository == nil || repository.shared == nil || repository.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	for _, statement := range standardTrigramIndexStatements(store) {
-		if _, err := store.pool.Exec(ctx, strings.TrimSpace(statement.sql)); err != nil {
+	for _, statement := range standardTrigramIndexStatements(repository) {
+		if _, err := repository.shared.pool.Exec(ctx, strings.TrimSpace(statement.sql)); err != nil {
 			return postgresDDLStatementExecutionError("create standard postgres trigram index", statement, err)
 		}
 	}
@@ -41,10 +41,10 @@ func (standardDialect) EnsureSearchIndexes(ctx context.Context, store *Store) er
 
 // standardTrigramIndexStatements renders the standard PostgreSQL lexical index DDL with stable names for precise startup diagnostics.
 // standardTrigramIndexStatements 用于渲染 standard PostgreSQL lexical 索引 DDL，并提供稳定名称以便启动诊断精确定位。
-func standardTrigramIndexStatements(store *Store) []postgresDDLStatement {
+func standardTrigramIndexStatements(repository *maintenanceRepository) []postgresDDLStatement {
 	return []postgresDDLStatement{
-		{name: "idx_vmm_memory_nodes_abstract_trgm", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (abstract gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_abstract_trgm"), store.memoryNodesTable())},
-		{name: "idx_vmm_memory_nodes_details_trgm", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (details gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_details_trgm"), store.memoryNodesTable())},
+		{name: "idx_vmm_memory_nodes_abstract_trgm", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (abstract gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_abstract_trgm"), repository.memoryNodesTable())},
+		{name: "idx_vmm_memory_nodes_details_trgm", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (details gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_details_trgm"), repository.memoryNodesTable())},
 	}
 }
 

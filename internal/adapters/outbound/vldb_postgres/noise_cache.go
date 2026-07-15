@@ -10,10 +10,10 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
-// LoadNoiseEmbeddingCache returns one persisted semantic prototype bundle keyed by scope, language, model, dimension, and rules hash.
-// LoadNoiseEmbeddingCache 用于返回按作用域、语言、模型、维度和规则哈希定位的一组持久化语义原型缓存。
-func (s *Store) LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error) {
-	if s == nil || s.pool == nil {
+// loadNoiseEmbeddingCache returns one persisted semantic prototype bundle keyed by scope, language, model, dimension, and rules hash.
+// loadNoiseEmbeddingCache 用于返回按作用域、语言、模型、维度和规则哈希定位的一组持久化语义原型缓存。
+func (r *vectorRepository) loadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	sqlText := fmt.Sprintf(`
@@ -21,10 +21,10 @@ SELECT scope, language, category_name, phrase, model, dimension, rules_hash, emb
 FROM %s
 WHERE scope = $1 AND language = $2 AND model = $3 AND dimension = $4 AND rules_hash = $5
 ORDER BY category_name ASC, phrase ASC
-`, s.noiseEmbeddingsTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.noiseEmbeddingsTable())
+	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	rows, err := s.pool.Query(callCtx, strings.TrimSpace(sqlText),
+	rows, err := r.shared.pool.Query(callCtx, strings.TrimSpace(sqlText),
 		strings.TrimSpace(query.Scope),
 		strings.TrimSpace(query.Language),
 		strings.TrimSpace(query.Model),
@@ -64,15 +64,15 @@ ORDER BY category_name ASC, phrase ASC
 	return entries, nil
 }
 
-// ReplaceNoiseEmbeddingCache replaces one fingerprinted cache bundle atomically so startup semantic preloads never observe half-written prototype rows.
-// ReplaceNoiseEmbeddingCache 用于原子替换某个指纹对应的缓存集合，避免启动期语义预加载看到半写入的原型行。
-func (s *Store) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error {
-	if s == nil || s.pool == nil {
+// replaceNoiseEmbeddingCache replaces one fingerprinted cache bundle atomically so startup semantic preloads never observe half-written prototype rows.
+// replaceNoiseEmbeddingCache 用于原子替换某个指纹对应的缓存集合，避免启动期语义预加载看到半写入的原型行。
+func (r *vectorRepository) replaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	callCtx, cancel := s.queryContext(ctx)
+	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	tx, err := s.pool.Begin(callCtx)
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
 		return fmt.Errorf("begin postgres noise cache replace tx: %w", err)
 	}
@@ -83,7 +83,7 @@ func (s *Store) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomai
 	deleteSQL := fmt.Sprintf(`
 DELETE FROM %s
 WHERE scope = $1 AND language = $2 AND model = $3 AND dimension = $4 AND rules_hash = $5
-`, s.noiseEmbeddingsTable())
+`, r.noiseEmbeddingsTable())
 	if _, err := tx.Exec(callCtx, strings.TrimSpace(deleteSQL),
 		strings.TrimSpace(query.Scope),
 		strings.TrimSpace(query.Language),
@@ -98,7 +98,7 @@ WHERE scope = $1 AND language = $2 AND model = $3 AND dimension = $4 AND rules_h
 INSERT INTO %s (
 	scope, language, category_name, phrase, model, dimension, rules_hash, embedding, updated_at
 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8::vector, $9)
-`, s.noiseEmbeddingsTable())
+`, r.noiseEmbeddingsTable())
 		for _, entry := range entries {
 			if _, err := tx.Exec(callCtx, strings.TrimSpace(insertSQL),
 				strings.TrimSpace(entry.Scope),
@@ -119,6 +119,24 @@ INSERT INTO %s (
 		return postgresNoiseCacheCommitOutcomeUncertainError(err)
 	}
 	return nil
+}
+
+// LoadNoiseEmbeddingCache delegates cache reads to the vector repository that owns the pgvector-backed cache table.
+// LoadNoiseEmbeddingCache 用于把缓存读取委托给拥有 pgvector 缓存表的向量仓储。
+func (s *Store) LoadNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery) ([]logicdomain.NoiseEmbeddingCacheEntry, error) {
+	if s == nil {
+		return nil, fmt.Errorf("postgres store is not initialized")
+	}
+	return s.repos.vector.loadNoiseEmbeddingCache(ctx, query)
+}
+
+// ReplaceNoiseEmbeddingCache delegates cache replacement to the vector repository so writes use the same shared runtime state as vector search.
+// ReplaceNoiseEmbeddingCache 用于把缓存替换委托给向量仓储，使写入与向量检索共用同一份运行时状态。
+func (s *Store) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error {
+	if s == nil {
+		return fmt.Errorf("postgres store is not initialized")
+	}
+	return s.repos.vector.replaceNoiseEmbeddingCache(ctx, query, entries)
 }
 
 // postgresNoiseCacheCommitOutcomeUncertainError marks cache-replace commit failures after PostgreSQL has accepted the transactional mutation set.

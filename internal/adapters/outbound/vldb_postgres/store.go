@@ -58,16 +58,10 @@ type memoryTableResolver interface {
 // Store acts as the public PostgreSQL combined-store facade while delegating shared runtime state and future repository ownership to internal repository bundles.
 // Store 用于作为 PostgreSQL 组合库对外暴露的统一门面，并把共享运行时状态与后续仓储职责收口到内部 repository bundle。
 type Store struct {
-	// shared and repos express the intended runtime boundary: one shared core plus one explicit repository bundle.
-	// shared 与 repos 用于表达目标运行时边界：一个共享核心，加上一组显式 repository bundle。
+	// shared and repos keep every public facade call on the same connection, configuration, and dialect state.
+	// shared 与 repos 用于确保所有门面调用共用同一份连接、配置与方言状态。
 	shared *storeShared
 	repos  storeRepositories
-
-	// pool/cfg/dialect stay on Store as compatibility mirrors so existing focused tests can still construct lightweight Store literals directly.
-	// pool/cfg/dialect 暂时保留在 Store 上作为兼容镜像，保证现有轻量测试仍可直接通过 Store 字面量构造实例。
-	pool    *pgxpool.Pool
-	cfg     Config
-	dialect searchDialect
 }
 
 // NewStore dials PostgreSQL, validates the configured dialect extensions, and bootstraps the shared schema metadata required by the combined runtime.
@@ -91,17 +85,12 @@ func NewStore(cfg Config) (*Store, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial postgres: %w", err)
 	}
-	store := &Store{
-		shared: &storeShared{
-			pool:    pool,
-			cfg:     cfg,
-			dialect: newSearchDialect(cfg.Flavor),
-		},
+	shared := &storeShared{
 		pool:    pool,
 		cfg:     cfg,
 		dialect: newSearchDialect(cfg.Flavor),
 	}
-	store.repos = newStoreRepositories(store.shared)
+	store := &Store{shared: shared, repos: newStoreRepositories(shared)}
 	if err := store.init(context.Background()); err != nil {
 		pool.Close()
 		return nil, err
@@ -117,28 +106,37 @@ func (s *Store) Shutdown(ctx context.Context) error {
 		return ctx.Err()
 	default:
 	}
-	if s == nil || s.pool == nil {
+	if s == nil || s.shared == nil || s.shared.pool == nil {
 		return nil
 	}
-	s.pool.Close()
+	s.shared.pool.Close()
 	return nil
 }
 
 // GetSchemaComponentVersion loads one shared PostgreSQL combined-store schema version row from the component version table.
 // GetSchemaComponentVersion 用于从组件版本表读取一条 PostgreSQL 组合库 schema 版本记录。
 func (s *Store) GetSchemaComponentVersion(ctx context.Context, component string) (int, error) {
-	if s == nil || s.pool == nil {
+	if s == nil {
+		return 0, fmt.Errorf("postgres store is not initialized")
+	}
+	return s.repos.maintenance.getSchemaComponentVersion(ctx, component)
+}
+
+// getSchemaComponentVersion loads one component version through the maintenance repository used by startup migrations and runtime schema synchronization.
+// getSchemaComponentVersion 用于通过维护仓储读取组件版本，供启动迁移与运行时 Schema 同步共用。
+func (r *maintenanceRepository) getSchemaComponentVersion(ctx context.Context, component string) (int, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return 0, fmt.Errorf("postgres store is not initialized")
 	}
 	component = strings.TrimSpace(component)
 	if component == "" {
 		component = defaultSchemaVersionComponent
 	}
-	query := fmt.Sprintf(`SELECT schema_version FROM %s WHERE component = $1`, s.schemaTable())
-	callCtx, cancel := s.queryContext(ctx)
+	query := fmt.Sprintf(`SELECT schema_version FROM %s WHERE component = $1`, r.maintenanceQualifiedTable("vmm_schema_versions"))
+	callCtx, cancel := r.maintenanceQueryContext(ctx)
 	defer cancel()
 	var version int
-	err := s.pool.QueryRow(callCtx, query, component).Scan(&version)
+	err := r.shared.pool.QueryRow(callCtx, query, component).Scan(&version)
 	if err != nil {
 		if strings.Contains(strings.ToLower(err.Error()), "no rows") {
 			return 0, nil
@@ -151,7 +149,16 @@ func (s *Store) GetSchemaComponentVersion(ctx context.Context, component string)
 // SetSchemaComponentVersion upserts one shared PostgreSQL combined-store schema version row into the component version table.
 // SetSchemaComponentVersion 用于把一条 PostgreSQL 组合库 schema 版本记录 upsert 到组件版本表。
 func (s *Store) SetSchemaComponentVersion(ctx context.Context, component string, version int) error {
-	if s == nil || s.pool == nil {
+	if s == nil {
+		return fmt.Errorf("postgres store is not initialized")
+	}
+	return s.repos.maintenance.setSchemaComponentVersion(ctx, component, version)
+}
+
+// setSchemaComponentVersion persists one component version through the maintenance repository used by startup migrations and runtime schema synchronization.
+// setSchemaComponentVersion 用于通过维护仓储持久化组件版本，供启动迁移与运行时 Schema 同步共用。
+func (r *maintenanceRepository) setSchemaComponentVersion(ctx context.Context, component string, version int) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	component = strings.TrimSpace(component)
@@ -163,10 +170,10 @@ INSERT INTO %s (component, schema_version, updated_at)
 VALUES ($1, $2, NOW())
 ON CONFLICT (component)
 DO UPDATE SET schema_version = EXCLUDED.schema_version, updated_at = EXCLUDED.updated_at
-`, s.schemaTable())
-	callCtx, cancel := s.queryContext(ctx)
+`, r.maintenanceQualifiedTable("vmm_schema_versions"))
+	callCtx, cancel := r.maintenanceQueryContext(ctx)
 	defer cancel()
-	if _, err := s.pool.Exec(callCtx, query, component, version); err != nil {
+	if _, err := r.shared.pool.Exec(callCtx, query, component, version); err != nil {
 		return fmt.Errorf("persist postgres schema version for %s: %w", component, err)
 	}
 	return nil
@@ -175,38 +182,16 @@ DO UPDATE SET schema_version = EXCLUDED.schema_version, updated_at = EXCLUDED.up
 // init bootstraps the shared schema version table and validates the configured search dialect before the runtime starts serving traffic.
 // init 用于在运行时开始对外服务前，初始化共享 schema 版本表并校验当前搜索方言。
 func (s *Store) init(ctx context.Context) error {
-	if s == nil || s.pool == nil {
+	if s == nil || s.shared == nil || s.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	if err := s.dialect.EnsureSearchExtensions(ctx, s.pool, s.cfg.AutoCreateExtensions); err != nil {
+	if err := s.shared.dialect.EnsureSearchExtensions(ctx, s.shared.pool, s.shared.cfg.AutoCreateExtensions); err != nil {
 		return err
 	}
 	if err := s.repos.maintenance.ensureSchema(ctx); err != nil {
 		return err
 	}
 	return nil
-}
-
-// schemaTable returns the fully-qualified component-version table name under the configured PostgreSQL schema.
-// schemaTable 用于返回配置 schema 下完整限定的组件版本表名。
-func (s *Store) schemaTable() string {
-	return s.qualifiedTable("vmm_schema_versions")
-}
-
-// trgmSimilarityThreshold returns the configured trigram similarity threshold used by lexical SQL generation.
-// trgmSimilarityThreshold 用于返回 lexical SQL 生成所需的配置 trigram 相似度阈值。
-func (s *Store) trgmSimilarityThreshold() float64 {
-	return s.cfg.TRGMSimilarityThreshold
-}
-
-// queryContext derives one bounded query context so shared PostgreSQL calls stay inside the configured runtime timeout.
-// queryContext 用于派生一个有界查询上下文，确保 PostgreSQL 共享调用始终受运行时超时约束。
-func (s *Store) queryContext(ctx context.Context) (context.Context, context.CancelFunc) {
-	timeout := s.cfg.QueryTimeout
-	if timeout <= 0 {
-		timeout = 5 * time.Second
-	}
-	return context.WithTimeout(ctx, timeout)
 }
 
 // normalizeConfig canonicalizes PostgreSQL combined-store settings before the adapter dials the pool so startup errors stay deterministic.

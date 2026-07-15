@@ -11,8 +11,8 @@ import (
 // TestMaintenanceReadContextUsesDedicatedConfiguredTimeout verifies maintenance/admin rebuild reads now honor the dedicated maintenance-tool timeout instead of inheriting the normal online query budget.
 // TestMaintenanceReadContextUsesDedicatedConfiguredTimeout 用于验证维护/管理重建读取现在会使用专用维护工具超时，而不是继续继承普通在线查询预算。
 func TestMaintenanceReadContextUsesDedicatedConfiguredTimeout(t *testing.T) {
-	store := &Store{cfg: Config{QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second}}
-	ctx, cancel := store.maintenanceReadContext(context.Background())
+	store := newTestStore(Config{QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second})
+	ctx, cancel := store.repos.memory.maintenanceReadContext(context.Background())
 	defer cancel()
 
 	assertContextDeadlineAtLeast(t, ctx, 44*time.Second)
@@ -22,8 +22,8 @@ func TestMaintenanceReadContextUsesDedicatedConfiguredTimeout(t *testing.T) {
 // TestMaintenanceReadContextFallsBackToDefaultBudget verifies direct store construction still falls back to the shipped maintenance-tool default when no dedicated read timeout is provided.
 // TestMaintenanceReadContextFallsBackToDefaultBudget 用于验证当未显式提供维护读取超时时，直接构造 store 仍会回退到仓库内建的维护工具默认预算。
 func TestMaintenanceReadContextFallsBackToDefaultBudget(t *testing.T) {
-	store := &Store{cfg: Config{QueryTimeout: 5 * time.Second}}
-	ctx, cancel := store.maintenanceReadContext(context.Background())
+	store := newTestStore(Config{QueryTimeout: 5 * time.Second})
+	ctx, cancel := store.repos.memory.maintenanceReadContext(context.Background())
 	defer cancel()
 
 	assertContextDeadlineAtLeast(t, ctx, 29*time.Second)
@@ -33,8 +33,8 @@ func TestMaintenanceReadContextFallsBackToDefaultBudget(t *testing.T) {
 // TestMaintenanceWriteContextUsesDedicatedConfiguredTimeout verifies destructive maintenance transactions honor the dedicated maintenance-tool write timeout instead of deriving from startup or online request settings.
 // TestMaintenanceWriteContextUsesDedicatedConfiguredTimeout 用于验证破坏性维护事务会遵循专用维护工具写超时，而不是继续从启动期或在线请求配置派生。
 func TestMaintenanceWriteContextUsesDedicatedConfiguredTimeout(t *testing.T) {
-	store := &Store{cfg: Config{QueryTimeout: 5 * time.Second, MaintenanceWriteTimeout: 12 * time.Minute}}
-	ctx, cancel := store.maintenanceWriteContext(context.Background())
+	store := newTestStore(Config{QueryTimeout: 5 * time.Second, MaintenanceWriteTimeout: 12 * time.Minute})
+	ctx, cancel := store.repos.maintenance.maintenanceWriteContext(context.Background())
 	defer cancel()
 
 	assertContextDeadlineAtLeast(t, ctx, 11*time.Minute+59*time.Second)

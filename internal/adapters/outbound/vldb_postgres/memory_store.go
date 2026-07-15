@@ -739,106 +739,65 @@ func nullableUint64(value uint64) any {
 // LoadMemoryNodesByIDs delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // LoadMemoryNodesByIDs 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.LoadMemoryNodesByIDs(ctx, memoryIDs)
 }
 
 // LoadMemoryContextEdgesByMemoryIDs delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // LoadMemoryContextEdgesByMemoryIDs 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.LoadMemoryContextEdgesByMemoryIDs(ctx, memoryIDs)
 }
 
 // LoadMemoryNodesByVectorIDs delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // LoadMemoryNodesByVectorIDs 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.LoadMemoryNodesByVectorIDs(ctx, vectorIDs)
 }
 
 // SearchLexicalMemory delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // SearchLexicalMemory 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.SearchLexicalMemory(ctx, query, topK, filter)
 }
 
 // FindRecentActiveMemoryByDedupe delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // FindRecentActiveMemoryByDedupe 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) FindRecentActiveMemoryByDedupe(ctx context.Context, session logicdomain.SessionRef, sourceKind, scopeLevel int, dedupeHash string, notBefore time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.FindRecentActiveMemoryByDedupe(ctx, session, sourceKind, scopeLevel, dedupeHash, notBefore)
 }
 
 // CreateDirectMemoryNode delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // CreateDirectMemoryNode 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.CreateDirectMemoryNode(ctx, session, record)
 }
 
 // ApplyDirectMemoryWrite delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // ApplyDirectMemoryWrite 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.ApplyDirectMemoryWrite(ctx, session, record, supersededMemoryIDs)
 }
 
 // DeleteMemoryNodes delegates explicit memory-node deletion to the memory repository so combined PostgreSQL storage updates the owning relational row.
 // DeleteMemoryNodes 用于把显式记忆条目删除委托给 memory repository，让 PostgreSQL 组合存储更新拥有该记忆的关系行。
 func (s *Store) DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.DeleteMemoryNodes(ctx, memoryIDs, filter, deletedAt, reason)
 }
 
 // ListProjectMemories delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // ListProjectMemories 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) ListProjectMemories(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.ListProjectMemories(ctx, projectID)
 }
 
 // ListProjectMemoriesForMaintenance delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // ListProjectMemoriesForMaintenance 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) ListProjectMemoriesForMaintenance(ctx context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.ListProjectMemoriesForMaintenance(ctx, projectID)
 }
 
 // ReplaceMemoryVectors delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // ReplaceMemoryVectors 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.MemoryRecord) error {
-	s.ensureMemoryRepo()
 	return s.repos.memory.ReplaceMemoryVectors(ctx, records)
-}
-
-// queryMemoryNodes delegates to the memory repository so internal callers can still execute memory queries through the Store facade.
-// queryMemoryNodes 用于让内部调用方仍能通过 Store 门面执行记忆查询。
-func (s *Store) queryMemoryNodes(ctx context.Context, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
-	s.ensureMemoryRepo()
-	return s.repos.memory.queryMemoryNodes(ctx, sqlText, args...)
-}
-
-// queryMemoryNodesWithQueryer delegates to the memory repository so internal callers can execute memory queries against a specific queryer (pool or transaction).
-// queryMemoryNodesWithQueryer 用于让内部调用方仍能针对特定查询器（连接池或事务）执行记忆查询。
-func (s *Store) queryMemoryNodesWithQueryer(ctx context.Context, q profileQueryer, sqlText string, args ...any) ([]memoryNodeScanRow, error) {
-	s.ensureMemoryRepo()
-	return s.repos.memory.queryMemoryNodesWithQueryer(ctx, q, sqlText, args...)
-}
-
-// listProjectMemoriesWithQueryerAndContextBuilder delegates to the memory repository so internal callers and tests can still use the shared project-memory listing helper through the Store facade.
-// listProjectMemoriesWithQueryerAndContextBuilder 用于让内部调用方和测试仍能通过 Store 门面使用共享的项目记忆枚举辅助方法。
-func (s *Store) listProjectMemoriesWithQueryerAndContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc), projectID uint64) ([]logicdomain.MemoryRecord, error) {
-	s.ensureMemoryRepo()
-	return s.repos.memory.listProjectMemoriesWithQueryerAndContextBuilder(ctx, q, buildContext, projectID)
-}
-
-// ensureMemoryRepo lazily wires a memoryRepository from Store compatibility mirrors so tests that construct bare Store literals via cfg/pool continue to work.
-// ensureMemoryRepo 用于从 Store 兼容镜像延迟组装 memoryRepository，让通过 cfg/pool 字面量构造的轻量测试仍能正常工作。
-func (s *Store) ensureMemoryRepo() {
-	if s.repos.memory.shared == nil {
-		s.repos.memory.shared = &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}
-		s.repos.memory.analysis = analysisRepository{shared: s.repos.memory.shared}
-	}
 }

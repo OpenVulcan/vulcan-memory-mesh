@@ -15,10 +15,10 @@ import (
 // TestListProjectMemoriesWithQueryerUsesOnlineQueryTimeout verifies the shared project-memory listing helper keeps normal online callers on the standard query timeout budget.
 // TestListProjectMemoriesWithQueryerUsesOnlineQueryTimeout 用于验证共享项目记忆枚举辅助逻辑会让普通在线调用方继续走标准 query timeout 预算。
 func TestListProjectMemoriesWithQueryerUsesOnlineQueryTimeout(t *testing.T) {
-	store := &Store{cfg: Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second}}
+	store := newTestStore(Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second})
 	queryer := &captureProjectMemoryQueryer{}
 
-	records, err := store.listProjectMemoriesWithQueryerAndContextBuilder(context.Background(), queryer, store.queryContext, 7)
+	records, err := store.repos.memory.listProjectMemoriesWithQueryerAndContextBuilder(context.Background(), queryer, store.repos.memory.queryContext, 7)
 	if err != nil {
 		t.Fatalf("listProjectMemoriesWithQueryerAndContextBuilder returned error: %v", err)
 	}
@@ -32,10 +32,10 @@ func TestListProjectMemoriesWithQueryerUsesOnlineQueryTimeout(t *testing.T) {
 // TestListProjectMemoriesWithQueryerUsesMaintenanceReadTimeout verifies maintenance callers can explicitly switch the same project-memory listing helper onto the dedicated maintenance read timeout.
 // TestListProjectMemoriesWithQueryerUsesMaintenanceReadTimeout 用于验证维护调用方可以显式把同一套项目记忆枚举辅助逻辑切到专用 maintenance read timeout。
 func TestListProjectMemoriesWithQueryerUsesMaintenanceReadTimeout(t *testing.T) {
-	store := &Store{cfg: Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second}}
+	store := newTestStore(Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second})
 	queryer := &captureProjectMemoryQueryer{}
 
-	records, err := store.listProjectMemoriesWithQueryerAndContextBuilder(context.Background(), queryer, store.maintenanceReadContext, 9)
+	records, err := store.repos.memory.listProjectMemoriesWithQueryerAndContextBuilder(context.Background(), queryer, store.repos.memory.maintenanceReadContext, 9)
 	if err != nil {
 		t.Fatalf("listProjectMemoriesWithQueryerAndContextBuilder returned error: %v", err)
 	}

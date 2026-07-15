@@ -489,9 +489,6 @@ RETURNING id, session_key, user_id, team_id, space_id, project_id,
 // ResolveRequestScope delegates to the workspace repository for request-scope resolution.
 // ResolveRequestScope 用于把请求范围解析委托给 workspace 仓储。
 func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, userID, projectID uint64) (logicdomain.SessionRef, error) {
-	if s.repos.workspace.shared == nil {
-		return (&workspaceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).ResolveRequestScope(ctx, sessionKey, userID, projectID)
-	}
 	return s.repos.workspace.ResolveRequestScope(ctx, sessionKey, userID, projectID)
 }
 
@@ -535,49 +532,4 @@ func (s *Store) EnsureUserName(ctx context.Context, userName string, confirmCrea
 // ListUsers 用于把用户枚举委托给 workspace 仓储。
 func (s *Store) ListUsers(ctx context.Context) ([]logicdomain.UserRecord, error) {
 	return s.repos.workspace.ListUsers(ctx)
-}
-
-// resolveProfileTargetWithQueryer delegates to the workspace repository for test-compatible profile target resolution.
-// resolveProfileTargetWithQueryer 用于把画像目标解析委托给 workspace 仓储，供测试兼容调用。
-func (s *Store) resolveProfileTargetWithQueryer(ctx context.Context, q profileQueryer, profileType int, userID, projectID uint64) (logicdomain.ProfileTargetRef, error) {
-	if s.repos.workspace.shared == nil {
-		return (&workspaceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).resolveProfileTargetWithQueryer(ctx, q, profileType, userID, projectID)
-	}
-	return s.repos.workspace.resolveProfileTargetWithQueryer(ctx, q, profileType, userID, projectID)
-}
-
-// insertTeam delegates to the workspace repository for team insertion.
-// insertTeam 用于把 team 插入委托给 workspace 仓储。
-func (s *Store) insertTeam(ctx context.Context, q profileQueryer, teamName string, now time.Time) (logicdomain.TeamRecord, error) {
-	if s.repos.workspace.shared == nil {
-		return (&workspaceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).insertTeam(ctx, q, teamName, now)
-	}
-	return s.repos.workspace.insertTeam(ctx, q, teamName, now)
-}
-
-// insertSpace delegates to the workspace repository for space insertion.
-// insertSpace 用于把 space 插入委托给 workspace 仓储。
-func (s *Store) insertSpace(ctx context.Context, q profileQueryer, teamID uint64, spaceName string, now time.Time) (logicdomain.SpaceRecord, error) {
-	if s.repos.workspace.shared == nil {
-		return (&workspaceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).insertSpace(ctx, q, teamID, spaceName, now)
-	}
-	return s.repos.workspace.insertSpace(ctx, q, teamID, spaceName, now)
-}
-
-// insertProject delegates to the workspace repository for project insertion.
-// insertProject 用于把 project 插入委托给 workspace 仓储。
-func (s *Store) insertProject(ctx context.Context, q profileQueryer, team logicdomain.TeamRecord, space logicdomain.SpaceRecord, projectName string, now time.Time) (logicdomain.ProjectRecord, error) {
-	if s.repos.workspace.shared == nil {
-		return (&workspaceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).insertProject(ctx, q, team, space, projectName, now)
-	}
-	return s.repos.workspace.insertProject(ctx, q, team, space, projectName, now)
-}
-
-// listProjectsWithQueryerAndContextBuilder delegates to the workspace repository for project enumeration with custom query context.
-// listProjectsWithQueryerAndContextBuilder 用于把带自定义上下文的项目枚举委托给 workspace 仓储。
-func (s *Store) listProjectsWithQueryerAndContextBuilder(ctx context.Context, q profileQueryer, buildContext func(context.Context) (context.Context, context.CancelFunc)) ([]logicdomain.ProjectRecord, error) {
-	if s.repos.workspace.shared == nil {
-		return (&workspaceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).listProjectsWithQueryerAndContextBuilder(ctx, q, buildContext)
-	}
-	return s.repos.workspace.listProjectsWithQueryerAndContextBuilder(ctx, q, buildContext)
 }

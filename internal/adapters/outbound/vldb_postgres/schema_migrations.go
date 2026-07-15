@@ -104,7 +104,7 @@ func (r *maintenanceRepository) applyTrackedSchemaMigrations(ctx context.Context
 	}
 	steps := trackedSchemaMigrationSteps(r.shared.cfg.Flavor)
 	for _, component := range trackedSchemaComponents(r.shared.cfg.Flavor) {
-		stored, err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).GetSchemaComponentVersion(ctx, component.component)
+		stored, err := r.getSchemaComponentVersion(ctx, component.component)
 		if err != nil {
 			return err
 		}
@@ -118,7 +118,7 @@ func (r *maintenanceRepository) applyTrackedSchemaMigrations(ctx context.Context
 				return fmt.Errorf("migrate postgres schema component %s %d -> %d (%s): %w", step.Component, step.FromVersion, step.ToVersion, step.Name, err)
 			}
 			current = step.ToVersion
-			if err := (&Store{pool: r.shared.pool, cfg: r.shared.cfg}).SetSchemaComponentVersion(ctx, component.component, current); err != nil {
+			if err := r.setSchemaComponentVersion(ctx, component.component, current); err != nil {
 				return err
 			}
 		}

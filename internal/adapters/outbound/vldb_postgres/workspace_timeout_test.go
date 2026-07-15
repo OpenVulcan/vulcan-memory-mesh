@@ -15,10 +15,10 @@ import (
 // TestListProjectsWithQueryerUsesOnlineQueryTimeout verifies the shared project-listing helper keeps normal online callers on the standard query timeout budget.
 // TestListProjectsWithQueryerUsesOnlineQueryTimeout 用于验证共享项目枚举辅助逻辑会让普通在线调用方继续走标准 query timeout 预算。
 func TestListProjectsWithQueryerUsesOnlineQueryTimeout(t *testing.T) {
-	store := &Store{cfg: Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second}}
+	store := newTestStore(Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second})
 	queryer := &captureProjectListQueryer{}
 
-	projects, err := store.listProjectsWithQueryerAndContextBuilder(context.Background(), queryer, store.queryContext)
+	projects, err := store.repos.workspace.listProjectsWithQueryerAndContextBuilder(context.Background(), queryer, store.repos.workspace.workspaceQueryContext)
 	if err != nil {
 		t.Fatalf("listProjectsWithQueryerAndContextBuilder returned error: %v", err)
 	}
@@ -32,10 +32,10 @@ func TestListProjectsWithQueryerUsesOnlineQueryTimeout(t *testing.T) {
 // TestListProjectsWithQueryerUsesMaintenanceReadTimeout verifies maintenance callers can explicitly switch the same project-listing helper onto the dedicated maintenance read timeout.
 // TestListProjectsWithQueryerUsesMaintenanceReadTimeout 用于验证维护调用方可以显式把同一套项目枚举辅助逻辑切到专用 maintenance read timeout。
 func TestListProjectsWithQueryerUsesMaintenanceReadTimeout(t *testing.T) {
-	store := &Store{cfg: Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second}}
+	store := newTestStore(Config{Schema: "public", QueryTimeout: 5 * time.Second, MaintenanceReadTimeout: 45 * time.Second})
 	queryer := &captureProjectListQueryer{}
 
-	projects, err := store.listProjectsWithQueryerAndContextBuilder(context.Background(), queryer, store.maintenanceReadContext)
+	projects, err := store.repos.workspace.listProjectsWithQueryerAndContextBuilder(context.Background(), queryer, store.repos.workspace.workspaceMaintenanceReadContext)
 	if err != nil {
 		t.Fatalf("listProjectsWithQueryerAndContextBuilder returned error: %v", err)
 	}

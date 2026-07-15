@@ -85,6 +85,5 @@ func (r *memoryRepository) SearchHybridMemory(ctx context.Context, query string,
 // SearchHybridMemory delegates to the memory repository so existing port interfaces continue to compile while ownership moves inward.
 // SearchHybridMemory 用于委托给 memory repository，让现有接口保持兼容的同时把职责向内迁移。
 func (s *Store) SearchHybridMemory(ctx context.Context, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) ([]logicdomain.MemoryHit, error) {
-	s.ensureMemoryRepo()
 	return s.repos.memory.SearchHybridMemory(ctx, query, vector, topK, filter, rrfK)
 }

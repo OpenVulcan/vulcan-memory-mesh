@@ -333,7 +333,7 @@ CREATE TABLE IF NOT EXISTS %s (
 	if err := r.ensureVectorIndex(callCtx); err != nil {
 		return err
 	}
-	if err := r.shared.dialect.EnsureSearchIndexes(callCtx, (&Store{pool: r.shared.pool, cfg: r.shared.cfg, dialect: r.shared.dialect})); err != nil {
+	if err := r.shared.dialect.EnsureSearchIndexes(callCtx, r); err != nil {
 		return err
 	}
 	return r.backfillTrackedSchemaVersions(callCtx)
@@ -560,40 +560,4 @@ SELECT setval(
 		return fmt.Errorf("sync postgres identity sequence for %s: %w", tableName, err)
 	}
 	return nil
-}
-
-// upsertDebugSeedUser delegates to the maintenance repository.
-// upsertDebugSeedUser 用于把 upsert 调试种子用户委托给 maintenance 仓储。
-func (s *Store) upsertDebugSeedUser(ctx context.Context, q profileQueryer, userName string, now time.Time) (uint64, error) {
-	if s.repos.maintenance.shared == nil {
-		return (&maintenanceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).upsertDebugSeedUser(ctx, q, userName, now)
-	}
-	return s.repos.maintenance.upsertDebugSeedUser(ctx, q, userName, now)
-}
-
-// upsertDebugSeedTeam delegates to the maintenance repository.
-// upsertDebugSeedTeam 用于把 upsert 调试种子团队委托给 maintenance 仓储。
-func (s *Store) upsertDebugSeedTeam(ctx context.Context, q profileQueryer, teamName string, now time.Time) (uint64, error) {
-	if s.repos.maintenance.shared == nil {
-		return (&maintenanceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).upsertDebugSeedTeam(ctx, q, teamName, now)
-	}
-	return s.repos.maintenance.upsertDebugSeedTeam(ctx, q, teamName, now)
-}
-
-// upsertDebugSeedSpace delegates to the maintenance repository.
-// upsertDebugSeedSpace 用于把 upsert 调试种子空间委托给 maintenance 仓储。
-func (s *Store) upsertDebugSeedSpace(ctx context.Context, q profileQueryer, teamID uint64, spaceName string, now time.Time) (uint64, error) {
-	if s.repos.maintenance.shared == nil {
-		return (&maintenanceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).upsertDebugSeedSpace(ctx, q, teamID, spaceName, now)
-	}
-	return s.repos.maintenance.upsertDebugSeedSpace(ctx, q, teamID, spaceName, now)
-}
-
-// upsertDebugSeedProject delegates to the maintenance repository.
-// upsertDebugSeedProject 用于把 upsert 调试种子项目委托给 maintenance 仓储。
-func (s *Store) upsertDebugSeedProject(ctx context.Context, q profileQueryer, teamID, spaceID uint64, projectName string, now time.Time) (uint64, error) {
-	if s.repos.maintenance.shared == nil {
-		return (&maintenanceRepository{shared: &storeShared{pool: s.pool, cfg: s.cfg, dialect: s.dialect}}).upsertDebugSeedProject(ctx, q, teamID, spaceID, projectName, now)
-	}
-	return s.repos.maintenance.upsertDebugSeedProject(ctx, q, teamID, spaceID, projectName, now)
 }

@@ -17,16 +17,14 @@ import (
 // TestParadeDBDialectBuildLexicalSearchSQL verifies the ParadeDB flavor emits @@@ plus pdb.parse and preserves scoped filters.
 // TestParadeDBDialectBuildLexicalSearchSQL 用于验证 ParadeDB flavor 会发出 @@@ 与 pdb.parse，并保留作用域过滤条件。
 func TestParadeDBDialectBuildLexicalSearchSQL(t *testing.T) {
-	store := &Store{
-		cfg: Config{
-			Schema:                  "memory",
-			Flavor:                  "paradedb",
-			BM25IndexName:           "vmm_memory_nodes_bm25_idx",
-			TRGMSimilarityThreshold: 0.2,
-			EmbeddingDimension:      3,
-		},
-	}
-	sqlText, args := paradeDBDialect{}.BuildLexicalSearchSQL(store, "架构 决策", 8, logicdomain.SearchFilter{
+	store := newTestStore(Config{
+		Schema:                  "memory",
+		Flavor:                  "paradedb",
+		BM25IndexName:           "vmm_memory_nodes_bm25_idx",
+		TRGMSimilarityThreshold: 0.2,
+		EmbeddingDimension:      3,
+	})
+	sqlText, args := paradeDBDialect{}.BuildLexicalSearchSQL(&store.repos.memory, "架构 决策", 8, logicdomain.SearchFilter{
 		TeamID:            10,
 		SpaceID:           20,
 		ProjectID:         30,
@@ -58,15 +56,13 @@ func TestParadeDBDialectBuildLexicalSearchSQL(t *testing.T) {
 // TestStandardDialectBuildLexicalSearchSQL verifies the standard flavor emits pg_trgm-friendly ILIKE and similarity clauses instead of tsvector search.
 // TestStandardDialectBuildLexicalSearchSQL 用于验证 standard flavor 会发出适合 pg_trgm 的 ILIKE 与 similarity 条件，而不是 tsvector 搜索。
 func TestStandardDialectBuildLexicalSearchSQL(t *testing.T) {
-	store := &Store{
-		cfg: Config{
-			Schema:                  "public",
-			Flavor:                  "standard",
-			TRGMSimilarityThreshold: 0.23,
-			EmbeddingDimension:      3,
-		},
-	}
-	sqlText, args := standardDialect{}.BuildLexicalSearchSQL(store, "中文检索", 6, logicdomain.SearchFilter{
+	store := newTestStore(Config{
+		Schema:                  "public",
+		Flavor:                  "standard",
+		TRGMSimilarityThreshold: 0.23,
+		EmbeddingDimension:      3,
+	})
+	sqlText, args := standardDialect{}.BuildLexicalSearchSQL(&store.repos.memory, "中文检索", 6, logicdomain.SearchFilter{
 		ProjectID: 1,
 		UserID:    2,
 	})
@@ -93,15 +89,13 @@ func TestStandardDialectBuildLexicalSearchSQL(t *testing.T) {
 // TestParadeDBDialectBuildHybridSearchSQL verifies the ParadeDB flavor can emit one SQL-level fusion query instead of requiring application-side vector/lexical fan-out.
 // TestParadeDBDialectBuildHybridSearchSQL 用于验证 ParadeDB flavor 可以直接生成 SQL 层融合查询，而不是继续依赖应用层拆成向量与 lexical 两段查询。
 func TestParadeDBDialectBuildHybridSearchSQL(t *testing.T) {
-	store := &Store{
-		cfg: Config{
-			Schema:             "memory",
-			Flavor:             "paradedb",
-			BM25IndexName:      "vmm_memory_nodes_bm25_idx",
-			EmbeddingDimension: 3,
-		},
-	}
-	sqlText, args := paradeDBDialect{}.BuildHybridSearchSQL(store, "混合 检索", []float32{0.1, 0.2, 0.3}, 8, logicdomain.SearchFilter{
+	store := newTestStore(Config{
+		Schema:             "memory",
+		Flavor:             "paradedb",
+		BM25IndexName:      "vmm_memory_nodes_bm25_idx",
+		EmbeddingDimension: 3,
+	})
+	sqlText, args := paradeDBDialect{}.BuildHybridSearchSQL(&store.repos.memory, "混合 检索", []float32{0.1, 0.2, 0.3}, 8, logicdomain.SearchFilter{
 		ProjectID:         30,
 		UserID:            40,
 		BoundarySessionID: 50,
@@ -130,15 +124,13 @@ func TestParadeDBDialectBuildHybridSearchSQL(t *testing.T) {
 // TestStandardDialectBuildHybridSearchSQL verifies the standard flavor fuses pgvector and trigram candidates in SQL without falling back to tsvector syntax.
 // TestStandardDialectBuildHybridSearchSQL 用于验证 standard flavor 会在 SQL 层融合 pgvector 与 trigram 候选，而不会回退到 tsvector 语法。
 func TestStandardDialectBuildHybridSearchSQL(t *testing.T) {
-	store := &Store{
-		cfg: Config{
-			Schema:                  "public",
-			Flavor:                  "standard",
-			TRGMSimilarityThreshold: 0.23,
-			EmbeddingDimension:      3,
-		},
-	}
-	sqlText, args := standardDialect{}.BuildHybridSearchSQL(store, "中文检索", []float32{0.1, 0.2, 0.3}, 6, logicdomain.SearchFilter{
+	store := newTestStore(Config{
+		Schema:                  "public",
+		Flavor:                  "standard",
+		TRGMSimilarityThreshold: 0.23,
+		EmbeddingDimension:      3,
+	})
+	sqlText, args := standardDialect{}.BuildHybridSearchSQL(&store.repos.memory, "中文检索", []float32{0.1, 0.2, 0.3}, 6, logicdomain.SearchFilter{
 		ProjectID: 1,
 		UserID:    2,
 	}, 60)
@@ -207,8 +199,8 @@ func TestPostgresCommonIndexStatementsExposeStableNames(t *testing.T) {
 // TestStandardTrigramIndexStatementsExposeStableNames verifies standard lexical indexes carry precise names for startup error reporting.
 // TestStandardTrigramIndexStatementsExposeStableNames 用于验证 standard lexical 索引会携带精确名称以服务启动错误报告。
 func TestStandardTrigramIndexStatementsExposeStableNames(t *testing.T) {
-	store := &Store{cfg: Config{Schema: "public"}}
-	statements := standardTrigramIndexStatements(store)
+	store := newTestStore(Config{Schema: "public"})
+	statements := standardTrigramIndexStatements(&store.repos.maintenance)
 	if len(statements) != 2 {
 		t.Fatalf("standard trigram index statement count = %d, want 2", len(statements))
 	}
@@ -404,12 +396,12 @@ func TestShouldSeedDebugWorkspace(t *testing.T) {
 // TestResolveProfileTargetWithQueryerUserScopeSkipsProjectLookup 用于验证 user 画像目标解析只访问长期用户行，从而保证调用方不必额外提供无关的 project id。
 func TestResolveProfileTargetWithQueryerUserScopeSkipsProjectLookup(t *testing.T) {
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	store := &Store{cfg: Config{Schema: "public"}}
+	store := newTestStore(Config{Schema: "public"})
 	queryer := &captureProfileQueryer{
 		rowValues: []any{uint64(7), "alice", "", "", now, now},
 	}
 
-	target, err := store.resolveProfileTargetWithQueryer(context.Background(), queryer, logicdomain.ProfileTypeUser, 7, 0)
+	target, err := store.repos.workspace.resolveProfileTargetWithQueryer(context.Background(), queryer, logicdomain.ProfileTypeUser, 7, 0)
 	if err != nil {
 		t.Fatalf("resolveProfileTargetWithQueryer error = %v", err)
 	}
@@ -422,7 +414,7 @@ func TestResolveProfileTargetWithQueryerUserScopeSkipsProjectLookup(t *testing.T
 	if queryer.queryRowCalls != 1 {
 		t.Fatalf("resolveProfileTargetWithQueryer QueryRow calls = %d, want 1", queryer.queryRowCalls)
 	}
-	if !strings.Contains(queryer.lastSQL, store.usersTable()) {
+	if !strings.Contains(queryer.lastSQL, store.repos.workspace.usersTable()) {
 		t.Fatalf("resolveProfileTargetWithQueryer should query users table, got:\n%s", queryer.lastSQL)
 	}
 }
@@ -455,12 +447,12 @@ func TestResolveProfileTargetWithQueryerProjectScopesSkipUserLookup(t *testing.T
 
 	for _, tc := range testCases {
 		t.Run(tc.name, func(t *testing.T) {
-			store := &Store{cfg: Config{Schema: "public"}}
+			store := newTestStore(Config{Schema: "public"})
 			queryer := &captureProfileQueryer{
 				rowValues: []any{uint64(41), uint64(11), uint64(21), "project-a", "", "team-a", "space-a", now, now},
 			}
 
-			target, err := store.resolveProfileTargetWithQueryer(context.Background(), queryer, tc.profileType, 0, 41)
+			target, err := store.repos.workspace.resolveProfileTargetWithQueryer(context.Background(), queryer, tc.profileType, 0, 41)
 			if err != nil {
 				t.Fatalf("resolveProfileTargetWithQueryer error = %v", err)
 			}
@@ -476,7 +468,7 @@ func TestResolveProfileTargetWithQueryerProjectScopesSkipUserLookup(t *testing.T
 			if queryer.queryRowCalls != 1 {
 				t.Fatalf("resolveProfileTargetWithQueryer QueryRow calls = %d, want 1", queryer.queryRowCalls)
 			}
-			if !strings.Contains(queryer.lastSQL, store.projectsTable()) {
+			if !strings.Contains(queryer.lastSQL, store.repos.workspace.projectsTable()) {
 				t.Fatalf("resolveProfileTargetWithQueryer should query projects table, got:\n%s", queryer.lastSQL)
 			}
 		})
@@ -487,12 +479,12 @@ func TestResolveProfileTargetWithQueryerProjectScopesSkipUserLookup(t *testing.T
 // TestInsertTeamUsesUpsertByName 用于验证项目路径创建不再对 team 行使用普通插入，从而让并发重复请求可以收敛到同一条长期行。
 func TestInsertTeamUsesUpsertByName(t *testing.T) {
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	store := &Store{cfg: Config{Schema: "public"}}
+	store := newTestStore(Config{Schema: "public"})
 	queryer := &captureProfileQueryer{
 		rowValues: []any{uint64(11), "default", "", now, now},
 	}
 
-	team, err := store.insertTeam(context.Background(), queryer, "default", now)
+	team, err := store.repos.workspace.insertTeam(context.Background(), queryer, "default", now)
 	if err != nil {
 		t.Fatalf("insertTeam error = %v", err)
 	}
@@ -508,12 +500,12 @@ func TestInsertTeamUsesUpsertByName(t *testing.T) {
 // TestInsertSpaceUsesUpsertByScopedName 用于验证项目路径创建现在会按 `(team_id, name)` upsert space，而不是在并发重复创建时直接失败。
 func TestInsertSpaceUsesUpsertByScopedName(t *testing.T) {
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	store := &Store{cfg: Config{Schema: "public"}}
+	store := newTestStore(Config{Schema: "public"})
 	queryer := &captureProfileQueryer{
 		rowValues: []any{uint64(21), uint64(11), "default", "", now, now},
 	}
 
-	space, err := store.insertSpace(context.Background(), queryer, 11, "default", now)
+	space, err := store.repos.workspace.insertSpace(context.Background(), queryer, 11, "default", now)
 	if err != nil {
 		t.Fatalf("insertSpace error = %v", err)
 	}
@@ -529,12 +521,12 @@ func TestInsertSpaceUsesUpsertByScopedName(t *testing.T) {
 // TestInsertProjectUsesUpsertByScopedName 用于验证项目路径创建现在会按 `(space_id, name)` upsert project，确保重复管理创建保持幂等。
 func TestInsertProjectUsesUpsertByScopedName(t *testing.T) {
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	store := &Store{cfg: Config{Schema: "public"}}
+	store := newTestStore(Config{Schema: "public"})
 	queryer := &captureProfileQueryer{
 		rowValues: []any{uint64(31), uint64(11), uint64(21), "default", "", now, now},
 	}
 
-	project, err := store.insertProject(
+	project, err := store.repos.workspace.insertProject(
 		context.Background(),
 		queryer,
 		logicdomain.TeamRecord{ID: 11, Name: "default"},
@@ -557,12 +549,12 @@ func TestInsertProjectUsesUpsertByScopedName(t *testing.T) {
 // TestUpsertDebugSeedUserUsesNameConflictKey 用于验证空工作区默认补种会按名称解析默认用户，而不是依赖单个硬编码数字 id。
 func TestUpsertDebugSeedUserUsesNameConflictKey(t *testing.T) {
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	store := &Store{cfg: Config{Schema: "public"}}
+	store := newTestStore(Config{Schema: "public"})
 	queryer := &captureProfileQueryer{
 		rowValues: []any{uint64(41)},
 	}
 
-	userID, err := store.upsertDebugSeedUser(context.Background(), queryer, "default", now)
+	userID, err := store.repos.maintenance.upsertDebugSeedUser(context.Background(), queryer, "default", now)
 	if err != nil {
 		t.Fatalf("upsertDebugSeedUser error = %v", err)
 	}
@@ -578,12 +570,12 @@ func TestUpsertDebugSeedUserUsesNameConflictKey(t *testing.T) {
 // TestUpsertDebugSeedProjectUsesResolvedPathKeys 用于验证默认调试项目补种会通过已解析的 Team/Space id 落库，而不是继续依赖固定行 id。
 func TestUpsertDebugSeedProjectUsesResolvedPathKeys(t *testing.T) {
 	now := time.Date(2026, 4, 4, 12, 0, 0, 0, time.UTC)
-	store := &Store{cfg: Config{Schema: "public"}}
+	store := newTestStore(Config{Schema: "public"})
 	queryer := &captureProfileQueryer{
 		rowValues: []any{uint64(51)},
 	}
 
-	projectID, err := store.upsertDebugSeedProject(context.Background(), queryer, 11, 21, "default", now)
+	projectID, err := store.repos.maintenance.upsertDebugSeedProject(context.Background(), queryer, 11, 21, "default", now)
 	if err != nil {
 		t.Fatalf("upsertDebugSeedProject error = %v", err)
 	}

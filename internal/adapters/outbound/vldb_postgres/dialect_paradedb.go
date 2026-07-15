@@ -27,12 +27,12 @@ func (paradeDBDialect) EnsureSearchExtensions(ctx context.Context, pool *pgxpool
 
 // EnsureSearchIndexes creates the ParadeDB BM25 index with the explicit jieba tokenizer so Chinese lexical recall can use native Tantivy analysis.
 // EnsureSearchIndexes 用于创建 ParadeDB BM25 索引，并显式指定 jieba 分词器，让中文 lexical 召回走原生 Tantivy 分析链路。
-func (paradeDBDialect) EnsureSearchIndexes(ctx context.Context, store *Store) error {
-	if store == nil || store.pool == nil {
+func (paradeDBDialect) EnsureSearchIndexes(ctx context.Context, repository *maintenanceRepository) error {
+	if repository == nil || repository.shared == nil || repository.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
 	concurrently := ""
-	if store.cfg.BM25IndexConcurrently {
+	if repository.shared.cfg.BM25IndexConcurrently {
 		concurrently = "CONCURRENTLY "
 	}
 	statement := fmt.Sprintf(`
@@ -50,9 +50,9 @@ CREATE INDEX %sIF NOT EXISTS %s ON %s USING bm25 (
 	expires_at,
 	created_at
 ) WITH (key_field='id')
-`, concurrently, quoteIdentifier(store.cfg.BM25IndexName), store.memoryNodesTable())
-	if _, err := store.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
-		return fmt.Errorf("create paradedb bm25 index %s: %w", strings.TrimSpace(store.cfg.BM25IndexName), err)
+`, concurrently, quoteIdentifier(repository.shared.cfg.BM25IndexName), repository.memoryNodesTable())
+	if _, err := repository.shared.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
+		return fmt.Errorf("create paradedb bm25 index %s: %w", strings.TrimSpace(repository.shared.cfg.BM25IndexName), err)
 	}
 	return nil
 }
