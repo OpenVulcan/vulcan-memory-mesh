@@ -1395,7 +1395,7 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 	if err != nil {
 		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("allocate turn record id: %w", err)
 	}
-	dehydratedContent, dehydratedBudget, err := buildDehydratedTurn(turn)
+	dehydratedContent, dehydratedBudget, err := storageutil.DehydrateTurn(turn)
 	if err != nil {
 		return logicdomain.PersistedTurnRecord{}, err
 	}
@@ -5433,46 +5433,6 @@ func estimateTokenBudget(text string) int {
 	}
 	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
 	return estimator.Estimate(text)
-}
-
-// dehydratedTurnPayload mirrors the JSON document persisted into vmm_turn_records after one cleaned turn is flattened into a stable analysis unit.
-// dehydratedTurnPayload 用于映射写入 vmm_turn_records 的 JSON 文档，此时一条清洗后的 turn 已经被压平成稳定分析单元。
-type dehydratedTurnPayload struct {
-	User      string                       `json:"user"`
-	Timeline  []dehydratedTurnTimelineItem `json:"timeline"`
-	Assistant string                       `json:"assistant"`
-}
-
-// dehydratedTurnTimelineItem stores one middle timeline node inside the dehydrated turn JSON payload.
-// dehydratedTurnTimelineItem 用于保存脱水 turn JSON 载荷中的一条中间 timeline 节点。
-type dehydratedTurnTimelineItem struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
-}
-
-// buildDehydratedTurn converts one cleaned turn into the persisted JSON payload and estimates its token budget.
-// buildDehydratedTurn 用于把一条清洗后的 turn 转换成持久化 JSON 载荷，并估算对应的 token 预算。
-func buildDehydratedTurn(turn logicdomain.TurnRecord) (string, int, error) {
-	// Preserve the storage-ready timeline exactly as the upstream sanitizer produced it because media/noise filtering already happened earlier.
-	// 原样保留上游清洗后的 timeline 文本，因为媒体与噪声过滤已经在更前面的阶段完成。
-	timeline := make([]dehydratedTurnTimelineItem, 0, len(turn.Timeline))
-	for _, item := range turn.Timeline {
-		timeline = append(timeline, dehydratedTurnTimelineItem{
-			Type:    strings.TrimSpace(item.Type),
-			Content: strings.TrimSpace(item.Content),
-		})
-	}
-	payload := dehydratedTurnPayload{
-		User:      strings.TrimSpace(turn.UserContent),
-		Timeline:  timeline,
-		Assistant: strings.TrimSpace(turn.AssistantContent),
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", 0, fmt.Errorf("marshal dehydrated turn: %w", err)
-	}
-	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
-	return string(body), estimator.Estimate(string(body)), nil
 }
 
 // parameterizedTurnInsertStatement returns one turn INSERT with dehydrated JSON bound as a typed SQLite param.

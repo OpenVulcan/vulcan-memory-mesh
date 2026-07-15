@@ -3,13 +3,54 @@
 package storageutil
 
 import (
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
 	"strings"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/textutil"
 )
+
+// dehydratedTurnPayload is the storage-independent JSON shape persisted for one cleaned conversation turn.
+// dehydratedTurnPayload 用于表示一条已清洗会话轮次在各存储后端中持久化的统一 JSON 结构。
+type dehydratedTurnPayload struct {
+	User      string                       `json:"user"`
+	Timeline  []dehydratedTurnTimelineItem `json:"timeline"`
+	Assistant string                       `json:"assistant"`
+}
+
+// dehydratedTurnTimelineItem is one normalized middle timeline item in the persisted turn payload.
+// dehydratedTurnTimelineItem 用于表示持久化轮次载荷中的一条规范化中间时间线记录。
+type dehydratedTurnTimelineItem struct {
+	Type    string `json:"type"`
+	Content string `json:"content"`
+}
+
+// DehydrateTurn serializes one cleaned turn into the shared persisted JSON shape and estimates its token budget.
+// DehydrateTurn 用于把一条已清洗轮次序列化为共享持久化 JSON 结构，并估算其 token 预算。
+func DehydrateTurn(turn logicdomain.TurnRecord) (string, int, error) {
+	timeline := make([]dehydratedTurnTimelineItem, 0, len(turn.Timeline))
+	for _, item := range turn.Timeline {
+		timeline = append(timeline, dehydratedTurnTimelineItem{
+			Type:    strings.TrimSpace(item.Type),
+			Content: strings.TrimSpace(item.Content),
+		})
+	}
+	payload := dehydratedTurnPayload{
+		User:      strings.TrimSpace(turn.UserContent),
+		Timeline:  timeline,
+		Assistant: strings.TrimSpace(turn.AssistantContent),
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return "", 0, fmt.Errorf("marshal dehydrated turn: %w", err)
+	}
+	serialized := string(body)
+	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
+	return serialized, estimator.Estimate(serialized), nil
+}
 
 // ProjectCreateConfirmationMessage explains which hierarchy levels are missing before a storage adapter performs a confirmed project-path creation.
 // ProjectCreateConfirmationMessage 用于说明存储适配器执行已确认的项目路径创建前仍缺少哪些层级。

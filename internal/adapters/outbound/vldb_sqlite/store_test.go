@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
 )
@@ -3079,7 +3080,7 @@ func TestStoreAppendTurnRecordUsesTypedSQLiteParamsForSplitWrites(t *testing.T) 
 		AssistantContent: "  turn assistant '; DROP TABLE vmm_sessions; --  ",
 		CreatedAt:        createdAt,
 	}
-	expectedPayload, expectedBudget, err := buildDehydratedTurn(turn)
+	expectedPayload, expectedBudget, err := storageutil.DehydrateTurn(turn)
 	if err != nil {
 		t.Fatalf("buildDehydratedTurn returned error: %v", err)
 	}
@@ -3235,7 +3236,7 @@ func TestStoreAppendTurnRecordReconcilesCommitUnknownInsert(t *testing.T) {
 
 	createdAt := time.Date(2026, 7, 6, 8, 30, 0, 123000000, time.UTC)
 	turn := logicdomain.TurnRecord{UserContent: "hello", AssistantContent: "reply", CreatedAt: createdAt}
-	expectedPayload, expectedBudget, err := buildDehydratedTurn(turn)
+	expectedPayload, expectedBudget, err := storageutil.DehydrateTurn(turn)
 	if err != nil {
 		t.Fatalf("buildDehydratedTurn returned error: %v", err)
 	}
@@ -3440,7 +3441,7 @@ func TestStoreAppendTurnRecordReconcilesCommitUnknownSessionCounterUpdate(t *tes
 	store := &Store{database: fake, timeout: time.Second}
 
 	turn := logicdomain.TurnRecord{UserContent: "hello", CreatedAt: time.Date(2026, 7, 6, 10, 0, 0, 0, time.UTC)}
-	_, expectedBudget, err := buildDehydratedTurn(turn)
+	_, expectedBudget, err := storageutil.DehydrateTurn(turn)
 	if err != nil {
 		t.Fatalf("buildDehydratedTurn returned error: %v", err)
 	}

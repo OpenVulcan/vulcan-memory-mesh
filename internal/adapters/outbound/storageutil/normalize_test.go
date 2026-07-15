@@ -75,3 +75,26 @@ func TestPositiveOrDefaultPreservesExplicitValues(t *testing.T) {
 		}
 	}
 }
+
+// TestDehydrateTurnBuildsCanonicalPayload verifies relational backends persist one identical cleaned turn representation.
+// TestDehydrateTurnBuildsCanonicalPayload 用于验证关系存储后端会持久化完全一致的已清洗轮次表示。
+func TestDehydrateTurnBuildsCanonicalPayload(t *testing.T) {
+	body, budget, err := DehydrateTurn(logicdomain.TurnRecord{
+		UserContent: " user ",
+		Timeline: []logicdomain.TurnTimelineItem{{
+			Type:    " tool ",
+			Content: " result ",
+		}},
+		AssistantContent: " assistant ",
+	})
+	if err != nil {
+		t.Fatalf("DehydrateTurn() error = %v", err)
+	}
+	want := `{"user":"user","timeline":[{"type":"tool","content":"result"}],"assistant":"assistant"}`
+	if body != want {
+		t.Fatalf("DehydrateTurn() body = %q, want %q", body, want)
+	}
+	if budget <= 0 {
+		t.Fatalf("DehydrateTurn() budget = %d, want positive", budget)
+	}
+}

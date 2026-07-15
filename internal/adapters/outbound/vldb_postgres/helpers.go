@@ -451,45 +451,6 @@ func estimateTokenBudget(text string) int {
 	return estimator.Estimate(text)
 }
 
-// dehydratedTurnPayload mirrors the JSON document stored in PostgreSQL turn rows after one cleaned turn is flattened into a stable analysis unit.
-// dehydratedTurnPayload 用于映射写入 PostgreSQL turn 行的 JSON 文档，让一条清洗后的 turn 可以稳定地被后续分析复用。
-type dehydratedTurnPayload struct {
-	User      string                       `json:"user"`
-	Timeline  []dehydratedTurnTimelineItem `json:"timeline"`
-	Assistant string                       `json:"assistant"`
-}
-
-// dehydratedTurnTimelineItem stores one middle timeline node inside the dehydrated turn JSON payload.
-// dehydratedTurnTimelineItem 用于保存脱水 turn JSON 载荷中的一条中间 timeline 节点。
-type dehydratedTurnTimelineItem struct {
-	Type    string `json:"type"`
-	Content string `json:"content"`
-}
-
-// buildDehydratedTurn converts one cleaned turn into the persisted JSON payload and estimates its token budget before PostgreSQL persistence.
-// buildDehydratedTurn 用于把一条清洗后的 turn 转成 PostgreSQL 持久化 JSON 载荷，并预估对应的 token 预算。
-func buildDehydratedTurn(turn logicdomain.TurnRecord) (string, int, error) {
-	// Preserve the already-sanitized timeline text as-is so PostgreSQL persists exactly the same canonical unit that upstream cleaning produced.
-	// 原样保留已经清洗完成的 timeline 文本，确保 PostgreSQL 落库的规范单元与上游清洗结果完全一致。
-	timeline := make([]dehydratedTurnTimelineItem, 0, len(turn.Timeline))
-	for _, item := range turn.Timeline {
-		timeline = append(timeline, dehydratedTurnTimelineItem{
-			Type:    strings.TrimSpace(item.Type),
-			Content: strings.TrimSpace(item.Content),
-		})
-	}
-	payload := dehydratedTurnPayload{
-		User:      strings.TrimSpace(turn.UserContent),
-		Timeline:  timeline,
-		Assistant: strings.TrimSpace(turn.AssistantContent),
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return "", 0, fmt.Errorf("marshal dehydrated turn: %w", err)
-	}
-	return string(body), estimateTokenBudget(string(body)), nil
-}
-
 // generateConfirmationCode returns one 32-character random hex token used by protected destructive admin flows.
 // generateConfirmationCode 用于生成 32 位随机十六进制确认码，服务需要保护的管理删除流程。
 func generateConfirmationCode() (string, error) {

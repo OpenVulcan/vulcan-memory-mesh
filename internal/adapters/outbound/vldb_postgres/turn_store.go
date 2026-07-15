@@ -28,7 +28,7 @@ func (r *turnRepository) AppendTurnRecord(ctx context.Context, session logicdoma
 		return logicdomain.PersistedTurnRecord{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
 
-	dehydratedContent, dehydratedBudget, err := buildDehydratedTurn(turn)
+	dehydratedContent, dehydratedBudget, err := storageutil.DehydrateTurn(turn)
 	if err != nil {
 		return logicdomain.PersistedTurnRecord{}, err
 	}
