@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -62,7 +63,7 @@ func (r *analysisRepository) ApplyMemoryAdoption(ctx context.Context, session lo
 	if session.SessionID == 0 {
 		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryRecord{}, nil
 	}
@@ -460,7 +461,7 @@ RETURNING id
 		).Scan(&insertedProfileID); err != nil {
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("insert postgres profile node %d: %w", idx, err)
 		}
-		supersedeNodeIDs := normalizeUint64List(node.SupersedeNodeIDs)
+		supersedeNodeIDs := storageutil.NormalizeUint64List(node.SupersedeNodeIDs)
 		if len(supersedeNodeIDs) == 0 {
 			continue
 		}
@@ -556,7 +557,7 @@ func (r *analysisRepository) loadActiveMemoryVectorIDsTx(ctx context.Context, tx
 	if r == nil || r.shared == nil {
 		return nil, fmt.Errorf("postgres analysis store is not initialized")
 	}
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return nil, nil
 	}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -87,7 +88,7 @@ WHERE memory_status IN (?, ?, ?)`
 			vectorIDs = append(vectorIDs, vectorID)
 		}
 	}
-	normalizedMemoryIDs := normalizeUint64List(memoryIDs)
+	normalizedMemoryIDs := storageutil.NormalizeUint64List(memoryIDs)
 	if len(normalizedMemoryIDs) == 0 {
 		return logicdomain.MemoryRecycleResult{}, nil
 	}
@@ -202,7 +203,7 @@ WHERE id IN (%s);
 		BatchID:              batchID,
 		RecycledMemoryCount:  len(rows),
 		RecycledContextCount: len(contextRows),
-		RecycledVectorIDs:    normalizeStringList(vectorIDs),
+		RecycledVectorIDs:    storageutil.NormalizeStringList(vectorIDs),
 	}
 	if s.database != nil {
 		if err := s.syncMemoryFTSAfterWrite(ctx, nil, normalizedMemoryIDs); err != nil {
@@ -274,18 +275,18 @@ LIMIT ?
 			result.RecycledVectorIDs = append(result.RecycledVectorIDs, sessionResult.RecycledVectorIDs...)
 		}
 		if recycleErr != nil {
-			result.BatchIDs = normalizeUint64List(result.BatchIDs)
-			result.SessionIDs = normalizeUint64List(result.SessionIDs)
-			result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
+			result.BatchIDs = storageutil.NormalizeUint64List(result.BatchIDs)
+			result.SessionIDs = storageutil.NormalizeUint64List(result.SessionIDs)
+			result.RecycledVectorIDs = storageutil.NormalizeStringList(result.RecycledVectorIDs)
 			if len(result.BatchIDs) > 0 {
 				return result, sqlitePartialMutationError(true, "recycle idle sessions", recycleErr)
 			}
 			return logicdomain.SessionIdleRecycleResult{}, recycleErr
 		}
 	}
-	result.BatchIDs = normalizeUint64List(result.BatchIDs)
-	result.SessionIDs = normalizeUint64List(result.SessionIDs)
-	result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
+	result.BatchIDs = storageutil.NormalizeUint64List(result.BatchIDs)
+	result.SessionIDs = storageutil.NormalizeUint64List(result.SessionIDs)
+	result.RecycledVectorIDs = storageutil.NormalizeStringList(result.RecycledVectorIDs)
 	return result, nil
 }
 
@@ -320,7 +321,7 @@ LIMIT ?
 	for _, row := range batchRows {
 		batchIDs = append(batchIDs, row.ID)
 	}
-	normalizedBatchIDs := normalizeUint64List(batchIDs)
+	normalizedBatchIDs := storageutil.NormalizeUint64List(batchIDs)
 	if len(normalizedBatchIDs) == 0 {
 		return logicdomain.RetentionTrashPurgeResult{}, nil
 	}
@@ -437,7 +438,7 @@ ORDER BY updated_timestamp ASC, id ASC
 			vectorIDs = append(vectorIDs, vectorID)
 		}
 	}
-	normalizedMemoryIDs := normalizeUint64List(memoryIDs)
+	normalizedMemoryIDs := storageutil.NormalizeUint64List(memoryIDs)
 	memoryIDPlaceholders := sqlitePlaceholders(len(normalizedMemoryIDs))
 	memoryIDParams := sqliteUint64Params(normalizedMemoryIDs)
 	contextCount := 0
@@ -491,7 +492,7 @@ ORDER BY tr.id ASC
 	for _, row := range turnRows {
 		turnIDs = append(turnIDs, row.ID)
 	}
-	normalizedTurnIDs := normalizeUint64List(turnIDs)
+	normalizedTurnIDs := storageutil.NormalizeUint64List(turnIDs)
 
 	batchStatement := sqliteWriteStatement{
 		SQL: `
@@ -656,7 +657,7 @@ WHERE id IN (%s);
 		RecycledMemoryCount:  len(normalizedMemoryIDs),
 		RecycledContextCount: contextCount,
 		RecycledTurnCount:    len(normalizedTurnIDs),
-		RecycledVectorIDs:    normalizeStringList(vectorIDs),
+		RecycledVectorIDs:    storageutil.NormalizeStringList(vectorIDs),
 	}
 	if hasTurnRecycleStatements {
 		expectedTurnRowsChanged := int64(len(normalizedTurnIDs))
@@ -756,7 +757,7 @@ OR EXISTS (
 // buildSQLiteIdleSessionTurnReferenceClause renders the turn-reference predicate used by idle-session recycle, optionally ignoring memory rows scheduled for deletion in the same batch.
 // buildSQLiteIdleSessionTurnReferenceClause 用于渲染 idle-session 回收里的 turn 引用谓词，并可选忽略同批将被删除的记忆行。
 func buildSQLiteIdleSessionTurnReferenceClause(recycledMemoryIDs []uint64) (string, []any) {
-	recycledMemoryIDs = normalizeUint64List(recycledMemoryIDs)
+	recycledMemoryIDs = storageutil.NormalizeUint64List(recycledMemoryIDs)
 	if len(recycledMemoryIDs) == 0 {
 		return `NOT EXISTS (
     SELECT 1

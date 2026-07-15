@@ -12,6 +12,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -326,7 +327,7 @@ RETURNING id, turn_id, profile_type, bind_id, content, profile_status, priority,
 			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("insert postgres manual profile node %d: %w", idx, err)
 		}
 		inserted := row.toRecord()
-		supersedeNodeIDs := normalizeUint64List(node.SupersedeNodeIDs)
+		supersedeNodeIDs := storageutil.NormalizeUint64List(node.SupersedeNodeIDs)
 		if len(supersedeNodeIDs) > 0 {
 			updateSupersededSQL := fmt.Sprintf(`
 UPDATE %s

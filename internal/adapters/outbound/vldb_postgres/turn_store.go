@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -255,7 +256,7 @@ func (r *turnRepository) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) (
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	turnIDs = normalizeUint64List(turnIDs)
+	turnIDs = storageutil.NormalizeUint64List(turnIDs)
 	if len(turnIDs) == 0 {
 		return []logicdomain.SessionTurnRecord{}, nil
 	}
@@ -278,7 +279,7 @@ func (r *turnRepository) LoadTurnWindows(ctx context.Context, turnIDs []uint64, 
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	turnIDs = normalizeUint64List(turnIDs)
+	turnIDs = storageutil.NormalizeUint64List(turnIDs)
 	if len(turnIDs) == 0 || radius <= 0 {
 		return map[uint64]logicdomain.TurnDetailWindow{}, nil
 	}

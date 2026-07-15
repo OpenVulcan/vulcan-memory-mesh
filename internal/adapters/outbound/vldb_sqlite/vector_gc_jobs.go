@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -52,7 +53,7 @@ func (s *Store) EnqueueVectorGCJobs(ctx context.Context, query logicdomain.Vecto
 	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
-	vectorIDs := normalizeStringList(query.VectorIDs)
+	vectorIDs := storageutil.NormalizeStringList(query.VectorIDs)
 	if len(vectorIDs) == 0 {
 		return nil
 	}
@@ -161,7 +162,7 @@ func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, _ tim
 	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}
@@ -193,7 +194,7 @@ func (s *Store) RetryVectorGCJobs(ctx context.Context, jobIDs []uint64, nextRunA
 	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}

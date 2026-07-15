@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -89,7 +90,7 @@ FOR UPDATE SKIP LOCKED
 			vectorIDs = append(vectorIDs, vectorID)
 		}
 	}
-	normalizedMemoryIDs := normalizeUint64List(memoryIDs)
+	normalizedMemoryIDs := storageutil.NormalizeUint64List(memoryIDs)
 	if len(normalizedMemoryIDs) == 0 {
 		return logicdomain.MemoryRecycleResult{}, nil
 	}
@@ -183,7 +184,7 @@ WHERE memory_id = ANY($4)
 		BatchID:              batchID,
 		RecycledMemoryCount:  int(expectedMemoryRowsAffected),
 		RecycledContextCount: int(expectedContextRowsAffected),
-		RecycledVectorIDs:    normalizeStringList(vectorIDs),
+		RecycledVectorIDs:    storageutil.NormalizeStringList(vectorIDs),
 	}
 	if err := tx.Commit(callCtx); err != nil {
 		return result, postgresCommitOutcomeUncertainError("recycle cold memories", "commit postgres cold-memory recycle tx", err)
@@ -233,9 +234,9 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 			if sessionResult.BatchID != 0 {
 				appendPostgresIdleSessionRecycleResult(&result, sessionResult)
 			}
-			result.BatchIDs = normalizeUint64List(result.BatchIDs)
-			result.SessionIDs = normalizeUint64List(result.SessionIDs)
-			result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
+			result.BatchIDs = storageutil.NormalizeUint64List(result.BatchIDs)
+			result.SessionIDs = storageutil.NormalizeUint64List(result.SessionIDs)
+			result.RecycledVectorIDs = storageutil.NormalizeStringList(result.RecycledVectorIDs)
 			return result, recycleErr
 		}
 		if sessionResult.BatchID == 0 {
@@ -244,15 +245,15 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 			}
 			inspectedSessionCount++
 			excludedSessionIDs = append(excludedSessionIDs, sessionResult.SessionID)
-			excludedSessionIDs = normalizeUint64List(excludedSessionIDs)
+			excludedSessionIDs = storageutil.NormalizeUint64List(excludedSessionIDs)
 			continue
 		}
 		inspectedSessionCount++
 		appendPostgresIdleSessionRecycleResult(&result, sessionResult)
 	}
-	result.BatchIDs = normalizeUint64List(result.BatchIDs)
-	result.SessionIDs = normalizeUint64List(result.SessionIDs)
-	result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
+	result.BatchIDs = storageutil.NormalizeUint64List(result.BatchIDs)
+	result.SessionIDs = storageutil.NormalizeUint64List(result.SessionIDs)
+	result.RecycledVectorIDs = storageutil.NormalizeStringList(result.RecycledVectorIDs)
 	return result, nil
 }
 
@@ -324,7 +325,7 @@ FOR UPDATE SKIP LOCKED
 	if err := rows.Err(); err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("iterate postgres trash batches: %w", err)
 	}
-	normalizedBatchIDs := normalizeUint64List(batchIDs)
+	normalizedBatchIDs := storageutil.NormalizeUint64List(batchIDs)
 	if len(normalizedBatchIDs) == 0 {
 		return logicdomain.RetentionTrashPurgeResult{}, nil
 	}
@@ -498,7 +499,7 @@ FOR UPDATE
 			vectorIDs = append(vectorIDs, vectorID)
 		}
 	}
-	normalizedMemoryIDs := normalizeUint64List(memoryIDs)
+	normalizedMemoryIDs := storageutil.NormalizeUint64List(memoryIDs)
 
 	expectedContextRowsAffected := int64(0)
 	if len(normalizedMemoryIDs) > 0 {
@@ -542,7 +543,7 @@ FOR UPDATE
 	for _, row := range turnRows {
 		turnIDs = append(turnIDs, row.ID)
 	}
-	normalizedTurnIDs := normalizeUint64List(turnIDs)
+	normalizedTurnIDs := storageutil.NormalizeUint64List(turnIDs)
 	if len(normalizedMemoryIDs) == 0 && len(normalizedTurnIDs) == 0 {
 		return postgresIdleSessionRecycleResult{SessionID: session.ID}, nil
 	}
@@ -665,7 +666,7 @@ WHERE id = ANY($4)
 		RecycledMemoryCount:  recycledMemoryCount,
 		RecycledContextCount: int(expectedContextRowsAffected),
 		RecycledTurnCount:    recycledTurnCount,
-		RecycledVectorIDs:    normalizeStringList(vectorIDs),
+		RecycledVectorIDs:    storageutil.NormalizeStringList(vectorIDs),
 	}
 	if err := tx.Commit(callCtx); err != nil {
 		return result, postgresCommitOutcomeUncertainError("recycle idle-session rows", fmt.Sprintf("commit postgres idle-session recycle tx for session %d", session.ID), err)

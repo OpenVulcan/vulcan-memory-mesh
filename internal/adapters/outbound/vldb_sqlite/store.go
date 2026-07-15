@@ -16,6 +16,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
@@ -1617,7 +1618,7 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 			CreatedMs:   nowMs,
 		}
 		statements = append(statements, parameterizedProfileNodeInsertStatement(insertedProfileID, &turn.ID, node.ProfileType, bindID, node, nowMs))
-		supersedeNodeIDs := normalizeUint64List(node.SupersedeNodeIDs)
+		supersedeNodeIDs := storageutil.NormalizeUint64List(node.SupersedeNodeIDs)
 		// Retire reviewer-approved predecessor nodes right after the replacement insert so rendered profile readers do not see both facts as active.
 		// 在替代节点插入后立即退役评审器批准的旧节点，避免画像读取链路同时看到新旧事实均为 active。
 		if supersedeStatement, ok := parameterizedProfileNodesSupersedeStatement(node.ProfileType, bindID, supersedeNodeIDs, insertedProfileID, strings.TrimSpace(node.StatusReason), nowMs); ok {
@@ -2070,7 +2071,7 @@ LIMIT 1
 // loadProfileNodeStatusesByIDs fetches lightweight lifecycle state for a small node-id set so uncertain status updates can be reconciled.
 // loadProfileNodeStatusesByIDs 用于读取一小批节点的轻量生命周期状态，让“不确定”的状态更新能够做状态对账。
 func (s *Store) loadProfileNodeStatusesByIDs(ctx context.Context, nodeIDs []uint64) ([]profileNodeStatusRow, error) {
-	nodeIDs = normalizeUint64List(nodeIDs)
+	nodeIDs = storageutil.NormalizeUint64List(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil, nil
 	}
@@ -2125,7 +2126,7 @@ func (s *Store) loadRenderedProfileByTarget(ctx context.Context, profileType int
 // loadRenderedProfileBatch reads exact rendered-profile rows for one scope so a batch update with uncertain commit outcome can be reconciled.
 // loadRenderedProfileBatch 用于读取一个 scope 的精确渲染画像行，让提交结果不确定的批量更新可以执行对账。
 func (s *Store) loadRenderedProfileBatch(ctx context.Context, profileType int, ids []uint64) ([]renderedProfileBatchRow, error) {
-	normalizedIDs := normalizeUint64List(ids)
+	normalizedIDs := storageutil.NormalizeUint64List(ids)
 	if len(normalizedIDs) == 0 {
 		return nil, nil
 	}
@@ -2182,7 +2183,7 @@ func (s *Store) reconcileProfileNodesSuperseded(ctx context.Context, nodeIDs []u
 	if err != nil {
 		return false, err
 	}
-	if len(rows) != len(normalizeUint64List(nodeIDs)) {
+	if len(rows) != len(storageutil.NormalizeUint64List(nodeIDs)) {
 		return false, nil
 	}
 	for _, row := range rows {
@@ -2196,7 +2197,7 @@ func (s *Store) reconcileProfileNodesSuperseded(ctx context.Context, nodeIDs []u
 // reconcileMemoryNodesSuperseded verifies whether all target memory rows reached this write's superseded state after one uncertain update error.
 // reconcileMemoryNodesSuperseded 用于验证在一次不确定更新报错后，目标 memory 行是否已经全部进入本次写入要求的 superseded 状态。
 func (s *Store) reconcileMemoryNodesSuperseded(ctx context.Context, memoryIDs []uint64, updatedMs int64) (bool, error) {
-	expectedIDs := normalizeUint64List(memoryIDs)
+	expectedIDs := storageutil.NormalizeUint64List(memoryIDs)
 	rows, err := s.LoadMemoryNodesByIDs(ctx, expectedIDs)
 	if err != nil {
 		return false, err
@@ -2217,7 +2218,7 @@ func (s *Store) reconcileMemoryNodesSuperseded(ctx context.Context, memoryIDs []
 // reconcileMemoryNodesDeleted verifies whether all target memory rows reached the manual-delete state after one uncertain status update.
 // reconcileMemoryNodesDeleted 用于验证一次不确定状态更新后，目标 memory 行是否已经全部进入手工删除状态。
 func (s *Store) reconcileMemoryNodesDeleted(ctx context.Context, memoryIDs []uint64, reason string, updatedMs int64) (bool, error) {
-	expectedIDs := normalizeUint64List(memoryIDs)
+	expectedIDs := storageutil.NormalizeUint64List(memoryIDs)
 	rows, err := s.LoadMemoryNodesByIDs(ctx, expectedIDs)
 	if err != nil {
 		return false, err
@@ -2294,7 +2295,7 @@ func (s *Store) reconcileProfileNodesRetired(ctx context.Context, nodeIDs []uint
 	if err != nil {
 		return false, err
 	}
-	if len(rows) != len(normalizeUint64List(nodeIDs)) {
+	if len(rows) != len(storageutil.NormalizeUint64List(nodeIDs)) {
 		return false, nil
 	}
 	for _, row := range rows {
@@ -2308,7 +2309,7 @@ func (s *Store) reconcileProfileNodesRetired(ctx context.Context, nodeIDs []uint
 // reconcileProfileNodesExpired verifies whether all selected lifecycle nodes already reached this expiry write after one uncertain update error.
 // reconcileProfileNodesExpired 用于验证一次不确定更新错误后，所有选中的生命周期节点是否已经进入本次过期写入要求的状态。
 func (s *Store) reconcileProfileNodesExpired(ctx context.Context, nodeIDs []uint64, reason string, updatedMs int64) (bool, error) {
-	expectedIDs := normalizeUint64List(nodeIDs)
+	expectedIDs := storageutil.NormalizeUint64List(nodeIDs)
 	rows, err := s.loadProfileNodeStatusesByIDs(ctx, expectedIDs)
 	if err != nil {
 		return false, err
@@ -2371,7 +2372,7 @@ func (s *Store) reconcileRenderedProfileTarget(ctx context.Context, profileType 
 // reconcileRenderedProfileBatch verifies every row in one uncertain scope batch reached the exact profile and updated_at payload from this write.
 // reconcileRenderedProfileBatch 用于验证一次不确定 scope 批量写入中的每一行都达到本次写入的精确 profile 和 updated_at 载荷。
 func (s *Store) reconcileRenderedProfileBatch(ctx context.Context, profileType int, ids []uint64, profiles map[uint64]string, updatedAt string) (bool, error) {
-	expectedIDs := normalizeUint64List(ids)
+	expectedIDs := storageutil.NormalizeUint64List(ids)
 	if len(expectedIDs) == 0 {
 		return true, nil
 	}
@@ -2588,7 +2589,7 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 			}
 		}
 		mutated = true
-		supersedeNodeIDs := normalizeUint64List(node.SupersedeNodeIDs)
+		supersedeNodeIDs := storageutil.NormalizeUint64List(node.SupersedeNodeIDs)
 		if supersedeStatement, ok := parameterizedProfileNodesSupersedeStatement(target.ProfileType, target.BindID, supersedeNodeIDs, insertedID, strings.TrimSpace(node.StatusReason), nowMs); ok {
 			// Retire the superseded nodes in a separate execute call because SQLite's shared-connection batch path
 			// can enter a resource-deadlock state when one script both inserts and updates the same hot table.
@@ -3118,7 +3119,7 @@ LIMIT ?
 // LoadTurnsByIDs returns one explicit set of dehydrated turn rows so memory-detail RPCs can inspect the exact persisted payloads behind recalled turn ids.
 // LoadTurnsByIDs 用于返回一组明确指定的脱水 turn 行，让记忆详情 RPC 可以查看召回 turn id 背后的精确持久化载荷。
 func (s *Store) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdomain.SessionTurnRecord, error) {
-	turnIDs = normalizeUint64List(turnIDs)
+	turnIDs = storageutil.NormalizeUint64List(turnIDs)
 	if len(turnIDs) == 0 {
 		return []logicdomain.SessionTurnRecord{}, nil
 	}
@@ -3146,7 +3147,7 @@ ORDER BY id ASC
 // LoadTurnWindows returns the previous and next turn ids around each requested anchor turn inside the same session.
 // LoadTurnWindows 用于返回每个请求锚点 turn 在同一 session 内前后相邻的 turn id。
 func (s *Store) LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius int) (map[uint64]logicdomain.TurnDetailWindow, error) {
-	turnIDs = normalizeUint64List(turnIDs)
+	turnIDs = storageutil.NormalizeUint64List(turnIDs)
 	if len(turnIDs) == 0 || radius <= 0 {
 		return map[uint64]logicdomain.TurnDetailWindow{}, nil
 	}
@@ -3196,7 +3197,7 @@ ORDER BY t.target_id ASC, o.rn ASC
 // LoadMemoryNodesByIDs loads one mixed batch of unified durable memory rows by numeric ids and returns them in ascending id order.
 // LoadMemoryNodesByIDs 用于按数字 id 批量读取统一长期记忆行，并按升序返回。
 func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryNodeRecord{}, nil
 	}
@@ -3226,7 +3227,7 @@ ORDER BY id ASC
 // LoadMemoryContextEdgesByMemoryIDs loads the contextual evidence rows attached to one memory-id batch so query-time scoring can align candidate memories with the current situation.
 // LoadMemoryContextEdgesByMemoryIDs 用于按 memory id 批量加载情境证据行，让查询期打分可以把候选记忆与当前场景对齐。
 func (s *Store) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryContextEdge{}, nil
 	}
@@ -3252,7 +3253,7 @@ ORDER BY memory_id ASC, context_key ASC, context_value ASC
 // LoadMemoryNodesByVectorIDs loads unified durable memory rows by vector ids so vector search hits can be enriched with relational refs.
 // LoadMemoryNodesByVectorIDs 用于按 vector id 读取统一长期记忆行，让向量召回结果补全为关系层 ref。
 func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
-	vectorIDs = normalizeStringList(vectorIDs)
+	vectorIDs = storageutil.NormalizeStringList(vectorIDs)
 	if len(vectorIDs) == 0 {
 		return []logicdomain.MemoryNodeRecord{}, nil
 	}
@@ -3302,7 +3303,7 @@ func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int,
 	candidates := make([]sqliteLexicalCandidate, 0, len(result.Hits))
 	candidateMemoryIDs := make([]uint64, 0, len(result.Hits))
 	for _, hit := range result.Hits {
-		memoryID, ok := parseUint64(hit.ID)
+		memoryID, ok := storageutil.ParsePositiveUint64(hit.ID)
 		if !ok || memoryID == 0 {
 			continue
 		}
@@ -3447,7 +3448,7 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 	now := time.Now().UTC()
 	nowMs := now.UnixMilli()
 	record = normalizeDirectMemoryNodeRecord(session, record, nextID, now)
-	supersededMemoryIDs = normalizeUint64List(supersededMemoryIDs)
+	supersededMemoryIDs = storageutil.NormalizeUint64List(supersededMemoryIDs)
 	supersededVectorIDs, err := s.loadActiveMemoryVectorIDs(ctx, supersededMemoryIDs)
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("load superseded direct-write vector ids: %w", err)
@@ -3501,7 +3502,7 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 // DeleteMemoryNodes marks active memory rows as deleted inside the provided hierarchy filter while leaving their source turn/detail rows untouched.
 // DeleteMemoryNodes 用于在给定层级过滤范围内把 active 记忆行标记为 deleted，同时保留其来源 turn/detail 行不变。
 func (s *Store) DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error) {
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return logicdomain.MemoryDeleteResult{}, nil
 	}
@@ -3620,7 +3621,7 @@ WHERE memory_status = ?
 	result := logicdomain.MemoryDeleteResult{
 		DeletedMemoryIDs:  deletedMemoryIDs,
 		NotFoundMemoryIDs: notFoundMemoryIDs,
-		DeletedVectorIDs:  normalizeStringList(deletedVectorIDs),
+		DeletedVectorIDs:  storageutil.NormalizeStringList(deletedVectorIDs),
 	}
 	if err := s.syncMemoryFTSAfterWrite(ctx, nil, deletedMemoryIDs); err != nil {
 		return result, sqlitePartialMutationError(true, "delete memory nodes", fmt.Errorf("sync memory fts after manual delete: %w", err))
@@ -3676,7 +3677,7 @@ func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.Ses
 	if session.SessionID == 0 {
 		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryRecord{}, nil
 	}
@@ -3875,7 +3876,7 @@ func (s *Store) AdvanceSessionExtractWindow(ctx context.Context, sessionID uint6
 // loadActiveMemoryVectorIDs loads the vector ids of active unified memory rows by memory id so callers can clean those vector rows after a supersede update commits.
 // loadActiveMemoryVectorIDs 用于按记忆 id 读取 active 统一记忆行的 vector_id，供调用方在 supersede 提交后清理对应向量行。
 func (s *Store) loadActiveMemoryVectorIDs(ctx context.Context, memoryIDs []uint64) ([]string, error) {
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return nil, nil
 	}
@@ -4069,10 +4070,10 @@ func (s *Store) ResolveProjectRef(ctx context.Context, projectRef string) (logic
 	if projectRef == "" {
 		return logicdomain.ProjectRecord{}, logicdomain.ValidationError{Field: "project_ref", Message: "is required"}
 	}
-	if projectID, ok := parseUint64(projectRef); ok {
+	if projectID, ok := storageutil.ParsePositiveUint64(projectRef); ok {
 		return s.loadProjectByID(ctx, projectID)
 	}
-	teamName, spaceName, projectName, err := parseProjectPath(projectRef)
+	teamName, spaceName, projectName, err := storageutil.ParseProjectPath(projectRef)
 	if err != nil {
 		return logicdomain.ProjectRecord{}, err
 	}
@@ -4261,7 +4262,7 @@ func sqliteMaintenanceBatchError(operation string, err error) error {
 // EnsureProjectPath resolves or creates a Team/Space/Project path according to the confirm flag rules required by the admin RPCs.
 // EnsureProjectPath 用于按管理 RPC 约定的确认规则，解析或创建一个 Team/Space/Project 路径。
 func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confirmCreate bool) (logicdomain.ProjectMutationResult, error) {
-	teamName, spaceName, projectName, err := parseProjectPath(projectPath)
+	teamName, spaceName, projectName, err := storageutil.ParseProjectPath(projectPath)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
@@ -4608,7 +4609,7 @@ func (s *Store) ResolveUserRef(ctx context.Context, userRef string) (logicdomain
 	if userRef == "" {
 		return logicdomain.UserRecord{}, logicdomain.ValidationError{Field: "user_ref", Message: "is required"}
 	}
-	if userID, ok := parseUint64(userRef); ok {
+	if userID, ok := storageutil.ParsePositiveUint64(userRef); ok {
 		return s.loadUserByID(ctx, userID)
 	}
 	rows, err := queryRows[userRow](s, ctx, `
@@ -5397,32 +5398,6 @@ func buildProjectConfirmMessage(teamName, spaceName, projectName string, teamExi
 	return fmt.Sprintf("path %s/%s/%s is incomplete; missing %s, use confirm_create=1 to create them", teamName, spaceName, projectName, strings.Join(missing, ", "))
 }
 
-// parseProjectPath enforces the canonical Team/Space/Project path format required by the admin RPCs.
-// parseProjectPath 用于强制要求管理 RPC 使用标准的 Team/Space/Project 路径格式。
-func parseProjectPath(path string) (string, string, string, error) {
-	parts := strings.Split(strings.TrimSpace(path), "/")
-	if len(parts) != 3 {
-		return "", "", "", logicdomain.ValidationError{Field: "project_path", Message: "must be TeamName/SpaceName/ProjectName"}
-	}
-	teamName := strings.TrimSpace(parts[0])
-	spaceName := strings.TrimSpace(parts[1])
-	projectName := strings.TrimSpace(parts[2])
-	if teamName == "" || spaceName == "" || projectName == "" {
-		return "", "", "", logicdomain.ValidationError{Field: "project_path", Message: "must be TeamName/SpaceName/ProjectName"}
-	}
-	return teamName, spaceName, projectName, nil
-}
-
-// parseUint64 parses one numeric identifier string and reports whether the conversion succeeded.
-// parseUint64 用于解析数字标识字符串，并返回转换是否成功。
-func parseUint64(raw string) (uint64, bool) {
-	value, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
-	if err != nil || value == 0 {
-		return 0, false
-	}
-	return value, true
-}
-
 // encodeFloat32Slice stores one vector payload as JSON text so unified memory rows can be rebuilt into vector rows later.
 // encodeFloat32Slice 用于把向量载荷保存成 JSON 文本，让统一记忆行后续可以重建回向量行。
 func encodeFloat32Slice(values []float32) string {
@@ -5733,7 +5708,7 @@ func (s *Store) syncMemoryFTSAfterWrite(ctx context.Context, inserted []logicdom
 			return s.rebuildMemoryFTSWithFallback(ctx, err)
 		}
 	}
-	for _, memoryID := range normalizeUint64List(deletedMemoryIDs) {
+	for _, memoryID := range storageutil.NormalizeUint64List(deletedMemoryIDs) {
 		result, err := s.database.DeleteFtsDocument(s.ftsIndexName, strconv.FormatUint(memoryID, 10))
 		if err != nil {
 			return s.rebuildMemoryFTSWithFallback(ctx, fmt.Errorf("delete sqlite memory fts document %d: %w", memoryID, err))
@@ -5941,7 +5916,7 @@ WHERE id = ? AND delete_confirm_code = '';
 // parameterizedProfileNodesSupersedeStatement returns the guarded UPDATE used to retire older profile nodes after one accepted replacement node is durable.
 // parameterizedProfileNodesSupersedeStatement 用于返回替代节点落库后退役旧画像节点的受保护 UPDATE 语句。
 func parameterizedProfileNodesSupersedeStatement(profileType int, bindID uint64, nodeIDs []uint64, supersededByID uint64, statusReason string, updatedMs int64) (sqliteWriteStatement, bool) {
-	nodeIDs = normalizeUint64List(nodeIDs)
+	nodeIDs = storageutil.NormalizeUint64List(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return sqliteWriteStatement{}, false
 	}
@@ -5970,7 +5945,7 @@ WHERE profile_status = ? AND profile_type = ? AND bind_id = ? AND id IN (%s);
 // parameterizedProfileNodesExpireStatement returns the lifecycle UPDATE used to mark due active profile nodes as expired.
 // parameterizedProfileNodesExpireStatement 用于返回生命周期收敛中把到期 active 画像节点标为 expired 的 UPDATE 语句。
 func parameterizedProfileNodesExpireStatement(nodeIDs []uint64, statusReason string, updatedMs int64) (sqliteWriteStatement, bool) {
-	nodeIDs = normalizeUint64List(nodeIDs)
+	nodeIDs = storageutil.NormalizeUint64List(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return sqliteWriteStatement{}, false
 	}
@@ -6029,7 +6004,7 @@ func parameterizedProfileTargetUpdateSQL(profileType int) string {
 // parameterizedMemoryNodesSupersedeStatement returns the memory replacement UPDATE used to mark obsolete active memory rows as superseded by id.
 // parameterizedMemoryNodesSupersedeStatement 用于返回记忆替代路径中按记忆 id 把过时 active 记忆行标记为 superseded 的 UPDATE 语句。
 func parameterizedMemoryNodesSupersedeStatement(memoryIDs []uint64, updatedMs int64) (sqliteWriteStatement, bool) {
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return sqliteWriteStatement{}, false
 	}
@@ -6226,30 +6201,6 @@ func chooseNonZeroTime(value, fallback time.Time) time.Time {
 	return value.UTC()
 }
 
-// normalizeUint64List removes zeros and duplicates from generic uint64 id lists while keeping a deterministic ascending order.
-// normalizeUint64List 用于从通用 uint64 id 列表中去掉零值和重复项，并保持确定性的升序。
-func normalizeUint64List(values []uint64) []uint64 {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := map[uint64]struct{}{}
-	out := make([]uint64, 0, len(values))
-	for _, value := range values {
-		if value == 0 {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i] < out[j]
-	})
-	return out
-}
-
 // collectTurnAnalysisSupersedeMemoryIDs unions reviewer-approved supersede ids from surviving memory nodes so persistence can retire only the durable memories still replaced after every filter.
 // collectTurnAnalysisSupersedeMemoryIDs 用于从存活记忆节点中汇总 reviewer 批准的 supersede id，确保持久化只退役经过全部过滤后仍被新节点替代的旧记忆。
 func collectTurnAnalysisSupersedeMemoryIDs(nodes []logicdomain.MemoryNodeCandidate) []uint64 {
@@ -6260,30 +6211,7 @@ func collectTurnAnalysisSupersedeMemoryIDs(nodes []logicdomain.MemoryNodeCandida
 	for _, node := range nodes {
 		merged = append(merged, node.SupersedeMemoryIDs...)
 	}
-	return normalizeUint64List(merged)
-}
-
-// normalizeStringList removes blanks and duplicates from generic string id lists while keeping deterministic ascending order.
-// normalizeStringList 用于从通用字符串 id 列表中去掉空值和重复项，并保持确定性的升序。
-func normalizeStringList(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
+	return storageutil.NormalizeUint64List(merged)
 }
 
 // buildActiveUnexpiredMemoryCondition renders the SQL predicate shared by hot-path memory reads that should ignore superseded or expired rows.
@@ -6343,7 +6271,7 @@ func checkSQLiteContext(ctx context.Context) error {
 // loadActiveMemoryNodesByIDs loads active and unexpired memory rows for a parsed FTS candidate set in one relational pass.
 // loadActiveMemoryNodesByIDs 用于一次性回表加载已解析 FTS 候选集中的 active 且未过期记忆行。
 func (s *Store) loadActiveMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) (map[uint64]logicdomain.MemoryNodeRecord, error) {
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return map[uint64]logicdomain.MemoryNodeRecord{}, nil
 	}

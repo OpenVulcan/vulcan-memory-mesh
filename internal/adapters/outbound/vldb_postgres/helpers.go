@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
 )
@@ -184,30 +185,6 @@ func (s *Store) maintenanceWriteContext(ctx context.Context) (context.Context, c
 	return context.WithTimeout(ctx, timeout)
 }
 
-// normalizeUint64List removes zero values and duplicates while keeping a deterministic ascending order for SQL IN/ANY queries.
-// normalizeUint64List 用于移除零值和重复项，并保持确定性的升序，供 SQL IN/ANY 查询复用。
-func normalizeUint64List(values []uint64) []uint64 {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := map[uint64]struct{}{}
-	out := make([]uint64, 0, len(values))
-	for _, value := range values {
-		if value == 0 {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Slice(out, func(i, j int) bool {
-		return out[i] < out[j]
-	})
-	return out
-}
-
 // collectTurnAnalysisSupersedeMemoryIDs unions reviewer-approved supersede ids from surviving memory nodes so PostgreSQL persistence only retires memories that still have one accepted replacement.
 // collectTurnAnalysisSupersedeMemoryIDs 用于从存活记忆节点中汇总 reviewer 批准的 supersede id，确保 PostgreSQL 持久化只退役那些仍被已接纳新节点替代的旧记忆。
 func collectTurnAnalysisSupersedeMemoryIDs(nodes []logicdomain.MemoryNodeCandidate) []uint64 {
@@ -218,30 +195,7 @@ func collectTurnAnalysisSupersedeMemoryIDs(nodes []logicdomain.MemoryNodeCandida
 	for _, node := range nodes {
 		merged = append(merged, node.SupersedeMemoryIDs...)
 	}
-	return normalizeUint64List(merged)
-}
-
-// normalizeStringList removes blank values and duplicates while keeping a deterministic ascending order for SQL IN/ANY queries.
-// normalizeStringList 用于移除空值和重复项，并保持确定性的升序，供 SQL IN/ANY 查询复用。
-func normalizeStringList(values []string) []string {
-	if len(values) == 0 {
-		return nil
-	}
-	seen := map[string]struct{}{}
-	out := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	sort.Strings(out)
-	return out
+	return storageutil.NormalizeUint64List(merged)
 }
 
 // toInt64List converts numeric identifiers into PostgreSQL-friendly bigint arrays for ANY($n) bindings.
@@ -442,32 +396,6 @@ func nullableTime(value time.Time) any {
 		return nil
 	}
 	return value.UTC()
-}
-
-// parseUint64 parses one positive numeric identifier string and reports whether conversion succeeded.
-// parseUint64 用于解析正整数标识字符串，并返回转换是否成功。
-func parseUint64(raw string) (uint64, bool) {
-	value, err := strconv.ParseUint(strings.TrimSpace(raw), 10, 64)
-	if err != nil || value == 0 {
-		return 0, false
-	}
-	return value, true
-}
-
-// parseProjectPath enforces the canonical Team/Space/Project path format used by workspace-facing admin flows.
-// parseProjectPath 用于强制要求 workspace 管理流使用标准 Team/Space/Project 路径格式。
-func parseProjectPath(path string) (string, string, string, error) {
-	parts := strings.Split(strings.TrimSpace(path), "/")
-	if len(parts) != 3 {
-		return "", "", "", logicdomain.ValidationError{Field: "project_path", Message: "must be TeamName/SpaceName/ProjectName"}
-	}
-	teamName := strings.TrimSpace(parts[0])
-	spaceName := strings.TrimSpace(parts[1])
-	projectName := strings.TrimSpace(parts[2])
-	if teamName == "" || spaceName == "" || projectName == "" {
-		return "", "", "", logicdomain.ValidationError{Field: "project_path", Message: "must be TeamName/SpaceName/ProjectName"}
-	}
-	return teamName, spaceName, projectName, nil
 }
 
 // memoryRecordMetadataFromNode builds the compatibility metadata map expected by workspace migration and vector-schema rebuild flows.

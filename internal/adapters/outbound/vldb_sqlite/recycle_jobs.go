@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -277,7 +278,7 @@ ORDER BY tr.id ASC
 	for _, row := range turnRows {
 		turnIDs = append(turnIDs, row.ID)
 	}
-	normalizedTurnIDs := normalizeUint64List(turnIDs)
+	normalizedTurnIDs := storageutil.NormalizeUint64List(turnIDs)
 	if len(normalizedTurnIDs) == 0 {
 		return logicdomain.ColdTurnRecycleResult{SessionID: query.SessionID, ProjectID: session.ProjectID}, nil
 	}
@@ -359,7 +360,7 @@ func (s *Store) CompleteRecycleJobs(ctx context.Context, jobIDs []uint64, _ time
 	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}
@@ -391,7 +392,7 @@ func (s *Store) RetryRecycleJobs(ctx context.Context, jobIDs []uint64, nextRunAt
 	if !s.hasSQLiteStore() {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}

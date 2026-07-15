@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -278,7 +279,7 @@ FOR UPDATE
 	if err := rows.Err(); err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("iterate postgres cold turns for session %d: %w", query.SessionID, err)
 	}
-	normalizedTurnIDs := normalizeUint64List(turnIDs)
+	normalizedTurnIDs := storageutil.NormalizeUint64List(turnIDs)
 	if len(normalizedTurnIDs) == 0 {
 		return logicdomain.ColdTurnRecycleResult{SessionID: query.SessionID, ProjectID: session.ProjectID}, nil
 	}
@@ -353,7 +354,7 @@ func (r *retentionRepository) CompleteRecycleJobs(ctx context.Context, jobIDs []
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}
@@ -390,7 +391,7 @@ func (r *retentionRepository) RetryRecycleJobs(ctx context.Context, jobIDs []uin
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}

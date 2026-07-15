@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -17,7 +18,7 @@ func (r *memoryRepository) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs [
 	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryNodeRecord{}, nil
 	}
@@ -44,7 +45,7 @@ func (r *memoryRepository) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context
 	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryContextEdge{}, nil
 	}
@@ -93,7 +94,7 @@ func (r *memoryRepository) LoadMemoryNodesByVectorIDs(ctx context.Context, vecto
 	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
 	}
-	vectorIDs = normalizeStringList(vectorIDs)
+	vectorIDs = storageutil.NormalizeStringList(vectorIDs)
 	if len(vectorIDs) == 0 {
 		return []logicdomain.MemoryNodeRecord{}, nil
 	}
@@ -269,7 +270,7 @@ func (r *memoryRepository) ApplyDirectMemoryWrite(ctx context.Context, session l
 
 	now := time.Now().UTC()
 	record = normalizeDirectMemoryNodeRecord(session, record, now)
-	supersededMemoryIDs = normalizeUint64List(supersededMemoryIDs)
+	supersededMemoryIDs = storageutil.NormalizeUint64List(supersededMemoryIDs)
 
 	// Keep the insert and the old-row retirement inside one explicit transaction so combined mode never exposes the fresh direct-write memory and the stale rows as simultaneously active.
 	// 把新插入和旧行退役都放进一个显式事务，确保组合模式不会同时暴露刚写入的新主动记忆和仍处于 active 的旧行。
@@ -341,7 +342,7 @@ func (r *memoryRepository) DeleteMemoryNodes(ctx context.Context, memoryIDs []ui
 	if r == nil || r.shared.pool == nil {
 		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("postgres store is not initialized")
 	}
-	memoryIDs = normalizeUint64List(memoryIDs)
+	memoryIDs = storageutil.NormalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
 		return logicdomain.MemoryDeleteResult{}, nil
 	}
@@ -429,13 +430,13 @@ WHERE memory_status = $4
 		return logicdomain.MemoryDeleteResult{
 			DeletedMemoryIDs:  deletedMemoryIDs,
 			NotFoundMemoryIDs: notFoundMemoryIDs,
-			DeletedVectorIDs:  normalizeStringList(deletedVectorIDs),
+			DeletedVectorIDs:  storageutil.NormalizeStringList(deletedVectorIDs),
 		}, postgresMemoryDeleteCommitOutcomeUncertainError(err)
 	}
 	return logicdomain.MemoryDeleteResult{
 		DeletedMemoryIDs:  deletedMemoryIDs,
 		NotFoundMemoryIDs: notFoundMemoryIDs,
-		DeletedVectorIDs:  normalizeStringList(deletedVectorIDs),
+		DeletedVectorIDs:  storageutil.NormalizeStringList(deletedVectorIDs),
 	}, nil
 }
 

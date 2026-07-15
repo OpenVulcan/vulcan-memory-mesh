@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -56,7 +57,7 @@ func (r *vectorRepository) EnqueueVectorGCJobs(ctx context.Context, query logicd
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	vectorIDs := normalizeStringList(query.VectorIDs)
+	vectorIDs := storageutil.NormalizeStringList(query.VectorIDs)
 	if len(vectorIDs) == 0 {
 		return nil
 	}
@@ -179,7 +180,7 @@ func (r *vectorRepository) CompleteVectorGCJobs(ctx context.Context, jobIDs []ui
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}
@@ -222,7 +223,7 @@ func (r *vectorRepository) RetryVectorGCJobs(ctx context.Context, jobIDs []uint6
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	jobIDs = normalizeUint64List(jobIDs)
+	jobIDs = storageutil.NormalizeUint64List(jobIDs)
 	if len(jobIDs) == 0 {
 		return nil
 	}

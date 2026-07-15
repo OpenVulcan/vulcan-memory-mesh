@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -195,10 +196,10 @@ func (r *workspaceRepository) ResolveProjectRef(ctx context.Context, projectRef 
 	if projectRef == "" {
 		return logicdomain.ProjectRecord{}, logicdomain.ValidationError{Field: "project_ref", Message: "is required"}
 	}
-	if projectID, ok := parseUint64(projectRef); ok {
+	if projectID, ok := storageutil.ParsePositiveUint64(projectRef); ok {
 		return r.loadProjectByID(ctx, projectID)
 	}
-	teamName, spaceName, projectName, err := parseProjectPath(projectRef)
+	teamName, spaceName, projectName, err := storageutil.ParseProjectPath(projectRef)
 	if err != nil {
 		return logicdomain.ProjectRecord{}, err
 	}
@@ -235,7 +236,7 @@ func (r *workspaceRepository) ResolveUserRef(ctx context.Context, userRef string
 	if userRef == "" {
 		return logicdomain.UserRecord{}, logicdomain.ValidationError{Field: "user_ref", Message: "is required"}
 	}
-	if userID, ok := parseUint64(userRef); ok {
+	if userID, ok := storageutil.ParsePositiveUint64(userRef); ok {
 		return r.loadUserByID(ctx, userID)
 	}
 	sqlText := fmt.Sprintf(`

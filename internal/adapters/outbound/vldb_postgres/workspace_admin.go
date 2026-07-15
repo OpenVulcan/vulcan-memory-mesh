@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
@@ -68,7 +69,7 @@ func (r *workspaceRepository) EnsureProjectPath(ctx context.Context, projectPath
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return logicdomain.ProjectMutationResult{}, fmt.Errorf("postgres store is not initialized")
 	}
-	teamName, spaceName, projectName, err := parseProjectPath(projectPath)
+	teamName, spaceName, projectName, err := storageutil.ParseProjectPath(projectPath)
 	if err != nil {
 		return logicdomain.ProjectMutationResult{}, err
 	}
