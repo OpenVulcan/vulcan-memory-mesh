@@ -5,11 +5,11 @@ package ai_key_failover
 import (
 	"context"
 	"fmt"
-	"maps"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -106,7 +106,7 @@ func (c *LLMClient) clientForKey(apiKey string) appports.LLMClient {
 // mergeHintMaps copies adapter defaults, model-specific overrides, and request overrides into one flat hint map for cost estimation.
 // mergeHintMaps 用于把适配器默认值、模型级覆盖和请求级覆盖合并成一份扁平 hint 表，供成本估算复用。
 func mergeHintMaps(base, modelDefaults, request map[string]any) map[string]any {
-	merged := cloneHintMap(base)
+	merged := providerhint.CloneMap(base)
 	for key, value := range modelDefaults {
 		merged[key] = value
 	}
@@ -114,13 +114,4 @@ func mergeHintMaps(base, modelDefaults, request map[string]any) map[string]any {
 		merged[key] = value
 	}
 	return merged
-}
-
-// cloneHintMap copies one flat hint map so request estimation never mutates runtime adapter defaults.
-// cloneHintMap 用于复制一份扁平 hint 表，避免请求估算过程修改运行时适配器默认值。
-func cloneHintMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return map[string]any{}
-	}
-	return maps.Clone(input)
 }

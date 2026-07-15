@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/OpenRouterTeam/go-sdk/models/operations"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -28,8 +29,8 @@ func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, params ma
 		client:      NewClient(endpoint, apiKey, 0, nil),
 		model:       strings.TrimSpace(model),
 		dimension:   dimension,
-		params:      cloneHintMap(params),
-		modelParams: cloneNestedHintMap(modelParams),
+		params:      providerhint.CloneMap(params),
+		modelParams: providerhint.CloneNestedMap(modelParams),
 	}
 }
 
@@ -127,20 +128,20 @@ func applyEmbeddingHints(params *operations.CreateEmbeddingsRequest, hints map[s
 		key := strings.ToLower(strings.TrimSpace(rawKey))
 		switch key {
 		case "user":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.User = &value
 			}
 		case "encoding_format":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				format := operations.EncodingFormat(value)
 				params.EncodingFormat = &format
 			}
 		case "dimensions":
-			if value, ok := intHint(rawValue); ok && value > 0 {
+			if value, ok := providerhint.Int64(rawValue); ok && value > 0 {
 				params.Dimensions = int64Pointer(value)
 			}
 		case "input_type":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.InputType = &value
 			}
 		case "provider":

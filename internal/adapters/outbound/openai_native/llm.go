@@ -5,12 +5,12 @@ package openai_native
 import (
 	"context"
 	"fmt"
-	"maps"
 	"strings"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
 	"github.com/openai/openai-go/v3/shared"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/trace"
@@ -31,8 +31,8 @@ func NewLLMClient(endpoint, apiKey, model, organization, project string, params 
 	return &LLMClient{
 		client:      NewClient(endpoint, apiKey, organization, project, nil),
 		model:       strings.TrimSpace(model),
-		params:      cloneHintMap(params),
-		modelParams: cloneNestedHintMap(modelParams),
+		params:      providerhint.CloneMap(params),
+		modelParams: providerhint.CloneNestedMap(modelParams),
 	}
 }
 
@@ -132,75 +132,75 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 		key := strings.ToLower(originalKey)
 		switch key {
 		case "temperature":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.Temperature = openai.Float(value)
 			}
 		case "top_p":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.TopP = openai.Float(value)
 			}
 		case "presence_penalty":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.PresencePenalty = openai.Float(value)
 			}
 		case "frequency_penalty":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.FrequencyPenalty = openai.Float(value)
 			}
 		case "max_tokens":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.MaxTokens = openai.Int(value)
 			}
 		case "max_completion_tokens":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.MaxCompletionTokens = openai.Int(value)
 			}
 		case "n":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.N = openai.Int(value)
 			}
 		case "seed":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.Seed = openai.Int(value)
 			}
 		case "logprobs":
-			if value, ok := boolHint(rawValue); ok {
+			if value, ok := providerhint.Bool(rawValue); ok {
 				params.Logprobs = openai.Bool(value)
 			}
 		case "top_logprobs":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.TopLogprobs = openai.Int(value)
 			}
 		case "store":
-			if value, ok := boolHint(rawValue); ok {
+			if value, ok := providerhint.Bool(rawValue); ok {
 				params.Store = openai.Bool(value)
 			}
 		case "parallel_tool_calls":
-			if value, ok := boolHint(rawValue); ok {
+			if value, ok := providerhint.Bool(rawValue); ok {
 				params.ParallelToolCalls = openai.Bool(value)
 			}
 		case "user":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.User = openai.String(value)
 			}
 		case "safety_identifier":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.SafetyIdentifier = openai.String(value)
 			}
 		case "prompt_cache_key":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.PromptCacheKey = openai.String(value)
 			}
 		case "reasoning_effort":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.ReasoningEffort = shared.ReasoningEffort(value)
 			}
 		case "service_tier":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.ServiceTier = openai.ChatCompletionNewParamsServiceTier(value)
 			}
 		case "verbosity":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.Verbosity = openai.ChatCompletionNewParamsVerbosity(value)
 			}
 		case "stop":
@@ -208,11 +208,11 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 				params.Stop = union
 			}
 		case "enable_thinking":
-			if value, ok := boolHint(rawValue); ok {
+			if value, ok := providerhint.Bool(rawValue); ok {
 				extraFields["enable_thinking"] = value
 			}
 		case "include_reasoning":
-			if value, ok := boolHint(rawValue); ok {
+			if value, ok := providerhint.Bool(rawValue); ok {
 				extraFields["include_reasoning"] = value
 			}
 		default:
@@ -231,7 +231,7 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 func mergeProviderHints(base map[string]any, modelParams map[string]map[string]any, model string, request map[string]any) map[string]any {
 	// Build one merged hint set so request-level overrides always win over configured defaults.
 	// 组装一份合并后的参数集，保证请求级覆盖始终优先于配置默认值。
-	merged := cloneHintMap(base)
+	merged := providerhint.CloneMap(base)
 	if overrides, ok := modelParams[strings.TrimSpace(model)]; ok {
 		for key, value := range overrides {
 			merged[key] = value
@@ -241,28 +241,6 @@ func mergeProviderHints(base map[string]any, modelParams map[string]map[string]a
 		merged[key] = value
 	}
 	return merged
-}
-
-// cloneHintMap copies one flat hint map so adapter-level defaults are never mutated by requests.
-// cloneHintMap 用于复制一份扁平参数表，避免请求覆盖时篡改适配器默认参数。
-func cloneHintMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return map[string]any{}
-	}
-	return maps.Clone(input)
-}
-
-// cloneNestedHintMap copies one nested model-parameter map so model defaults stay immutable at runtime.
-// cloneNestedHintMap 用于复制模型级嵌套参数表，保证运行时不会修改模型默认参数。
-func cloneNestedHintMap(input map[string]map[string]any) map[string]map[string]any {
-	if len(input) == 0 {
-		return map[string]map[string]any{}
-	}
-	cloned := make(map[string]map[string]any, len(input))
-	for model, params := range input {
-		cloned[strings.TrimSpace(model)] = cloneHintMap(params)
-	}
-	return cloned
 }
 
 // requestOptionsFromContext forwards the current trace ID through both provider correlation headers.
@@ -278,65 +256,6 @@ func requestOptionsFromContext(ctx context.Context) []option.RequestOption {
 		option.WithHeader("X-Trace-ID", traceID),
 		option.WithHeader("X-Client-Request-Id", traceID),
 	}
-}
-
-// floatHint converts supported integer and floating-point hint values into float64 without accepting strings.
-// floatHint 用于把受支持的整数与浮点 hint 值转换为 float64，且不接受字符串。
-func floatHint(value any) (float64, bool) {
-	switch tv := value.(type) {
-	case float64:
-		return tv, true
-	case float32:
-		return float64(tv), true
-	case int:
-		return float64(tv), true
-	case int64:
-		return float64(tv), true
-	case int32:
-		return float64(tv), true
-	default:
-		return 0, false
-	}
-}
-
-// intHint converts supported numeric hint values into the SDK's int64 representation.
-// intHint 用于把受支持的数值 hint 转换为 SDK 使用的 int64 表示。
-func intHint(value any) (int64, bool) {
-	switch tv := value.(type) {
-	case int:
-		return int64(tv), true
-	case int64:
-		return tv, true
-	case int32:
-		return int64(tv), true
-	case float64:
-		return int64(tv), true
-	case float32:
-		return int64(tv), true
-	default:
-		return 0, false
-	}
-}
-
-// boolHint accepts only native boolean hint values so configuration type errors remain visible.
-// boolHint 仅接受原生布尔 hint 值，使配置类型错误保持可见。
-func boolHint(value any) (bool, bool) {
-	tv, ok := value.(bool)
-	return tv, ok
-}
-
-// stringHint returns a trimmed non-empty string hint and rejects other value types.
-// stringHint 用于返回清理后的非空字符串 hint，并拒绝其他值类型。
-func stringHint(value any) (string, bool) {
-	tv, ok := value.(string)
-	if !ok {
-		return "", false
-	}
-	tv = strings.TrimSpace(tv)
-	if tv == "" {
-		return "", false
-	}
-	return tv, true
 }
 
 // stopHint normalizes one string or a string list into the SDK stop-sequence union while dropping blank entries.

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/openai/openai-go/v3"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -28,8 +29,8 @@ func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, organizat
 		client:      NewClient(endpoint, apiKey, organization, project, nil),
 		model:       strings.TrimSpace(model),
 		dimension:   dimension,
-		params:      cloneHintMap(params),
-		modelParams: cloneNestedHintMap(modelParams),
+		params:      providerhint.CloneMap(params),
+		modelParams: providerhint.CloneNestedMap(modelParams),
 	}
 }
 
@@ -116,15 +117,15 @@ func applyEmbeddingHints(params *openai.EmbeddingNewParams, hints map[string]any
 		key := strings.ToLower(originalKey)
 		switch key {
 		case "user":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.User = openai.String(value)
 			}
 		case "encoding_format":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.EncodingFormat = openai.EmbeddingNewParamsEncodingFormat(value)
 			}
 		case "dimensions":
-			if value, ok := intHint(rawValue); ok && value > 0 {
+			if value, ok := providerhint.Int64(rawValue); ok && value > 0 {
 				params.Dimensions = openai.Int(value)
 			}
 		default:

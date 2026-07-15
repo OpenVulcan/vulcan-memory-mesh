@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/OpenRouterTeam/go-sdk/models/operations"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
 
@@ -47,8 +48,8 @@ func NewRerankerClientWithParams(endpoint, apiKey, model string, timeout time.Du
 	return &RerankerClient{
 		client:      NewClient(endpoint, apiKey, timeout, httpClient),
 		model:       strings.TrimSpace(model),
-		params:      cloneHintMap(params),
-		modelParams: cloneNestedHintMap(modelParams),
+		params:      providerhint.CloneMap(params),
+		modelParams: providerhint.CloneNestedMap(modelParams),
 	}
 }
 

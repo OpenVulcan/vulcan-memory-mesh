@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"google.golang.org/genai"
@@ -27,8 +28,8 @@ func NewLLMClient(endpoint, apiKey, model string, params map[string]any, modelPa
 	return &LLMClient{
 		client:      NewClient(endpoint, apiKey, nil),
 		model:       strings.TrimSpace(model),
-		params:      cloneHintMap(params),
-		modelParams: cloneNestedHintMap(modelParams),
+		params:      providerhint.CloneMap(params),
+		modelParams: providerhint.CloneNestedMap(modelParams),
 	}
 }
 

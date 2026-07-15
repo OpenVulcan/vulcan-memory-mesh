@@ -6,19 +6,19 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"strings"
 
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 	"github.com/OpenRouterTeam/go-sdk/models/operations"
 	"github.com/OpenRouterTeam/go-sdk/optionalnullable"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
 
 // mergeProviderHints merges adapter defaults, model-specific defaults, and request overrides without mutating configured maps.
 // mergeProviderHints 用于合并适配器默认参数、模型级默认参数和请求级覆盖参数，同时避免修改配置中的原始 map。
 func mergeProviderHints(base map[string]any, modelParams map[string]map[string]any, model string, request map[string]any) map[string]any {
-	merged := cloneHintMap(base)
+	merged := providerhint.CloneMap(base)
 	if overrides, ok := modelParams[strings.TrimSpace(model)]; ok {
 		for key, value := range overrides {
 			merged[key] = value
@@ -28,28 +28,6 @@ func mergeProviderHints(base map[string]any, modelParams map[string]map[string]a
 		merged[key] = value
 	}
 	return merged
-}
-
-// cloneHintMap copies one flat hint map so request-scoped overrides cannot leak back into route-level defaults.
-// cloneHintMap 用于复制一份扁平参数表，避免请求级覆盖反向污染路由级默认参数。
-func cloneHintMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return map[string]any{}
-	}
-	return maps.Clone(input)
-}
-
-// cloneNestedHintMap copies model-specific provider hints and normalizes model keys to keep lookup behavior deterministic.
-// cloneNestedHintMap 用于复制模型专属 provider 参数，并规范化模型键，保证运行时查找行为稳定。
-func cloneNestedHintMap(input map[string]map[string]any) map[string]map[string]any {
-	if len(input) == 0 {
-		return map[string]map[string]any{}
-	}
-	cloned := make(map[string]map[string]any, len(input))
-	for model, params := range input {
-		cloned[strings.TrimSpace(model)] = cloneHintMap(params)
-	}
-	return cloned
 }
 
 // requestOptionsFromContext attaches fixed OpenRouter app attribution headers and optional trace identifiers to every SDK request.
@@ -74,65 +52,6 @@ func requestOptionsFromContext(ctx context.Context) []operations.Option {
 // optionalValue 用于把具体值包装成 SDK 使用的 OptionalNullable 表示，同时让其他字段继续保持省略语义。
 func optionalValue[T any](value T) optionalnullable.OptionalNullable[T] {
 	return optionalnullable.From(&value)
-}
-
-// floatHint extracts numeric provider hints from YAML-decoded values while rejecting non-numeric inputs.
-// floatHint 用于从 YAML 解码后的值中提取数值型 provider 参数，并拒绝非数值输入。
-func floatHint(value any) (float64, bool) {
-	switch tv := value.(type) {
-	case float64:
-		return tv, true
-	case float32:
-		return float64(tv), true
-	case int:
-		return float64(tv), true
-	case int64:
-		return float64(tv), true
-	case int32:
-		return float64(tv), true
-	default:
-		return 0, false
-	}
-}
-
-// intHint extracts integer-like provider hints and converts them into the int64 shape required by OpenRouter SDK structs.
-// intHint 用于提取整数型 provider 参数，并转换成 OpenRouter SDK 结构体所需的 int64 形态。
-func intHint(value any) (int64, bool) {
-	switch tv := value.(type) {
-	case int:
-		return int64(tv), true
-	case int64:
-		return tv, true
-	case int32:
-		return int64(tv), true
-	case float64:
-		return int64(tv), true
-	case float32:
-		return int64(tv), true
-	default:
-		return 0, false
-	}
-}
-
-// boolHint extracts boolean provider hints without accepting ambiguous string values.
-// boolHint 用于提取布尔型 provider 参数，并避免接受含义不明确的字符串值。
-func boolHint(value any) (bool, bool) {
-	tv, ok := value.(bool)
-	return tv, ok
-}
-
-// stringHint trims provider hint strings and rejects empty values so SDK requests do not carry meaningless fields.
-// stringHint 用于裁剪 provider 参数字符串并拒绝空值，避免 SDK 请求携带无意义字段。
-func stringHint(value any) (string, bool) {
-	tv, ok := value.(string)
-	if !ok {
-		return "", false
-	}
-	tv = strings.TrimSpace(tv)
-	if tv == "" {
-		return "", false
-	}
-	return tv, true
 }
 
 // stopHint maps supported stop-sequence hint shapes onto OpenRouter's typed Stop union.

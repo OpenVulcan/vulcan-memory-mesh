@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/OpenRouterTeam/go-sdk/models/components"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
@@ -27,8 +28,8 @@ func NewLLMClient(endpoint, apiKey, model string, params map[string]any, modelPa
 	return &LLMClient{
 		client:      NewClient(endpoint, apiKey, 0, nil),
 		model:       strings.TrimSpace(model),
-		params:      cloneHintMap(params),
-		modelParams: cloneNestedHintMap(modelParams),
+		params:      providerhint.CloneMap(params),
+		modelParams: providerhint.CloneNestedMap(modelParams),
 	}
 }
 
@@ -130,55 +131,55 @@ func applyProviderHints(params *components.ChatRequest, hints map[string]any) {
 		key := strings.ToLower(strings.TrimSpace(rawKey))
 		switch key {
 		case "temperature":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.Temperature = optionalValue(value)
 			}
 		case "top_p":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.TopP = optionalValue(value)
 			}
 		case "presence_penalty":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.PresencePenalty = optionalValue(value)
 			}
 		case "frequency_penalty":
-			if value, ok := floatHint(rawValue); ok {
+			if value, ok := providerhint.Float64(rawValue); ok {
 				params.FrequencyPenalty = optionalValue(value)
 			}
 		case "max_tokens":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.MaxTokens = optionalValue(value)
 			}
 		case "max_completion_tokens":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.MaxCompletionTokens = optionalValue(value)
 			}
 		case "seed":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.Seed = optionalValue(value)
 			}
 		case "logprobs":
-			if value, ok := boolHint(rawValue); ok {
+			if value, ok := providerhint.Bool(rawValue); ok {
 				params.Logprobs = optionalValue(value)
 			}
 		case "top_logprobs":
-			if value, ok := intHint(rawValue); ok {
+			if value, ok := providerhint.Int64(rawValue); ok {
 				params.TopLogprobs = optionalValue(value)
 			}
 		case "parallel_tool_calls":
-			if value, ok := boolHint(rawValue); ok {
+			if value, ok := providerhint.Bool(rawValue); ok {
 				params.ParallelToolCalls = optionalValue(value)
 			}
 		case "user":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.User = &value
 			}
 		case "session_id":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.SessionID = &value
 			}
 		case "service_tier":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				params.ServiceTier = optionalValue(components.ChatRequestServiceTier(value))
 			}
 		case "stop":
@@ -194,11 +195,11 @@ func applyProviderHints(params *components.ChatRequest, hints map[string]any) {
 				params.Provider = optionalValue(value)
 			}
 		case "reasoning_effort":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				ensureReasoning(params).Effort = optionalValue(components.Effort(value))
 			}
 		case "reasoning_summary":
-			if value, ok := stringHint(rawValue); ok {
+			if value, ok := providerhint.String(rawValue); ok {
 				ensureReasoning(params).Summary = optionalValue(components.ChatReasoningSummaryVerbosityEnum(value))
 			}
 		}

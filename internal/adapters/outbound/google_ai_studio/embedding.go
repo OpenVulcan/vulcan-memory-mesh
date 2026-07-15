@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"google.golang.org/genai"
 )
@@ -28,8 +29,8 @@ func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, params ma
 		client:      NewClient(endpoint, apiKey, nil),
 		model:       strings.TrimSpace(model),
 		dimension:   dimension,
-		params:      cloneHintMap(params),
-		modelParams: cloneNestedHintMap(modelParams),
+		params:      providerhint.CloneMap(params),
+		modelParams: providerhint.CloneNestedMap(modelParams),
 	}
 }
 

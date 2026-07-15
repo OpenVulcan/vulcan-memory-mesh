@@ -4,15 +4,16 @@ package google_ai_studio
 
 import (
 	"fmt"
-	"maps"
 	"strconv"
 	"strings"
+
+	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 )
 
 // mergeProviderHints merges adapter defaults, model-specific defaults, and request overrides in order so request-level hints always win.
 // mergeProviderHints 用于按顺序合并适配器默认参数、模型级默认参数和请求级覆盖，确保请求级 hint 始终优先。
 func mergeProviderHints(base map[string]any, modelParams map[string]map[string]any, model string, request map[string]any) map[string]any {
-	merged := cloneHintMap(base)
+	merged := providerhint.CloneMap(base)
 	if overrides, ok := modelParams[strings.TrimSpace(model)]; ok {
 		for key, value := range overrides {
 			merged[key] = value
@@ -22,28 +23,6 @@ func mergeProviderHints(base map[string]any, modelParams map[string]map[string]a
 		merged[key] = value
 	}
 	return merged
-}
-
-// cloneHintMap copies one flat hint map so adapter defaults are never mutated by request-level overrides.
-// cloneHintMap 用于复制一份扁平 hint 表，避免请求级覆盖修改适配器默认参数。
-func cloneHintMap(input map[string]any) map[string]any {
-	if len(input) == 0 {
-		return map[string]any{}
-	}
-	return maps.Clone(input)
-}
-
-// cloneNestedHintMap copies model-scoped defaults so runtime requests cannot mutate the configuration-derived nested map.
-// cloneNestedHintMap 用于复制模型粒度的默认参数表，避免运行时请求修改源自配置的嵌套 map。
-func cloneNestedHintMap(input map[string]map[string]any) map[string]map[string]any {
-	if len(input) == 0 {
-		return map[string]map[string]any{}
-	}
-	cloned := make(map[string]map[string]any, len(input))
-	for model, params := range input {
-		cloned[strings.TrimSpace(model)] = cloneHintMap(params)
-	}
-	return cloned
 }
 
 // stringHint normalizes one generic value into a non-empty string when the provider hint is text-like.
