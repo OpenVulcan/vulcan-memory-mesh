@@ -15,7 +15,6 @@ import (
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
-	"github.com/openvulcan/vmm/internal/platform/textutil"
 )
 
 const (
@@ -438,17 +437,6 @@ func memoryRecordFromNode(record logicdomain.MemoryNodeRecord) logicdomain.Memor
 		Metadata:     memoryRecordMetadataFromNode(record),
 		CreatedAt:    record.CreatedAt,
 	}
-}
-
-// estimateTokenBudget applies the local domestic estimator to one text blob so PostgreSQL turn summaries and extracted payloads keep the same budget heuristic as SQLite mode.
-// estimateTokenBudget 用于对文本载荷应用本地估算器，让 PostgreSQL 下的 turn 总结和提炼结果与 SQLite 模式共享同一套预算口径。
-func estimateTokenBudget(text string) int {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return 0
-	}
-	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
-	return estimator.Estimate(text)
 }
 
 // generateConfirmationCode returns one 32-character random hex token used by protected destructive admin flows.

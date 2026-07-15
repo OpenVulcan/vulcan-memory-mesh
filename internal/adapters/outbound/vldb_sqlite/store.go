@@ -19,7 +19,6 @@ import (
 	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
-	"github.com/openvulcan/vmm/internal/platform/textutil"
 )
 
 const (
@@ -1494,7 +1493,7 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	defer s.writeMu.Unlock()
 
 	if analysis.DetailsBudget <= 0 {
-		analysis.DetailsBudget = estimateTokenBudget(analysis.Details)
+		analysis.DetailsBudget = storageutil.EstimateTokenBudget(analysis.Details)
 	}
 	now := time.Now().UTC()
 	nowMs := now.UnixMilli()
@@ -5422,17 +5421,6 @@ func decodeStringMap(raw string) map[string]string {
 		return map[string]string{}
 	}
 	return out
-}
-
-// estimateTokenBudget applies the local domestic estimator to one text blob so turn summaries and extracted payloads share one stable budget heuristic.
-// estimateTokenBudget 用于对文本载荷应用本地估算器，让 turn 总结和提炼结果共享同一套稳定的 token 预算口径。
-func estimateTokenBudget(text string) int {
-	text = strings.TrimSpace(text)
-	if text == "" {
-		return 0
-	}
-	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
-	return estimator.Estimate(text)
 }
 
 // parameterizedTurnInsertStatement returns one turn INSERT with dehydrated JSON bound as a typed SQLite param.

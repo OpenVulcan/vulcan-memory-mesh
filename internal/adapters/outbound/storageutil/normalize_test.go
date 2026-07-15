@@ -98,3 +98,11 @@ func TestDehydrateTurnBuildsCanonicalPayload(t *testing.T) {
 		t.Fatalf("DehydrateTurn() budget = %d, want positive", budget)
 	}
 }
+
+// TestEstimateTokenBudgetReturnsZeroForBlankText verifies empty persisted details do not acquire artificial budget.
+// TestEstimateTokenBudgetReturnsZeroForBlankText 用于验证空白持久化详情不会产生虚假的 token 预算。
+func TestEstimateTokenBudgetReturnsZeroForBlankText(t *testing.T) {
+	if got := EstimateTokenBudget("  \t\n"); got != 0 {
+		t.Fatalf("EstimateTokenBudget(blank) = %d, want 0", got)
+	}
+}

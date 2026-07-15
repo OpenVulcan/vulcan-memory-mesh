@@ -192,7 +192,7 @@ func (r *analysisRepository) ApplyTurnAnalysis(ctx context.Context, session logi
 		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "user_id", Message: "must resolve to one persisted user"}
 	}
 	if analysis.DetailsBudget <= 0 {
-		analysis.DetailsBudget = estimateTokenBudget(analysis.Details)
+		analysis.DetailsBudget = storageutil.EstimateTokenBudget(analysis.Details)
 	}
 	now := time.Now().UTC()
 

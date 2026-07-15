@@ -48,8 +48,18 @@ func DehydrateTurn(turn logicdomain.TurnRecord) (string, int, error) {
 		return "", 0, fmt.Errorf("marshal dehydrated turn: %w", err)
 	}
 	serialized := string(body)
+	return serialized, EstimateTokenBudget(serialized), nil
+}
+
+// EstimateTokenBudget estimates normalized non-empty storage text with the shared domestic-language token profile.
+// EstimateTokenBudget 用于使用共享的中文场景 token 配置估算经过规范化的非空存储文本。
+func EstimateTokenBudget(text string) int {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return 0
+	}
 	estimator := textutil.NewTokenEstimator(textutil.DomesticTokenEstimatorConfig())
-	return serialized, estimator.Estimate(serialized), nil
+	return estimator.Estimate(text)
 }
 
 // ProjectCreateConfirmationMessage explains which hierarchy levels are missing before a storage adapter performs a confirmed project-path creation.
