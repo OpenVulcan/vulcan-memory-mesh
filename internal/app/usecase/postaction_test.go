@@ -39,7 +39,7 @@ func TestPostActionExecuteRejectsNilReceiver(t *testing.T) {
 // TestPostActionExecuteRejectsNilStore verifies the exported post-action use case fails fast with one stable error when partial construction omits the relational store required for durable turn persistence.
 // TestPostActionExecuteRejectsNilStore 用于验证当部分装配遗漏 turn 持久化所需的关系存储时，导出的 post-action 用例会快速返回稳定错误。
 func TestPostActionExecuteRejectsNilStore(t *testing.T) {
-	uc := newPostActionUseCase(nil, nil, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, nil, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	_, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -182,7 +182,7 @@ func TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation(
 			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
 		}},
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 	session := logicdomain.SessionRef{SessionID: 41, SessionKey: "sess-rollback", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
 	turn := logicdomain.PersistedTurnRecord{ID: 91, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
 
@@ -238,7 +238,7 @@ func TestPostActionApplyImmediateTurnAnalysisCleansSupersededVectorsBeforeAdvanc
 			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
 		}},
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 	session := logicdomain.SessionRef{SessionID: 47, SessionKey: "sess-supersede-advance-fail", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
 	turn := logicdomain.PersistedTurnRecord{ID: 97, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
 
@@ -287,7 +287,7 @@ func TestPostActionApplyImmediateTurnAnalysisKeepsVectorsOnOutcomeUncertain(t *t
 			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
 		}},
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 	session := logicdomain.SessionRef{SessionID: 45, SessionKey: "sess-outcome-uncertain", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
 	turn := logicdomain.PersistedTurnRecord{ID: 95, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
 
@@ -332,7 +332,7 @@ func TestPostActionApplyImmediateTurnAnalysisRollsBackVectorsWhenUnreferenced(t 
 			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
 		}},
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 	session := logicdomain.SessionRef{SessionID: 46, SessionKey: "sess-outcome-uncertain-unreferenced", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
 	turn := logicdomain.PersistedTurnRecord{ID: 96, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
 
@@ -391,7 +391,7 @@ func TestPostActionApplyImmediateTurnAnalysisDropsInvalidEmbeddedMemoryNode(t *t
 			},
 		},
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 	session := logicdomain.SessionRef{SessionID: 42, SessionKey: "sess-drop-invalid-memory", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
 	turn := logicdomain.PersistedTurnRecord{ID: 92, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
 
@@ -461,7 +461,7 @@ func TestPostActionApplyImmediateTurnAnalysisReconcilesSupersedesAfterDroppedMem
 			},
 		},
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 	session := logicdomain.SessionRef{SessionID: 43, SessionKey: "sess-reconcile-supersede-after-drop", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
 	turn := logicdomain.PersistedTurnRecord{ID: 93, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
 
@@ -504,7 +504,7 @@ func TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes(
 			SupersedeMemoryIDs: []uint64{801},
 		}},
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 	session := logicdomain.SessionRef{SessionID: 44, SessionKey: "sess-all-dropped-invalid-memory", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
 	turn := logicdomain.PersistedTurnRecord{ID: 94, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
 
@@ -528,7 +528,7 @@ func TestPostActionApplyImmediateTurnAnalysisAllowsAllDroppedInvalidMemoryNodes(
 func TestPostActionUseCaseDropsSingleRoundNoise(t *testing.T) {
 	filter := &stubNoiseTurnFilter{filtered: []logicdomain.NormalizedTurn{}}
 	store := &testRelationalStore{}
-	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -567,7 +567,7 @@ func TestPostActionExecuteScrubsPIIBeforeNoiseGateAndPersistence(t *testing.T) {
 		}},
 	}
 	store := &testRelationalStore{}
-	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(filter, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{}, nil)
 	uc.ConfigurePIIScrubber(stubPIIScrubber{
 		replacements: map[string]string{
 			"13800138000": "[PHONE]",
@@ -612,7 +612,7 @@ func TestPostActionUseCaseSkipsNoiseGateForTimeline(t *testing.T) {
 		TurnID:        1,
 		Details:       "timeline turn details",
 	}}
-	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -669,7 +669,7 @@ func TestPostActionUseCaseQueuesAcceptedTurnWithoutBlocking(t *testing.T) {
 	uc := newPostActionUseCase(filter, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
-	}, nil, false)
+	}, nil)
 
 	result, err := uc.Execute(context.Background(), PostActionCommand{
 		Session: logicdomain.SessionRef{
@@ -709,7 +709,7 @@ func TestBuildTurnAnalysisInputReusesScrubbedStoredData(t *testing.T) {
 			{MemoryID: 30, ScopeLevel: "project", Abstract: "最近直写电话 [PHONE]", Details: "工具记下了 [PHONE]", CreatedTimestamp: 123},
 		},
 	}
-	uc := newPostActionUseCase(nil, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{HistoryTurns: 4, MaxInputTokens: 200}, nil, false)
+	uc := newPostActionUseCase(nil, store, nil, nil, &stubPostActionTurnAnalyzer{}, nil, nil, PostActionAnalysisConfig{HistoryTurns: 4, MaxInputTokens: 200}, nil)
 	scrubber := &countingPIIScrubber{}
 	uc.ConfigurePIIScrubber(scrubber)
 
@@ -804,7 +804,7 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
-	}, nil, false)
+	}, nil)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  88,
@@ -896,7 +896,7 @@ func TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzer
 	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
-	}, logger, false)
+	}, logger)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  90,
@@ -963,7 +963,7 @@ func TestPostActionApplyImmediateTurnAnalysisPropagatesInvalidReviewerOutput(t *
 		Scene:   "postaction_l2_main",
 		Message: "memory legacy candidate index lists are unsupported",
 	}}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, nil)
 
 	err := uc.applyImmediateTurnAnalysis(context.Background(), logicdomain.SessionRef{
 		SessionID:  98,
@@ -1063,7 +1063,7 @@ func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
 	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
-	}, logger, false)
+	}, logger)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  88,
@@ -1121,7 +1121,7 @@ func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
 	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
-	}, logger, false)
+	}, logger)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  92,
@@ -1197,7 +1197,7 @@ func TestPostActionUseCaseLogsRawCandidateReviewInvalidOutput(t *testing.T) {
 	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
-	}, logger, false)
+	}, logger)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  93,
@@ -1280,7 +1280,7 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 			},
 		},
 	}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, nil)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  91,
@@ -1345,7 +1345,7 @@ func TestPostActionAnalysisLogsRawPayloadsWhenPayloadDebugEnabled(t *testing.T) 
 	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{
 		HistoryTurns:   3,
 		MaxInputTokens: 200,
-	}, logger, false)
+	}, logger)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  89,
@@ -1417,7 +1417,7 @@ func TestPostActionUseCaseConvergesExpiredProfiles(t *testing.T) {
 	}
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, nil, PostActionAnalysisConfig{}, logger, false)
+	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, nil, PostActionAnalysisConfig{}, logger)
 
 	uc.convergeExpiredProfiles()
 
@@ -1445,7 +1445,7 @@ func TestPostActionUseCaseBacksOffMaintenanceAfterDeadlock(t *testing.T) {
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
 	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, nil, PostActionAnalysisConfig{
 		QueueScanInterval: 30 * time.Second,
-	}, logger, false)
+	}, logger)
 
 	uc.convergeExpiredProfiles()
 

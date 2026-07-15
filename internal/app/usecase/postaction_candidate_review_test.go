@@ -125,7 +125,8 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesConfiguredMemoryReplaceScope(t
 				MemoryReplaceScope:        tt.rawScope,
 				DedupeMinSimilarity:       0.90,
 				HardDedupeCosineThreshold: 0,
-			}, nil, false)
+			}, nil)
+
 			analysis := &logicdomain.TurnAnalysis{
 				UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 				MemoryNodes: []logicdomain.MemoryNodeCandidate{{
@@ -259,7 +260,8 @@ func TestPostActionUseCaseReviewTurnCandidatesUsesUnifiedReviewerOnceForMemoryAn
 		MemoryReplaceScope:        memoryReplaceScopeTeam,
 		DedupeMinSimilarity:       0.90,
 		HardDedupeCosineThreshold: 0,
-	}, nil, false)
+	}, nil)
+
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputMixed,
 		Details:       "用户明确要求团队以后默认使用 Rust，并确认这是长期偏好。",
@@ -373,7 +375,7 @@ func TestPostActionUseCaseReviewTurnCandidatesKeepsInvalidProfilesForPersistence
 			},
 		},
 	}
-	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, reviewer, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, reviewer, PostActionAnalysisConfig{}, nil)
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		Details:       "用户给出了一条不应纳入长期画像的短期偏好。",
@@ -458,7 +460,8 @@ func TestPostActionUseCaseReviewTurnCandidatesRejectsUnavailableSupersedeIDs(t *
 		MemoryReplaceScope:        memoryReplaceScopeProject,
 		DedupeMinSimilarity:       0.90,
 		HardDedupeCosineThreshold: 0,
-	}, nil, false)
+	}, nil)
+
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
@@ -516,7 +519,7 @@ func TestPostActionUseCaseReviewTurnCandidatesClearsAnalyzerSupersedeWhenAllMemo
 			},
 		},
 	}
-	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil)
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
@@ -615,7 +618,7 @@ func TestPostActionUseCaseReviewTurnCandidatesKeepsAcceptedCandidateLocalSuperse
 			},
 		},
 	}
-	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, searcher, reviewer, PostActionAnalysisConfig{}, nil)
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
@@ -808,7 +811,8 @@ func TestPostActionUseCaseReviewTurnCandidatesHardDedupeSkipsReviewer(t *testing
 		MemoryReplaceScope:        memoryReplaceScopeProject,
 		DedupeMinSimilarity:       0.80,
 		HardDedupeCosineThreshold: 0.99,
-	}, nil, false)
+	}, nil)
+
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
@@ -904,7 +908,8 @@ func TestPostActionUseCaseReviewTurnCandidatesHardDedupeRequiresMatchingCategory
 		MemoryReplaceScope:        memoryReplaceScopeProject,
 		DedupeMinSimilarity:       0.80,
 		HardDedupeCosineThreshold: 0.99,
-	}, nil, false)
+	}, nil)
+
 	analysis := &logicdomain.TurnAnalysis{
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
@@ -952,7 +957,7 @@ func TestPostActionUseCaseReviewTurnCandidatesHardDedupeRequiresMatchingCategory
 func TestPostActionAnalysisLogIncludesCompactionMetrics(t *testing.T) {
 	logBuf := &bytes.Buffer{}
 	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
-	uc := newPostActionUseCase(nil, nil, nil, nil, nil, nil, nil, PostActionAnalysisConfig{}, logger, false)
+	uc := newPostActionUseCase(nil, nil, nil, nil, nil, nil, nil, PostActionAnalysisConfig{}, logger)
 
 	uc.logPostActionAnalysisResult(logicdomain.SessionRef{
 		SessionID:  41,

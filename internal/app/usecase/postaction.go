@@ -121,12 +121,16 @@ type PostActionUseCase struct {
 // NewPostActionUseCase creates a PostActionUseCase instance for the runtime asynchronous single-turn path.
 // NewPostActionUseCase 用于为运行时异步单轮提炼路径创建 PostActionUseCase 实例。
 func NewPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, memorySearcher PostActionMemorySearcher, candidateReviewer PostActionCandidateReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
-	return newPostActionUseCase(noiseGate, store, embedding, vector, turnAnalyzer, memorySearcher, candidateReviewer, analysisCfg, logger, true)
+	useCase := newPostActionUseCase(noiseGate, store, embedding, vector, turnAnalyzer, memorySearcher, candidateReviewer, analysisCfg, logger)
+	if store != nil {
+		useCase.startQueueWorker()
+	}
+	return useCase
 }
 
-// newPostActionUseCase builds the post-action use case and optionally starts the async queue worker for runtime paths.
-// newPostActionUseCase 用于构建 post-action 用例，并按需启动运行时异步队列工作器。
-func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, memorySearcher PostActionMemorySearcher, candidateReviewer PostActionCandidateReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger, startWorker bool) *PostActionUseCase {
+// newPostActionUseCase assembles the post-action use case without starting background workers so construction and lifecycle ownership remain separate.
+// newPostActionUseCase 用于组装 post-action 用例但不启动后台工作器，使对象构造与生命周期管理保持分离。
+func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.RelationalStore, embedding appports.EmbeddingClient, vector appports.VectorStore, turnAnalyzer PostActionTurnAnalyzer, memorySearcher PostActionMemorySearcher, candidateReviewer PostActionCandidateReviewer, analysisCfg PostActionAnalysisConfig, logger *logx.Logger) *PostActionUseCase {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -166,7 +170,7 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	if analysisCfg.MaxQueueWorkers <= 0 {
 		analysisCfg.MaxQueueWorkers = 1
 	}
-	uc := &PostActionUseCase{
+	return &PostActionUseCase{
 		noiseGate:         noiseGate,
 		store:             store,
 		embedding:         embedding,
@@ -178,10 +182,6 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 		logger:            logger,
 		queueWorkers:      analysisCfg.MaxQueueWorkers,
 	}
-	if startWorker && store != nil {
-		uc.startQueueWorker()
-	}
-	return uc
 }
 
 // ConfigurePIIScrubber injects the shared PII scrubber used to redact canonical post-action payloads, raw replay payloads, and analyzer-facing context before the workflow touches storage or LLM-backed stages.
