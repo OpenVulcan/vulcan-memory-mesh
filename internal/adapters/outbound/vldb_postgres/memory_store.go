@@ -239,7 +239,7 @@ func (r *memoryRepository) CreateDirectMemoryNode(ctx context.Context, session l
 		_ = tx.Rollback(context.Background())
 	}()
 
-	created, err := r.scanDirectMemoryNodeInsertRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeInsertSQL(r.memoryNodesTable()), directMemoryNodeInsertArgs(record)...))
+	created, err := r.scanDirectMemoryNodeInsertRow(tx.QueryRow(callCtx, directMemoryNodeInsertSQL(r.memoryNodesTable()), directMemoryNodeInsertArgs(record)...))
 	if err != nil {
 		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("insert postgres direct memory node: %w", err)
 	}
@@ -288,7 +288,7 @@ func (r *memoryRepository) ApplyDirectMemoryWrite(ctx context.Context, session l
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("load postgres direct-write superseded vector ids: %w", err)
 	}
-	created, err := r.scanDirectMemoryNodeInsertRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeInsertSQL(r.memoryNodesTable()), directMemoryNodeInsertArgs(record)...))
+	created, err := r.scanDirectMemoryNodeInsertRow(tx.QueryRow(callCtx, directMemoryNodeInsertSQL(r.memoryNodesTable()), directMemoryNodeInsertArgs(record)...))
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("insert postgres direct memory write row: %w", err)
 	}
@@ -516,7 +516,7 @@ func directMemoryNodeInsertArgs(record logicdomain.MemoryNodeRecord) []any {
 
 // scanDirectMemoryNodeInsertRow scans one direct-memory INSERT result row into the shared durable memory record model.
 // scanDirectMemoryNodeInsertRow 用于把一条主动记忆 INSERT 返回行扫描成共享的长期记忆记录模型。
-func (r *memoryRepository) scanDirectMemoryNodeInsertRow(_ context.Context, row pgRowScanner) (logicdomain.MemoryNodeRecord, error) {
+func (r *memoryRepository) scanDirectMemoryNodeInsertRow(row pgRowScanner) (logicdomain.MemoryNodeRecord, error) {
 	var scan memoryNodeScanRow
 	if err := row.Scan(
 		&scan.ID,
