@@ -66,7 +66,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	// Build the Gemini-native embedding request so the configured vector dimension keeps matching downstream vector-store schema expectations.
 	// 组装 Gemini 原生 embedding 请求，确保配置中的向量维度继续与下游向量存储 schema 保持一致。
 	config := &genai.EmbedContentConfig{}
-	applyEmbeddingHints(config, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
+	applyEmbeddingHints(config, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
 	dimension := req.Dimension
 	if dimension <= 0 {
 		dimension = c.dimension

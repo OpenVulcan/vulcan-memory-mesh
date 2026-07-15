@@ -66,7 +66,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	if dimension > 0 {
 		params.Dimensions = int64Pointer(int64(dimension))
 	}
-	applyEmbeddingHints(&params, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
+	applyEmbeddingHints(&params, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
 
 	// Call OpenRouter through its generated SDK and keep vector parsing strict so base64 responses cannot silently corrupt recall.
 	// 通过生成式 SDK 调用 OpenRouter，并对向量解析保持严格，避免 base64 响应静默破坏召回链路。

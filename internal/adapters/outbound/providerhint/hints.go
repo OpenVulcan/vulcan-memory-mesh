@@ -29,6 +29,19 @@ func CloneNestedMap(input map[string]map[string]any) map[string]map[string]any {
 	return cloned
 }
 
+// Merge overlays model defaults and request hints onto a cloned base map so request values have final precedence.
+// Merge 用于把模型默认值与请求 hint 覆盖到基础 map 的克隆上，使请求值拥有最终优先级。
+func Merge(base, modelDefaults, request map[string]any) map[string]any {
+	merged := CloneMap(base)
+	for key, value := range modelDefaults {
+		merged[key] = value
+	}
+	for key, value := range request {
+		merged[key] = value
+	}
+	return merged
+}
+
 // Float64 accepts the exact numeric hint types supported by strict OpenAI-compatible adapters.
 // Float64 用于接受严格 OpenAI 兼容适配器支持的精确数值 hint 类型。
 func Float64(value any) (float64, bool) {

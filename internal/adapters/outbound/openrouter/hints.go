@@ -11,24 +11,8 @@ import (
 	"github.com/OpenRouterTeam/go-sdk/models/components"
 	"github.com/OpenRouterTeam/go-sdk/models/operations"
 	"github.com/OpenRouterTeam/go-sdk/optionalnullable"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
-
-// mergeProviderHints merges adapter defaults, model-specific defaults, and request overrides without mutating configured maps.
-// mergeProviderHints 用于合并适配器默认参数、模型级默认参数和请求级覆盖参数，同时避免修改配置中的原始 map。
-func mergeProviderHints(base map[string]any, modelParams map[string]map[string]any, model string, request map[string]any) map[string]any {
-	merged := providerhint.CloneMap(base)
-	if overrides, ok := modelParams[strings.TrimSpace(model)]; ok {
-		for key, value := range overrides {
-			merged[key] = value
-		}
-	}
-	for key, value := range request {
-		merged[key] = value
-	}
-	return merged
-}
 
 // requestOptionsFromContext attaches fixed OpenRouter app attribution headers and optional trace identifiers to every SDK request.
 // requestOptionsFromContext 用于为每个 SDK 请求附加固定 OpenRouter 应用归因 header，并按需透传 trace 标识。

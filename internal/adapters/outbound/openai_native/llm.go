@@ -58,7 +58,7 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	if responseFormat := mapResponseFormat(req.ResponseFormat); responseFormat != nil {
 		params.ResponseFormat = *responseFormat
 	}
-	applyProviderHints(&params, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
+	applyProviderHints(&params, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
 
 	// Execute the provider call and reject structurally empty results.
 	// 执行模型调用，并拒绝结构上为空的返回结果。
@@ -224,23 +224,6 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 	if len(extraFields) > 0 {
 		params.SetExtraFields(extraFields)
 	}
-}
-
-// mergeProviderHints merges adapter defaults, model-specific defaults, and request overrides in order.
-// mergeProviderHints 用于按顺序合并适配器默认参数、模型级默认参数和请求级覆盖参数。
-func mergeProviderHints(base map[string]any, modelParams map[string]map[string]any, model string, request map[string]any) map[string]any {
-	// Build one merged hint set so request-level overrides always win over configured defaults.
-	// 组装一份合并后的参数集，保证请求级覆盖始终优先于配置默认值。
-	merged := providerhint.CloneMap(base)
-	if overrides, ok := modelParams[strings.TrimSpace(model)]; ok {
-		for key, value := range overrides {
-			merged[key] = value
-		}
-	}
-	for key, value := range request {
-		merged[key] = value
-	}
-	return merged
 }
 
 // requestOptionsFromContext forwards the current trace ID through both provider correlation headers.

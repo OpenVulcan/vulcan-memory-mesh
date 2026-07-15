@@ -58,7 +58,7 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	if responseFormat := mapResponseFormat(req.ResponseFormat); responseFormat != nil {
 		params.ResponseFormat = responseFormat
 	}
-	applyProviderHints(&params, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
+	applyProviderHints(&params, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
 
 	// Execute through the SDK so transport, auth, and future OpenRouter schema changes stay isolated in this outbound adapter.
 	// 通过 SDK 执行请求，让传输、鉴权和未来 OpenRouter schema 变化都被隔离在当前出站适配器内。

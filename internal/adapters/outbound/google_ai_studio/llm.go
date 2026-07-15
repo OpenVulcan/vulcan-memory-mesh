@@ -63,7 +63,7 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	if systemPrompt := strings.TrimSpace(req.SystemPrompt); systemPrompt != "" {
 		config.SystemInstruction = genai.NewContentFromText(systemPrompt, genai.RoleUser)
 	}
-	applyGenerateHints(config, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
+	applyGenerateHints(config, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
 	applyResponseFormat(config, req.ResponseFormat)
 	if httpOptions := requestHTTPOptionsFromContext(ctx); httpOptions != nil {
 		config.HTTPOptions = httpOptions

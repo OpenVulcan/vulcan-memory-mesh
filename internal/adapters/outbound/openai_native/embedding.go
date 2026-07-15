@@ -72,7 +72,7 @@ func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingReque
 	if dimension > 0 {
 		params.Dimensions = openai.Int(int64(dimension))
 	}
-	applyEmbeddingHints(&params, mergeProviderHints(c.params, c.modelParams, model, req.ProviderHints))
+	applyEmbeddingHints(&params, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
 	resp, err := c.client.sdkClient.Embeddings.New(ctx, params, requestOptionsFromContext(ctx)...)
 	if err != nil {
 		return appports.EmbeddingResponse{}, err

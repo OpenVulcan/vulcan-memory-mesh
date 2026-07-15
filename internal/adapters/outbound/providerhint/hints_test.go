@@ -35,6 +35,20 @@ func TestCloneNestedMapTrimsKeysAndClonesValues(t *testing.T) {
 	}
 }
 
+// TestMergePreservesPrecedenceAndBaseIsolation verifies request hints override model defaults without mutating configured base values.
+// TestMergePreservesPrecedenceAndBaseIsolation 用于验证请求 hint 会覆盖模型默认值，且不会修改已配置的基础值。
+func TestMergePreservesPrecedenceAndBaseIsolation(t *testing.T) {
+	base := map[string]any{"temperature": 0.1, "top_p": 0.8}
+	merged := Merge(base, map[string]any{"temperature": 0.2}, map[string]any{"temperature": 0.3})
+	if merged["temperature"] != 0.3 || merged["top_p"] != 0.8 {
+		t.Fatalf("unexpected merged hints: %#v", merged)
+	}
+	merged["top_p"] = 0.5
+	if base["top_p"] != 0.8 {
+		t.Fatalf("base hints mutated through merge: %#v", base)
+	}
+}
+
 // TestStrictScalarConversions verifies accepted types and rejects string coercion retained only by provider-specific adapters.
 // TestStrictScalarConversions 用于验证受支持类型，并拒绝仅由特定 provider 适配器保留的字符串强制转换。
 func TestStrictScalarConversions(t *testing.T) {

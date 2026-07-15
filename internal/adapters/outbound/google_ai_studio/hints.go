@@ -6,24 +6,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
-
-	"github.com/openvulcan/vmm/internal/adapters/outbound/providerhint"
 )
-
-// mergeProviderHints merges adapter defaults, model-specific defaults, and request overrides in order so request-level hints always win.
-// mergeProviderHints 用于按顺序合并适配器默认参数、模型级默认参数和请求级覆盖，确保请求级 hint 始终优先。
-func mergeProviderHints(base map[string]any, modelParams map[string]map[string]any, model string, request map[string]any) map[string]any {
-	merged := providerhint.CloneMap(base)
-	if overrides, ok := modelParams[strings.TrimSpace(model)]; ok {
-		for key, value := range overrides {
-			merged[key] = value
-		}
-	}
-	for key, value := range request {
-		merged[key] = value
-	}
-	return merged
-}
 
 // stringHint normalizes one generic value into a non-empty string when the provider hint is text-like.
 // stringHint 用于在 provider hint 为文本形态时，把通用值规范化成非空字符串。

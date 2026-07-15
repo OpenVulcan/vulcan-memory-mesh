@@ -82,7 +82,7 @@ func (c *RerankerClient) Rerank(ctx context.Context, query string, docs []apppor
 		Query:     query,
 		TopN:      int64Pointer(int64(topN)),
 	}
-	applyRerankHints(&params, mergeProviderHints(c.params, c.modelParams, c.model, nil))
+	applyRerankHints(&params, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(c.model)], nil))
 	resp, err := c.client.sdkClient.Rerank.Rerank(ctx, params, requestOptionsFromContext(ctx)...)
 	if err != nil {
 		return nil, err

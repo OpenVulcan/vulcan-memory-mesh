@@ -75,7 +75,7 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 		return appports.LLMResponse{}, fmt.Errorf("llm key failover requires fixed model %q, got %q", c.model, model)
 	}
 	req.Model = c.model
-	mergedHints := mergeHintMaps(c.params, c.modelParams[c.model], req.ProviderHints)
+	mergedHints := providerhint.Merge(c.params, c.modelParams[c.model], req.ProviderHints)
 	inputTokens := estimateTextTokens(req.SystemPrompt, req.UserPrompt)
 	cost := estimateLLMRequestCost(req.SystemPrompt, req.UserPrompt, mergedHints)
 	return executeWithFailover(ctx, c.selector, cost, func(ctx context.Context, apiKey string) (appports.LLMResponse, error) {
@@ -101,17 +101,4 @@ func (c *LLMClient) clientForKey(apiKey string) appports.LLMClient {
 	client := c.factory(apiKey)
 	c.clients[apiKey] = client
 	return client
-}
-
-// mergeHintMaps copies adapter defaults, model-specific overrides, and request overrides into one flat hint map for cost estimation.
-// mergeHintMaps 用于把适配器默认值、模型级覆盖和请求级覆盖合并成一份扁平 hint 表，供成本估算复用。
-func mergeHintMaps(base, modelDefaults, request map[string]any) map[string]any {
-	merged := providerhint.CloneMap(base)
-	for key, value := range modelDefaults {
-		merged[key] = value
-	}
-	for key, value := range request {
-		merged[key] = value
-	}
-	return merged
 }
