@@ -3,10 +3,12 @@
 package main
 
 import (
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/openvulcan/vmm/internal/config"
+	"github.com/openvulcan/vmm/internal/platform/storagemigrate"
 )
 
 // TestParseMaintenanceMigrateTargetAcceptsSplitToCombined verifies the current maintenance command accepts the documented split-to-combined migration action.
@@ -50,5 +52,19 @@ func TestBuildPostgresMaintenanceConfigCarriesMaintenanceTimeouts(t *testing.T) 
 	}
 	if got, want := postgresCfg.MaintenanceWriteTimeout, 12*time.Minute; got != want {
 		t.Fatalf("maintenance write timeout = %v, want %v", got, want)
+	}
+}
+
+// TestFormatMigrationReportErrorDetailIncludesTotalAndTables verifies failed imports can still expose the same row-count facts that success output prints.
+// TestFormatMigrationReportErrorDetailIncludesTotalAndTables 用于验证失败导入仍可暴露成功输出中相同的行数事实。
+func TestFormatMigrationReportErrorDetailIncludesTotalAndTables(t *testing.T) {
+	detail := formatMigrationReportErrorDetail(storagemigrate.Report{
+		Users:       2,
+		MemoryNodes: 1,
+	})
+	for _, want := range []string{"total_rows=3", "users=2", "memory_nodes=1", "profile_instructions=0"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("report error detail %q missing %q", detail, want)
+		}
 	}
 }

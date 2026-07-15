@@ -28,8 +28,8 @@ func (r *vectorRepository) Upsert(_ context.Context, record logicdomain.MemoryRe
 	return nil
 }
 
-// Search executes one pgvector semantic recall directly against the unified durable memory table and maps the result into the shared MemoryHit shape.
-// Search 用于直接在统一长期记忆表上执行一次 pgvector 语义召回，并把结果映射为共享 MemoryHit 结构。
+// Search executes one pgvector semantic recall directly against the unified durable memory table and returns materialized memory rows with each hit to avoid an immediate app-layer reload.
+// Search 用于直接在统一长期记忆表上执行一次 pgvector 语义召回，并让每条命中携带已物化记忆行，避免应用层立刻再次回表。
 func (r *vectorRepository) Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error) {
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
@@ -50,20 +50,13 @@ func (r *vectorRepository) Search(ctx context.Context, vector []float32, topK in
 	whereClauses := []string{activeUnexpiredMemoryCondition("m")}
 	appendScopedMemoryFilter(&whereClauses, args, filter, "m")
 	sqlText := fmt.Sprintf(`
-SELECT m.vector_id,
-       m.abstract,
-       m.team_id,
-       m.space_id,
-       m.project_id,
-       m.origin_session_id,
-       m.user_id,
-       COALESCE(m.source_turn_id, 0) AS source_turn_id,
+SELECT %s,
        (m.embedding <=> %s::vector) AS distance
 FROM %s AS m
 WHERE %s
 ORDER BY m.embedding <=> %s::vector ASC, m.id ASC
 LIMIT %s
-`, vectorPlaceholder, r.memoryNodesTable(), strings.Join(whereClauses, " AND "), vectorPlaceholder, limitPlaceholder)
+`, memoryNodeSelectColumns("m"), vectorPlaceholder, r.memoryNodesTable(), strings.Join(whereClauses, " AND "), vectorPlaceholder, limitPlaceholder)
 
 	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
@@ -72,7 +65,7 @@ LIMIT %s
 		return nil, fmt.Errorf("begin postgres vector search tx: %w", err)
 	}
 	defer func() {
-		_ = tx.Rollback(context.Background())
+		_ = tx.Rollback(callCtx)
 	}()
 
 	// Apply the ANN probe setting with SET LOCAL inside the same transaction so the recall query observes the operator-configured runtime knob without polluting pooled connections.
@@ -95,41 +88,22 @@ LIMIT %s
 	hits := make([]logicdomain.MemoryHit, 0)
 	for rows.Next() {
 		var (
-			vectorID      string
-			abstract      string
-			teamID        uint64
-			spaceID       uint64
-			projectID     uint64
-			originSession uint64
-			userID        uint64
-			sourceTurnID  uint64
-			distance      float64
+			row      memoryNodeScanRow
+			distance float64
 		)
-		if err := rows.Scan(&vectorID, &abstract, &teamID, &spaceID, &projectID, &originSession, &userID, &sourceTurnID, &distance); err != nil {
+		scanTargets := append(memoryNodeScanDestinations(&row), &distance)
+		if err := rows.Scan(scanTargets...); err != nil {
 			return nil, fmt.Errorf("scan postgres vector hit: %w", err)
 		}
-		hits = append(hits, logicdomain.MemoryHit{
-			ID:    strings.TrimSpace(vectorID),
-			Text:  strings.TrimSpace(abstract),
-			Score: distanceToScore(distance),
-			Filter: logicdomain.SearchFilter{
-				TeamID:    teamID,
-				SpaceID:   spaceID,
-				ProjectID: projectID,
-				SessionID: originSession,
-				UserID:    userID,
-			},
-			Metadata: map[string]string{
-				"turn_id": fmt.Sprintf("%d", sourceTurnID),
-			},
-		})
+		// Plain pgvector recall is a single-channel vector path, so stamp its origin at the adapter boundary before the app layer maps durable memory rows.
+		// 普通 pgvector 召回是单通道向量路径，因此在适配器边界写入来源，再交给应用层映射长期记忆行。
+		hits = append(hits, postgresMemoryHitFromRecord(row.toMemoryNodeRecord(), distanceToScore(distance), "vector_search"))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate postgres vector hits: %w", err)
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return nil, fmt.Errorf("commit postgres vector search tx: %w", err)
-	}
+	// Let the deferred rollback close the read-only transaction because it exists only to scope SET LOCAL probe tuning, not to commit durable state.
+	// 让延迟 rollback 关闭只读事务，因为该事务只用于限定 SET LOCAL 探针参数作用域，而不是提交持久状态。
 	return hits, nil
 }
 
@@ -158,6 +132,32 @@ func distanceToScore(distance float64) float64 {
 		return 1
 	}
 	return 1 / (1 + distance)
+}
+
+// postgresMemoryHitFromRecord converts one already-scanned unified memory row into the shared recall hit shape while preserving the materialized row for app-layer mapping.
+// postgresMemoryHitFromRecord 用于把已扫描的统一记忆行转换成共享召回命中结构，同时保留已物化行供应用层映射使用。
+func postgresMemoryHitFromRecord(record logicdomain.MemoryNodeRecord, score float64, origin string) logicdomain.MemoryHit {
+	metadata := map[string]string{
+		"turn_id": fmt.Sprintf("%d", record.SourceTurnID),
+	}
+	if origin = strings.TrimSpace(origin); origin != "" {
+		metadata["origin"] = origin
+	}
+	return logicdomain.MemoryHit{
+		ID:        strings.TrimSpace(record.VectorID),
+		Text:      strings.TrimSpace(record.Abstract),
+		Score:     score,
+		Record:    record,
+		CreatedAt: record.CreatedAt,
+		Filter: logicdomain.SearchFilter{
+			TeamID:    record.TeamID,
+			SpaceID:   record.SpaceID,
+			ProjectID: record.ProjectID,
+			SessionID: record.OriginSessionID,
+			UserID:    record.UserID,
+		},
+		Metadata: metadata,
+	}
 }
 
 // DeleteByFilter delegates to the vector repository.

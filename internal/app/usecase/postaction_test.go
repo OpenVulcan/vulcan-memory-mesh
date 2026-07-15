@@ -56,6 +56,59 @@ func TestPostActionExecuteRejectsNilStore(t *testing.T) {
 	}
 }
 
+// TestValidateTurnAnalysisRejectsAdmissionReasonContractDrift verifies the use-case boundary rejects analyzer outputs whose rejection reason no longer matches the keep/drop decision.
+// TestValidateTurnAnalysisRejectsAdmissionReasonContractDrift 用于验证用例边界会拒绝拒绝原因与 keep/drop 结论不再匹配的分析器输出。
+func TestValidateTurnAnalysisRejectsAdmissionReasonContractDrift(t *testing.T) {
+	input := logicdomain.TurnAnalysisInput{
+		TargetTurn: logicdomain.TurnAnalysisTargetTurn{TurnID: 101},
+	}
+	tests := []struct {
+		name     string
+		analysis logicdomain.TurnAnalysis
+	}{
+		{
+			name: "memory drop without reason",
+			analysis: logicdomain.TurnAnalysis{
+				UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+				TurnID:        101,
+				MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+					Category:       logicdomain.MemoryNodeCategoryProjectContext,
+					Abstract:       "只是回答问题。",
+					Details:        "只是回答问题。",
+					EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceAssistantGeneralKnowledge,
+					Admission:      logicdomain.TurnAnalysisAdmissionDrop,
+				}},
+			},
+		},
+		{
+			name: "profile keep with rejection reason",
+			analysis: logicdomain.TurnAnalysis{
+				UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+				TurnID:        101,
+				ProfileNodes: []logicdomain.ProfileNodeCandidate{{
+					ProfileType:     logicdomain.ProfileTypeProject,
+					Content:         "当前项目要求长期保留准入元数据。",
+					EvidenceSource:  logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+					Admission:       logicdomain.TurnAnalysisAdmissionKeep,
+					AdmissionReason: logicdomain.TurnAnalysisAdmissionReasonNonDurable,
+				}},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := validateTurnAnalysis(input, tt.analysis)
+			if err == nil {
+				t.Fatal("expected admission_reason contract error")
+			}
+			if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
+				t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+			}
+		})
+	}
+}
+
 // TestPostActionShutdownAcceptsNilContext verifies the exported queue shutdown hook normalizes nil contexts so direct callers can stop a partially constructed worker without panicking on ctx.Done().
 // TestPostActionShutdownAcceptsNilContext 用于验证导出的队列关闭钩子会归一 nil context，确保直接调用方在关闭部分装配工作器时不会因为 ctx.Done() 触发 panic。
 func TestPostActionShutdownAcceptsNilContext(t *testing.T) {
@@ -79,10 +132,15 @@ func TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext(t *testing.T) {
 	uc.queueCh <- 1
 
 	uc.pushQueueID(2)
-	time.Sleep(20 * time.Millisecond)
 
 	if got := len(uc.queueCh); got != 1 {
 		t.Fatalf("expected queue length to remain 1, got %d", got)
+	}
+	if len(uc.deferredQueueIDs) != 0 {
+		t.Fatalf("expected missing queue context to skip deferred queue, got %v", uc.deferredQueueIDs)
+	}
+	if len(uc.deferredQueueSet) != 0 {
+		t.Fatalf("expected missing queue context to skip deferred set, got %v", uc.deferredQueueSet)
 	}
 }
 
@@ -173,6 +231,147 @@ func TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation(
 	}
 	if store.vectorGCEnqueueQuery.NextRunAt.IsZero() {
 		t.Fatal("expected vector gc compensation to schedule a retry time")
+	}
+}
+
+// TestPostActionApplyImmediateTurnAnalysisCleansSupersededVectorsBeforeAdvanceFailure verifies obsolete vectors are cleaned or queued immediately after the relational supersede commit even when the later session checkpoint update fails.
+// TestPostActionApplyImmediateTurnAnalysisCleansSupersededVectorsBeforeAdvanceFailure 用于验证关系层 supersede 提交后，即使后续 session 检查点推进失败，旧向量也会立即被清理或进入补偿队列。
+func TestPostActionApplyImmediateTurnAnalysisCleansSupersededVectorsBeforeAdvanceFailure(t *testing.T) {
+	store := &testRelationalStore{
+		analysisApplyResult: logicdomain.TurnAnalysisApplyResult{
+			SupersededVectorIDs: []string{" vec-old-1 ", "", "vec-old-1", "vec-old-2"},
+		},
+		advanceErr: errors.New("advance extract window failed"),
+	}
+	vector := &stubVectorStore{deleteErr: errors.New("vector delete unavailable")}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        97,
+		Details:       "记住用户确认的新状态并替代旧状态。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Abstract:       "当前项目已经进入灰度阶段。",
+			Details:        "当前项目已经进入灰度阶段。",
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	session := logicdomain.SessionRef{SessionID: 47, SessionKey: "sess-supersede-advance-fail", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
+	turn := logicdomain.PersistedTurnRecord{ID: 97, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), session, turn, logicdomain.TurnRecord{
+		UserContent:      "项目现在进入灰度阶段，旧阶段状态可以淘汰。",
+		AssistantContent: "收到，我会更新。",
+	})
+	if err == nil || !strings.Contains(err.Error(), "advance extract window failed") {
+		t.Fatalf("expected advance failure after supersede cleanup, got %v", err)
+	}
+	if len(vector.deleteIDsCalls) != 1 {
+		t.Fatalf("expected one superseded-vector cleanup attempt before advance failure, got %+v", vector.deleteIDsCalls)
+	}
+	if got, want := vector.deleteIDsCalls[0], []string{"vec-old-1", "vec-old-2"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("superseded vector delete ids = %+v, want %+v", got, want)
+	}
+	if store.vectorGCEnqueueQuery.JobType != logicdomain.VectorGCJobTypeTurnAnalysisSupersedeCleanup {
+		t.Fatalf("vector gc job type = %q, want %q", store.vectorGCEnqueueQuery.JobType, logicdomain.VectorGCJobTypeTurnAnalysisSupersedeCleanup)
+	}
+	if got, want := store.vectorGCEnqueueQuery.VectorIDs, []string{"vec-old-1", "vec-old-2"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("vector gc compensation ids = %+v, want %+v", got, want)
+	}
+}
+
+// TestPostActionApplyImmediateTurnAnalysisKeepsVectorsOnOutcomeUncertain verifies fresh vectors are not rolled back when relational persistence may already reference them.
+// TestPostActionApplyImmediateTurnAnalysisKeepsVectorsOnOutcomeUncertain 用于验证当关系持久化结果不确定且可能已引用新向量时，不会回滚删除这些新向量。
+func TestPostActionApplyImmediateTurnAnalysisKeepsVectorsOnOutcomeUncertain(t *testing.T) {
+	store := &testRelationalStore{analysisErr: logicdomain.OutcomeUncertainError{
+		Operation:            "apply turn analysis",
+		Message:              "supersede turn analysis memory nodes affected 1 rows, want 2",
+		FreshVectorReference: true,
+	}}
+	vector := &stubVectorStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        95,
+		Details:       "记住用户确认的项目状态。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Abstract:       "当前项目已经进入灰度阶段。",
+			Details:        "当前项目已经进入灰度阶段。",
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	session := logicdomain.SessionRef{SessionID: 45, SessionKey: "sess-outcome-uncertain", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
+	turn := logicdomain.PersistedTurnRecord{ID: 95, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), session, turn, logicdomain.TurnRecord{
+		UserContent:      "项目已经进入灰度阶段。",
+		AssistantContent: "收到，我会记住。",
+	})
+	if err == nil || !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain relational apply error, got %v", err)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one vector upsert before uncertain relational result, got %+v", vector.upserts)
+	}
+	if len(vector.deleteIDsCalls) != 0 {
+		t.Fatalf("expected no rollback delete for outcome-uncertain apply, got %+v", vector.deleteIDsCalls)
+	}
+	if store.vectorGCEnqueueQuery.JobType != "" || len(store.vectorGCEnqueueQuery.VectorIDs) != 0 {
+		t.Fatalf("expected no rollback compensation for outcome-uncertain apply, got %+v", store.vectorGCEnqueueQuery)
+	}
+}
+
+// TestPostActionApplyImmediateTurnAnalysisRollsBackVectorsWhenUnreferenced verifies uncertain relational state does not automatically retain vectors unless a durable memory row may reference them.
+// TestPostActionApplyImmediateTurnAnalysisRollsBackVectorsWhenUnreferenced 用于验证关系状态不确定并不自动保留向量，除非长期 memory 行可能已经引用这些向量。
+func TestPostActionApplyImmediateTurnAnalysisRollsBackVectorsWhenUnreferenced(t *testing.T) {
+	store := &testRelationalStore{analysisErr: logicdomain.OutcomeUncertainError{
+		Operation: "apply turn analysis",
+		Message:   "profile target update failed after turn update",
+	}}
+	vector := &stubVectorStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        96,
+		Details:       "记住用户确认的项目状态。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Abstract:       "当前项目已经进入灰度阶段。",
+			Details:        "当前项目已经进入灰度阶段。",
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, nil, nil, PostActionAnalysisConfig{}, nil, false)
+	session := logicdomain.SessionRef{SessionID: 46, SessionKey: "sess-outcome-uncertain-unreferenced", UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9}
+	turn := logicdomain.PersistedTurnRecord{ID: 96, SessionID: session.SessionID, ProjectID: session.ProjectID, CreatedAt: time.Now().UTC(), DehydratedBudget: 12}
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), session, turn, logicdomain.TurnRecord{
+		UserContent:      "项目已经进入灰度阶段。",
+		AssistantContent: "收到，我会记住。",
+	})
+	if err == nil || !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain relational apply error, got %v", err)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one vector upsert before uncertain relational result, got %+v", vector.upserts)
+	}
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 {
+		t.Fatalf("expected rollback delete when uncertain relation has no fresh vector reference, got %+v", vector.deleteIDsCalls)
+	}
+	if store.vectorGCEnqueueQuery.JobType != "" || len(store.vectorGCEnqueueQuery.VectorIDs) != 0 {
+		t.Fatalf("expected no compensation when rollback succeeds, got %+v", store.vectorGCEnqueueQuery)
 	}
 }
 
@@ -755,6 +954,71 @@ func TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzer
 	}
 }
 
+// TestPostActionApplyImmediateTurnAnalysisPropagatesInvalidReviewerOutput verifies structured L2 contract errors stop persistence instead of degrading to analyzer output.
+// TestPostActionApplyImmediateTurnAnalysisPropagatesInvalidReviewerOutput 用于验证结构化 L2 契约错误会阻止持久化，而不是降级到分析器输出。
+func TestPostActionApplyImmediateTurnAnalysisPropagatesInvalidReviewerOutput(t *testing.T) {
+	store := &testRelationalStore{}
+	analyzer := &stubPostActionTurnAnalyzer{result: logicdomain.TurnAnalysis{
+		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+		TurnID:        98,
+		Details:       "用户确认默认部署方式需要长期保留。",
+		MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+			Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+			Abstract:       "当前项目默认使用本地部署方式。",
+			Details:        "用户确认当前项目默认使用本地部署方式。",
+			EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserConfirmed,
+			Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+		}},
+	}}
+	embedding := &stubEmbeddingClient{response: appports.EmbeddingResponse{Vectors: [][]float32{{0.4, 0.5, 0.6}}}}
+	vector := &stubVectorStore{}
+	searcher := &stubPostActionMemorySearcher{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{{
+				QueryIndex: 0,
+				Query:      "当前项目默认使用本地部署方式。",
+			}},
+		},
+	}
+	reviewer := &stubPostActionCandidateReviewer{err: logicdomain.InvalidLLMOutputError{
+		Scene:   "postaction_l2_main",
+		Message: "memory legacy candidate index lists are unsupported",
+	}}
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, nil, false)
+
+	err := uc.applyImmediateTurnAnalysis(context.Background(), logicdomain.SessionRef{
+		SessionID:  98,
+		SessionKey: "sess-invalid-reviewer",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, logicdomain.PersistedTurnRecord{
+		ID:               98,
+		SessionID:        98,
+		ProjectID:        12,
+		CreatedAt:        time.Date(2026, 4, 2, 10, 0, 0, 0, time.UTC),
+		DehydratedBudget: 16,
+	}, logicdomain.TurnRecord{
+		UserContent:      "帮我记住默认部署方式。",
+		AssistantContent: "我来整理成长期记忆。",
+	})
+
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) || invalid.Scene != "postaction_l2_main" {
+		t.Fatalf("expected postaction_l2_main InvalidLLMOutputError, got %v", err)
+	}
+	if reviewer.calls != 1 {
+		t.Fatalf("expected reviewer to run once, got %d", reviewer.calls)
+	}
+	if len(embedding.requests) != 0 || len(vector.upserts) != 0 {
+		t.Fatalf("expected invalid reviewer output to stop before vector persistence, embedding=%+v vectors=%+v", embedding.requests, vector.upserts)
+	}
+	if store.analysisTurn.ID != 0 || store.advancedSessionID != 0 {
+		t.Fatalf("expected invalid reviewer output to stop before relational persistence, turn=%+v advanced=%d", store.analysisTurn, store.advancedSessionID)
+	}
+}
+
 // TestPostActionUseCaseRedactsAnalysisResultLogs verifies the async analysis-result log keeps throughput diagnostics without writing derived analysis text into runtime logs.
 // TestPostActionUseCaseRedactsAnalysisResultLogs 用于验证异步分析结果日志会保留吞吐诊断字段，但不会把提炼出的分析文本写入运行时日志。
 func TestPostActionUseCaseRedactsAnalysisResultLogs(t *testing.T) {
@@ -904,6 +1168,94 @@ func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
 	}
 	if !strings.Contains(logs, "invalid llm output for postaction_l1_main: json decode failed") {
 		t.Fatalf("expected invalid llm output error summary in failure log, got %s", logs)
+	}
+}
+
+// TestPostActionUseCaseLogsRawCandidateReviewInvalidOutput verifies queued postaction_l2_main structural failures emit the reviewer model label and the raw model output needed to debug strict reviewer contract violations.
+// TestPostActionUseCaseLogsRawCandidateReviewInvalidOutput 用于验证排队 postaction_l2_main 结构化失败会输出 reviewer 模型标识和原样模型返回体，方便定位严格 reviewer 契约问题。
+func TestPostActionUseCaseLogsRawCandidateReviewInvalidOutput(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{
+				ID:                93,
+				SessionID:         93,
+				ProjectID:         12,
+				DehydratedContent: `{"user":"记住默认部署必须本地优先","timeline":[],"assistant":"我会整理成长期记忆"}`,
+				DehydratedBudget:  12,
+				ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+				CreatedAt:         time.Date(2026, 4, 8, 2, 0, 0, 0, time.UTC),
+				UpdatedAt:         time.Date(2026, 4, 8, 2, 0, 1, 0, time.UTC),
+			},
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{
+		result: logicdomain.TurnAnalysis{
+			UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
+			TurnID:        93,
+			Details:       "用户要求默认部署长期保持本地优先。",
+			MemoryNodes: []logicdomain.MemoryNodeCandidate{{
+				Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+				Abstract:       "默认部署需要本地优先。",
+				Details:        "用户要求当前项目默认部署长期保持本地优先。",
+				EvidenceSource: logicdomain.TurnAnalysisEvidenceSourceUserAsserted,
+				Admission:      logicdomain.TurnAnalysisAdmissionKeep,
+			}},
+		},
+		model: "Qwen/Qwen3-32B",
+	}
+	rawOutput := `{"memory":{"accepted_candidate_indexes":[0],"reason":"旧格式输出"},"user":null,"project":null}`
+	reviewer := &stubPostActionCandidateReviewer{
+		err: logicdomain.InvalidLLMOutputError{
+			Scene:   "postaction_l2_main",
+			Message: "memory legacy candidate index lists are unsupported",
+			Raw:     rawOutput,
+		},
+		model: "Qwen/Qwen3-235B-A22B",
+	}
+	searcher := &stubPostActionMemorySearcher{}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, searcher, reviewer, PostActionAnalysisConfig{
+		HistoryTurns:   3,
+		MaxInputTokens: 200,
+	}, logger, false)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{
+		SessionID:  93,
+		SessionKey: "sess-invalid-l2-reviewer",
+		UserID:     9,
+		TeamID:     4,
+		SpaceID:    6,
+		ProjectID:  12,
+	}, "test")
+
+	logs := logBuf.String()
+	if analyzer.calls != 1 {
+		t.Fatalf("expected queued turn analyzer to run once, got %d", analyzer.calls)
+	}
+	if reviewer.calls != 1 {
+		t.Fatalf("expected queued candidate reviewer to run once, got %d; logs=%s", reviewer.calls, logs)
+	}
+	if !strings.Contains(logs, "post-action queued turn analysis failed") {
+		t.Fatalf("expected queued turn analysis failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "llm_scene：\"postaction_l2_main\"") {
+		t.Fatalf("expected l2 scene field in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "model：\"Qwen/Qwen3-235B-A22B\"") {
+		t.Fatalf("expected reviewer model field in failure log, got %s", logs)
+	}
+	if strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
+		t.Fatalf("expected failure log to avoid attributing l2 output to the analyzer model, got %s", logs)
+	}
+	if !strings.Contains(logs, "JSON(llm_raw_output)：") || !strings.Contains(logs, `"accepted_candidate_indexes"`) || !strings.Contains(logs, `"旧格式输出"`) {
+		t.Fatalf("expected raw postaction_l2_main output in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "invalid llm output for postaction_l2_main: memory legacy candidate index lists are unsupported") {
+		t.Fatalf("expected invalid l2 output summary in failure log, got %s", logs)
+	}
+	if store.analysisTurn.ID != 0 || store.advancedSessionID != 0 {
+		t.Fatalf("expected invalid reviewer output to stop before persistence, turn=%+v advanced=%d", store.analysisTurn, store.advancedSessionID)
 	}
 }
 
@@ -1248,6 +1600,7 @@ type testRelationalStore struct {
 	advancedSessionID       uint64
 	advancedObservedAt      time.Time
 	advancedCompletedAt     time.Time
+	advanceErr              error
 	adoptedMemoryIDs        []uint64
 	adoptedAt               time.Time
 	adoptionErr             error
@@ -1368,15 +1721,15 @@ func (s *testRelationalStore) AdvanceSessionExtractWindow(_ context.Context, ses
 	s.advancedSessionID = sessionID
 	s.advancedObservedAt = observedAt
 	s.advancedCompletedAt = completedAt
-	return nil
+	return s.advanceErr
 }
 
 // ApplyMemoryAdoption keeps interface completeness for tests that only exercise post-action paths.
 // ApplyMemoryAdoption 用于在只覆盖 post-action 路径的测试里补齐接口。
-func (s *testRelationalStore) ApplyMemoryAdoption(_ context.Context, _ logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+func (s *testRelationalStore) ApplyMemoryAdoption(_ context.Context, _ logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error) {
 	s.adoptedMemoryIDs = append([]uint64(nil), memoryIDs...)
 	s.adoptedAt = adoptedAt
-	return s.adoptionErr
+	return nil, s.adoptionErr
 }
 
 // ApplyTurnAnalysis keeps interface completeness for legacy tests that still compile against the expanded port.
@@ -1470,15 +1823,16 @@ func (s *stubEmbeddingClient) Embed(_ context.Context, req appports.EmbeddingReq
 // stubVectorStore captures vector writes and rollback deletions so post-action tests can assert the LanceDB-facing contract.
 // stubVectorStore 用于捕获向量写入和回滚删除，让 post-action 测试可以断言面向 LanceDB 的契约。
 type stubVectorStore struct {
-	upserts        []logicdomain.MemoryRecord
-	deleteFilters  []logicdomain.SearchFilter
-	deleteIDsCalls [][]string
-	searchFilters  []logicdomain.SearchFilter
-	searchTopKs    []int
-	searchHits     []logicdomain.MemoryHit
-	upsertErr      error
-	searchErr      error
-	deleteErr      error
+	upserts             []logicdomain.MemoryRecord
+	deleteFilters       []logicdomain.SearchFilter
+	deleteIDsCalls      [][]string
+	deleteIDContextErrs []error
+	searchFilters       []logicdomain.SearchFilter
+	searchTopKs         []int
+	searchHits          []logicdomain.MemoryHit
+	upsertErr           error
+	searchErr           error
+	deleteErr           error
 }
 
 // Upsert records one memory vector row and optionally returns the configured failure.
@@ -1496,7 +1850,26 @@ func (s *stubVectorStore) Search(_ context.Context, _ []float32, topK int, filte
 	}
 	s.searchTopKs = append(s.searchTopKs, topK)
 	s.searchFilters = append(s.searchFilters, filter)
-	return append([]logicdomain.MemoryHit(nil), s.searchHits...), nil
+	return cloneVectorSearchHitsForTest(s.searchHits), nil
+}
+
+// cloneVectorSearchHitsForTest copies canned vector hits and stamps the origin required by the production VectorStore contract.
+// cloneVectorSearchHitsForTest 用于复制预设向量命中，并写入生产 VectorStore 契约要求的来源标签。
+func cloneVectorSearchHitsForTest(hits []logicdomain.MemoryHit) []logicdomain.MemoryHit {
+	cloned := append([]logicdomain.MemoryHit(nil), hits...)
+	for idx := range cloned {
+		// Copy metadata before stamping the test origin so assertions can still inspect the original fixture without shared-map mutation.
+		// 写入测试来源前先复制 metadata，避免共享 map 变更影响其他断言读取原始夹具。
+		metadata := make(map[string]string, len(cloned[idx].Metadata)+1)
+		for key, value := range cloned[idx].Metadata {
+			metadata[key] = value
+		}
+		if strings.TrimSpace(metadata["origin"]) == "" {
+			metadata["origin"] = "vector_search"
+		}
+		cloned[idx].Metadata = metadata
+	}
+	return cloned
 }
 
 // DeleteByFilter records the destructive filter call and reuses the configured delete error when needed.
@@ -1511,9 +1884,14 @@ func (s *stubVectorStore) DeleteByFilter(_ context.Context, filter logicdomain.S
 
 // DeleteByIDs records rollback or obsolete vector ids so tests can assert the async queue cleans up the right rows.
 // DeleteByIDs 用于记录回滚或淘汰时的向量 id，方便测试断言异步队列会清理正确的行。
-func (s *stubVectorStore) DeleteByIDs(_ context.Context, ids []string) (uint64, error) {
+func (s *stubVectorStore) DeleteByIDs(ctx context.Context, ids []string) (uint64, error) {
 	copied := append([]string(nil), ids...)
 	s.deleteIDsCalls = append(s.deleteIDsCalls, copied)
+	if ctx == nil {
+		s.deleteIDContextErrs = append(s.deleteIDContextErrs, nil)
+	} else {
+		s.deleteIDContextErrs = append(s.deleteIDContextErrs, ctx.Err())
+	}
 	if s.deleteErr != nil {
 		return 0, s.deleteErr
 	}

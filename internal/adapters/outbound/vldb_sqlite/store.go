@@ -59,9 +59,18 @@ const (
 	// memoryFTSIndexName 用于固定长期记忆 lexical 检索所使用的独立 SQLite FTS 文档表名称，
 	// 让库侧能够维护单独的 fts5 表，而不会与关系源表发生命名冲突。
 	memoryFTSIndexName = "vmm_memory_nodes_fts"
+
+	// memoryLexicalResultLimit caps final lexical hits so SQLite split-mode recall stays aligned with the existing query fan-out budget.
+	// memoryLexicalResultLimit 用于限制最终 lexical 命中数，让 SQLite split 模式召回保持现有查询扇出预算。
+	memoryLexicalResultLimit = 32
+
+	// memoryLexicalCandidateLimit caps pre-filter FTS candidates so expired or inactive rows cannot crowd out valid rows before relational filtering.
+	// memoryLexicalCandidateLimit 用于限制过滤前 FTS 候选数，避免过期或非 active 行在关系过滤前挤掉有效结果。
+	memoryLexicalCandidateLimit = 128
 )
 
 const currentSchemaSQL = `
+BEGIN IMMEDIATE;
 CREATE TABLE IF NOT EXISTS vmm_noise_embeddings (
   scope TEXT NOT NULL,
   language TEXT NOT NULL,
@@ -377,6 +386,7 @@ CREATE TABLE IF NOT EXISTS vmm_profile_instructions (
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_profile_instructions_target ON vmm_profile_instructions(profile_type, bind_id, id);
 
+COMMIT;
 `
 
 // Store is the SQLite local-FFI adapter used for hierarchy metadata, session/turn persistence, cache storage, and built-in FTS.
@@ -516,45 +526,202 @@ func (s *Store) init(ctx context.Context) error {
 	return s.ensureBuiltinMemoryFTS(ctx)
 }
 
-// buildDebugSeedWorkspaceSQL renders the deterministic testing-stage seed rows so grpc debugging always starts with user_id=1 and project_id=1 available.
-// buildDebugSeedWorkspaceSQL 用于渲染测试阶段的确定性种子数据，让 gRPC 调试时始终直接拥有 user_id=1 和 project_id=1。
-func buildDebugSeedWorkspaceSQL(now time.Time) string {
+// parameterizedDebugSeedWorkspaceStatements builds deterministic testing-stage seed writes as single-statement typed-param calls because the real FFI only accepts flat params for one SQL statement.
+// parameterizedDebugSeedWorkspaceStatements 用于把确定性的测试阶段 seed 构造成单语句强类型参数调用，因为真实 FFI 只接受单条 SQL 的扁平参数。
+func parameterizedDebugSeedWorkspaceStatements(now time.Time) []sqliteWriteStatement {
 	now = now.UTC()
 	nowRFC3339 := now.Format(time.RFC3339Nano)
-	return fmt.Sprintf(`
+	return []sqliteWriteStatement{
+		{
+			SQL: `
 INSERT INTO vmm_users (id, name, profile, delete_confirm_code, created_at, updated_at)
-VALUES (%d, %s, '', '', %s, %s);
-
+VALUES (?, ?, '', '', ?, ?);
+`,
+			Params: []any{debugSeedUserID, debugSeedDefaultName, nowRFC3339, nowRFC3339},
+		},
+		{
+			SQL: `
 INSERT INTO vmm_teams (id, name, profile, created_at, updated_at)
-VALUES (%d, %s, '', %s, %s);
-
+VALUES (?, ?, '', ?, ?);
+`,
+			Params: []any{debugSeedTeamID, debugSeedDefaultName, nowRFC3339, nowRFC3339},
+		},
+		{
+			SQL: `
 INSERT INTO vmm_spaces (id, team_id, name, profile, created_at, updated_at)
-VALUES (%d, %d, %s, '', %s, %s);
-
+VALUES (?, ?, ?, '', ?, ?);
+`,
+			Params: []any{debugSeedSpaceID, debugSeedTeamID, debugSeedDefaultName, nowRFC3339, nowRFC3339},
+		},
+		{
+			SQL: `
 INSERT INTO vmm_projects (id, team_id, space_id, name, profile, created_at, updated_at)
-VALUES (%d, %d, %d, %s, '', %s, %s);
-`, debugSeedUserID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339),
-		debugSeedTeamID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339),
-		debugSeedSpaceID, debugSeedTeamID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339),
-		debugSeedProjectID, debugSeedTeamID, debugSeedSpaceID, sqlStringLiteral(debugSeedDefaultName), sqlStringLiteral(nowRFC3339), sqlStringLiteral(nowRFC3339))
+VALUES (?, ?, ?, ?, '', ?, ?);
+`,
+			Params: []any{debugSeedProjectID, debugSeedTeamID, debugSeedSpaceID, debugSeedDefaultName, nowRFC3339, nowRFC3339},
+		},
+	}
 }
 
 // exec sends one SQL statement or script to the SQLite gateway and prefers native typed params for the sqlite-first runtime path.
 // exec 用于把单条 SQL 或脚本发送给 SQLite 网关，并在 sqlite-first 运行路径里优先使用原生强类型参数。
 func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
+	_, err := s.execResult(ctx, sql, params...)
+	return err
+}
+
+// execResult sends one SQL statement or script to SQLite and returns the execution metadata for callers that need affected-row checks.
+// execResult 用于把单条 SQL 或脚本发送给 SQLite，并把执行元数据返回给需要校验影响行数的调用方。
+func (s *Store) execResult(ctx context.Context, sql string, params ...any) (sqliteffi.ExecuteResult, error) {
 	if !s.hasSQLiteStore() {
-		return fmt.Errorf("sqlite store is not initialized")
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
-		return err
+		return sqliteffi.ExecuteResult{}, err
 	}
 	resp, err := s.executeScript(ctx, strings.TrimSpace(sql), prepared.Values)
 	if err != nil {
-		return fmt.Errorf("sqlite execute: %w", err)
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("sqlite execute: %s", strings.TrimSpace(resp.Message))
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute: %s", strings.TrimSpace(resp.Message))
+	}
+	return resp, nil
+}
+
+// execExpectRowsChanged executes one write and requires SQLite to report the exact affected-row count for state-machine updates.
+// execExpectRowsChanged 用于执行一次写入，并要求 SQLite 返回精确影响行数，服务于状态机类更新的命中校验。
+func (s *Store) execExpectRowsChanged(ctx context.Context, operation string, expectedRows int64, sql string, params ...any) error {
+	resp, err := s.execResult(ctx, sql, params...)
+	if err != nil {
+		return err
+	}
+	if resp.RowsChanged != expectedRows {
+		return fmt.Errorf("%s affected %d rows, want %d", operation, resp.RowsChanged, expectedRows)
+	}
+	return nil
+}
+
+// sqlitePartialMutationError converts a post-mutation failure into the shared uncertain-outcome contract so upper layers do not add unsafe cleanup or failure writes.
+// sqlitePartialMutationError 用于把已发生部分写入后的失败转换为统一的结果不确定契约，避免上层追加不安全的清理或失败写入。
+func sqlitePartialMutationError(mutated bool, operation string, err error) error {
+	return sqlitePartialMutationErrorWithFreshVectorReference(mutated, false, operation, err)
+}
+
+// sqliteAutocommitRowsChangedDriftError classifies a single SQLite autocommit row-count drift as ordinary when no row changed and outcome-uncertain once any row has already been mutated.
+// sqliteAutocommitRowsChangedDriftError 用于分类单条 SQLite 自动提交语句的行数漂移：未改变任何行时返回普通错误，已经改变至少一行时返回结果不确定错误。
+func sqliteAutocommitRowsChangedDriftError(operation string, messagePrefix string, rowsChanged, expectedRows int64) error {
+	if rowsChanged == expectedRows {
+		return nil
+	}
+	err := fmt.Errorf("%s affected %d rows, want %d", messagePrefix, rowsChanged, expectedRows)
+	return sqlitePartialMutationError(rowsChanged > 0, operation, err)
+}
+
+// sqliteWriteCommitBoundaryError marks SQLite write failures that report an unknown commit boundary while leaving ordinary write failures unchanged.
+// sqliteWriteCommitBoundaryError 用于标记报告提交边界未知的 SQLite 写入失败，同时保持普通写入失败不变。
+func sqliteWriteCommitBoundaryError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isSQLiteOutcomeUncertainError(err) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: operation,
+			Message:   err.Error(),
+		}
+	}
+	return err
+}
+
+// sqliteWriteCommitOrPartialMutationError preserves explicit commit-boundary ambiguity before using confirmed prior writes to classify ordinary failures.
+// sqliteWriteCommitOrPartialMutationError 用于优先保留明确的提交边界不确定语义，再用已确认的前序写入分类普通失败。
+func sqliteWriteCommitOrPartialMutationError(mutated bool, operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if logicdomain.IsOutcomeUncertain(err) {
+		return err
+	}
+	if classifiedErr := sqliteWriteCommitBoundaryError(operation, err); logicdomain.IsOutcomeUncertain(classifiedErr) {
+		return classifiedErr
+	}
+	return sqlitePartialMutationError(mutated, operation, err)
+}
+
+// sqlitePartialMutationErrorWithFreshVectorReference marks partial SQLite writes and records whether fresh vector rows may now be referenced by durable memory rows.
+// sqlitePartialMutationErrorWithFreshVectorReference 用于标记 SQLite 部分写入，并记录新向量是否可能已经被长期 memory 行引用。
+func sqlitePartialMutationErrorWithFreshVectorReference(mutated bool, freshVectorReference bool, operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if !mutated || logicdomain.IsOutcomeUncertain(err) {
+		return err
+	}
+	return logicdomain.OutcomeUncertainError{
+		Operation:            operation,
+		Message:              err.Error(),
+		FreshVectorReference: freshVectorReference,
+	}
+}
+
+// sqliteWriteStatement stores one ordered write statement plus its typed parameters.
+// sqliteWriteStatement 用于保存顺序写入中的单条语句及其强类型参数。
+type sqliteWriteStatement struct {
+	// SQL stores one executable SQLite statement without transaction control.
+	// SQL 用于保存一条不包含事务控制语句的 SQLite 可执行语句。
+	SQL string
+	// Params stores the typed values bound to SQL placeholders.
+	// Params 用于保存绑定到 SQL 占位符的强类型参数值。
+	Params []any
+}
+
+// turnAnalysisProfileInsertExpectation stores the exact profile-node insert target needed to reconcile an uncertain post-action profile write.
+// turnAnalysisProfileInsertExpectation 用于保存 post-action 画像写入不确定时所需对账的精确画像节点插入目标。
+type turnAnalysisProfileInsertExpectation struct {
+	ID          uint64
+	TurnID      uint64
+	ProfileType int
+	BindID      uint64
+	Node        logicdomain.ProfileNodeCandidate
+	CreatedMs   int64
+}
+
+// turnAnalysisProfileSupersedeExpectation stores the target retirement state for one post-action profile supersede statement.
+// turnAnalysisProfileSupersedeExpectation 用于保存一条 post-action 画像替代语句的目标退役状态。
+type turnAnalysisProfileSupersedeExpectation struct {
+	NodeIDs        []uint64
+	SupersededByID uint64
+	ExpectedRows   int64
+}
+
+// turnAnalysisMemoryContextEdgeExpectation stores the exact edge-table state expected after one post-action context-edge statement.
+// turnAnalysisMemoryContextEdgeExpectation 用于保存一条 post-action 情境边语句执行后应达到的精确边表状态。
+type turnAnalysisMemoryContextEdgeExpectation struct {
+	// MemoryID stores the durable memory row whose context edges are being rewritten.
+	// MemoryID 保存正在重写情境边的长期 memory 行 ID。
+	MemoryID uint64
+	// ExpectedEdges stores the complete edge set that must be visible for the memory row after this statement.
+	// ExpectedEdges 保存该语句完成后，这条 memory 行下必须可见的完整情境边集合。
+	ExpectedEdges []logicdomain.MemoryContextEdge
+	// RequireRowsChanged reports whether the statement must affect an exact number of rows when SQLite returns normally.
+	// RequireRowsChanged 表示 SQLite 正常返回时是否必须校验精确影响行数。
+	RequireRowsChanged bool
+	// ExpectedRows stores the exact row count required when RequireRowsChanged is true.
+	// ExpectedRows 保存 RequireRowsChanged 为 true 时要求的精确影响行数。
+	ExpectedRows int64
+}
+
+// execWriteStatements executes ordered single-statement typed writes without pretending to hold a cross-call SQLite transaction that the real FFI cannot preserve.
+// execWriteStatements 用于按顺序执行单语句强类型写入，不伪装成真实 FFI 无法跨调用保留的 SQLite 事务。
+func (s *Store) execWriteStatements(ctx context.Context, statements ...sqliteWriteStatement) error {
+	if len(statements) == 0 {
+		return nil
+	}
+	for index, statement := range statements {
+		if err := s.exec(ctx, statement.SQL, statement.Params...); err != nil {
+			return fmt.Errorf("execute sqlite write statement %d: %w", index+1, err)
+		}
 	}
 	return nil
 }
@@ -562,28 +729,35 @@ func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 // execBatch sends one repeated-shape write workload through SQLite's native ExecuteBatch RPC so sqlite-first storage avoids one-RPC-per-row churn.
 // execBatch 用于通过 SQLite 原生 ExecuteBatch RPC 发送同构写入，避免 sqlite-first 存储退化成“一行一次 RPC”。
 func (s *Store) execBatch(ctx context.Context, sql string, items [][]any) error {
+	_, err := s.execBatchResult(ctx, sql, items)
+	return err
+}
+
+// execBatchResult sends one repeated-shape write workload and returns SQLite execution metadata for callers that must verify batch row counts.
+// execBatchResult 用于发送同构批量写入，并返回 SQLite 执行元数据，供必须校验批量命中行数的调用方使用。
+func (s *Store) execBatchResult(ctx context.Context, sql string, items [][]any) (sqliteffi.ExecuteResult, error) {
 	if !s.hasSQLiteStore() {
-		return fmt.Errorf("sqlite store is not initialized")
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	if len(items) == 0 {
-		return nil
+		return sqliteffi.ExecuteResult{Success: true}, nil
 	}
 	batchItems := make([][]sqliteffi.SQLValue, 0, len(items))
 	for idx, item := range items {
 		values, err := prepareSQLiteBatchParams(item)
 		if err != nil {
-			return fmt.Errorf("prepare sqlite batch item %d: %w", idx, err)
+			return sqliteffi.ExecuteResult{}, fmt.Errorf("prepare sqlite batch item %d: %w", idx, err)
 		}
 		batchItems = append(batchItems, values)
 	}
 	resp, err := s.executeBatch(ctx, strings.TrimSpace(sql), batchItems)
 	if err != nil {
-		return fmt.Errorf("sqlite execute batch: %w", err)
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute batch: %w", err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("sqlite execute batch: %s", strings.TrimSpace(resp.Message))
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute batch: %s", strings.TrimSpace(resp.Message))
 	}
-	return nil
+	return resp, nil
 }
 
 // queryRows decodes one JSON query response into a typed slice so higher-level methods can stay small and explicit while still preferring native sqlite params.
@@ -820,6 +994,234 @@ func (s *Store) nextNumericID(ctx context.Context, table string) (uint64, error)
 	return rows[0].NextID, nil
 }
 
+// loadTurnRecordByID loads one durable turn row by primary key for write reconciliation paths that cannot rely on retry safety.
+// loadTurnRecordByID 用于按主键读取一条长期 turn 行，服务于无法依赖安全重试的写入对账路径。
+func (s *Store) loadTurnRecordByID(ctx context.Context, turnID uint64) (logicdomain.SessionTurnRecord, bool, error) {
+	rows, err := queryRows[turnRecordRow](s, ctx, `
+SELECT id, session_id, project_id,
+       dehydrated_content,
+       dehydrated_budget, extracted_status, details, details_budget,
+       created_timestamp, updated_timestamp
+FROM vmm_turn_records
+WHERE id = ?
+LIMIT 1
+`, turnID)
+	if err != nil {
+		return logicdomain.SessionTurnRecord{}, false, fmt.Errorf("query turn record: %w", err)
+	}
+	if len(rows) == 0 {
+		return logicdomain.SessionTurnRecord{}, false, nil
+	}
+	return rows[0].toDomain(), true, nil
+}
+
+// sameAppendedTurnRecord reports whether a read-back row exactly matches the turn insert currently being reconciled.
+// sameAppendedTurnRecord 用于判断回读行是否精确匹配当前正在对账的 turn 插入。
+func sameAppendedTurnRecord(row logicdomain.SessionTurnRecord, id, sessionID, projectID uint64, dehydratedContent string, dehydratedBudget int, createdMs, updatedMs int64) bool {
+	return row.ID == id &&
+		row.SessionID == sessionID &&
+		row.ProjectID == projectID &&
+		row.DehydratedContent == strings.TrimSpace(dehydratedContent) &&
+		row.DehydratedBudget == dehydratedBudget &&
+		row.ExtractedStatus == logicdomain.TurnExtractedStatusPending &&
+		row.Details == "" &&
+		row.DetailsBudget == 0 &&
+		row.CreatedAt.Equal(unixMilliToTime(createdMs)) &&
+		row.UpdatedAt.Equal(unixMilliToTime(updatedMs))
+}
+
+// sameCorruptedTurnMark reports whether a read-back turn row proves one pending-to-done corrupted mark reached the durable table without changing payload fields.
+// sameCorruptedTurnMark 用于判断回读 turn 行是否证明一次损坏 turn 的 pending 到 done 标记已经落入长期表，且没有改写载荷字段。
+func sameCorruptedTurnMark(row logicdomain.SessionTurnRecord, before logicdomain.SessionTurnRecord, sessionID, turnID uint64, updatedMs int64) bool {
+	return before.ID == turnID &&
+		before.SessionID == sessionID &&
+		before.ExtractedStatus == logicdomain.TurnExtractedStatusPending &&
+		row.ID == before.ID &&
+		row.SessionID == before.SessionID &&
+		row.ProjectID == before.ProjectID &&
+		row.DehydratedContent == before.DehydratedContent &&
+		row.DehydratedBudget == before.DehydratedBudget &&
+		row.ExtractedStatus == logicdomain.TurnExtractedStatusDone &&
+		row.Details == before.Details &&
+		row.DetailsBudget == before.DetailsBudget &&
+		row.CreatedAt.Equal(before.CreatedAt) &&
+		sessionTimestampReached(row.UpdatedAt, updatedMs)
+}
+
+// sameAnalyzedTurnUpdate reports whether a read-back turn row has reached the exact analysis status and details written by the first post-action mutation.
+// sameAnalyzedTurnUpdate 用于判断回读 turn 行是否已经达到 post-action 首个写入所要求的分析状态与 details 内容。
+func sameAnalyzedTurnUpdate(row logicdomain.SessionTurnRecord, sessionID, projectID, turnID uint64, details string, detailsBudget int, updatedMs int64) bool {
+	return row.ID == turnID &&
+		row.SessionID == sessionID &&
+		row.ProjectID == projectID &&
+		row.ExtractedStatus == logicdomain.TurnExtractedStatusDone &&
+		row.Details == strings.TrimSpace(details) &&
+		row.DetailsBudget == detailsBudget &&
+		sessionTimestampReached(row.UpdatedAt, updatedMs)
+}
+
+// sameSQLiteRecordTime compares a read-back SQLite millisecond timestamp with the time value that was written through UnixMilli.
+// sameSQLiteRecordTime 用于比较 SQLite 回读的毫秒时间戳与通过 UnixMilli 写入的原始 time 值。
+func sameSQLiteRecordTime(value, expected time.Time) bool {
+	if expected.IsZero() {
+		return value.IsZero()
+	}
+	return value.Equal(unixMilliToTime(expected.UTC().UnixMilli()))
+}
+
+// sameFloat32Vector reports whether two vectors are bit-identical after SQLite JSON round-trip decoding.
+// sameFloat32Vector 用于判断两个向量在 SQLite JSON 往返解码后是否保持 bit 级一致。
+func sameFloat32Vector(left, right []float32) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for idx := range left {
+		if math.Float32bits(left[idx]) != math.Float32bits(right[idx]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sameMemoryNodeRecord reports whether a read-back memory row exactly matches one pending durable memory target.
+// sameMemoryNodeRecord 用于判断回读 memory 行是否精确匹配一个待落表的长期记忆目标。
+func sameMemoryNodeRecord(row logicdomain.MemoryNodeRecord, expected logicdomain.MemoryNodeRecord) bool {
+	return row.ID == expected.ID &&
+		row.TeamID == expected.TeamID &&
+		row.SpaceID == expected.SpaceID &&
+		row.ProjectID == expected.ProjectID &&
+		row.UserID == expected.UserID &&
+		row.OriginSessionID == expected.OriginSessionID &&
+		row.SourceTurnID == expected.SourceTurnID &&
+		row.VectorID == strings.TrimSpace(expected.VectorID) &&
+		sameFloat32Vector(row.Vector, expected.Vector) &&
+		row.SourceKind == expected.SourceKind &&
+		row.ScopeLevel == expected.ScopeLevel &&
+		row.Category == expected.Category &&
+		row.Abstract == strings.TrimSpace(expected.Abstract) &&
+		row.Details == strings.TrimSpace(expected.Details) &&
+		row.Status == expected.Status &&
+		row.Priority == expected.Priority &&
+		row.MemoryLevel == expected.MemoryLevel &&
+		row.RefreshWeight == expected.RefreshWeight &&
+		row.SupportCount == expected.SupportCount &&
+		row.RebuttalCount == expected.RebuttalCount &&
+		row.StatusReason == strings.TrimSpace(expected.StatusReason) &&
+		sameSQLiteRecordTime(row.ExpiresAt, expected.ExpiresAt) &&
+		sameSQLiteRecordTime(row.LastRecalledAt, expected.LastRecalledAt) &&
+		sameSQLiteRecordTime(row.LastAdoptedAt, expected.LastAdoptedAt) &&
+		sameSQLiteRecordTime(row.LastReinforcedAt, expected.LastReinforcedAt) &&
+		row.RecalledCount == expected.RecalledCount &&
+		row.AdoptedCount == expected.AdoptedCount &&
+		row.ReinforcementCount == expected.ReinforcementCount &&
+		row.CrossSessionAdoptedCount == expected.CrossSessionAdoptedCount &&
+		row.DecayDisabled == expected.DecayDisabled &&
+		row.DedupeHash == strings.TrimSpace(expected.DedupeHash) &&
+		sameSQLiteRecordTime(row.CreatedAt, expected.CreatedAt) &&
+		sameSQLiteRecordTime(row.UpdatedAt, expected.UpdatedAt)
+}
+
+// sameMemoryContextEdgeSet reports whether a read-back edge set exactly matches the durable edge state expected after one context-edge rewrite statement.
+// sameMemoryContextEdgeSet 用于判断回读情境边集合是否精确匹配某条情境边重写语句执行后应达到的长期状态。
+func sameMemoryContextEdgeSet(rows []logicdomain.MemoryContextEdge, expected []logicdomain.MemoryContextEdge) bool {
+	if len(rows) != len(expected) {
+		return false
+	}
+	orderedRows := append([]logicdomain.MemoryContextEdge(nil), rows...)
+	orderedExpected := append([]logicdomain.MemoryContextEdge(nil), expected...)
+	sortMemoryContextEdgesByPrimaryKey(orderedRows)
+	sortMemoryContextEdgesByPrimaryKey(orderedExpected)
+	for index := range orderedExpected {
+		if !sameMemoryContextEdge(orderedRows[index], orderedExpected[index]) {
+			return false
+		}
+	}
+	return true
+}
+
+// sortMemoryContextEdgesByPrimaryKey aligns in-memory comparisons with the SQLite table primary key instead of relying on extraction-order side effects.
+// sortMemoryContextEdgesByPrimaryKey 用于让内存比较对齐 SQLite 表主键顺序，而不是依赖提炼顺序的副作用。
+func sortMemoryContextEdgesByPrimaryKey(edges []logicdomain.MemoryContextEdge) {
+	sort.Slice(edges, func(left, right int) bool {
+		if edges[left].MemoryID != edges[right].MemoryID {
+			return edges[left].MemoryID < edges[right].MemoryID
+		}
+		if edges[left].ContextKey != edges[right].ContextKey {
+			return edges[left].ContextKey < edges[right].ContextKey
+		}
+		return edges[left].ContextValue < edges[right].ContextValue
+	})
+}
+
+// sameMemoryContextEdge reports whether one read-back edge matches the exact primary-key row and counters written for a turn-extracted memory.
+// sameMemoryContextEdge 用于判断单条回读情境边是否匹配 turn 提炼记忆写入的精确主键行与计数器。
+func sameMemoryContextEdge(row logicdomain.MemoryContextEdge, expected logicdomain.MemoryContextEdge) bool {
+	return row.MemoryID == expected.MemoryID &&
+		row.ContextKey == strings.TrimSpace(expected.ContextKey) &&
+		row.ContextValue == strings.TrimSpace(expected.ContextValue) &&
+		row.SupportCount == expected.SupportCount &&
+		row.RebuttalCount == expected.RebuttalCount &&
+		sameSQLiteRecordTime(row.LastSupportedAt, expected.LastSupportedAt) &&
+		sameSQLiteRecordTime(row.LastRebuttedAt, expected.LastRebuttedAt) &&
+		sameSQLiteRecordTime(row.CreatedAt, expected.CreatedAt) &&
+		sameSQLiteRecordTime(row.UpdatedAt, expected.UpdatedAt)
+}
+
+// sameProfileNodeInsert reports whether a read-back profile node matches the post-action insert target that may have committed already.
+// sameProfileNodeInsert 用于判断回读画像节点是否匹配一次可能已经提交的 post-action 插入目标。
+func sameProfileNodeInsert(row logicdomain.ProfileNodeRecord, expected turnAnalysisProfileInsertExpectation) bool {
+	expiresAt := time.Time{}
+	if !expected.Node.ExpiresAt.IsZero() {
+		expiresAt = expected.Node.ExpiresAt.UTC()
+	}
+	return row.ID == expected.ID &&
+		row.TurnID == expected.TurnID &&
+		row.ProfileType == expected.ProfileType &&
+		row.BindID == expected.BindID &&
+		row.Content == strings.TrimSpace(expected.Node.Content) &&
+		row.Status == expected.Node.Status &&
+		row.Priority == expected.Node.Priority &&
+		row.ProfileLevel == expected.Node.ProfileLevel &&
+		row.LevelReason == strings.TrimSpace(expected.Node.LevelReason) &&
+		row.RefreshWeight == expected.Node.RefreshWeight &&
+		row.ProfileDate == strings.TrimSpace(expected.Node.ProfileDate) &&
+		row.SourceKind == expected.Node.SourceKind &&
+		row.SourceID == expected.Node.SourceID &&
+		row.StatusReason == strings.TrimSpace(expected.Node.StatusReason) &&
+		sameSQLiteRecordTime(row.ExpiresAt, expiresAt) &&
+		row.SupersededByID == 0 &&
+		row.CreatedAt.Equal(unixMilliToTime(expected.CreatedMs)) &&
+		row.UpdatedAt.Equal(unixMilliToTime(expected.CreatedMs))
+}
+
+// sameAppendedSessionCounters reports whether a read-back session row has reached the absolute counter target for one appended turn.
+// sameAppendedSessionCounters 用于判断回读 session 行是否已经达到一次 turn 追加对应的绝对计数目标。
+func sameAppendedSessionCounters(row logicdomain.SessionRecord, sessionID, projectID uint64, turnCount, summarizeBudget int, updatedMs int64) bool {
+	return row.ID == sessionID &&
+		row.ProjectID == projectID &&
+		row.TurnCount == turnCount &&
+		row.SummarizeBudget == summarizeBudget &&
+		!row.UpdatedAt.Before(unixMilliToTime(updatedMs))
+}
+
+// sessionTimestampReached reports whether one read-back session timestamp has reached a requested checkpoint while treating zero as "no checkpoint requested".
+// sessionTimestampReached 用于判断回读 session 时间戳是否达到请求的检查点，同时把零值视为“未请求该检查点”。
+func sessionTimestampReached(value time.Time, targetMs int64) bool {
+	if targetMs <= 0 {
+		return true
+	}
+	return !value.Before(unixMilliToTime(targetMs))
+}
+
+// sameAdvancedSessionExtractWindow reports whether a read-back session row proves one extract-window checkpoint update has reached every requested timestamp.
+// sameAdvancedSessionExtractWindow 用于判断回读 session 行是否能够证明一次提炼窗口检查点更新已经达到所有请求的时间戳。
+func sameAdvancedSessionExtractWindow(row logicdomain.SessionRecord, sessionID uint64, observedMs, completedMs, updatedMs int64) bool {
+	return row.ID == sessionID &&
+		sessionTimestampReached(row.LastExtractObservedAt, observedMs) &&
+		sessionTimestampReached(row.LastExtractCompletedAt, completedMs) &&
+		sessionTimestampReached(row.UpdatedAt, updatedMs)
+}
+
 // generateConfirmationCode returns one 32-character random hex token used by protected destructive flows.
 // generateConfirmationCode 用于生成 32 位随机十六进制确认码，服务需要保护的破坏性操作。
 func generateConfirmationCode() (string, error) {
@@ -860,8 +1262,8 @@ ORDER BY category_name ASC, phrase ASC
 	return entries, nil
 }
 
-// ReplaceNoiseEmbeddingCache rewrites one semantic prototype bundle atomically by deleting the old rows and batch-inserting the refreshed set.
-// ReplaceNoiseEmbeddingCache 用于通过“先删后批量插入”原子重写一组语义原型缓存。
+// ReplaceNoiseEmbeddingCache rewrites one semantic prototype bundle by deleting old rows and batch-inserting the refreshed set; callers treat failures as cache-refresh degradation.
+// ReplaceNoiseEmbeddingCache 用于通过先删旧行再批量插入新行来重写一组语义原型缓存；调用方会把失败视为缓存刷新降级。
 func (s *Store) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomain.NoiseEmbeddingCacheQuery, entries []logicdomain.NoiseEmbeddingCacheEntry) error {
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
@@ -870,7 +1272,7 @@ func (s *Store) ReplaceNoiseEmbeddingCache(ctx context.Context, query logicdomai
 DELETE FROM vmm_noise_embeddings
 WHERE scope = ? AND language = ? AND model = ? AND dimension = ? AND rules_hash = ?
 `, strings.TrimSpace(query.Scope), strings.TrimSpace(query.Language), strings.TrimSpace(query.Model), query.Dimension, strings.TrimSpace(query.RulesHash)); err != nil {
-		return fmt.Errorf("clear noise embedding cache: %w", err)
+		return sqliteNoiseEmbeddingCacheReplaceError("clear noise embedding cache", err)
 	}
 	if len(entries) == 0 {
 		return nil
@@ -898,9 +1300,25 @@ INSERT INTO vmm_noise_embeddings (
   scope, language, category_name, phrase, model, dimension, rules_hash, vector_json, updated_at
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 `, batchItems); err != nil {
-		return fmt.Errorf("insert noise embedding cache rows: %w", err)
+		return sqliteNoiseEmbeddingCacheReplaceError("insert noise embedding cache rows", err)
 	}
 	return nil
+}
+
+// sqliteNoiseEmbeddingCacheReplaceError keeps cache refresh failures non-fatal to callers while preserving commit-boundary uncertainty in the storage error type.
+// sqliteNoiseEmbeddingCacheReplaceError 用于让调用方继续把缓存刷新失败视为非致命降级，同时在存储错误类型中保留提交边界不确定语义。
+func sqliteNoiseEmbeddingCacheReplaceError(stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+	stage = strings.TrimSpace(stage)
+	if isSQLiteOutcomeUncertainError(err) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: "replace sqlite noise embedding cache",
+			Message:   fmt.Sprintf("%s: %v", stage, err),
+		}
+	}
+	return fmt.Errorf("%s: %w", stage, err)
 }
 
 // ResolveRequestScope validates numeric user/project identifiers, resolves hierarchy names, and auto-creates the session row when needed.
@@ -926,7 +1344,7 @@ func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, user
 	if err != nil {
 		return logicdomain.SessionRef{}, err
 	}
-	session, err := s.ensureSession(ctx, strings.TrimSpace(sessionKey), user.ID, project)
+	session, err := s.ensureSession(ctx, strings.TrimSpace(sessionKey), user, project)
 	if err != nil {
 		return logicdomain.SessionRef{}, err
 	}
@@ -967,8 +1385,8 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 		return logicdomain.PersistedTurnRecord{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
 	}
 
-	// Serialize turn writes so session counters and turn rows stay consistent inside one SQLite transaction boundary.
-	// 串行化 turn 写入，确保 session 计数和 turn 行在同一个 SQLite 写入边界内保持一致。
+	// Serialize turn writes under the process write lock because the real SQLite FFI cannot bind typed params across a multi-statement transaction script.
+	// 在进程写锁下串行化 turn 写入，因为真实 SQLite FFI 无法在多语句事务脚本中绑定强类型参数。
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
@@ -985,11 +1403,63 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 	if !turn.CreatedAt.IsZero() {
 		createdMs = turn.CreatedAt.UTC().UnixMilli()
 	}
-	if err := s.exec(ctx, buildTurnInsertSQL(nextID, session.SessionID, session.ProjectID, dehydratedContent, dehydratedBudget, createdMs, nowMs)); err != nil {
-		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("insert turn record: %w", err)
+	currentSession, err := s.loadSessionByID(ctx, session.SessionID)
+	if err != nil {
+		return logicdomain.PersistedTurnRecord{}, err
 	}
-	if err := s.exec(ctx, buildSessionTurnUpdateSQL(session.SessionID, dehydratedBudget, nowMs)); err != nil {
-		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("update session turn counters: %w", err)
+	if currentSession.ProjectID != session.ProjectID {
+		return logicdomain.PersistedTurnRecord{}, logicdomain.ConflictError{
+			Resource: "session",
+			Message:  fmt.Sprintf("session %d belongs to project %d, not project %d", session.SessionID, currentSession.ProjectID, session.ProjectID),
+		}
+	}
+	nextTurnCount := currentSession.TurnCount + 1
+	nextSummarizeBudget := currentSession.SummarizeBudget + dehydratedBudget
+
+	// Write and verify the durable turn row first because any later failure must be reported as an uncertain append outcome.
+	// 先写入并验收持久化 turn 行，因为后续任何失败都必须以追加结果不确定的方式上报。
+	turnInsertStatement := parameterizedTurnInsertStatement(nextID, session.SessionID, session.ProjectID, dehydratedContent, dehydratedBudget, createdMs, nowMs)
+	if err := s.execInsertOneRow(ctx, "insert appended turn record", turnInsertStatement.SQL, turnInsertStatement.Params...); err != nil {
+		insertRecovered := false
+		// Re-read only the allocated primary key after a commit-unknown insert; a mismatched row cannot prove this append was persisted.
+		// 仅在插入提交结果不明后回读本次分配的主键；不匹配的行无法证明本次追加已经落库。
+		if sqliteInsertCommitUnknownError(err) {
+			recovered, found, reconcileErr := s.loadTurnRecordByID(ctx, nextID)
+			if reconcileErr != nil {
+				return logicdomain.PersistedTurnRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "append turn record insert",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if found && sameAppendedTurnRecord(recovered, nextID, session.SessionID, session.ProjectID, dehydratedContent, dehydratedBudget, createdMs, nowMs) {
+				insertRecovered = true
+			}
+		}
+		if !insertRecovered {
+			return logicdomain.PersistedTurnRecord{}, fmt.Errorf("append turn record insert: %w", err)
+		}
+	}
+
+	// Update the owning session counter only after the insert is confirmed, then convert counter drift into outcome-uncertain instead of pretending the append failed cleanly.
+	// 仅在确认插入成功后更新所属 session 计数，并把计数漂移转换为结果不确定，避免伪装成可安全重试的干净失败。
+	sessionUpdateStatement := parameterizedSessionTurnUpdateStatement(session.SessionID, nextTurnCount, nextSummarizeBudget, nowMs)
+	if err := s.execExpectRowsChanged(ctx, "update appended turn session counters", 1, sessionUpdateStatement.SQL, sessionUpdateStatement.Params...); err != nil {
+		sessionUpdateRecovered := false
+		// Re-read the absolute counter target only after a commit-unknown session update; row-count drift still means the append is uncertain.
+		// 仅在 session 更新提交结果不明后回读绝对计数目标；行数漂移仍表示追加结果不确定。
+		if isSQLiteOutcomeUncertainError(err) {
+			recoveredSession, reconcileErr := s.loadSessionByID(ctx, session.SessionID)
+			if reconcileErr != nil {
+				return logicdomain.PersistedTurnRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "append turn record",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			sessionUpdateRecovered = sameAppendedSessionCounters(recoveredSession, session.SessionID, session.ProjectID, nextTurnCount, nextSummarizeBudget, nowMs)
+		}
+		if !sessionUpdateRecovered {
+			return logicdomain.PersistedTurnRecord{}, sqlitePartialMutationError(true, "append turn record", err)
+		}
 	}
 	return logicdomain.PersistedTurnRecord{
 		ID:               nextID,
@@ -1006,6 +1476,9 @@ func (s *Store) AppendTurnRecord(ctx context.Context, session logicdomain.Sessio
 func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error) {
 	if turn.ID == 0 {
 		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+	}
+	if session.SessionID == 0 {
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
 	if session.ProjectID == 0 {
 		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
@@ -1028,6 +1501,18 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 	memoryStartID := uint64(0)
 	profileStartID := uint64(0)
 	var err error
+	// Resolve merged profile targets before the first turn-status write so missing scope rows remain clean rollback-safe failures.
+	// 在首个 turn 状态写入之前解析合并画像目标，让缺失范围行保持为可安全回滚的干净失败。
+	if analysis.UserProfileMerged {
+		if _, err := s.loadUserByID(ctx, session.UserID); err != nil {
+			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load merged user profile target: %w", err)
+		}
+	}
+	if analysis.ProjectProfileMerged {
+		if _, err := s.loadProjectByID(ctx, session.ProjectID); err != nil {
+			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load merged project profile target: %w", err)
+		}
+	}
 	if len(analysis.MemoryNodes) > 0 {
 		memoryStartID, err = s.nextNumericID(ctx, "vmm_memory_nodes")
 		if err != nil {
@@ -1049,12 +1534,26 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load superseded vector ids: %w", err)
 	}
 
-	script := buildTurnAnalysisUpdateSQL(turn.ID, strings.TrimSpace(analysis.Details), analysis.DetailsBudget, nowMs)
+	turnUpdateStatement := parameterizedTurnAnalysisUpdateStatement(session.SessionID, turn.ID, strings.TrimSpace(analysis.Details), analysis.DetailsBudget, nowMs)
+	statements := []sqliteWriteStatement{}
+	profileTargetStatementIndexes := map[int]struct{}{}
+	memoryInsertStatementRecords := map[int]logicdomain.MemoryNodeRecord{}
+	memoryContextEdgeStatementExpectations := map[int]turnAnalysisMemoryContextEdgeExpectation{}
+	profileInsertStatementExpectations := map[int]turnAnalysisProfileInsertExpectation{}
+	profileSupersedeStatementExpectations := map[int]turnAnalysisProfileSupersedeExpectation{}
 	if analysis.UserProfileMerged {
-		script += buildUserProfileUpdateSQL(session.UserID, analysis.MergedUserProfile, nowRFC3339)
+		profileTargetStatementIndexes[len(statements)] = struct{}{}
+		statements = append(statements, sqliteWriteStatement{
+			SQL:    parameterizedProfileTargetUpdateSQL(logicdomain.ProfileTypeUser),
+			Params: []any{strings.TrimSpace(analysis.MergedUserProfile), nowRFC3339, session.UserID},
+		})
 	}
 	if analysis.ProjectProfileMerged {
-		script += buildProjectProfileUpdateSQL(session.ProjectID, analysis.MergedProjectProfile, nowRFC3339)
+		profileTargetStatementIndexes[len(statements)] = struct{}{}
+		statements = append(statements, sqliteWriteStatement{
+			SQL:    parameterizedProfileTargetUpdateSQL(logicdomain.ProfileTypeProject),
+			Params: []any{strings.TrimSpace(analysis.MergedProjectProfile), nowRFC3339, session.ProjectID},
+		})
 	}
 	insertedMemoryNodes := make([]logicdomain.MemoryNodeRecord, 0, len(analysis.MemoryNodes))
 	for idx, node := range analysis.MemoryNodes {
@@ -1065,10 +1564,30 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "memory_nodes[" + strconv.Itoa(idx) + "].category", Message: "must be one supported memory category"}
 		}
 		record := normalizeTurnMemoryNodeRecord(session, turn, node, memoryStartID+uint64(idx), now)
-		contextEdges := normalizeTurnMemoryContextEdges(record.ID, node.ContextEdges, now)
-		record.SupportCount, record.RebuttalCount = summarizeMemoryContextEdges(contextEdges)
-		script += buildMemoryNodeInsertSQL(record)
-		script += buildMemoryContextEdgesReplaceSQL(record.ID, contextEdges)
+		contextEdges := logicdomain.NormalizeMemoryContextEdges(record.ID, node.ContextEdges, now)
+		record.SupportCount, record.RebuttalCount = logicdomain.SummarizeMemoryContextEdges(contextEdges)
+		memoryInsertStatementRecords[len(statements)] = record
+		statements = append(statements, parameterizedMemoryNodeInsertStatement(record))
+		// Track every delete-then-insert boundary because commit-unknown recovery must know the exact edge-table prefix that should be visible before later inserts run.
+		// 跟踪每个先删后插边界，因为提交未知恢复必须知道后续插入执行前边表应可见的精确前缀集合。
+		contextEdgeStatements := parameterizedMemoryContextEdgesReplaceStatements(record.ID, contextEdges)
+		for contextStatementIndex := range contextEdgeStatements {
+			expectedEdges := []logicdomain.MemoryContextEdge(nil)
+			requireRowsChanged := false
+			expectedRows := int64(0)
+			if contextStatementIndex > 0 {
+				expectedEdges = append(expectedEdges, contextEdges[:contextStatementIndex]...)
+				requireRowsChanged = true
+				expectedRows = 1
+			}
+			memoryContextEdgeStatementExpectations[len(statements)+contextStatementIndex] = turnAnalysisMemoryContextEdgeExpectation{
+				MemoryID:           record.ID,
+				ExpectedEdges:      expectedEdges,
+				RequireRowsChanged: requireRowsChanged,
+				ExpectedRows:       expectedRows,
+			}
+		}
+		statements = append(statements, contextEdgeStatements...)
 		insertedMemoryNodes = append(insertedMemoryNodes, record)
 	}
 	for idx, node := range analysis.ProfileNodes {
@@ -1088,16 +1607,248 @@ func (s *Store) ApplyTurnAnalysis(ctx context.Context, session logicdomain.Sessi
 		if strings.TrimSpace(node.ProfileDate) == "" {
 			node.ProfileDate = logicdomain.FormatDisplayDate(turn.CreatedAt)
 		}
-		script += buildProfileNodeInsertSQL(profileStartID+uint64(idx), uint64Ptr(turn.ID), node.ProfileType, bindID, node, nowMs)
+		insertedProfileID := profileStartID + uint64(idx)
+		profileInsertStatementExpectations[len(statements)] = turnAnalysisProfileInsertExpectation{
+			ID:          insertedProfileID,
+			TurnID:      turn.ID,
+			ProfileType: node.ProfileType,
+			BindID:      bindID,
+			Node:        node,
+			CreatedMs:   nowMs,
+		}
+		statements = append(statements, parameterizedProfileNodeInsertStatement(insertedProfileID, &turn.ID, node.ProfileType, bindID, node, nowMs))
+		supersedeNodeIDs := normalizeUint64List(node.SupersedeNodeIDs)
+		// Retire reviewer-approved predecessor nodes right after the replacement insert so rendered profile readers do not see both facts as active.
+		// 在替代节点插入后立即退役评审器批准的旧节点，避免画像读取链路同时看到新旧事实均为 active。
+		if supersedeStatement, ok := parameterizedProfileNodesSupersedeStatement(node.ProfileType, bindID, supersedeNodeIDs, insertedProfileID, strings.TrimSpace(node.StatusReason), nowMs); ok {
+			profileSupersedeStatementExpectations[len(statements)] = turnAnalysisProfileSupersedeExpectation{
+				NodeIDs:        supersedeNodeIDs,
+				SupersededByID: insertedProfileID,
+				ExpectedRows:   int64(len(supersedeNodeIDs)),
+			}
+			statements = append(statements, supersedeStatement)
+		}
+	}
+	// Track the first durable mutation because later failures must not be treated as clean relational failures by vector rollback paths.
+	// 记录首次持久化突变，因为后续失败不能再被向量回滚路径当成干净的关系写入失败处理。
+	mutated := false
+	// Require the current session's pending turn before any memory row can reference the extracted result, so stale queue items remain clean rollback-safe failures.
+	// 在任何 memory 行引用提炼结果之前先要求当前 session 的 pending turn 存在，让过期队列项保持为可安全回滚的干净失败。
+	turnUpdateResult, err := s.execResult(ctx, turnUpdateStatement.SQL, turnUpdateStatement.Params...)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			recoveredTurn, found, reconcileErr := s.loadTurnRecordByID(ctx, turn.ID)
+			if reconcileErr != nil {
+				return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "apply turn analysis",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if !found || !sameAnalyzedTurnUpdate(recoveredTurn, session.SessionID, turn.ProjectID, turn.ID, analysis.Details, analysis.DetailsBudget, nowMs) {
+				return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "apply turn analysis",
+					Message:   err.Error(),
+				}
+			}
+		} else {
+			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update turn analysis: %w", err)
+		}
+	} else if err := sqliteAutocommitRowsChangedDriftError("apply turn analysis", "update analyzed turn", turnUpdateResult.RowsChanged, 1); err != nil {
+		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update turn analysis: %w", err)
+	}
+	mutated = true
+	freshVectorReference := false
+	for index, statement := range statements {
+		var err error
+		if _, ok := profileTargetStatementIndexes[index]; ok {
+			err = s.execExpectRowsChanged(ctx, "update turn analysis profile target", 1, statement.SQL, statement.Params...)
+		} else if record, ok := memoryInsertStatementRecords[index]; ok {
+			insertResult, insertErr := s.execResult(ctx, statement.SQL, statement.Params...)
+			if insertErr != nil {
+				if isSQLiteOutcomeUncertainError(insertErr) {
+					recoveredRows, reconcileErr := s.LoadMemoryNodesByIDs(ctx, []uint64{record.ID})
+					if reconcileErr != nil {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v; reconcile failed: %v", index+1, insertErr, reconcileErr),
+							FreshVectorReference: true,
+						}
+					}
+					if len(recoveredRows) == 1 && sameMemoryNodeRecord(recoveredRows[0], record) {
+						freshVectorReference = true
+					} else {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, insertErr),
+							FreshVectorReference: true,
+						}
+					}
+				} else {
+					err = insertErr
+				}
+			} else if insertResult.RowsChanged != 1 {
+				rowDriftErr := fmt.Errorf("insert turn analysis memory node affected %d rows, want 1", insertResult.RowsChanged)
+				if insertResult.RowsChanged > 0 {
+					return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation:            "apply turn analysis",
+						Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, rowDriftErr),
+						FreshVectorReference: true,
+					}
+				}
+				err = rowDriftErr
+			}
+		} else if expected, ok := memoryContextEdgeStatementExpectations[index]; ok {
+			edgeResult, edgeErr := s.execResult(ctx, statement.SQL, statement.Params...)
+			if edgeErr != nil {
+				if isSQLiteOutcomeUncertainError(edgeErr) {
+					recoveredEdges, reconcileErr := s.LoadMemoryContextEdgesByMemoryIDs(ctx, []uint64{expected.MemoryID})
+					if reconcileErr != nil {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v; reconcile failed: %v", index+1, edgeErr, reconcileErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					if !sameMemoryContextEdgeSet(recoveredEdges, expected.ExpectedEdges) {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, edgeErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					// Continue only after the edge table exactly matches the statement boundary, so later inserts do not duplicate or skip contextual evidence.
+					// 仅在边表精确匹配当前语句边界后继续，避免后续插入重复或跳过情境证据。
+				} else {
+					err = edgeErr
+				}
+			} else if expected.RequireRowsChanged && edgeResult.RowsChanged != expected.ExpectedRows {
+				rowDriftErr := fmt.Errorf("write turn analysis memory context edge affected %d rows, want %d", edgeResult.RowsChanged, expected.ExpectedRows)
+				if edgeResult.RowsChanged > 0 {
+					return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation:            "apply turn analysis",
+						Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, rowDriftErr),
+						FreshVectorReference: freshVectorReference,
+					}
+				}
+				err = rowDriftErr
+			}
+		} else if expected, ok := profileInsertStatementExpectations[index]; ok {
+			insertResult, insertErr := s.execResult(ctx, statement.SQL, statement.Params...)
+			if insertErr != nil {
+				if isSQLiteOutcomeUncertainError(insertErr) {
+					recovered, found, reconcileErr := s.loadProfileNodeByID(ctx, expected.ID)
+					if reconcileErr != nil {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v; reconcile failed: %v", index+1, insertErr, reconcileErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					if !found || !sameProfileNodeInsert(recovered, expected) {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, insertErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					// Keep processing later supersede statements because the profile node insert has reached the durable target.
+					// 继续处理后续 supersede 语句，因为画像节点插入已经达到长期目标。
+				} else {
+					err = insertErr
+				}
+			} else if insertResult.RowsChanged != 1 {
+				rowDriftErr := fmt.Errorf("insert turn analysis profile node affected %d rows, want 1", insertResult.RowsChanged)
+				if insertResult.RowsChanged > 0 {
+					return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation:            "apply turn analysis",
+						Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, rowDriftErr),
+						FreshVectorReference: freshVectorReference,
+					}
+				}
+				err = rowDriftErr
+			}
+		} else if expected, ok := profileSupersedeStatementExpectations[index]; ok {
+			supersedeResult, supersedeErr := s.execResult(ctx, statement.SQL, statement.Params...)
+			if supersedeErr != nil {
+				if isSQLiteOutcomeUncertainError(supersedeErr) {
+					recovered, reconcileErr := s.reconcileProfileNodesSuperseded(ctx, expected.NodeIDs, expected.SupersededByID)
+					if reconcileErr != nil {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v; reconcile failed: %v", index+1, supersedeErr, reconcileErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					if !recovered {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, supersedeErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					// Continue after confirmed retirement so rendered profile readers do not see both old and replacement nodes as active.
+					// 确认退役成功后继续执行，避免画像读取链路同时看到旧节点与替代节点均为 active。
+				} else {
+					err = supersedeErr
+				}
+			} else if supersedeResult.RowsChanged != expected.ExpectedRows {
+				rowDriftErr := fmt.Errorf("supersede turn analysis profile nodes affected %d rows, want %d", supersedeResult.RowsChanged, expected.ExpectedRows)
+				if supersedeResult.RowsChanged > 0 {
+					return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+						Operation:            "apply turn analysis",
+						Message:              fmt.Sprintf("execute turn analysis write statement %d: %v", index+1, rowDriftErr),
+						FreshVectorReference: freshVectorReference,
+					}
+				}
+				err = rowDriftErr
+			}
+		} else {
+			err = s.exec(ctx, statement.SQL, statement.Params...)
+		}
+		if err != nil {
+			return logicdomain.TurnAnalysisApplyResult{}, sqlitePartialMutationErrorWithFreshVectorReference(mutated, freshVectorReference, "apply turn analysis", fmt.Errorf("execute turn analysis write statement %d: %w", index+1, err))
+		}
+		if _, ok := memoryInsertStatementRecords[index]; ok {
+			// Mark the boundary only after the durable memory row insert succeeds because that is when fresh vectors may become referenced.
+			// 仅在长期 memory 行插入成功后标记边界，因为此时新向量才可能被关系行引用。
+			freshVectorReference = true
+		}
+		mutated = true
 	}
 	if len(supersededMemoryIDs) > 0 {
-		script += buildMemoryNodesSupersedeSQL(supersededMemoryIDs, nowMs)
-	}
-	if err := s.exec(ctx, script); err != nil {
-		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("apply turn analysis: %w", err)
+		if supersedeStatement, ok := parameterizedMemoryNodesSupersedeStatement(supersededMemoryIDs, nowMs); ok {
+			supersedeResult, supersedeErr := s.execResult(ctx, supersedeStatement.SQL, supersedeStatement.Params...)
+			if supersedeErr != nil {
+				if isSQLiteOutcomeUncertainError(supersedeErr) {
+					recovered, reconcileErr := s.reconcileMemoryNodesSuperseded(ctx, supersededMemoryIDs, nowMs)
+					if reconcileErr != nil {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("supersede turn analysis memory nodes: %v; reconcile failed: %v", supersedeErr, reconcileErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					if !recovered {
+						return logicdomain.TurnAnalysisApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply turn analysis",
+							Message:              fmt.Sprintf("supersede turn analysis memory nodes: %v", supersedeErr),
+							FreshVectorReference: freshVectorReference,
+						}
+					}
+					// Continue to FTS deletion only after the durable memory rows prove this supersede write reached the table.
+					// 只有在长期 memory 行证明本次 supersede 已落表后，才继续执行 FTS 删除。
+				} else {
+					return logicdomain.TurnAnalysisApplyResult{}, sqlitePartialMutationErrorWithFreshVectorReference(mutated, freshVectorReference, "apply turn analysis", fmt.Errorf("supersede turn analysis memory nodes: %w", supersedeErr))
+				}
+			} else if supersedeResult.RowsChanged != int64(len(supersededMemoryIDs)) {
+				rowDriftErr := fmt.Errorf("affected %d rows, want %d", supersedeResult.RowsChanged, len(supersededMemoryIDs))
+				return logicdomain.TurnAnalysisApplyResult{}, sqlitePartialMutationErrorWithFreshVectorReference(mutated, freshVectorReference, "apply turn analysis", fmt.Errorf("supersede turn analysis memory nodes: %w", rowDriftErr))
+			}
+			mutated = true
+		}
 	}
 	if err := s.syncMemoryFTSAfterWrite(ctx, insertedMemoryNodes, supersededMemoryIDs); err != nil {
-		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("sync memory fts after turn analysis: %w", err)
+		return logicdomain.TurnAnalysisApplyResult{}, sqlitePartialMutationErrorWithFreshVectorReference(mutated, freshVectorReference, "apply turn analysis", fmt.Errorf("sync memory fts after turn analysis: %w", err))
 	}
 	return logicdomain.TurnAnalysisApplyResult{
 		InsertedMemoryNodes: insertedMemoryNodes,
@@ -1276,13 +2027,13 @@ func (s *Store) LoadRenderedProfile(ctx context.Context, target logicdomain.Prof
 // loadProfileInstructionByID fetches one manual profile-instruction row by its durable numeric id so uncertain commits can be reconciled before retrying.
 // loadProfileInstructionByID 用于按长期数字 id 读取一条手工画像指令，让“不确定提交”在重试前先做状态对账。
 func (s *Store) loadProfileInstructionByID(ctx context.Context, instructionID uint64) (logicdomain.ProfileInstructionRecord, bool, error) {
-	rows, err := queryRows[profileInstructionRow](s, ctx, fmt.Sprintf(`
+	rows, err := queryRows[profileInstructionRow](s, ctx, `
 SELECT id, profile_type, bind_id, instruction, instruction_status,
        review_result_json, failure_reason, created_timestamp, updated_timestamp
 FROM vmm_profile_instructions
-WHERE id = %d
+WHERE id = ?
 LIMIT 1
-`, instructionID))
+`, instructionID)
 	if err != nil {
 		return logicdomain.ProfileInstructionRecord{}, false, err
 	}
@@ -1295,7 +2046,7 @@ LIMIT 1
 // loadProfileNodeByID fetches one durable profile node by id so manual-instruction persistence can verify whether a supposedly failed insert already landed.
 // loadProfileNodeByID 用于按 id 读取一条长期画像节点，让手工画像持久化能判断一个“看似失败”的插入是否其实已经落库。
 func (s *Store) loadProfileNodeByID(ctx context.Context, nodeID uint64) (logicdomain.ProfileNodeRecord, bool, error) {
-	rows, err := queryRows[profileNodeRow](s, ctx, fmt.Sprintf(`
+	rows, err := queryRows[profileNodeRow](s, ctx, `
 SELECT n.id, n.turn_id, n.profile_type, n.bind_id, n.content, n.profile_status,
        n.priority, n.profile_level, n.level_reason, n.refresh_weight,
        n.source_kind, n.source_id, n.status_reason,
@@ -1304,9 +2055,9 @@ SELECT n.id, n.turn_id, n.profile_type, n.bind_id, n.content, n.profile_status,
        COALESCE(t.created_timestamp, n.created_timestamp) AS profile_date_anchor_timestamp
 FROM vmm_profile_nodes AS n
 LEFT JOIN vmm_turn_records AS t ON t.id = n.turn_id
-WHERE n.id = %d
+WHERE n.id = ?
 LIMIT 1
-`, nodeID))
+`, nodeID)
 	if err != nil {
 		return logicdomain.ProfileNodeRecord{}, false, err
 	}
@@ -1316,42 +2067,52 @@ LIMIT 1
 	return rows[0].toRecord(), true, nil
 }
 
-// loadProfileNodeStatusesByIDs fetches the lightweight retirement state for a small node-id set so uncertain supersede/retire updates can be reconciled.
-// loadProfileNodeStatusesByIDs 用于读取一小批节点的轻量状态，让“不确定”的 supersede 或 retire 更新能够做状态对账。
+// loadProfileNodeStatusesByIDs fetches lightweight lifecycle state for a small node-id set so uncertain status updates can be reconciled.
+// loadProfileNodeStatusesByIDs 用于读取一小批节点的轻量生命周期状态，让“不确定”的状态更新能够做状态对账。
 func (s *Store) loadProfileNodeStatusesByIDs(ctx context.Context, nodeIDs []uint64) ([]profileNodeStatusRow, error) {
 	nodeIDs = normalizeUint64List(nodeIDs)
 	if len(nodeIDs) == 0 {
 		return nil, nil
 	}
+	nodeIDPlaceholders := sqlitePlaceholders(len(nodeIDs))
+	nodeIDParams := sqliteUint64Params(nodeIDs)
 	rows, err := queryRows[profileNodeStatusRow](s, ctx, fmt.Sprintf(`
-SELECT id, profile_status, superseded_by_id
+SELECT id, profile_status, superseded_by_id, status_reason, updated_timestamp
 FROM vmm_profile_nodes
 WHERE id IN (%s)
 ORDER BY id ASC
-`, sqlUint64List(nodeIDs)))
+`, nodeIDPlaceholders), nodeIDParams...)
 	if err != nil {
 		return nil, err
 	}
 	return rows, nil
 }
 
-// loadRenderedProfileByTarget reads the durable scope blob after one uncertain update so callers can verify whether the final profile text already committed.
-// loadRenderedProfileByTarget 用于在 scope 画像更新不确定后读取长期 Blob，让调用方验证最终画像文本是否已经提交成功。
-func (s *Store) loadRenderedProfileByTarget(ctx context.Context, profileType int, bindID uint64) (string, error) {
-	query := ""
+// renderedProfileScopeTable maps one domain profile type to the concrete scope table used for durable rendered-profile blobs.
+// renderedProfileScopeTable 用于把一个领域画像类型映射到持久化渲染画像 Blob 所在的具体 scope 表。
+func renderedProfileScopeTable(profileType int) (string, error) {
 	switch profileType {
 	case logicdomain.ProfileTypeUser:
-		query = `SELECT profile FROM vmm_users WHERE id = ? LIMIT 1`
+		return "vmm_users", nil
 	case logicdomain.ProfileTypeTeam:
-		query = `SELECT profile FROM vmm_teams WHERE id = ? LIMIT 1`
+		return "vmm_teams", nil
 	case logicdomain.ProfileTypeSpace:
-		query = `SELECT profile FROM vmm_spaces WHERE id = ? LIMIT 1`
+		return "vmm_spaces", nil
 	case logicdomain.ProfileTypeProject:
-		query = `SELECT profile FROM vmm_projects WHERE id = ? LIMIT 1`
+		return "vmm_projects", nil
 	default:
 		return "", logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile target"}
 	}
-	rows, err := queryRows[profileBlobRow](s, ctx, query, bindID)
+}
+
+// loadRenderedProfileByTarget reads the durable scope blob after one uncertain update so callers can verify whether the final profile text already committed.
+// loadRenderedProfileByTarget 用于在 scope 画像更新不确定后读取长期 Blob，让调用方验证最终画像文本是否已经提交成功。
+func (s *Store) loadRenderedProfileByTarget(ctx context.Context, profileType int, bindID uint64) (string, error) {
+	table, err := renderedProfileScopeTable(profileType)
+	if err != nil {
+		return "", err
+	}
+	rows, err := queryRows[profileBlobRow](s, ctx, fmt.Sprintf(`SELECT profile FROM %s WHERE id = ? LIMIT 1`, table), bindID)
 	if err != nil {
 		return "", err
 	}
@@ -1359,6 +2120,29 @@ func (s *Store) loadRenderedProfileByTarget(ctx context.Context, profileType int
 		return "", nil
 	}
 	return rows[0].Profile, nil
+}
+
+// loadRenderedProfileBatch reads exact rendered-profile rows for one scope so a batch update with uncertain commit outcome can be reconciled.
+// loadRenderedProfileBatch 用于读取一个 scope 的精确渲染画像行，让提交结果不确定的批量更新可以执行对账。
+func (s *Store) loadRenderedProfileBatch(ctx context.Context, profileType int, ids []uint64) ([]renderedProfileBatchRow, error) {
+	normalizedIDs := normalizeUint64List(ids)
+	if len(normalizedIDs) == 0 {
+		return nil, nil
+	}
+	table, err := renderedProfileScopeTable(profileType)
+	if err != nil {
+		return nil, err
+	}
+	rows, err := queryRows[renderedProfileBatchRow](s, ctx, fmt.Sprintf(`
+SELECT id, profile, updated_at
+FROM %s
+WHERE id IN (%s)
+ORDER BY id ASC
+`, table, sqlitePlaceholders(len(normalizedIDs))), sqliteUint64Params(normalizedIDs)...)
+	if err != nil {
+		return nil, err
+	}
+	return rows, nil
 }
 
 // reconcileProfileInstructionCreate checks whether one insert that returned a commit-uncertain error has already materialized in SQLite.
@@ -1409,6 +2193,100 @@ func (s *Store) reconcileProfileNodesSuperseded(ctx context.Context, nodeIDs []u
 	return true, nil
 }
 
+// reconcileMemoryNodesSuperseded verifies whether all target memory rows reached this write's superseded state after one uncertain update error.
+// reconcileMemoryNodesSuperseded 用于验证在一次不确定更新报错后，目标 memory 行是否已经全部进入本次写入要求的 superseded 状态。
+func (s *Store) reconcileMemoryNodesSuperseded(ctx context.Context, memoryIDs []uint64, updatedMs int64) (bool, error) {
+	expectedIDs := normalizeUint64List(memoryIDs)
+	rows, err := s.LoadMemoryNodesByIDs(ctx, expectedIDs)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != len(expectedIDs) {
+		return false, nil
+	}
+	for index, row := range rows {
+		if row.ID != expectedIDs[index] ||
+			row.Status != logicdomain.MemoryStatusSuperseded ||
+			!sessionTimestampReached(row.UpdatedAt, updatedMs) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// reconcileMemoryNodesDeleted verifies whether all target memory rows reached the manual-delete state after one uncertain status update.
+// reconcileMemoryNodesDeleted 用于验证一次不确定状态更新后，目标 memory 行是否已经全部进入手工删除状态。
+func (s *Store) reconcileMemoryNodesDeleted(ctx context.Context, memoryIDs []uint64, reason string, updatedMs int64) (bool, error) {
+	expectedIDs := normalizeUint64List(memoryIDs)
+	rows, err := s.LoadMemoryNodesByIDs(ctx, expectedIDs)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != len(expectedIDs) {
+		return false, nil
+	}
+	expectedReason := strings.TrimSpace(reason)
+	for index, row := range rows {
+		if row.ID != expectedIDs[index] ||
+			row.Status != logicdomain.MemoryStatusDeleted ||
+			row.StatusReason != expectedReason ||
+			!sessionTimestampReached(row.UpdatedAt, updatedMs) {
+			return false, nil
+		}
+	}
+	return true, nil
+}
+
+// reconcileMemoryAdoptionUpdate verifies whether one uncertain adoption update already reached its exact durable memory target.
+// reconcileMemoryAdoptionUpdate 用于验证一次不确定的采纳更新是否已经达到精确的长期记忆目标。
+func (s *Store) reconcileMemoryAdoptionUpdate(ctx context.Context, expected logicdomain.MemoryNodeRecord) (bool, error) {
+	rows, err := s.LoadMemoryNodesByIDs(ctx, []uint64{expected.ID})
+	if err != nil {
+		return false, err
+	}
+	return len(rows) == 1 && sameMemoryNodeRecord(rows[0], expected), nil
+}
+
+// executeDirectMemoryInsert writes one direct-memory row and reconciles commit-unknown inserts because the vector row was already written before this relation step.
+// executeDirectMemoryInsert 用于写入一条主动记忆关系行，并在提交未知时对账，因为进入该关系步骤前向量行已经写入成功。
+func (s *Store) executeDirectMemoryInsert(ctx context.Context, operation string, record logicdomain.MemoryNodeRecord) error {
+	insertStatement := parameterizedMemoryNodeInsertStatement(record)
+	insertResult, insertErr := s.execResult(ctx, insertStatement.SQL, insertStatement.Params...)
+	if insertErr != nil {
+		if isSQLiteOutcomeUncertainError(insertErr) {
+			recoveredRows, reconcileErr := s.LoadMemoryNodesByIDs(ctx, []uint64{record.ID})
+			if reconcileErr != nil {
+				return logicdomain.OutcomeUncertainError{
+					Operation:            operation,
+					Message:              fmt.Sprintf("insert direct memory node: %v; reconcile failed: %v", insertErr, reconcileErr),
+					FreshVectorReference: true,
+				}
+			}
+			if len(recoveredRows) == 1 && sameMemoryNodeRecord(recoveredRows[0], record) {
+				return nil
+			}
+			return logicdomain.OutcomeUncertainError{
+				Operation:            operation,
+				Message:              fmt.Sprintf("insert direct memory node: %v", insertErr),
+				FreshVectorReference: true,
+			}
+		}
+		return fmt.Errorf("insert direct memory node: %w", insertErr)
+	}
+	if insertResult.RowsChanged != 1 {
+		rowDriftErr := fmt.Errorf("insert direct memory node affected %d rows, want 1", insertResult.RowsChanged)
+		if insertResult.RowsChanged > 0 {
+			return logicdomain.OutcomeUncertainError{
+				Operation:            operation,
+				Message:              rowDriftErr.Error(),
+				FreshVectorReference: true,
+			}
+		}
+		return rowDriftErr
+	}
+	return nil
+}
+
 // reconcileProfileNodesRetired verifies whether all target nodes already left the active set after one uncertain retire update.
 // reconcileProfileNodesRetired 用于验证在一次不确定退役更新后，目标节点是否已经全部离开 active 集合。
 func (s *Store) reconcileProfileNodesRetired(ctx context.Context, nodeIDs []uint64) (bool, error) {
@@ -1427,24 +2305,57 @@ func (s *Store) reconcileProfileNodesRetired(ctx context.Context, nodeIDs []uint
 	return true, nil
 }
 
-// reconcileProfileInstructionApplied verifies whether the instruction row already moved to the applied state after one uncertain update.
-// reconcileProfileInstructionApplied 用于验证一条 instruction 行在不确定更新后是否已经进入 applied 状态。
-func (s *Store) reconcileProfileInstructionApplied(ctx context.Context, instructionID uint64) (bool, error) {
-	stored, found, err := s.loadProfileInstructionByID(ctx, instructionID)
-	if err != nil || !found {
+// reconcileProfileNodesExpired verifies whether all selected lifecycle nodes already reached this expiry write after one uncertain update error.
+// reconcileProfileNodesExpired 用于验证一次不确定更新错误后，所有选中的生命周期节点是否已经进入本次过期写入要求的状态。
+func (s *Store) reconcileProfileNodesExpired(ctx context.Context, nodeIDs []uint64, reason string, updatedMs int64) (bool, error) {
+	expectedIDs := normalizeUint64List(nodeIDs)
+	rows, err := s.loadProfileNodeStatusesByIDs(ctx, expectedIDs)
+	if err != nil {
 		return false, err
 	}
-	return stored.Status == logicdomain.ProfileInstructionStatusApplied, nil
+	if len(rows) != len(expectedIDs) {
+		return false, nil
+	}
+	expectedReason := strings.TrimSpace(reason)
+	for index, row := range rows {
+		if row.ID != expectedIDs[index] ||
+			row.ProfileStatus != logicdomain.ProfileStatusExpired ||
+			strings.TrimSpace(row.StatusReason) != expectedReason ||
+			!sessionTimestampReached(unixMilliToTime(row.UpdatedTimestamp), updatedMs) {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
-// reconcileProfileInstructionFailed verifies whether the instruction row already moved to the failed state after one uncertain failure-mark update.
-// reconcileProfileInstructionFailed 用于验证一条 instruction 行在不确定失败回写后是否已经进入 failed 状态。
-func (s *Store) reconcileProfileInstructionFailed(ctx context.Context, instructionID uint64) (bool, error) {
+// sameProfileInstructionStatusUpdate reports whether a read-back instruction row matches the exact status-update payload that may have committed.
+// sameProfileInstructionStatusUpdate 用于判断回读的 instruction 行是否精确匹配一次可能已经提交的状态更新载荷。
+func sameProfileInstructionStatusUpdate(stored logicdomain.ProfileInstructionRecord, instructionID uint64, status int, reviewResult, failureReason string, updatedMs int64) bool {
+	return stored.ID == instructionID &&
+		stored.Status == status &&
+		strings.TrimSpace(stored.ReviewResult) == strings.TrimSpace(reviewResult) &&
+		strings.TrimSpace(stored.FailureReason) == strings.TrimSpace(failureReason) &&
+		sessionTimestampReached(stored.UpdatedAt, updatedMs)
+}
+
+// reconcileProfileInstructionApplied verifies whether the instruction row already reached this write's applied payload after one uncertain update.
+// reconcileProfileInstructionApplied 用于验证一条 instruction 行在不确定更新后是否已经进入本次写入要求的 applied 载荷。
+func (s *Store) reconcileProfileInstructionApplied(ctx context.Context, instructionID uint64, reviewResult string, updatedMs int64) (bool, error) {
 	stored, found, err := s.loadProfileInstructionByID(ctx, instructionID)
 	if err != nil || !found {
 		return false, err
 	}
-	return stored.Status == logicdomain.ProfileInstructionStatusFailed, nil
+	return sameProfileInstructionStatusUpdate(stored, instructionID, logicdomain.ProfileInstructionStatusApplied, reviewResult, "", updatedMs), nil
+}
+
+// reconcileProfileInstructionFailed verifies whether the instruction row already reached this write's failed payload after one uncertain failure-mark update.
+// reconcileProfileInstructionFailed 用于验证一条 instruction 行在不确定失败回写后是否已经进入本次写入要求的 failed 载荷。
+func (s *Store) reconcileProfileInstructionFailed(ctx context.Context, instructionID uint64, failureReason, reviewResult string, updatedMs int64) (bool, error) {
+	stored, found, err := s.loadProfileInstructionByID(ctx, instructionID)
+	if err != nil || !found {
+		return false, err
+	}
+	return sameProfileInstructionStatusUpdate(stored, instructionID, logicdomain.ProfileInstructionStatusFailed, reviewResult, failureReason, updatedMs), nil
 }
 
 // reconcileRenderedProfileTarget verifies whether the durable scope profile blob already contains the final rendered text after one uncertain update.
@@ -1455,6 +2366,33 @@ func (s *Store) reconcileRenderedProfileTarget(ctx context.Context, profileType 
 		return false, err
 	}
 	return strings.TrimSpace(stored) == strings.TrimSpace(renderedProfile), nil
+}
+
+// reconcileRenderedProfileBatch verifies every row in one uncertain scope batch reached the exact profile and updated_at payload from this write.
+// reconcileRenderedProfileBatch 用于验证一次不确定 scope 批量写入中的每一行都达到本次写入的精确 profile 和 updated_at 载荷。
+func (s *Store) reconcileRenderedProfileBatch(ctx context.Context, profileType int, ids []uint64, profiles map[uint64]string, updatedAt string) (bool, error) {
+	expectedIDs := normalizeUint64List(ids)
+	if len(expectedIDs) == 0 {
+		return true, nil
+	}
+	rows, err := s.loadRenderedProfileBatch(ctx, profileType, expectedIDs)
+	if err != nil {
+		return false, err
+	}
+	if len(rows) != len(expectedIDs) {
+		return false, nil
+	}
+	for index, expectedID := range expectedIDs {
+		expectedProfile, ok := profiles[expectedID]
+		if !ok {
+			return false, nil
+		}
+		row := rows[index]
+		if row.ID != expectedID || row.Profile != expectedProfile || row.UpdatedAt != updatedAt {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // CreateProfileInstruction inserts one pending manual profile instruction so later review results can reference a durable instruction id.
@@ -1485,11 +2423,11 @@ func (s *Store) CreateProfileInstruction(ctx context.Context, record logicdomain
 	record.ID = nextID
 	record.CreatedAt = now
 	record.UpdatedAt = now
-	if err := s.exec(ctx, fmt.Sprintf(`
+	if err := s.exec(ctx, `
 INSERT INTO vmm_profile_instructions (
   id, profile_type, bind_id, instruction, instruction_status, review_result_json, failure_reason, created_timestamp, updated_timestamp
-) VALUES (%d, %d, %d, %s, %d, %s, %s, %d, %d);
-`, nextID, record.ProfileType, record.BindID, sqlStringLiteral(strings.TrimSpace(record.Instruction)), record.Status, sqlStringLiteral(strings.TrimSpace(record.ReviewResult)), sqlStringLiteral(strings.TrimSpace(record.FailureReason)), nowMs, nowMs)); err != nil {
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+`, nextID, record.ProfileType, record.BindID, strings.TrimSpace(record.Instruction), record.Status, strings.TrimSpace(record.ReviewResult), strings.TrimSpace(record.FailureReason), nowMs, nowMs); err != nil {
 		if isSQLiteOutcomeUncertainError(err) {
 			recovered, ok, reconcileErr := s.reconcileProfileInstructionCreate(ctx, record)
 			if reconcileErr == nil && ok {
@@ -1518,16 +2456,17 @@ func (s *Store) FailProfileInstruction(ctx context.Context, instructionID uint64
 		return logicdomain.ValidationError{Field: "instruction_id", Message: "must be one persisted profile instruction id"}
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	if err := s.exec(ctx, fmt.Sprintf(`
+	if err := s.execExpectRowsChanged(ctx, "mark profile instruction failed", 1, `
 UPDATE vmm_profile_instructions
-SET instruction_status = %d,
-    review_result_json = %s,
-    failure_reason = %s,
-    updated_timestamp = %d
-WHERE id = %d;
-`, logicdomain.ProfileInstructionStatusFailed, sqlStringLiteral(strings.TrimSpace(reviewResult)), sqlStringLiteral(strings.TrimSpace(failureReason)), nowMs, instructionID)); err != nil {
+SET instruction_status = ?,
+    review_result_json = ?,
+    failure_reason = ?,
+    updated_timestamp = ?
+WHERE id = ?
+  AND instruction_status = ?;
+`, logicdomain.ProfileInstructionStatusFailed, strings.TrimSpace(reviewResult), strings.TrimSpace(failureReason), nowMs, instructionID, logicdomain.ProfileInstructionStatusPending); err != nil {
 		if isSQLiteOutcomeUncertainError(err) {
-			recovered, reconcileErr := s.reconcileProfileInstructionFailed(ctx, instructionID)
+			recovered, reconcileErr := s.reconcileProfileInstructionFailed(ctx, instructionID, failureReason, reviewResult, nowMs)
 			if reconcileErr == nil && recovered {
 				return nil
 			}
@@ -1578,6 +2517,10 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 	nowRFC3339 := now.Format(time.RFC3339Nano)
 
 	accepted := make([]logicdomain.ProfileNodeRecord, 0, len(nodes))
+	mutated := false
+	// Track nodes already retired by supersede updates so returned retire decisions do not trigger duplicate SQLite writes.
+	// 记录已通过 supersede 更新退役的节点，避免返回用退役决策再次触发重复 SQLite 写入。
+	supersededNodeIDs := make(map[uint64]struct{})
 	for idx, node := range nodes {
 		if strings.TrimSpace(node.Content) == "" {
 			return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.ValidationError{Field: "nodes[" + strconv.Itoa(idx) + "].content", Message: "is required"}
@@ -1620,13 +2563,15 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 			CreatedAt:     now,
 			UpdatedAt:     now,
 		}
-		// Persist the new active node first so later retire/supersede updates can point at a durable replacement id.
-		// 先持久化新的 active 节点，让后续退役或 supersede 更新能够引用已经存在的替代节点 id。
-		if err := s.exec(ctx, buildProfileNodeInsertSQL(insertedID, nil, target.ProfileType, target.BindID, node, nowMs)); err != nil {
+		// Persist the new active node with typed params so reviewer text never becomes executable SQL.
+		// 使用强类型参数持久化新的 active 节点，避免评审文本进入可执行 SQL。
+		insertStatement := parameterizedProfileNodeInsertStatement(insertedID, nil, target.ProfileType, target.BindID, node, nowMs)
+		if err := s.exec(ctx, insertStatement.SQL, insertStatement.Params...); err != nil {
 			if isSQLiteOutcomeUncertainError(err) {
 				recovered, ok, reconcileErr := s.reconcileManualProfileNodeInsert(ctx, target, node, insertedID)
 				if reconcileErr == nil && ok {
 					acceptedRecord = recovered
+					mutated = true
 				} else if reconcileErr != nil {
 					return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
 						Operation: fmt.Sprintf("insert manual profile node %d", insertedID),
@@ -1639,18 +2584,24 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 					}
 				}
 			} else {
-				return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("insert manual profile node %d: %w", insertedID, err)
+				return logicdomain.ManualProfileInstructionApplyResult{}, sqlitePartialMutationError(mutated, "apply manual profile instruction", fmt.Errorf("insert manual profile node %d: %w", insertedID, err))
 			}
 		}
-		if len(node.SupersedeNodeIDs) > 0 {
+		mutated = true
+		supersedeNodeIDs := normalizeUint64List(node.SupersedeNodeIDs)
+		if supersedeStatement, ok := parameterizedProfileNodesSupersedeStatement(target.ProfileType, target.BindID, supersedeNodeIDs, insertedID, strings.TrimSpace(node.StatusReason), nowMs); ok {
 			// Retire the superseded nodes in a separate execute call because SQLite's shared-connection batch path
 			// can enter a resource-deadlock state when one script both inserts and updates the same hot table.
 			// 单独执行 supersede 更新，因为 SQLite 的共享连接批量路径在同一脚本里同时插入并更新热点表时，
 			// 可能进入 resource deadlock 状态。
-			if err := s.exec(ctx, buildProfileNodesSupersedeSQL(normalizeUint64List(node.SupersedeNodeIDs), insertedID, strings.TrimSpace(node.StatusReason), nowMs)); err != nil {
+			if err := s.execExpectRowsChanged(ctx, fmt.Sprintf("supersede manual profile nodes for %d", insertedID), int64(len(supersedeNodeIDs)), supersedeStatement.SQL, supersedeStatement.Params...); err != nil {
 				if isSQLiteOutcomeUncertainError(err) {
-					recovered, reconcileErr := s.reconcileProfileNodesSuperseded(ctx, node.SupersedeNodeIDs, insertedID)
+					recovered, reconcileErr := s.reconcileProfileNodesSuperseded(ctx, supersedeNodeIDs, insertedID)
 					if reconcileErr == nil && recovered {
+						mutated = true
+						for _, nodeID := range supersedeNodeIDs {
+							supersededNodeIDs[nodeID] = struct{}{}
+						}
 						accepted = append(accepted, acceptedRecord)
 						continue
 					}
@@ -1665,21 +2616,30 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 						Message:   err.Error(),
 					}
 				}
-				return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("supersede manual profile nodes for %d: %w", insertedID, err)
+				return logicdomain.ManualProfileInstructionApplyResult{}, sqlitePartialMutationError(mutated, "apply manual profile instruction", fmt.Errorf("supersede manual profile nodes for %d: %w", insertedID, err))
+			}
+			mutated = true
+			for _, nodeID := range supersedeNodeIDs {
+				supersededNodeIDs[nodeID] = struct{}{}
 			}
 		}
 		accepted = append(accepted, acceptedRecord)
 	}
-	for _, decision := range retired {
+	for _, decision := range standaloneSQLiteProfileRetireDecisions(retired, supersededNodeIDs) {
 		if decision.NodeID == 0 {
 			continue
 		}
 		// Apply standalone retire decisions after inserts so reviewer-directed removals stay explicit and debuggable.
 		// 在插入完成后再应用独立退役决策，让评审器给出的移除动作保持明确且可调试。
-		if err := s.exec(ctx, buildSingleProfileNodeRetireSQL(decision.NodeID, decision.Reason, nowMs)); err != nil {
+		retireStatement, ok := parameterizedSingleProfileNodeRetireStatement(decision.NodeID, decision.Reason, nowMs)
+		if !ok {
+			continue
+		}
+		if err := s.execExpectRowsChanged(ctx, fmt.Sprintf("retire manual profile node %d", decision.NodeID), 1, retireStatement.SQL, retireStatement.Params...); err != nil {
 			if isSQLiteOutcomeUncertainError(err) {
 				recovered, reconcileErr := s.reconcileProfileNodesRetired(ctx, []uint64{decision.NodeID})
 				if reconcileErr == nil && recovered {
+					mutated = true
 					continue
 				}
 				if reconcileErr != nil {
@@ -1693,41 +2653,23 @@ func (s *Store) ApplyManualProfileInstruction(ctx context.Context, target logicd
 					Message:   err.Error(),
 				}
 			}
-			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("retire manual profile node %d: %w", decision.NodeID, err)
+			return logicdomain.ManualProfileInstructionApplyResult{}, sqlitePartialMutationError(mutated, "apply manual profile instruction", fmt.Errorf("retire manual profile node %d: %w", decision.NodeID, err))
 		}
+		mutated = true
 	}
 
-	// Mark the instruction as applied only after every node mutation has succeeded, then refresh the rendered scope blob last.
-	// 只有在全部节点变更都成功后，才把指令标记为 applied，并把 scope 画像 Blob 的回写放在最后。
-	if err := s.exec(ctx, buildProfileInstructionAppliedSQL(instruction.ID, reviewResult, nowMs)); err != nil {
-		if isSQLiteOutcomeUncertainError(err) {
-			recovered, reconcileErr := s.reconcileProfileInstructionApplied(ctx, instruction.ID)
-			if reconcileErr == nil && recovered {
-				goto updateRenderedProfile
-			}
-			if reconcileErr != nil {
-				return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
-					Operation: "mark manual profile instruction applied",
-					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
-				}
-			}
-			return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
-				Operation: "mark manual profile instruction applied",
-				Message:   err.Error(),
-			}
-		}
-		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("mark manual profile instruction applied: %w", err)
+	updateProfileSQL := parameterizedProfileTargetUpdateSQL(target.ProfileType)
+	if strings.TrimSpace(updateProfileSQL) == "" {
+		return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.ValidationError{Field: "target", Message: "must be one supported profile target"}
 	}
-updateRenderedProfile:
-	if err := s.exec(ctx, buildProfileTargetUpdateSQL(target.ProfileType, target.BindID, renderedProfile, nowRFC3339)); err != nil {
+	// Refresh the rendered scope blob before marking the instruction as applied so a missing target row cannot leave a successful instruction status behind.
+	// 先刷新 scope 画像 Blob，再把指令标记为 applied，避免目标行缺失时留下成功状态。
+	if err := s.execExpectRowsChanged(ctx, "update rendered manual profile target", 1, updateProfileSQL, strings.TrimSpace(renderedProfile), nowRFC3339, target.BindID); err != nil {
 		if isSQLiteOutcomeUncertainError(err) {
 			recovered, reconcileErr := s.reconcileRenderedProfileTarget(ctx, target.ProfileType, target.BindID, renderedProfile)
 			if reconcileErr == nil && recovered {
-				return logicdomain.ManualProfileInstructionApplyResult{
-					InstructionID: instruction.ID,
-					AcceptedNodes: accepted,
-					RetiredNodes:  retired,
-				}, nil
+				mutated = true
+				goto markInstructionApplied
 			}
 			if reconcileErr != nil {
 				return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
@@ -1740,13 +2682,64 @@ updateRenderedProfile:
 				Message:   err.Error(),
 			}
 		}
-		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("update rendered manual profile target: %w", err)
+		return logicdomain.ManualProfileInstructionApplyResult{}, sqlitePartialMutationError(mutated, "apply manual profile instruction", fmt.Errorf("update rendered manual profile target: %w", err))
+	}
+	mutated = true
+markInstructionApplied:
+	// Mark the instruction as applied only after every node mutation and the rendered profile update have succeeded.
+	// 只有在全部节点变更与渲染画像回写都成功后，才把指令标记为 applied。
+	if err := s.execExpectRowsChanged(ctx, "mark manual profile instruction applied", 1, `
+UPDATE vmm_profile_instructions
+SET instruction_status = ?,
+    review_result_json = ?,
+    failure_reason = '',
+    updated_timestamp = ?
+WHERE id = ?
+  AND instruction_status = ?;
+`, logicdomain.ProfileInstructionStatusApplied, strings.TrimSpace(reviewResult), nowMs, instruction.ID, logicdomain.ProfileInstructionStatusPending); err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			recovered, reconcileErr := s.reconcileProfileInstructionApplied(ctx, instruction.ID, reviewResult, nowMs)
+			if reconcileErr == nil && recovered {
+				return logicdomain.ManualProfileInstructionApplyResult{
+					InstructionID: instruction.ID,
+					AcceptedNodes: accepted,
+					RetiredNodes:  retired,
+				}, nil
+			}
+			if reconcileErr != nil {
+				return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "mark manual profile instruction applied",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.OutcomeUncertainError{
+				Operation: "mark manual profile instruction applied",
+				Message:   err.Error(),
+			}
+		}
+		return logicdomain.ManualProfileInstructionApplyResult{}, sqlitePartialMutationError(mutated, "apply manual profile instruction", fmt.Errorf("mark manual profile instruction applied: %w", err))
 	}
 	return logicdomain.ManualProfileInstructionApplyResult{
 		InstructionID: instruction.ID,
 		AcceptedNodes: accepted,
 		RetiredNodes:  retired,
 	}, nil
+}
+
+// standaloneSQLiteProfileRetireDecisions removes retire decisions already persisted by a replacement-node supersede update.
+// standaloneSQLiteProfileRetireDecisions 用于移除已经通过替代节点 supersede 更新持久化的退役决策。
+func standaloneSQLiteProfileRetireDecisions(retired []logicdomain.ProfileRetireDecision, supersededNodeIDs map[uint64]struct{}) []logicdomain.ProfileRetireDecision {
+	if len(retired) == 0 || len(supersededNodeIDs) == 0 {
+		return retired
+	}
+	standalone := make([]logicdomain.ProfileRetireDecision, 0, len(retired))
+	for _, decision := range retired {
+		if _, alreadySuperseded := supersededNodeIDs[decision.NodeID]; alreadySuperseded {
+			continue
+		}
+		standalone = append(standalone, decision)
+	}
+	return standalone
 }
 
 // ConvergeExpiredProfileNodes marks due active profile nodes as expired and returns the affected user/project targets with their remaining renderable active nodes.
@@ -1801,8 +2794,39 @@ LIMIT ?
 		}
 		return targets[i].BindID < targets[j].BindID
 	})
-	if err := s.exec(ctx, buildProfileNodesExpireSQL(expiredIDs, "expired by lifecycle convergence", nowMs)); err != nil {
-		return nil, fmt.Errorf("mark expired profile nodes: %w", err)
+	expireReason := "expired by lifecycle convergence"
+	expireStatement, ok := parameterizedProfileNodesExpireStatement(expiredIDs, expireReason, nowMs)
+	if !ok {
+		return nil, fmt.Errorf("mark expired profile nodes: no valid expired node ids")
+	}
+	// Verify the exact expired-row boundary because the following render snapshots assume every selected node has already left the active set.
+	// 校验精确的过期行边界，因为后续渲染快照默认所有已选节点都已经离开 active 集合。
+	expireRecovered := false
+	expireResult, err := s.execResult(ctx, expireStatement.SQL, expireStatement.Params...)
+	if err != nil {
+		writeErr := fmt.Errorf("mark expired profile nodes: %w", err)
+		if isSQLiteOutcomeUncertainError(err) {
+			recovered, reconcileErr := s.reconcileProfileNodesExpired(ctx, expiredIDs, expireReason, nowMs)
+			if reconcileErr != nil {
+				return nil, logicdomain.OutcomeUncertainError{
+					Operation: "converge expired profile nodes",
+					Message:   writeErr.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if !recovered {
+				return nil, logicdomain.OutcomeUncertainError{
+					Operation: "converge expired profile nodes",
+					Message:   writeErr.Error(),
+				}
+			}
+			expireRecovered = true
+		} else {
+			return nil, writeErr
+		}
+	}
+	if expectedRows := int64(len(expiredIDs)); !expireRecovered && expireResult.RowsChanged != expectedRows {
+		err := fmt.Errorf("expire sqlite profile nodes by lifecycle convergence affected %d rows, want %d", expireResult.RowsChanged, expectedRows)
+		return nil, sqlitePartialMutationError(expireResult.RowsChanged > 0, "converge expired profile nodes", err)
 	}
 	for idx := range targets {
 		nodes, err := s.loadActiveProfileNodes(ctx, targets[idx].ProfileType, targets[idx].BindID, nowMs)
@@ -1827,44 +2851,56 @@ func (s *Store) ReplaceRenderedProfiles(ctx context.Context, updates logicdomain
 	defer s.writeMu.Unlock()
 
 	nowRFC3339 := time.Now().UTC().Format(time.RFC3339Nano)
+	// Track successful earlier scope batches because a later miss means rendered-profile replacement has already partially committed.
+	// 记录前序 scope 批量写入是否已成功，因为后续漏命中表示渲染画像替换已经部分提交。
+	mutated := false
 	userIDs := sortedProfileBindingIDs(updates.UserProfiles)
-	if err := s.replaceRenderedProfileBatch(ctx, `
+	if err := s.replaceRenderedProfileBatch(ctx, logicdomain.ProfileTypeUser, `
 UPDATE vmm_users
 SET profile = ?, updated_at = ?
 WHERE id = ?
 `, userIDs, updates.UserProfiles, nowRFC3339); err != nil {
-		return fmt.Errorf("replace rendered user profiles: %w", err)
+		return sqliteWriteCommitOrPartialMutationError(mutated, "replace rendered profiles", fmt.Errorf("replace rendered user profiles: %w", err))
+	}
+	if len(userIDs) > 0 {
+		mutated = true
 	}
 	teamIDs := sortedProfileBindingIDs(updates.TeamProfiles)
-	if err := s.replaceRenderedProfileBatch(ctx, `
+	if err := s.replaceRenderedProfileBatch(ctx, logicdomain.ProfileTypeTeam, `
 UPDATE vmm_teams
 SET profile = ?, updated_at = ?
 WHERE id = ?
 `, teamIDs, updates.TeamProfiles, nowRFC3339); err != nil {
-		return fmt.Errorf("replace rendered team profiles: %w", err)
+		return sqliteWriteCommitOrPartialMutationError(mutated, "replace rendered profiles", fmt.Errorf("replace rendered team profiles: %w", err))
+	}
+	if len(teamIDs) > 0 {
+		mutated = true
 	}
 	spaceIDs := sortedProfileBindingIDs(updates.SpaceProfiles)
-	if err := s.replaceRenderedProfileBatch(ctx, `
+	if err := s.replaceRenderedProfileBatch(ctx, logicdomain.ProfileTypeSpace, `
 UPDATE vmm_spaces
 SET profile = ?, updated_at = ?
 WHERE id = ?
 `, spaceIDs, updates.SpaceProfiles, nowRFC3339); err != nil {
-		return fmt.Errorf("replace rendered space profiles: %w", err)
+		return sqliteWriteCommitOrPartialMutationError(mutated, "replace rendered profiles", fmt.Errorf("replace rendered space profiles: %w", err))
+	}
+	if len(spaceIDs) > 0 {
+		mutated = true
 	}
 	projectIDs := sortedProfileBindingIDs(updates.ProjectProfiles)
-	if err := s.replaceRenderedProfileBatch(ctx, `
+	if err := s.replaceRenderedProfileBatch(ctx, logicdomain.ProfileTypeProject, `
 UPDATE vmm_projects
 SET profile = ?, updated_at = ?
 WHERE id = ?
 `, projectIDs, updates.ProjectProfiles, nowRFC3339); err != nil {
-		return fmt.Errorf("replace rendered project profiles: %w", err)
+		return sqliteWriteCommitOrPartialMutationError(mutated, "replace rendered profiles", fmt.Errorf("replace rendered project profiles: %w", err))
 	}
 	return nil
 }
 
 // replaceRenderedProfileBatch reuses SQLite ExecuteBatch for one scope table so repeated profile-blob updates stay in the sqlite-native transport path.
 // replaceRenderedProfileBatch 用于对单个 scope 表复用 SQLite ExecuteBatch，让重复的 profile Blob 更新保持在 sqlite 原生传输路径内。
-func (s *Store) replaceRenderedProfileBatch(ctx context.Context, sql string, ids []uint64, profiles map[uint64]string, nowRFC3339 string) error {
+func (s *Store) replaceRenderedProfileBatch(ctx context.Context, profileType int, sql string, ids []uint64, profiles map[uint64]string, nowRFC3339 string) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -1872,7 +2908,24 @@ func (s *Store) replaceRenderedProfileBatch(ctx context.Context, sql string, ids
 	for _, id := range ids {
 		items = append(items, []any{profiles[id], nowRFC3339, id})
 	}
-	return s.execBatch(ctx, sql, items)
+	result, err := s.execBatchResult(ctx, sql, items)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			recovered, reconcileErr := s.reconcileRenderedProfileBatch(ctx, profileType, ids, profiles, nowRFC3339)
+			if reconcileErr != nil {
+				return fmt.Errorf("%w; reconcile rendered profile batch: %v", err, reconcileErr)
+			}
+			if recovered {
+				return nil
+			}
+		}
+		return err
+	}
+	if expectedRows := int64(len(ids)); result.RowsChanged != expectedRows {
+		err := fmt.Errorf("replace rendered profile batch affected %d rows, want %d", result.RowsChanged, expectedRows)
+		return sqlitePartialMutationError(result.RowsChanged > 0, "replace rendered profile batch", err)
+	}
+	return nil
 }
 
 // loadActiveProfileNodes is the shared query helper used by profile review and expiry convergence to fetch only currently renderable active nodes.
@@ -1925,6 +2978,19 @@ ORDER BY id ASC
 	return turns, nil
 }
 
+// parameterizedMarkTurnAsCorruptedStatement builds the guarded pending-to-done update used when a queued turn payload is unreadable.
+// parameterizedMarkTurnAsCorruptedStatement 用于构造排队 turn 载荷不可读时使用的受保护 pending 到 done 更新语句。
+func parameterizedMarkTurnAsCorruptedStatement(sessionID, turnID uint64, updatedMs int64) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
+UPDATE vmm_turn_records
+SET extracted_status = ?, updated_timestamp = ?
+WHERE id = ? AND session_id = ? AND extracted_status = ?;
+`,
+		Params: []any{logicdomain.TurnExtractedStatusDone, updatedMs, turnID, sessionID, logicdomain.TurnExtractedStatusPending},
+	}
+}
+
 // MarkTurnAsCorrupted marks one pending turn whose dehydrated payload cannot be decoded as done so it stops being returned by LoadPendingSessionTurns.
 // MarkTurnAsCorrupted 用于将无法解码的损坏 pending turn 标记为已处理，让它不再被 LoadPendingSessionTurns 返回。
 func (s *Store) MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error {
@@ -1935,11 +3001,51 @@ func (s *Store) MarkTurnAsCorrupted(ctx context.Context, session logicdomain.Ses
 		return logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	if err := s.exec(ctx, fmt.Sprintf(`
-UPDATE vmm_turn_records
-SET extracted_status = %d, updated_timestamp = %d
-WHERE id = %d AND session_id = %d AND extracted_status = %d;
-`, logicdomain.TurnExtractedStatusDone, nowMs, turnID, session.SessionID, logicdomain.TurnExtractedStatusPending)); err != nil {
+
+	// Serialize corrupted-turn draining with normal turn analysis because both paths transition the same pending turn state machine.
+	// 将损坏 turn 消化与正常 turn 分析串行化，因为两条路径都会推进同一个 pending turn 状态机。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	// Capture the exact pending row before the guarded update so commit-unknown reconciliation can prove this narrow state transition instead of guessing from status alone.
+	// 在受保护更新前捕获精确 pending 行，让提交未知对账可以证明这次窄状态迁移，而不是只凭状态字段猜测。
+	beforeTurn, beforeFound, err := s.loadTurnRecordByID(ctx, turnID)
+	if err != nil {
+		return fmt.Errorf("load corrupted turn before mark: %w", err)
+	}
+
+	// Preserve monotonic turn activity time when the durable row already carries a newer timestamp than the local clock sample.
+	// 当长期 turn 行已有比本地时钟采样更新的时间戳时，保持 turn 活动时间单调不回退。
+	updatedMs := nowMs
+	if beforeFound && !beforeTurn.UpdatedAt.IsZero() {
+		beforeUpdatedMs := beforeTurn.UpdatedAt.UTC().UnixMilli()
+		if beforeUpdatedMs > updatedMs {
+			updatedMs = beforeUpdatedMs
+		}
+	}
+
+	statement := parameterizedMarkTurnAsCorruptedStatement(session.SessionID, turnID, updatedMs)
+	result, err := s.execResult(ctx, statement.SQL, statement.Params...)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			recoveredTurn, recoveredFound, reconcileErr := s.loadTurnRecordByID(ctx, turnID)
+			if reconcileErr != nil {
+				return logicdomain.OutcomeUncertainError{
+					Operation: "mark turn as corrupted",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if beforeFound && recoveredFound && sameCorruptedTurnMark(recoveredTurn, beforeTurn, session.SessionID, turnID, updatedMs) {
+				return nil
+			}
+			return logicdomain.OutcomeUncertainError{
+				Operation: "mark turn as corrupted",
+				Message:   err.Error(),
+			}
+		}
+		return fmt.Errorf("mark turn as corrupted: %w", err)
+	}
+	if err := sqliteAutocommitRowsChangedDriftError("mark turn as corrupted", "mark turn as corrupted", result.RowsChanged, 1); err != nil {
 		return fmt.Errorf("mark turn as corrupted: %w", err)
 	}
 	return nil
@@ -2016,6 +3122,8 @@ func (s *Store) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdo
 	if len(turnIDs) == 0 {
 		return []logicdomain.SessionTurnRecord{}, nil
 	}
+	turnIDPlaceholders := sqlitePlaceholders(len(turnIDs))
+	turnIDParams := sqliteUint64Params(turnIDs)
 	rows, err := queryRows[turnRecordRow](s, ctx, fmt.Sprintf(`
 SELECT id, session_id, project_id,
        dehydrated_content,
@@ -2024,7 +3132,7 @@ SELECT id, session_id, project_id,
 FROM vmm_turn_records
 WHERE id IN (%s)
 ORDER BY id ASC
-`, sqlUint64List(turnIDs)))
+`, turnIDPlaceholders), turnIDParams...)
 	if err != nil {
 		return nil, fmt.Errorf("query turns by ids: %w", err)
 	}
@@ -2042,6 +3150,9 @@ func (s *Store) LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius in
 	if len(turnIDs) == 0 || radius <= 0 {
 		return map[uint64]logicdomain.TurnDetailWindow{}, nil
 	}
+	turnIDPlaceholders := sqlitePlaceholders(len(turnIDs))
+	queryParams := sqliteUint64Params(turnIDs)
+	queryParams = append(queryParams, radius, radius)
 	rows, err := queryRows[turnWindowRow](s, ctx, fmt.Sprintf(`
 WITH ordered_turns AS (
   SELECT id, session_id,
@@ -2059,10 +3170,10 @@ SELECT t.target_id,
 FROM target_turns t
 JOIN ordered_turns o
   ON o.session_id = t.session_id
- AND o.rn BETWEEN t.target_rn - %d AND t.target_rn + %d
+ AND o.rn BETWEEN t.target_rn - ? AND t.target_rn + ?
  AND o.id <> t.target_id
 ORDER BY t.target_id ASC, o.rn ASC
-`, sqlUint64List(turnIDs), radius, radius))
+`, turnIDPlaceholders), queryParams...)
 	if err != nil {
 		return nil, fmt.Errorf("query turn windows: %w", err)
 	}
@@ -2089,6 +3200,8 @@ func (s *Store) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryNodeRecord{}, nil
 	}
+	memoryIDPlaceholders := sqlitePlaceholders(len(memoryIDs))
+	memoryIDParams := sqliteUint64Params(memoryIDs)
 	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -2099,7 +3212,7 @@ SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_tur
 FROM vmm_memory_nodes
 WHERE id IN (%s)
 ORDER BY id ASC
-`, sqlUint64List(memoryIDs)))
+`, memoryIDPlaceholders), memoryIDParams...)
 	if err != nil {
 		return nil, fmt.Errorf("query memory nodes by ids: %w", err)
 	}
@@ -2117,13 +3230,15 @@ func (s *Store) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs
 	if len(memoryIDs) == 0 {
 		return []logicdomain.MemoryContextEdge{}, nil
 	}
+	memoryIDPlaceholders := sqlitePlaceholders(len(memoryIDs))
+	memoryIDParams := sqliteUint64Params(memoryIDs)
 	rows, err := queryRows[memoryContextEdgeRow](s, ctx, fmt.Sprintf(`
 SELECT memory_id, context_key, context_value, support_count, rebuttal_count,
        last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
 FROM vmm_memory_context_edges
 WHERE memory_id IN (%s)
 ORDER BY memory_id ASC, context_key ASC, context_value ASC
-`, sqlUint64List(memoryIDs)))
+`, memoryIDPlaceholders), memoryIDParams...)
 	if err != nil {
 		return nil, fmt.Errorf("query memory context edges by memory ids: %w", err)
 	}
@@ -2142,6 +3257,10 @@ func (s *Store) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []stri
 		return []logicdomain.MemoryNodeRecord{}, nil
 	}
 	nowMs := time.Now().UTC().UnixMilli()
+	vectorIDParams := make([]any, 0, len(vectorIDs))
+	for _, vectorID := range vectorIDs {
+		vectorIDParams = append(vectorIDParams, vectorID)
+	}
 	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -2153,7 +3272,7 @@ FROM vmm_memory_nodes
 WHERE vector_id IN (%s)
   AND %s
 ORDER BY created_timestamp ASC, id ASC
-`, sqlStringList(vectorIDs), buildActiveUnexpiredMemoryCondition("", nowMs)))
+`, sqlitePlaceholders(len(vectorIDs)), buildActiveUnexpiredMemoryCondition("", nowMs)), vectorIDParams...)
 	if err != nil {
 		return nil, fmt.Errorf("query memory nodes by vector ids: %w", err)
 	}
@@ -2164,44 +3283,76 @@ ORDER BY created_timestamp ASC, id ASC
 	return out, nil
 }
 
-// SearchLexicalMemory runs one SQLite FTS recall over durable memory text and returns ranked memory ids for later relational materialization plus RRF fusion.
-// SearchLexicalMemory 用于在长期记忆文本上执行一次 SQLite FTS 召回，并返回后续回表与 RRF 融合所需的排序 memory id。
+// SearchLexicalMemory runs one SQLite FTS recall over durable memory text and returns ranked materialized memory rows for app-layer RRF fusion.
+// SearchLexicalMemory 用于在长期记忆文本上执行一次 SQLite FTS 召回，并返回应用层 RRF 融合所需的已排序物化记忆行。
 func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
 	if strings.TrimSpace(query) == "" || topK <= 0 {
 		return []logicdomain.MemoryLexicalHit{}, nil
 	}
-	if topK > 32 {
-		topK = 32
+	if topK > memoryLexicalResultLimit {
+		topK = memoryLexicalResultLimit
 	}
 	if s == nil || s.database == nil {
 		return nil, fmt.Errorf("sqlite lexical search requires one local ffi database")
 	}
-	result, err := s.database.SearchFts(s.ftsIndexName, s.tokenizerMode, strings.TrimSpace(query), uint32(topK), 0)
+	result, err := s.database.SearchFts(s.ftsIndexName, s.tokenizerMode, strings.TrimSpace(query), uint32(memoryLexicalSearchCandidateLimit(topK)), 0)
 	if err != nil {
 		return nil, fmt.Errorf("search lexical memory: %w", err)
 	}
-	filtered := make([]logicdomain.MemoryLexicalHit, 0, len(result.Hits))
+	candidates := make([]sqliteLexicalCandidate, 0, len(result.Hits))
+	candidateMemoryIDs := make([]uint64, 0, len(result.Hits))
 	for _, hit := range result.Hits {
 		memoryID, ok := parseUint64(hit.ID)
 		if !ok || memoryID == 0 {
 			continue
 		}
-		record, found, err := s.loadActiveMemoryNodeByID(ctx, memoryID)
-		if err != nil {
-			return nil, fmt.Errorf("load lexical memory node %d: %w", memoryID, err)
-		}
+		candidates = append(candidates, sqliteLexicalCandidate{MemoryID: memoryID, Score: hit.Score})
+		candidateMemoryIDs = append(candidateMemoryIDs, memoryID)
+	}
+	activeRowsByID, err := s.loadActiveMemoryNodesByIDs(ctx, candidateMemoryIDs)
+	if err != nil {
+		return nil, fmt.Errorf("load lexical memory nodes: %w", err)
+	}
+
+	filtered := make([]logicdomain.MemoryLexicalHit, 0, len(candidates))
+	for _, candidate := range candidates {
+		record, found := activeRowsByID[candidate.MemoryID]
 		if !found || !matchesLexicalMemoryFilter(record, filter) {
 			continue
 		}
 		filtered = append(filtered, logicdomain.MemoryLexicalHit{
-			MemoryID: memoryID,
-			Score:    hit.Score,
+			MemoryID: candidate.MemoryID,
+			Record:   record,
+			Score:    candidate.Score,
 		})
 		if len(filtered) >= topK {
 			break
 		}
 	}
 	return filtered, nil
+}
+
+// sqliteLexicalCandidate stores one parsed FTS hit before relational active-row validation keeps or drops it.
+// sqliteLexicalCandidate 用于保存一条已解析的 FTS 命中，等待关系侧 active 行校验决定保留或丢弃。
+type sqliteLexicalCandidate struct {
+	MemoryID uint64
+	Score    float64
+}
+
+// memoryLexicalSearchCandidateLimit expands the pre-filter FTS window while preserving the final caller-visible topK cap.
+// memoryLexicalSearchCandidateLimit 用于扩大过滤前 FTS 候选窗口，同时保持调用方可见的最终 topK 上限不变。
+func memoryLexicalSearchCandidateLimit(topK int) int {
+	if topK <= 0 {
+		return 0
+	}
+	limit := topK * 4
+	if limit < topK {
+		return topK
+	}
+	if limit > memoryLexicalCandidateLimit {
+		return memoryLexicalCandidateLimit
+	}
+	return limit
 }
 
 // FindRecentActiveMemoryByDedupe finds one recent active direct-write memory row inside the same resolved session scope and soft-idempotency window.
@@ -2264,12 +3415,11 @@ func (s *Store) CreateDirectMemoryNode(ctx context.Context, session logicdomain.
 	}
 	now := time.Now().UTC()
 	record = normalizeDirectMemoryNodeRecord(session, record, nextID, now)
-	script := buildMemoryNodeInsertSQL(record)
-	if err := s.exec(ctx, script); err != nil {
-		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("insert direct memory node: %w", err)
+	if err := s.executeDirectMemoryInsert(ctx, "create direct memory node", record); err != nil {
+		return logicdomain.MemoryNodeRecord{}, err
 	}
 	if err := s.syncMemoryFTSAfterWrite(ctx, []logicdomain.MemoryNodeRecord{record}, nil); err != nil {
-		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("sync memory fts after direct insert: %w", err)
+		return logicdomain.MemoryNodeRecord{}, sqlitePartialMutationErrorWithFreshVectorReference(true, true, "create direct memory node", fmt.Errorf("sync memory fts after direct insert: %w", err))
 	}
 	return record, nil
 }
@@ -2303,17 +3453,44 @@ func (s *Store) ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("load superseded direct-write vector ids: %w", err)
 	}
 
-	// Keep the insert and the old-row status flip inside one serialized SQL script so direct writes cannot leave “new row inserted but old row still active” gaps behind.
-	// 把插入新行和旧行状态切换放进同一段串行 SQL 脚本，避免主动写记忆留下“新行已插入但旧行仍 active”的缝隙。
-	script := buildMemoryNodeInsertSQL(record)
-	if len(supersededMemoryIDs) > 0 {
-		script += buildMemoryNodesSupersedeSQL(supersededMemoryIDs, nowMs)
+	// Execute the insert before the old-row status flip so later failures are reported as partial relational writes instead of clean failures.
+	// 先执行插入再切换旧行状态，让后续失败按关系侧部分写入上报，而不是被误认为干净失败。
+	if err := s.executeDirectMemoryInsert(ctx, "apply direct memory write", record); err != nil {
+		return logicdomain.DirectMemoryWriteApplyResult{}, err
 	}
-	if err := s.exec(ctx, script); err != nil {
-		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("apply direct memory write: %w", err)
+	if len(supersededMemoryIDs) > 0 {
+		if supersedeStatement, ok := parameterizedMemoryNodesSupersedeStatement(supersededMemoryIDs, nowMs); ok {
+			supersedeResult, supersedeErr := s.execResult(ctx, supersedeStatement.SQL, supersedeStatement.Params...)
+			if supersedeErr != nil {
+				if isSQLiteOutcomeUncertainError(supersedeErr) {
+					recovered, reconcileErr := s.reconcileMemoryNodesSuperseded(ctx, supersededMemoryIDs, nowMs)
+					if reconcileErr != nil {
+						return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply direct memory write",
+							Message:              fmt.Sprintf("supersede direct memory nodes: %v; reconcile failed: %v", supersedeErr, reconcileErr),
+							FreshVectorReference: true,
+						}
+					}
+					if !recovered {
+						return logicdomain.DirectMemoryWriteApplyResult{}, logicdomain.OutcomeUncertainError{
+							Operation:            "apply direct memory write",
+							Message:              fmt.Sprintf("supersede direct memory nodes: %v", supersedeErr),
+							FreshVectorReference: true,
+						}
+					}
+					// Continue to FTS deletion only after the direct-write replacement rows prove this supersede reached SQLite.
+					// 只有在主动写替代行证明本次 supersede 已进入 SQLite 后，才继续执行 FTS 删除。
+				} else {
+					return logicdomain.DirectMemoryWriteApplyResult{}, sqlitePartialMutationErrorWithFreshVectorReference(true, true, "apply direct memory write", fmt.Errorf("supersede direct memory nodes: %w", supersedeErr))
+				}
+			} else if supersedeResult.RowsChanged != int64(len(supersededMemoryIDs)) {
+				rowDriftErr := fmt.Errorf("affected %d rows, want %d", supersedeResult.RowsChanged, len(supersededMemoryIDs))
+				return logicdomain.DirectMemoryWriteApplyResult{}, sqlitePartialMutationErrorWithFreshVectorReference(true, true, "apply direct memory write", fmt.Errorf("supersede direct memory nodes: %w", rowDriftErr))
+			}
+		}
 	}
 	if err := s.syncMemoryFTSAfterWrite(ctx, []logicdomain.MemoryNodeRecord{record}, supersededMemoryIDs); err != nil {
-		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("sync memory fts after direct write: %w", err)
+		return logicdomain.DirectMemoryWriteApplyResult{}, sqlitePartialMutationErrorWithFreshVectorReference(true, true, "apply direct memory write", fmt.Errorf("sync memory fts after direct write: %w", err))
 	}
 	return logicdomain.DirectMemoryWriteApplyResult{
 		InsertedMemoryNode:  record,
@@ -2337,6 +3514,9 @@ func (s *Store) DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filte
 
 	// Load the candidate rows under the write lock so the subsequent status flip uses the same active-row snapshot and cannot race with lifecycle writes.
 	// 在写锁内加载候选行，让后续状态切换使用同一份 active 行快照，避免与生命周期写入发生竞态。
+	memoryIDPlaceholders := sqlitePlaceholders(len(memoryIDs))
+	memoryIDParams := sqliteUint64Params(memoryIDs)
+	queryParams := append([]any{logicdomain.MemoryStatusActive}, memoryIDParams...)
 	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -2348,7 +3528,7 @@ FROM vmm_memory_nodes
 WHERE memory_status = ?
   AND id IN (%s)
 ORDER BY id ASC
-`, sqlUint64List(memoryIDs)), logicdomain.MemoryStatusActive)
+`, memoryIDPlaceholders), queryParams...)
 	if err != nil {
 		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("query sqlite memory nodes for delete: %w", err)
 	}
@@ -2383,29 +3563,69 @@ ORDER BY id ASC
 	// Mark only the scoped active rows as deleted so future recall/detail filters skip them while source turns remain available for audit.
 	// 只把范围内的 active 行标记为 deleted，让后续召回/详情过滤跳过这些记忆，同时保留来源轮次供审计查看。
 	deletedAt = chooseNonZeroTime(deletedAt, time.Now().UTC()).UTC()
-	if err := s.exec(ctx, fmt.Sprintf(`
+	deletedAtMs := deletedAt.UnixMilli()
+	deletedMemoryIDPlaceholders := sqlitePlaceholders(len(deletedMemoryIDs))
+	deletedMemoryIDParams := sqliteUint64Params(deletedMemoryIDs)
+	updateParams := append([]any{
+		logicdomain.MemoryStatusDeleted,
+		strings.TrimSpace(reason),
+		deletedAtMs,
+		logicdomain.MemoryStatusActive,
+	}, deletedMemoryIDParams...)
+	updateResult, err := s.execResult(ctx, fmt.Sprintf(`
 UPDATE vmm_memory_nodes
 SET memory_status = ?,
     status_reason = ?,
     updated_timestamp = ?
 WHERE memory_status = ?
   AND id IN (%s)
-`, sqlUint64List(deletedMemoryIDs)),
-		logicdomain.MemoryStatusDeleted,
-		strings.TrimSpace(reason),
-		deletedAt.UnixMilli(),
-		logicdomain.MemoryStatusActive,
-	); err != nil {
-		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("delete sqlite memory nodes: %w", err)
+`, deletedMemoryIDPlaceholders), updateParams...)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			recovered, reconcileErr := s.reconcileMemoryNodesDeleted(ctx, deletedMemoryIDs, reason, deletedAtMs)
+			if reconcileErr != nil {
+				return logicdomain.MemoryDeleteResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "delete memory nodes",
+					Message:   fmt.Sprintf("delete sqlite memory nodes: %v; reconcile failed: %v", err, reconcileErr),
+				}
+			}
+			if !recovered {
+				return logicdomain.MemoryDeleteResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "delete memory nodes",
+					Message:   fmt.Sprintf("delete sqlite memory nodes: %v", err),
+				}
+			}
+			// Continue only after every scoped memory row proves it has reached the deleted state, so vector cleanup coordinates are safe to expose.
+			// 只有在范围内的每条 memory 行都证明已经进入 deleted 状态后，才继续暴露 vector 清理坐标。
+		} else {
+			return logicdomain.MemoryDeleteResult{}, fmt.Errorf("delete sqlite memory nodes: %w", err)
+		}
+	} else {
+		// Do not hand vector ids back to the use case unless every loaded active row was actually marked deleted.
+		// 只有所有已加载的 active 行都确实标记为 deleted 后，才把 vector id 返回给用例层清理。
+		expectedRowsChanged := int64(len(deletedMemoryIDs))
+		if updateResult.RowsChanged != expectedRowsChanged {
+			err := fmt.Errorf("delete sqlite memory nodes affected %d rows, want %d", updateResult.RowsChanged, expectedRowsChanged)
+			if updateResult.RowsChanged > 0 {
+				return logicdomain.MemoryDeleteResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "delete memory nodes",
+					Message:   err.Error(),
+				}
+			}
+			return logicdomain.MemoryDeleteResult{}, err
+		}
 	}
-	if err := s.syncMemoryFTSAfterWrite(ctx, nil, deletedMemoryIDs); err != nil {
-		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("sync memory fts after manual delete: %w", err)
-	}
-	return logicdomain.MemoryDeleteResult{
+	// Build the sidecar cleanup coordinates only after the relational status flip is fully verified, so post-delete index failures can still be compensated safely.
+	// 只有在关系状态切换已完整验收后才构造旁路清理坐标，让删除后的索引失败仍可被安全补偿。
+	result := logicdomain.MemoryDeleteResult{
 		DeletedMemoryIDs:  deletedMemoryIDs,
 		NotFoundMemoryIDs: notFoundMemoryIDs,
 		DeletedVectorIDs:  normalizeStringList(deletedVectorIDs),
-	}, nil
+	}
+	if err := s.syncMemoryFTSAfterWrite(ctx, nil, deletedMemoryIDs); err != nil {
+		return result, sqlitePartialMutationError(true, "delete memory nodes", fmt.Errorf("sync memory fts after manual delete: %w", err))
+	}
+	return result, nil
 }
 
 // LoadRecentDirectMemoryWrites returns the direct AI-written memory rows created inside one exclusion window so the turn analyzer can avoid duplicate extraction.
@@ -2452,13 +3672,13 @@ ORDER BY created_timestamp ASC, id ASC
 
 // ApplyMemoryAdoption increments lifecycle counters for the memory rows selected by pre-check and promotes hot session facts when they prove useful across sessions.
 // ApplyMemoryAdoption 用于为被 pre-check 采纳的记忆行递增生命周期计数，并在 session 级事实跨会话多次命中后将其升级。
-func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error) {
 	if session.SessionID == 0 {
-		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
 	memoryIDs = normalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
-		return nil
+		return []logicdomain.MemoryRecord{}, nil
 	}
 	if adoptedAt.IsZero() {
 		adoptedAt = time.Now().UTC()
@@ -2475,27 +3695,74 @@ func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.Ses
 	// 先加载当前长期行，确保生命周期更新能够尊重每条记录已有的作用域、计数器和过期时间。
 	rows, err := s.LoadMemoryNodesByIDs(ctx, memoryIDs)
 	if err != nil {
-		return fmt.Errorf("load memory adoption targets: %w", err)
+		return nil, fmt.Errorf("load memory adoption targets: %w", err)
 	}
 	if len(rows) == 0 {
-		return nil
+		return []logicdomain.MemoryRecord{}, nil
 	}
 
-	script := ""
+	// Pair each planned write with the lifecycle record that may be returned only after the durable row is confirmed updated.
+	// 将每条计划写入与生命周期记录配对，只有确认长期行被更新后才允许返回该记录。
+	pendingWrites := make([]struct {
+		statement sqliteWriteStatement
+		expected  logicdomain.MemoryNodeRecord
+		record    logicdomain.MemoryRecord
+	}, 0, len(rows))
 	for _, row := range rows {
 		if !logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(row, adoptedAt) {
 			continue
 		}
 		evolved := evolveAdoptedMemoryRecord(session, row, adoptedAt)
-		script += buildMemoryAdoptionUpdateSQL(evolved)
+		pendingWrites = append(pendingWrites, struct {
+			statement sqliteWriteStatement
+			expected  logicdomain.MemoryNodeRecord
+			record    logicdomain.MemoryRecord
+		}{
+			statement: parameterizedMemoryAdoptionUpdateStatement(evolved),
+			expected:  evolved,
+			record:    memoryRecordFromNode(evolved),
+		})
 	}
-	if strings.TrimSpace(script) == "" {
-		return nil
+	if len(pendingWrites) == 0 {
+		return []logicdomain.MemoryRecord{}, nil
 	}
-	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("apply memory adoption: %w", err)
+
+	// Keep only confirmed lifecycle records for vector-side sync so callers never upsert speculative adoption state.
+	// 只保留已确认写入的生命周期记录供向量侧同步使用，避免调用方 upsert 推测性的采纳状态。
+	updatedRecords := make([]logicdomain.MemoryRecord, 0, len(pendingWrites))
+	// Track whether an earlier SQLite update succeeded so later drift is reported as an uncertain partial mutation.
+	// 记录前序 SQLite 更新是否已经成功，让后续漂移按部分突变结果不确定上报。
+	mutated := false
+	for index, pendingWrite := range pendingWrites {
+		updateResult, updateErr := s.execResult(ctx, pendingWrite.statement.SQL, pendingWrite.statement.Params...)
+		if updateErr != nil {
+			if isSQLiteOutcomeUncertainError(updateErr) {
+				recovered, reconcileErr := s.reconcileMemoryAdoptionUpdate(ctx, pendingWrite.expected)
+				if reconcileErr != nil {
+					return nil, logicdomain.OutcomeUncertainError{
+						Operation: "apply memory adoption",
+						Message:   fmt.Sprintf("apply memory adoption statement %d: %v; reconcile failed: %v", index+1, updateErr, reconcileErr),
+					}
+				}
+				if !recovered {
+					return nil, logicdomain.OutcomeUncertainError{
+						Operation: "apply memory adoption",
+						Message:   fmt.Sprintf("apply memory adoption statement %d: %v", index+1, updateErr),
+					}
+				}
+				// Continue only after the durable row proves this adoption update reached the exact lifecycle target.
+				// 只有在长期行证明本次采纳更新已经达到精确生命周期目标后，才继续处理后续记录。
+			} else {
+				return nil, sqlitePartialMutationError(mutated, "apply memory adoption", fmt.Errorf("apply memory adoption statement %d: %w", index+1, updateErr))
+			}
+		} else if updateResult.RowsChanged != 1 {
+			rowDriftErr := fmt.Errorf("update adopted sqlite memory node affected %d rows, want 1", updateResult.RowsChanged)
+			return nil, sqlitePartialMutationError(mutated, "apply memory adoption", fmt.Errorf("apply memory adoption statement %d: %w", index+1, rowDriftErr))
+		}
+		mutated = true
+		updatedRecords = append(updatedRecords, pendingWrite.record)
 	}
-	return nil
+	return updatedRecords, nil
 }
 
 // ListIdlePendingSessions returns sessions whose latest conversation activity is older than the idle timeout while still carrying pending turn rows.
@@ -2568,19 +3835,38 @@ func (s *Store) AdvanceSessionExtractWindow(ctx context.Context, sessionID uint6
 	if !completedAt.IsZero() {
 		completedMs = completedAt.UTC().UnixMilli()
 	}
-	if err := s.exec(ctx, `
-UPDATE vmm_sessions
-SET last_extract_observed_timestamp = CASE
-      WHEN last_extract_observed_timestamp < ? THEN ? ELSE last_extract_observed_timestamp
-    END,
-    last_extract_completed_timestamp = CASE
-      WHEN last_extract_completed_timestamp < ? THEN ? ELSE last_extract_completed_timestamp
-    END,
-    updated_timestamp = CASE
-      WHEN updated_timestamp < ? THEN ? ELSE updated_timestamp
-    END
-WHERE id = ?
-`, observedMs, observedMs, completedMs, completedMs, completedMs, completedMs, sessionID); err != nil {
+	updatedMs := completedMs
+	if observedMs > updatedMs {
+		updatedMs = observedMs
+	}
+
+	// Serialize session checkpoint writes with turn appends because both paths move the session activity timestamp that drives idle-session queue recovery.
+	// 将 session 检查点写入与 turn 追加串行化，因为两条路径都会推进用于空闲 session 队列恢复的活动时间戳。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	statement := parameterizedSessionExtractWindowUpdateStatement(sessionID, observedMs, completedMs, updatedMs)
+	result, err := s.execResult(ctx, statement.SQL, statement.Params...)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			recoveredSession, reconcileErr := s.loadSessionByID(ctx, sessionID)
+			if reconcileErr != nil {
+				return logicdomain.OutcomeUncertainError{
+					Operation: "advance session extract window",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if sameAdvancedSessionExtractWindow(recoveredSession, sessionID, observedMs, completedMs, updatedMs) {
+				return nil
+			}
+			return logicdomain.OutcomeUncertainError{
+				Operation: "advance session extract window",
+				Message:   err.Error(),
+			}
+		}
+		return fmt.Errorf("advance session extract window: %w", err)
+	}
+	if err := sqliteAutocommitRowsChangedDriftError("advance session extract window", "update session extract window", result.RowsChanged, 1); err != nil {
 		return fmt.Errorf("advance session extract window: %w", err)
 	}
 	return nil
@@ -2593,12 +3879,15 @@ func (s *Store) loadActiveMemoryVectorIDs(ctx context.Context, memoryIDs []uint6
 	if len(memoryIDs) == 0 {
 		return nil, nil
 	}
+	memoryIDPlaceholders := sqlitePlaceholders(len(memoryIDs))
+	memoryIDParams := sqliteUint64Params(memoryIDs)
+	queryParams := append([]any{logicdomain.MemoryStatusActive}, memoryIDParams...)
 	rows, err := queryRows[obsoleteVectorRow](s, ctx, fmt.Sprintf(`
 SELECT vector_id
 FROM vmm_memory_nodes
-WHERE memory_status = %d AND id IN (%s)
+WHERE memory_status = ? AND id IN (%s)
 ORDER BY id ASC
-`, logicdomain.MemoryStatusActive, sqlUint64List(memoryIDs)))
+`, memoryIDPlaceholders), queryParams...)
 	if err != nil {
 		return nil, err
 	}
@@ -2652,9 +3941,30 @@ LIMIT 1
 	return rows[0].toDomain(), nil
 }
 
-// ensureSession loads one existing session inside the target project or creates it under the resolved hierarchy when it does not exist yet.
-// ensureSession 用于在目标项目内按外部 session_key 读取 session；如果还不存在，则在已解析层级下创建一条新 session。
-func (s *Store) ensureSession(ctx context.Context, sessionKey string, userID uint64, project logicdomain.ProjectRecord) (logicdomain.SessionRecord, error) {
+// loadSessionByID resolves one durable session row by numeric id so append writes can derive counters from the current locked state.
+// loadSessionByID 用于按数字 ID 解析一条长期 session 行，让追加写入可以从当前锁内状态推导计数。
+func (s *Store) loadSessionByID(ctx context.Context, sessionID uint64) (logicdomain.SessionRecord, error) {
+	rows, err := queryRows[sessionRow](s, ctx, `
+SELECT id, session_key, user_id, team_id, space_id, project_id, turn_count,
+       last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+       last_extract_observed_timestamp, last_extract_completed_timestamp, last_compacted_timestamp,
+       created_timestamp, updated_timestamp
+FROM vmm_sessions
+WHERE id = ?
+LIMIT 1
+`, sessionID)
+	if err != nil {
+		return logicdomain.SessionRecord{}, fmt.Errorf("query session: %w", err)
+	}
+	if len(rows) == 0 {
+		return logicdomain.SessionRecord{}, logicdomain.NotFoundError{Resource: "session", Message: fmt.Sprintf("session_id %d does not exist", sessionID)}
+	}
+	return rows[0].toDomain(), nil
+}
+
+// lookupSessionByProjectAndKey resolves one project-scoped session key and reports absence without treating it as an error.
+// lookupSessionByProjectAndKey 用于解析一个项目作用域内的 session key，并把不存在作为布尔结果返回。
+func (s *Store) lookupSessionByProjectAndKey(ctx context.Context, projectID uint64, sessionKey string) (logicdomain.SessionRecord, bool, error) {
 	rows, err := queryRows[sessionRow](s, ctx, `
 SELECT id, session_key, user_id, team_id, space_id, project_id, turn_count,
        last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
@@ -2663,54 +3973,65 @@ SELECT id, session_key, user_id, team_id, space_id, project_id, turn_count,
 FROM vmm_sessions
 WHERE project_id = ? AND session_key = ?
 LIMIT 1
-`, project.ID, sessionKey)
+`, projectID, sessionKey)
 	if err != nil {
-		return logicdomain.SessionRecord{}, fmt.Errorf("query session: %w", err)
+		return logicdomain.SessionRecord{}, false, fmt.Errorf("query session: %w", err)
 	}
-	if len(rows) > 0 {
+	if len(rows) == 0 {
+		return logicdomain.SessionRecord{}, false, nil
+	}
+	return rows[0].toDomain(), true, nil
+}
+
+// ensureSession loads one existing session inside the target project or creates it under the locked, freshly verified user/project hierarchy.
+// ensureSession 用于在目标项目内读取已有 session，或在写锁内重新校验 user/project 后创建缺失的 session。
+func (s *Store) ensureSession(ctx context.Context, sessionKey string, user logicdomain.UserRecord, project logicdomain.ProjectRecord) (logicdomain.SessionRecord, error) {
+	session, exists, err := s.lookupSessionByProjectAndKey(ctx, project.ID, sessionKey)
+	if err != nil {
+		return logicdomain.SessionRecord{}, err
+	}
+	if exists {
 		// Reuse the project-scoped session row directly even when the upstream plugin has switched user ids during debugging.
 		// 在调试阶段，即使上游插件手动切换了 user_id，也直接复用同一 project 下的 session 行。
-		return rows[0].toDomain(), nil
+		return session, nil
 	}
 
-	// Auto-create the session row only after user and project are both confirmed to exist.
-	// 只有在 user 和 project 都确认存在之后，才自动创建 session 行。
+	// Serialize the missing-session create window so duplicate requests converge before allocating a fresh numeric id.
+	// 串行化缺失 session 的创建窗口，让重复请求在分配新数字 ID 前先收敛到已有行。
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	nextID, err := s.nextNumericID(ctx, "vmm_sessions")
+
+	session, exists, err = s.lookupSessionByProjectAndKey(ctx, project.ID, sessionKey)
 	if err != nil {
-		return logicdomain.SessionRecord{}, fmt.Errorf("allocate session id: %w", err)
+		return logicdomain.SessionRecord{}, err
 	}
-	now := time.Now().UTC()
-	nowMs := now.UnixMilli()
-	if err := s.exec(ctx, `
-INSERT INTO vmm_sessions (
-  id, session_key, user_id, team_id, space_id, project_id,
-  turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
-  last_extract_observed_timestamp, last_extract_completed_timestamp, last_compacted_timestamp,
-  created_timestamp, updated_timestamp
-) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, '', 0, 0, 0, 0, ?, ?)
-`, nextID, sessionKey, userID, project.TeamID, project.SpaceID, project.ID, nowMs, nowMs); err != nil {
-		return logicdomain.SessionRecord{}, fmt.Errorf("insert session: %w", err)
+	if exists {
+		return session, nil
 	}
-	return logicdomain.SessionRecord{
-		ID:                     nextID,
-		SessionKey:             sessionKey,
-		UserID:                 userID,
-		TeamID:                 project.TeamID,
-		SpaceID:                project.SpaceID,
-		ProjectID:              project.ID,
-		TurnCount:              0,
-		LastSummarizedID:       0,
-		LastCompactedTurnID:    0,
-		SummarizeContent:       "",
-		SummarizeBudget:        0,
-		LastExtractObservedAt:  time.Time{},
-		LastExtractCompletedAt: time.Time{},
-		LastCompactedAt:        time.Time{},
-		CreatedAt:              now,
-		UpdatedAt:              now,
-	}, nil
+
+	// Revalidate the resolved user and project after the write lock is acquired so a delete/recreate race cannot leave an orphaned session.
+	// 获取写锁后重新校验已解析的 user 与 project，避免删除/重建竞争留下孤儿 session。
+	currentUser, err := s.loadUserByID(ctx, user.ID)
+	if err != nil {
+		return logicdomain.SessionRecord{}, fmt.Errorf("reload user before session create: %w", err)
+	}
+	if !sameUserIdentity(currentUser, user) {
+		return logicdomain.SessionRecord{}, logicdomain.ConflictError{
+			Resource: "user",
+			Message:  fmt.Sprintf("user changed before session create: resolved %s, current %s", user.Name, currentUser.Name),
+		}
+	}
+	currentProject, err := s.loadProjectByID(ctx, project.ID)
+	if err != nil {
+		return logicdomain.SessionRecord{}, fmt.Errorf("reload project before session create: %w", err)
+	}
+	if !sameProjectIdentity(currentProject, project) {
+		return logicdomain.SessionRecord{}, logicdomain.ConflictError{
+			Resource: "project",
+			Message:  fmt.Sprintf("project changed before session create: resolved %s, current %s", project.Path(), currentProject.Path()),
+		}
+	}
+	return s.insertSession(ctx, sessionKey, currentUser, currentProject, time.Now().UTC())
 }
 
 // ListProjects returns all projects together with their display path components, ordered for deterministic UX.
@@ -2795,37 +4116,45 @@ ORDER BY created_timestamp ASC, id ASC
 	out := make([]logicdomain.MemoryRecord, 0, len(rows))
 	for _, row := range rows {
 		record := row.toMemoryNodeRecord()
-		filter := logicdomain.SearchFilter{
-			UserID:    record.UserID,
-			TeamID:    record.TeamID,
-			SpaceID:   record.SpaceID,
-			ProjectID: record.ProjectID,
-		}
-		if record.SourceKind == logicdomain.MemorySourceKindTurnExtract || record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
-			filter.SessionID = record.OriginSessionID
-		}
-		metadata := map[string]string{
-			"category":     strconv.Itoa(record.Category),
-			"details":      record.Details,
-			"source_kind":  logicdomain.MemorySourceKindLabel(record.SourceKind),
-			"scope_level":  logicdomain.MemoryScopeLevelLabel(record.ScopeLevel),
-			"priority":     strconv.Itoa(record.Priority),
-			"memory_level": strconv.Itoa(record.MemoryLevel),
-		}
-		if record.SourceTurnID > 0 {
-			metadata["turn_id"] = strconv.FormatUint(record.SourceTurnID, 10)
-		}
-		out = append(out, logicdomain.MemoryRecord{
-			ID:           record.VectorID,
-			Text:         record.Abstract,
-			Vector:       append([]float32(nil), record.Vector...),
-			Filter:       filter,
-			SourceTurnID: record.SourceTurnID,
-			Metadata:     metadata,
-			CreatedAt:    record.CreatedAt,
-		})
+		out = append(out, memoryRecordFromNode(record))
 	}
 	return out, nil
+}
+
+// memoryRecordFromNode converts one active durable SQLite memory row into the sidecar/vector-store record used by rebuild, migration, and lifecycle sync paths.
+// memoryRecordFromNode 用于把一条 SQLite 长期记忆行转换成重建、迁移和生命周期同步路径使用的旁路向量记录。
+func memoryRecordFromNode(record logicdomain.MemoryNodeRecord) logicdomain.MemoryRecord {
+	filter := logicdomain.SearchFilter{
+		UserID:    record.UserID,
+		TeamID:    record.TeamID,
+		SpaceID:   record.SpaceID,
+		ProjectID: record.ProjectID,
+	}
+	if record.SourceKind == logicdomain.MemorySourceKindTurnExtract || record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
+		filter.SessionID = record.OriginSessionID
+	}
+	metadata := map[string]string{
+		"category":     strconv.Itoa(record.Category),
+		"details":      record.Details,
+		"source_kind":  logicdomain.MemorySourceKindLabel(record.SourceKind),
+		"scope_level":  logicdomain.MemoryScopeLevelLabel(record.ScopeLevel),
+		"priority":     strconv.Itoa(record.Priority),
+		"memory_level": strconv.Itoa(record.MemoryLevel),
+	}
+	if record.SourceTurnID > 0 {
+		metadata["turn_id"] = strconv.FormatUint(record.SourceTurnID, 10)
+	}
+	return logicdomain.MemoryRecord{
+		ID:           record.VectorID,
+		Text:         record.Abstract,
+		Vector:       append([]float32(nil), record.Vector...),
+		Filter:       filter,
+		SourceTurnID: record.SourceTurnID,
+		Status:       record.Status,
+		ExpiresAt:    record.ExpiresAt,
+		Metadata:     metadata,
+		CreatedAt:    record.CreatedAt,
+	}
 }
 
 // ListProjectMemoriesForMaintenance reuses the normal SQLite project-memory scan for maintenance commands because SQLite already executes the durable read under the same bounded gateway timeout.
@@ -2860,12 +4189,19 @@ func (s *Store) ReplaceMemoryVectors(ctx context.Context, records []logicdomain.
 		}
 		items = append(items, []any{encodeFloat32Slice(record.Vector), vectorID})
 	}
-	if err := s.execBatch(ctx, `
+	result, err := s.execBatchResult(ctx, `
 UPDATE vmm_memory_nodes
 SET vector_json = ?
 WHERE vector_id = ?
-`, items); err != nil {
-		return fmt.Errorf("replace sqlite memory vectors: %w", err)
+`, items)
+	if err != nil {
+		return sqliteMaintenanceBatchError("replace sqlite memory vectors", err)
+	}
+	// Require every selected durable row to be rewritten before the sidecar vector table can be refilled from the same batch.
+	// 在用同一批数据回填旁路向量表之前，要求每个已选长期行都完成重写。
+	if expectedRows := int64(len(items)); result.RowsChanged != expectedRows {
+		err := fmt.Errorf("replace sqlite memory vectors affected %d rows, want %d", result.RowsChanged, expectedRows)
+		return sqlitePartialMutationError(result.RowsChanged > 0, "replace sqlite memory vectors", err)
 	}
 	return nil
 }
@@ -2893,14 +4229,33 @@ func (s *Store) ClearMemoryVectors(ctx context.Context, vectorIDs []string) erro
 		}
 		items = append(items, []any{cleanedVectorID})
 	}
-	if err := s.execBatch(ctx, `
+	result, err := s.execBatchResult(ctx, `
 UPDATE vmm_memory_nodes
 SET vector_json = '[]'
 WHERE vector_id = ?
-`, items); err != nil {
-		return fmt.Errorf("clear sqlite memory vectors: %w", err)
+`, items)
+	if err != nil {
+		return sqliteMaintenanceBatchError("clear sqlite memory vectors", err)
+	}
+	// Require every durable row to be cleared so the reset phase cannot leave stale SQLite vectors behind the rebuilt sidecar table.
+	// 要求每个长期行都被清空，避免 reset 阶段在旁路表重建后留下陈旧的 SQLite 向量。
+	if expectedRows := int64(len(items)); result.RowsChanged != expectedRows {
+		err := fmt.Errorf("clear sqlite memory vectors affected %d rows, want %d", result.RowsChanged, expectedRows)
+		return sqlitePartialMutationError(result.RowsChanged > 0, "clear sqlite memory vectors", err)
 	}
 	return nil
+}
+
+// sqliteMaintenanceBatchError preserves ordinary batch failures while marking SQLite commit-boundary failures that may already have changed maintenance rows.
+// sqliteMaintenanceBatchError 用于保留普通批处理失败，同时标记可能已经改变维护行的 SQLite 提交边界失败。
+func sqliteMaintenanceBatchError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if classifiedErr := sqliteWriteCommitBoundaryError(operation, err); logicdomain.IsOutcomeUncertain(classifiedErr) {
+		return classifiedErr
+	}
+	return fmt.Errorf("%s: %w", operation, err)
 }
 
 // EnsureProjectPath resolves or creates a Team/Space/Project path according to the confirm flag rules required by the admin RPCs.
@@ -2943,23 +4298,58 @@ func (s *Store) EnsureProjectPath(ctx context.Context, projectPath string, confi
 	createdTeam := false
 	createdSpace := false
 	createdProject := false
+
+	// Re-resolve the hierarchy under the write lock so the confirmation decision and inserts are based
+	// on the same serialized SQLite window instead of stale pre-lock lookup results.
+	// 在写锁内重新解析层级，让确认决策和插入基于同一个串行 SQLite 窗口，而不是锁前的陈旧查询结果。
+	team, teamExists, err = s.lookupTeamByName(ctx, teamName)
+	if err != nil {
+		return logicdomain.ProjectMutationResult{}, err
+	}
+	space, spaceExists, err = s.lookupSpaceByName(ctx, team.ID, spaceName, teamExists)
+	if err != nil {
+		return logicdomain.ProjectMutationResult{}, err
+	}
+	if !confirmCreate && (!teamExists || !spaceExists) {
+		return logicdomain.ProjectMutationResult{
+			Message:      buildProjectConfirmMessage(teamName, spaceName, projectName, teamExists, spaceExists),
+			NeedsConfirm: true,
+			MissingTeam:  !teamExists,
+			MissingSpace: !spaceExists,
+		}, nil
+	}
 	if !teamExists {
 		team, err = s.insertTeam(ctx, teamName, now)
 		if err != nil {
 			return logicdomain.ProjectMutationResult{}, err
 		}
 		createdTeam = true
+		space, spaceExists, err = s.lookupSpaceByName(ctx, team.ID, spaceName, true)
+		if err != nil {
+			return logicdomain.ProjectMutationResult{}, sqlitePartialMutationError(createdTeam, "ensure project path", err)
+		}
 	}
 	if !spaceExists {
 		space, err = s.insertSpace(ctx, team.ID, spaceName, now)
 		if err != nil {
-			return logicdomain.ProjectMutationResult{}, err
+			return logicdomain.ProjectMutationResult{}, sqlitePartialMutationError(createdTeam, "ensure project path", err)
 		}
 		createdSpace = true
 	}
-	project, err := s.insertProject(ctx, team, space, projectName, now)
+	project, projectExists, err := s.lookupProjectBySpaceAndName(ctx, team, space, projectName)
 	if err != nil {
-		return logicdomain.ProjectMutationResult{}, err
+		return logicdomain.ProjectMutationResult{}, sqlitePartialMutationError(createdTeam || createdSpace, "ensure project path", err)
+	}
+	if projectExists {
+		return logicdomain.ProjectMutationResult{
+			Project: project,
+			Message: fmt.Sprintf("project %s already exists", project.Path()),
+			Exists:  true,
+		}, nil
+	}
+	project, err = s.insertProject(ctx, team, space, projectName, now)
+	if err != nil {
+		return logicdomain.ProjectMutationResult{}, sqlitePartialMutationError(createdTeam || createdSpace, "ensure project path", err)
 	}
 	createdProject = true
 	return logicdomain.ProjectMutationResult{
@@ -3001,29 +4391,39 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	// or belong to one now-empty parent scope that will be deleted together with the project.
 	// 删除项目自身、其 turn 派生、以及随空父级一并删除的 scope 所关联的画像节点。
 	deleteSQL, deleteParams := buildProjectProfileNodesDeleteSQL(project.ID, project.SpaceID, project.TeamID, deletePlan.DeletedSpaces > 0, deletePlan.DeletedTeams > 0)
-	if err := s.exec(ctx, deleteSQL, deleteParams...); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project profile nodes: %w", err)
+	// Track confirmed destructive steps so any later ordinary write failure cannot be reported as a clean retryable delete failure.
+	// 跟踪已确认的破坏性步骤，避免后续普通写入失败被误报为可干净重试的删除失败。
+	mutated := false
+	runDeleteStep := func(operation string, expectedRows int, sql string, params ...any) error {
+		if err := s.execProjectDeleteStep(ctx, operation, mutated, expectedRows, sql, params...); err != nil {
+			return err
+		}
+		mutated = mutated || expectedRows > 0
+		return nil
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE project_id = ?`, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project memory nodes: %w", err)
+	if err := runDeleteStep("delete project profile nodes", deletePlan.DeletedProfiles, deleteSQL, deleteParams...); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE project_id = ?`, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project turn records: %w", err)
+	if err := runDeleteStep("delete project memory nodes", deletePlan.DeletedMemories, `DELETE FROM vmm_memory_nodes WHERE project_id = ?`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE project_id = ?`, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project sessions: %w", err)
+	if err := runDeleteStep("delete project turn records", deletePlan.DeletedMessages, `DELETE FROM vmm_turn_records WHERE project_id = ?`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_projects WHERE id = ?`, project.ID); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete project row: %w", err)
+	if err := runDeleteStep("delete project sessions", deletePlan.DeletedSessions, `DELETE FROM vmm_sessions WHERE project_id = ?`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
+	if err := runDeleteStep("delete project row", deletePlan.DeletedProjects, `DELETE FROM vmm_projects WHERE id = ?`, project.ID); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
 	}
 	if deletePlan.DeletedSpaces > 0 {
-		if err := s.exec(ctx, `DELETE FROM vmm_spaces WHERE id = ?`, project.SpaceID); err != nil {
-			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete empty project space row: %w", err)
+		if err := runDeleteStep("delete empty project space row", deletePlan.DeletedSpaces, `DELETE FROM vmm_spaces WHERE id = ?`, project.SpaceID); err != nil {
+			return logicdomain.ProjectDeleteResult{}, err
 		}
 	}
 	if deletePlan.DeletedTeams > 0 {
-		if err := s.exec(ctx, `DELETE FROM vmm_teams WHERE id = ?`, project.TeamID); err != nil {
-			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete empty project team row: %w", err)
+		if err := runDeleteStep("delete empty project team row", deletePlan.DeletedTeams, `DELETE FROM vmm_teams WHERE id = ?`, project.TeamID); err != nil {
+			return logicdomain.ProjectDeleteResult{}, err
 		}
 	}
 	return logicdomain.ProjectDeleteResult{
@@ -3039,8 +4439,24 @@ func (s *Store) DeleteProjectPath(ctx context.Context, projectPath string, confi
 	}, nil
 }
 
-// MigrateProjectPath moves SQL-backed sessions/turn records/memories from one project scope onto another when explicitly confirmed.
-// MigrateProjectPath 用于在显式确认后，把 SQL 侧的 sessions/turn 记录/memories 从源项目范围迁移到目标项目范围。
+// execProjectDeleteStep executes one planned project-delete write and classifies failures using both commit-boundary evidence and prior destructive progress.
+// execProjectDeleteStep 用于执行一次已规划的项目删除写入，并结合提交边界证据与前序破坏性进度来分类失败。
+func (s *Store) execProjectDeleteStep(ctx context.Context, operation string, mutated bool, expectedRows int, sql string, params ...any) error {
+	resp, err := s.execResult(ctx, sql, params...)
+	if err != nil {
+		return sqliteWriteCommitOrPartialMutationError(mutated, "delete project path", fmt.Errorf("%s: %w", operation, err))
+	}
+	if resp.RowsChanged != int64(expectedRows) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: "delete project path",
+			Message:   fmt.Sprintf("%s affected %d rows, want %d", operation, resp.RowsChanged, expectedRows),
+		}
+	}
+	return nil
+}
+
+// MigrateProjectPath moves SQL-backed sessions, turn records, memories, and project-bound profiles from one project scope onto another when explicitly confirmed.
+// MigrateProjectPath 用于在显式确认后，把 SQL 侧 sessions、turn 记录、memories 和项目绑定画像从源项目范围迁移到目标项目范围。
 func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath string, confirm bool) (logicdomain.ProjectMigrationResult, error) {
 	source, err := s.ResolveProjectRef(ctx, sourcePath)
 	if err != nil {
@@ -3062,49 +4478,127 @@ func (s *Store) MigrateProjectPath(ctx context.Context, sourcePath, targetPath s
 		}, nil
 	}
 
-	sessions, messages, memories, err := s.countProjectRows(ctx, source.ID)
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	// Re-read both migration endpoints after acquiring the write lock so a stale path resolution cannot
+	// migrate rows against a deleted or recreated project node.
+	// 获取写锁后重新读取迁移两端，避免陈旧路径解析把数据迁移到已删除或重建的项目节点上。
+	source, err = s.verifyProjectMigrationEndpoint(ctx, "source", source)
 	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, err
 	}
-	s.writeMu.Lock()
-	defer s.writeMu.Unlock()
+	target, err = s.verifyProjectMigrationEndpoint(ctx, "target", target)
+	if err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
+	}
+
+	// Plan migration counts inside the write lock so the later affected-row checks validate the exact
+	// source scope observed by this serialized SQLite mutation path.
+	// 在写锁内规划迁移计数，让后续影响行数校验对齐当前串行 SQLite 写入路径实际观察到的源范围。
+	migrationPlan, err := s.planProjectMigration(ctx, source.ID)
+	if err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
+	}
 	nowMs := time.Now().UTC().UnixMilli()
-	if err := s.exec(ctx, fmt.Sprintf(`
+	mutated := false
+	if err := s.execProjectMigrationStep(ctx, "migrate project sessions", migrationPlan.MigratedSessions, `
 UPDATE vmm_sessions
-SET team_id = %d, space_id = %d, project_id = %d, updated_timestamp = %d
-WHERE project_id = %d
-`, target.TeamID, target.SpaceID, target.ID, nowMs, source.ID)); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate sessions: %w", err)
+SET team_id = ?, space_id = ?, project_id = ?, updated_timestamp = ?
+WHERE project_id = ?
+`, target.TeamID, target.SpaceID, target.ID, nowMs, source.ID); err != nil {
+		return logicdomain.ProjectMigrationResult{}, sqlitePartialMutationError(mutated, "migrate project path", err)
 	}
-	if err := s.exec(ctx, fmt.Sprintf(`
+	mutated = mutated || migrationPlan.MigratedSessions > 0
+	if err := s.execProjectMigrationStep(ctx, "migrate project turn records", migrationPlan.MigratedMessages, `
 UPDATE vmm_turn_records
-SET project_id = %d, updated_timestamp = %d
-WHERE project_id = %d
-`, target.ID, nowMs, source.ID)); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate turn records: %w", err)
+SET project_id = ?, updated_timestamp = ?
+WHERE project_id = ?
+`, target.ID, nowMs, source.ID); err != nil {
+		return logicdomain.ProjectMigrationResult{}, sqlitePartialMutationError(mutated, "migrate project path", err)
 	}
-	if err := s.exec(ctx, fmt.Sprintf(`
+	mutated = mutated || migrationPlan.MigratedMessages > 0
+	if err := s.execProjectMigrationStep(ctx, "migrate project memory nodes", migrationPlan.MigratedMemories, `
 UPDATE vmm_memory_nodes
-SET team_id = %d, space_id = %d, project_id = %d, updated_timestamp = %d
-WHERE project_id = %d
-`, target.TeamID, target.SpaceID, target.ID, nowMs, source.ID)); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate memory nodes: %w", err)
+SET team_id = ?, space_id = ?, project_id = ?, updated_timestamp = ?
+WHERE project_id = ?
+`, target.TeamID, target.SpaceID, target.ID, nowMs, source.ID); err != nil {
+		return logicdomain.ProjectMigrationResult{}, sqlitePartialMutationError(mutated, "migrate project path", err)
 	}
-	if err := s.exec(ctx, fmt.Sprintf(`
+	mutated = mutated || migrationPlan.MigratedMemories > 0
+	if err := s.execProjectMigrationStep(ctx, "migrate project profile nodes", migrationPlan.MigratedProfiles, `
 UPDATE vmm_profile_nodes
-SET bind_id = %d
-WHERE profile_type = %d AND bind_id = %d
-`, target.ID, logicdomain.ProfileTypeProject, source.ID)); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate project profile nodes: %w", err)
+SET bind_id = ?
+WHERE profile_type = ? AND bind_id = ?
+`, target.ID, logicdomain.ProfileTypeProject, source.ID); err != nil {
+		return logicdomain.ProjectMigrationResult{}, sqlitePartialMutationError(mutated, "migrate project path", err)
 	}
 	return logicdomain.ProjectMigrationResult{
 		Source:           source,
 		Target:           target,
 		Message:          fmt.Sprintf("migrated project %s -> %s", source.Path(), target.Path()),
-		MigratedSessions: sessions,
-		MigratedMessages: messages,
-		MigratedMemories: memories,
+		MigratedSessions: migrationPlan.MigratedSessions,
+		MigratedMessages: migrationPlan.MigratedMessages,
+		MigratedMemories: migrationPlan.MigratedMemories,
 	}, nil
+}
+
+// execProjectMigrationStep executes one planned project-migration write and rejects affected-row drift before vector rebuild can start.
+// execProjectMigrationStep 用于执行一次已规划的项目迁移写入，并在向量重建开始前拦截影响行数漂移。
+func (s *Store) execProjectMigrationStep(ctx context.Context, operation string, expectedRows int, sql string, params ...any) error {
+	resp, err := s.execResult(ctx, sql, params...)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			return logicdomain.OutcomeUncertainError{
+				Operation: "migrate project path",
+				Message:   fmt.Sprintf("%s: %v", operation, err),
+			}
+		}
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	if resp.RowsChanged != int64(expectedRows) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: "migrate project path",
+			Message:   fmt.Sprintf("%s affected %d rows, want %d", operation, resp.RowsChanged, expectedRows),
+		}
+	}
+	return nil
+}
+
+// verifyProjectMigrationEndpoint reloads one migration endpoint under the write lock and rejects stale source or target identity before any rows move.
+// verifyProjectMigrationEndpoint 用于在写锁下重新读取迁移端点，并在任何行迁移前拒绝陈旧的源或目标身份。
+func (s *Store) verifyProjectMigrationEndpoint(ctx context.Context, role string, resolved logicdomain.ProjectRecord) (logicdomain.ProjectRecord, error) {
+	current, err := s.loadProjectByID(ctx, resolved.ID)
+	if err != nil {
+		return logicdomain.ProjectRecord{}, fmt.Errorf("reload %s project before migration: %w", role, err)
+	}
+	if !sameProjectIdentity(current, resolved) {
+		return logicdomain.ProjectRecord{}, logicdomain.ConflictError{
+			Resource: "project",
+			Message:  fmt.Sprintf("%s project changed before migration: resolved %s, current %s", role, resolved.Path(), current.Path()),
+		}
+	}
+	return current, nil
+}
+
+// sameProjectIdentity compares the stable hierarchy identity fields that prove two project records refer to the same durable node.
+// sameProjectIdentity 用于比较稳定的层级身份字段，确认两条项目记录指向同一个长期节点。
+func sameProjectIdentity(left, right logicdomain.ProjectRecord) bool {
+	return left.ID == right.ID &&
+		left.TeamID == right.TeamID &&
+		left.SpaceID == right.SpaceID &&
+		left.TeamName == right.TeamName &&
+		left.SpaceName == right.SpaceName &&
+		left.Name == right.Name &&
+		left.CreatedAt.Equal(right.CreatedAt)
+}
+
+// sameUserIdentity compares the stable user identity fields that prove one numeric user id was not deleted and reused.
+// sameUserIdentity 用于比较稳定的用户身份字段，确认一个数字 user id 没有被删除后复用。
+func sameUserIdentity(left, right logicdomain.UserRecord) bool {
+	return left.ID == right.ID &&
+		left.Name == right.Name &&
+		left.CreatedAt.Equal(right.CreatedAt)
 }
 
 // ResolveUserRef resolves either a numeric user id or a unique user name.
@@ -3150,19 +4644,22 @@ func (s *Store) EnsureUserName(ctx context.Context, userName string, confirmCrea
 
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
-	now := time.Now().UTC()
-	nextID, err := s.nextNumericID(ctx, "vmm_users")
-	if err != nil {
-		return logicdomain.UserResolveResult{}, fmt.Errorf("allocate user id: %w", err)
+
+	// Re-read under the write lock so duplicate in-process create requests converge to the existing row
+	// before allocating a new numeric id.
+	// 在写锁下重新读取，让进程内重复创建请求在分配新数字 ID 前收敛到已存在行。
+	if user, err := s.ResolveUserRef(ctx, userName); err == nil {
+		return logicdomain.UserResolveResult{User: user, Message: fmt.Sprintf("user %s already exists", user.Name), Exists: true}, nil
+	} else if !logicdomain.IsNotFoundError(err) {
+		return logicdomain.UserResolveResult{}, err
 	}
-	if err := s.exec(ctx, `
-INSERT INTO vmm_users (id, name, delete_confirm_code, created_at, updated_at)
-VALUES (?, ?, '', ?, ?)
-`, nextID, userName, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		return logicdomain.UserResolveResult{}, fmt.Errorf("insert user: %w", err)
+	now := time.Now().UTC()
+	user, err := s.insertUser(ctx, userName, now)
+	if err != nil {
+		return logicdomain.UserResolveResult{}, err
 	}
 	return logicdomain.UserResolveResult{
-		User:    logicdomain.UserRecord{ID: nextID, Name: userName, CreatedAt: now, UpdatedAt: now},
+		User:    user,
 		Message: fmt.Sprintf("user %s created", userName),
 		Created: true,
 	}, nil
@@ -3228,39 +4725,42 @@ func (s *Store) DeleteUserRef(ctx context.Context, userRef, confirmationCode str
 		return logicdomain.UserDeleteResult{}, err
 	}
 	nowMs := time.Now().UTC().UnixMilli()
-	if err := s.exec(ctx, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user profile nodes by bind: %w", err)
+
+	// mutated records whether a prior planned delete step has already changed durable rows in this autocommit sequence.
+	// mutated 用于记录此前规划删除步骤是否已经在本次自动提交序列中改变长期行。
+	mutated := false
+	// runDeleteStep executes one planned write and updates mutation state only after the affected-row check succeeds.
+	// runDeleteStep 用于执行一条规划写入，并且只在影响行数校验成功后更新写入状态。
+	runDeleteStep := func(operation string, expectedRows int, sql string, params ...any) error {
+		if err := s.execUserDeleteStep(ctx, operation, mutated, expectedRows, sql, params...); err != nil {
+			return err
+		}
+		mutated = mutated || expectedRows > 0
+		return nil
+	}
+
+	if err := runDeleteStep("delete user profile nodes by bind", deletePlan.DeletedProfiles, `DELETE FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeUser, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, err
 	}
 	// Detach surviving shared-scope profile facts from the user's historical turns before those turn rows disappear.
 	// These nodes must keep living under project/team/space scope, but they can no longer point at deleted turn ids.
 	// 在删除用户历史 turn 前，先把仍应保留的共享范围画像节点与原 turn 脱钩。
 	// 这些节点继续归属于 project/team/space，但不能再指向即将被删除的 turn id。
-	if err := s.exec(ctx, `
-UPDATE vmm_profile_nodes
-SET turn_id = NULL,
-    source_kind = ?,
-    source_id = ?,
-    status_reason = ?,
-    updated_timestamp = ?
-WHERE profile_type <> ? AND turn_id IN (
-  SELECT tr.id
-  FROM vmm_turn_records tr
-  JOIN vmm_sessions s ON s.id = tr.session_id
-  WHERE s.user_id = ?
-)`, logicdomain.ProfileSourceKindRetainedAfterUserDelete, currentUser.ID, "source user deleted; shared scope node retained without original turn binding", nowMs, logicdomain.ProfileTypeUser, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("detach surviving shared profile nodes from deleted user turns: %w", err)
+	detachSQL, detachParams := buildUserSharedProfileDetachUpdateSQL(currentUser.ID, nowMs)
+	if err := runDeleteStep("detach surviving shared profile nodes from deleted user turns", deletePlan.DetachedProfiles, detachSQL, detachParams...); err != nil {
+		return logicdomain.UserDeleteResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_memory_nodes WHERE user_id = ?`, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user memory nodes: %w", err)
+	if err := runDeleteStep("delete user memory nodes", deletePlan.DeletedMemories, `DELETE FROM vmm_memory_nodes WHERE user_id = ?`, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user turn records: %w", err)
+	if err := runDeleteStep("delete user turn records", deletePlan.DeletedMessages, `DELETE FROM vmm_turn_records WHERE session_id IN (SELECT id FROM vmm_sessions WHERE user_id = ?)`, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_sessions WHERE user_id = ?`, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user sessions: %w", err)
+	if err := runDeleteStep("delete user sessions", deletePlan.DeletedSessions, `DELETE FROM vmm_sessions WHERE user_id = ?`, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, err
 	}
-	if err := s.exec(ctx, `DELETE FROM vmm_users WHERE id = ?`, currentUser.ID); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete user row: %w", err)
+	if err := runDeleteStep("delete user row", deletePlan.DeletedUsers, `DELETE FROM vmm_users WHERE id = ?`, currentUser.ID); err != nil {
+		return logicdomain.UserDeleteResult{}, err
 	}
 	return logicdomain.UserDeleteResult{
 		User:            currentUser,
@@ -3271,6 +4771,22 @@ WHERE profile_type <> ? AND turn_id IN (
 		DeletedMemories: deletePlan.DeletedMemories,
 		DeletedProfiles: deletePlan.DeletedProfiles,
 	}, nil
+}
+
+// execUserDeleteStep executes one planned user-delete write and classifies execution errors by confirmed prior mutation before rejecting affected-row drift.
+// execUserDeleteStep 用于执行一次已规划的用户删除写入，并先按已确认的前序写入分类执行错误，再拦截影响行数漂移。
+func (s *Store) execUserDeleteStep(ctx context.Context, operation string, mutated bool, expectedRows int, sql string, params ...any) error {
+	resp, err := s.execResult(ctx, sql, params...)
+	if err != nil {
+		return sqliteWriteCommitOrPartialMutationError(mutated, "delete user ref", fmt.Errorf("%s: %w", operation, err))
+	}
+	if resp.RowsChanged != int64(expectedRows) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: "delete user ref",
+			Message:   fmt.Sprintf("%s affected %d rows, want %d", operation, resp.RowsChanged, expectedRows),
+		}
+	}
+	return nil
 }
 
 // ensureUserDeleteConfirmation makes the first delete step idempotent by generating one confirmation code only when the durable row still has none.
@@ -3295,10 +4811,41 @@ func (s *Store) ensureUserDeleteConfirmation(ctx context.Context, user logicdoma
 		if err != nil {
 			return logicdomain.UserDeleteResult{}, err
 		}
-		if err := s.exec(ctx, buildUserDeleteConfirmationSQL(currentUser.ID, code, time.Now().UTC().Format(time.RFC3339Nano))); err != nil {
-			return logicdomain.UserDeleteResult{}, fmt.Errorf("persist user delete confirmation code: %w", err)
+		confirmationStatement := parameterizedUserDeleteConfirmationStatement(currentUser.ID, code, time.Now().UTC().Format(time.RFC3339Nano))
+		resp, err := s.execResult(ctx, confirmationStatement.SQL, confirmationStatement.Params...)
+		if err != nil {
+			wrappedErr := fmt.Errorf("persist user delete confirmation code: %w", err)
+			classifiedErr := sqliteWriteCommitBoundaryError("persist user delete confirmation code", wrappedErr)
+			if !logicdomain.IsOutcomeUncertain(classifiedErr) {
+				return logicdomain.UserDeleteResult{}, wrappedErr
+			}
+			reconciledUser, reconciledCode, recovered, reconcileErr := s.reconcileUserDeleteConfirmationCode(ctx, currentUser.ID)
+			if reconcileErr != nil {
+				return logicdomain.UserDeleteResult{}, logicdomain.OutcomeUncertainError{
+					Operation: "persist user delete confirmation code",
+					Message:   classifiedErr.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if !recovered {
+				return logicdomain.UserDeleteResult{}, classifiedErr
+			}
+			currentUser = reconciledUser
+			code = reconciledCode
+		} else if resp.RowsChanged != 1 {
+			// Reload after a guarded no-op so idempotent confirmation returns the durable code written by the winning request.
+			// 受保护更新未命中时重新读取，让幂等确认流程返回获胜请求已经写入的长期确认码。
+			reconciledUser, reconciledCode, recovered, err := s.reconcileUserDeleteConfirmationCode(ctx, currentUser.ID)
+			if err != nil {
+				return logicdomain.UserDeleteResult{}, err
+			}
+			if !recovered {
+				return logicdomain.UserDeleteResult{}, fmt.Errorf("persist user delete confirmation code affected %d rows, want 1", resp.RowsChanged)
+			}
+			currentUser = reconciledUser
+			code = reconciledCode
+		} else {
+			currentUser.DeleteConfirmCode = code
 		}
-		currentUser.DeleteConfirmCode = code
 	}
 	return logicdomain.UserDeleteResult{
 		User:                 currentUser,
@@ -3306,6 +4853,20 @@ func (s *Store) ensureUserDeleteConfirmation(ctx context.Context, user logicdoma
 		RequiresConfirmation: true,
 		ConfirmationCode:     code,
 	}, nil
+}
+
+// reconcileUserDeleteConfirmationCode reloads the durable user row after an ambiguous or guarded first-phase write and accepts any stored confirmation code as the source of truth.
+// reconcileUserDeleteConfirmationCode 用于在第一阶段写入不明确或受保护更新未命中后重载长期用户行，并把任何已落库确认码作为真实结果。
+func (s *Store) reconcileUserDeleteConfirmationCode(ctx context.Context, userID uint64) (logicdomain.UserRecord, string, bool, error) {
+	currentUser, err := s.loadUserByID(ctx, userID)
+	if err != nil {
+		return logicdomain.UserRecord{}, "", false, err
+	}
+	code := strings.TrimSpace(currentUser.DeleteConfirmCode)
+	if code == "" {
+		return currentUser, "", false, nil
+	}
+	return currentUser, code, true, nil
 }
 
 // lookupTeamByName resolves one team name and reports whether it already exists.
@@ -3347,41 +4908,212 @@ LIMIT 1
 	return rows[0].toDomain(), true, nil
 }
 
-// insertTeam creates one missing team node under the write lock.
-// insertTeam 用于在写锁保护下创建缺失的 team 节点。
+// lookupProjectBySpaceAndName resolves one project under the locked Team/Space hierarchy and reports whether it already exists.
+// lookupProjectBySpaceAndName 用于在已加锁的 Team/Space 层级下解析单个 project，并返回它是否已经存在。
+func (s *Store) lookupProjectBySpaceAndName(ctx context.Context, team logicdomain.TeamRecord, space logicdomain.SpaceRecord, projectName string) (logicdomain.ProjectRecord, bool, error) {
+	rows, err := queryRows[projectJoinRow](s, ctx, `
+SELECT p.id, p.team_id, p.space_id, p.name, p.profile, p.created_at, p.updated_at,
+       t.name AS team_name,
+       sp.name AS space_name
+FROM vmm_projects p
+JOIN vmm_teams t ON t.id = p.team_id
+JOIN vmm_spaces sp ON sp.id = p.space_id
+WHERE p.space_id = ? AND p.name = ?
+LIMIT 1
+`, space.ID, projectName)
+	if err != nil {
+		return logicdomain.ProjectRecord{}, false, fmt.Errorf("lookup project: %w", err)
+	}
+	if len(rows) == 0 {
+		return logicdomain.ProjectRecord{}, false, nil
+	}
+	project := rows[0].toDomain()
+	if project.TeamID != team.ID || project.SpaceID != space.ID {
+		return logicdomain.ProjectRecord{}, false, logicdomain.ConflictError{Resource: "project", Message: fmt.Sprintf("project %s resolved outside expected team/space", projectName)}
+	}
+	return project, true, nil
+}
+
+// execInsertOneRow executes one durable create statement and classifies row-count drift by confirmed mutation state.
+// execInsertOneRow 用于执行一条长期创建语句，并按已确认写入状态分类行数漂移。
+func (s *Store) execInsertOneRow(ctx context.Context, operation string, sql string, params ...any) error {
+	resp, err := s.execResult(ctx, sql, params...)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			return logicdomain.OutcomeUncertainError{
+				Operation: operation,
+				Message:   err.Error(),
+			}
+		}
+		return fmt.Errorf("%s: %w", operation, err)
+	}
+	return sqliteAutocommitRowsChangedDriftError(operation, operation, resp.RowsChanged, 1)
+}
+
+// sqliteInsertCommitUnknownError reports whether one insert failure came from an ambiguous SQLite commit boundary instead of affected-row drift.
+// sqliteInsertCommitUnknownError 用于判断一次插入失败是否来自 SQLite 提交边界不明确，而不是影响行数漂移。
+func sqliteInsertCommitUnknownError(err error) bool {
+	return err != nil && logicdomain.IsOutcomeUncertain(err) && isSQLiteOutcomeUncertainError(err)
+}
+
+// insertSession creates one missing session row and reconciles ambiguous commits by the project-scoped session key.
+// insertSession 用于创建一条缺失的 session 行，并通过项目作用域内的 session key 对账提交结果不明的插入。
+func (s *Store) insertSession(ctx context.Context, sessionKey string, user logicdomain.UserRecord, project logicdomain.ProjectRecord, now time.Time) (logicdomain.SessionRecord, error) {
+	nextID, err := s.nextNumericID(ctx, "vmm_sessions")
+	if err != nil {
+		return logicdomain.SessionRecord{}, fmt.Errorf("allocate session id: %w", err)
+	}
+	nowMs := now.UnixMilli()
+	if err := s.execInsertOneRow(ctx, "insert session", `
+INSERT INTO vmm_sessions (
+  id, session_key, user_id, team_id, space_id, project_id,
+  turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+  last_extract_observed_timestamp, last_extract_completed_timestamp, last_compacted_timestamp,
+  created_timestamp, updated_timestamp
+) VALUES (?, ?, ?, ?, ?, ?, 0, 0, 0, '', 0, 0, 0, 0, ?, ?)
+`, nextID, sessionKey, user.ID, project.TeamID, project.SpaceID, project.ID, nowMs, nowMs); err != nil {
+		// Re-read the project-scoped unique key only when SQLite reports an ambiguous commit boundary, so ordinary insert failures stay retry-safe.
+		// 仅当 SQLite 报告提交边界不明确时才按项目作用域唯一键回读，确保普通插入失败仍保持可安全重试。
+		if sqliteInsertCommitUnknownError(err) {
+			recovered, ok, reconcileErr := s.lookupSessionByProjectAndKey(ctx, project.ID, sessionKey)
+			if reconcileErr != nil {
+				return logicdomain.SessionRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "insert session",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if ok {
+				return recovered, nil
+			}
+		}
+		return logicdomain.SessionRecord{}, err
+	}
+	return logicdomain.SessionRecord{
+		ID:                     nextID,
+		SessionKey:             sessionKey,
+		UserID:                 user.ID,
+		TeamID:                 project.TeamID,
+		SpaceID:                project.SpaceID,
+		ProjectID:              project.ID,
+		TurnCount:              0,
+		LastSummarizedID:       0,
+		LastCompactedTurnID:    0,
+		SummarizeContent:       "",
+		SummarizeBudget:        0,
+		LastExtractObservedAt:  time.Time{},
+		LastExtractCompletedAt: time.Time{},
+		LastCompactedAt:        time.Time{},
+		CreatedAt:              now,
+		UpdatedAt:              now,
+	}, nil
+}
+
+// insertUser creates one missing user row and reconciles ambiguous commits by the unique user name.
+// insertUser 用于创建一条缺失的 user 行，并通过唯一用户名对账提交结果不明的插入。
+func (s *Store) insertUser(ctx context.Context, userName string, now time.Time) (logicdomain.UserRecord, error) {
+	nextID, err := s.nextNumericID(ctx, "vmm_users")
+	if err != nil {
+		return logicdomain.UserRecord{}, fmt.Errorf("allocate user id: %w", err)
+	}
+	nowRFC3339 := now.Format(time.RFC3339Nano)
+	if err := s.execInsertOneRow(ctx, "insert user", `
+INSERT INTO vmm_users (id, name, delete_confirm_code, created_at, updated_at)
+VALUES (?, ?, '', ?, ?)
+`, nextID, userName, nowRFC3339, nowRFC3339); err != nil {
+		// Re-read the unique user name only after a commit-unknown insert, preserving the original uncertain error when the row never became durable.
+		// 仅在插入提交结果不明后回读唯一用户名；如果长期行并未落库，则保留原始结果不明错误。
+		if sqliteInsertCommitUnknownError(err) {
+			recovered, reconcileErr := s.ResolveUserRef(ctx, userName)
+			if reconcileErr != nil {
+				if logicdomain.IsNotFoundError(reconcileErr) {
+					return logicdomain.UserRecord{}, err
+				}
+				return logicdomain.UserRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "insert user",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			return recovered, nil
+		}
+		return logicdomain.UserRecord{}, err
+	}
+	return logicdomain.UserRecord{ID: nextID, Name: userName, CreatedAt: now, UpdatedAt: now}, nil
+}
+
+// insertTeam creates one missing team node under the write lock and reconciles ambiguous commits by the unique team name.
+// insertTeam 用于在写锁保护下创建缺失的 team 节点，并通过唯一 team 名称对账提交结果不明的插入。
 func (s *Store) insertTeam(ctx context.Context, teamName string, now time.Time) (logicdomain.TeamRecord, error) {
 	nextID, err := s.nextNumericID(ctx, "vmm_teams")
 	if err != nil {
 		return logicdomain.TeamRecord{}, fmt.Errorf("allocate team id: %w", err)
 	}
-	if err := s.exec(ctx, `INSERT INTO vmm_teams (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`, nextID, teamName, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		return logicdomain.TeamRecord{}, fmt.Errorf("insert team: %w", err)
+	nowRFC3339 := now.Format(time.RFC3339Nano)
+	if err := s.execInsertOneRow(ctx, "insert team", `INSERT INTO vmm_teams (id, name, created_at, updated_at) VALUES (?, ?, ?, ?)`, nextID, teamName, nowRFC3339, nowRFC3339); err != nil {
+		if sqliteInsertCommitUnknownError(err) {
+			recovered, ok, reconcileErr := s.lookupTeamByName(ctx, teamName)
+			if reconcileErr != nil {
+				return logicdomain.TeamRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "insert team",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if ok {
+				return recovered, nil
+			}
+		}
+		return logicdomain.TeamRecord{}, err
 	}
 	return logicdomain.TeamRecord{ID: nextID, Name: teamName, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-// insertSpace creates one missing space node under an existing team.
-// insertSpace 用于在已存在的 team 下创建缺失的 space 节点。
+// insertSpace creates one missing space node under an existing team and reconciles ambiguous commits by the team/name unique key.
+// insertSpace 用于在已存在的 team 下创建缺失的 space 节点，并通过 team/name 唯一键对账提交结果不明的插入。
 func (s *Store) insertSpace(ctx context.Context, teamID uint64, spaceName string, now time.Time) (logicdomain.SpaceRecord, error) {
 	nextID, err := s.nextNumericID(ctx, "vmm_spaces")
 	if err != nil {
 		return logicdomain.SpaceRecord{}, fmt.Errorf("allocate space id: %w", err)
 	}
-	if err := s.exec(ctx, `INSERT INTO vmm_spaces (id, team_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, nextID, teamID, spaceName, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		return logicdomain.SpaceRecord{}, fmt.Errorf("insert space: %w", err)
+	nowRFC3339 := now.Format(time.RFC3339Nano)
+	if err := s.execInsertOneRow(ctx, "insert space", `INSERT INTO vmm_spaces (id, team_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?)`, nextID, teamID, spaceName, nowRFC3339, nowRFC3339); err != nil {
+		if sqliteInsertCommitUnknownError(err) {
+			recovered, ok, reconcileErr := s.lookupSpaceByName(ctx, teamID, spaceName, true)
+			if reconcileErr != nil {
+				return logicdomain.SpaceRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "insert space",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if ok {
+				return recovered, nil
+			}
+		}
+		return logicdomain.SpaceRecord{}, err
 	}
 	return logicdomain.SpaceRecord{ID: nextID, TeamID: teamID, Name: spaceName, CreatedAt: now, UpdatedAt: now}, nil
 }
 
-// insertProject creates one missing project node under the resolved Team/Space hierarchy.
-// insertProject 用于在已解析的 Team/Space 层级下创建缺失的 project 节点。
+// insertProject creates one missing project node under the resolved Team/Space hierarchy and reconciles ambiguous commits by the scoped project name.
+// insertProject 用于在已解析的 Team/Space 层级下创建缺失的 project 节点，并通过范围内 project 名称对账提交结果不明的插入。
 func (s *Store) insertProject(ctx context.Context, team logicdomain.TeamRecord, space logicdomain.SpaceRecord, projectName string, now time.Time) (logicdomain.ProjectRecord, error) {
 	nextID, err := s.nextNumericID(ctx, "vmm_projects")
 	if err != nil {
 		return logicdomain.ProjectRecord{}, fmt.Errorf("allocate project id: %w", err)
 	}
-	if err := s.exec(ctx, `INSERT INTO vmm_projects (id, team_id, space_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, nextID, team.ID, space.ID, projectName, now.Format(time.RFC3339Nano), now.Format(time.RFC3339Nano)); err != nil {
-		return logicdomain.ProjectRecord{}, fmt.Errorf("insert project: %w", err)
+	nowRFC3339 := now.Format(time.RFC3339Nano)
+	if err := s.execInsertOneRow(ctx, "insert project", `INSERT INTO vmm_projects (id, team_id, space_id, name, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?)`, nextID, team.ID, space.ID, projectName, nowRFC3339, nowRFC3339); err != nil {
+		if sqliteInsertCommitUnknownError(err) {
+			recovered, ok, reconcileErr := s.lookupProjectBySpaceAndName(ctx, team, space, projectName)
+			if reconcileErr != nil {
+				return logicdomain.ProjectRecord{}, logicdomain.OutcomeUncertainError{
+					Operation: "insert project",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if ok {
+				return recovered, nil
+			}
+		}
+		return logicdomain.ProjectRecord{}, err
 	}
 	return logicdomain.ProjectRecord{
 		ID:        nextID,
@@ -3458,14 +5190,34 @@ type projectDeletePlan struct {
 	DeletedProfiles int
 }
 
-// userDeletePlan records the exact row categories that one user deletion will remove.
-// userDeletePlan 用于记录一次用户删除将真正移除的行类别。
+// projectMigrationPlan records the exact source rows that one confirmed project migration must move before vector rebuild starts.
+// projectMigrationPlan 用于记录一次已确认项目迁移在向量重建开始前必须移动的精确源行。
+type projectMigrationPlan struct {
+	// MigratedSessions records session rows whose hierarchy ids move to the target project.
+	// MigratedSessions 用于记录层级 ID 会迁移到目标项目的 session 行数。
+	MigratedSessions int
+	// MigratedMessages records turn rows whose project id moves to the target project.
+	// MigratedMessages 用于记录 project id 会迁移到目标项目的 turn 行数。
+	MigratedMessages int
+	// MigratedMemories records SQL-backed memory rows whose project scope moves to the target project.
+	// MigratedMemories 用于记录项目范围会迁移到目标项目的 SQL 侧 memory 行数。
+	MigratedMemories int
+	// MigratedProfiles records project-scope profile nodes rebound from the source project to the target project.
+	// MigratedProfiles 用于记录从源项目重新绑定到目标项目的项目级画像节点数。
+	MigratedProfiles int
+}
+
+// userDeletePlan records the exact row categories that one user deletion will remove or detach before turn rows disappear.
+// userDeletePlan 用于记录一次用户删除将真正移除的行类别，以及 turn 行消失前必须脱钩的共享画像数量。
 type userDeletePlan struct {
 	DeletedUsers    int
 	DeletedSessions int
 	DeletedMessages int
 	DeletedMemories int
 	DeletedProfiles int
+	// DetachedProfiles records shared-scope profile nodes whose turn references must be cleared before deleting the user turns.
+	// DetachedProfiles 用于记录在删除用户 turn 前必须清除 turn 引用的共享范围画像节点数量。
+	DetachedProfiles int
 }
 
 // planProjectDelete computes the concrete delete counts and empty-parent cascade decisions for one resolved project.
@@ -3509,6 +5261,25 @@ func (s *Store) planProjectDelete(ctx context.Context, project logicdomain.Proje
 	return plan, nil
 }
 
+// planProjectMigration computes the concrete migration counts for one resolved source project, including project-bound profile nodes that are moved internally but not exposed in the public RPC summary.
+// planProjectMigration 用于为一个已解析源项目计算实际迁移计数，包括内部迁移但不暴露到公开 RPC 摘要中的项目绑定画像节点。
+func (s *Store) planProjectMigration(ctx context.Context, sourceProjectID uint64) (projectMigrationPlan, error) {
+	sessions, messages, memories, err := s.countProjectRows(ctx, sourceProjectID)
+	if err != nil {
+		return projectMigrationPlan{}, err
+	}
+	profiles, err := s.countRows(ctx, `SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE profile_type = ? AND bind_id = ?`, logicdomain.ProfileTypeProject, sourceProjectID)
+	if err != nil {
+		return projectMigrationPlan{}, fmt.Errorf("count project migration profile nodes: %w", err)
+	}
+	return projectMigrationPlan{
+		MigratedSessions: sessions,
+		MigratedMessages: messages,
+		MigratedMemories: memories,
+		MigratedProfiles: profiles,
+	}, nil
+}
+
 // planUserDelete computes the concrete delete counts for one resolved user while excluding shared-scope profile nodes
 // that are retained after the user and their turns disappear.
 // planUserDelete 用于为一个已解析用户计算实际删除计数，并排除那些会在用户和其 turn 删除后仍被保留的共享范围画像节点。
@@ -3521,13 +5292,59 @@ func (s *Store) planUserDelete(ctx context.Context, userID uint64) (userDeletePl
 	if err != nil {
 		return userDeletePlan{}, fmt.Errorf("count user profile nodes: %w", err)
 	}
+	detachSQL, detachParams := buildUserSharedProfileDetachCountSQL(userID)
+	detachedProfiles, err := s.countRows(ctx, detachSQL, detachParams...)
+	if err != nil {
+		return userDeletePlan{}, fmt.Errorf("count shared profile nodes detached from deleted user turns: %w", err)
+	}
 	return userDeletePlan{
-		DeletedUsers:    1,
-		DeletedSessions: sessions,
-		DeletedMessages: messages,
-		DeletedMemories: memories,
-		DeletedProfiles: deletedProfiles,
+		DeletedUsers:     1,
+		DeletedSessions:  sessions,
+		DeletedMessages:  messages,
+		DeletedMemories:  memories,
+		DeletedProfiles:  deletedProfiles,
+		DetachedProfiles: detachedProfiles,
 	}, nil
+}
+
+// buildUserSharedProfileDetachCountSQL renders the COUNT query for shared profile nodes that will survive a user delete but must lose their source turn pointer.
+// buildUserSharedProfileDetachCountSQL 用于渲染共享画像节点脱钩前的 COUNT 查询，这些节点会在用户删除后保留但必须失去源 turn 指针。
+func buildUserSharedProfileDetachCountSQL(userID uint64) (string, []any) {
+	whereSQL, params := buildUserSharedProfileDetachWhere(userID)
+	return fmt.Sprintf("SELECT COUNT(*) AS count FROM vmm_profile_nodes WHERE %s", whereSQL), params
+}
+
+// buildUserSharedProfileDetachUpdateSQL renders the UPDATE that detaches surviving shared profile nodes from turns owned by the deleted user.
+// buildUserSharedProfileDetachUpdateSQL 用于渲染共享画像节点脱钩 UPDATE，将保留节点与被删除用户拥有的 turn 断开。
+func buildUserSharedProfileDetachUpdateSQL(userID uint64, nowMs int64) (string, []any) {
+	whereSQL, whereParams := buildUserSharedProfileDetachWhere(userID)
+	params := []any{
+		logicdomain.ProfileSourceKindRetainedAfterUserDelete,
+		userID,
+		"source user deleted; shared scope node retained without original turn binding",
+		nowMs,
+	}
+	params = append(params, whereParams...)
+	return fmt.Sprintf(`
+UPDATE vmm_profile_nodes
+SET turn_id = NULL,
+    source_kind = ?,
+    source_id = ?,
+    status_reason = ?,
+    updated_timestamp = ?
+WHERE %s
+`, whereSQL), params
+}
+
+// buildUserSharedProfileDetachWhere centralizes the shared-profile predicate so the detach count and update cannot drift apart.
+// buildUserSharedProfileDetachWhere 用于集中维护共享画像脱钩条件，避免脱钩计数与实际 UPDATE 范围发生漂移。
+func buildUserSharedProfileDetachWhere(userID uint64) (string, []any) {
+	return `profile_type <> ? AND turn_id IN (
+  SELECT tr.id
+  FROM vmm_turn_records tr
+  JOIN vmm_sessions s ON s.id = tr.session_id
+  WHERE s.user_id = ?
+)`, []any{logicdomain.ProfileTypeUser, userID}
 }
 
 // buildProjectProfileNodesDeleteSQL renders one raw DELETE that removes every profile node
@@ -3696,41 +5513,74 @@ func buildDehydratedTurn(turn logicdomain.TurnRecord) (string, int, error) {
 	return string(body), estimator.Estimate(string(body)), nil
 }
 
-// buildTurnInsertSQL renders one raw INSERT statement so the gateway avoids the buggy optional-pointer update path seen during debug runs.
-// buildTurnInsertSQL 用于渲染原始 INSERT 语句，让网关绕开调试阶段已出现过的 optional-pointer 更新故障路径。
+// parameterizedTurnInsertStatement returns one turn INSERT with dehydrated JSON bound as a typed SQLite param.
+// parameterizedTurnInsertStatement 用于返回 turn 插入语句，并把脱水 JSON 作为强类型 SQLite 参数绑定。
 // The dehydrated payload stays as JSON text on purpose so OSS-local boot no longer depends on SQLite's json extension.
 // 脱水载荷会刻意以 JSON 文本形式保存，避免 OSS 本地版启动继续依赖 SQLite 的 json 扩展。
-func buildTurnInsertSQL(id, sessionID, projectID uint64, dehydratedContent string, dehydratedBudget int, createdMs, updatedMs int64) string {
-	return fmt.Sprintf(`
+func parameterizedTurnInsertStatement(id, sessionID, projectID uint64, dehydratedContent string, dehydratedBudget int, createdMs, updatedMs int64) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
 INSERT INTO vmm_turn_records (
   id, session_id, project_id, dehydrated_content, dehydrated_budget, extracted_status, created_timestamp, updated_timestamp
-) VALUES (%d, %d, %d, %s, %d, 0, %d, %d)
-`, id, sessionID, projectID, sqlStringLiteral(dehydratedContent), dehydratedBudget, createdMs, updatedMs)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+`,
+		Params: []any{id, sessionID, projectID, strings.TrimSpace(dehydratedContent), dehydratedBudget, logicdomain.TurnExtractedStatusPending, createdMs, updatedMs},
+	}
 }
 
-// buildSessionTurnUpdateSQL renders one raw UPDATE that increments the turn counter and the unsummarized token budget after a turn row is inserted successfully.
-// buildSessionTurnUpdateSQL 用于渲染原始 UPDATE，在 turn 行成功插入后同步递增 turn 计数和未总结 token 预算。
-func buildSessionTurnUpdateSQL(sessionID uint64, addedBudget int, updatedMs int64) string {
-	return fmt.Sprintf(`
+// parameterizedSessionTurnUpdateStatement returns the absolute session counter UPDATE paired after a durable turn append.
+// parameterizedSessionTurnUpdateStatement 用于返回跟随 turn 持久化追加之后执行的绝对 session 计数更新语句。
+func parameterizedSessionTurnUpdateStatement(sessionID uint64, turnCount, summarizeBudget int, updatedMs int64) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
 UPDATE vmm_sessions
-SET turn_count = turn_count + 1, summarize_budget = summarize_budget + %d, updated_timestamp = %d
-WHERE id = %d
-`, addedBudget, updatedMs, sessionID)
+SET turn_count = ?, summarize_budget = ?,
+    updated_timestamp = CASE
+      WHEN updated_timestamp < ? THEN ? ELSE updated_timestamp
+    END
+WHERE id = ?;
+`,
+		Params: []any{turnCount, summarizeBudget, updatedMs, updatedMs, sessionID},
+	}
 }
 
-// buildTurnAnalysisUpdateSQL renders the raw UPDATE used to store the extracted turn summary and mark the turn as processed.
-// buildTurnAnalysisUpdateSQL 用于渲染原始 UPDATE 语句，把提炼出的 turn 总结写回并标记该 turn 已处理。
-func buildTurnAnalysisUpdateSQL(turnID uint64, details string, detailsBudget int, updatedMs int64) string {
-	return fmt.Sprintf(`
+// parameterizedSessionExtractWindowUpdateStatement returns the monotonic extract-window checkpoint UPDATE for one resolved session.
+// parameterizedSessionExtractWindowUpdateStatement 用于返回单个已解析 session 的单调提炼窗口检查点 UPDATE。
+func parameterizedSessionExtractWindowUpdateStatement(sessionID uint64, observedMs, completedMs, updatedMs int64) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
+UPDATE vmm_sessions
+SET last_extract_observed_timestamp = CASE
+      WHEN last_extract_observed_timestamp < ? THEN ? ELSE last_extract_observed_timestamp
+    END,
+    last_extract_completed_timestamp = CASE
+      WHEN last_extract_completed_timestamp < ? THEN ? ELSE last_extract_completed_timestamp
+    END,
+    updated_timestamp = CASE
+      WHEN updated_timestamp < ? THEN ? ELSE updated_timestamp
+    END
+WHERE id = ?;
+`,
+		Params: []any{observedMs, observedMs, completedMs, completedMs, updatedMs, updatedMs, sessionID},
+	}
+}
+
+// parameterizedTurnAnalysisUpdateStatement returns the pending-turn update guarded by current session ownership with extracted details bound as typed SQLite params.
+// parameterizedTurnAnalysisUpdateStatement 用于返回受当前 session 归属保护的 pending turn 更新语句，并把提炼详情作为强类型 SQLite 参数绑定。
+func parameterizedTurnAnalysisUpdateStatement(sessionID, turnID uint64, details string, detailsBudget int, updatedMs int64) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
 UPDATE vmm_turn_records
-SET details = %s, details_budget = %d, extracted_status = %d, updated_timestamp = %d
-WHERE id = %d;
-`, sqlStringLiteral(details), detailsBudget, logicdomain.TurnExtractedStatusDone, updatedMs, turnID)
+SET details = ?, details_budget = ?, extracted_status = ?, updated_timestamp = ?
+WHERE id = ? AND session_id = ? AND extracted_status = ?;
+`,
+		Params: []any{strings.TrimSpace(details), detailsBudget, logicdomain.TurnExtractedStatusDone, updatedMs, turnID, sessionID, logicdomain.TurnExtractedStatusPending},
+	}
 }
 
-// buildMemoryNodeInsertSQL renders the raw INSERT used for one unified durable memory row so turn extraction and direct-write paths share the same relational schema.
-// buildMemoryNodeInsertSQL 用于渲染统一长期记忆行的原始 INSERT 语句，让 turn 提炼和主动写入共用同一套关系表结构。
-func buildMemoryNodeInsertSQL(record logicdomain.MemoryNodeRecord) string {
+// parameterizedMemoryNodeInsertStatement returns the unified memory INSERT used by post-action and direct-write paths with text fields bound outside the SQL template.
+// parameterizedMemoryNodeInsertStatement 用于返回 post-action 与主动写路径使用的统一记忆 INSERT，并把文本字段绑定在 SQL 模板之外。
+func parameterizedMemoryNodeInsertStatement(record logicdomain.MemoryNodeRecord) sqliteWriteStatement {
 	expiresMs := int64(0)
 	if !record.ExpiresAt.IsZero() {
 		expiresMs = record.ExpiresAt.UTC().UnixMilli()
@@ -3747,8 +5597,12 @@ func buildMemoryNodeInsertSQL(record logicdomain.MemoryNodeRecord) string {
 	if !record.LastReinforcedAt.IsZero() {
 		lastReinforcedMs = record.LastReinforcedAt.UTC().UnixMilli()
 	}
-	vectorJSON := encodeFloat32Slice(record.Vector)
-	return fmt.Sprintf(`
+	var sourceTurnIDParam any
+	if record.SourceTurnID != 0 {
+		sourceTurnIDParam = record.SourceTurnID
+	}
+	return sqliteWriteStatement{
+		SQL: `
 INSERT INTO vmm_memory_nodes (
   id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
   vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -3756,13 +5610,44 @@ INSERT INTO vmm_memory_nodes (
   expires_timestamp, last_recalled_timestamp, last_adopted_timestamp, last_reinforced_timestamp,
   recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
   created_timestamp, updated_timestamp
-) VALUES (%d, %d, %d, %d, %d, %d, %s, %s, %s, %d, %d, %d, %s, %s, %d, %d, %d, %d, %d, %d, %s, %d, %d, %d, %d, %d, %d, %d, %d, %d, %s, %d, %d);
-`, record.ID, record.TeamID, record.SpaceID, record.ProjectID, record.UserID, record.OriginSessionID, sqlNullableUint64(nullableUint64(record.SourceTurnID)),
-		sqlStringLiteral(strings.TrimSpace(record.VectorID)), sqlStringLiteral(vectorJSON), record.SourceKind, record.ScopeLevel, record.Category,
-		sqlStringLiteral(strings.TrimSpace(record.Abstract)), sqlStringLiteral(strings.TrimSpace(record.Details)),
-		record.Status, record.Priority, record.MemoryLevel, record.RefreshWeight, record.SupportCount, record.RebuttalCount, sqlStringLiteral(strings.TrimSpace(record.StatusReason)),
-		expiresMs, lastRecalledMs, lastAdoptedMs, lastReinforcedMs, record.RecalledCount, record.AdoptedCount, record.ReinforcementCount, record.CrossSessionAdoptedCount,
-		boolToSQLiteInt(record.DecayDisabled), sqlStringLiteral(strings.TrimSpace(record.DedupeHash)), record.CreatedAt.UTC().UnixMilli(), record.UpdatedAt.UTC().UnixMilli())
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+`,
+		Params: []any{
+			record.ID,
+			record.TeamID,
+			record.SpaceID,
+			record.ProjectID,
+			record.UserID,
+			record.OriginSessionID,
+			sourceTurnIDParam,
+			strings.TrimSpace(record.VectorID),
+			encodeFloat32Slice(record.Vector),
+			record.SourceKind,
+			record.ScopeLevel,
+			record.Category,
+			strings.TrimSpace(record.Abstract),
+			strings.TrimSpace(record.Details),
+			record.Status,
+			record.Priority,
+			record.MemoryLevel,
+			record.RefreshWeight,
+			record.SupportCount,
+			record.RebuttalCount,
+			strings.TrimSpace(record.StatusReason),
+			expiresMs,
+			lastRecalledMs,
+			lastAdoptedMs,
+			lastReinforcedMs,
+			record.RecalledCount,
+			record.AdoptedCount,
+			record.ReinforcementCount,
+			record.CrossSessionAdoptedCount,
+			boolToSQLiteInt(record.DecayDisabled),
+			strings.TrimSpace(record.DedupeHash),
+			record.CreatedAt.UTC().UnixMilli(),
+			record.UpdatedAt.UTC().UnixMilli(),
+		},
+	}
 }
 
 // ensureBuiltinMemoryFTS ensures the built-in SQLite FTS index exists and rebuilds it when the configured tokenizer mode changes.
@@ -3778,12 +5663,46 @@ func (s *Store) ensureBuiltinMemoryFTS(ctx context.Context) error {
 	if err != nil {
 		return fmt.Errorf("ensure sqlite builtin fts index: %w", err)
 	}
+	if err := sqliteFTSEnsureResultError("ensure sqlite builtin fts index", result); err != nil {
+		return err
+	}
 	if result.TokenizerMode != s.tokenizerMode {
-		if _, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode); err != nil {
+		rebuildResult, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode)
+		if err != nil {
 			return fmt.Errorf("rebuild sqlite builtin fts index: %w", err)
+		}
+		if err := sqliteFTSRebuildResultError("rebuild sqlite builtin fts index", rebuildResult); err != nil {
+			return err
 		}
 	}
 	return checkSQLiteContext(ctx)
+}
+
+// sqliteFTSEnsureResultError converts an unsuccessful ensure result into a boundary error before callers trust tokenizer metadata.
+// sqliteFTSEnsureResultError 用于在调用方信任分词器元数据前，把 ensure 返回的失败结果位转换为边界错误。
+func sqliteFTSEnsureResultError(stage string, result sqliteffi.EnsureFtsIndexResult) error {
+	if result.Success {
+		return nil
+	}
+	return fmt.Errorf("%s reported unsuccessful result", strings.TrimSpace(stage))
+}
+
+// sqliteFTSRebuildResultError converts an unsuccessful rebuild result into a boundary error so full-index recovery cannot report success on a failed FFI result.
+// sqliteFTSRebuildResultError 用于把 rebuild 返回的失败结果位转换为边界错误，避免全量索引恢复在 FFI 失败时被误判为成功。
+func sqliteFTSRebuildResultError(stage string, result sqliteffi.RebuildFtsIndexResult) error {
+	if result.Success {
+		return nil
+	}
+	return fmt.Errorf("%s reported unsuccessful result", strings.TrimSpace(stage))
+}
+
+// sqliteFTSMutationResultError converts an unsuccessful incremental mutation result into a boundary error before the relational/FTS write is considered synchronized.
+// sqliteFTSMutationResultError 用于在关系表与 FTS 写入被视为同步前，把增量变更返回的失败结果位转换为边界错误。
+func sqliteFTSMutationResultError(stage string, result sqliteffi.FtsMutationResult) error {
+	if result.Success {
+		return nil
+	}
+	return fmt.Errorf("%s reported unsuccessful result", strings.TrimSpace(stage))
 }
 
 // syncMemoryFTSAfterWrite synchronizes inserted and deleted memory rows into the built-in SQLite FTS index and falls back to a full rebuild when incremental sync fails.
@@ -3799,20 +5718,28 @@ func (s *Store) syncMemoryFTSAfterWrite(ctx context.Context, inserted []logicdom
 		return nil
 	}
 	for _, record := range inserted {
-		if _, err := s.database.UpsertFtsDocument(
+		result, err := s.database.UpsertFtsDocument(
 			s.ftsIndexName,
 			s.tokenizerMode,
 			strconv.FormatUint(record.ID, 10),
 			record.VectorID,
 			strings.TrimSpace(record.Abstract),
 			strings.TrimSpace(record.Details),
-		); err != nil {
+		)
+		if err != nil {
 			return s.rebuildMemoryFTSWithFallback(ctx, fmt.Errorf("upsert sqlite memory fts document %d: %w", record.ID, err))
+		}
+		if err := sqliteFTSMutationResultError(fmt.Sprintf("upsert sqlite memory fts document %d", record.ID), result); err != nil {
+			return s.rebuildMemoryFTSWithFallback(ctx, err)
 		}
 	}
 	for _, memoryID := range normalizeUint64List(deletedMemoryIDs) {
-		if _, err := s.database.DeleteFtsDocument(s.ftsIndexName, strconv.FormatUint(memoryID, 10)); err != nil {
+		result, err := s.database.DeleteFtsDocument(s.ftsIndexName, strconv.FormatUint(memoryID, 10))
+		if err != nil {
 			return s.rebuildMemoryFTSWithFallback(ctx, fmt.Errorf("delete sqlite memory fts document %d: %w", memoryID, err))
+		}
+		if err := sqliteFTSMutationResultError(fmt.Sprintf("delete sqlite memory fts document %d", memoryID), result); err != nil {
+			return s.rebuildMemoryFTSWithFallback(ctx, err)
 		}
 	}
 	return checkSQLiteContext(ctx)
@@ -3821,24 +5748,31 @@ func (s *Store) syncMemoryFTSAfterWrite(ctx context.Context, inserted []logicdom
 // rebuildMemoryFTSWithFallback rebuilds the full built-in FTS index so relational/FTS consistency can self-heal after one incremental mutation fails.
 // rebuildMemoryFTSWithFallback 用于重建整个内建 FTS 索引，让关系表与 FTS 在单次增量同步失败后能够自愈。
 func (s *Store) rebuildMemoryFTSWithFallback(ctx context.Context, cause error) error {
-	if _, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode); err != nil {
+	result, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode)
+	if err != nil {
+		return fmt.Errorf("%w; rebuild sqlite builtin fts index also failed: %v", cause, err)
+	}
+	if err := sqliteFTSRebuildResultError("rebuild sqlite builtin fts index", result); err != nil {
 		return fmt.Errorf("%w; rebuild sqlite builtin fts index also failed: %v", cause, err)
 	}
 	return cause
 }
 
-// buildMemoryContextEdgesReplaceSQL rewrites one memory row's contextual evidence edges in one deterministic script so later contextual retrieval can trust relational support/rebuttal stats.
-// buildMemoryContextEdgesReplaceSQL 用于以确定性脚本重写某条记忆的情境证据边，让后续情境检索能够信赖关系层的支持/反驳统计。
-func buildMemoryContextEdgesReplaceSQL(memoryID uint64, edges []logicdomain.MemoryContextEdge) string {
+// parameterizedMemoryContextEdgesReplaceStatements returns the delete-then-insert edge rewrite used after a memory node write.
+// parameterizedMemoryContextEdgesReplaceStatements 用于返回记忆节点写入后的先删后插情境边重写语句。
+func parameterizedMemoryContextEdgesReplaceStatements(memoryID uint64, edges []logicdomain.MemoryContextEdge) []sqliteWriteStatement {
 	if memoryID == 0 {
-		return ""
+		return nil
 	}
-	script := fmt.Sprintf(`
+	statements := []sqliteWriteStatement{{
+		SQL: `
 DELETE FROM vmm_memory_context_edges
-WHERE memory_id = %d;
-`, memoryID)
+WHERE memory_id = ?;
+`,
+		Params: []any{memoryID},
+	}}
 	for _, edge := range edges {
-		if edge.MemoryID == 0 || strings.TrimSpace(edge.ContextKey) == "" || strings.TrimSpace(edge.ContextValue) == "" {
+		if strings.TrimSpace(edge.ContextKey) == "" || strings.TrimSpace(edge.ContextValue) == "" {
 			continue
 		}
 		lastSupportedMs := int64(0)
@@ -3849,20 +5783,34 @@ WHERE memory_id = %d;
 		if !edge.LastRebuttedAt.IsZero() {
 			lastRebuttedMs = edge.LastRebuttedAt.UTC().UnixMilli()
 		}
-		script += fmt.Sprintf(`
+		// Bind the contextual labels because they are extracted text, while the durable owner remains the outer memoryID.
+		// 绑定情境标签文本，因为它们来自提炼结果；长期归属仍以外层 memoryID 为准。
+		statements = append(statements, sqliteWriteStatement{
+			SQL: `
 INSERT INTO vmm_memory_context_edges (
   memory_id, context_key, context_value, support_count, rebuttal_count,
   last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
-) VALUES (%d, %s, %s, %d, %d, %d, %d, %d, %d);
-`, edge.MemoryID, sqlStringLiteral(strings.TrimSpace(edge.ContextKey)), sqlStringLiteral(strings.TrimSpace(edge.ContextValue)),
-			edge.SupportCount, edge.RebuttalCount, lastSupportedMs, lastRebuttedMs, edge.CreatedAt.UTC().UnixMilli(), edge.UpdatedAt.UTC().UnixMilli())
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
+`,
+			Params: []any{
+				memoryID,
+				strings.TrimSpace(edge.ContextKey),
+				strings.TrimSpace(edge.ContextValue),
+				edge.SupportCount,
+				edge.RebuttalCount,
+				lastSupportedMs,
+				lastRebuttedMs,
+				edge.CreatedAt.UTC().UnixMilli(),
+				edge.UpdatedAt.UTC().UnixMilli(),
+			},
+		})
 	}
-	return script
+	return statements
 }
 
-// buildMemoryAdoptionUpdateSQL renders one raw UPDATE for a memory row that has just been adopted by pre-check.
-// buildMemoryAdoptionUpdateSQL 用于渲染一条刚被 pre-check 采纳的记忆行更新语句。
-func buildMemoryAdoptionUpdateSQL(record logicdomain.MemoryNodeRecord) string {
+// parameterizedMemoryAdoptionUpdateStatement returns one typed UPDATE for a memory row that has just been adopted by pre-check.
+// parameterizedMemoryAdoptionUpdateStatement 用于返回一条刚被 pre-check 采纳的记忆行强类型更新语句。
+func parameterizedMemoryAdoptionUpdateStatement(record logicdomain.MemoryNodeRecord) sqliteWriteStatement {
 	expiresMs := int64(0)
 	if !record.ExpiresAt.IsZero() {
 		expiresMs = record.ExpiresAt.UTC().UnixMilli()
@@ -3879,56 +5827,84 @@ func buildMemoryAdoptionUpdateSQL(record logicdomain.MemoryNodeRecord) string {
 	if !record.LastReinforcedAt.IsZero() {
 		lastReinforcedMs = record.LastReinforcedAt.UTC().UnixMilli()
 	}
-	return fmt.Sprintf(`
+	return sqliteWriteStatement{
+		SQL: `
 UPDATE vmm_memory_nodes
-SET scope_level = %d,
-    memory_status = %d,
-    memory_level = %d,
-    refresh_weight = %d,
-    expires_timestamp = %d,
-    last_recalled_timestamp = %d,
-    last_adopted_timestamp = %d,
-    last_reinforced_timestamp = %d,
-    recalled_count = %d,
-    adopted_count = %d,
-    reinforcement_count = %d,
-    cross_session_adopted_count = %d,
-    decay_disabled = %d,
-    updated_timestamp = %d
-WHERE id = %d;
-`, record.ScopeLevel, record.Status, record.MemoryLevel, record.RefreshWeight, expiresMs, lastRecalledMs, lastAdoptedMs, lastReinforcedMs,
-		record.RecalledCount, record.AdoptedCount, record.ReinforcementCount, record.CrossSessionAdoptedCount, boolToSQLiteInt(record.DecayDisabled), record.UpdatedAt.UTC().UnixMilli(), record.ID)
+SET scope_level = ?,
+    memory_status = ?,
+    memory_level = ?,
+    refresh_weight = ?,
+    expires_timestamp = ?,
+    last_recalled_timestamp = ?,
+    last_adopted_timestamp = ?,
+    last_reinforced_timestamp = ?,
+    recalled_count = ?,
+    adopted_count = ?,
+    reinforcement_count = ?,
+    cross_session_adopted_count = ?,
+    decay_disabled = ?,
+    updated_timestamp = ?
+WHERE id = ?;
+`,
+		Params: []any{
+			record.ScopeLevel,
+			record.Status,
+			record.MemoryLevel,
+			record.RefreshWeight,
+			expiresMs,
+			lastRecalledMs,
+			lastAdoptedMs,
+			lastReinforcedMs,
+			record.RecalledCount,
+			record.AdoptedCount,
+			record.ReinforcementCount,
+			record.CrossSessionAdoptedCount,
+			boolToSQLiteInt(record.DecayDisabled),
+			record.UpdatedAt.UTC().UnixMilli(),
+			record.ID,
+		},
+	}
 }
 
-// buildProfileNodeInsertSQL renders the raw INSERT used for one extracted profile node together with its lifecycle metadata and final status.
-// buildProfileNodeInsertSQL 用于渲染单条画像节点的原始 INSERT 语句，并携带生命周期元数据和最终状态。
-func buildProfileNodeInsertSQL(id uint64, turnID *uint64, profileType int, bindID uint64, node logicdomain.ProfileNodeCandidate, createdMs int64) string {
+// parameterizedProfileNodeInsertStatement returns the INSERT statement used by profile-node write paths with all profile text bound as typed SQLite params.
+// parameterizedProfileNodeInsertStatement 用于返回画像节点写入路径使用的 INSERT 语句，并把全部画像文本作为强类型 SQLite 参数绑定。
+func parameterizedProfileNodeInsertStatement(id uint64, turnID *uint64, profileType int, bindID uint64, node logicdomain.ProfileNodeCandidate, createdMs int64) sqliteWriteStatement {
 	expiresMs := int64(0)
 	if !node.ExpiresAt.IsZero() {
 		expiresMs = node.ExpiresAt.UTC().UnixMilli()
 	}
-	return fmt.Sprintf(`
+	var turnIDParam any
+	if turnID != nil {
+		turnIDParam = *turnID
+	}
+	return sqliteWriteStatement{
+		SQL: `
 INSERT INTO vmm_profile_nodes (
   id, turn_id, profile_type, bind_id, content, profile_status,
   priority, profile_level, level_reason, refresh_weight, source_kind, source_id, status_reason, expires_timestamp,
   superseded_by_id, profile_date, created_timestamp, updated_timestamp
-) VALUES (%d, %s, %d, %d, %s, %d, %d, %d, %s, %d, %d, %d, %s, %d, 0, %s, %d, %d);
-`, id, sqlNullableUint64(turnID), profileType, bindID, sqlStringLiteral(strings.TrimSpace(node.Content)), node.Status, node.Priority, node.ProfileLevel, sqlStringLiteral(strings.TrimSpace(node.LevelReason)), node.RefreshWeight, node.SourceKind, node.SourceID, sqlStringLiteral(strings.TrimSpace(node.StatusReason)), expiresMs, sqlStringLiteral(strings.TrimSpace(node.ProfileDate)), createdMs, createdMs)
-}
-
-// uint64Ptr returns one pointer for SQL builders that need an explicit numeric binding while still allowing nil to mean "no turn source".
-// uint64Ptr 用于为 SQL 构造器返回一个数字指针，让调用方在需要显式绑定时传值，同时保留 nil 表示“没有 turn 来源”。
-func uint64Ptr(value uint64) *uint64 {
-	return &value
-}
-
-// sqlNullableUint64 renders either one integer literal or NULL so manual profile nodes can stay semantically unbound to any conversational turn.
-// sqlNullableUint64 用于渲染整数文本或 NULL，让手工画像节点在语义上真正不绑定任何对话 turn。
-func sqlNullableUint64(value *uint64) string {
-	if value == nil {
-		return "NULL"
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?);
+`,
+		Params: []any{
+			id,
+			turnIDParam,
+			profileType,
+			bindID,
+			strings.TrimSpace(node.Content),
+			node.Status,
+			node.Priority,
+			node.ProfileLevel,
+			strings.TrimSpace(node.LevelReason),
+			node.RefreshWeight,
+			node.SourceKind,
+			node.SourceID,
+			strings.TrimSpace(node.StatusReason),
+			expiresMs,
+			strings.TrimSpace(node.ProfileDate),
+			createdMs,
+			createdMs,
+		},
 	}
-	return strconv.FormatUint(*value, 10)
 }
 
 // boolToSQLiteInt renders SQLite-friendly boolean literals because the managed schema persists bool-like fields as integer columns.
@@ -3949,215 +5925,128 @@ func optionalUint64Value(value *uint64) uint64 {
 	return *value
 }
 
-// buildUserProfileUpdateSQL renders the raw UPDATE used to replace the durable user profile blob once the merge scene has accepted the latest evidence.
-// buildUserProfileUpdateSQL 用于渲染原始 UPDATE 语句，在合并场景接纳最新证据后替换长期用户画像 Blob。
-func buildUserProfileUpdateSQL(userID uint64, profile, updatedAt string) string {
-	return fmt.Sprintf(`
+// parameterizedUserDeleteConfirmationStatement returns the guarded UPDATE used by the first phase of user deletion so duplicate confirmation requests reuse one stable code instead of racing on the same row.
+// parameterizedUserDeleteConfirmationStatement 用于返回用户删除第一阶段的受保护 UPDATE，让重复确认请求复用同一确认码，而不是在同一行上并发竞争。
+func parameterizedUserDeleteConfirmationStatement(userID uint64, confirmationCode, updatedAt string) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
 UPDATE vmm_users
-SET profile = %s, updated_at = %s
-WHERE id = %d;
-`, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), userID)
-}
-
-// buildTeamProfileUpdateSQL renders the raw UPDATE used to replace the durable team profile blob after lifecycle convergence or manual edits.
-// buildTeamProfileUpdateSQL 用于渲染原始 UPDATE 语句，在生命周期收敛或手工修改后替换长期 team 画像 Blob。
-func buildTeamProfileUpdateSQL(teamID uint64, profile, updatedAt string) string {
-	return fmt.Sprintf(`
-UPDATE vmm_teams
-SET profile = %s, updated_at = %s
-WHERE id = %d;
-`, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), teamID)
-}
-
-// buildSpaceProfileUpdateSQL renders the raw UPDATE used to replace the durable space profile blob after lifecycle convergence or manual edits.
-// buildSpaceProfileUpdateSQL 用于渲染原始 UPDATE 语句，在生命周期收敛或手工修改后替换长期 space 画像 Blob。
-func buildSpaceProfileUpdateSQL(spaceID uint64, profile, updatedAt string) string {
-	return fmt.Sprintf(`
-UPDATE vmm_spaces
-SET profile = %s, updated_at = %s
-WHERE id = %d;
-`, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), spaceID)
-}
-
-// buildProjectProfileUpdateSQL renders the raw UPDATE used to replace the durable project profile blob once the merge scene has accepted the latest evidence.
-// buildProjectProfileUpdateSQL 用于渲染原始 UPDATE 语句，在合并场景接纳最新证据后替换长期项目画像 Blob。
-func buildProjectProfileUpdateSQL(projectID uint64, profile, updatedAt string) string {
-	return fmt.Sprintf(`
-UPDATE vmm_projects
-SET profile = %s, updated_at = %s
-WHERE id = %d;
-`, sqlStringLiteral(strings.TrimSpace(profile)), sqlStringLiteral(strings.TrimSpace(updatedAt)), projectID)
-}
-
-// buildUserDeleteConfirmationSQL renders the guarded UPDATE used by the first phase of user deletion so duplicate confirmation requests reuse one stable code instead of racing on the same row.
-// buildUserDeleteConfirmationSQL 用于渲染用户删除第一阶段的受保护 UPDATE，让重复确认请求复用同一确认码，而不是在同一行上并发竞争。
-func buildUserDeleteConfirmationSQL(userID uint64, confirmationCode, updatedAt string) string {
-	return fmt.Sprintf(`
-UPDATE vmm_users
-SET delete_confirm_code = %s, updated_at = %s
-WHERE id = %d AND delete_confirm_code = '';
-`, sqlStringLiteral(strings.TrimSpace(confirmationCode)), sqlStringLiteral(strings.TrimSpace(updatedAt)), userID)
-}
-
-// buildProfileNodesSupersedeSQL renders the raw UPDATE used to retire older profile nodes once a fresher node has replaced them.
-// buildProfileNodesSupersedeSQL 用于渲染原始 UPDATE 语句，在较新的画像节点替代旧节点后把旧节点标成 superseded。
-func buildProfileNodesSupersedeSQL(nodeIDs []uint64, supersededByID uint64, statusReason string, updatedMs int64) string {
-	if len(nodeIDs) == 0 {
-		return ""
+SET delete_confirm_code = ?, updated_at = ?
+WHERE id = ? AND delete_confirm_code = '';
+`,
+		Params: []any{strings.TrimSpace(confirmationCode), strings.TrimSpace(updatedAt), userID},
 	}
-	return fmt.Sprintf(`
-UPDATE vmm_profile_nodes
-SET profile_status = %d, superseded_by_id = %d, status_reason = %s, updated_timestamp = %d
-WHERE profile_status = %d AND id IN (%s);
-`, logicdomain.ProfileStatusSuperseded, supersededByID, sqlStringLiteral(strings.TrimSpace(statusReason)), updatedMs, logicdomain.ProfileStatusActive, sqlUint64List(nodeIDs))
 }
 
-// buildProfileNodesRetireSQL renders the raw UPDATE used to retire active profile nodes without attaching them to one newly inserted replacement node.
-// buildProfileNodesRetireSQL 用于渲染原始 UPDATE 语句，在没有新替代节点时把活跃画像节点直接退役。
-func buildProfileNodesRetireSQL(nodeIDs []uint64, statusReason string, updatedMs int64) string {
+// parameterizedProfileNodesSupersedeStatement returns the guarded UPDATE used to retire older profile nodes after one accepted replacement node is durable.
+// parameterizedProfileNodesSupersedeStatement 用于返回替代节点落库后退役旧画像节点的受保护 UPDATE 语句。
+func parameterizedProfileNodesSupersedeStatement(profileType int, bindID uint64, nodeIDs []uint64, supersededByID uint64, statusReason string, updatedMs int64) (sqliteWriteStatement, bool) {
+	nodeIDs = normalizeUint64List(nodeIDs)
 	if len(nodeIDs) == 0 {
-		return ""
+		return sqliteWriteStatement{}, false
 	}
-	return fmt.Sprintf(`
+	nodeIDPlaceholders := sqlitePlaceholders(len(nodeIDs))
+	params := append([]any{
+		logicdomain.ProfileStatusSuperseded,
+		supersededByID,
+		strings.TrimSpace(statusReason),
+		updatedMs,
+		logicdomain.ProfileStatusActive,
+		profileType,
+		bindID,
+	}, sqliteUint64Params(nodeIDs)...)
+	// Bind reviewer-controlled reason text, target ownership, and node ids together so profile replacement cannot cross scope boundaries.
+	// 将评审器控制的原因文本、目标归属和节点 id 一起绑定，确保画像替代不会跨范围更新。
+	return sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 UPDATE vmm_profile_nodes
-SET profile_status = %d, status_reason = %s, updated_timestamp = %d
-WHERE profile_status = %d AND id IN (%s);
-`, logicdomain.ProfileStatusSuperseded, sqlStringLiteral(strings.TrimSpace(statusReason)), updatedMs, logicdomain.ProfileStatusActive, sqlUint64List(nodeIDs))
+SET profile_status = ?, superseded_by_id = ?, status_reason = ?, updated_timestamp = ?
+WHERE profile_status = ? AND profile_type = ? AND bind_id = ? AND id IN (%s);
+`, nodeIDPlaceholders),
+		Params: params,
+	}, true
 }
 
-// buildProfileNodesExpireSQL renders the raw UPDATE used by the periodic lifecycle convergence path to mark due active profile nodes as expired.
-// buildProfileNodesExpireSQL 用于渲染周期性生命周期收敛路径使用的原始 UPDATE 语句，把已到期的 active 画像节点标记为 expired。
-func buildProfileNodesExpireSQL(nodeIDs []uint64, statusReason string, updatedMs int64) string {
+// parameterizedProfileNodesExpireStatement returns the lifecycle UPDATE used to mark due active profile nodes as expired.
+// parameterizedProfileNodesExpireStatement 用于返回生命周期收敛中把到期 active 画像节点标为 expired 的 UPDATE 语句。
+func parameterizedProfileNodesExpireStatement(nodeIDs []uint64, statusReason string, updatedMs int64) (sqliteWriteStatement, bool) {
+	nodeIDs = normalizeUint64List(nodeIDs)
 	if len(nodeIDs) == 0 {
-		return ""
+		return sqliteWriteStatement{}, false
 	}
-	return fmt.Sprintf(`
+	nodeIDPlaceholders := sqlitePlaceholders(len(nodeIDs))
+	params := append([]any{
+		logicdomain.ProfileStatusExpired,
+		strings.TrimSpace(statusReason),
+		updatedMs,
+		logicdomain.ProfileStatusActive,
+	}, sqliteUint64Params(nodeIDs)...)
+	// Bind lifecycle reason text and node ids together so expiry writes share the same dynamic-IN contract as profile replacement writes.
+	// 将生命周期原因文本和节点 id 一起绑定，让过期写入与画像替代写入共享同一套动态 IN 契约。
+	return sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 UPDATE vmm_profile_nodes
-SET profile_status = %d, status_reason = %s, updated_timestamp = %d
-WHERE profile_status = %d AND id IN (%s);
-`, logicdomain.ProfileStatusExpired, sqlStringLiteral(strings.TrimSpace(statusReason)), updatedMs, logicdomain.ProfileStatusActive, sqlUint64List(nodeIDs))
+SET profile_status = ?, status_reason = ?, updated_timestamp = ?
+WHERE profile_status = ? AND id IN (%s);
+`, nodeIDPlaceholders),
+		Params: params,
+	}, true
 }
 
-// buildSingleProfileNodeRetireSQL renders the raw UPDATE used by manual profile instructions to retire one active node together with the explicit reviewer reason.
-// buildSingleProfileNodeRetireSQL 用于渲染手工画像指令退役单条 active 节点的原始 UPDATE 语句，并写入评审给出的明确原因。
-func buildSingleProfileNodeRetireSQL(nodeID uint64, statusReason string, updatedMs int64) string {
+// parameterizedSingleProfileNodeRetireStatement returns the manual-instruction UPDATE used to retire one active profile node with the reviewer reason.
+// parameterizedSingleProfileNodeRetireStatement 用于返回手工画像指令退役单条 active 画像节点的 UPDATE 语句，并绑定评审原因。
+func parameterizedSingleProfileNodeRetireStatement(nodeID uint64, statusReason string, updatedMs int64) (sqliteWriteStatement, bool) {
 	if nodeID == 0 {
-		return ""
+		return sqliteWriteStatement{}, false
 	}
-	return fmt.Sprintf(`
+	return sqliteWriteStatement{
+		SQL: `
 UPDATE vmm_profile_nodes
-SET profile_status = %d, status_reason = %s, updated_timestamp = %d
-WHERE profile_status = %d AND id = %d;
-`, logicdomain.ProfileStatusSuperseded, sqlStringLiteral(strings.TrimSpace(statusReason)), updatedMs, logicdomain.ProfileStatusActive, nodeID)
+SET profile_status = ?, status_reason = ?, updated_timestamp = ?
+WHERE profile_status = ? AND id = ?;
+`,
+		Params: []any{logicdomain.ProfileStatusSuperseded, strings.TrimSpace(statusReason), updatedMs, logicdomain.ProfileStatusActive, nodeID},
+	}, true
 }
 
-// buildProfileInstructionAppliedSQL renders the raw UPDATE used to mark one manual profile instruction as applied after all reviewed node changes have been persisted.
-// buildProfileInstructionAppliedSQL 用于渲染原始 UPDATE 语句，在评审后的节点变更全部落库后把手工画像指令标记为 applied。
-func buildProfileInstructionAppliedSQL(instructionID uint64, reviewResult string, updatedMs int64) string {
-	if instructionID == 0 {
-		return ""
-	}
-	return fmt.Sprintf(`
-UPDATE vmm_profile_instructions
-SET instruction_status = %d,
-    review_result_json = %s,
-    failure_reason = '',
-    updated_timestamp = %d
-WHERE id = %d;
-`, logicdomain.ProfileInstructionStatusApplied, sqlStringLiteral(strings.TrimSpace(reviewResult)), updatedMs, instructionID)
-}
-
-// buildProfileTargetUpdateSQL renders the raw UPDATE used to replace one durable scope profile blob after manual instruction review or lifecycle convergence.
-// buildProfileTargetUpdateSQL 用于渲染原始 UPDATE 语句，在手工画像评审或生命周期收敛后替换某个 scope 的长期画像 Blob。
-func buildProfileTargetUpdateSQL(profileType int, bindID uint64, profile, updatedAt string) string {
+// parameterizedProfileTargetUpdateSQL returns the controlled table-specific UPDATE template used by manual profile instructions before binding rendered profile text as parameters.
+// parameterizedProfileTargetUpdateSQL 用于返回手工画像指令使用的受控目标表 UPDATE 模板，并在外层把渲染画像文本作为参数绑定。
+func parameterizedProfileTargetUpdateSQL(profileType int) string {
 	switch profileType {
 	case logicdomain.ProfileTypeUser:
-		return buildUserProfileUpdateSQL(bindID, profile, updatedAt)
+		return `UPDATE vmm_users SET profile = ?, updated_at = ? WHERE id = ?;`
 	case logicdomain.ProfileTypeTeam:
-		return buildTeamProfileUpdateSQL(bindID, profile, updatedAt)
+		return `UPDATE vmm_teams SET profile = ?, updated_at = ? WHERE id = ?;`
 	case logicdomain.ProfileTypeSpace:
-		return buildSpaceProfileUpdateSQL(bindID, profile, updatedAt)
+		return `UPDATE vmm_spaces SET profile = ?, updated_at = ? WHERE id = ?;`
 	case logicdomain.ProfileTypeProject:
-		return buildProjectProfileUpdateSQL(bindID, profile, updatedAt)
+		return `UPDATE vmm_projects SET profile = ?, updated_at = ? WHERE id = ?;`
 	default:
 		return ""
 	}
 }
 
-// buildMemoryNodesSupersedeSQL renders the raw UPDATE used to mark obsolete active memory rows as superseded by id.
-// buildMemoryNodesSupersedeSQL 用于渲染原始 UPDATE 语句，按记忆 id 把过时的 active 记忆行标记为 superseded。
-func buildMemoryNodesSupersedeSQL(memoryIDs []uint64, updatedMs int64) string {
+// parameterizedMemoryNodesSupersedeStatement returns the memory replacement UPDATE used to mark obsolete active memory rows as superseded by id.
+// parameterizedMemoryNodesSupersedeStatement 用于返回记忆替代路径中按记忆 id 把过时 active 记忆行标记为 superseded 的 UPDATE 语句。
+func parameterizedMemoryNodesSupersedeStatement(memoryIDs []uint64, updatedMs int64) (sqliteWriteStatement, bool) {
+	memoryIDs = normalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
-		return ""
+		return sqliteWriteStatement{}, false
 	}
-	return fmt.Sprintf(`
+	memoryIDPlaceholders := sqlitePlaceholders(len(memoryIDs))
+	params := append([]any{
+		logicdomain.MemoryStatusSuperseded,
+		updatedMs,
+		logicdomain.MemoryStatusActive,
+	}, sqliteUint64Params(memoryIDs)...)
+	return sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 UPDATE vmm_memory_nodes
-SET memory_status = %d, updated_timestamp = %d
-WHERE memory_status = %d AND id IN (%s);
-`, logicdomain.MemoryStatusSuperseded, updatedMs, logicdomain.MemoryStatusActive, sqlUint64List(memoryIDs))
-}
-
-// normalizeTurnMemoryContextEdges aggregates one extracted candidate's situational evidence into durable per-context counters so later retrieval can reason over explicit support/rebuttal traces.
-// normalizeTurnMemoryContextEdges 用于把一条提炼候选上的情境证据聚合成长期的逐情境计数，让后续检索能够基于显式支持/反驳轨迹推理。
-func normalizeTurnMemoryContextEdges(memoryID uint64, candidates []logicdomain.MemoryContextEdgeCandidate, now time.Time) []logicdomain.MemoryContextEdge {
-	if memoryID == 0 || len(candidates) == 0 {
-		return nil
-	}
-	aggregated := make(map[string]logicdomain.MemoryContextEdge, len(candidates))
-	for _, candidate := range candidates {
-		contextKey := logicdomain.NormalizeMemoryContextKey(candidate.ContextKey)
-		contextValue := logicdomain.NormalizeMemoryContextValue(candidate.ContextValue)
-		relation := strings.TrimSpace(candidate.Relation)
-		if contextKey == "" || contextValue == "" || !logicdomain.ValidMemoryContextRelation(relation) {
-			continue
-		}
-		key := contextKey + "|" + contextValue
-		edge := aggregated[key]
-		if edge.MemoryID == 0 {
-			edge = logicdomain.MemoryContextEdge{
-				MemoryID:     memoryID,
-				ContextKey:   contextKey,
-				ContextValue: contextValue,
-				CreatedAt:    now.UTC(),
-				UpdatedAt:    now.UTC(),
-			}
-		}
-		switch relation {
-		case logicdomain.MemoryContextRelationRebuttal:
-			edge.RebuttalCount++
-			edge.LastRebuttedAt = now.UTC()
-		default:
-			edge.SupportCount++
-			edge.LastSupportedAt = now.UTC()
-		}
-		edge.UpdatedAt = now.UTC()
-		aggregated[key] = edge
-	}
-	if len(aggregated) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(aggregated))
-	for key := range aggregated {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	edges := make([]logicdomain.MemoryContextEdge, 0, len(keys))
-	for _, key := range keys {
-		edges = append(edges, aggregated[key])
-	}
-	return edges
-}
-
-// summarizeMemoryContextEdges folds one edge slice into memory-level support/rebuttal totals so the main memory row can expose quick ranking signals without joining the edge table.
-// summarizeMemoryContextEdges 用于把情境边切片折叠成记忆级 support/rebuttal 总数，让主记忆行无需 join 边表也能暴露快速排序信号。
-func summarizeMemoryContextEdges(edges []logicdomain.MemoryContextEdge) (int, int) {
-	supportCount := 0
-	rebuttalCount := 0
-	for _, edge := range edges {
-		supportCount += edge.SupportCount
-		rebuttalCount += edge.RebuttalCount
-	}
-	return supportCount, rebuttalCount
+SET memory_status = ?, updated_timestamp = ?
+WHERE memory_status = ? AND id IN (%s);
+`, memoryIDPlaceholders),
+		Params: params,
+	}, true
 }
 
 // normalizeTurnMemoryNodeRecord fills unified-memory defaults for one turn-extracted node before it is persisted.
@@ -4182,6 +6071,7 @@ func normalizeTurnMemoryNodeRecord(session logicdomain.SessionRef, turn logicdom
 		Priority:        node.Priority,
 		MemoryLevel:     node.MemoryLevel,
 		RefreshWeight:   node.RefreshWeight,
+		ExpiresAt:       node.ExpiresAt,
 		DedupeHash:      strings.TrimSpace(node.DedupeHash),
 		CreatedAt:       now,
 		UpdatedAt:       now,
@@ -4336,15 +6226,6 @@ func chooseNonZeroTime(value, fallback time.Time) time.Time {
 	return value.UTC()
 }
 
-// nullableUint64 returns a pointer only when the value is non-zero, so SQL builders can emit NULL for optional ids.
-// nullableUint64 用于仅在数值非零时返回指针，让 SQL 构造器可以为可空 id 输出 NULL。
-func nullableUint64(value uint64) *uint64 {
-	if value == 0 {
-		return nil
-	}
-	return &value
-}
-
 // normalizeUint64List removes zeros and duplicates from generic uint64 id lists while keeping a deterministic ascending order.
 // normalizeUint64List 用于从通用 uint64 id 列表中去掉零值和重复项，并保持确定性的升序。
 func normalizeUint64List(values []uint64) []uint64 {
@@ -4459,9 +6340,18 @@ func checkSQLiteContext(ctx context.Context) error {
 	}
 }
 
-// loadActiveMemoryNodeByID loads one active and unexpired memory node by id for lexical hit validation.
-// loadActiveMemoryNodeByID 用于按 id 读取一条 active 且未过期的记忆行，供 lexical 命中过滤使用。
-func (s *Store) loadActiveMemoryNodeByID(ctx context.Context, memoryID uint64) (logicdomain.MemoryNodeRecord, bool, error) {
+// loadActiveMemoryNodesByIDs loads active and unexpired memory rows for a parsed FTS candidate set in one relational pass.
+// loadActiveMemoryNodesByIDs 用于一次性回表加载已解析 FTS 候选集中的 active 且未过期记忆行。
+func (s *Store) loadActiveMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) (map[uint64]logicdomain.MemoryNodeRecord, error) {
+	memoryIDs = normalizeUint64List(memoryIDs)
+	if len(memoryIDs) == 0 {
+		return map[uint64]logicdomain.MemoryNodeRecord{}, nil
+	}
+
+	// Batch the relational validation so stale FTS documents are filtered by the same active/unexpired predicate without issuing one SQLite query per hit.
+	// 批量执行关系侧校验，让陈旧 FTS 文档继续通过同一套 active/未过期谓词过滤，同时避免每个命中都单独查询 SQLite。
+	memoryIDPlaceholders := sqlitePlaceholders(len(memoryIDs))
+	memoryIDParams := sqliteUint64Params(memoryIDs)
 	rows, err := queryRows[memoryNodeRow](s, ctx, fmt.Sprintf(`
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -4470,17 +6360,19 @@ SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_tur
        recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count, decay_disabled, dedupe_hash,
        created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
-WHERE id = ?
+WHERE id IN (%s)
   AND %s
-LIMIT 1
-`, buildActiveUnexpiredMemoryCondition("", time.Now().UTC().UnixMilli())), memoryID)
+ORDER BY id ASC
+`, memoryIDPlaceholders, buildActiveUnexpiredMemoryCondition("", time.Now().UTC().UnixMilli())), memoryIDParams...)
 	if err != nil {
-		return logicdomain.MemoryNodeRecord{}, false, err
+		return nil, err
 	}
-	if len(rows) == 0 {
-		return logicdomain.MemoryNodeRecord{}, false, nil
+	recordsByID := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		record := row.toMemoryNodeRecord()
+		recordsByID[record.ID] = record
 	}
-	return rows[0].toMemoryNodeRecord(), true, nil
+	return recordsByID, nil
 }
 
 // matchesLexicalMemoryFilter reuses the relational-memory scope rules to keep lexical recall aligned with vector recall.
@@ -4529,49 +6421,30 @@ func sortedProfileBindingIDs(values map[uint64]string) []uint64 {
 	return ids
 }
 
-// sqlUint64List converts one uint64 slice into a comma-separated SQL list for the debug-stage raw statement builders.
-// sqlUint64List 用于把 uint64 切片转换成逗号分隔的 SQL 列表，供调试阶段原始语句构建器使用。
-func sqlUint64List(values []uint64) string {
+// sqliteUint64Params converts normalized numeric ids into typed SQLite bind parameters for dynamic IN predicates.
+// sqliteUint64Params 用于把规范化后的数字 id 转换为 SQLite 强类型绑定参数，供动态 IN 条件使用。
+func sqliteUint64Params(values []uint64) []any {
 	if len(values) == 0 {
-		return "0"
+		return nil
 	}
-	parts := make([]string, 0, len(values))
+	params := make([]any, 0, len(values))
 	for _, value := range values {
-		if value == 0 {
-			continue
-		}
-		parts = append(parts, strconv.FormatUint(value, 10))
+		params = append(params, value)
 	}
-	if len(parts) == 0 {
-		return "0"
-	}
-	return strings.Join(parts, ",")
+	return params
 }
 
-// sqlStringList converts one string slice into a comma-separated SQL literal list for raw statement builders.
-// sqlStringList 用于把字符串切片转换成逗号分隔的 SQL 字面量列表，供原始语句构造器使用。
-func sqlStringList(values []string) string {
-	if len(values) == 0 {
-		return "''"
+// sqlitePlaceholders renders the exact placeholder list for one dynamic SQLite IN predicate whose values are supplied through typed params.
+// sqlitePlaceholders 用于为动态 SQLite IN 条件渲染精确数量的占位符，实际值通过强类型参数传入。
+func sqlitePlaceholders(count int) string {
+	if count <= 0 {
+		return ""
 	}
-	parts := make([]string, 0, len(values))
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		parts = append(parts, sqlStringLiteral(value))
-	}
-	if len(parts) == 0 {
-		return "''"
+	parts := make([]string, count)
+	for idx := range parts {
+		parts[idx] = "?"
 	}
 	return strings.Join(parts, ",")
-}
-
-// sqlStringLiteral escapes one string into a single-quoted SQL literal for debug-stage raw statement rendering.
-// sqlStringLiteral 用于把字符串转成单引号 SQL 字面量，服务调试阶段的原始语句渲染。
-func sqlStringLiteral(raw string) string {
-	return "'" + strings.ReplaceAll(raw, "'", "''") + "'"
 }
 
 // unixMilliToTime converts one millisecond unix timestamp back into UTC time and tolerates zero values.
@@ -4973,6 +6846,12 @@ type profileNodeStatusRow struct {
 	ID             uint64 `json:"id"`
 	ProfileStatus  int    `json:"profile_status"`
 	SupersededByID uint64 `json:"superseded_by_id"`
+	// StatusReason stores the lifecycle reason written by guarded status updates that need exact reconciliation.
+	// StatusReason 保存受保护状态更新写入的生命周期原因，供精确对账使用。
+	StatusReason string `json:"status_reason"`
+	// UpdatedTimestamp stores the durable millisecond timestamp used to prove an uncertain update reached this write.
+	// UpdatedTimestamp 保存长期毫秒时间戳，用于证明不确定更新已经达到本次写入。
+	UpdatedTimestamp int64 `json:"updated_timestamp"`
 }
 
 type profileInstructionRow struct {
@@ -5003,6 +6882,20 @@ func (r profileInstructionRow) toDomain() logicdomain.ProfileInstructionRecord {
 
 type profileBlobRow struct {
 	Profile string `json:"profile"`
+}
+
+// renderedProfileBatchRow mirrors one scope row read back after an uncertain rendered-profile batch update.
+// renderedProfileBatchRow 用于映射渲染画像批量更新不确定后回读的一条 scope 行。
+type renderedProfileBatchRow struct {
+	// ID stores the durable scope-row id and must match the sorted batch id at the same index.
+	// ID 保存长期 scope 行 id，必须与同一排序位置上的批量 id 匹配。
+	ID uint64 `json:"id"`
+	// Profile stores the rendered profile blob written by ReplaceRenderedProfiles.
+	// Profile 保存 ReplaceRenderedProfiles 写入的渲染画像 Blob。
+	Profile string `json:"profile"`
+	// UpdatedAt stores the RFC3339Nano timestamp written with the profile blob, proving the row reached this batch.
+	// UpdatedAt 保存随画像 Blob 一起写入的 RFC3339Nano 时间戳，用于证明该行已达到本次批量写入。
+	UpdatedAt string `json:"updated_at"`
 }
 
 type obsoleteVectorRow struct {

@@ -114,6 +114,7 @@ func TestParadeDBDialectBuildHybridSearchSQL(t *testing.T) {
 		"@@@ pdb.parse($2, lenient => true)",
 		"pdb.score(m.id)",
 		"'hybrid_rrf'",
+		"m.embedding::text AS embedding_text",
 		"1.0 / ($4::double precision + v.vector_rank::double precision)",
 	}
 	for _, fragment := range requiredFragments {
@@ -148,6 +149,7 @@ func TestStandardDialectBuildHybridSearchSQL(t *testing.T) {
 		"similarity(m.abstract, $2)",
 		"similarity(m.details, $2)",
 		"'hybrid_rrf'",
+		"m.embedding::text AS embedding_text",
 		"1.0 / ($5::double precision + l.lexical_rank::double precision)",
 	}
 	for _, fragment := range requiredFragments {
@@ -160,6 +162,63 @@ func TestStandardDialectBuildHybridSearchSQL(t *testing.T) {
 	}
 	if len(args) == 0 {
 		t.Fatalf("BuildHybridSearchSQL args should not be empty")
+	}
+}
+
+// TestPostgresMemoryHitFromRecordPreservesOrigin verifies scanned memory rows keep the adapter-stamped retrieval channel when converted into shared recall hits.
+// TestPostgresMemoryHitFromRecordPreservesOrigin 用于验证已扫描的记忆行转换成共享召回命中时，会保留适配器写入的检索通道。
+func TestPostgresMemoryHitFromRecordPreservesOrigin(t *testing.T) {
+	hit := postgresMemoryHitFromRecord(logicdomain.MemoryNodeRecord{
+		ID:              701,
+		VectorID:        " vec-701 ",
+		OriginSessionID: 51,
+		SourceTurnID:    5101,
+		UserID:          7,
+		ProjectID:       9,
+		Abstract:        "普通 pgvector 检索命中。",
+	}, 0.87, " vector_search ")
+
+	if hit.ID != "vec-701" || hit.Metadata["origin"] != "vector_search" {
+		t.Fatalf("unexpected postgres memory hit mapping: %+v", hit)
+	}
+	if hit.Filter.SessionID != 51 || hit.Metadata["turn_id"] != "5101" {
+		t.Fatalf("unexpected postgres memory hit scope metadata: %+v", hit)
+	}
+}
+
+// TestPostgresCommonIndexStatementsExposeStableNames verifies shared bootstrap indexes carry one diagnostic name per DDL statement.
+// TestPostgresCommonIndexStatementsExposeStableNames 用于验证共享启动索引的每条 DDL 都携带一个诊断名称。
+func TestPostgresCommonIndexStatementsExposeStableNames(t *testing.T) {
+	repo := &maintenanceRepository{shared: &storeShared{cfg: Config{Schema: "public"}}}
+	statements := postgresCommonIndexStatements(repo)
+	if len(statements) != 28 {
+		t.Fatalf("common index statement count = %d, want 28", len(statements))
+	}
+	for _, statement := range statements {
+		if strings.TrimSpace(statement.name) == "" {
+			t.Fatalf("common index statement has empty diagnostic name: %+v", statement)
+		}
+		if !strings.Contains(statement.sql, statement.name) {
+			t.Fatalf("common index statement %q does not include its index name in SQL: %s", statement.name, statement.sql)
+		}
+	}
+}
+
+// TestStandardTrigramIndexStatementsExposeStableNames verifies standard lexical indexes carry precise names for startup error reporting.
+// TestStandardTrigramIndexStatementsExposeStableNames 用于验证 standard lexical 索引会携带精确名称以服务启动错误报告。
+func TestStandardTrigramIndexStatementsExposeStableNames(t *testing.T) {
+	store := &Store{cfg: Config{Schema: "public"}}
+	statements := standardTrigramIndexStatements(store)
+	if len(statements) != 2 {
+		t.Fatalf("standard trigram index statement count = %d, want 2", len(statements))
+	}
+	for _, statement := range statements {
+		if strings.TrimSpace(statement.name) == "" {
+			t.Fatalf("standard trigram statement has empty diagnostic name: %+v", statement)
+		}
+		if !strings.Contains(statement.sql, statement.name) {
+			t.Fatalf("standard trigram statement %q does not include its index name in SQL: %s", statement.name, statement.sql)
+		}
 	}
 }
 

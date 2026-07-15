@@ -33,6 +33,7 @@ var (
 	errConfirmation    = ErrorDescriptor{Code: codes.FailedPrecondition, ID: "CONFIRMATION_REQUIRED", Category: "confirmation", Message: "explicit confirmation is required"}
 	errOutcomeUnknown  = ErrorDescriptor{Code: codes.Aborted, ID: "STORAGE_OUTCOME_UNCERTAIN", Category: "storage", Message: "storage outcome is uncertain"}
 	errTimeout         = ErrorDescriptor{Code: codes.DeadlineExceeded, ID: "UPSTREAM_TIMEOUT", Category: "timeout", Message: "request timeout"}
+	errInvalidLLM      = ErrorDescriptor{Code: codes.Internal, ID: "UPSTREAM_INVALID_LLM_OUTPUT", Category: "upstream", Message: "upstream model returned invalid structured output"}
 	errInternal        = ErrorDescriptor{Code: codes.Internal, ID: "INTERNAL_ERROR", Category: "internal", Message: "internal server error"}
 	errTooLarge        = ErrorDescriptor{Code: codes.ResourceExhausted, ID: "GRPC_REQUEST_TOO_LARGE", Category: "transport", Message: "request payload exceeds size limit"}
 )
@@ -57,6 +58,8 @@ func describeError(err error) ErrorDescriptor {
 		return withMessage(errOutcomeUnknown, err.Error())
 	case errors.Is(err, context.DeadlineExceeded), errors.Is(err, logicdomain.ErrTimeout):
 		return errTimeout
+	case logicdomain.IsInvalidLLMOutputError(err):
+		return withMessage(errInvalidLLM, err.Error())
 	default:
 		if strings.Contains(strings.ToLower(err.Error()), "received message larger than max") {
 			return errTooLarge

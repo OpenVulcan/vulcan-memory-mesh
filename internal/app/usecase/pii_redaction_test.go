@@ -34,3 +34,26 @@ func (s *countingPIIScrubber) Scrub(text string) string {
 	}
 	return text
 }
+
+// replacingCountingPIIScrubber records masking calls while applying deterministic literal replacements, allowing tests to verify both cost and redaction output.
+// replacingCountingPIIScrubber 用于在执行确定性字面量替换的同时记录脱敏调用次数，让测试同时验证成本与脱敏结果。
+type replacingCountingPIIScrubber struct {
+	replacements map[string]string
+	calls        int
+}
+
+// Scrub records one invocation and applies the configured replacements in sequence.
+// Scrub 用于记录一次调用，并按顺序执行配置好的字面量替换。
+func (s *replacingCountingPIIScrubber) Scrub(text string) string {
+	if s != nil {
+		s.calls++
+	}
+	out := text
+	if s == nil {
+		return out
+	}
+	for from, to := range s.replacements {
+		out = strings.ReplaceAll(out, from, to)
+	}
+	return out
+}

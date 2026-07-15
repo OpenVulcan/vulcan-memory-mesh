@@ -26,6 +26,15 @@ func NewManualProfileReviewer(llm logicports.LLMClient, prompts logicports.Promp
 	return &ManualProfileReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
+// ReviewModel returns the configured manual profile reviewer model label so use cases can annotate malformed-output logs with the exact model selection.
+// ReviewModel 用于返回当前配置的手工画像 reviewer 模型标识，方便用例层在畸形输出日志中标注本次模型选择。
+func (r *ManualProfileReviewer) ReviewModel() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.model)
+}
+
 // Review compares one explicit manual instruction against the current active nodes of one target and returns structured node-mutation instructions.
 // Review 用于把一条显式手工画像指令与单个目标当前 active 节点做对照，并返回结构化的节点变更指令。
 func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.ProfileTargetRef, activeNodes []logicdomain.ProfileNodeRecord, instruction string, floorPriority, floorLevel int) (logicdomain.ManualProfileInstructionReview, error) {

@@ -195,23 +195,28 @@ func (ProfileBundleMode) EnumDescriptor() ([]byte, []int) {
 type PreCheckRecallMode int32
 
 const (
-	// PRE_CHECK_RECALL_MODE_LEGACY keeps the historical pre-check behavior and does not read any compact boundary.
-	// PRE_CHECK_RECALL_MODE_LEGACY 表示保持历史 pre-check 行为，不读取任何 compact 边界。
-	PreCheckRecallMode_PRE_CHECK_RECALL_MODE_LEGACY PreCheckRecallMode = 0
+	// PRE_CHECK_RECALL_MODE_UNSPECIFIED lets the server apply the safe compact-aware default when callers omit recall_mode.
+	// PRE_CHECK_RECALL_MODE_UNSPECIFIED 用于在调用方省略 recall_mode 时，让服务端应用安全的 compact-aware 默认策略。
+	PreCheckRecallMode_PRE_CHECK_RECALL_MODE_UNSPECIFIED PreCheckRecallMode = 0
 	// PRE_CHECK_RECALL_MODE_SESSION_COMPACT enables the current-session compact-aware recall rule and reopens only turns at or before the compact anchor.
 	// PRE_CHECK_RECALL_MODE_SESSION_COMPACT 表示启用当前 session 的 compact-aware 召回规则，只重新开放 compact 锚点及之前的 turn。
 	PreCheckRecallMode_PRE_CHECK_RECALL_MODE_SESSION_COMPACT PreCheckRecallMode = 1
+	// PRE_CHECK_RECALL_MODE_FULL explicitly disables the current-session compact boundary while preserving all other resolved scope and lifecycle filters.
+	// PRE_CHECK_RECALL_MODE_FULL 表示显式关闭当前 session 的 compact 边界，同时保留其他已解析作用域与生命周期过滤条件。
+	PreCheckRecallMode_PRE_CHECK_RECALL_MODE_FULL PreCheckRecallMode = 2
 )
 
 // Enum value maps for PreCheckRecallMode.
 var (
 	PreCheckRecallMode_name = map[int32]string{
-		0: "PRE_CHECK_RECALL_MODE_LEGACY",
+		0: "PRE_CHECK_RECALL_MODE_UNSPECIFIED",
 		1: "PRE_CHECK_RECALL_MODE_SESSION_COMPACT",
+		2: "PRE_CHECK_RECALL_MODE_FULL",
 	}
 	PreCheckRecallMode_value = map[string]int32{
-		"PRE_CHECK_RECALL_MODE_LEGACY":          0,
+		"PRE_CHECK_RECALL_MODE_UNSPECIFIED":     0,
 		"PRE_CHECK_RECALL_MODE_SESSION_COMPACT": 1,
+		"PRE_CHECK_RECALL_MODE_FULL":            2,
 	}
 )
 
@@ -3095,7 +3100,7 @@ func (x *PreCheckRequest) GetRecallMode() PreCheckRecallMode {
 	if x != nil {
 		return x.RecallMode
 	}
-	return PreCheckRecallMode_PRE_CHECK_RECALL_MODE_LEGACY
+	return PreCheckRecallMode_PRE_CHECK_RECALL_MODE_UNSPECIFIED
 }
 
 // ChatCompactRequest carries the resolved scope selectors used to mark the latest persisted turn as the active compact boundary for one session.
@@ -3873,10 +3878,11 @@ const file_vmm_proto_rawDesc = "" +
 	"\x11ProfileBundleMode\x12#\n" +
 	"\x1fPROFILE_BUNDLE_MODE_UNSPECIFIED\x10\x00\x12\x1c\n" +
 	"\x18PROFILE_BUNDLE_MODE_FULL\x10\x01\x12\x1d\n" +
-	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x02*a\n" +
-	"\x12PreCheckRecallMode\x12 \n" +
-	"\x1cPRE_CHECK_RECALL_MODE_LEGACY\x10\x00\x12)\n" +
-	"%PRE_CHECK_RECALL_MODE_SESSION_COMPACT\x10\x012\xc9\v\n" +
+	"\x19PROFILE_BUNDLE_MODE_SPLIT\x10\x02*\x86\x01\n" +
+	"\x12PreCheckRecallMode\x12%\n" +
+	"!PRE_CHECK_RECALL_MODE_UNSPECIFIED\x10\x00\x12)\n" +
+	"%PRE_CHECK_RECALL_MODE_SESSION_COMPACT\x10\x01\x12\x1e\n" +
+	"\x1aPRE_CHECK_RECALL_MODE_FULL\x10\x022\xc9\v\n" +
 	"\n" +
 	"VMMService\x12:\n" +
 	"\aHealthz\x12\x16.google.protobuf.Empty\x1a\x17.vmm.v1.HealthzResponse\x12D\n" +

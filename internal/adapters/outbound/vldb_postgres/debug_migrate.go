@@ -80,16 +80,27 @@ func (r *maintenanceRepository) importManagedSnapshot(ctx context.Context, snaps
 	if err := r.importProfileInstructions(callCtx, tx, snapshot.ProfileInstructions); err != nil {
 		return storagemigrate.Report{}, err
 	}
+	// Build the report before the commit boundary because a failed acknowledgement may still leave the imported rows durable.
+	// 在提交边界前构建报告，因为确认失败时导入行仍可能已经持久化。
+	report := snapshot.BuildReport()
 	if err := tx.Commit(callCtx); err != nil {
-		return storagemigrate.Report{}, fmt.Errorf("commit postgres debug migration tx: %w", err)
+		return postgresDebugImportOutcomeUncertain(report, "commit postgres debug migration tx", err)
 	}
+	// Treat post-commit maintenance failures as uncertain because the imported dataset is durable while sequence/version repair may be partial.
+	// 将提交后的维护失败视为结果不确定，因为导入数据已经持久化，而序列或版本修复可能只完成了一部分。
 	if err := r.syncDebugSeedSequences(callCtx); err != nil {
-		return storagemigrate.Report{}, err
+		return postgresDebugImportOutcomeUncertain(report, "sync postgres identity sequences after debug migration", err)
 	}
 	if err := r.persistManagedSnapshotVersions(callCtx); err != nil {
-		return storagemigrate.Report{}, err
+		return postgresDebugImportOutcomeUncertain(report, "persist postgres schema versions after debug migration", err)
 	}
-	return snapshot.BuildReport(), nil
+	return report, nil
+}
+
+// postgresDebugImportOutcomeUncertain returns the attempted migration report with an uncertain error once the debug import may already have changed managed PostgreSQL rows.
+// postgresDebugImportOutcomeUncertain 用于在调试导入可能已经改变 PostgreSQL 受管数据后，连同尝试导入报告一起返回结果不确定错误。
+func postgresDebugImportOutcomeUncertain(report storagemigrate.Report, message string, err error) (storagemigrate.Report, error) {
+	return report, postgresOutcomeUncertainError("import debug snapshot", message, err)
 }
 
 // truncateManagedTables clears every managed PostgreSQL table inside one transaction so the import can replay explicit ids from SQLite without conflict drift.

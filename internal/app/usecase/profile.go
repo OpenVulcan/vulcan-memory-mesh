@@ -5,6 +5,7 @@ package usecase
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -19,6 +20,9 @@ import (
 // ManualProfileInstructionReviewer 用于让画像用例把一条显式指令与单个目标当前 active 节点做对照评审。
 type ManualProfileInstructionReviewer interface {
 	Review(ctx context.Context, target logicdomain.ProfileTargetRef, activeNodes []logicdomain.ProfileNodeRecord, instruction string, floorPriority, floorLevel int) (logicdomain.ManualProfileInstructionReview, error)
+	// ReviewModel returns the configured manual profile reviewer model label so malformed outputs can be attributed to the exact route/model.
+	// ReviewModel 用于返回当前手工画像 reviewer 的模型标识，便于把畸形输出归因到准确的路由/模型。
+	ReviewModel() string
 }
 
 const (
@@ -244,6 +248,7 @@ func (u *ProfileUseCase) applyInstructionLocked(ctx context.Context, target logi
 	floorPriority, floorLevel := manualInstructionFloors(target.ProfileType, instruction)
 	review, err := u.reviewer.Review(ctx, target, activeNodes, instruction, floorPriority, floorLevel)
 	if err != nil {
+		u.logManualProfileInstructionInvalidOutput(target, instructionRecord.ID, len(activeNodes), err)
 		u.failProfileInstruction(ctx, instructionRecord.ID, err.Error(), "")
 		return ProfileInstructionResult{}, err
 	}
@@ -253,6 +258,7 @@ func (u *ProfileUseCase) applyInstructionLocked(ctx context.Context, target logi
 	// 把评审结果翻译成长期节点候选，并在任何 SQL 写入前先施加目标级别的权限地板规则。
 	candidates, retired, renderedProfile, err := u.materializeManualInstructionReview(target, instructionRecord.ID, activeNodes, review, floorPriority, floorLevel)
 	if err != nil {
+		u.logManualProfileInstructionInvalidOutput(target, instructionRecord.ID, len(activeNodes), err)
 		u.failProfileInstruction(ctx, instructionRecord.ID, err.Error(), reviewJSON)
 		return ProfileInstructionResult{}, err
 	}
@@ -272,6 +278,41 @@ func (u *ProfileUseCase) applyInstructionLocked(ctx context.Context, target logi
 		RetiredNodes:  applied.RetiredNodes,
 		ReviewReason:  strings.TrimSpace(review.Reason),
 	}, nil
+}
+
+// logManualProfileInstructionInvalidOutput records structured reviewer contract failures on the server side while keeping raw model output out of the RPC response.
+// logManualProfileInstructionInvalidOutput 用于在服务端记录结构化 reviewer 契约失败，同时避免把原始模型输出放进 RPC 响应。
+func (u *ProfileUseCase) logManualProfileInstructionInvalidOutput(target logicdomain.ProfileTargetRef, instructionID uint64, activeNodeCount int, err error) {
+	if u == nil || u.logger == nil || err == nil {
+		return
+	}
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) {
+		return
+	}
+	fields := []any{
+		"instruction_id", instructionID,
+		"profile_type", target.ProfileType,
+		"bind_id", target.BindID,
+		"user_id", target.UserID,
+		"project_id", target.ProjectID,
+		"active_node_count", activeNodeCount,
+	}
+	if scene := strings.TrimSpace(invalid.Scene); scene != "" {
+		fields = append(fields, "llm_scene", scene)
+	}
+	if u.reviewer != nil {
+		if model := strings.TrimSpace(u.reviewer.ReviewModel()); model != "" {
+			fields = append(fields, "model", model)
+		}
+	}
+	// Manual profile instructions are synchronous RPCs; raw provider output belongs in operator logs rather than caller-facing status text.
+	// 手工画像指令是同步 RPC；原始 provider 响应应进入运维日志，而不是面向调用方的状态文本。
+	if raw := strings.TrimSpace(invalid.Raw); raw != "" {
+		fields = append(fields, "llm_raw_output", invalid.Raw)
+	}
+	fields = append(fields, "err", err)
+	u.logger.Error("manual profile instruction reviewer output invalid", fields...)
 }
 
 // profileInstructionFlightKey builds the dedupe key for one explicit instruction against one resolved target.
@@ -442,6 +483,9 @@ func (u *ProfileUseCase) failProfileInstruction(ctx context.Context, instruction
 // validateProfileQueryCommand checks the requested target selector before the query hits SQLite-backed persistence.
 // validateProfileQueryCommand 用于在查询命中 SQLite 持久化之前校验请求目标选择参数。
 func validateProfileQueryCommand(cmd ProfileQueryCommand) error {
+	if cmd.Limit < 0 {
+		return logicdomain.ValidationError{Field: "limit", Message: "must be >= 0"}
+	}
 	if cmd.ProfileType == ProfileQueryTypeAll {
 		if cmd.UserID == 0 {
 			return logicdomain.ValidationError{Field: "user_id", Message: "must be a numeric id"}

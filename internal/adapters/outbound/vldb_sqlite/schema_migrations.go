@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
 const (
@@ -74,9 +76,24 @@ CREATE TABLE IF NOT EXISTS vmm_schema_versions (
   schema_version INTEGER NOT NULL,
   updated_at TEXT NOT NULL DEFAULT ''
 )`); err != nil {
-		return fmt.Errorf("bootstrap component schema version table: %w", err)
+		return sqliteSchemaVersionTableBootstrapError(err)
 	}
 	return nil
+}
+
+// sqliteSchemaVersionTableBootstrapError preserves deterministic version-table DDL errors while marking ambiguous SQLite commit boundaries.
+// sqliteSchemaVersionTableBootstrapError 用于保留确定性的版本表 DDL 错误，同时标记 SQLite 提交边界不确定。
+func sqliteSchemaVersionTableBootstrapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isSQLiteOutcomeUncertainError(err) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: "bootstrap sqlite schema version table",
+			Message:   err.Error(),
+		}
+	}
+	return fmt.Errorf("bootstrap component schema version table: %w", err)
 }
 
 // buildSQLiteSchemaMigrationPlan returns the current relational-schema migration chain so future upgrades only need one appended step.
@@ -200,21 +217,52 @@ ON CONFLICT(component) DO UPDATE SET
   schema_version = excluded.schema_version,
   updated_at = excluded.updated_at
 `, strings.TrimSpace(component), version, now); err != nil {
-		return fmt.Errorf("persist component %s schema version %d: %w", component, version, err)
+		return sqliteSchemaVersionPersistError(component, version, err)
 	}
 	return nil
+}
+
+// sqliteSchemaVersionPersistError preserves deterministic schema-version write errors while marking commit-boundary failures as uncertain.
+// sqliteSchemaVersionPersistError 用于保留确定性的 schema 版本写入错误，同时把提交边界失败标记为结果不确定。
+func sqliteSchemaVersionPersistError(component string, version int, err error) error {
+	if err == nil {
+		return nil
+	}
+	message := fmt.Sprintf("persist component %s schema version %d", strings.TrimSpace(component), version)
+	if isSQLiteOutcomeUncertainError(err) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: "persist sqlite schema version",
+			Message:   fmt.Sprintf("%s: %v", message, err),
+		}
+	}
+	return fmt.Errorf("%s: %w", message, err)
 }
 
 // bootstrapCurrentSQLiteSchema applies the latest full relational schema to an empty database and seeds the deterministic debug hierarchy only when the workspace is still empty.
 // bootstrapCurrentSQLiteSchema 用于把最新完整关系 schema 应用到空库，并只在工作区仍为空时补种确定性的调试层级。
 func bootstrapCurrentSQLiteSchema(ctx context.Context, s *Store) error {
 	if err := s.exec(ctx, currentSchemaSQL); err != nil {
-		return fmt.Errorf("apply current sqlite schema: %w", err)
+		return sqliteSchemaMigrationError("bootstrap sqlite schema", fmt.Errorf("apply current sqlite schema: %w", err))
 	}
 	if err := s.seedDebugWorkspaceIfEmpty(ctx); err != nil {
 		return err
 	}
 	return nil
+}
+
+// sqliteSchemaMigrationError classifies schema scripts that include their own commit boundary without hiding ordinary deterministic DDL failures.
+// sqliteSchemaMigrationError 用于分类自带提交边界的 schema 脚本错误，同时不掩盖普通确定性 DDL 失败。
+func sqliteSchemaMigrationError(operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if isSQLiteOutcomeUncertainError(err) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: operation,
+			Message:   err.Error(),
+		}
+	}
+	return err
 }
 
 // seedDebugWorkspaceIfEmpty inserts the deterministic default hierarchy only for fresh local workspaces, preventing later migrations from duplicating debug seed rows.
@@ -227,8 +275,12 @@ func (s *Store) seedDebugWorkspaceIfEmpty(ctx context.Context) error {
 	if projectCount > 0 {
 		return nil
 	}
-	if err := s.exec(ctx, buildDebugSeedWorkspaceSQL(time.Now().UTC())); err != nil {
-		return fmt.Errorf("seed debug sqlite workspace: %w", err)
+	// Seed hierarchy rows as single-statement typed calls because the real SQLite gateway rejects flat params on multi-statement scripts.
+	// 以单语句强类型调用补种层级行，因为真实 SQLite 网关会拒绝把扁平参数绑定到多语句脚本。
+	for index, seedStatement := range parameterizedDebugSeedWorkspaceStatements(time.Now().UTC()) {
+		if err := s.exec(ctx, seedStatement.SQL, seedStatement.Params...); err != nil {
+			return fmt.Errorf("seed debug sqlite workspace statement %d: %w", index+1, err)
+		}
 	}
 	return nil
 }
@@ -438,14 +490,14 @@ CREATE TABLE IF NOT EXISTS vmm_recycle_jobs (
 // migrateSQLiteSchema19To20 drops removed work-memory tables so upgraded local databases match the current runtime schema.
 // migrateSQLiteSchema19To20 用于删除已移除的工作记忆表，让升级后的本地数据库与当前运行时 schema 保持一致。
 func migrateSQLiteSchema19To20(ctx context.Context, s *Store) error {
-	statements := []string{
-		`DROP TABLE IF EXISTS vmm_scratchpad_nodes`,
-		`DROP TABLE IF EXISTS vmm_scratchpad_plans`,
-	}
-	for _, statement := range statements {
-		if err := s.exec(ctx, statement); err != nil {
-			return err
-		}
+	statement := `
+BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS vmm_scratchpad_nodes;
+DROP TABLE IF EXISTS vmm_scratchpad_plans;
+COMMIT;
+`
+	if err := s.exec(ctx, statement); err != nil {
+		return sqliteSchemaMigrationError("migrate sqlite schema 19 to 20", fmt.Errorf("drop removed sqlite work-memory tables: %w", err))
 	}
 	return nil
 }

@@ -115,8 +115,8 @@ ORDER BY m.created_at ASC, m.id ASC
 	return out, nil
 }
 
-// SearchLexicalMemory delegates lexical SQL generation to the active dialect so ParadeDB and standard PostgreSQL can share one relational materialization flow.
-// SearchLexicalMemory 用于把 lexical SQL 生成委托给当前方言，让 ParadeDB 与 standard PostgreSQL 共享同一条关系回表链路。
+// SearchLexicalMemory delegates lexical SQL generation to the active dialect and returns materialized active memory rows for app-layer fusion.
+// SearchLexicalMemory 用于把 lexical SQL 生成委托给当前方言，并返回应用层融合所需的已物化 active 记忆行。
 func (r *memoryRepository) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
 	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
@@ -140,14 +140,17 @@ func (r *memoryRepository) SearchLexicalMemory(ctx context.Context, query string
 	hits := make([]logicdomain.MemoryLexicalHit, 0)
 	for rows.Next() {
 		var (
-			memoryID uint64
-			score    float64
+			row   memoryNodeScanRow
+			score float64
 		)
-		if err := rows.Scan(&memoryID, &score); err != nil {
+		scanTargets := append([]any{&score}, memoryNodeScanDestinations(&row)...)
+		if err := rows.Scan(scanTargets...); err != nil {
 			return nil, fmt.Errorf("scan postgres lexical hit: %w", err)
 		}
+		record := row.toMemoryNodeRecord()
 		hits = append(hits, logicdomain.MemoryLexicalHit{
-			MemoryID: memoryID,
+			MemoryID: record.ID,
+			Record:   record,
 			Score:    score,
 		})
 	}
@@ -202,8 +205,8 @@ LIMIT 1
 	return rows[0].toMemoryNodeRecord(), true, nil
 }
 
-// CreateDirectMemoryNode upserts one fully materialized direct-write durable memory row into the shared combined-store table.
-// CreateDirectMemoryNode 用于把一条已完整物化的主动写长期记忆 upsert 到共享组合库表中。
+// CreateDirectMemoryNode inserts one fully materialized direct-write durable memory row into the shared combined-store table.
+// CreateDirectMemoryNode 用于把一条已完整物化的主动写长期记忆插入共享组合库表。
 func (r *memoryRepository) CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
 	if r == nil || r.shared.pool == nil {
 		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("postgres store is not initialized")
@@ -224,9 +227,23 @@ func (r *memoryRepository) CreateDirectMemoryNode(ctx context.Context, session l
 	record = normalizeDirectMemoryNodeRecord(session, record, now)
 	callCtx, cancel := r.queryContext(ctx)
 	defer cancel()
-	created, err := r.upsertDirectMemoryNodeRow(callCtx, r.shared.pool.QueryRow(callCtx, directMemoryNodeUpsertSQL(r.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
+
+	// Use an explicit transaction even for the single fallback insert so insert failures remain rollback-safe while commit ambiguity can preserve the fresh vector.
+	// 即使 fallback 只有单条插入也使用显式事务，让插入阶段失败保持可回滚，而提交结果不明时可以保留新向量。
+	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
-		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("upsert postgres direct memory node: %w", err)
+		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("begin postgres direct memory node tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+
+	created, err := r.scanDirectMemoryNodeInsertRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeInsertSQL(r.memoryNodesTable()), directMemoryNodeInsertArgs(record)...))
+	if err != nil {
+		return logicdomain.MemoryNodeRecord{}, fmt.Errorf("insert postgres direct memory node: %w", err)
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return logicdomain.MemoryNodeRecord{}, postgresFreshVectorCommitOutcomeUncertainError("create direct memory node", "commit postgres direct memory node tx", err)
 	}
 	return created, nil
 }
@@ -270,36 +287,52 @@ func (r *memoryRepository) ApplyDirectMemoryWrite(ctx context.Context, session l
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("load postgres direct-write superseded vector ids: %w", err)
 	}
-	created, err := r.upsertDirectMemoryNodeRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeUpsertSQL(r.memoryNodesTable()), directMemoryNodeUpsertArgs(record)...))
+	created, err := r.scanDirectMemoryNodeInsertRow(callCtx, tx.QueryRow(callCtx, directMemoryNodeInsertSQL(r.memoryNodesTable()), directMemoryNodeInsertArgs(record)...))
 	if err != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("insert postgres direct memory write row: %w", err)
 	}
 	if len(supersededMemoryIDs) > 0 {
-		updateSupersededSQL := fmt.Sprintf(`
-UPDATE %s
-SET memory_status = $1,
-    updated_at = $2
-WHERE memory_status = $3
-  AND id = ANY($4)
-`, r.memoryNodesTable())
-		if _, err := tx.Exec(
+		updateSupersededSQL := buildPostgresMemoryNodesSupersedeSQL(r.memoryNodesTable())
+		supersedeTag, err := tx.Exec(
 			callCtx,
 			strings.TrimSpace(updateSupersededSQL),
 			logicdomain.MemoryStatusSuperseded,
 			now,
 			logicdomain.MemoryStatusActive,
 			toInt64List(supersededMemoryIDs),
-		); err != nil {
+		)
+		if err != nil {
 			return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("supersede postgres direct-write memory nodes: %w", err)
+		}
+		if err := requirePostgresDirectMemoryWriteRowsAffected("supersede postgres direct-write memory nodes", supersedeTag.RowsAffected(), len(supersededMemoryIDs)); err != nil {
+			return logicdomain.DirectMemoryWriteApplyResult{}, err
 		}
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.DirectMemoryWriteApplyResult{}, fmt.Errorf("commit postgres direct memory write tx: %w", err)
+		return logicdomain.DirectMemoryWriteApplyResult{}, postgresFreshVectorCommitOutcomeUncertainError("apply direct memory write", "commit postgres direct memory write tx", err)
 	}
 	return logicdomain.DirectMemoryWriteApplyResult{
 		InsertedMemoryNode:  created,
 		SupersededVectorIDs: supersededVectorIDs,
 	}, nil
+}
+
+// buildPostgresMemoryNodesSupersedeSQL builds the shared active-memory retirement statement used by post-action and direct-write replacement paths.
+// buildPostgresMemoryNodesSupersedeSQL 用于构造 post-action 与主动写替代路径共享的 active 记忆退役语句。
+func buildPostgresMemoryNodesSupersedeSQL(memoryNodesTable string) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+UPDATE %s
+SET memory_status = $1,
+    updated_at = $2
+WHERE memory_status = $3
+  AND id = ANY($4)
+`, memoryNodesTable))
+}
+
+// requirePostgresDirectMemoryWriteRowsAffected rejects direct-write lifecycle drift before transaction commit, so callers can still roll back the uncommitted fresh memory row.
+// requirePostgresDirectMemoryWriteRowsAffected 用于在事务提交前拒绝主动写生命周期行数漂移，使调用方仍可回滚尚未提交的新主动记忆行。
+func requirePostgresDirectMemoryWriteRowsAffected(action string, rowsAffected int64, expectedRows int) error {
+	return postgresRowsAffectedDriftError(action, rowsAffected, int64(expectedRows))
 }
 
 // DeleteMemoryNodes marks active PostgreSQL memory rows as deleted inside the provided hierarchy filter while preserving immutable turn/detail rows.
@@ -363,9 +396,8 @@ FOR UPDATE
 		}
 	}
 	if len(deletedMemoryIDs) == 0 {
-		if err := tx.Commit(callCtx); err != nil {
-			return logicdomain.MemoryDeleteResult{}, fmt.Errorf("commit postgres empty memory delete tx: %w", err)
-		}
+		// Let the deferred rollback release the locked read set because no active memory row will be mutated.
+		// 因为没有任何 active memory 行会被修改，所以让延迟 rollback 释放已锁定的只读集合即可。
 		return logicdomain.MemoryDeleteResult{
 			NotFoundMemoryIDs: notFoundMemoryIDs,
 		}, nil
@@ -394,7 +426,11 @@ WHERE memory_status = $4
 		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("delete postgres memory nodes: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.MemoryDeleteResult{}, fmt.Errorf("commit postgres memory delete tx: %w", err)
+		return logicdomain.MemoryDeleteResult{
+			DeletedMemoryIDs:  deletedMemoryIDs,
+			NotFoundMemoryIDs: notFoundMemoryIDs,
+			DeletedVectorIDs:  normalizeStringList(deletedVectorIDs),
+		}, postgresMemoryDeleteCommitOutcomeUncertainError(err)
 	}
 	return logicdomain.MemoryDeleteResult{
 		DeletedMemoryIDs:  deletedMemoryIDs,
@@ -403,15 +439,21 @@ WHERE memory_status = $4
 	}, nil
 }
 
+// postgresMemoryDeleteCommitOutcomeUncertainError marks delete commits whose durable memory status flips may already be visible.
+// postgresMemoryDeleteCommitOutcomeUncertainError 用于标记长期记忆删除提交失败，此时 durable 状态切换可能已经可见。
+func postgresMemoryDeleteCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("delete memory nodes", "commit postgres memory delete tx", err)
+}
+
 // pgRowScanner captures the Scan method shared by pgx row implementations so direct-memory upsert helpers can work with both pool and transaction query paths.
 // pgRowScanner 用于抽象 pgx 行对象共享的 Scan 方法，让主动记忆 upsert 辅助函数同时适用于连接池和事务查询路径。
 type pgRowScanner interface {
 	Scan(dest ...any) error
 }
 
-// directMemoryNodeUpsertSQL returns the shared PostgreSQL UPSERT statement used by both the legacy direct-write path and the new atomic replacement write path.
-// directMemoryNodeUpsertSQL 用于返回 PostgreSQL 共享 UPSERT 语句，供旧主动写路径和新的原子替代写路径共同复用。
-func directMemoryNodeUpsertSQL(table string) string {
+// directMemoryNodeInsertSQL returns the shared PostgreSQL INSERT statement used by direct-write paths that must create a new durable memory row.
+// directMemoryNodeInsertSQL 用于返回主动写路径共享的 PostgreSQL INSERT 语句，确保每次主动写都创建新的长期记忆行。
+func directMemoryNodeInsertSQL(table string) string {
 	return strings.TrimSpace(fmt.Sprintf(`
 INSERT INTO %s (
 	team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
@@ -428,45 +470,13 @@ INSERT INTO %s (
 	$25, $26, $27, $28, $29, $30,
 	$31, $32
 )
-ON CONFLICT (vector_id)
-DO UPDATE SET
-	team_id = EXCLUDED.team_id,
-	space_id = EXCLUDED.space_id,
-	project_id = EXCLUDED.project_id,
-	user_id = EXCLUDED.user_id,
-	origin_session_id = EXCLUDED.origin_session_id,
-	source_turn_id = EXCLUDED.source_turn_id,
-	embedding = EXCLUDED.embedding,
-	source_kind = EXCLUDED.source_kind,
-	scope_level = EXCLUDED.scope_level,
-	category = EXCLUDED.category,
-	abstract = EXCLUDED.abstract,
-	details = EXCLUDED.details,
-	memory_status = EXCLUDED.memory_status,
-	priority = EXCLUDED.priority,
-	memory_level = EXCLUDED.memory_level,
-	refresh_weight = EXCLUDED.refresh_weight,
-	support_count = EXCLUDED.support_count,
-	rebuttal_count = EXCLUDED.rebuttal_count,
-	status_reason = EXCLUDED.status_reason,
-	expires_at = EXCLUDED.expires_at,
-	last_recalled_at = EXCLUDED.last_recalled_at,
-	last_adopted_at = EXCLUDED.last_adopted_at,
-	last_reinforced_at = EXCLUDED.last_reinforced_at,
-	recalled_count = EXCLUDED.recalled_count,
-	adopted_count = EXCLUDED.adopted_count,
-	reinforcement_count = EXCLUDED.reinforcement_count,
-	cross_session_adopted_count = EXCLUDED.cross_session_adopted_count,
-	decay_disabled = EXCLUDED.decay_disabled,
-	dedupe_hash = EXCLUDED.dedupe_hash,
-	updated_at = EXCLUDED.updated_at
 RETURNING %s
 `, table, memoryNodeSelectColumns("")))
 }
 
-// directMemoryNodeUpsertArgs materializes the ordered UPSERT arguments once so pool and transaction code paths cannot drift on column order.
-// directMemoryNodeUpsertArgs 用于一次性生成 UPSERT 参数顺序，避免连接池和事务两条代码路径在列顺序上发生漂移。
-func directMemoryNodeUpsertArgs(record logicdomain.MemoryNodeRecord) []any {
+// directMemoryNodeInsertArgs materializes the ordered INSERT arguments once so pool and transaction code paths cannot drift on column order.
+// directMemoryNodeInsertArgs 用于一次性生成 INSERT 参数顺序，避免连接池和事务两条代码路径在列顺序上发生漂移。
+func directMemoryNodeInsertArgs(record logicdomain.MemoryNodeRecord) []any {
 	return []any{
 		int64(record.TeamID),
 		int64(record.SpaceID),
@@ -503,9 +513,9 @@ func directMemoryNodeUpsertArgs(record logicdomain.MemoryNodeRecord) []any {
 	}
 }
 
-// upsertDirectMemoryNodeRow scans one direct-memory UPSERT result row into the shared durable memory record model.
-// upsertDirectMemoryNodeRow 用于把一条主动记忆 UPSERT 返回行扫描成共享的长期记忆记录模型。
-func (r *memoryRepository) upsertDirectMemoryNodeRow(_ context.Context, row pgRowScanner) (logicdomain.MemoryNodeRecord, error) {
+// scanDirectMemoryNodeInsertRow scans one direct-memory INSERT result row into the shared durable memory record model.
+// scanDirectMemoryNodeInsertRow 用于把一条主动记忆 INSERT 返回行扫描成共享的长期记忆记录模型。
+func (r *memoryRepository) scanDirectMemoryNodeInsertRow(_ context.Context, row pgRowScanner) (logicdomain.MemoryNodeRecord, error) {
 	var scan memoryNodeScanRow
 	if err := row.Scan(
 		&scan.ID,
@@ -585,24 +595,7 @@ ORDER BY m.created_at ASC, m.id ASC
 	out := make([]logicdomain.MemoryRecord, 0, len(rows))
 	for _, row := range rows {
 		record := row.toMemoryNodeRecord()
-		filter := logicdomain.SearchFilter{
-			UserID:    record.UserID,
-			TeamID:    record.TeamID,
-			SpaceID:   record.SpaceID,
-			ProjectID: record.ProjectID,
-		}
-		if record.SourceKind == logicdomain.MemorySourceKindTurnExtract || record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
-			filter.SessionID = record.OriginSessionID
-		}
-		out = append(out, logicdomain.MemoryRecord{
-			ID:           record.VectorID,
-			Text:         record.Abstract,
-			Vector:       append([]float32(nil), record.Vector...),
-			Filter:       filter,
-			SourceTurnID: record.SourceTurnID,
-			Metadata:     memoryRecordMetadataFromNode(record),
-			CreatedAt:    record.CreatedAt,
-		})
+		out = append(out, memoryRecordFromNode(record))
 	}
 	return out, nil
 }
@@ -645,9 +638,15 @@ func (r *memoryRepository) ReplaceMemoryVectors(ctx context.Context, records []l
 		}
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return fmt.Errorf("commit postgres vector rebuild tx: %w", err)
+		return postgresMemoryVectorReplaceCommitOutcomeUncertainError(err)
 	}
 	return nil
+}
+
+// postgresMemoryVectorReplaceCommitOutcomeUncertainError marks maintenance vector-rewrite commits whose inline embeddings may already be durable.
+// postgresMemoryVectorReplaceCommitOutcomeUncertainError 用于标记维护向量重写提交失败，此时内联 embedding 可能已经持久化。
+func postgresMemoryVectorReplaceCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("replace memory vectors", "commit postgres vector rebuild tx", err)
 }
 
 // buildReplaceMemoryVectorSQL returns the narrow maintenance UPDATE used to rewrite one combined-store memory row's inline embedding payload by stable vector_id.

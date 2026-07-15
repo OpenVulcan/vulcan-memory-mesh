@@ -5,8 +5,10 @@ package grpcapi
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
+	"github.com/openvulcan/vmm/internal/app/usecase"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"google.golang.org/protobuf/proto"
@@ -138,14 +140,19 @@ func NormalizeApplyProfileInstructionRequest(req *vmmv1.ApplyProfileInstructionR
 	req.Instruction = strings.TrimSpace(req.GetInstruction())
 }
 
-// NormalizeSearchMemoryEventsRequest trims each query string before the memory-query use case validates and executes the AI-facing search request.
-// NormalizeSearchMemoryEventsRequest 用于在记忆查询用例校验和执行 AI 面向的搜索请求前，先裁剪每一条查询字符串。
+// NormalizeSearchMemoryEventsRequest trims each query string and clamps oversized top-k values before the memory-query use case validates and executes the AI-facing search request.
+// NormalizeSearchMemoryEventsRequest 用于在记忆查询用例校验和执行 AI 面向的搜索请求前，裁剪每一条查询字符串并把过大的 top-k 钳制到公开上限。
 func NormalizeSearchMemoryEventsRequest(req *vmmv1.SearchMemoryEventsRequest) {
 	if req == nil {
 		return
 	}
 	for idx, query := range req.GetQueries() {
 		req.Queries[idx] = strings.TrimSpace(query)
+	}
+	// Clamp oversized caller hints at the transport boundary so every executor observes the same bounded contract instead of rejecting an otherwise valid search.
+	// 在传输边界钳制过大的调用方提示，让所有执行器都看到相同的有界契约，而不是拒绝其他字段均合法的检索请求。
+	if req.GetTopK() > uint32(usecase.MaxMemorySearchTopK) {
+		req.TopK = uint32(usecase.MaxMemorySearchTopK)
 	}
 }
 
@@ -421,9 +428,6 @@ func (v *RequestValidator) ValidateSearchMemoryEvents(req *vmmv1.SearchMemoryEve
 			return err
 		}
 	}
-	if req.GetTopK() > 64 {
-		return logicdomain.ValidationError{Field: "top_k", Message: "must be <= 64"}
-	}
 	return nil
 }
 
@@ -436,8 +440,8 @@ func (v *RequestValidator) ValidateGetTurnDetails(req *vmmv1.GetTurnDetailsReque
 	if len(req.GetTurnIds()) == 0 {
 		return logicdomain.ValidationError{Field: "turn_ids", Message: "must contain at least one id"}
 	}
-	if len(req.GetTurnIds()) > 256 {
-		return logicdomain.ValidationError{Field: "turn_ids", Message: "must contain at most 256 ids"}
+	if len(req.GetTurnIds()) > usecase.MaxTurnDetailLookup {
+		return logicdomain.ValidationError{Field: "turn_ids", Message: fmt.Sprintf("must contain at most %d ids", usecase.MaxTurnDetailLookup)}
 	}
 	for idx, turnID := range req.GetTurnIds() {
 		if turnID == 0 {
@@ -472,7 +476,7 @@ func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest
 		if item == nil {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d]", idx), Message: "item is required"}
 		}
-		if item.GetScopeLevel() < 0 || item.GetScopeLevel() > 3 {
+		if !validTransportMemoryScopeLevel(item.GetScopeLevel()) {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].scope_level", idx), Message: "must be one supported memory scope"}
 		}
 		if err := requireString(fmt.Sprintf("items[%d].abstract", idx), item.GetAbstract(), 16000); err != nil {
@@ -481,13 +485,13 @@ func (v *RequestValidator) ValidateWriteMemories(req *vmmv1.WriteMemoriesRequest
 		if err := requireString(fmt.Sprintf("items[%d].details", idx), item.GetDetails(), 64000); err != nil {
 			return err
 		}
-		if item.GetCategory() < 0 {
-			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].category", idx), Message: "must be >= 0"}
+		if !logicdomain.ValidMemoryNodeCategory(int(item.GetCategory())) {
+			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].category", idx), Message: "must be one supported memory category"}
 		}
-		if item.GetPriority() < 0 || item.GetPriority() > 3 {
+		if !validTransportMemoryPriority(item.GetPriority()) {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].priority", idx), Message: "must be one supported memory priority"}
 		}
-		if item.GetMemoryLevel() < 0 || item.GetMemoryLevel() > 4 {
+		if !validTransportMemoryLevel(item.GetMemoryLevel()) {
 			return logicdomain.ValidationError{Field: fmt.Sprintf("items[%d].memory_level", idx), Message: "must be one supported memory level"}
 		}
 	}
@@ -509,8 +513,8 @@ func (v *RequestValidator) ValidateDeleteMemories(req *vmmv1.DeleteMemoriesReque
 	if len(req.GetMemoryIds()) == 0 {
 		return logicdomain.ValidationError{Field: "memory_ids", Message: "must contain at least one id"}
 	}
-	if len(req.GetMemoryIds()) > 256 {
-		return logicdomain.ValidationError{Field: "memory_ids", Message: "must contain at most 256 ids"}
+	if len(req.GetMemoryIds()) > usecase.MaxDeleteMemoryIDs {
+		return logicdomain.ValidationError{Field: "memory_ids", Message: fmt.Sprintf("must contain at most %d ids", usecase.MaxDeleteMemoryIDs)}
 	}
 	for idx, memoryID := range req.GetMemoryIds() {
 		if memoryID == 0 {
@@ -536,7 +540,7 @@ func maxString(field, value string, max int) error {
 	if max <= 0 {
 		return nil
 	}
-	if len(value) > max {
+	if utf8.RuneCountInString(value) > max {
 		return logicdomain.ValidationError{Field: field, Message: fmt.Sprintf("must be at most %d characters", max)}
 	}
 	return nil

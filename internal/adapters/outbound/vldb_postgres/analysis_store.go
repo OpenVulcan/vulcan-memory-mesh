@@ -55,16 +55,16 @@ ORDER BY m.created_at ASC, m.id ASC
 
 // ApplyMemoryAdoption increments lifecycle counters for the memory rows selected by pre-check and promotes hot session facts when they prove useful across sessions.
 // ApplyMemoryAdoption 用于为被 pre-check 采纳的记忆行递增生命周期计数，并在 session 级事实跨会话多次命中后将其升级。
-func (r *analysisRepository) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+func (r *analysisRepository) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error) {
 	if r == nil || r.shared == nil || r.shared.pool == nil {
-		return fmt.Errorf("postgres store is not initialized")
+		return nil, fmt.Errorf("postgres store is not initialized")
 	}
 	if session.SessionID == 0 {
-		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+		return nil, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
 	memoryIDs = normalizeUint64List(memoryIDs)
 	if len(memoryIDs) == 0 {
-		return nil
+		return []logicdomain.MemoryRecord{}, nil
 	}
 	if adoptedAt.IsZero() {
 		adoptedAt = time.Now().UTC()
@@ -76,7 +76,7 @@ func (r *analysisRepository) ApplyMemoryAdoption(ctx context.Context, session lo
 	defer cancel()
 	tx, err := r.shared.pool.Begin(callCtx)
 	if err != nil {
-		return fmt.Errorf("begin postgres memory adoption tx: %w", err)
+		return nil, fmt.Errorf("begin postgres memory adoption tx: %w", err)
 	}
 	defer func() {
 		_ = tx.Rollback(context.Background())
@@ -93,10 +93,10 @@ FOR UPDATE
 `, memoryNodeSelectColumns("m"), r.memoryNodesTable())
 	rows, err := r.queryMemoryNodesWithQueryer(callCtx, tx, strings.TrimSpace(selectAdoptionTargetsSQL), toInt64List(memoryIDs))
 	if err != nil {
-		return fmt.Errorf("load postgres memory adoption targets: %w", err)
+		return nil, fmt.Errorf("load postgres memory adoption targets: %w", err)
 	}
 	if len(rows) == 0 {
-		return nil
+		return []logicdomain.MemoryRecord{}, nil
 	}
 
 	updateSQL := fmt.Sprintf(`
@@ -117,13 +117,17 @@ SET scope_level = $1,
     updated_at = $14
 WHERE id = $15
 `, r.memoryNodesTable())
+	updatedRecords := make([]logicdomain.MemoryRecord, 0, len(rows))
+	// Track whether at least one lifecycle UPDATE reached PostgreSQL so commit ambiguity is only raised after a real mutation boundary.
+	// 记录是否至少已有一条生命周期 UPDATE 到达 PostgreSQL，确保只有真实突变后的提交结果不明才上报 outcome-uncertain。
+	mutated := false
 	for _, row := range rows {
 		record := row.toMemoryNodeRecord()
 		if !logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(record, adoptedAt) {
 			continue
 		}
 		evolved := evolveAdoptedMemoryRecord(session, record, adoptedAt)
-		if _, err := tx.Exec(
+		updateTag, err := tx.Exec(
 			callCtx,
 			strings.TrimSpace(updateSQL),
 			evolved.ScopeLevel,
@@ -141,14 +145,31 @@ WHERE id = $15
 			evolved.DecayDisabled,
 			evolved.UpdatedAt.UTC(),
 			int64(evolved.ID),
-		); err != nil {
-			return fmt.Errorf("update postgres adopted memory node %d: %w", evolved.ID, err)
+		)
+		if err != nil {
+			return nil, fmt.Errorf("update postgres adopted memory node %d: %w", evolved.ID, err)
 		}
+		if err := requirePostgresMemoryAdoptionRowsAffected(evolved.ID, updateTag.RowsAffected()); err != nil {
+			return nil, err
+		}
+		mutated = true
+		updatedRecords = append(updatedRecords, memoryRecordFromNode(evolved))
+	}
+	if !mutated {
+		// Let the deferred rollback release the read-only adoption locks when every selected row was already inactive or expired.
+		// 当所有选中行都已非 active 或已过期时，让延迟 rollback 释放只读采纳锁即可。
+		return updatedRecords, nil
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return fmt.Errorf("commit postgres memory adoption tx: %w", err)
+		return nil, postgresCommitOutcomeUncertainError("apply memory adoption", "commit postgres memory adoption tx", err)
 	}
-	return nil
+	return updatedRecords, nil
+}
+
+// requirePostgresMemoryAdoptionRowsAffected rejects an adoption lifecycle update that missed the locked memory row it is about to return for vector-side sync.
+// requirePostgresMemoryAdoptionRowsAffected 用于拒绝未命中已锁定记忆行的采纳生命周期更新，避免返回未持久化却即将同步到向量侧的记录。
+func requirePostgresMemoryAdoptionRowsAffected(memoryID uint64, rowsAffected int64) error {
+	return postgresRowsAffectedDriftError(fmt.Sprintf("update postgres adopted memory node %d", memoryID), rowsAffected, 1)
 }
 
 // ApplyTurnAnalysis writes the extracted turn summary back to the turn row, inserts durable memory/profile nodes, and returns follow-up vector cleanup coordinates.
@@ -159,6 +180,9 @@ func (r *analysisRepository) ApplyTurnAnalysis(ctx context.Context, session logi
 	}
 	if turn.ID == 0 {
 		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+	}
+	if session.SessionID == 0 {
+		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
 	}
 	if session.ProjectID == 0 {
 		return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "project_id", Message: "must resolve to one persisted project"}
@@ -189,28 +213,45 @@ func (r *analysisRepository) ApplyTurnAnalysis(ctx context.Context, session logi
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("load postgres superseded vector ids: %w", err)
 	}
 
-	updateTurnSQL := fmt.Sprintf(`
-UPDATE %s
-SET details = $1,
-    details_budget = $2,
-    extracted_status = $3,
-    updated_at = $4
-WHERE id = $5
-`, r.turnsTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateTurnSQL), strings.TrimSpace(analysis.Details), analysis.DetailsBudget, logicdomain.TurnExtractedStatusDone, now, int64(turn.ID)); err != nil {
+	// Require the current session's pending turn before any derived memory/profile rows are inserted so stale queue items stop before cross-table references appear.
+	// 在插入任何派生 memory/profile 行之前先要求当前 session 的 pending turn 存在，确保过期队列项在跨表引用出现前停止。
+	updateTurnSQL := buildPostgresTurnAnalysisUpdateSQL(r.turnsTable())
+	updateTurnTag, err := tx.Exec(
+		callCtx,
+		strings.TrimSpace(updateTurnSQL),
+		strings.TrimSpace(analysis.Details),
+		analysis.DetailsBudget,
+		logicdomain.TurnExtractedStatusDone,
+		now,
+		int64(turn.ID),
+		int64(session.SessionID),
+		logicdomain.TurnExtractedStatusPending,
+	)
+	if err != nil {
 		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update postgres turn analysis details: %w", err)
+	}
+	if err := requirePostgresTurnAnalysisRowsAffected("update postgres turn analysis details", updateTurnTag.RowsAffected(), 1); err != nil {
+		return logicdomain.TurnAnalysisApplyResult{}, err
 	}
 
 	if analysis.UserProfileMerged {
 		updateUserSQL := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, r.usersTable())
-		if _, err := tx.Exec(callCtx, updateUserSQL, strings.TrimSpace(analysis.MergedUserProfile), now, int64(session.UserID)); err != nil {
+		updateUserTag, err := tx.Exec(callCtx, updateUserSQL, strings.TrimSpace(analysis.MergedUserProfile), now, int64(session.UserID))
+		if err != nil {
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update postgres merged user profile: %w", err)
+		}
+		if err := requirePostgresTurnAnalysisRowsAffected("update postgres merged user profile", updateUserTag.RowsAffected(), 1); err != nil {
+			return logicdomain.TurnAnalysisApplyResult{}, err
 		}
 	}
 	if analysis.ProjectProfileMerged {
 		updateProjectSQL := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, r.projectsTable())
-		if _, err := tx.Exec(callCtx, updateProjectSQL, strings.TrimSpace(analysis.MergedProjectProfile), now, int64(session.ProjectID)); err != nil {
+		updateProjectTag, err := tx.Exec(callCtx, updateProjectSQL, strings.TrimSpace(analysis.MergedProjectProfile), now, int64(session.ProjectID))
+		if err != nil {
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("update postgres merged project profile: %w", err)
+		}
+		if err := requirePostgresTurnAnalysisRowsAffected("update postgres merged project profile", updateProjectTag.RowsAffected(), 1); err != nil {
+			return logicdomain.TurnAnalysisApplyResult{}, err
 		}
 	}
 
@@ -227,8 +268,8 @@ WHERE id = $5
 		}
 
 		record := normalizeTurnMemoryNodeRecord(session, turn, node, now)
-		previewEdges := normalizeTurnMemoryContextEdges(1, node.ContextEdges, now)
-		record.SupportCount, record.RebuttalCount = summarizeMemoryContextEdges(previewEdges)
+		previewEdges := logicdomain.NormalizeMemoryContextEdges(1, node.ContextEdges, now)
+		record.SupportCount, record.RebuttalCount = logicdomain.SummarizeMemoryContextEdges(previewEdges)
 
 		insertSQL := fmt.Sprintf(`
 INSERT INTO %s (
@@ -322,7 +363,7 @@ RETURNING %s
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("insert postgres memory node %d: %w", idx, err)
 		}
 		insertedRecord := inserted.toMemoryNodeRecord()
-		contextEdges := normalizeTurnMemoryContextEdges(insertedRecord.ID, node.ContextEdges, now)
+		contextEdges := logicdomain.NormalizeMemoryContextEdges(insertedRecord.ID, node.ContextEdges, now)
 		if len(contextEdges) > 0 {
 			insertEdgeSQL := fmt.Sprintf(`
 INSERT INTO %s (
@@ -354,15 +395,7 @@ INSERT INTO %s (
 		insertedMemoryNodes = append(insertedMemoryNodes, insertedRecord)
 	}
 
-	updateSupersededProfilesSQL := fmt.Sprintf(`
-UPDATE %s
-SET profile_status = $1,
-    superseded_by_id = $2,
-    status_reason = $3,
-    updated_at = $4
-WHERE profile_status = $5
-  AND id = ANY($6)
-`, r.profileNodesTable())
+	updateSupersededProfilesSQL := buildPostgresProfileNodesSupersedeSQL(r.profileNodesTable())
 	for idx, node := range analysis.ProfileNodes {
 		if !logicdomain.ValidProfileType(node.ProfileType) {
 			return logicdomain.TurnAnalysisApplyResult{}, logicdomain.ValidationError{Field: "profile_nodes[" + strconv.Itoa(idx) + "].profile_type", Message: "must be one supported profile type"}
@@ -431,9 +464,9 @@ RETURNING id
 		if len(supersedeNodeIDs) == 0 {
 			continue
 		}
-		// Retire the replaced active profile nodes in the same transaction so readers never observe the reviewed replacement and the superseded facts together.
-		// 在同一事务里退役被替换的活跃画像节点，避免读取链路同时看到评审通过的新事实与旧事实。
-		if _, err := tx.Exec(
+		// Retire only same-target predecessor nodes in the same transaction so readers never observe the reviewed replacement and superseded facts together.
+		// 在同一事务里仅退役同一目标下的旧节点，避免读取链路同时看到评审通过的新事实与旧事实。
+		supersedeProfilesTag, err := tx.Exec(
 			callCtx,
 			strings.TrimSpace(updateSupersededProfilesSQL),
 			logicdomain.ProfileStatusSuperseded,
@@ -441,39 +474,80 @@ RETURNING id
 			strings.TrimSpace(node.StatusReason),
 			now,
 			logicdomain.ProfileStatusActive,
+			node.ProfileType,
+			int64(bindID),
 			toInt64List(supersedeNodeIDs),
-		); err != nil {
+		)
+		if err != nil {
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("supersede postgres profile nodes for %d: %w", insertedProfileID, err)
+		}
+		if err := requirePostgresTurnAnalysisRowsAffected("supersede postgres profile nodes", supersedeProfilesTag.RowsAffected(), len(supersedeNodeIDs)); err != nil {
+			return logicdomain.TurnAnalysisApplyResult{}, err
 		}
 	}
 
 	if len(supersededMemoryIDs) > 0 {
-		updateSupersededSQL := fmt.Sprintf(`
-UPDATE %s
-SET memory_status = $1,
-    updated_at = $2
-WHERE memory_status = $3
-  AND id = ANY($4)
-`, r.memoryNodesTable())
-		if _, err := tx.Exec(
+		updateSupersededSQL := buildPostgresMemoryNodesSupersedeSQL(r.memoryNodesTable())
+		supersedeMemoryTag, err := tx.Exec(
 			callCtx,
 			strings.TrimSpace(updateSupersededSQL),
 			logicdomain.MemoryStatusSuperseded,
 			now,
 			logicdomain.MemoryStatusActive,
 			toInt64List(supersededMemoryIDs),
-		); err != nil {
+		)
+		if err != nil {
 			return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("supersede postgres memory nodes: %w", err)
+		}
+		if err := requirePostgresTurnAnalysisRowsAffected("supersede postgres memory nodes", supersedeMemoryTag.RowsAffected(), len(supersededMemoryIDs)); err != nil {
+			return logicdomain.TurnAnalysisApplyResult{}, err
 		}
 	}
 
 	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("commit postgres turn analysis tx: %w", err)
+		return logicdomain.TurnAnalysisApplyResult{}, postgresFreshVectorCommitOutcomeUncertainError("apply turn analysis", "commit postgres turn analysis tx", err)
 	}
 	return logicdomain.TurnAnalysisApplyResult{
 		InsertedMemoryNodes: insertedMemoryNodes,
 		SupersededVectorIDs: supersededVectorIDs,
 	}, nil
+}
+
+// buildPostgresTurnAnalysisUpdateSQL builds the guarded pending-turn update that anchors one post-action analysis transaction.
+// buildPostgresTurnAnalysisUpdateSQL 用于构造受保护的 pending turn 更新语句，作为单轮 post-action 分析事务的锚点。
+func buildPostgresTurnAnalysisUpdateSQL(turnsTable string) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+UPDATE %s
+SET details = $1,
+    details_budget = $2,
+    extracted_status = $3,
+    updated_at = $4
+WHERE id = $5
+  AND session_id = $6
+  AND extracted_status = $7
+`, turnsTable))
+}
+
+// buildPostgresProfileNodesSupersedeSQL builds the guarded profile-node replacement update used after a reviewed profile node is inserted.
+// buildPostgresProfileNodesSupersedeSQL 用于构造评审通过画像节点插入后的受保护旧节点替代更新语句。
+func buildPostgresProfileNodesSupersedeSQL(profileNodesTable string) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+UPDATE %s
+SET profile_status = $1,
+    superseded_by_id = $2,
+    status_reason = $3,
+    updated_at = $4
+WHERE profile_status = $5
+  AND profile_type = $6
+  AND bind_id = $7
+  AND id = ANY($8)
+`, profileNodesTable))
+}
+
+// requirePostgresTurnAnalysisRowsAffected rejects deterministic turn-analysis updates that did not touch every intended row before the transaction commits.
+// requirePostgresTurnAnalysisRowsAffected 用于在事务提交前拒绝未命中全部目标行的确定性 turn-analysis 更新。
+func requirePostgresTurnAnalysisRowsAffected(action string, rowsAffected int64, expectedRows int) error {
+	return postgresRowsAffectedDriftError(action, rowsAffected, int64(expectedRows))
 }
 
 // loadActiveMemoryVectorIDsTx loads the vector ids of active memory rows by memory id inside one transaction so later status flips can return deterministic cleanup coordinates.

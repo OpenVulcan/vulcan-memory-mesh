@@ -157,8 +157,15 @@ func IsConfirmationRequired(err error) bool { return errors.Is(err, ErrConfirm) 
 // OutcomeUncertainError marks one persistence step whose upstream storage engine reported an error after the commit outcome became ambiguous.
 // OutcomeUncertainError 用于标记一次持久化步骤在上游存储引擎报错后进入“提交结果不确定”的状态。
 type OutcomeUncertainError struct {
+	// Operation names the persistence step whose final side effects are no longer fully knowable by the caller.
+	// Operation 用于标记调用方已无法完全确认最终副作用的持久化步骤。
 	Operation string
-	Message   string
+	// Message keeps the storage-facing detail that explains why the outcome became uncertain.
+	// Message 用于保留导致结果不确定的存储侧细节。
+	Message string
+	// FreshVectorReference reports whether a freshly written vector may already be referenced by a durable memory row.
+	// FreshVectorReference 用于标记刚写入的新向量是否可能已经被长期 memory 行引用。
+	FreshVectorReference bool
 }
 
 // Error executes the Error logic.
@@ -180,6 +187,16 @@ func (e OutcomeUncertainError) Unwrap() error { return ErrOutcomeUncertain }
 // IsOutcomeUncertain reports whether the condition is true.
 // IsOutcomeUncertain 用于返回条件是否成立。
 func IsOutcomeUncertain(err error) bool { return errors.Is(err, ErrOutcomeUncertain) }
+
+// IsFreshVectorReferenceUncertain reports whether a failed persistence step may already reference freshly written vectors.
+// IsFreshVectorReferenceUncertain 用于判断失败的持久化步骤是否可能已经引用了刚写入的新向量。
+func IsFreshVectorReferenceUncertain(err error) bool {
+	var uncertain OutcomeUncertainError
+	if !errors.As(err, &uncertain) {
+		return false
+	}
+	return uncertain.FreshVectorReference
+}
 
 // InvalidLLMOutputError captures malformed model output when processors expect structured JSON.
 // InvalidLLMOutputError 用于在处理器期望结构化 JSON 时记录模型输出格式错误。

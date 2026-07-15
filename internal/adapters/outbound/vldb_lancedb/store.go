@@ -19,7 +19,7 @@ import (
 const (
 	// CurrentSchemaVersion tracks the latest LanceDB table layout expected by this runtime.
 	// CurrentSchemaVersion 用于标记当前运行时期望的最新 LanceDB 表结构版本。
-	CurrentSchemaVersion = 2
+	CurrentSchemaVersion = 3
 )
 
 // Store is the LanceDB local-FFI adapter used by the vector store port.
@@ -129,17 +129,19 @@ func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) err
 	}
 	rows := []map[string]any{
 		{
-			"id":             record.ID,
-			"content":        record.Text,
-			"team_id":        record.Filter.TeamID,
-			"space_id":       record.Filter.SpaceID,
-			"project_id":     record.Filter.ProjectID,
-			"session_id":     record.Filter.SessionID,
-			"user_id":        record.Filter.UserID,
-			"source_turn_id": record.SourceTurnID,
-			"metadata_json":  string(metadataJSON),
-			"created_at":     record.CreatedAt.UTC().Format(time.RFC3339Nano),
-			s.vectorColumn:   record.Vector,
+			"id":                record.ID,
+			"content":           record.Text,
+			"team_id":           record.Filter.TeamID,
+			"space_id":          record.Filter.SpaceID,
+			"project_id":        record.Filter.ProjectID,
+			"session_id":        record.Filter.SessionID,
+			"user_id":           record.Filter.UserID,
+			"source_turn_id":    record.SourceTurnID,
+			"memory_status":     normalizedMemoryRecordStatus(record),
+			"expires_timestamp": memoryRecordExpiresTimestamp(record),
+			"metadata_json":     string(metadataJSON),
+			"created_at":        record.CreatedAt.UTC().Format(time.RFC3339Nano),
+			s.vectorColumn:      record.Vector,
 		},
 	}
 	payload, err := json.Marshal(rows)
@@ -244,6 +246,9 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 				// 即使元数据解码失败，也保留命中结果可用性。
 			}
 		}
+		// Stamp the search-origin at the adapter boundary because every LanceDB hit is produced by the split vector-search path.
+		// 在适配器边界写入检索来源，因为每条 LanceDB 命中都来自分离式向量检索路径。
+		metadata["origin"] = "vector_search"
 		distance := row.Distance
 		if distance == 0 {
 			distance = row.Score
@@ -316,7 +321,29 @@ func (s *Store) RecreateTable(ctx context.Context) error {
 	if err == nil && !result.Success && !isLanceTableNotFoundMessage(result.Message) {
 		return fmt.Errorf("drop lancedb table %s: %s", s.tableName, strings.TrimSpace(result.Message))
 	}
-	return s.init(ctx)
+
+	// Only a confirmed successful drop means this call has already removed the live sidecar table; missing-table responses leave later create failures as ordinary bootstrap errors.
+	// 只有明确成功的删表结果才表示本次调用已经移除了线上 sidecar 表；表原本不存在时，后续建表失败仍属于普通启动建表错误。
+	droppedExistingTable := err == nil && result.Success
+	if err := s.init(ctx); err != nil {
+		if droppedExistingTable {
+			return lanceTableRecreateOutcomeUncertainError(s.tableName, err)
+		}
+		return err
+	}
+	return nil
+}
+
+// lanceTableRecreateOutcomeUncertainError reports that a destructive LanceDB recreate crossed the drop boundary before table creation failed.
+// lanceTableRecreateOutcomeUncertainError 用于报告 LanceDB 破坏性重建已经越过删表边界，但后续建表失败。
+func lanceTableRecreateOutcomeUncertainError(tableName string, err error) error {
+	if err == nil {
+		return nil
+	}
+	return logicdomain.OutcomeUncertainError{
+		Operation: "recreate lancedb table",
+		Message:   fmt.Sprintf("create lancedb table %s after drop: %v", tableName, err),
+	}
 }
 
 // init ensures the configured vector table exists with the expected schema.
@@ -336,6 +363,8 @@ func (s *Store) init(ctx context.Context) error {
 			{Name: "session_id", ColumnType: "int64", Nullable: false},
 			{Name: "user_id", ColumnType: "int64", Nullable: false},
 			{Name: "source_turn_id", ColumnType: "int64", Nullable: false},
+			{Name: "memory_status", ColumnType: "int64", Nullable: false},
+			{Name: "expires_timestamp", ColumnType: "int64", Nullable: false},
 			{Name: "metadata_json", ColumnType: "string", Nullable: false},
 			{Name: "created_at", ColumnType: "string", Nullable: false},
 			{Name: s.vectorColumn, ColumnType: "vector_float32", VectorDim: uint32(s.dimension), Nullable: false},
@@ -380,7 +409,11 @@ func isLanceTableNotFoundMessage(message string) bool {
 // buildFilterExpr renders one LanceDB-compatible filter expression from the hierarchical search filter.
 // buildFilterExpr 用于根据层级检索过滤条件渲染一条兼容 LanceDB 的过滤表达式。
 func buildFilterExpr(filter logicdomain.SearchFilter) string {
-	conditions := make([]string, 0, 7)
+	nowMs := time.Now().UTC().UnixMilli()
+	conditions := []string{
+		fmt.Sprintf("memory_status = %d", logicdomain.MemoryStatusActive),
+		fmt.Sprintf("(expires_timestamp <= 0 OR expires_timestamp > %d)", nowMs),
+	}
 	if filter.TeamID > 0 {
 		conditions = append(conditions, fmt.Sprintf("team_id = %d", filter.TeamID))
 	}
@@ -452,6 +485,24 @@ func buildDeleteIDsCondition(ids []string) string {
 		parts = append(parts, fmt.Sprintf("id = %s", id))
 	}
 	return strings.Join(parts, " OR ")
+}
+
+// normalizedMemoryRecordStatus returns the sidecar lifecycle status for one memory vector while treating zero-valued legacy records as active.
+// normalizedMemoryRecordStatus 用于返回一条记忆向量的旁路生命周期状态，并把零值旧记录视为 active。
+func normalizedMemoryRecordStatus(record logicdomain.MemoryRecord) int {
+	if logicdomain.ValidMemoryStatus(record.Status) {
+		return record.Status
+	}
+	return logicdomain.MemoryStatusActive
+}
+
+// memoryRecordExpiresTimestamp converts one optional durable expiry time into the millisecond value stored in the LanceDB sidecar.
+// memoryRecordExpiresTimestamp 用于把可选的长期过期时间转换成 LanceDB 旁路表保存的毫秒值。
+func memoryRecordExpiresTimestamp(record logicdomain.MemoryRecord) int64 {
+	if record.ExpiresAt.IsZero() {
+		return 0
+	}
+	return record.ExpiresAt.UTC().UnixMilli()
 }
 
 // quoteLanceString escapes one string literal for LanceDB filter expressions.

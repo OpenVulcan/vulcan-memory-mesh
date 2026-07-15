@@ -5,6 +5,7 @@ package vldb_lancedb
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -36,6 +37,8 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 		Text:         "gateway-backed memory",
 		Vector:       []float32{0.1, 0.2, 0.3},
 		SourceTurnID: 41,
+		Status:       logicdomain.MemoryStatusActive,
+		ExpiresAt:    time.Date(2026, 3, 28, 9, 0, 0, 0, time.UTC),
 		Filter: logicdomain.SearchFilter{
 			UserID:    7,
 			TeamID:    3,
@@ -61,6 +64,9 @@ func TestUpsertEncodesJSONRowsAndKeys(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0]["id"] != "mem-1" || rows[0]["content"] != "gateway-backed memory" {
 		t.Fatalf("unexpected row payload = %#v", rows)
+	}
+	if rows[0]["memory_status"] != float64(logicdomain.MemoryStatusActive) || rows[0]["expires_timestamp"] != float64(time.Date(2026, 3, 28, 9, 0, 0, 0, time.UTC).UnixMilli()) {
+		t.Fatalf("unexpected lifecycle payload = %#v", rows[0])
 	}
 }
 
@@ -94,8 +100,14 @@ func TestSearchMapsRowsAndFilter(t *testing.T) {
 	if len(hits) != 1 || hits[0].ID != "mem-1" || hits[0].Filter.UserID != 0 {
 		t.Fatalf("unexpected hits = %#v", hits)
 	}
+	if hits[0].Metadata["source"] != "seed" || hits[0].Metadata["origin"] != "vector_search" {
+		t.Fatalf("expected LanceDB search to preserve metadata and stamp vector origin, got %#v", hits[0].Metadata)
+	}
 	if !strings.Contains(capturedFilter, "(user_id = 0 OR user_id = 7)") {
 		t.Fatalf("unexpected filter expression: %s", capturedFilter)
+	}
+	if !strings.Contains(capturedFilter, "memory_status = 0") || !strings.Contains(capturedFilter, "expires_timestamp <= 0 OR expires_timestamp >") {
+		t.Fatalf("expected lifecycle pre-filter expression, got: %s", capturedFilter)
 	}
 }
 
@@ -176,6 +188,36 @@ func TestInitIgnoresAlreadyExistsResponses(t *testing.T) {
 	}
 }
 
+// TestInitCreatesLifecycleColumns verifies schema v3 creates lifecycle columns that let split-mode vector recall filter inactive rows before top-k truncation.
+// TestInitCreatesLifecycleColumns 用于验证 schema v3 会创建生命周期列，让 split 模式向量召回能在 top-k 截断前过滤非活跃行。
+func TestInitCreatesLifecycleColumns(t *testing.T) {
+	var captured lancedbffi.CreateTableRequest
+	engine := &fakeLanceDBEngine{
+		createTableFunc: func(request lancedbffi.CreateTableRequest) (lancedbffi.CreateTableResult, error) {
+			captured = request
+			return lancedbffi.CreateTableResult{Success: true, Message: "ok"}, nil
+		},
+	}
+	store := &Store{engine: engine, tableName: "vmm_memory_vectors_3", vectorColumn: "vector", dimension: 3}
+
+	if err := store.init(context.Background()); err != nil {
+		t.Fatalf("init returned error: %v", err)
+	}
+	columns := map[string]lancedbffi.CreateTableColumn{}
+	for _, column := range captured.Columns {
+		columns[column.Name] = column
+	}
+	for _, name := range []string{"memory_status", "expires_timestamp"} {
+		column, ok := columns[name]
+		if !ok {
+			t.Fatalf("expected lifecycle column %q in %#v", name, captured.Columns)
+		}
+		if column.ColumnType != "int64" || column.Nullable {
+			t.Fatalf("unexpected lifecycle column %q definition: %#v", name, column)
+		}
+	}
+}
+
 // TestDebugDropConfiguredTableTreatsMissingTableAsSuccess verifies repeated debug-clean attempts stay idempotent when the table is already gone.
 // TestDebugDropConfiguredTableTreatsMissingTableAsSuccess 用于验证目标表已不存在时，重复 debug-clean 仍保持幂等成功。
 func TestDebugDropConfiguredTableTreatsMissingTableAsSuccess(t *testing.T) {
@@ -186,6 +228,53 @@ func TestDebugDropConfiguredTableTreatsMissingTableAsSuccess(t *testing.T) {
 	}
 	if err := debugDropTableWithEngine(context.Background(), engine, "vmm_memory_vectors_3", time.Second); err != nil {
 		t.Fatalf("debug drop configured table should tolerate missing table: %v", err)
+	}
+}
+
+// TestRecreateTableMarksCreateFailureAfterDropOutcomeUncertain verifies destructive table recreation does not hide that the old sidecar table was already removed.
+// TestRecreateTableMarksCreateFailureAfterDropOutcomeUncertain 用于验证破坏性表重建不会掩盖旧 sidecar 表已经被删除这一事实。
+func TestRecreateTableMarksCreateFailureAfterDropOutcomeUncertain(t *testing.T) {
+	engine := &fakeLanceDBEngine{
+		dropTableFunc: func(request lancedbffi.DropTableRequest) (lancedbffi.DropTableResult, error) {
+			return lancedbffi.DropTableResult{Success: true, Message: "dropped"}, nil
+		},
+		createTableFunc: func(request lancedbffi.CreateTableRequest) (lancedbffi.CreateTableResult, error) {
+			return lancedbffi.CreateTableResult{}, errors.New("ffi create failed")
+		},
+	}
+	store := &Store{engine: engine, tableName: "vmm_memory_vectors_3", vectorColumn: "vector", dimension: 3}
+
+	err := store.RecreateTable(context.Background())
+	if err == nil {
+		t.Fatalf("expected recreate error")
+	}
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain recreate error, got %T %v", err, err)
+	}
+	if !strings.Contains(err.Error(), "create lancedb table vmm_memory_vectors_3 after drop") {
+		t.Fatalf("unexpected recreate error detail: %v", err)
+	}
+}
+
+// TestRecreateTableKeepsCreateFailureOrdinaryWhenTableWasAlreadyMissing verifies create failures are only marked uncertain after this call removed an existing table.
+// TestRecreateTableKeepsCreateFailureOrdinaryWhenTableWasAlreadyMissing 用于验证只有本次调用删除过已有表时，建表失败才会上报结果不确定。
+func TestRecreateTableKeepsCreateFailureOrdinaryWhenTableWasAlreadyMissing(t *testing.T) {
+	engine := &fakeLanceDBEngine{
+		dropTableFunc: func(request lancedbffi.DropTableRequest) (lancedbffi.DropTableResult, error) {
+			return lancedbffi.DropTableResult{Success: false, Message: "table does not exist"}, nil
+		},
+		createTableFunc: func(request lancedbffi.CreateTableRequest) (lancedbffi.CreateTableResult, error) {
+			return lancedbffi.CreateTableResult{}, errors.New("ffi create failed")
+		},
+	}
+	store := &Store{engine: engine, tableName: "vmm_memory_vectors_3", vectorColumn: "vector", dimension: 3}
+
+	err := store.RecreateTable(context.Background())
+	if err == nil {
+		t.Fatalf("expected recreate error")
+	}
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected ordinary create failure when no table was dropped, got %T %v", err, err)
 	}
 }
 

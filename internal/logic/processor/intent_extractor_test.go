@@ -28,6 +28,18 @@ func TestParseIntentResponseParsesMarkdownJSON(t *testing.T) {
 	}
 }
 
+// TestParseIntentResponseAcceptsNoMemoryWithEmptyQueries verifies the no-recall branch remains valid when queries is explicitly empty.
+// TestParseIntentResponseAcceptsNoMemoryWithEmptyQueries 用于验证无需召回分支在显式返回空 queries 时仍然合法。
+func TestParseIntentResponseAcceptsNoMemoryWithEmptyQueries(t *testing.T) {
+	intent, err := parseIntentResponse(`{"reason":"recent context answers it","need_memory":false,"queries":[]}`)
+	if err != nil {
+		t.Fatalf("parse no-memory intent: %v", err)
+	}
+	if intent.NeedMemory || len(intent.Queries) != 0 || intent.Reason != "recent context answers it" {
+		t.Fatalf("unexpected no-memory intent: %#v", intent)
+	}
+}
+
 // TestParseIntentResponseRejectsInvalidJSON verifies that malformed payloads are surfaced as InvalidLLMOutputError values.
 // TestParseIntentResponseRejectsInvalidJSON 用于验证畸形载荷会被识别为 InvalidLLMOutputError。
 func TestParseIntentResponseRejectsInvalidJSON(t *testing.T) {
@@ -35,6 +47,60 @@ func TestParseIntentResponseRejectsInvalidJSON(t *testing.T) {
 	var invalid logicdomain.InvalidLLMOutputError
 	if !errors.As(err, &invalid) {
 		t.Fatalf("expected InvalidLLMOutputError, got %v", err)
+	}
+}
+
+// TestParseIntentResponseRejectsLegacyKeywords verifies the parser no longer accepts the removed keywords fallback field.
+// TestParseIntentResponseRejectsLegacyKeywords 用于验证解析器不再接受已经移除的 keywords 回退字段。
+func TestParseIntentResponseRejectsLegacyKeywords(t *testing.T) {
+	_, err := parseIntentResponse(`{"reason":"needs memory","need_memory":true,"keywords":["fastapi"]}`)
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) {
+		t.Fatalf("expected InvalidLLMOutputError, got %v", err)
+	}
+}
+
+// TestParseIntentResponseRejectsMissingRequiredFields verifies the first-stage parser requires every field in the current prompt contract.
+// TestParseIntentResponseRejectsMissingRequiredFields 用于验证第一层解析器会要求当前提示词契约中的所有字段都显式存在。
+func TestParseIntentResponseRejectsMissingRequiredFields(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "missing-reason", raw: `{"need_memory":true,"queries":["历史决策"]}`},
+		{name: "missing-need-memory", raw: `{"reason":"needs memory","queries":["历史决策"]}`},
+		{name: "missing-queries", raw: `{"reason":"needs memory","need_memory":true}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseIntentResponse(tc.raw)
+			var invalid logicdomain.InvalidLLMOutputError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("expected InvalidLLMOutputError, got %v", err)
+			}
+		})
+	}
+}
+
+// TestParseIntentResponseRejectsNeedMemoryQueryMismatch verifies need_memory and queries stay consistent at the parser boundary.
+// TestParseIntentResponseRejectsNeedMemoryQueryMismatch 用于验证 need_memory 与 queries 在解析器边界保持一致。
+func TestParseIntentResponseRejectsNeedMemoryQueryMismatch(t *testing.T) {
+	cases := []struct {
+		name string
+		raw  string
+	}{
+		{name: "need-memory-empty-queries", raw: `{"reason":"needs memory","need_memory":true,"queries":[]}`},
+		{name: "need-memory-blank-queries", raw: `{"reason":"needs memory","need_memory":true,"queries":["  "]}`},
+		{name: "no-memory-with-query", raw: `{"reason":"recent answer exists","need_memory":false,"queries":["历史决策"]}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := parseIntentResponse(tc.raw)
+			var invalid logicdomain.InvalidLLMOutputError
+			if !errors.As(err, &invalid) {
+				t.Fatalf("expected InvalidLLMOutputError, got %v", err)
+			}
+		})
 	}
 }
 

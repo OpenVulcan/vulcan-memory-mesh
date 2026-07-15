@@ -129,6 +129,157 @@ func TestPreCheckExecuteReturnsEmptyContextWhenMemoryIsNotNeeded(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecuteLogsIntentInvalidOutput verifies degraded pre-check intent failures keep raw first-stage model diagnostics in server logs.
+// TestPreCheckExecuteLogsIntentInvalidOutput 用于验证 pre-check 第一层意图失败降级时，会把原始模型诊断留在服务端日志中。
+func TestPreCheckExecuteLogsIntentInvalidOutput(t *testing.T) {
+	rawOutput := strings.Join([]string{
+		"```json",
+		"{\"need_memory\":true,\"queries\":[\"部署策略\"]",
+		"```",
+	}, "\n")
+	intent := &stubPreCheckIntentExtractor{
+		err: logicdomain.InvalidLLMOutputError{
+			Scene:   "precheck_l1_main",
+			Message: "json decode failed",
+			Raw:     rawOutput,
+		},
+		model: "Qwen/Qwen3-32B",
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := NewPreCheckUseCase(
+		&stubPreCheckMemories{},
+		&stubPreCheckStore{},
+		intent,
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{},
+		logger,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-precheck-invalid-l1"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-invalid-l1",
+			UserID:     7,
+			ProjectID:  9,
+		},
+		UserContent: "这次部署策略怎么定？",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if !result.Degraded || result.ShouldInject {
+		t.Fatalf("expected degraded empty result, got %+v", result)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "pre-check intent degraded") {
+		t.Fatalf("expected intent degraded log, got %s", logs)
+	}
+	if !strings.Contains(logs, "llm_scene：\"precheck_l1_main\"") {
+		t.Fatalf("expected l1 scene in degraded log, got %s", logs)
+	}
+	if !strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
+		t.Fatalf("expected intent model in degraded log, got %s", logs)
+	}
+	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
+		t.Fatalf("expected raw intent output in degraded log, got %s", logs)
+	}
+	if !strings.Contains(logs, "invalid llm output for precheck_l1_main: json decode failed") {
+		t.Fatalf("expected invalid intent output summary in degraded log, got %s", logs)
+	}
+}
+
+// TestPreCheckExecuteLogsReviewerInvalidOutput verifies degraded pre-check reviewer failures keep raw second-stage model diagnostics in server logs.
+// TestPreCheckExecuteLogsReviewerInvalidOutput 用于验证 pre-check 第二层评审失败降级时，会把原始模型诊断留在服务端日志中。
+func TestPreCheckExecuteLogsReviewerInvalidOutput(t *testing.T) {
+	intent := &stubPreCheckIntentExtractor{
+		result: logicdomain.IntentResult{
+			Queries:    []string{"部署策略"},
+			NeedMemory: true,
+			Reason:     "用户问题需要长期部署记忆。",
+		},
+		model: "Qwen/Qwen3-32B",
+	}
+	rawOutput := strings.Join([]string{
+		"```json",
+		"{\"selected_candidate_numbers\":[1]",
+		"```",
+	}, "\n")
+	reviewer := &stubPreCheckReviewer{
+		err: logicdomain.InvalidLLMOutputError{
+			Scene:   "precheck_l2_main",
+			Message: "json decode failed",
+			Raw:     rawOutput,
+		},
+		model: "Qwen/Qwen3-235B-A22B",
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := NewPreCheckUseCase(
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{{
+					QueryIndex: 0,
+					Query:      "部署策略",
+					Hits: []MemoryQueryHit{{
+						MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+						SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 8},
+						SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+						ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+						Abstract:       "项目默认采用本地部署。",
+						DetailsPreview: "用户确认项目默认采用本地部署。",
+						Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+						Score:          0.97,
+						Origin:         "vector",
+					}},
+				}},
+			},
+		},
+		&stubPreCheckStore{},
+		intent,
+		reviewer,
+		&stubPreCheckAssembler{},
+		PreCheckConfig{},
+		logger,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-precheck-invalid-l2"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  42,
+			SessionKey: "sess-invalid-l2",
+			UserID:     7,
+			ProjectID:  9,
+		},
+		UserContent: "这次部署策略怎么定？",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if !result.Degraded || result.ShouldInject {
+		t.Fatalf("expected degraded empty result, got %+v", result)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "pre-check memory adoption degraded") {
+		t.Fatalf("expected memory adoption degraded log, got %s", logs)
+	}
+	if !strings.Contains(logs, "llm_scene：\"precheck_l2_main\"") {
+		t.Fatalf("expected l2 scene in degraded log, got %s", logs)
+	}
+	if !strings.Contains(logs, "model：\"Qwen/Qwen3-235B-A22B\"") {
+		t.Fatalf("expected reviewer model in degraded log, got %s", logs)
+	}
+	if strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
+		t.Fatalf("expected l2 failure log to avoid intent model attribution, got %s", logs)
+	}
+	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
+		t.Fatalf("expected raw reviewer output in degraded log, got %s", logs)
+	}
+	if !strings.Contains(logs, "invalid llm output for precheck_l2_main: json decode failed") {
+		t.Fatalf("expected invalid reviewer output summary in degraded log, got %s", logs)
+	}
+}
+
 // TestPreCheckExecuteScrubsPIIBeforeIntentReviewAndAssembly verifies pre-check redacts the current request, recent-turn context, and recalled memory payloads before they reach the first-stage extractor, second-stage reviewer, and final assembler.
 // TestPreCheckExecuteScrubsPIIBeforeIntentReviewAndAssembly 用于验证 pre-check 会在第一层提取器、第二层评审器和最终组装器看到文本之前，先脱敏当前请求、最近 turn 上下文以及召回记忆内容。
 func TestPreCheckExecuteScrubsPIIBeforeIntentReviewAndAssembly(t *testing.T) {
@@ -234,6 +385,106 @@ func TestPreCheckExecuteScrubsPIIBeforeIntentReviewAndAssembly(t *testing.T) {
 	}
 	if len(assembler.hits) != 1 || strings.Contains(assembler.hits[0].Text, "13800138000") {
 		t.Fatalf("expected assembled hits to stay scrubbed, got %#v", assembler.hits)
+	}
+}
+
+// TestPreCheckSearchMemoryCandidatesScrubsMergedCandidatesOnce verifies repeated query-group hits for the same memory are merged before reviewer-candidate PII redaction runs.
+// TestPreCheckSearchMemoryCandidatesScrubsMergedCandidatesOnce 用于验证同一 memory 被多个 query group 命中时，会先合并再执行 reviewer 候选脱敏。
+func TestPreCheckSearchMemoryCandidatesScrubsMergedCandidatesOnce(t *testing.T) {
+	memories := &stubPreCheckMemories{
+		result: MemoryQueryResult{
+			Results: []MemoryQueryGroupResult{
+				{
+					QueryIndex: 0,
+					Query:      "联系方式",
+					Hits: []MemoryQueryHit{
+						{
+							MemoryRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+							SourceRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 8},
+							SourceKind:                 logicdomain.MemorySourceKindTurnExtract,
+							ScopeLevel:                 logicdomain.MemoryScopeLevelProject,
+							Abstract:                   "用户电话是 13800138000",
+							DetailsPreview:             "需要联系时使用 13800138000",
+							Category:                   logicdomain.MemoryNodeCategorySecurityPolicy,
+							Score:                      0.95,
+							Origin:                     "vector_search",
+							MatchedContextValues:       []string{"phone=13800138000"},
+							MatchedContextSupportCount: 1,
+							MatchedContextScoreDelta:   0.05,
+						},
+					},
+				},
+				{
+					QueryIndex: 1,
+					Query:      "电话",
+					Hits: []MemoryQueryHit{
+						{
+							MemoryRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+							SourceRef:                  logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 8},
+							SourceKind:                 logicdomain.MemorySourceKindTurnExtract,
+							ScopeLevel:                 logicdomain.MemoryScopeLevelProject,
+							Abstract:                   "用户电话是 13800138000",
+							DetailsPreview:             "需要联系时使用 13800138000",
+							Category:                   logicdomain.MemoryNodeCategorySecurityPolicy,
+							Score:                      0.94,
+							Origin:                     "hybrid_rrf",
+							MatchedContextValues:       []string{"phone=13900139000"},
+							MatchedContextSupportCount: 2,
+							MatchedContextScoreDelta:   0.04,
+						},
+					},
+				},
+			},
+		},
+	}
+	uc := NewPreCheckUseCase(
+		memories,
+		nil,
+		nil,
+		nil,
+		nil,
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, ReviewCandidateLimit: 10},
+		nil,
+	)
+	scrubber := &replacingCountingPIIScrubber{
+		replacements: map[string]string{
+			"13800138000": "masked phone",
+			"13900139000": "masked phone",
+		},
+	}
+	uc.ConfigurePIIScrubber(scrubber)
+
+	candidates, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-precheck-merge-scrub",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "帮我查联系方式",
+	}, logicdomain.IntentResult{
+		Queries:    []string{"联系方式", "电话"},
+		NeedMemory: true,
+		Reason:     "contact recall",
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if len(candidates) != 1 {
+		t.Fatalf("expected duplicate memory hits to merge into one candidate, got %#v", candidates)
+	}
+	candidate := candidates[0]
+	if strings.Contains(candidate.Abstract, "13800138000") || strings.Contains(candidate.Abstract, "13900139000") ||
+		strings.Contains(candidate.Details, "13800138000") || strings.Contains(candidate.Details, "13900139000") {
+		t.Fatalf("expected merged candidate text to be scrubbed, got %#v", candidate)
+	}
+	if len(candidate.MatchedContextValues) != 1 || candidate.MatchedContextValues[0] != "phone=masked phone" {
+		t.Fatalf("expected scrubbed context values to be deduplicated, got %#v", candidate.MatchedContextValues)
+	}
+	if scrubber.calls != 6 {
+		t.Fatalf("expected scrub calls to reuse log previews and scrub one merged candidate once, got %d", scrubber.calls)
 	}
 }
 
@@ -441,7 +692,6 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 	reviewer := &stubPreCheckReviewer{
 		result: logicdomain.PreCheckMemoryReviewResult{
 			SelectedCandidateNumbers: []int{2, 1},
-			Reason:                   "先用最近确认，再用稳定决策",
 		},
 	}
 	assembler := &stubPreCheckAssembler{
@@ -510,6 +760,84 @@ func TestPreCheckExecuteUsesMixedRecentTurnsAndAdoptsSelectedCandidates(t *testi
 	}
 }
 
+// TestPreCheckExecuteDeduplicatesReviewerSelectedCandidateNumbers verifies the usecase boundary removes repeated reviewer selections before adoption write-back and final assembly.
+// TestPreCheckExecuteDeduplicatesReviewerSelectedCandidateNumbers 用于验证 usecase 边界会在采纳写回和最终组装前移除 reviewer 重复选择的候选编号。
+func TestPreCheckExecuteDeduplicatesReviewerSelectedCandidateNumbers(t *testing.T) {
+	store := &stubPreCheckStore{}
+	reviewer := &stubPreCheckReviewer{
+		result: logicdomain.PreCheckMemoryReviewResult{
+			SelectedCandidateNumbers: []int{1, 1, 1},
+		},
+	}
+	assembler := &stubPreCheckAssembler{
+		text: "assembled once",
+		items: []logicdomain.ContextItem{
+			{Kind: "memory", Title: "混合召回记忆", Text: "项目已经决定用 channel 替代 mutex。", Source: "memory", Score: 0.93, TurnID: 8},
+		},
+	}
+	uc := NewPreCheckUseCase(
+		&stubPreCheckMemories{
+			result: MemoryQueryResult{
+				Results: []MemoryQueryGroupResult{
+					{
+						QueryIndex: 0,
+						Query:      "为什么改成 channel",
+						Hits: []MemoryQueryHit{
+							{
+								MemoryRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 20},
+								SourceRef:      logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeTurn, ID: 8},
+								SourceKind:     logicdomain.MemorySourceKindTurnExtract,
+								ScopeLevel:     logicdomain.MemoryScopeLevelProject,
+								Abstract:       "项目已经决定用 channel 替代 mutex。",
+								DetailsPreview: "这是当前项目的并发实现决策。",
+								Category:       logicdomain.MemoryNodeCategoryArchitectureDecision,
+								Score:          0.93,
+								Origin:         "hybrid_rrf",
+							},
+						},
+					},
+				},
+			},
+		},
+		store,
+		&stubPreCheckIntentExtractor{
+			result: logicdomain.IntentResult{
+				Queries:    []string{"为什么改成 channel"},
+				NeedMemory: true,
+				Reason:     "needs architecture memory",
+			},
+		},
+		reviewer,
+		assembler,
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, HistoryTurns: 4, MaxInputTokens: 200},
+		nil,
+	)
+
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-pre-review-dedupe"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  41,
+			SessionKey: "sess-1",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		UserContent: "为什么这里要换成 channel？",
+	})
+	if err != nil {
+		t.Fatalf("execute pre-check: %v", err)
+	}
+	if !result.ShouldInject || result.ContextText != "assembled once" {
+		t.Fatalf("expected one assembled injection result, got %#v", result)
+	}
+	if len(store.adoptedIDs) != 1 || store.adoptedIDs[0] != 20 {
+		t.Fatalf("expected duplicate reviewer selection to write adoption once, got %#v", store.adoptedIDs)
+	}
+	if len(assembler.hits) != 1 || assembler.hits[0].ID != "20" {
+		t.Fatalf("expected duplicate reviewer selection to assemble once, got %#v", assembler.hits)
+	}
+}
+
 // TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID verifies that when the reviewer selects multiple memories from the same source turn, pre-check still compacts the final injected context to one representative item while preserving lifecycle write-back for every reviewer-selected memory id.
 // TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID 用于验证当评审器同时选中多个来自同一来源 turn 的记忆时，pre-check 仍会把最终注入上下文压缩成一个代表项，同时保留对全部选中 memory id 的生命周期写回。
 func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.T) {
@@ -563,7 +891,6 @@ func TestPreCheckExecuteDeduplicatesSelectedCandidatesBySourceTurnID(t *testing.
 		&stubPreCheckReviewer{
 			result: logicdomain.PreCheckMemoryReviewResult{
 				SelectedCandidateNumbers: []int{1, 2},
-				Reason:                   "两条都相关，但最终只应保留一个 turn 代表项。",
 			},
 		},
 		nil,
@@ -1651,9 +1978,9 @@ func TestPreCheckSearchCandidatesReopensOnlyCompactedTurns(t *testing.T) {
 	}
 }
 
-// TestPreCheckSearchCandidatesDefaultsToLegacyRecallMode verifies omitted mode values keep the historical pre-check behavior and bypass compact-boundary filtering.
-// TestPreCheckSearchCandidatesDefaultsToLegacyRecallMode 用于验证省略 mode 时会保持历史 pre-check 行为，并绕过 compact 边界过滤。
-func TestPreCheckSearchCandidatesDefaultsToLegacyRecallMode(t *testing.T) {
+// TestPreCheckSearchCandidatesDefaultsToCompactRecallMode verifies omitted mode values use compact-boundary filtering instead of the deprecated legacy branch.
+// TestPreCheckSearchCandidatesDefaultsToCompactRecallMode 用于验证省略 mode 时会应用 compact 边界过滤，而不是进入已弃用的 legacy 分支。
+func TestPreCheckSearchCandidatesDefaultsToCompactRecallMode(t *testing.T) {
 	memories := &stubPreCheckMemories{}
 	uc := NewPreCheckUseCase(
 		memories,
@@ -1675,16 +2002,54 @@ func TestPreCheckSearchCandidatesDefaultsToLegacyRecallMode(t *testing.T) {
 			ProjectID:           9,
 			LastCompactedTurnID: 88,
 		},
-		UserContent: "旧插件不支持 compact 判定",
+		UserContent: "省略模式时仍需要 compact 判定",
 	}, logicdomain.IntentResult{
 		NeedMemory: true,
-		Queries:    []string{"旧插件不支持 compact 判定"},
+		Queries:    []string{"省略模式时仍需要 compact 判定"},
+	})
+	if err != nil {
+		t.Fatalf("search memory candidates: %v", err)
+	}
+	if memories.cmd.BoundarySessionID != 41 || memories.cmd.BoundaryMaxTurnID != 88 || memories.cmd.ExcludeBoundaryTurn {
+		t.Fatalf("expected omitted mode to use compact boundary filtering, got %#v", memories.cmd)
+	}
+}
+
+// TestPreCheckSearchCandidatesFullRecallSkipsCurrentSessionBoundary verifies only the explicit FULL mode removes the current-session compact filter.
+// TestPreCheckSearchCandidatesFullRecallSkipsCurrentSessionBoundary 用于验证只有显式 FULL 模式会移除当前 session 的 compact 过滤条件。
+func TestPreCheckSearchCandidatesFullRecallSkipsCurrentSessionBoundary(t *testing.T) {
+	memories := &stubPreCheckMemories{}
+	uc := NewPreCheckUseCase(
+		memories,
+		&stubPreCheckStore{},
+		&stubPreCheckIntentExtractor{},
+		&stubPreCheckReviewer{},
+		&stubPreCheckAssembler{},
+		PreCheckConfig{TopK: 4, MinSimilarityScore: 0.8, SearchScope: "project"},
+		nil,
+	)
+
+	_, err := uc.searchMemoryCandidates(context.Background(), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:           41,
+			SessionKey:          "sess-1",
+			UserID:              7,
+			TeamID:              3,
+			SpaceID:             5,
+			ProjectID:           9,
+			LastCompactedTurnID: 88,
+		},
+		UserContent: "显式请求当前检索范围内的全量记忆",
+		RecallMode:  PreCheckRecallModeFull,
+	}, logicdomain.IntentResult{
+		NeedMemory: true,
+		Queries:    []string{"显式请求当前检索范围内的全量记忆"},
 	})
 	if err != nil {
 		t.Fatalf("search memory candidates: %v", err)
 	}
 	if memories.cmd.BoundarySessionID != 0 || memories.cmd.BoundaryMaxTurnID != 0 || memories.cmd.ExcludeBoundaryTurn {
-		t.Fatalf("expected compact boundary to be bypassed, got %#v", memories.cmd)
+		t.Fatalf("expected full recall to omit current-session boundary filtering, got %#v", memories.cmd)
 	}
 }
 
@@ -1898,7 +2263,6 @@ func TestPreCheckExecuteDeduplicatesEquivalentFinalInjectionText(t *testing.T) {
 	reviewer := &stubPreCheckReviewer{
 		result: logicdomain.PreCheckMemoryReviewResult{
 			SelectedCandidateNumbers: []int{1, 2},
-			Reason:                   "两条都相关，但最终注入不需要重复文本",
 		},
 	}
 	assembler := &stubPreCheckAssembler{
@@ -1984,6 +2348,60 @@ func TestPreCheckExecuteDeduplicatesEquivalentFinalInjectionText(t *testing.T) {
 	}
 }
 
+// TestPreCheckWriteMemoryAdoptionSyncsReturnedRecordsToVectorLifecycle verifies relational adoption changes are mirrored into the vector sidecar.
+// TestPreCheckWriteMemoryAdoptionSyncsReturnedRecordsToVectorLifecycle 用于验证关系侧采纳变更会同步镜像到向量 sidecar。
+func TestPreCheckWriteMemoryAdoptionSyncsReturnedRecordsToVectorLifecycle(t *testing.T) {
+	expiresAt := time.Date(2026, 4, 3, 12, 0, 0, 0, time.UTC)
+	store := &stubPreCheckStore{
+		adoptedRecords: []logicdomain.MemoryRecord{
+			{
+				ID:        "memory-301",
+				Vector:    []float32{0.1, 0.2},
+				Text:      "SQLite uses local lifecycle filtering.",
+				Filter:    logicdomain.SearchFilter{TeamID: 1, SpaceID: 2, ProjectID: 3, UserID: 4, SessionID: 41},
+				Status:    logicdomain.MemoryStatusActive,
+				ExpiresAt: expiresAt,
+			},
+		},
+	}
+	lifecycle := &stubPreCheckLifecycleVectorStore{}
+	uc := &PreCheckUseCase{store: store}
+	uc.ConfigureMemoryAdoptionVectorSync(lifecycle)
+
+	err := uc.writeMemoryAdoption(context.Background(), logicdomain.SessionRef{SessionID: 41}, []logicdomain.PreCheckMemoryCandidate{
+		{MemoryID: 301},
+	})
+	if err != nil {
+		t.Fatalf("writeMemoryAdoption returned error: %v", err)
+	}
+	if len(store.adoptedIDs) != 1 || store.adoptedIDs[0] != 301 {
+		t.Fatalf("unexpected adopted ids: %#v", store.adoptedIDs)
+	}
+	if len(lifecycle.records) != 1 {
+		t.Fatalf("expected one vector lifecycle upsert, got %#v", lifecycle.records)
+	}
+	if lifecycle.records[0].ID != "memory-301" || !lifecycle.records[0].ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("unexpected vector lifecycle record: %#v", lifecycle.records[0])
+	}
+}
+
+// TestPreCheckWriteMemoryAdoptionSkipsStoreWithoutValidMemoryIDs verifies invalid in-memory candidates cannot delegate an empty adoption mutation to the relational store.
+// TestPreCheckWriteMemoryAdoptionSkipsStoreWithoutValidMemoryIDs 用于验证无效内存候选不会把空采纳写入下放到关系存储。
+func TestPreCheckWriteMemoryAdoptionSkipsStoreWithoutValidMemoryIDs(t *testing.T) {
+	store := &stubPreCheckStore{}
+	uc := &PreCheckUseCase{store: store}
+
+	err := uc.writeMemoryAdoption(context.Background(), logicdomain.SessionRef{}, []logicdomain.PreCheckMemoryCandidate{
+		{MemoryID: 0},
+	})
+	if err != nil {
+		t.Fatalf("writeMemoryAdoption returned error: %v", err)
+	}
+	if store.adoptionCalls != 0 {
+		t.Fatalf("expected empty memory-id adoption to skip store, got %d calls", store.adoptionCalls)
+	}
+}
+
 // stubPreCheckMemories is the memory search double used by pre-check tests.
 // stubPreCheckMemories 用于作为 pre-check 测试里的记忆检索桩。
 type stubPreCheckMemories struct {
@@ -2033,7 +2451,9 @@ type stubPreCheckStore struct {
 	adoptedSession logicdomain.SessionRef
 	adoptedIDs     []uint64
 	adoptedAt      time.Time
+	adoptedRecords []logicdomain.MemoryRecord
 	adoptionErr    error
+	adoptionCalls  int
 }
 
 // LoadRecentSessionTurns executes the stubbed LoadRecentSessionTurns logic.
@@ -2044,11 +2464,29 @@ func (s *stubPreCheckStore) LoadRecentSessionTurns(context.Context, logicdomain.
 
 // ApplyMemoryAdoption executes the stubbed ApplyMemoryAdoption logic.
 // ApplyMemoryAdoption 用于执行桩化的 ApplyMemoryAdoption 逻辑。
-func (s *stubPreCheckStore) ApplyMemoryAdoption(_ context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+func (s *stubPreCheckStore) ApplyMemoryAdoption(_ context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error) {
+	s.adoptionCalls++
 	s.adoptedSession = session
 	s.adoptedIDs = append([]uint64(nil), memoryIDs...)
 	s.adoptedAt = adoptedAt
-	return s.adoptionErr
+	return append([]logicdomain.MemoryRecord(nil), s.adoptedRecords...), s.adoptionErr
+}
+
+// stubPreCheckLifecycleVectorStore captures vector lifecycle upserts emitted after relational memory adoption.
+// stubPreCheckLifecycleVectorStore 用于记录关系侧记忆采纳后触发的向量生命周期 upsert。
+type stubPreCheckLifecycleVectorStore struct {
+	records []logicdomain.MemoryRecord
+	err     error
+}
+
+// Upsert executes the stubbed vector lifecycle synchronization.
+// Upsert 用于执行桩化的向量生命周期同步。
+func (s *stubPreCheckLifecycleVectorStore) Upsert(_ context.Context, record logicdomain.MemoryRecord) error {
+	if s.err != nil {
+		return s.err
+	}
+	s.records = append(s.records, record)
+	return nil
 }
 
 // stubPreCheckIntentExtractor is the first-stage extractor double used by pre-check tests.
@@ -2058,6 +2496,7 @@ type stubPreCheckIntentExtractor struct {
 	current string
 	result  logicdomain.IntentResult
 	err     error
+	model   string
 }
 
 // Extract executes the stubbed Extract logic.
@@ -2068,12 +2507,22 @@ func (s *stubPreCheckIntentExtractor) Extract(_ context.Context, turns []logicdo
 	return s.result, s.err
 }
 
+// ExtractModel returns the configured stub intent model label so degraded invalid-output tests can assert first-stage model attribution.
+// ExtractModel 用于返回桩对象配置的意图模型标识，方便降级畸形输出测试断言第一层模型归因。
+func (s *stubPreCheckIntentExtractor) ExtractModel() string {
+	if s == nil {
+		return ""
+	}
+	return s.model
+}
+
 // stubPreCheckReviewer is the second-stage reviewer double used by pre-check tests.
 // stubPreCheckReviewer 用于作为 pre-check 测试里的第二层评审桩。
 type stubPreCheckReviewer struct {
 	input  logicdomain.PreCheckMemoryReviewInput
 	result logicdomain.PreCheckMemoryReviewResult
 	err    error
+	model  string
 }
 
 // Review executes the stubbed Review logic.
@@ -2081,6 +2530,15 @@ type stubPreCheckReviewer struct {
 func (s *stubPreCheckReviewer) Review(_ context.Context, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error) {
 	s.input = input
 	return s.result, s.err
+}
+
+// ReviewModel returns the configured stub reviewer model label so degraded invalid-output tests can assert second-stage model attribution.
+// ReviewModel 用于返回桩对象配置的 reviewer 模型标识，方便降级畸形输出测试断言第二层模型归因。
+func (s *stubPreCheckReviewer) ReviewModel() string {
+	if s == nil {
+		return ""
+	}
+	return s.model
 }
 
 // stubPreCheckAssembler is the context assembler double used by pre-check tests.

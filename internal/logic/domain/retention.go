@@ -96,7 +96,10 @@ type SessionIdleRecycleResult struct {
 	RecycledMemoryCount  int
 	RecycledContextCount int
 	RecycledTurnCount    int
-	RecycledVectorIDs    []string
+	// TurnDriftCount records selected idle-session turns whose trash copy or hot-table delete was not fully confirmed so maintenance logs can expose retryable archive drift.
+	// TurnDriftCount 记录已选中但 trash 复制或热表删除未完全确认的 idle-session turn 数量，让维护日志可以暴露可重试归档漂移。
+	TurnDriftCount    int
+	RecycledVectorIDs []string
 }
 
 // ColdTurnRecycleJobEnqueueQuery describes one scan pass that should enqueue bounded cold-turn recycle jobs for sessions that currently expose recyclable turns.

@@ -84,15 +84,31 @@ SET turn_count = turn_count + 1,
     END
 WHERE id = $3
 `, r.sessionsTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateSessionSQL), dehydratedBudget, createdAt.UTC(), int64(session.SessionID)); err != nil {
+	sessionTag, err := tx.Exec(callCtx, strings.TrimSpace(updateSessionSQL), dehydratedBudget, createdAt.UTC(), int64(session.SessionID))
+	if err != nil {
 		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("update postgres session turn counters: %w", err)
 	}
+	if err := requirePostgresTurnAppendRowsAffected("update postgres session turn counters", session.SessionID, sessionTag.RowsAffected()); err != nil {
+		return logicdomain.PersistedTurnRecord{}, err
+	}
 	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.PersistedTurnRecord{}, fmt.Errorf("commit postgres turn append tx: %w", err)
+		return persisted, postgresTurnAppendCommitOutcomeUncertainError(err)
 	}
 	persisted.CreatedAt = persisted.CreatedAt.UTC()
 	persisted.UpdatedAt = persisted.UpdatedAt.UTC()
 	return persisted, nil
+}
+
+// postgresTurnAppendCommitOutcomeUncertainError marks append-turn commits whose turn row and session counters may already be durable.
+// postgresTurnAppendCommitOutcomeUncertainError 用于标记追加 turn 提交失败，此时 turn 行和 session 计数可能已经持久化。
+func postgresTurnAppendCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("append turn record", "commit postgres turn append tx", err)
+}
+
+// requirePostgresTurnAppendRowsAffected rejects append-turn counter drift before the transaction can report a persisted turn id.
+// requirePostgresTurnAppendRowsAffected 用于在事务返回已持久化 turn id 前拒绝追加 turn 后的 session 计数漂移。
+func requirePostgresTurnAppendRowsAffected(action string, sessionID uint64, rowsAffected int64) error {
+	return postgresRowsAffectedDriftError(fmt.Sprintf("%s for session %d", action, sessionID), rowsAffected, 1)
 }
 
 // LoadPendingSessionTurns returns the oldest not-yet-extracted turn rows for one session so queued post-action workers can drain durable work in order.
@@ -115,6 +131,60 @@ ORDER BY id ASC
 		return nil, fmt.Errorf("query postgres pending session turns: %w", err)
 	}
 	return rows, nil
+}
+
+// MarkTurnAsCorrupted marks one pending turn whose dehydrated payload cannot be decoded as done so queued analysis can continue.
+// MarkTurnAsCorrupted 用于将无法解码脱水载荷的 pending turn 标记为已处理，让排队分析可以继续推进。
+func (r *turnRepository) MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
+		return fmt.Errorf("postgres store is not initialized")
+	}
+	if session.SessionID == 0 {
+		return logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if turnID == 0 {
+		return logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+	}
+
+	// Guard by both turn identity and pending status so a stale queue item cannot rewrite an already analyzed turn.
+	// 同时使用 turn 身份和 pending 状态作为保护条件，避免过期队列项重写已经分析完成的 turn。
+	callCtx, cancel := r.turnQueryContext(ctx)
+	defer cancel()
+	tag, err := r.shared.pool.Exec(
+		callCtx,
+		buildPostgresMarkTurnAsCorruptedSQL(r.turnsTable()),
+		logicdomain.TurnExtractedStatusDone,
+		time.Now().UTC(),
+		int64(turnID),
+		int64(session.SessionID),
+		logicdomain.TurnExtractedStatusPending,
+	)
+	if err != nil {
+		return fmt.Errorf("mark postgres turn as corrupted: %w", err)
+	}
+	if err := requirePostgresCorruptedTurnRowsAffected("mark postgres turn as corrupted", session.SessionID, turnID, tag.RowsAffected()); err != nil {
+		return err
+	}
+	return nil
+}
+
+// buildPostgresMarkTurnAsCorruptedSQL builds the narrow pending-to-done transition used when a queued turn payload is unreadable.
+// buildPostgresMarkTurnAsCorruptedSQL 用于构造排队 turn 载荷不可读时的窄范围 pending 到 done 状态迁移语句。
+func buildPostgresMarkTurnAsCorruptedSQL(turnsTable string) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+UPDATE %s
+SET extracted_status = $1,
+    updated_at = $2
+WHERE id = $3
+  AND session_id = $4
+  AND extracted_status = $5
+`, turnsTable))
+}
+
+// requirePostgresCorruptedTurnRowsAffected rejects corrupted-turn status drift so queue workers do not treat an unmarked bad row as drained.
+// requirePostgresCorruptedTurnRowsAffected 用于拒绝损坏 turn 状态迁移漂移，避免队列工作器把未标记成功的坏行当成已消化。
+func requirePostgresCorruptedTurnRowsAffected(action string, sessionID, turnID uint64, rowsAffected int64) error {
+	return postgresRowsAffectedDriftError(fmt.Sprintf("%s for session %d turn %d", action, sessionID, turnID), rowsAffected, 1)
 }
 
 // LoadRecentSessionTurns returns the latest persisted turn rows for one session regardless of extracted status, ordered from oldest to newest after the final window is chosen.
@@ -392,8 +462,12 @@ WHERE id = $4
 `, r.sessionsTable())
 	callCtx, cancel := r.turnQueryContext(ctx)
 	defer cancel()
-	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), nullableTime(observedAt), nullableTime(completedAt), nullableTime(updatedAt), int64(sessionID)); err != nil {
+	updateTag, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), nullableTime(observedAt), nullableTime(completedAt), nullableTime(updatedAt), int64(sessionID))
+	if err != nil {
 		return fmt.Errorf("advance postgres session extract window: %w", err)
+	}
+	if err := requirePostgresSessionStateRowsAffected("advance postgres session extract window", sessionID, updateTag.RowsAffected()); err != nil {
+		return err
 	}
 	return nil
 }
@@ -451,13 +525,29 @@ SET last_compacted_turn_id = $1,
     END
 WHERE id = $3
 `, r.sessionsTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateSQL), int64(latestTurnID), compactedAt.UTC(), int64(session.SessionID)); err != nil {
+	updateTag, err := tx.Exec(callCtx, strings.TrimSpace(updateSQL), int64(latestTurnID), compactedAt.UTC(), int64(session.SessionID))
+	if err != nil {
 		return 0, false, fmt.Errorf("update postgres session compact boundary: %w", err)
 	}
+	if err := requirePostgresSessionStateRowsAffected("update postgres session compact boundary", session.SessionID, updateTag.RowsAffected()); err != nil {
+		return 0, false, err
+	}
 	if err := tx.Commit(callCtx); err != nil {
-		return 0, false, fmt.Errorf("commit postgres compact tx: %w", err)
+		return latestTurnID, true, postgresSessionCompactCommitOutcomeUncertainError(err)
 	}
 	return latestTurnID, true, nil
+}
+
+// postgresSessionCompactCommitOutcomeUncertainError marks compact-boundary commits whose session state may already be durable.
+// postgresSessionCompactCommitOutcomeUncertainError 用于标记 session compact 边界提交失败，此时 session 状态可能已经持久化。
+func postgresSessionCompactCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("mark session compacted", "commit postgres compact tx", err)
+}
+
+// requirePostgresSessionStateRowsAffected rejects deterministic session-state updates that miss the resolved session row.
+// requirePostgresSessionStateRowsAffected 用于拒绝未命中已解析 session 行的确定性 session 状态更新。
+func requirePostgresSessionStateRowsAffected(action string, sessionID uint64, rowsAffected int64) error {
+	return postgresRowsAffectedDriftError(fmt.Sprintf("%s for session %d", action, sessionID), rowsAffected, 1)
 }
 
 // queryTurnRecords executes one PostgreSQL turn query and maps the result rows into the shared durable session-turn model.
@@ -514,10 +604,10 @@ func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain
 	return s.repos.turns.LoadPendingSessionTurns(ctx, session)
 }
 
-// MarkTurnAsCorrupted rejects PostgreSQL corrupted-turn marking until the relational read workflow is fully ported.
-// MarkTurnAsCorrupted 用于在 PostgreSQL 关系读取工作流完整迁移前，显式拒绝损坏 turn 标记。
-func (s *Store) MarkTurnAsCorrupted(context.Context, logicdomain.SessionRef, uint64) error {
-	return unsupportedOperationError("MarkTurnAsCorrupted")
+// MarkTurnAsCorrupted delegates to the turn repository so queued post-action workers can drain unreadable PostgreSQL turns.
+// MarkTurnAsCorrupted 用于委托给 turn repository，让排队 post-action worker 能消化 PostgreSQL 中不可读的 turn。
+func (s *Store) MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error {
+	return s.repos.turns.MarkTurnAsCorrupted(ctx, session, turnID)
 }
 
 // LoadRecentSessionTurns delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.

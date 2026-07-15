@@ -116,7 +116,13 @@ INSERT INTO %s (
 		}
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return fmt.Errorf("commit postgres noise embedding cache replace: %w", err)
+		return postgresNoiseCacheCommitOutcomeUncertainError(err)
 	}
 	return nil
+}
+
+// postgresNoiseCacheCommitOutcomeUncertainError marks cache-replace commit failures after PostgreSQL has accepted the transactional mutation set.
+// postgresNoiseCacheCommitOutcomeUncertainError 用于标记 PostgreSQL 已接收缓存替换事务变更后发生的提交失败。
+func postgresNoiseCacheCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("replace postgres noise embedding cache", "commit postgres noise embedding cache replace", err)
 }

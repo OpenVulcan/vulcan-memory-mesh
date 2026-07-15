@@ -101,7 +101,7 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 
 	// Reuse the resolved config chain so tests hit the same endpoint, model, and prompt files as the local runtime.
 	// 复用解析出的配置链，让测试和本地运行时使用同一套 endpoint、model 与提示词文件。
-	cleanupEnvFallback, err := ensureRealRuntimeFixtureEnvFallback(layout.ConfigPaths(), "OPENROUTER_KEY", "test-openrouter-key")
+	cleanupEnvFallback, err := ensureRealRuntimeFixtureEnvFallback(layout.ConfigPaths(), "DEEPSEEK_API_KEY", "test-deepseek-key")
 	if err != nil {
 		return nil, err
 	}

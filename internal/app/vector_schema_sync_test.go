@@ -4,15 +4,17 @@ package app
 
 import (
 	"context"
+	"errors"
 	"testing"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
 // TestEnsureVectorSchemaSkipsRebuildWhenVersionAlreadyCurrent verifies SQL-only changes do not trigger an unnecessary vector-table rebuild.
 // TestEnsureVectorSchemaSkipsRebuildWhenVersionAlreadyCurrent 用于验证当向量版本已经是最新时，纯 SQL 变化不会触发不必要的向量表重建。
 func TestEnsureVectorSchemaSkipsRebuildWhenVersionAlreadyCurrent(t *testing.T) {
-	versions := &stubSchemaVersionStore{version: 2}
+	versions := &stubSchemaVersionStore{version: vldb_lancedb.CurrentSchemaVersion}
 	workspace := &stubVectorSchemaWorkspaceStore{}
 	vector := &stubVectorSchemaStore{}
 
@@ -60,8 +62,67 @@ func TestEnsureVectorSchemaRebuildsAndPersistsVersion(t *testing.T) {
 	if len(vector.upserts) != 1 || vector.upserts[0].SourceTurnID != 88 {
 		t.Fatalf("unexpected rebuilt vector rows: %#v", vector.upserts)
 	}
-	if versions.lastComponent != "lancedb" || versions.lastVersion != 2 {
+	if versions.lastComponent != "lancedb" || versions.lastVersion != vldb_lancedb.CurrentSchemaVersion {
 		t.Fatalf("unexpected persisted version write: component=%q version=%d", versions.lastComponent, versions.lastVersion)
+	}
+}
+
+// TestEnsureVectorSchemaMarksUpsertFailureAfterRecreateOutcomeUncertain verifies startup schema sync reports partial side effects once the LanceDB table has been recreated.
+// TestEnsureVectorSchemaMarksUpsertFailureAfterRecreateOutcomeUncertain 用于验证启动期 schema 同步在 LanceDB 表已重建后，会把回灌失败报告为存在局部副作用。
+func TestEnsureVectorSchemaMarksUpsertFailureAfterRecreateOutcomeUncertain(t *testing.T) {
+	versions := &stubSchemaVersionStore{version: 0}
+	workspace := &stubVectorSchemaWorkspaceStore{
+		projects: []logicdomain.ProjectRecord{{ID: 10}},
+		projectMemories: map[uint64][]logicdomain.MemoryRecord{
+			10: {
+				{ID: "vec-10-a", Text: "schema row a"},
+				{ID: "vec-10-b", Text: "schema row b"},
+			},
+		},
+	}
+	vector := &stubVectorSchemaStore{upsertErrAtCall: 2, upsertErr: errors.New("lancedb upsert failed")}
+
+	err := ensureVectorSchema(context.Background(), versions, workspace, vector, nil)
+	if err == nil {
+		t.Fatal("expected vector schema upsert failure")
+	}
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain schema sync error, got %T %v", err, err)
+	}
+	if vector.recreateCalls != 1 || len(vector.upserts) != 1 {
+		t.Fatalf("unexpected vector sync progress: recreate=%d upserts=%d", vector.recreateCalls, len(vector.upserts))
+	}
+	if versions.setCalls != 0 {
+		t.Fatalf("schema version should not be persisted after row failure, got %d calls", versions.setCalls)
+	}
+}
+
+// TestEnsureVectorSchemaMarksVersionPersistFailureAfterRebuildOutcomeUncertain verifies version-write failures keep the rebuilt sidecar state visible to callers.
+// TestEnsureVectorSchemaMarksVersionPersistFailureAfterRebuildOutcomeUncertain 用于验证版本写入失败时，调用方仍能看到 sidecar 已完成重建这一状态。
+func TestEnsureVectorSchemaMarksVersionPersistFailureAfterRebuildOutcomeUncertain(t *testing.T) {
+	versions := &stubSchemaVersionStore{version: 0, setErr: errors.New("schema version write failed")}
+	workspace := &stubVectorSchemaWorkspaceStore{
+		projects: []logicdomain.ProjectRecord{{ID: 11}},
+		projectMemories: map[uint64][]logicdomain.MemoryRecord{
+			11: {
+				{ID: "vec-11", Text: "schema row eleven"},
+			},
+		},
+	}
+	vector := &stubVectorSchemaStore{}
+
+	err := ensureVectorSchema(context.Background(), versions, workspace, vector, nil)
+	if err == nil {
+		t.Fatal("expected schema version persistence failure")
+	}
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain version persistence error, got %T %v", err, err)
+	}
+	if vector.recreateCalls != 1 || len(vector.upserts) != 1 {
+		t.Fatalf("unexpected rebuilt vector rows: recreate=%d upserts=%d", vector.recreateCalls, len(vector.upserts))
+	}
+	if versions.version != 0 {
+		t.Fatalf("stub version should remain old after failed persistence, got %d", versions.version)
 	}
 }
 
@@ -72,6 +133,7 @@ type stubSchemaVersionStore struct {
 	lastComponent string
 	lastVersion   int
 	setCalls      int
+	setErr        error
 }
 
 // GetSchemaComponentVersion executes the stubbed version lookup logic.
@@ -84,6 +146,9 @@ func (s *stubSchemaVersionStore) GetSchemaComponentVersion(context.Context, stri
 // SetSchemaComponentVersion 用于执行桩化的版本持久化逻辑。
 func (s *stubSchemaVersionStore) SetSchemaComponentVersion(_ context.Context, component string, version int) error {
 	s.setCalls++
+	if s.setErr != nil {
+		return s.setErr
+	}
 	s.lastComponent = component
 	s.lastVersion = version
 	s.version = version
@@ -161,13 +226,23 @@ func (s *stubVectorSchemaWorkspaceStore) DeleteUserRef(context.Context, string, 
 // stubVectorSchemaStore is the vector-store double used by vector schema sync tests.
 // stubVectorSchemaStore 用于作为向量 schema 协调测试里的向量存储桩。
 type stubVectorSchemaStore struct {
-	recreateCalls int
-	upserts       []logicdomain.MemoryRecord
+	recreateCalls   int
+	upsertCalls     int
+	upsertErrAtCall int
+	upsertErr       error
+	upserts         []logicdomain.MemoryRecord
 }
 
 // Upsert records one rebuilt vector row.
 // Upsert 用于记录一条被回灌的向量行。
 func (s *stubVectorSchemaStore) Upsert(_ context.Context, record logicdomain.MemoryRecord) error {
+	s.upsertCalls++
+	if s.upsertErrAtCall > 0 && s.upsertCalls == s.upsertErrAtCall {
+		if s.upsertErr != nil {
+			return s.upsertErr
+		}
+		return errors.New("stub lancedb schema upsert failed")
+	}
 	s.upserts = append(s.upserts, record)
 	return nil
 }

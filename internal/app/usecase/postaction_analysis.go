@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -74,6 +75,12 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	// Apply one unified post-action review so memory dedupe and profile acceptance can share the same turn-level reasoning context.
 	// 执行一次统一的 post-action 评审，让记忆去重与画像接纳共享同一轮语义上下文。
 	if err := u.reviewTurnCandidatesWithResolvedTime(ctx, session, turn, rawTurn, resolvedTurnCreatedAt, &analysis, &compaction); err != nil {
+		var invalidOutput logicdomain.InvalidLLMOutputError
+		// Stop on structured reviewer contract violations because falling back would persist unreviewed candidates after an invalid L2 decision payload.
+		// 结构化 reviewer 契约错误必须停止；否则会在 L2 决策载荷无效后仍把未复审候选落库。
+		if errors.As(err, &invalidOutput) {
+			return err
+		}
 		if u.logger != nil {
 			u.logger.Warn(
 				"post-action candidate review degraded to analyzer output",
@@ -96,8 +103,10 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	}
 	applyResult, err := u.store.ApplyTurnAnalysis(ctx, session, turn, analysis)
 	if err != nil {
-		if len(vectorIDs) > 0 && u.vector != nil {
-			rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		// Roll back fresh vectors only when the relational write failed before any durable mutation could reference them.
+		// 仅当关系写入尚未发生任何持久化突变时才回滚新向量，避免删除已被长期记忆行引用的向量。
+		if len(vectorIDs) > 0 && u.vector != nil && !logicdomain.IsFreshVectorReferenceUncertain(err) {
+			rollbackCtx, rollbackCancel := newPostCommitVectorCleanupContext()
 			defer rollbackCancel()
 			if _, rollbackErr := u.vector.DeleteByIDs(rollbackCtx, vectorIDs); rollbackErr != nil {
 				if u.logger != nil {
@@ -112,23 +121,42 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 		}
 		return err
 	}
+	u.cleanupSupersededTurnAnalysisVectors(session, turn.ID, applyResult.SupersededVectorIDs, time.Now().UTC())
 	if err := u.store.AdvanceSessionExtractWindow(ctx, session.SessionID, analysisCutoff, analysisCutoff); err != nil {
 		return err
 	}
-	if len(applyResult.SupersededVectorIDs) > 0 && u.vector != nil {
-		if _, deleteErr := u.vector.DeleteByIDs(ctx, applyResult.SupersededVectorIDs); deleteErr != nil {
-			if u.logger != nil {
-				u.logger.Error("post-action superseded vector cleanup failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turn.ID, "err", deleteErr)
-			}
-			enqueueVectorGCCompensation(ctx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisSupersedeCleanup, applyResult.SupersededVectorIDs, time.Now().UTC(),
-				"session_key", session.SessionKey,
-				"session_id", session.SessionID,
-				"turn_id", turn.ID,
-			)
-		}
-	}
 	u.logPostActionAnalysisResult(session, turn, input, analysis, vectorIDs, compaction)
 	return nil
+}
+
+// cleanupSupersededTurnAnalysisVectors removes obsolete vectors immediately after the relational supersede commit, before later checkpoint updates can fail and hide the cleanup coordinates.
+// cleanupSupersededTurnAnalysisVectors 用于在关系层 supersede 提交后立即清理旧向量，避免后续检查点更新失败导致清理坐标丢失。
+func (u *PostActionUseCase) cleanupSupersededTurnAnalysisVectors(session logicdomain.SessionRef, turnID uint64, vectorIDs []string, now time.Time) {
+	vectorIDs = normalizeVectorGCIDs(vectorIDs)
+	if u == nil || len(vectorIDs) == 0 {
+		return
+	}
+	cleanupCtx, cleanupCancel := newPostCommitVectorCleanupContext()
+	defer cleanupCancel()
+	if u.vector == nil {
+		enqueueVectorGCCompensation(cleanupCtx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisSupersedeCleanup, vectorIDs, now,
+			"session_key", session.SessionKey,
+			"session_id", session.SessionID,
+			"turn_id", turnID,
+			"err", "vector store is nil",
+		)
+		return
+	}
+	if _, deleteErr := u.vector.DeleteByIDs(cleanupCtx, vectorIDs); deleteErr != nil {
+		if u.logger != nil {
+			u.logger.Error("post-action superseded vector cleanup failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", turnID, "err", deleteErr)
+		}
+		enqueueVectorGCCompensation(cleanupCtx, u.store, u.logger, logicdomain.VectorGCJobTypeTurnAnalysisSupersedeCleanup, vectorIDs, now,
+			"session_key", session.SessionKey,
+			"session_id", session.SessionID,
+			"turn_id", turnID,
+		)
+	}
 }
 
 // logPostActionAnalysisResult records one redacted debug-level summary of the persisted analysis so operators can diagnose extraction throughput without writing derived user text into runtime logs, while also stripping high-dimensional vectors from debug JSON output.
@@ -404,24 +432,30 @@ func validateTurnAnalysis(input logicdomain.TurnAnalysisInput, analysis logicdom
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
 			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].evidence_source is invalid", idx)}
 		}
-		if !logicdomain.ValidTurnAnalysisAdmission(strings.TrimSpace(node.Admission)) {
+		admission := strings.TrimSpace(node.Admission)
+		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
 			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].admission is invalid", idx)}
 		}
 		reason := strings.TrimSpace(node.AdmissionReason)
-		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
-			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].admission_reason is invalid", idx)}
+		// Keep the admission decision and rejection reason coupled here because tests and future analyzers may bypass JSON parsing.
+		// 在这里绑定准入结论与拒绝原因，因为测试桩和未来分析器可能绕过 JSON 解析层。
+		if !logicdomain.ValidTurnAnalysisAdmissionReasonForAdmission(admission, reason) {
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("memory_nodes[%d].admission_reason is invalid for admission", idx)}
 		}
 	}
 	for idx, node := range analysis.ProfileNodes {
 		if !logicdomain.ValidTurnAnalysisEvidenceSource(strings.TrimSpace(node.EvidenceSource)) {
 			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].evidence_source is invalid", idx)}
 		}
-		if !logicdomain.ValidTurnAnalysisAdmission(strings.TrimSpace(node.Admission)) {
+		admission := strings.TrimSpace(node.Admission)
+		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
 			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].admission is invalid", idx)}
 		}
 		reason := strings.TrimSpace(node.AdmissionReason)
-		if reason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(reason) {
-			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].admission_reason is invalid", idx)}
+		// Keep the admission decision and rejection reason coupled here because tests and future analyzers may bypass JSON parsing.
+		// 在这里绑定准入结论与拒绝原因，因为测试桩和未来分析器可能绕过 JSON 解析层。
+		if !logicdomain.ValidTurnAnalysisAdmissionReasonForAdmission(admission, reason) {
+			return logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("profile_nodes[%d].admission_reason is invalid for admission", idx)}
 		}
 	}
 	return nil
@@ -480,7 +514,7 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		}
 		// Use a fresh context for rollback to avoid failure when caller's ctx is already cancelled.
 		// 回滚使用独立的超时 context，避免调用方 ctx 已取消导致回滚失败。
-		rollbackCtx, rollbackCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		rollbackCtx, rollbackCancel := newPostCommitVectorCleanupContext()
 		defer rollbackCancel()
 		if _, rollbackErr := u.vector.DeleteByIDs(rollbackCtx, insertedIDs); rollbackErr != nil {
 			if u.logger != nil {
@@ -508,12 +542,19 @@ func (u *PostActionUseCase) persistMemoryNodeVectors(ctx context.Context, sessio
 		}
 		node.VectorID = vectorID
 		node.Vector = append([]float32(nil), item.Vector...)
+		if node.ExpiresAt.IsZero() {
+			node.ExpiresAt = createdAt.UTC().Add(defaultMemoryTTL(node.ScopeLevel))
+		} else {
+			node.ExpiresAt = node.ExpiresAt.UTC()
+		}
 		record := logicdomain.MemoryRecord{
 			ID:           vectorID,
 			Text:         strings.TrimSpace(node.Abstract),
 			Vector:       append([]float32(nil), item.Vector...),
 			Filter:       buildPostActionMemoryFilter(session),
 			SourceTurnID: turn.ID,
+			Status:       logicdomain.MemoryStatusActive,
+			ExpiresAt:    node.ExpiresAt,
 			Metadata: map[string]string{
 				"turn_id":  strconv.FormatUint(turn.ID, 10),
 				"category": strconv.Itoa(node.Category),

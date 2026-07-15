@@ -25,11 +25,14 @@ type sqliteIdleSessionRecycleResult struct {
 	RecycledMemoryCount  int
 	RecycledContextCount int
 	RecycledTurnCount    int
-	RecycledVectorIDs    []string
+	// TurnDriftCount records selected turns whose trash copy or hot-table delete was not fully confirmed after the batch boundary had already been crossed.
+	// TurnDriftCount 记录在 batch 边界已跨过后，trash 复制或热表删除未完整确认的已选 turn 数量。
+	TurnDriftCount    int
+	RecycledVectorIDs []string
 }
 
-// RecycleColdMemories transactionally copies terminal durable memories and their context edges into SQLite trash tables before removing them from the hot tables.
-// RecycleColdMemories 用于在同一 SQLite 事务里先复制终态长期记忆及其情境边到回收站，再从热表删除。
+// RecycleColdMemories copies terminal durable memories and their context edges into SQLite trash tables before removing them from the hot tables under the process write lock.
+// RecycleColdMemories 用于在进程写锁下先复制终态长期记忆及其情境边到回收站，再从热表删除。
 func (s *Store) RecycleColdMemories(ctx context.Context, query logicdomain.MemoryRecycleQuery) (logicdomain.MemoryRecycleResult, error) {
 	if !s.hasSQLiteStore() {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("sqlite store is not initialized")
@@ -45,8 +48,8 @@ func (s *Store) RecycleColdMemories(ctx context.Context, query logicdomain.Memor
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	// Query the terminal-memory candidate set under the write lock so the later trash-copy transaction observes the same hot-table slice.
-	// 在写锁保护下查询终态记忆候选，确保后续 trash 复制事务看到的是同一批热表切片。
+	// Query the terminal-memory candidate set under the write lock so the later trash-copy writes observe the same hot-table slice.
+	// 在写锁保护下查询终态记忆候选，确保后续 trash 复制写入看到的是同一批热表切片。
 	selectSQL := `
 SELECT id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id,
        vector_id, vector_json, source_kind, scope_level, category, abstract, details,
@@ -88,7 +91,8 @@ WHERE memory_status IN (?, ?, ?)`
 	if len(normalizedMemoryIDs) == 0 {
 		return logicdomain.MemoryRecycleResult{}, nil
 	}
-	memoryIDList := sqlUint64List(normalizedMemoryIDs)
+	memoryIDPlaceholders := sqlitePlaceholders(len(normalizedMemoryIDs))
+	memoryIDParams := sqliteUint64Params(normalizedMemoryIDs)
 
 	contextRows, err := queryRows[memoryContextEdgeRow](s, ctx, fmt.Sprintf(`
 SELECT memory_id, context_key, context_value, support_count, rebuttal_count,
@@ -96,7 +100,7 @@ SELECT memory_id, context_key, context_value, support_count, rebuttal_count,
 FROM vmm_memory_context_edges
 WHERE memory_id IN (%s)
 ORDER BY memory_id ASC, context_key ASC, context_value ASC
-`, memoryIDList))
+`, memoryIDPlaceholders), memoryIDParams...)
 	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("query sqlite cold memory context edges: %w", err)
 	}
@@ -106,13 +110,17 @@ ORDER BY memory_id ASC, context_key ASC, context_value ASC
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("allocate sqlite recycle batch id: %w", err)
 	}
 	projectID := sharedSQLiteRecycleProjectID(rows)
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
+	batchInsertStatement := sqliteWriteStatement{
+		SQL: `
 INSERT INTO vmm_recycle_batches (
   id, recycle_type, session_id, project_id, reason, recycled_at, purged_at, created_timestamp, updated_timestamp
 )
-VALUES (%d, %s, 0, %d, %s, %d, 0, %d, %d);
-
+VALUES (?, ?, 0, ?, ?, ?, 0, ?, ?);
+`,
+		Params: []any{batchID, logicdomain.RecycleTypeColdMemory, projectID, reason, recycledAtMillis, recycledAtMillis, recycledAtMillis},
+	}
+	memoryTrashStatement := sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 INSERT INTO vmm_memory_nodes_trash (
   batch_id, recycled_at, recycle_reason,
   id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id, vector_id, vector_json,
@@ -121,7 +129,7 @@ INSERT INTO vmm_memory_nodes_trash (
   last_reinforced_timestamp, recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count,
   decay_disabled, dedupe_hash, created_timestamp, updated_timestamp
 )
-SELECT %d, %d, %s,
+SELECT ?, ?, ?,
        id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id, vector_id, vector_json,
        source_kind, scope_level, category, abstract, details, memory_status, priority, memory_level, refresh_weight,
        support_count, rebuttal_count, status_reason, expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
@@ -129,44 +137,80 @@ SELECT %d, %d, %s,
        decay_disabled, dedupe_hash, created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE id IN (%s);
-
+`, memoryIDPlaceholders),
+		Params: append([]any{batchID, recycledAtMillis, reason}, memoryIDParams...),
+	}
+	contextTrashStatement := sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 INSERT INTO vmm_memory_context_edges_trash (
   batch_id, recycled_at, recycle_reason,
   memory_id, context_key, context_value, support_count, rebuttal_count,
   last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
 )
-SELECT %d, %d, %s,
+SELECT ?, ?, ?,
        memory_id, context_key, context_value, support_count, rebuttal_count,
        last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
 FROM vmm_memory_context_edges
 WHERE memory_id IN (%s);
-
+`, memoryIDPlaceholders),
+		Params: append([]any{batchID, recycledAtMillis, reason}, memoryIDParams...),
+	}
+	contextDeleteStatement := sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 DELETE FROM vmm_memory_context_edges
 WHERE memory_id IN (%s);
-
+`, memoryIDPlaceholders),
+		Params: memoryIDParams,
+	}
+	memoryDeleteStatement := sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 DELETE FROM vmm_memory_nodes
 WHERE id IN (%s);
-COMMIT;
-`, batchID, sqlStringLiteral(logicdomain.RecycleTypeColdMemory), projectID, sqlStringLiteral(reason), recycledAtMillis, recycledAtMillis, recycledAtMillis,
-		batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
-		batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
-		memoryIDList,
-		memoryIDList)
-	if err := s.exec(ctx, script); err != nil {
-		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("recycle sqlite cold memories: %w", err)
+`, memoryIDPlaceholders),
+		Params: memoryIDParams,
 	}
-	if s.database != nil {
-		if err := s.syncMemoryFTSAfterWrite(ctx, nil, normalizedMemoryIDs); err != nil {
-			return logicdomain.MemoryRecycleResult{}, fmt.Errorf("sync sqlite memory fts after cold recycle: %w", err)
+	// Verify every recycle stage before advancing to destructive deletes because trash copies are the only durable recovery source after hot rows leave active tables.
+	// 在进入破坏性删除前逐步验收每个回收阶段，因为热表行离开 active 表后，trash 副本就是唯一的长期恢复来源。
+	if err := s.execInsertOneRow(ctx, "insert cold memory recycle batch", batchInsertStatement.SQL, batchInsertStatement.Params...); err != nil {
+		return logicdomain.MemoryRecycleResult{}, err
+	}
+	mutated := true
+	expectedMemoryRowsChanged := int64(len(normalizedMemoryIDs))
+	if err := s.execExpectRowsChanged(ctx, "copy sqlite cold memories to trash", expectedMemoryRowsChanged, memoryTrashStatement.SQL, memoryTrashStatement.Params...); err != nil {
+		return logicdomain.MemoryRecycleResult{}, sqlitePartialMutationError(mutated, "recycle cold memories", err)
+	}
+	expectedContextRowsChanged := int64(len(contextRows))
+	if err := s.execExpectRowsChanged(ctx, "copy sqlite cold memory contexts to trash", expectedContextRowsChanged, contextTrashStatement.SQL, contextTrashStatement.Params...); err != nil {
+		return logicdomain.MemoryRecycleResult{}, sqlitePartialMutationError(mutated, "recycle cold memories", err)
+	}
+	if err := s.execExpectRowsChanged(ctx, "delete recycled sqlite cold memory contexts", expectedContextRowsChanged, contextDeleteStatement.SQL, contextDeleteStatement.Params...); err != nil {
+		return logicdomain.MemoryRecycleResult{}, sqlitePartialMutationError(mutated, "recycle cold memories", err)
+	}
+	deleteResult, err := s.execResult(ctx, memoryDeleteStatement.SQL, memoryDeleteStatement.Params...)
+	if err != nil {
+		return logicdomain.MemoryRecycleResult{}, sqlitePartialMutationError(mutated, "recycle cold memories", fmt.Errorf("delete recycled sqlite cold memories: %w", err))
+	}
+	// Return vector cleanup coordinates only after every copied hot memory row has actually left the active table.
+	// 只有所有已复制的热 memory 行都确实离开 active 表后，才返回 vector 清理坐标。
+	if deleteResult.RowsChanged != expectedMemoryRowsChanged {
+		return logicdomain.MemoryRecycleResult{}, logicdomain.OutcomeUncertainError{
+			Operation: "recycle cold memories",
+			Message:   fmt.Sprintf("delete recycled sqlite cold memories affected %d rows, want %d", deleteResult.RowsChanged, expectedMemoryRowsChanged),
 		}
 	}
-
-	return logicdomain.MemoryRecycleResult{
+	result := logicdomain.MemoryRecycleResult{
 		BatchID:              batchID,
 		RecycledMemoryCount:  len(rows),
 		RecycledContextCount: len(contextRows),
 		RecycledVectorIDs:    normalizeStringList(vectorIDs),
-	}, nil
+	}
+	if s.database != nil {
+		if err := s.syncMemoryFTSAfterWrite(ctx, nil, normalizedMemoryIDs); err != nil {
+			return result, sqlitePartialMutationError(mutated, "recycle cold memories", fmt.Errorf("sync sqlite memory fts after cold recycle: %w", err))
+		}
+	}
+
+	return result, nil
 }
 
 // RecycleIdleSessions compacts long-idle SQLite sessions by moving stale session memories and eligible old turns into trash tables before removing them from the hot tables.
@@ -220,18 +264,24 @@ LIMIT ?
 	result := logicdomain.SessionIdleRecycleResult{}
 	for _, session := range sessionRows {
 		sessionResult, recycleErr := s.recycleOneSQLiteIdleSession(ctx, session, idleBeforeMillis, turnHotWindowSize, recycledAtMillis, reason)
+		if sessionResult.BatchID != 0 {
+			result.BatchIDs = append(result.BatchIDs, sessionResult.BatchID)
+			result.SessionIDs = append(result.SessionIDs, sessionResult.SessionID)
+			result.RecycledMemoryCount += sessionResult.RecycledMemoryCount
+			result.RecycledContextCount += sessionResult.RecycledContextCount
+			result.RecycledTurnCount += sessionResult.RecycledTurnCount
+			result.TurnDriftCount += sessionResult.TurnDriftCount
+			result.RecycledVectorIDs = append(result.RecycledVectorIDs, sessionResult.RecycledVectorIDs...)
+		}
 		if recycleErr != nil {
+			result.BatchIDs = normalizeUint64List(result.BatchIDs)
+			result.SessionIDs = normalizeUint64List(result.SessionIDs)
+			result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
+			if len(result.BatchIDs) > 0 {
+				return result, sqlitePartialMutationError(true, "recycle idle sessions", recycleErr)
+			}
 			return logicdomain.SessionIdleRecycleResult{}, recycleErr
 		}
-		if sessionResult.BatchID == 0 {
-			continue
-		}
-		result.BatchIDs = append(result.BatchIDs, sessionResult.BatchID)
-		result.SessionIDs = append(result.SessionIDs, sessionResult.SessionID)
-		result.RecycledMemoryCount += sessionResult.RecycledMemoryCount
-		result.RecycledContextCount += sessionResult.RecycledContextCount
-		result.RecycledTurnCount += sessionResult.RecycledTurnCount
-		result.RecycledVectorIDs = append(result.RecycledVectorIDs, sessionResult.RecycledVectorIDs...)
 	}
 	result.BatchIDs = normalizeUint64List(result.BatchIDs)
 	result.SessionIDs = normalizeUint64List(result.SessionIDs)
@@ -274,38 +324,64 @@ LIMIT ?
 	if len(normalizedBatchIDs) == 0 {
 		return logicdomain.RetentionTrashPurgeResult{}, nil
 	}
-	batchIDList := sqlUint64List(normalizedBatchIDs)
+	batchIDPlaceholders := sqlitePlaceholders(len(normalizedBatchIDs))
+	batchIDParams := sqliteUint64Params(normalizedBatchIDs)
 
-	purgedMemoryCount, err := s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_memory_nodes_trash WHERE batch_id IN (%s)`, batchIDList))
+	purgedMemoryCount, err := s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_memory_nodes_trash WHERE batch_id IN (%s)`, batchIDPlaceholders), batchIDParams...)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("count sqlite memory trash rows: %w", err)
 	}
-	purgedContextCount, err := s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_memory_context_edges_trash WHERE batch_id IN (%s)`, batchIDList))
+	purgedContextCount, err := s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_memory_context_edges_trash WHERE batch_id IN (%s)`, batchIDPlaceholders), batchIDParams...)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("count sqlite memory-context trash rows: %w", err)
 	}
-	purgedTurnCount, err := s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_turn_records_trash WHERE batch_id IN (%s)`, batchIDList))
+	purgedTurnCount, err := s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_turn_records_trash WHERE batch_id IN (%s)`, batchIDPlaceholders), batchIDParams...)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("count sqlite turn trash rows: %w", err)
 	}
 
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
+	// Verify each permanent delete against the pre-counted trash rows so purge cannot report a batch as removed while rows or metadata remain.
+	// 用预先统计的 trash 行数校验每一次永久删除，避免仍有数据行或元数据残留时把批次报告为已清理。
+	mutated := false
+	mutated, err = s.execSQLiteTrashPurgeDelete(ctx, mutated, "delete sqlite memory-context trash rows", int64(purgedContextCount), sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 DELETE FROM vmm_memory_context_edges_trash
 WHERE batch_id IN (%s);
-
+`, batchIDPlaceholders),
+		Params: batchIDParams,
+	})
+	if err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
+	}
+	mutated, err = s.execSQLiteTrashPurgeDelete(ctx, mutated, "delete sqlite memory trash rows", int64(purgedMemoryCount), sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 DELETE FROM vmm_memory_nodes_trash
 WHERE batch_id IN (%s);
-
+`, batchIDPlaceholders),
+		Params: batchIDParams,
+	})
+	if err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
+	}
+	mutated, err = s.execSQLiteTrashPurgeDelete(ctx, mutated, "delete sqlite turn trash rows", int64(purgedTurnCount), sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 DELETE FROM vmm_turn_records_trash
 WHERE batch_id IN (%s);
-
+`, batchIDPlaceholders),
+		Params: batchIDParams,
+	})
+	if err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
+	}
+	mutated, err = s.execSQLiteTrashPurgeDelete(ctx, mutated, "delete sqlite recycle batch metadata", int64(len(normalizedBatchIDs)), sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 DELETE FROM vmm_recycle_batches
 WHERE id IN (%s);
-COMMIT;
-`, batchIDList, batchIDList, batchIDList, batchIDList)
-	if err := s.exec(ctx, script); err != nil {
-		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("purge sqlite recycle trash: %w", err)
+`, batchIDPlaceholders),
+		Params: batchIDParams,
+	})
+	if err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
 	}
 
 	return logicdomain.RetentionTrashPurgeResult{
@@ -314,6 +390,20 @@ COMMIT;
 		PurgedContextCount: purgedContextCount,
 		PurgedTurnCount:    purgedTurnCount,
 	}, nil
+}
+
+// execSQLiteTrashPurgeDelete executes one permanent purge delete and reports whether this purge pass has already mutated trash state.
+// execSQLiteTrashPurgeDelete 用于执行一条永久 purge 删除，并返回本轮 purge 是否已经改变过 trash 状态。
+func (s *Store) execSQLiteTrashPurgeDelete(ctx context.Context, mutated bool, operation string, expectedRows int64, statement sqliteWriteStatement) (bool, error) {
+	result, err := s.execResult(ctx, statement.SQL, statement.Params...)
+	if err != nil {
+		return mutated, fmt.Errorf("%s: %w", operation, err)
+	}
+	if result.RowsChanged == expectedRows {
+		return mutated || result.RowsChanged > 0, nil
+	}
+	err = fmt.Errorf("%s affected %d rows, want %d", operation, result.RowsChanged, expectedRows)
+	return mutated || result.RowsChanged > 0, sqlitePartialMutationError(mutated || result.RowsChanged > 0, "purge expired trash", err)
 }
 
 // recycleOneSQLiteIdleSession compacts one concrete long-idle session under the adapter write lock so the selected stale rows and turn candidates cannot drift before the final recycle script runs.
@@ -348,22 +438,26 @@ ORDER BY updated_timestamp ASC, id ASC
 		}
 	}
 	normalizedMemoryIDs := normalizeUint64List(memoryIDs)
+	memoryIDPlaceholders := sqlitePlaceholders(len(normalizedMemoryIDs))
+	memoryIDParams := sqliteUint64Params(normalizedMemoryIDs)
 	contextCount := 0
 	if len(normalizedMemoryIDs) > 0 {
-		contextCount, err = s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_memory_context_edges WHERE memory_id IN (%s)`, sqlUint64List(normalizedMemoryIDs)))
+		contextCount, err = s.countRows(ctx, fmt.Sprintf(`SELECT COUNT(*) AS count FROM vmm_memory_context_edges WHERE memory_id IN (%s)`, memoryIDPlaceholders), memoryIDParams...)
 		if err != nil {
 			return sqliteIdleSessionRecycleResult{}, fmt.Errorf("count sqlite idle-session context edges for session %d: %w", session.ID, err)
 		}
 	}
 
-	turnReferenceClause := buildSQLiteIdleSessionTurnReferenceClause(normalizedMemoryIDs)
+	turnReferenceClause, turnReferenceParams := buildSQLiteIdleSessionTurnReferenceClause(normalizedMemoryIDs)
+	turnQueryParams := []any{session.ID, turnHotWindowSize, session.ID, logicdomain.TurnExtractedStatusPending}
+	turnQueryParams = append(turnQueryParams, turnReferenceParams...)
 	turnRows, err := queryRows[turnRecordRow](s, ctx, fmt.Sprintf(`
 WITH recent_turns AS (
   SELECT id
   FROM vmm_turn_records
   WHERE session_id = ?
   ORDER BY id DESC
-  LIMIT %d
+  LIMIT ?
 )
 SELECT tr.id, tr.session_id, tr.project_id,
        tr.dehydrated_content,
@@ -380,7 +474,7 @@ WHERE tr.session_id = ?
     WHERE pn.turn_id = tr.id
   )
 ORDER BY tr.id ASC
-`, turnHotWindowSize, turnReferenceClause), session.ID, session.ID, logicdomain.TurnExtractedStatusPending)
+`, turnReferenceClause), turnQueryParams...)
 	if err != nil {
 		return sqliteIdleSessionRecycleResult{}, fmt.Errorf("query sqlite idle-session turns for session %d: %w", session.ID, err)
 	}
@@ -399,18 +493,27 @@ ORDER BY tr.id ASC
 	}
 	normalizedTurnIDs := normalizeUint64List(turnIDs)
 
-	var builder strings.Builder
-	builder.WriteString("BEGIN IMMEDIATE;\n")
-	builder.WriteString(fmt.Sprintf(`
+	batchStatement := sqliteWriteStatement{
+		SQL: `
 INSERT INTO vmm_recycle_batches (
   id, recycle_type, session_id, project_id, reason, recycled_at, purged_at, created_timestamp, updated_timestamp
 )
-VALUES (%d, %s, %d, %d, %s, %d, 0, %d, %d);
-`, batchID, sqlStringLiteral(logicdomain.RecycleTypeSessionIdle), session.ID, session.ProjectID, sqlStringLiteral(reason), recycledAtMillis, recycledAtMillis, recycledAtMillis))
+VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?);
+`,
+		Params: []any{batchID, logicdomain.RecycleTypeSessionIdle, session.ID, session.ProjectID, reason, recycledAtMillis, recycledAtMillis, recycledAtMillis},
+	}
+	var memoryTrashStatement sqliteWriteStatement
+	var contextTrashStatement sqliteWriteStatement
+	var contextDeleteStatement sqliteWriteStatement
+	var memoryDeleteStatement sqliteWriteStatement
+	hasMemoryRecycleStatements := false
+	var turnTrashStatement sqliteWriteStatement
+	var turnDeleteStatement sqliteWriteStatement
+	hasTurnRecycleStatements := false
 
 	if len(normalizedMemoryIDs) > 0 {
-		memoryIDList := sqlUint64List(normalizedMemoryIDs)
-		builder.WriteString(fmt.Sprintf(`
+		memoryTrashStatement = sqliteWriteStatement{
+			SQL: fmt.Sprintf(`
 INSERT INTO vmm_memory_nodes_trash (
   batch_id, recycled_at, recycle_reason,
   id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id, vector_id, vector_json,
@@ -419,7 +522,7 @@ INSERT INTO vmm_memory_nodes_trash (
   last_reinforced_timestamp, recalled_count, adopted_count, reinforcement_count, cross_session_adopted_count,
   decay_disabled, dedupe_hash, created_timestamp, updated_timestamp
 )
-SELECT %d, %d, %s,
+SELECT ?, ?, ?,
        id, team_id, space_id, project_id, user_id, origin_session_id, source_turn_id, vector_id, vector_json,
        source_kind, scope_level, category, abstract, details, memory_status, priority, memory_level, refresh_weight,
        support_count, rebuttal_count, status_reason, expires_timestamp, last_recalled_timestamp, last_adopted_timestamp,
@@ -427,66 +530,174 @@ SELECT %d, %d, %s,
        decay_disabled, dedupe_hash, created_timestamp, updated_timestamp
 FROM vmm_memory_nodes
 WHERE id IN (%s);
-
+`, memoryIDPlaceholders),
+			Params: append([]any{batchID, recycledAtMillis, reason}, memoryIDParams...),
+		}
+		contextTrashStatement = sqliteWriteStatement{
+			SQL: fmt.Sprintf(`
 INSERT INTO vmm_memory_context_edges_trash (
   batch_id, recycled_at, recycle_reason,
   memory_id, context_key, context_value, support_count, rebuttal_count,
   last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
 )
-SELECT %d, %d, %s,
+SELECT ?, ?, ?,
        memory_id, context_key, context_value, support_count, rebuttal_count,
        last_supported_timestamp, last_rebutted_timestamp, created_timestamp, updated_timestamp
 FROM vmm_memory_context_edges
 WHERE memory_id IN (%s);
-
+`, memoryIDPlaceholders),
+			Params: append([]any{batchID, recycledAtMillis, reason}, memoryIDParams...),
+		}
+		contextDeleteStatement = sqliteWriteStatement{
+			SQL: fmt.Sprintf(`
 DELETE FROM vmm_memory_context_edges
 WHERE memory_id IN (%s);
-
+`, memoryIDPlaceholders),
+			Params: memoryIDParams,
+		}
+		memoryDeleteStatement = sqliteWriteStatement{
+			SQL: fmt.Sprintf(`
 DELETE FROM vmm_memory_nodes
 WHERE id IN (%s);
-`, batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
-			batchID, recycledAtMillis, sqlStringLiteral(reason), memoryIDList,
-			memoryIDList,
-			memoryIDList))
+`, memoryIDPlaceholders),
+			Params: memoryIDParams,
+		}
+		hasMemoryRecycleStatements = true
 	}
 
 	if len(normalizedTurnIDs) > 0 {
-		turnIDList := sqlUint64List(normalizedTurnIDs)
-		builder.WriteString(fmt.Sprintf(`
+		turnIDPlaceholders := sqlitePlaceholders(len(normalizedTurnIDs))
+		turnIDParams := sqliteUint64Params(normalizedTurnIDs)
+		turnTrashStatement = sqliteWriteStatement{
+			SQL: fmt.Sprintf(`
 INSERT INTO vmm_turn_records_trash (
   batch_id, recycled_at, recycle_reason,
   id, session_id, project_id, dehydrated_content, dehydrated_budget,
   extracted_status, details, details_budget, created_timestamp, updated_timestamp
 )
-SELECT %d, %d, %s,
+SELECT ?, ?, ?,
        id, session_id, project_id, dehydrated_content, dehydrated_budget,
        extracted_status, details, details_budget, created_timestamp, updated_timestamp
 FROM vmm_turn_records
 WHERE id IN (%s);
-
+`, turnIDPlaceholders),
+			Params: append([]any{batchID, recycledAtMillis, reason}, turnIDParams...),
+		}
+		turnDeleteStatement = sqliteWriteStatement{
+			SQL: fmt.Sprintf(`
 DELETE FROM vmm_turn_records
 WHERE id IN (%s);
-`, batchID, recycledAtMillis, sqlStringLiteral(reason), turnIDList, turnIDList))
+`, turnIDPlaceholders),
+			Params: turnIDParams,
+		}
+		hasTurnRecycleStatements = true
 	}
-	builder.WriteString("COMMIT;\n")
 
-	if err := s.exec(ctx, builder.String()); err != nil {
+	// Verify the batch metadata row before copying trash rows so orphaned trash data cannot be created under an unconfirmed batch id.
+	// 在复制 trash 行之前先验收批次元数据，避免在未确认的 batch id 下创建孤立回收站数据。
+	if err := s.execInsertOneRow(ctx, fmt.Sprintf("insert sqlite idle-session recycle batch for session %d", session.ID), batchStatement.SQL, batchStatement.Params...); err != nil {
 		return sqliteIdleSessionRecycleResult{}, fmt.Errorf("recycle sqlite idle session %d: %w", session.ID, err)
 	}
-	if s.database != nil {
-		if err := s.syncMemoryFTSAfterWrite(ctx, nil, normalizedMemoryIDs); err != nil {
-			return sqliteIdleSessionRecycleResult{}, fmt.Errorf("sync sqlite memory fts after idle recycle %d: %w", session.ID, err)
+	if hasMemoryRecycleStatements {
+		expectedMemoryRowsChanged := int64(len(normalizedMemoryIDs))
+		memoryTrashResult, err := s.execResult(ctx, memoryTrashStatement.SQL, memoryTrashStatement.Params...)
+		if err != nil {
+			return sqliteIdleSessionRecycleResult{}, sqlitePartialMutationError(true, "recycle idle-session memories", fmt.Errorf("copy sqlite idle-session memories to trash for session %d: %w", session.ID, err))
+		}
+		// Stop before deleting hot memory rows unless the trash copy covers the exact selected session-memory set.
+		// 除非 trash 复制精确覆盖已选中的 session memory 集合，否则在删除热表 memory 前停止。
+		if memoryTrashResult.RowsChanged != expectedMemoryRowsChanged {
+			return sqliteIdleSessionRecycleResult{}, logicdomain.OutcomeUncertainError{
+				Operation: "recycle idle-session memories",
+				Message:   fmt.Sprintf("copy sqlite idle-session memories to trash for session %d affected %d rows, want %d", session.ID, memoryTrashResult.RowsChanged, expectedMemoryRowsChanged),
+			}
+		}
+		expectedContextRowsChanged := int64(contextCount)
+		contextTrashResult, err := s.execResult(ctx, contextTrashStatement.SQL, contextTrashStatement.Params...)
+		if err != nil {
+			return sqliteIdleSessionRecycleResult{}, sqlitePartialMutationError(true, "recycle idle-session memories", fmt.Errorf("copy sqlite idle-session memory contexts to trash for session %d: %w", session.ID, err))
+		}
+		// Keep hot memory rows in place unless the context-edge audit copy matches the pre-counted context set.
+		// 除非 context edge 审计复制与预先计数的 context 集合一致，否则保留热表 memory 行。
+		if contextTrashResult.RowsChanged != expectedContextRowsChanged {
+			return sqliteIdleSessionRecycleResult{}, logicdomain.OutcomeUncertainError{
+				Operation: "recycle idle-session memories",
+				Message:   fmt.Sprintf("copy sqlite idle-session memory contexts to trash for session %d affected %d rows, want %d", session.ID, contextTrashResult.RowsChanged, expectedContextRowsChanged),
+			}
+		}
+		contextDeleteResult, err := s.execResult(ctx, contextDeleteStatement.SQL, contextDeleteStatement.Params...)
+		if err != nil {
+			return sqliteIdleSessionRecycleResult{}, sqlitePartialMutationError(true, "recycle idle-session memories", fmt.Errorf("delete recycled sqlite idle-session memory contexts for session %d: %w", session.ID, err))
+		}
+		// Stop before deleting hot memory rows if context removal drifted from the audited context count.
+		// 如果 context 删除行数偏离审计计数，则在删除热表 memory 前停止。
+		if contextDeleteResult.RowsChanged != expectedContextRowsChanged {
+			return sqliteIdleSessionRecycleResult{}, logicdomain.OutcomeUncertainError{
+				Operation: "recycle idle-session memories",
+				Message:   fmt.Sprintf("delete recycled sqlite idle-session memory contexts for session %d affected %d rows, want %d", session.ID, contextDeleteResult.RowsChanged, expectedContextRowsChanged),
+			}
+		}
+		deleteResult, err := s.execResult(ctx, memoryDeleteStatement.SQL, memoryDeleteStatement.Params...)
+		if err != nil {
+			return sqliteIdleSessionRecycleResult{}, sqlitePartialMutationError(true, "recycle idle-session memories", fmt.Errorf("delete recycled sqlite idle-session memories for session %d: %w", session.ID, err))
+		}
+		// Return vector cleanup coordinates only after every selected session memory row has left the hot table.
+		// 只有所有已选中的 session memory 行都离开热表后，才允许返回 vector 清理坐标。
+		if deleteResult.RowsChanged != expectedMemoryRowsChanged {
+			return sqliteIdleSessionRecycleResult{}, logicdomain.OutcomeUncertainError{
+				Operation: "recycle idle-session memories",
+				Message:   fmt.Sprintf("delete recycled sqlite idle-session memories for session %d affected %d rows, want %d", session.ID, deleteResult.RowsChanged, expectedMemoryRowsChanged),
+			}
 		}
 	}
-
-	return sqliteIdleSessionRecycleResult{
+	result := sqliteIdleSessionRecycleResult{
 		BatchID:              batchID,
 		SessionID:            session.ID,
 		RecycledMemoryCount:  len(normalizedMemoryIDs),
 		RecycledContextCount: contextCount,
 		RecycledTurnCount:    len(normalizedTurnIDs),
 		RecycledVectorIDs:    normalizeStringList(vectorIDs),
-	}, nil
+	}
+	if hasTurnRecycleStatements {
+		expectedTurnRowsChanged := int64(len(normalizedTurnIDs))
+		turnTrashResult, err := s.execResult(ctx, turnTrashStatement.SQL, turnTrashStatement.Params...)
+		if err != nil {
+			result.RecycledTurnCount = 0
+			result.TurnDriftCount = len(normalizedTurnIDs)
+			return result, sqlitePartialMutationError(true, "recycle idle-session turns", fmt.Errorf("copy sqlite idle-session turns to trash for session %d: %w", session.ID, err))
+		}
+		if turnTrashResult.RowsChanged != expectedTurnRowsChanged {
+			result.RecycledTurnCount = 0
+			result.TurnDriftCount = len(normalizedTurnIDs)
+			return result, logicdomain.OutcomeUncertainError{
+				Operation: "recycle idle-session turns",
+				Message:   fmt.Sprintf("copy sqlite idle-session turns to trash for session %d affected %d rows, want %d", session.ID, turnTrashResult.RowsChanged, expectedTurnRowsChanged),
+			}
+		}
+		turnDeleteResult, err := s.execResult(ctx, turnDeleteStatement.SQL, turnDeleteStatement.Params...)
+		if err != nil {
+			result.RecycledTurnCount = 0
+			result.TurnDriftCount = len(normalizedTurnIDs)
+			return result, sqlitePartialMutationError(true, "recycle idle-session turns", fmt.Errorf("delete recycled sqlite idle-session turns for session %d: %w", session.ID, err))
+		}
+		if turnDeleteResult.RowsChanged != expectedTurnRowsChanged {
+			// Return the already-confirmed memory/vector coordinates while marking turn archival as uncertain, so callers can still clean vectors without logging the turn pass as successful.
+			// 返回已确认的 memory/vector 坐标，同时把 turn 归档标记为不确定，让调用方仍可清理向量但不会把 turn 回收记录为成功。
+			result.RecycledTurnCount = 0
+			result.TurnDriftCount = len(normalizedTurnIDs)
+			return result, logicdomain.OutcomeUncertainError{
+				Operation: "recycle idle-session turns",
+				Message:   fmt.Sprintf("delete recycled sqlite idle-session turns for session %d affected %d rows, want %d", session.ID, turnDeleteResult.RowsChanged, expectedTurnRowsChanged),
+			}
+		}
+	}
+	if s.database != nil {
+		if err := s.syncMemoryFTSAfterWrite(ctx, nil, normalizedMemoryIDs); err != nil {
+			return result, sqlitePartialMutationError(true, "recycle idle-session memories", fmt.Errorf("sync sqlite memory fts after idle recycle %d: %w", session.ID, err))
+		}
+	}
+
+	return result, nil
 }
 
 // buildSQLiteProtectedSharedMemoryRecycleClause renders the shared-memory protection predicate used by SQLite recycle scans.
@@ -505,7 +716,7 @@ func buildSQLiteProtectedSharedMemoryRecycleClause(query logicdomain.MemoryRecyc
 // buildSQLiteIdleSessionCandidateAvailabilityClause prefilters idle-session candidates to only sessions that already expose recyclable stale session memories or old turns, so no-op oldest sessions cannot block later useful work forever.
 // buildSQLiteIdleSessionCandidateAvailabilityClause 用于为 SQLite idle-session 候选追加“确实存在可回收数据”的预过滤，避免最老但 no-op 的 session 永远阻塞后续真正有收益的回收工作。
 func buildSQLiteIdleSessionCandidateAvailabilityClause(idleBeforeMillis int64, turnHotWindowSize int) (string, []any) {
-	return fmt.Sprintf(`(
+	return `(
 EXISTS (
   SELECT 1
   FROM vmm_memory_nodes m
@@ -522,7 +733,7 @@ OR EXISTS (
     FROM vmm_turn_records
     WHERE session_id = vmm_sessions.id
     ORDER BY id DESC
-    LIMIT %d
+    LIMIT ?
   )
   SELECT 1
   FROM vmm_turn_records tr
@@ -532,31 +743,33 @@ OR EXISTS (
     AND NOT EXISTS (SELECT 1 FROM vmm_memory_nodes mn WHERE mn.source_turn_id = tr.id)
     AND NOT EXISTS (SELECT 1 FROM vmm_profile_nodes pn WHERE pn.turn_id = tr.id)
 )
-)`, turnHotWindowSize), []any{
+)`, []any{
 			logicdomain.MemoryScopeLevelSession,
 			logicdomain.MemoryStatusActive,
 			idleBeforeMillis,
 			idleBeforeMillis,
+			turnHotWindowSize,
 			logicdomain.TurnExtractedStatusPending,
 		}
 }
 
-// buildSQLiteIdleSessionTurnReferenceClause renders the turn-reference predicate used by idle-session recycle, optionally ignoring the memory rows scheduled for deletion in the same recycle batch.
+// buildSQLiteIdleSessionTurnReferenceClause renders the turn-reference predicate used by idle-session recycle, optionally ignoring memory rows scheduled for deletion in the same batch.
 // buildSQLiteIdleSessionTurnReferenceClause 用于渲染 idle-session 回收里的 turn 引用谓词，并可选忽略同批将被删除的记忆行。
-func buildSQLiteIdleSessionTurnReferenceClause(recycledMemoryIDs []uint64) string {
+func buildSQLiteIdleSessionTurnReferenceClause(recycledMemoryIDs []uint64) (string, []any) {
+	recycledMemoryIDs = normalizeUint64List(recycledMemoryIDs)
 	if len(recycledMemoryIDs) == 0 {
 		return `NOT EXISTS (
     SELECT 1
     FROM vmm_memory_nodes mn
     WHERE mn.source_turn_id = tr.id
-  )`
+  )`, nil
 	}
 	return fmt.Sprintf(`NOT EXISTS (
     SELECT 1
     FROM vmm_memory_nodes mn
     WHERE mn.source_turn_id = tr.id
       AND mn.id NOT IN (%s)
-  )`, sqlUint64List(recycledMemoryIDs))
+  )`, sqlitePlaceholders(len(recycledMemoryIDs))), sqliteUint64Params(recycledMemoryIDs)
 }
 
 // normalizeSQLiteRetentionBatchLimit keeps recycle and purge limits positive even when callers pass zero or negative values.

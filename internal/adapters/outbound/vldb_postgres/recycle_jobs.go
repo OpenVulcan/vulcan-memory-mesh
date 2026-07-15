@@ -157,7 +157,7 @@ func (r *retentionRepository) ClaimPendingRecycleJobs(ctx context.Context, jobTy
 		return nil, fmt.Errorf("iterate postgres recycle jobs: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return nil, fmt.Errorf("commit postgres recycle-job claim tx: %w", err)
+		return nil, postgresClaimCommitError("claim recycle jobs", "commit postgres recycle-job claim tx", len(claimed), err)
 	}
 	return claimed, nil
 }
@@ -310,20 +310,41 @@ WHERE id = ANY($4)
 	if err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("copy postgres cold turns into trash for session %d: %w", query.SessionID, err)
 	}
+	expectedTurnRowsAffected := int64(len(normalizedTurnIDs))
+	if err := requirePostgresColdTurnRowsAffected("copy postgres cold turns into trash", query.SessionID, turnTag.RowsAffected(), expectedTurnRowsAffected); err != nil {
+		return logicdomain.ColdTurnRecycleResult{}, err
+	}
 	deleteTurnSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.turnsTable())
-	if _, err := tx.Exec(callCtx, deleteTurnSQL, turnIDArgs); err != nil {
+	deleteTurnTag, err := tx.Exec(callCtx, deleteTurnSQL, turnIDArgs)
+	if err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("delete postgres cold turns for session %d: %w", query.SessionID, err)
 	}
-
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("commit postgres cold-turn recycle tx for session %d: %w", query.SessionID, err)
+	if err := requirePostgresColdTurnRowsAffected("delete postgres cold turns", query.SessionID, deleteTurnTag.RowsAffected(), expectedTurnRowsAffected); err != nil {
+		return logicdomain.ColdTurnRecycleResult{}, err
 	}
-	return logicdomain.ColdTurnRecycleResult{
+
+	result := logicdomain.ColdTurnRecycleResult{
 		BatchID:           batchID,
 		SessionID:         query.SessionID,
 		ProjectID:         session.ProjectID,
 		RecycledTurnCount: int(turnTag.RowsAffected()),
-	}, nil
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresColdTurnRecycleCommitOutcomeUncertainError(query.SessionID, err)
+	}
+	return result, nil
+}
+
+// postgresColdTurnRecycleCommitOutcomeUncertainError marks cold-turn archive commits whose trash copy and hot-table delete may already be durable.
+// postgresColdTurnRecycleCommitOutcomeUncertainError 用于标记冷 turn 归档提交失败，此时 trash 复制和热表删除可能已经持久化。
+func postgresColdTurnRecycleCommitOutcomeUncertainError(sessionID uint64, err error) error {
+	return postgresCommitOutcomeUncertainError("recycle cold turns", fmt.Sprintf("commit postgres cold-turn recycle tx for session %d", sessionID), err)
+}
+
+// requirePostgresColdTurnRowsAffected rejects cold-turn recycle drift before the transaction commits and the claimed job is completed.
+// requirePostgresColdTurnRowsAffected 用于在事务提交和已领取任务完成前拒绝 cold-turn 回收行数漂移。
+func requirePostgresColdTurnRowsAffected(action string, sessionID uint64, rowsAffected, expectedRows int64) error {
+	return postgresRowsAffectedDriftError(fmt.Sprintf("%s for session %d", action, sessionID), rowsAffected, expectedRows)
 }
 
 // CompleteRecycleJobs removes one PostgreSQL recycle-job batch immediately after scan-separated cold-turn execution completes, keeping the queue transient instead of turning it into a second long-lived ledger.
@@ -343,8 +364,22 @@ WHERE id = ANY($1)
 
 	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs)); err != nil {
+	tx, err := r.shared.pool.Begin(callCtx)
+	if err != nil {
+		return fmt.Errorf("begin postgres recycle-job completion tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+	tag, err := tx.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs))
+	if err != nil {
 		return fmt.Errorf("complete postgres recycle jobs: %w", err)
+	}
+	if err := requirePostgresRecycleJobRowsAffected("complete postgres recycle jobs", tag.RowsAffected(), len(jobIDs)); err != nil {
+		return err
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return postgresCommitOutcomeUncertainError("complete recycle jobs", "commit postgres recycle-job completion tx", err)
 	}
 	return nil
 }
@@ -375,10 +410,30 @@ WHERE id = ANY($1)
 
 	callCtx, cancel := r.retentionQueryContext(ctx)
 	defer cancel()
-	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now); err != nil {
+	tx, err := r.shared.pool.Begin(callCtx)
+	if err != nil {
+		return fmt.Errorf("begin postgres recycle-job retry tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+	tag, err := tx.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now)
+	if err != nil {
 		return fmt.Errorf("retry postgres recycle jobs: %w", err)
 	}
+	if err := requirePostgresRecycleJobRowsAffected("retry postgres recycle jobs", tag.RowsAffected(), len(jobIDs)); err != nil {
+		return err
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return postgresCommitOutcomeUncertainError("retry recycle jobs", "commit postgres recycle-job retry tx", err)
+	}
 	return nil
+}
+
+// requirePostgresRecycleJobRowsAffected rejects queue state drift when a terminal recycle-job update did not touch every normalized job id.
+// requirePostgresRecycleJobRowsAffected 用于在回收任务终态更新未命中全部归一化 job id 时拒绝队列状态漂移。
+func requirePostgresRecycleJobRowsAffected(messagePrefix string, rowsAffected int64, expectedRows int) error {
+	return postgresRowsAffectedDriftError(messagePrefix, rowsAffected, int64(expectedRows))
 }
 
 // buildPostgresColdTurnJobSessionAvailabilityClause renders the candidate predicate used by the independent cold-turn scan so only sessions with real recyclable turns enter the queue.

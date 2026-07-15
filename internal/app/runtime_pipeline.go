@@ -100,6 +100,7 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 		logger,
 	)
 	pre.ConfigurePIIScrubber(piiScrubber)
+	pre.ConfigureMemoryAdoptionVectorSync(storage.Vector)
 	post := usecase.NewPostActionUseCase(
 		noiseGate,
 		storage.Relational,

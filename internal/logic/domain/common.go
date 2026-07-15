@@ -124,19 +124,40 @@ type MemoryRecord struct {
 	Vector       []float32
 	Filter       SearchFilter
 	SourceTurnID uint64
-	Metadata     map[string]string
-	CreatedAt    time.Time
+	// Status mirrors the durable memory lifecycle state so detached vector stores can filter inactive rows before top-k truncation.
+	// Status 用于镜像长期记忆生命周期状态，让独立向量库能在 top-k 截断前过滤非活跃行。
+	Status int
+	// ExpiresAt mirrors the durable expiry timestamp so detached vector stores can filter expired rows before top-k truncation.
+	// ExpiresAt 用于镜像长期记忆过期时间，让独立向量库能在 top-k 截断前过滤已过期行。
+	ExpiresAt time.Time
+	Metadata  map[string]string
+	CreatedAt time.Time
 }
 
-// MemoryHit represents one recalled memory candidate returned by the vector backend.
-// MemoryHit 用于表示向量后端返回的一条召回记忆候选项。
+// MemoryHit represents one recalled memory candidate returned by semantic or SQL-fused retrieval before the app layer maps it into a durable query hit.
+// MemoryHit 用于表示语义检索或 SQL 融合检索返回的一条召回候选，随后由应用层映射成长期记忆查询命中。
 type MemoryHit struct {
-	ID        string
-	Text      string
-	Score     float64
+	// ID stores the vector-side identifier that preserves the legacy detached vector-store lookup contract.
+	// ID 用于保存向量侧标识，保持历史分离向量库按 vector id 补全的查询契约。
+	ID string
+	// Text stores the lightweight recall text carried by detached vector backends for diagnostics and ranking traces.
+	// Text 用于保存分离向量后端携带的轻量召回文本，供诊断和排序追踪使用。
+	Text string
+	// Score stores the store-native higher-is-better recall score before app-layer normalization or fusion rewrites it.
+	// Score 用于保存存储侧原生的越高越好召回分数，应用层归一化或融合前使用。
+	Score float64
+	// Record optionally carries the already materialized durable memory row when the retrieval backend queried the unified memory table itself.
+	// Record 在检索后端自身已经查询统一记忆表时，可选携带已经物化的长期记忆行。
+	Record MemoryNodeRecord
+	// CreatedAt carries backend-level creation time when a detached vector backend exposes it directly.
+	// CreatedAt 用于在分离向量后端直接暴露创建时间时携带该时间。
 	CreatedAt time.Time
-	Filter    SearchFilter
-	Metadata  map[string]string
+	// Filter carries the scoped coordinates observed by recall so app-layer fallbacks can preserve the original search scope.
+	// Filter 用于携带召回阶段观察到的范围坐标，使应用层回退逻辑能够保留原始搜索范围。
+	Filter SearchFilter
+	// Metadata carries backend-specific ranking diagnostics and must include the origin label for recall hits returned through VectorStore.
+	// Metadata 用于携带后端特定的排序诊断信息，并且通过 VectorStore 返回的召回命中必须包含来源标签。
+	Metadata map[string]string
 }
 
 // UserRecord stores one durable user row that can be resolved by numeric id or unique name during admin RPCs.

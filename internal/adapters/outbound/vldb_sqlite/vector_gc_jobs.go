@@ -5,6 +5,7 @@ package vldb_sqlite
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -69,21 +70,38 @@ func (s *Store) EnqueueVectorGCJobs(ctx context.Context, query logicdomain.Vecto
 	if err != nil {
 		return fmt.Errorf("allocate sqlite vector gc job id: %w", err)
 	}
-	script := strings.Builder{}
-	script.WriteString("BEGIN IMMEDIATE;\n")
+	statements := make([]sqliteWriteStatement, 0, len(vectorIDs))
 	for _, vectorID := range vectorIDs {
-		script.WriteString(fmt.Sprintf(`
-INSERT OR IGNORE INTO vmm_vector_gc_jobs (
+		statements = append(statements, sqliteWriteStatement{
+			SQL: `
+INSERT INTO vmm_vector_gc_jobs (
   id, batch_id, vector_id, job_type, attempt_count, next_run_timestamp,
   claimed_timestamp, completed_timestamp, last_error, created_timestamp, updated_timestamp
 )
-VALUES (%d, %d, %s, %s, 0, %d, 0, 0, '', %d, %d);
-`, nextID, query.BatchID, sqlStringLiteral(vectorID), sqlStringLiteral(jobType), nextRunMs, nowMs, nowMs))
+VALUES (?, ?, ?, ?, 0, ?, 0, 0, '', ?, ?)
+ON CONFLICT(vector_id, job_type, batch_id) DO UPDATE SET
+  updated_timestamp = excluded.updated_timestamp;
+`,
+			Params: []any{nextID, query.BatchID, vectorID, jobType, nextRunMs, nowMs, nowMs},
+		})
 		nextID++
 	}
-	script.WriteString("COMMIT;")
-	if err := s.exec(ctx, script.String()); err != nil {
-		return fmt.Errorf("enqueue sqlite vector gc jobs: %w", err)
+	// Count confirmed autocommit retry rows so partial enqueue failures can expose how many vector deletes remain retryable.
+	// 统计已确认自动提交的重试行数量，让局部入队失败能暴露仍可重试的向量删除数量。
+	enqueuedCount := 0
+	for idx, statement := range statements {
+		insertResult, err := s.execResult(ctx, statement.SQL, statement.Params...)
+		if err != nil {
+			err := fmt.Errorf("enqueue sqlite vector gc job %d after %d confirmed jobs: %w", idx+1, enqueuedCount, err)
+			return sqliteQueuePartialWriteError(enqueuedCount > 0, "enqueue vector gc jobs", err)
+		}
+		// Report vector-GC enqueue success only after the retry job is durably present or an existing equivalent job has been refreshed.
+		// 只有向量 GC 重试任务已持久化进入队列表，或等价的既有任务已刷新后，才报告入队成功。
+		if insertResult.RowsChanged != 1 {
+			err := fmt.Errorf("enqueue sqlite vector gc job %d affected %d rows, want 1 after %d confirmed jobs", idx+1, insertResult.RowsChanged, enqueuedCount)
+			return sqlitePartialMutationError(enqueuedCount > 0 || insertResult.RowsChanged > 0, "enqueue vector gc jobs", err)
+		}
+		enqueuedCount++
 	}
 	return nil
 }
@@ -103,45 +121,35 @@ func (s *Store) ClaimPendingVectorGCJobs(ctx context.Context, dueBefore, claimUn
 	defer s.writeMu.Unlock()
 
 	rows, err := queryRows[sqliteVectorGCJobRow](s, ctx, `
-SELECT id, batch_id, vector_id, job_type, attempt_count,
-       next_run_timestamp, claimed_timestamp, completed_timestamp,
-       last_error, created_timestamp, updated_timestamp
-FROM vmm_vector_gc_jobs
+UPDATE vmm_vector_gc_jobs
+SET claimed_timestamp = ?,
+    next_run_timestamp = ?,
+    updated_timestamp = ?
 WHERE completed_timestamp = 0
-  AND next_run_timestamp > 0
-  AND next_run_timestamp <= ?
-ORDER BY next_run_timestamp ASC, id ASC
-LIMIT ?
-`, dueBeforeMs, limit)
+  AND id IN (
+    SELECT id
+    FROM vmm_vector_gc_jobs
+    WHERE completed_timestamp = 0
+      AND next_run_timestamp > 0
+      AND next_run_timestamp <= ?
+    ORDER BY next_run_timestamp ASC, id ASC
+    LIMIT ?
+  )
+RETURNING id, batch_id, vector_id, job_type, attempt_count,
+          next_run_timestamp, claimed_timestamp, completed_timestamp,
+		  last_error, created_timestamp, updated_timestamp;
+`, claimAtMs, claimUntilMs, claimAtMs, dueBeforeMs, limit)
 	if err != nil {
-		return nil, fmt.Errorf("query sqlite pending vector gc jobs: %w", err)
+		return nil, sqliteQueueWriteError("claim vector gc jobs", fmt.Errorf("claim sqlite pending vector gc jobs: %w", err))
 	}
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	jobIDs := make([]uint64, 0, len(rows))
-	for _, row := range rows {
-		jobIDs = append(jobIDs, row.ID)
-	}
-	jobIDList := sqlUint64List(jobIDs)
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
-UPDATE vmm_vector_gc_jobs
-SET claimed_timestamp = %d,
-    next_run_timestamp = %d,
-    updated_timestamp = %d
-WHERE id IN (%s)
-  AND completed_timestamp = 0;
-COMMIT;
-`, claimAtMs, claimUntilMs, claimAtMs, jobIDList)
-	if err := s.exec(ctx, script); err != nil {
-		return nil, fmt.Errorf("claim sqlite vector gc jobs: %w", err)
-	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
 	claimed := make([]logicdomain.VectorGCJobRecord, 0, len(rows))
 	for _, row := range rows {
-		row.ClaimedTimestamp = claimAtMs
-		row.NextRunTimestamp = claimUntilMs
-		row.UpdatedTimestamp = claimAtMs
 		claimed = append(claimed, row.toDomain())
 	}
 	return claimed, nil
@@ -161,14 +169,20 @@ func (s *Store) CompleteVectorGCJobs(ctx context.Context, jobIDs []uint64, _ tim
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
+	jobIDParams := make([]any, 0, len(jobIDs))
+	for _, jobID := range jobIDs {
+		jobIDParams = append(jobIDParams, jobID)
+	}
+	deleteResult, err := s.execResult(ctx, fmt.Sprintf(`
 DELETE FROM vmm_vector_gc_jobs
 WHERE id IN (%s);
-COMMIT;
-`, sqlUint64List(jobIDs))
-	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("complete sqlite vector gc jobs: %w", err)
+`, sqlitePlaceholders(len(jobIDs))), jobIDParams...)
+	if err != nil {
+		return sqliteQueueWriteError("complete vector gc jobs", fmt.Errorf("complete sqlite vector gc jobs: %w", err))
+	}
+	expectedRowsChanged := int64(len(jobIDs))
+	if err := sqliteAutocommitRowsChangedDriftError("complete vector gc jobs", "complete sqlite vector gc jobs", deleteResult.RowsChanged, expectedRowsChanged); err != nil {
+		return err
 	}
 	return nil
 }
@@ -190,20 +204,27 @@ func (s *Store) RetryVectorGCJobs(ctx context.Context, jobIDs []uint64, nextRunA
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
+	params := make([]any, 0, 3+len(jobIDs))
+	params = append(params, nextRunMs, lastError, nowMs)
+	for _, jobID := range jobIDs {
+		params = append(params, jobID)
+	}
+	updateResult, err := s.execResult(ctx, fmt.Sprintf(`
 UPDATE vmm_vector_gc_jobs
 SET attempt_count = attempt_count + 1,
-    next_run_timestamp = %d,
+    next_run_timestamp = ?,
     claimed_timestamp = 0,
-    last_error = %s,
-    updated_timestamp = %d
+    last_error = ?,
+    updated_timestamp = ?
 WHERE id IN (%s)
   AND completed_timestamp = 0;
-COMMIT;
-`, nextRunMs, sqlStringLiteral(lastError), nowMs, sqlUint64List(jobIDs))
-	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("retry sqlite vector gc jobs: %w", err)
+`, sqlitePlaceholders(len(jobIDs))), params...)
+	if err != nil {
+		return sqliteQueueWriteError("retry vector gc jobs", fmt.Errorf("retry sqlite vector gc jobs: %w", err))
+	}
+	expectedRowsChanged := int64(len(jobIDs))
+	if err := sqliteAutocommitRowsChangedDriftError("retry vector gc jobs", "retry sqlite vector gc jobs", updateResult.RowsChanged, expectedRowsChanged); err != nil {
+		return err
 	}
 	return nil
 }

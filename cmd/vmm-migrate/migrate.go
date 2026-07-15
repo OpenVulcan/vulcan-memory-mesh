@@ -67,6 +67,9 @@ func runSplitToCombinedMigration(ctx context.Context, cfg config.Config) error {
 	}
 	report, err := vldb_postgres.DebugImportManagedSnapshot(ctx, postgresCfg, snapshot)
 	if err != nil {
+		if report.TotalRows() > 0 {
+			return fmt.Errorf("import snapshot into postgres combined store (%s): %w", formatMigrationReportErrorDetail(report), err)
+		}
 		return fmt.Errorf("import snapshot into postgres combined store: %w", err)
 	}
 
@@ -75,6 +78,13 @@ func runSplitToCombinedMigration(ctx context.Context, cfg config.Config) error {
 		fmt.Printf("[vmm-migrate] %s\n", line)
 	}
 	return nil
+}
+
+// formatMigrationReportErrorDetail renders the same row-count facts for failed imports whose PostgreSQL adapter can still report the attempted durable import scale.
+// formatMigrationReportErrorDetail 用于在 PostgreSQL 适配器能返回已尝试持久化规模时，为失败导入渲染同一组行数事实。
+func formatMigrationReportErrorDetail(report storagemigrate.Report) string {
+	parts := append([]string{fmt.Sprintf("total_rows=%d", report.TotalRows())}, formatMigrationReportLines(report)...)
+	return strings.Join(parts, " ")
 }
 
 // buildPostgresMaintenanceConfig extracts the PostgreSQL combined-store settings required by standalone maintenance actions.

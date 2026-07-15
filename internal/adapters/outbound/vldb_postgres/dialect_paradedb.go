@@ -52,7 +52,7 @@ CREATE INDEX %sIF NOT EXISTS %s ON %s USING bm25 (
 ) WITH (key_field='id')
 `, concurrently, quoteIdentifier(store.cfg.BM25IndexName), store.memoryNodesTable())
 	if _, err := store.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
-		return fmt.Errorf("create paradedb bm25 index: %w", err)
+		return fmt.Errorf("create paradedb bm25 index %s: %w", strings.TrimSpace(store.cfg.BM25IndexName), err)
 	}
 	return nil
 }
@@ -69,12 +69,13 @@ func (paradeDBDialect) BuildLexicalSearchSQL(r memoryTableResolver, query string
 	}
 	appendScopedMemoryFilter(&whereClauses, args, filter, "m")
 	sqlText := fmt.Sprintf(`
-SELECT m.id AS memory_id, pdb.score(m.id) AS score
+SELECT pdb.score(m.id) AS score,
+       %s
 FROM %s AS m
 WHERE %s
 ORDER BY pdb.score(m.id) DESC, m.id ASC
 LIMIT %s
-`, r.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
+`, memoryNodeSelectColumns("m"), r.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }
 
@@ -100,14 +101,6 @@ func (paradeDBDialect) BuildHybridSearchSQL(r memoryTableResolver, query string,
 WITH vector_candidates AS (
 	SELECT
 		m.id AS memory_id,
-		m.vector_id,
-		m.abstract,
-		m.team_id,
-		m.space_id,
-		m.project_id,
-		m.origin_session_id,
-		m.user_id,
-		COALESCE(m.source_turn_id, 0) AS source_turn_id,
 		ROW_NUMBER() OVER (ORDER BY m.embedding <=> %s::vector ASC, m.id ASC) AS vector_rank
 	FROM %s AS m
 	WHERE %s
@@ -117,14 +110,6 @@ WITH vector_candidates AS (
 lexical_candidates AS (
 	SELECT
 		m.id AS memory_id,
-		m.vector_id,
-		m.abstract,
-		m.team_id,
-		m.space_id,
-		m.project_id,
-		m.origin_session_id,
-		m.user_id,
-		COALESCE(m.source_turn_id, 0) AS source_turn_id,
 		ROW_NUMBER() OVER (ORDER BY pdb.score(m.id) DESC, m.id ASC) AS lexical_rank
 	FROM %s AS m
 	WHERE %s
@@ -134,14 +119,6 @@ lexical_candidates AS (
 fused_candidates AS (
 	SELECT
 		COALESCE(v.memory_id, l.memory_id) AS memory_id,
-		COALESCE(v.vector_id, l.vector_id) AS vector_id,
-		COALESCE(v.abstract, l.abstract) AS abstract,
-		COALESCE(v.team_id, l.team_id) AS team_id,
-		COALESCE(v.space_id, l.space_id) AS space_id,
-		COALESCE(v.project_id, l.project_id) AS project_id,
-		COALESCE(v.origin_session_id, l.origin_session_id) AS origin_session_id,
-		COALESCE(v.user_id, l.user_id) AS user_id,
-		COALESCE(v.source_turn_id, l.source_turn_id, 0) AS source_turn_id,
 		CASE
 			WHEN v.vector_rank IS NULL THEN 0
 			ELSE 1.0 / (%s::double precision + v.vector_rank::double precision)
@@ -161,19 +138,14 @@ fused_candidates AS (
 		ON l.memory_id = v.memory_id
 )
 SELECT
-	vector_id,
-	abstract,
-	team_id,
-	space_id,
-	project_id,
-	origin_session_id,
-	user_id,
-	source_turn_id,
-	fused_score,
-	origin
-FROM fused_candidates
-ORDER BY fused_score DESC, memory_id ASC
+	%s,
+	f.fused_score,
+	f.origin
+FROM fused_candidates AS f
+JOIN %s AS m
+	ON m.id = f.memory_id
+ORDER BY f.fused_score DESC, f.memory_id ASC
 LIMIT %s
-`, vectorPlaceholder, r.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, r.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), limitPlaceholder, rrfPlaceholder, rrfPlaceholder, limitPlaceholder)
+`, vectorPlaceholder, r.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, r.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), limitPlaceholder, rrfPlaceholder, rrfPlaceholder, memoryNodeSelectColumns("m"), r.memoryNodesTable(), limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }

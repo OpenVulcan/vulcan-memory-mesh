@@ -5,6 +5,7 @@ package usecase
 import (
 	"bytes"
 	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -485,8 +486,12 @@ func TestPostActionUseCaseReviewTurnCandidatesRejectsUnavailableSupersedeIDs(t *
 		UserContent:      "新的长期事实",
 		AssistantContent: "我会更新长期记忆。",
 	}, analysis, &postActionCompactionStats{})
-	if err == nil || !strings.Contains(err.Error(), "references unavailable supersede_memory_id") {
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) {
 		t.Fatalf("expected invalid supersede id error, got %v", err)
+	}
+	if invalid.Scene != "postaction_l2_main" || !strings.Contains(invalid.Message, "references unavailable supersede_memory_id") {
+		t.Fatalf("unexpected invalid supersede id error details: %+v", invalid)
 	}
 }
 
@@ -1017,6 +1022,7 @@ type stubPostActionCandidateReviewer struct {
 	inputs []logicdomain.PostActionCandidateReviewInput
 	result logicdomain.PostActionCandidateReviewResult
 	err    error
+	model  string
 }
 
 // Review captures the joint memory/profile payload so tests can assert one shared LLM review context.
@@ -1039,4 +1045,13 @@ func (s *stubPostActionCandidateReviewer) Review(_ context.Context, input logicd
 		return logicdomain.PostActionCandidateReviewResult{}, s.err
 	}
 	return s.result, nil
+}
+
+// ReviewModel returns the configured stub reviewer model label so queued failure-log tests can assert second-stage model attribution.
+// ReviewModel 用于返回桩对象配置的 reviewer 模型标识，方便队列失败日志测试断言第二层模型归因。
+func (s *stubPostActionCandidateReviewer) ReviewModel() string {
+	if s == nil {
+		return ""
+	}
+	return s.model
 }

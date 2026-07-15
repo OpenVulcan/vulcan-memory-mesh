@@ -16,17 +16,17 @@ const (
 	// defaultMemorySearchTopK 用于在调用方未显式指定 limit 时，保证记忆查询 RPC 仍然具备可用的默认返回量。
 	defaultMemorySearchTopK = 8
 
-	// maxMemorySearchTopK caps one memory-query RPC so accidental oversized requests do not explode embedding or vector work.
-	// maxMemorySearchTopK 用于限制单次记忆查询 RPC 的最大返回量，避免误传超大请求时把 embedding 或向量检索放大。
-	maxMemorySearchTopK = 32
+	// MaxMemorySearchTopK caps one memory-query RPC so transport and use-case normalization share the same public limit.
+	// MaxMemorySearchTopK 用于限制单次记忆查询 RPC 的最大返回量，让传输层和用例层归一共享同一个公开上限。
+	MaxMemorySearchTopK = 32
 
 	// maxMemoryQueryItems bounds the simple query list size so one request cannot fan out into an unbounded number of vector searches.
 	// maxMemoryQueryItems 用于限制简单查询列表的条目数量，避免一次请求扩散成无限制的向量检索。
 	maxMemoryQueryItems = 16
 
-	// maxTurnDetailLookup limits how many turn ids one detail query can request at once to keep relational reads bounded.
-	// maxTurnDetailLookup 用于限制一次详情查询最多请求多少个 turn id，保持关系读取的规模可控。
-	maxTurnDetailLookup = 256
+	// MaxTurnDetailLookup limits how many turn ids one detail query can request at once so transport validation and use-case reads stay bounded by one contract.
+	// MaxTurnDetailLookup 用于限制一次详情查询最多请求多少个 turn id，让传输层校验和用例层读取共享同一个规模契约。
+	MaxTurnDetailLookup = 256
 
 	// maxMemoryDetailLookup limits how many unified memory refs one detail query can request at once.
 	// maxMemoryDetailLookup 用于限制一次统一记忆详情查询最多请求多少个引用。
@@ -36,9 +36,9 @@ const (
 	// maxWriteMemoryItems 用于限制一次主动写入调用最多能写多少条记忆，避免单次工具调用扩散成无限 embedding 工作量。
 	maxWriteMemoryItems = 32
 
-	// maxDeleteMemoryIDs limits one manual delete call so relational locking, FTS cleanup, and vector cleanup stay bounded.
-	// maxDeleteMemoryIDs 用于限制一次手工删除调用最多处理多少条记忆，让关系锁定、FTS 清理和向量清理保持有界。
-	maxDeleteMemoryIDs = 256
+	// MaxDeleteMemoryIDs limits one manual delete call so transport validation, relational locking, FTS cleanup, and vector cleanup stay bounded by one contract.
+	// MaxDeleteMemoryIDs 用于限制一次手工删除调用最多处理多少条记忆，让传输层校验、关系锁定、FTS 清理和向量清理共享同一个规模契约。
+	MaxDeleteMemoryIDs = 256
 
 	// turnDetailContextRadius keeps three turns before and after each anchor so callers can continue finer follow-up lookups without fetching entire sessions.
 	// turnDetailContextRadius 用于固定返回每个锚点 turn 前后各三轮编号，让调用方无需拉取整条 session 也能继续做更细的后续查询。
@@ -330,8 +330,8 @@ func (u *MemoryUseCase) ConfigureHybrid(enabled bool, lexicalTopK, rrfK int) {
 	if lexicalTopK <= 0 {
 		lexicalTopK = defaultMemorySearchTopK
 	}
-	if lexicalTopK > maxMemorySearchTopK {
-		lexicalTopK = maxMemorySearchTopK
+	if lexicalTopK > MaxMemorySearchTopK {
+		lexicalTopK = MaxMemorySearchTopK
 	}
 	if rrfK <= 0 {
 		rrfK = 60
@@ -392,8 +392,8 @@ func (u *MemoryUseCase) ConfigureRerank(reranker appports.RerankerClient, topN i
 	if topN <= 0 {
 		topN = defaultMemorySearchTopK
 	}
-	if topN > maxMemorySearchTopK {
-		topN = maxMemorySearchTopK
+	if topN > MaxMemorySearchTopK {
+		topN = MaxMemorySearchTopK
 	}
 	u.rerankTopN = topN
 }
@@ -407,8 +407,8 @@ func (u *MemoryUseCase) ConfigureHardDedupePoolTopK(topK int) {
 	if topK <= 0 {
 		topK = 16
 	}
-	if topK > maxMemorySearchTopK {
-		topK = maxMemorySearchTopK
+	if topK > MaxMemorySearchTopK {
+		topK = MaxMemorySearchTopK
 	}
 	u.hardDedupePoolTopK = topK
 }
@@ -424,8 +424,8 @@ func (u *MemoryUseCase) ConfigureMemoryReplace(reviewer PostActionCandidateRevie
 	if topK <= 0 {
 		topK = defaultMemorySearchTopK
 	}
-	if topK > maxMemorySearchTopK {
-		topK = maxMemorySearchTopK
+	if topK > MaxMemorySearchTopK {
+		topK = MaxMemorySearchTopK
 	}
 	u.memoryReplaceTopK = topK
 	u.memoryReplaceScope = normalizeMemoryReplaceScope(scope)

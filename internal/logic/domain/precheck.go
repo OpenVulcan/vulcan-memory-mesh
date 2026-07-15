@@ -48,9 +48,8 @@ type PreCheckMemoryReviewInput struct {
 	Candidates       []PreCheckMemoryCandidate
 }
 
-// PreCheckMemoryReviewResult stores the chosen candidate numbers returned by the second-stage reviewer together with its brief rationale.
-// PreCheckMemoryReviewResult 用于保存第二层评审器返回的候选编号，以及简要理由。
+// PreCheckMemoryReviewResult stores the chosen candidate numbers returned by the second-stage reviewer.
+// PreCheckMemoryReviewResult 用于保存第二层评审器返回的候选编号。
 type PreCheckMemoryReviewResult struct {
 	SelectedCandidateNumbers []int
-	Reason                   string
 }

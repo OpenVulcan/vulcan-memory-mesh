@@ -261,11 +261,12 @@
 
 - `project_id` 在数据库层级上已经唯一绑定 `space_id` 和 `team_id`
 - 这两个字段由服务端统一反查，不再由客户端传入
-- `recall_mode=0` 或省略时，服务端会回退到旧版 pre-check 检索行为
-- `recall_mode=1` 时，服务端会应用当前 session 的 compact 边界：
-  - 未 compact：排除当前 session 的 turn-extract 记忆
-  - 已 compact：只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
-- `recall_mode` 为未来新增的非零值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
+- 省略 `recall_mode` 或传 `0/UNSPECIFIED` 时，服务端默认应用当前 session 的 compact 边界
+- `recall_mode=1/SESSION_COMPACT` 时，服务端显式应用当前 session 的 compact 边界：
+   - 未 compact：排除当前 session 的 turn-extract 记忆
+   - 已 compact：只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
+- `recall_mode=2/FULL` 时，服务端关闭当前 session compact 边界，在其他作用域与生命周期过滤条件内执行全量召回
+- `recall_mode` 为未来新增值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
 
 ### 2. ChatCompact
 
@@ -547,8 +548,8 @@
   - 当前最大 `16` 条
 - `top_k`
   - 单条 query 期望返回的命中上限
-  - transport 上限为 `64`
-  - 实现层会进一步做保护性截断
+  - 省略或传 `0` 时默认返回 `8` 条
+  - transport 与实现层共享上限 `32`，超过该值时会按 `32` 继续执行
 
 请求示例：
 
@@ -630,6 +631,8 @@
 - `project_context`
 - `logical_bug_debt`
 - `security_policy`
+
+如果历史数据或手工写库产生了不支持的分类编号，`SearchMemoryEvents` 会返回 `unknown`，不会把异常编号静默伪装成 `general`。
 
 ### GetTurnDetails
 
@@ -778,6 +781,8 @@
 - `not_found_memory_ids[]`
 - `deleted_vector_rows`
 - `trace_id`
+
+`deleted_memory_ids[]` 和 `not_found_memory_ids[]` 会按请求中 `memory_ids[]` 的首次出现顺序返回；重复 id 只按第一次出现参与结果排序。
 
 ### PreCheck
 

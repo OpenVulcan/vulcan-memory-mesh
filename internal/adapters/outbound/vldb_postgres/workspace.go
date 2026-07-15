@@ -302,9 +302,20 @@ RETURNING id, name, profile, delete_confirm_code, created_at, updated_at
 			Created: true,
 		}, nil
 	}
-	user, resolveErr := r.ResolveUserRef(ctx, userName)
+	return resolvePostgresEnsureUserNameInsertConflict(userName, err, func() (logicdomain.UserRecord, error) {
+		return r.ResolveUserRef(ctx, userName)
+	})
+}
+
+// resolvePostgresEnsureUserNameInsertConflict resolves the concurrent creator only when PostgreSQL reports the expected no-row conflict outcome.
+// resolvePostgresEnsureUserNameInsertConflict 用于仅在 PostgreSQL 返回预期的无返回行冲突结果时解析并发创建赢家。
+func resolvePostgresEnsureUserNameInsertConflict(userName string, insertErr error, resolveExisting func() (logicdomain.UserRecord, error)) (logicdomain.UserResolveResult, error) {
+	if !errors.Is(insertErr, pgx.ErrNoRows) {
+		return logicdomain.UserResolveResult{}, fmt.Errorf("create postgres user: %w", insertErr)
+	}
+	user, resolveErr := resolveExisting()
 	if resolveErr != nil {
-		return logicdomain.UserResolveResult{}, fmt.Errorf("create postgres user: %w", err)
+		return logicdomain.UserResolveResult{}, fmt.Errorf("resolve postgres user after create conflict: %w", resolveErr)
 	}
 	return logicdomain.UserResolveResult{
 		User:    user,
@@ -419,27 +430,8 @@ LIMIT 1
 	}
 
 	now := time.Now().UTC()
-	insertSQL := fmt.Sprintf(`
-INSERT INTO %s (
-	session_key, user_id, team_id, space_id, project_id,
-	turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
-	last_extract_observed_at, last_extract_completed_at, last_compacted_at,
-	created_at, updated_at
-) VALUES (
-	$1, $2, $3, $4, $5,
-	0, 0, 0, '', 0,
-	NULL, NULL, NULL,
-	$6, $6
-)
-ON CONFLICT (project_id, session_key)
-DO UPDATE SET updated_at = EXCLUDED.updated_at
-RETURNING id, session_key, user_id, team_id, space_id, project_id,
-          turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
-          last_extract_observed_at, last_extract_completed_at, last_compacted_at,
-          created_at, updated_at
-`, r.sessionsTable())
 	var created sessionScanRow
-	if err := r.shared.pool.QueryRow(callCtx, strings.TrimSpace(insertSQL),
+	if err := r.shared.pool.QueryRow(callCtx, buildPostgresEnsureSessionInsertSQL(r.sessionsTable()),
 		sessionKey,
 		int64(userID),
 		int64(project.TeamID),
@@ -467,6 +459,30 @@ RETURNING id, session_key, user_id, team_id, space_id, project_id,
 		return logicdomain.SessionRecord{}, fmt.Errorf("ensure postgres session: %w", err)
 	}
 	return created.toDomain(), nil
+}
+
+// buildPostgresEnsureSessionInsertSQL returns the insert-or-return statement used by session creation while preserving existing session freshness metadata on conflict.
+// buildPostgresEnsureSessionInsertSQL 用于返回 session 创建的插入或返回语句，并在冲突时保留既有 session 的活跃时间元数据。
+func buildPostgresEnsureSessionInsertSQL(sessionsTable string) string {
+	return strings.TrimSpace(fmt.Sprintf(`
+INSERT INTO %s AS existing (
+	session_key, user_id, team_id, space_id, project_id,
+	turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+	last_extract_observed_at, last_extract_completed_at, last_compacted_at,
+	created_at, updated_at
+) VALUES (
+	$1, $2, $3, $4, $5,
+	0, 0, 0, '', 0,
+	NULL, NULL, NULL,
+	$6, $6
+)
+ON CONFLICT (project_id, session_key)
+DO UPDATE SET updated_at = existing.updated_at
+RETURNING id, session_key, user_id, team_id, space_id, project_id,
+          turn_count, last_summarized_id, last_compacted_turn_id, summarize_content, summarize_budget,
+          last_extract_observed_at, last_extract_completed_at, last_compacted_at,
+          created_at, updated_at
+`, sessionsTable))
 }
 
 // ResolveRequestScope delegates to the workspace repository for request-scope resolution.

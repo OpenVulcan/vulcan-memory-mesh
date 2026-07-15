@@ -45,20 +45,27 @@ func (u *MemoryUseCase) Delete(ctx context.Context, cmd DeleteMemoriesCommand) (
 	memoryIDs := normalizeDeleteMemoryIDs(cmd.MemoryIDs)
 	reason := normalizeDeleteMemoryReason(cmd.Reason)
 	filter := buildScopedMemorySearchFilter(userTarget, projectTarget, "")
-	deleteResult, err := u.memories.DeleteMemoryNodes(ctx, memoryIDs, filter, now, reason)
-	if err != nil {
-		return DeleteMemoriesResult{}, err
+	deleteResult, deleteErr := u.memories.DeleteMemoryNodes(ctx, memoryIDs, filter, now, reason)
+	if deleteErr != nil && !logicdomain.IsOutcomeUncertain(deleteErr) {
+		return DeleteMemoriesResult{}, deleteErr
 	}
+	deleteResult.DeletedMemoryIDs = orderDeleteResultMemoryIDsByRequest(deleteResult.DeletedMemoryIDs, memoryIDs)
+	deleteResult.NotFoundMemoryIDs = orderDeleteResultMemoryIDsByRequest(deleteResult.NotFoundMemoryIDs, memoryIDs)
 
 	deletedVectorRows := uint64(0)
-	if len(deleteResult.DeletedVectorIDs) > 0 {
+	deletedVectorIDs := normalizeVectorGCIDs(deleteResult.DeletedVectorIDs)
+	if len(deletedVectorIDs) > 0 {
+		// Clean confirmed sidecar vectors once the relational delete path returns coordinates, including outcome-uncertain post-delete boundaries that still provide safe coordinates.
+		// 一旦关系删除路径返回坐标就清理已确认旁路向量；对于仍提供安全坐标的删除后结果不确定边界也同样执行。
+		cleanupCtx, cleanupCancel := newPostCommitVectorCleanupContext()
+		defer cleanupCancel()
 		if u.vector == nil {
-			enqueueVectorGCCompensation(ctx, u.memories, u.logger, logicdomain.VectorGCJobTypeManualMemoryDelete, deleteResult.DeletedVectorIDs, now,
+			enqueueVectorGCCompensation(cleanupCtx, u.memories, u.logger, logicdomain.VectorGCJobTypeManualMemoryDelete, deletedVectorIDs, now,
 				"memory_ids", deleteResult.DeletedMemoryIDs,
 				"err", "vector store is nil",
 			)
-		} else if rows, deleteErr := u.vector.DeleteByIDs(ctx, deleteResult.DeletedVectorIDs); deleteErr != nil {
-			enqueueVectorGCCompensation(ctx, u.memories, u.logger, logicdomain.VectorGCJobTypeManualMemoryDelete, deleteResult.DeletedVectorIDs, now,
+		} else if rows, deleteErr := u.vector.DeleteByIDs(cleanupCtx, deletedVectorIDs); deleteErr != nil {
+			enqueueVectorGCCompensation(cleanupCtx, u.memories, u.logger, logicdomain.VectorGCJobTypeManualMemoryDelete, deletedVectorIDs, now,
 				"memory_ids", deleteResult.DeletedMemoryIDs,
 				"err", deleteErr,
 			)
@@ -66,11 +73,15 @@ func (u *MemoryUseCase) Delete(ctx context.Context, cmd DeleteMemoriesCommand) (
 			deletedVectorRows = rows
 		}
 	}
-	return DeleteMemoriesResult{
+	result := DeleteMemoriesResult{
 		DeletedMemoryIDs:  deleteResult.DeletedMemoryIDs,
 		NotFoundMemoryIDs: deleteResult.NotFoundMemoryIDs,
 		DeletedVectorRows: deletedVectorRows,
-	}, nil
+	}
+	if deleteErr != nil {
+		return result, deleteErr
+	}
+	return result, nil
 }
 
 // validateDeleteMemoriesCommand checks the manual delete request before scope resolution and relational locking begin.
@@ -85,8 +96,8 @@ func validateDeleteMemoriesCommand(cmd DeleteMemoriesCommand) error {
 	if len(cmd.MemoryIDs) == 0 {
 		return logicdomain.ValidationError{Field: "memory_ids", Message: "must contain at least one id"}
 	}
-	if len(cmd.MemoryIDs) > maxDeleteMemoryIDs {
-		return logicdomain.ValidationError{Field: "memory_ids", Message: fmt.Sprintf("must contain at most %d ids", maxDeleteMemoryIDs)}
+	if len(cmd.MemoryIDs) > MaxDeleteMemoryIDs {
+		return logicdomain.ValidationError{Field: "memory_ids", Message: fmt.Sprintf("must contain at most %d ids", MaxDeleteMemoryIDs)}
 	}
 	for idx, memoryID := range cmd.MemoryIDs {
 		if memoryID == 0 {
@@ -113,6 +124,40 @@ func normalizeDeleteMemoryIDs(values []uint64) []uint64 {
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
+	}
+	return out
+}
+
+// orderDeleteResultMemoryIDsByRequest projects store-level delete results back onto the first-seen request id order while preserving any unexpected store-only ids at the end for visibility.
+// orderDeleteResultMemoryIDsByRequest 用于把存储层删除结果投射回请求 id 的首次出现顺序，并把异常的存储层额外 id 保留在末尾便于观察。
+func orderDeleteResultMemoryIDsByRequest(values []uint64, requestOrder []uint64) []uint64 {
+	if len(values) < 2 || len(requestOrder) == 0 {
+		return values
+	}
+
+	// Count store-returned ids first so duplicate or unexpected adapter outputs are preserved instead of being silently dropped during response reordering.
+	// 先统计存储层返回的 id，这样重复或异常的适配器输出在响应重排时不会被静默丢弃。
+	remaining := make(map[uint64]int, len(values))
+	for _, value := range values {
+		remaining[value]++
+	}
+
+	// Emit ids that appeared in the normalized request first, then append store-only leftovers so callers see the same order they asked about without hiding adapter drift.
+	// 先按归一化请求顺序输出出现过的 id，再追加仅由存储层返回的剩余 id，让调用方看到自己请求的顺序，同时不隐藏适配器漂移。
+	out := make([]uint64, 0, len(values))
+	for _, memoryID := range requestOrder {
+		if remaining[memoryID] == 0 {
+			continue
+		}
+		out = append(out, memoryID)
+		remaining[memoryID]--
+	}
+	for _, value := range values {
+		if remaining[value] == 0 {
+			continue
+		}
+		out = append(out, value)
+		remaining[value]--
 	}
 	return out
 }

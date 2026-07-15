@@ -50,18 +50,18 @@ func (r *maintenanceRepository) ensureSchemaVersionTable(ctx context.Context) er
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	statements := []string{
-		fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdentifier(r.shared.cfg.Schema)),
-		fmt.Sprintf(`
+	statements := []postgresDDLStatement{
+		{name: "schema " + strings.TrimSpace(r.shared.cfg.Schema), sql: fmt.Sprintf(`CREATE SCHEMA IF NOT EXISTS %s`, quoteIdentifier(r.shared.cfg.Schema))},
+		{name: "vmm_schema_versions", sql: fmt.Sprintf(`
 CREATE TABLE IF NOT EXISTS %s (
 	component TEXT PRIMARY KEY,
 	schema_version INTEGER NOT NULL,
 	updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
-)`, r.maintenanceQualifiedTable("vmm_schema_versions")),
+)`, r.maintenanceQualifiedTable("vmm_schema_versions"))},
 	}
 	for _, statement := range statements {
-		if _, err := r.shared.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
-			return fmt.Errorf("bootstrap postgres schema version table: %w", err)
+		if _, err := r.shared.pool.Exec(ctx, strings.TrimSpace(statement.sql)); err != nil {
+			return postgresDDLStatementExecutionError("bootstrap postgres schema version table", statement, err)
 		}
 	}
 	return nil

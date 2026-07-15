@@ -113,6 +113,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 	cachedHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
 	cachedHardDedupeHits := make(map[string][]MemoryQueryHit, len(uniqueItems))
 	cachedQueryVectors := make(map[string][]float32, len(uniqueItems))
+	contextEdgeCache := newMemoryContextEdgeCache()
 	for idx, item := range uniqueItems {
 		queryText := buildMemorySearchText(item)
 		hits, usedCombinedHybridSQL, err := u.searchMemoryFirstStage(ctx, item, embedResp.Vectors[idx], candidatePoolK, filter)
@@ -156,7 +157,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		mapped = clampMemoryQueryHitScores(mapped)
 		mapped = u.applyWeibullDecaySearchHits(mapped)
 		mapped = clampMemoryQueryHitScores(mapped)
-		mapped = u.applyContextEvidenceScoring(ctx, item, mapped)
+		mapped = u.applyContextEvidenceScoring(ctx, item, mapped, contextEdgeCache)
 		mapped = clampMemoryQueryHitScores(mapped)
 
 		// Capture a dedicated hard-dedupe window before MMR and final top-k trimming so the duplicate shortcut can still inspect near-identical memories that diversity control intentionally pushes out of reviewer-visible results.
@@ -167,7 +168,7 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 		}
 		hardDedupeHits := trimSearchHits(mapped, hardDedupePoolTopK)
 
-		mapped = u.applyMMRSearchHits(ctx, topK, mapped)
+		mapped = u.applyMMRSearchHits(topK, mapped)
 		mapped = clampMemoryQueryHitScores(mapped)
 		u.logMemorySearchStage(ctx, "memory search final stage completed", queryText, []any{
 			"query_index", idx,
@@ -341,8 +342,8 @@ func normalizeMemorySearchTopK(topK int) int {
 	if topK <= 0 {
 		return defaultMemorySearchTopK
 	}
-	if topK > maxMemorySearchTopK {
-		return maxMemorySearchTopK
+	if topK > MaxMemorySearchTopK {
+		return MaxMemorySearchTopK
 	}
 	return topK
 }
@@ -397,7 +398,7 @@ func (u *MemoryUseCase) hybridizeSearchHits(ctx context.Context, item MemoryQuer
 		})
 		return trimSearchHits(vectorHits, poolK)
 	}
-	materialized, err := u.materializeLexicalHits(ctx, lexicalHits)
+	materialized, err := u.materializeLexicalHits(lexicalHits)
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Warn("memory lexical materialization degraded", append(memoryQueryLogFields(u.logger, query), "err", err)...)
@@ -425,23 +426,29 @@ func buildMemoryLexicalQuery(item MemoryQueryItem) string {
 	return strings.TrimSpace(item.Query)
 }
 
-// materializeLexicalHits loads the durable rows for lexical hits and converts them into the same public hit shape used by vector recall.
-// materializeLexicalHits 用于回表加载 lexical 命中的长期行，并把它们转换成与向量召回一致的公开命中结构。
-func (u *MemoryUseCase) materializeLexicalHits(ctx context.Context, hits []logicdomain.MemoryLexicalHit) ([]MemoryQueryHit, error) {
-	memoryIDs := collectLexicalMemoryIDs(hits)
-	if len(memoryIDs) == 0 {
+// materializeLexicalHits converts lexical hits that already carry durable rows into the same public hit shape used by vector recall.
+// materializeLexicalHits 用于把已经携带长期行的 lexical 命中转换成与向量召回一致的公开命中结构。
+func (u *MemoryUseCase) materializeLexicalHits(hits []logicdomain.MemoryLexicalHit) ([]MemoryQueryHit, error) {
+	if len(hits) == 0 {
 		return []MemoryQueryHit{}, nil
 	}
-	rows, err := u.memories.LoadMemoryNodesByIDs(ctx, memoryIDs)
-	if err != nil {
-		return nil, err
-	}
-	byID := indexActiveUnexpiredMemoryRowsByID(rows, time.Now().UTC())
+	now := time.Now().UTC()
 	mapped := make([]MemoryQueryHit, 0, len(hits))
 	total := len(hits)
 	for idx, hit := range hits {
-		row, ok := byID[hit.MemoryID]
-		if !ok {
+		row := hit.Record
+		if hit.MemoryID == 0 {
+			return nil, fmt.Errorf("lexical hit at rank %d is missing memory id", idx+1)
+		}
+		if row.ID == 0 {
+			return nil, fmt.Errorf("lexical hit %d is missing materialized memory row", hit.MemoryID)
+		}
+		if row.ID != hit.MemoryID {
+			return nil, fmt.Errorf("lexical hit %d materialized row id mismatch: got %d", hit.MemoryID, row.ID)
+		}
+		// Keep the app-layer hot-path guard after store-level lexical filtering so concurrent retirements cannot leak into fusion.
+		// 在存储层 lexical 过滤之后继续保留应用层热路径守卫，避免并发退役的记忆泄漏进融合阶段。
+		if !logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(row, now) {
 			continue
 		}
 		mappedHit := MemoryQueryHit{
@@ -480,27 +487,6 @@ func (u *MemoryUseCase) materializeLexicalHits(ctx context.Context, hits []logic
 		mapped = append(mapped, mappedHit)
 	}
 	return mapped, nil
-}
-
-// collectLexicalMemoryIDs removes empty and duplicate lexical hit ids before the relational materialization query starts.
-// collectLexicalMemoryIDs 用于在关系层回表开始前去掉空值和重复的 lexical 命中 id。
-func collectLexicalMemoryIDs(hits []logicdomain.MemoryLexicalHit) []uint64 {
-	if len(hits) == 0 {
-		return nil
-	}
-	seen := make(map[uint64]struct{}, len(hits))
-	ids := make([]uint64, 0, len(hits))
-	for _, hit := range hits {
-		if hit.MemoryID == 0 {
-			continue
-		}
-		if _, ok := seen[hit.MemoryID]; ok {
-			continue
-		}
-		seen[hit.MemoryID] = struct{}{}
-		ids = append(ids, hit.MemoryID)
-	}
-	return ids
 }
 
 // fuseSearchHitsByRRF merges vector and lexical hits by reciprocal-rank fusion while preserving one caller-friendly score in the 0..1 range.
@@ -708,10 +694,67 @@ func latestMemoryReinforcementTime(hit MemoryQueryHit) time.Time {
 	return latest
 }
 
+// memoryContextEdgeCache stores context edges already loaded during one Search request so overlapping candidate pools across different query groups do not repeatedly hit the relational store.
+// memoryContextEdgeCache 用于缓存单次 Search 请求内已经读取过的 context edges，避免不同 query 分组命中重叠候选池时反复访问关系存储。
+type memoryContextEdgeCache struct {
+	// edgesByMemoryID stores raw context edges keyed by durable memory id for the current Search request.
+	// edgesByMemoryID 用于按长期 memory id 缓存当前 Search 请求已读取的原始 context edges。
+	edgesByMemoryID map[uint64][]logicdomain.MemoryContextEdge
+}
+
+// newMemoryContextEdgeCache creates an empty request-scoped context-edge cache; it takes no parameters and returns a cache ready for Search pipeline reuse.
+// newMemoryContextEdgeCache 用于创建空的请求级 context-edge 缓存；它不接收参数，并返回可供 Search 链路复用的缓存实例。
+func newMemoryContextEdgeCache() *memoryContextEdgeCache {
+	return &memoryContextEdgeCache{
+		edgesByMemoryID: make(map[uint64][]logicdomain.MemoryContextEdge),
+	}
+}
+
+// load returns context edges for memoryIDs by reusing cached rows and loading only unseen ids from store; ctx carries cancellation, store is the relational memory port, and the return value preserves the caller's memory-id order.
+// load 会复用缓存行并只从 store 加载尚未见过的 memoryIDs；ctx 负责取消控制，store 是关系记忆端口，返回值按调用方传入的 memory id 顺序汇总。
+func (c *memoryContextEdgeCache) load(ctx context.Context, store appports.MemoryStore, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
+	if len(memoryIDs) == 0 {
+		return nil, nil
+	}
+	missingIDs := make([]uint64, 0, len(memoryIDs))
+	missingSet := make(map[uint64]struct{}, len(memoryIDs))
+	for _, memoryID := range memoryIDs {
+		if _, ok := c.edgesByMemoryID[memoryID]; ok {
+			continue
+		}
+		missingIDs = append(missingIDs, memoryID)
+		missingSet[memoryID] = struct{}{}
+	}
+	if len(missingIDs) > 0 {
+		loaded, err := store.LoadMemoryContextEdgesByMemoryIDs(ctx, missingIDs)
+		if err != nil {
+			return nil, err
+		}
+		loadedByID := make(map[uint64][]logicdomain.MemoryContextEdge, len(missingIDs))
+		for _, memoryID := range missingIDs {
+			loadedByID[memoryID] = nil
+		}
+		for _, edge := range loaded {
+			if _, ok := missingSet[edge.MemoryID]; !ok {
+				continue
+			}
+			loadedByID[edge.MemoryID] = append(loadedByID[edge.MemoryID], edge)
+		}
+		for _, memoryID := range missingIDs {
+			c.edgesByMemoryID[memoryID] = loadedByID[memoryID]
+		}
+	}
+	edges := make([]logicdomain.MemoryContextEdge, 0)
+	for _, memoryID := range memoryIDs {
+		edges = append(edges, c.edgesByMemoryID[memoryID]...)
+	}
+	return edges, nil
+}
+
 // applyContextEvidenceScoring loads contextual evidence edges for the current candidate pool and applies a soft boost or demotion when the normalized query explicitly matches those situations.
 // applyContextEvidenceScoring 用于为当前候选池加载情境证据边，并在规范化 query 明确命中这些场景时做软提升或软降权。
-func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item MemoryQueryItem, hits []MemoryQueryHit) []MemoryQueryHit {
-	if u == nil || u.memories == nil || len(hits) <= 1 {
+func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item MemoryQueryItem, hits []MemoryQueryHit, contextEdgeCache *memoryContextEdgeCache) []MemoryQueryHit {
+	if u == nil || u.memories == nil || len(hits) == 0 {
 		return hits
 	}
 	signals := buildMemoryQueryContextSignals(item)
@@ -722,7 +765,7 @@ func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item Me
 	if len(memoryIDs) == 0 {
 		return hits
 	}
-	edges, err := u.memories.LoadMemoryContextEdgesByMemoryIDs(ctx, memoryIDs)
+	edges, err := contextEdgeCache.load(ctx, u.memories, memoryIDs)
 	if err != nil {
 		if u.logger != nil {
 			u.logger.Warn("memory context evidence scoring degraded", "candidate_count", len(memoryIDs), "err", err)
@@ -750,6 +793,8 @@ func (u *MemoryUseCase) applyContextEvidenceScoring(ctx context.Context, item Me
 		return hits
 	}
 
+	// Apply matched evidence even for a single candidate because the fields feed reviewer explanations, not only multi-hit ordering.
+	// 即使只有一条候选也要应用命中证据，因为这些字段不仅用于多候选排序，也会进入 reviewer 解释。
 	scored := append([]MemoryQueryHit(nil), hits...)
 	evidenceByID := make(map[uint64]memoryContextEvidenceScore, len(matchedEvidence))
 	for idx := range scored {
@@ -800,17 +845,25 @@ type memoryContextEvidenceScore struct {
 // memoryQueryContextSignals stores the normalized phrases extracted from the query so context edges can do deterministic lexical matching without another model call.
 // memoryQueryContextSignals 用于保存从 query 提取出的规范化短语，让 context edge 可以在不增加额外模型调用的情况下做确定性匹配。
 type memoryQueryContextSignals struct {
+	// Text stores the normalized full query so long context values can match as bounded phrases instead of being limited by the short n-gram window.
+	// Text 用于保存规范化后的完整 query，让较长的 context value 可以按边界短语匹配，而不是受短 n-gram 窗口限制。
+	Text string
+	// Phrases stores exact normalized tokens and short n-grams for fast context-value matching.
+	// Phrases 用于保存规范化后的 token 和短 n-gram，便于快速匹配 context value。
 	Phrases map[string]struct{}
 }
 
 // Match reports whether one normalized contextual value appears in the extracted phrase set for the current query item.
 // Match 用于判断某个规范化情境值是否出现在当前 query item 提取出的短语集合中。
 func (s memoryQueryContextSignals) Match(value string) bool {
-	if len(s.Phrases) == 0 {
+	normalizedValue := normalizeMemoryContextMatchText(value)
+	if normalizedValue == "" {
 		return false
 	}
-	_, ok := s.Phrases[normalizeMemoryContextMatchText(value)]
-	return ok
+	if _, ok := s.Phrases[normalizedValue]; ok {
+		return true
+	}
+	return containsMemoryContextPhrase(s.Text, normalizedValue)
 }
 
 // buildMemoryQueryContextSignals extracts deterministic phrases and short n-grams from the current query item so contextual retrieval can align memory edges with user intent.
@@ -837,13 +890,28 @@ func buildMemoryQueryContextSignals(item MemoryQueryItem) memoryQueryContextSign
 		}
 	}
 	appendText(item.Query)
-	return memoryQueryContextSignals{Phrases: phrases}
+	return memoryQueryContextSignals{
+		Text:    normalizeMemoryContextMatchText(item.Query),
+		Phrases: phrases,
+	}
 }
 
 // normalizeMemoryContextMatchText normalizes a contextual phrase into the same lexical surface used by query-time matching and edge values.
 // normalizeMemoryContextMatchText 用于把情境短语归一成查询期匹配和 edge 值共享的词法表面形式。
 func normalizeMemoryContextMatchText(raw string) string {
 	return logicdomain.NormalizeMemoryContextValue(raw)
+}
+
+// containsMemoryContextPhrase reports whether phrase appears in text with whitespace boundaries after both strings have already been normalized onto the context-value surface.
+// containsMemoryContextPhrase 用于判断 phrase 是否以空白边界出现在 text 中；调用方需要先把两者归一到 context-value 词法表面。
+func containsMemoryContextPhrase(text, phrase string) bool {
+	if text == "" || phrase == "" {
+		return false
+	}
+	if text == phrase {
+		return true
+	}
+	return strings.Contains(" "+text+" ", " "+phrase+" ")
 }
 
 // computeMemoryContextEvidenceDelta converts matched support/rebuttal counts into one bounded score delta so context evidence influences ranking without dominating the whole retrieval pipeline.
@@ -979,7 +1047,7 @@ func maxInt(a, b int) int {
 
 // applyMMRSearchHits diversifies the already-ranked candidate pool so highly similar memories do not monopolize the final top-k.
 // applyMMRSearchHits 用于对已经排好序的候选池做多样性重排，避免高度相似的记忆垄断最终 top-k。
-func (u *MemoryUseCase) applyMMRSearchHits(ctx context.Context, topK int, hits []MemoryQueryHit) []MemoryQueryHit {
+func (u *MemoryUseCase) applyMMRSearchHits(topK int, hits []MemoryQueryHit) []MemoryQueryHit {
 	if u == nil || !u.mmrEnabled || len(hits) <= 1 {
 		return trimSearchHits(hits, topK)
 	}
@@ -987,8 +1055,9 @@ func (u *MemoryUseCase) applyMMRSearchHits(ctx context.Context, topK int, hits [
 	if limit <= 0 || limit > len(hits) {
 		limit = len(hits)
 	}
+	// Consume only vectors already carried by mapped hits because vector and lexical materialization now own the row payload contract.
+	// 只消费映射命中自身携带的向量，因为向量与 lexical 物化阶段已经负责长期行载荷契约。
 	working := append([]MemoryQueryHit(nil), hits...)
-	working = u.ensureMMRVectors(ctx, working)
 	if len(working) <= 1 {
 		return trimSearchHits(working, limit)
 	}
@@ -1027,51 +1096,6 @@ func (u *MemoryUseCase) applyMMRSearchHits(ctx context.Context, topK int, hits [
 		used[chosen.MemoryRef.ID] = struct{}{}
 	}
 	return selected
-}
-
-// ensureMMRVectors backfills missing vectors from durable memory rows so the diversity pass can still run on hits produced by multiple retrieval channels.
-// ensureMMRVectors 用于从长期记忆行回填缺失向量，让多通道召回后的命中仍能执行多样性重排。
-func (u *MemoryUseCase) ensureMMRVectors(ctx context.Context, hits []MemoryQueryHit) []MemoryQueryHit {
-	if u == nil || u.memories == nil || len(hits) == 0 {
-		return hits
-	}
-	missingIDs := make([]uint64, 0, len(hits))
-	for _, hit := range hits {
-		if hit.MemoryRef.ID == 0 || len(hit.Vector) > 0 {
-			continue
-		}
-		missingIDs = append(missingIDs, hit.MemoryRef.ID)
-	}
-	if len(missingIDs) == 0 {
-		return hits
-	}
-	rows, err := u.memories.LoadMemoryNodesByIDs(ctx, missingIDs)
-	if err != nil {
-		if u.logger != nil {
-			u.logger.Warn("memory mmr vector backfill degraded", "candidate_count", len(missingIDs), "err", err)
-		}
-		return hits
-	}
-	now := time.Now().UTC()
-	byID := make(map[uint64][]float32, len(rows))
-	for _, row := range rows {
-		if !memoryNodeRecordIsActiveUnexpiredAt(row, now) {
-			continue
-		}
-		if len(row.Vector) == 0 {
-			continue
-		}
-		byID[row.ID] = append([]float32(nil), row.Vector...)
-	}
-	for idx := range hits {
-		if len(hits[idx].Vector) > 0 {
-			continue
-		}
-		if vector, ok := byID[hits[idx].MemoryRef.ID]; ok {
-			hits[idx].Vector = vector
-		}
-	}
-	return hits
 }
 
 // maxMMRSimilarity returns the largest cosine similarity between one candidate and the already selected set.
@@ -1123,10 +1147,16 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 		limit = len(hits)
 	}
 	primary := append([]MemoryQueryHit(nil), hits[:limit]...)
-	results, err := u.reranker.Rerank(ctx, strings.TrimSpace(query), buildRerankDocuments(primary), len(primary))
+	documents := buildRerankDocuments(primary)
+	// Rerank only has ordering value when at least two provider-facing documents survive text normalization, so keep the current recall order instead of spending an external call on a single comparable item.
+	// 只有至少两个 provider 可见文档通过文本归一化后，rerank 才有排序价值；否则保留当前召回顺序，避免为单个可比较项消耗外部调用。
+	if len(documents) <= 1 {
+		return hits
+	}
+	results, err := u.reranker.Rerank(ctx, strings.TrimSpace(query), documents, len(documents))
 	if err != nil {
 		if u.logger != nil {
-			u.logger.Warn("memory search rerank degraded to rerank-disabled fallback", append(memoryQueryLogFields(u.logger, query), "candidate_count", len(primary), "fallback_mode", "rerank_disabled", "err", err)...)
+			u.logger.Warn("memory search rerank degraded to rerank-disabled fallback", append(memoryQueryLogFields(u.logger, query), "candidate_count", len(documents), "primary_candidate_count", len(primary), "fallback_mode", "rerank_disabled", "err", err)...)
 		}
 		return hits
 	}
@@ -1166,7 +1196,8 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 		ordered = append(ordered, hits[limit:]...)
 	}
 	u.logMemorySearchStage(ctx, "memory search rerank stage completed", query, []any{
-		"rerank_input_count", len(primary),
+		"rerank_input_count", len(documents),
+		"rerank_primary_candidate_count", len(primary),
 		"rerank_output_count", len(ordered),
 	}, map[string]any{
 		"top_input_candidate":  summarizeMemoryQueryHitForLog(firstMemoryQueryHit(primary)),
@@ -1175,8 +1206,8 @@ func (u *MemoryUseCase) rerankSearchHits(ctx context.Context, query string, hits
 	return ordered
 }
 
-// normalizeRerankedOrigin upgrades the hit origin label once a later rerank model has re-evaluated the candidate order.
-// normalizeRerankedOrigin 用于在后续 rerank 模型重新评估候选顺序后，升级命中来源标签。
+// normalizeRerankedOrigin upgrades the hit origin label once a later rerank model has re-evaluated the candidate order without inventing missing source attribution.
+// normalizeRerankedOrigin 用于在后续 rerank 模型重新评估候选顺序后升级命中来源标签，同时不会伪造缺失的来源归属。
 func normalizeRerankedOrigin(origin string) string {
 	origin = strings.TrimSpace(origin)
 	switch origin {
@@ -1187,15 +1218,12 @@ func normalizeRerankedOrigin(origin string) string {
 	case "vector_search":
 		return "vector_rerank"
 	default:
-		if origin == "" {
-			return "rerank"
-		}
 		return origin
 	}
 }
 
-// normalizeMMROrigin upgrades the hit origin label once the diversity pass has re-ordered the candidate list.
-// normalizeMMROrigin 用于在多样性重排改写候选顺序后，升级命中来源标签。
+// normalizeMMROrigin upgrades the hit origin label once the diversity pass has re-ordered the candidate list without masking missing source attribution.
+// normalizeMMROrigin 用于在多样性重排改写候选顺序后升级命中来源标签，同时不会掩盖缺失的来源归属。
 func normalizeMMROrigin(origin string) string {
 	origin = strings.TrimSpace(origin)
 	switch origin {
@@ -1213,7 +1241,7 @@ func normalizeMMROrigin(origin string) string {
 		return "vector_mmr"
 	default:
 		if origin == "" {
-			return "mmr"
+			return ""
 		}
 		if strings.HasSuffix(origin, "_mmr") {
 			return origin
@@ -1376,23 +1404,24 @@ func shortLogDigest(raw string) string {
 // mapSearchHits enriches vector hits with relational unified-memory rows so the search response can return durable memory refs instead of bare turn anchors.
 // mapSearchHits 用于用关系层统一记忆行补全向量命中，从而让搜索响应返回长期 memory ref，而不是裸 turn 锚点。
 func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.MemoryHit) ([]MemoryQueryHit, error) {
-	vectorIDs := collectVectorIDs(hits)
-	if len(vectorIDs) == 0 {
-		return []MemoryQueryHit{}, nil
-	}
-	rows, err := u.memories.LoadMemoryNodesByVectorIDs(ctx, vectorIDs)
+	byVectorID, err := u.materializeVectorHitRows(ctx, hits)
 	if err != nil {
 		return nil, err
 	}
-	byVectorID := make(map[string]logicdomain.MemoryNodeRecord, len(rows))
-	for _, row := range rows {
-		byVectorID[strings.TrimSpace(row.VectorID)] = row
+	if len(byVectorID) == 0 {
+		return []MemoryQueryHit{}, nil
 	}
 	mapped := make([]MemoryQueryHit, 0, len(hits))
 	for _, hit := range hits {
 		row, ok := byVectorID[strings.TrimSpace(hit.ID)]
 		if !ok {
 			continue
+		}
+		// Require source attribution before response mapping so later rerank or MMR stages cannot hide a backend contract violation.
+		// 在响应映射前强制校验来源归属，避免后续 rerank 或 MMR 阶段掩盖后端契约违例。
+		origin, err := requiredRawMemoryHitOrigin(hit)
+		if err != nil {
+			return nil, err
 		}
 		mappedHit := MemoryQueryHit{
 			MemoryRef: logicdomain.MemoryRef{
@@ -1409,7 +1438,7 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 			DetailsPreview:           strings.TrimSpace(row.Details),
 			Category:                 row.Category,
 			Score:                    hit.Score,
-			Origin:                   rawMemoryHitOrigin(hit),
+			Origin:                   origin,
 			Vector:                   append([]float32(nil), row.Vector...),
 			CreatedAt:                row.CreatedAt,
 			LastRecalledAt:           row.LastRecalledAt,
@@ -1438,6 +1467,89 @@ func (u *MemoryUseCase) mapSearchHits(ctx context.Context, hits []logicdomain.Me
 	return mapped, nil
 }
 
+// materializeVectorHitRows returns durable memory rows for vector hits, preferring rows embedded by combined backends and only querying by vector id for detached backends that cannot materialize memory rows themselves.
+// materializeVectorHitRows 用于返回向量命中的长期记忆行；优先使用组合后端随命中携带的行，仅在分离后端无法自行物化记忆行时才按 vector id 回表。
+func (u *MemoryUseCase) materializeVectorHitRows(ctx context.Context, hits []logicdomain.MemoryHit) (map[string]logicdomain.MemoryNodeRecord, error) {
+	byVectorID := make(map[string]logicdomain.MemoryNodeRecord, len(hits))
+	if len(hits) == 0 {
+		return byVectorID, nil
+	}
+	now := time.Now().UTC()
+	for idx, hit := range hits {
+		if hit.Record.ID == 0 {
+			continue
+		}
+		vectorID := strings.TrimSpace(hit.ID)
+		if err := validateMaterializedVectorHit(idx, vectorID, hit.Record); err != nil {
+			return nil, err
+		}
+		// Keep the app-layer lifecycle guard for embedded combined-store rows so stale test fixtures or future callers cannot bypass the active+unexpired recall contract.
+		// 对组合库随命中携带的行继续保留应用层生命周期守卫，避免过期测试夹具或未来调用方绕过 active+unexpired 召回契约。
+		if !logicdomain.MemoryNodeRecordIsActiveUnexpiredAt(hit.Record, now) {
+			continue
+		}
+		byVectorID[vectorID] = hit.Record
+	}
+
+	vectorIDs := collectMissingVectorHitRowIDs(hits, byVectorID)
+	if len(vectorIDs) == 0 {
+		return byVectorID, nil
+	}
+	rows, err := u.memories.LoadMemoryNodesByVectorIDs(ctx, vectorIDs)
+	if err != nil {
+		return nil, err
+	}
+	for _, row := range rows {
+		vectorID := strings.TrimSpace(row.VectorID)
+		if vectorID == "" {
+			return nil, fmt.Errorf("loaded memory row %d is missing vector id", row.ID)
+		}
+		byVectorID[vectorID] = row
+	}
+	return byVectorID, nil
+}
+
+// validateMaterializedVectorHit enforces the combined-backend contract that a hit carrying a durable row must point at exactly the same vector id as that row.
+// validateMaterializedVectorHit 用于校验组合后端契约：携带长期记忆行的命中必须指向与该行完全一致的 vector id。
+func validateMaterializedVectorHit(idx int, vectorID string, row logicdomain.MemoryNodeRecord) error {
+	if strings.TrimSpace(vectorID) == "" {
+		return fmt.Errorf("vector hit at rank %d carries materialized row %d but is missing vector id", idx+1, row.ID)
+	}
+	rowVectorID := strings.TrimSpace(row.VectorID)
+	if rowVectorID == "" {
+		return fmt.Errorf("vector hit %q carries materialized row %d without vector id", vectorID, row.ID)
+	}
+	if rowVectorID != vectorID {
+		return fmt.Errorf("vector hit %q materialized row %d vector id mismatch: got %q", vectorID, row.ID, rowVectorID)
+	}
+	return nil
+}
+
+// collectMissingVectorHitRowIDs returns the detached vector ids that still need relational backfill after embedded rows have been consumed.
+// collectMissingVectorHitRowIDs 用于返回消费完随命中携带的行之后，仍然需要关系层补全的分离向量 id。
+func collectMissingVectorHitRowIDs(hits []logicdomain.MemoryHit, byVectorID map[string]logicdomain.MemoryNodeRecord) []string {
+	if len(hits) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(hits))
+	ids := make([]string, 0, len(hits))
+	for _, hit := range hits {
+		vectorID := strings.TrimSpace(hit.ID)
+		if vectorID == "" {
+			continue
+		}
+		if _, ok := byVectorID[vectorID]; ok {
+			continue
+		}
+		if _, ok := seen[vectorID]; ok {
+			continue
+		}
+		seen[vectorID] = struct{}{}
+		ids = append(ids, vectorID)
+	}
+	return ids
+}
+
 // normalizeCombinedHybridSQLHits rewrites SQL-level raw RRF scores into the stable 0..1 score contract expected by downstream thresholding, while preserving the original fused score for diagnostics.
 // normalizeCombinedHybridSQLHits 用于把 SQL 层原始 RRF 分数改写成下游阈值链路期望的稳定 0..1 分数契约，同时保留原始融合分供诊断使用。
 func normalizeCombinedHybridSQLHits(hits []logicdomain.MemoryHit) []logicdomain.MemoryHit {
@@ -1462,13 +1574,13 @@ func normalizeCombinedHybridSQLHits(hits []logicdomain.MemoryHit) []logicdomain.
 	return normalized
 }
 
-// rawMemoryHitOrigin extracts the preferred ranking-origin label carried by one raw hit and falls back to the legacy vector label when older backends do not populate metadata.
-// rawMemoryHitOrigin 用于提取原始命中携带的排序来源标签；当旧后端未填充 metadata 时，则回退到传统的 vector 标签。
-func rawMemoryHitOrigin(hit logicdomain.MemoryHit) string {
+// requiredRawMemoryHitOrigin extracts the retrieval-channel label that every vector-search adapter must stamp before app-layer mapping.
+// requiredRawMemoryHitOrigin 用于提取每个向量检索适配器在应用层映射前必须写入的检索通道标签。
+func requiredRawMemoryHitOrigin(hit logicdomain.MemoryHit) (string, error) {
 	if origin := strings.TrimSpace(hit.Metadata["origin"]); origin != "" {
-		return origin
+		return origin, nil
 	}
-	return "vector_search"
+	return "", fmt.Errorf("memory hit %q is missing origin metadata", strings.TrimSpace(hit.ID))
 }
 
 // loadTurnDetails batches one turn-id list into ordered turn-detail records plus neighboring turn ids.

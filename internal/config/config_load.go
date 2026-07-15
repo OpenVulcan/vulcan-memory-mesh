@@ -3,9 +3,11 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -59,7 +61,7 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 		if err := applyLayeredAIKeyOverrideReset(&cfg, expandedBytes); err != nil {
 			return Config{}, fmt.Errorf("apply AI key override reset in config layer %q: %w", path, err)
 		}
-		if err := json.Unmarshal(expandedBytes, &cfg); err != nil {
+		if err := unmarshalStrictConfigLayer(expandedBytes, &cfg); err != nil {
 			return Config{}, fmt.Errorf("unmarshal config layer %q: %w", path, err)
 		}
 	}
@@ -69,11 +71,9 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	if err := validateRemovedAIEnvOverrides(referencedEnvKeys); err != nil {
 		return Config{}, err
 	}
-	applyEnvWarnings := applyEnvOverrides(&cfg, referencedEnvKeys)
-	if len(applyEnvWarnings) > 0 {
-		// Log at warn level so operators know which environment variables were silently ignored due to parse errors.
-		// 输出警告日志，让运维知道哪些环境变量因解析错误被静默忽略。
-		fmt.Fprintf(os.Stderr, "[WARN] config: failed to parse integer env variables: %v\n", applyEnvWarnings)
+	envOverrideParseFailures := applyEnvOverrides(&cfg, collectReferencedEnvOverrideKeys(envReferences))
+	if len(envOverrideParseFailures) > 0 {
+		return Config{}, fmt.Errorf("parse env overrides: %v", envOverrideParseFailures)
 	}
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
@@ -82,15 +82,66 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	return cfg, nil
 }
 
+// unmarshalStrictConfigLayer decodes one normalized config layer while rejecting unknown fields that would otherwise be ignored by the runtime.
+// unmarshalStrictConfigLayer 用于反序列化单层规范化配置，同时拒绝运行时原本会忽略的未知字段。
+func unmarshalStrictConfigLayer(body []byte, cfg *Config) error {
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(cfg); err != nil {
+		return err
+	}
+	var extra any
+	if err := decoder.Decode(&extra); err != io.EOF {
+		if err == nil {
+			return errors.New("config layer must contain a single JSON document")
+		}
+		return err
+	}
+	return nil
+}
+
 // decodeConfigLayer converts one JSON or YAML config layer into JSON bytes so the rest of the loader can keep one validation and merge path.
 // decodeConfigLayer 用于把单层 JSON 或 YAML 配置统一转换成 JSON 字节，让后续校验与合并逻辑共用同一条路径。
 func decodeConfigLayer(path string, body []byte) ([]byte, error) {
+	var decoded []byte
 	switch strings.ToLower(filepath.Ext(strings.TrimSpace(path))) {
 	case ".yaml", ".yml":
-		return convertYAMLToJSON(body)
+		converted, err := convertYAMLToJSON(body)
+		if err != nil {
+			return nil, err
+		}
+		decoded = converted
 	default:
+		decoded = body
+	}
+	return stripTopLevelConfigExtensionFields(decoded)
+}
+
+// stripTopLevelConfigExtensionFields removes YAML-style x-* anchor helper blocks before strict config unmarshalling.
+// stripTopLevelConfigExtensionFields 用于在严格反序列化前移除 YAML 风格的顶层 x-* 锚点辅助块。
+func stripTopLevelConfigExtensionFields(body []byte) ([]byte, error) {
+	root := map[string]json.RawMessage{}
+	if err := json.Unmarshal(body, &root); err != nil {
+		return nil, err
+	}
+	changed := false
+	for key := range root {
+		if !isTopLevelConfigExtensionField(key) {
+			continue
+		}
+		delete(root, key)
+		changed = true
+	}
+	if !changed {
 		return body, nil
 	}
+	return json.Marshal(root)
+}
+
+// isTopLevelConfigExtensionField reports whether one top-level key is reserved for YAML anchors and must not enter runtime config semantics.
+// isTopLevelConfigExtensionField 用于判断一个顶层键是否保留给 YAML 锚点辅助块，且不应进入运行时配置语义。
+func isTopLevelConfigExtensionField(key string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(key)), "x-")
 }
 
 // convertYAMLToJSON decodes one YAML document and re-encodes it as JSON so json.RawMessage-based layered validation continues to work.
@@ -440,6 +491,38 @@ func collectReferencedEnvKeysFromConfigPaths(paths []string) (map[string]struct{
 	return referenced, references, nil
 }
 
+// collectReferencedEnvOverrideKeys keeps process-level VMM_* overrides gated by both env key and the matching config field path.
+// collectReferencedEnvOverrideKeys 用于同时按环境变量键和对应配置字段路径限制进程级 VMM_* 覆盖。
+func collectReferencedEnvOverrideKeys(references []envReference) map[string]struct{} {
+	allowed := map[string]struct{}{}
+	for _, ref := range references {
+		if !envOverrideReferenceMatchesField(ref.Key, ref.ValuePath) {
+			continue
+		}
+		allowed[ref.Key] = struct{}{}
+	}
+	return allowed
+}
+
+// envOverrideReferenceMatchesField reports whether one env placeholder appears in a field that owns the same process-level override key.
+// envOverrideReferenceMatchesField 用于判断某个环境变量占位符是否出现在该进程级覆盖键归属的配置字段中。
+func envOverrideReferenceMatchesField(key, valuePath string) bool {
+	for _, allowedPath := range supportedEnvOverrideValuePaths[key] {
+		if configValuePathMatchesField(valuePath, allowedPath) {
+			return true
+		}
+	}
+	return false
+}
+
+// configValuePathMatchesField allows scalar fields and list items under the same field to opt into one process-level override.
+// configValuePathMatchesField 允许标量字段以及同一字段下的列表项启用对应进程级覆盖。
+func configValuePathMatchesField(actualPath, allowedPath string) bool {
+	actual := strings.ToLower(strings.TrimSpace(actualPath))
+	allowed := strings.ToLower(strings.TrimSpace(allowedPath))
+	return actual == allowed || strings.HasPrefix(actual, allowed+"[")
+}
+
 // decodeRawConfigLayer decodes one raw JSON/YAML config layer without environment expansion so placeholder discovery can inspect only real config values, not comments.
 // decodeRawConfigLayer 用于在不展开环境变量的前提下解码原始 JSON/YAML 配置层，让占位符发现逻辑只检查真实配置值而不是注释文本。
 func decodeRawConfigLayer(path string, body []byte) (any, error) {
@@ -470,6 +553,9 @@ func collectEnvReferencesInValue(value any, referenced map[string]struct{}, refe
 		}
 		sort.Strings(keys)
 		for _, key := range keys {
+			if valuePath == "" && isTopLevelConfigExtensionField(key) {
+				continue
+			}
 			collectEnvReferencesInValue(typed[key], referenced, references, configPath, joinConfigValuePath(valuePath, key))
 		}
 	case []any:

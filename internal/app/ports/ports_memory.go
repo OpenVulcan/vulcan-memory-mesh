@@ -13,6 +13,8 @@ import (
 // VectorStore 用于抽象记忆召回流水线中的向量写入、检索和管理清理能力。
 type VectorStore interface {
 	Upsert(ctx context.Context, record logicdomain.MemoryRecord) error
+	// Search returns ranked recall hits and must stamp Metadata["origin"] with the retrieval channel before handing them to the app layer.
+	// Search 用于返回排序后的召回命中，并必须在交给应用层前用 Metadata["origin"] 标明检索通道。
 	Search(ctx context.Context, vector []float32, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryHit, error)
 	DeleteByFilter(ctx context.Context, filter logicdomain.SearchFilter) (uint64, error)
 	DeleteByIDs(ctx context.Context, ids []string) (uint64, error)
@@ -33,7 +35,7 @@ type RelationalStore interface {
 	ConvergeExpiredProfileNodes(ctx context.Context, limit int) ([]logicdomain.ProfileRenderTargetSnapshot, error)
 	ReplaceRenderedProfiles(ctx context.Context, updates logicdomain.RenderedProfileSet) error
 	AdvanceSessionExtractWindow(ctx context.Context, sessionID uint64, observedAt, completedAt time.Time) error
-	ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error
+	ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error)
 	ApplyTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, analysis logicdomain.TurnAnalysis) (logicdomain.TurnAnalysisApplyResult, error)
 	MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error
 	Shutdowner

@@ -65,6 +65,9 @@ type PostActionMemorySearcher interface {
 // PostActionCandidateReviewer 用于表示统一 reviewer 端口，在一次 LLM 调用里同时决定记忆去重准入和画像接纳结果。
 type PostActionCandidateReviewer interface {
 	Review(ctx context.Context, input logicdomain.PostActionCandidateReviewInput) (logicdomain.PostActionCandidateReviewResult, error)
+	// ReviewModel returns the configured post-action second-stage model label so malformed reviewer outputs can be attributed to the exact route/model.
+	// ReviewModel 用于返回当前 post-action 第二层使用的模型标识，便于把 reviewer 畸形输出归因到准确的路由/模型。
+	ReviewModel() string
 }
 
 // PostActionAnalysisConfig carries the queue and history knobs used by the async single-turn extraction pipeline,

@@ -5,6 +5,7 @@ package vldb_sqlite
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -91,23 +92,46 @@ LIMIT ?
 	if err != nil {
 		return 0, fmt.Errorf("allocate sqlite recycle job id: %w", err)
 	}
-	var builder strings.Builder
-	builder.WriteString("BEGIN IMMEDIATE;\n")
+	statements := make([]sqliteWriteStatement, 0, len(sessionRows))
 	for _, session := range sessionRows {
-		builder.WriteString(fmt.Sprintf(`
-INSERT OR IGNORE INTO vmm_recycle_jobs (
+		statements = append(statements, parameterizedColdTurnRecycleJobInsertStatement(nextID, session.ID, session.ProjectID, nextRunMs, scannedAtMs))
+		nextID++
+	}
+	// Count each confirmed autocommit enqueue so callers do not lose already-durable queue rows when a later candidate drifts.
+	// 统计每条已确认的自动提交入队结果，避免后续候选漂移时调用方丢失已经持久化的队列行数量。
+	enqueuedCount := 0
+	for idx, statement := range statements {
+		insertResult, err := s.execResult(ctx, statement.SQL, statement.Params...)
+		if err != nil {
+			err := fmt.Errorf("enqueue sqlite cold-turn recycle job %d: %w", idx+1, err)
+			return enqueuedCount, sqliteQueuePartialWriteError(enqueuedCount > 0, "enqueue cold-turn recycle jobs", err)
+		}
+		// Report enqueue success only when the candidate session produced or refreshed exactly one durable recycle-job row.
+		// 只有候选 session 精确生成或刷新一条持久化 recycle-job 行时，才报告入队成功。
+		if insertResult.RowsChanged != 1 {
+			err := fmt.Errorf("enqueue sqlite cold-turn recycle job %d affected %d rows, want 1", idx+1, insertResult.RowsChanged)
+			return enqueuedCount, sqlitePartialMutationError(enqueuedCount > 0 || insertResult.RowsChanged > 0, "enqueue cold-turn recycle jobs", err)
+		}
+		enqueuedCount++
+	}
+	return enqueuedCount, nil
+}
+
+// parameterizedColdTurnRecycleJobInsertStatement returns one bounded cold-turn recycle-job UPSERT with the stable job type bound as a typed param.
+// parameterizedColdTurnRecycleJobInsertStatement 用于返回一条有界冷 turn 回收任务 UPSERT，并把稳定 job type 作为强类型参数绑定。
+func parameterizedColdTurnRecycleJobInsertStatement(jobID, sessionID, projectID uint64, nextRunMs, scannedAtMs int64) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
+INSERT INTO vmm_recycle_jobs (
   id, session_id, project_id, job_type, attempt_count, next_run_timestamp,
   claimed_timestamp, last_error, created_timestamp, updated_timestamp
 )
-VALUES (%d, %d, %d, %s, 0, %d, 0, '', %d, %d);
-`, nextID, session.ID, session.ProjectID, sqlStringLiteral(logicdomain.RecycleJobTypeColdTurn), nextRunMs, scannedAtMs, scannedAtMs))
-		nextID++
+VALUES (?, ?, ?, ?, 0, ?, 0, ?, ?, ?)
+ON CONFLICT(session_id, job_type) DO UPDATE SET
+  updated_timestamp = excluded.updated_timestamp;
+`,
+		Params: []any{jobID, sessionID, projectID, logicdomain.RecycleJobTypeColdTurn, nextRunMs, "", scannedAtMs, scannedAtMs},
 	}
-	builder.WriteString("COMMIT;")
-	if err := s.exec(ctx, builder.String()); err != nil {
-		return 0, fmt.Errorf("enqueue sqlite cold-turn recycle jobs: %w", err)
-	}
-	return len(sessionRows), nil
 }
 
 // ClaimPendingRecycleJobs leases one bounded SQLite recycle-job batch by moving due jobs to the lease horizon, so crashed workers eventually release the claim automatically.
@@ -129,43 +153,33 @@ func (s *Store) ClaimPendingRecycleJobs(ctx context.Context, jobType string, due
 	defer s.writeMu.Unlock()
 
 	rows, err := queryRows[sqliteRecycleJobRow](s, ctx, `
-SELECT id, session_id, project_id, job_type, attempt_count,
-       next_run_timestamp, claimed_timestamp, last_error, created_timestamp, updated_timestamp
-FROM vmm_recycle_jobs
-WHERE job_type = ?
-  AND next_run_timestamp > 0
-  AND next_run_timestamp <= ?
-ORDER BY next_run_timestamp ASC, id ASC
-LIMIT ?
-`, jobType, dueBeforeMs, limit)
+UPDATE vmm_recycle_jobs
+SET claimed_timestamp = ?,
+    next_run_timestamp = ?,
+    updated_timestamp = ?
+WHERE id IN (
+  SELECT id
+  FROM vmm_recycle_jobs
+  WHERE job_type = ?
+    AND next_run_timestamp > 0
+    AND next_run_timestamp <= ?
+  ORDER BY next_run_timestamp ASC, id ASC
+  LIMIT ?
+)
+RETURNING id, session_id, project_id, job_type, attempt_count,
+		  next_run_timestamp, claimed_timestamp, last_error, created_timestamp, updated_timestamp;
+`, claimAtMs, claimUntilMs, claimAtMs, jobType, dueBeforeMs, limit)
 	if err != nil {
-		return nil, fmt.Errorf("query sqlite pending recycle jobs: %w", err)
+		return nil, sqliteQueueWriteError("claim recycle jobs", fmt.Errorf("claim sqlite pending recycle jobs: %w", err))
 	}
 	if len(rows) == 0 {
 		return nil, nil
 	}
-	jobIDs := make([]uint64, 0, len(rows))
-	for _, row := range rows {
-		jobIDs = append(jobIDs, row.ID)
-	}
-	jobIDList := sqlUint64List(jobIDs)
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
-UPDATE vmm_recycle_jobs
-SET claimed_timestamp = %d,
-    next_run_timestamp = %d,
-    updated_timestamp = %d
-WHERE id IN (%s);
-COMMIT;
-`, claimAtMs, claimUntilMs, claimAtMs, jobIDList)
-	if err := s.exec(ctx, script); err != nil {
-		return nil, fmt.Errorf("claim sqlite recycle jobs: %w", err)
-	}
+	sort.Slice(rows, func(i, j int) bool {
+		return rows[i].ID < rows[j].ID
+	})
 	claimed := make([]logicdomain.RecycleJobRecord, 0, len(rows))
 	for _, row := range rows {
-		row.ClaimedTimestamp = claimAtMs
-		row.NextRunTimestamp = claimUntilMs
-		row.UpdatedTimestamp = claimAtMs
 		claimed = append(claimed, row.toDomain())
 	}
 	return claimed, nil
@@ -220,13 +234,13 @@ WHERE session_id = ?
 		return logicdomain.ColdTurnRecycleResult{SessionID: query.SessionID, ProjectID: session.ProjectID}, nil
 	}
 
-	turnRows, err := queryRows[turnRecordRow](s, ctx, fmt.Sprintf(`
+	turnRows, err := queryRows[turnRecordRow](s, ctx, `
 WITH recent_turns AS (
   SELECT id
   FROM vmm_turn_records
   WHERE session_id = ?
   ORDER BY id DESC
-  LIMIT %d
+  LIMIT ?
 )
 SELECT tr.id, tr.session_id, tr.project_id,
        tr.dehydrated_content,
@@ -247,7 +261,7 @@ WHERE tr.session_id = ?
     WHERE pn.turn_id = tr.id
   )
 ORDER BY tr.id ASC
-`, turnHotWindowSize), query.SessionID, query.SessionID, logicdomain.TurnExtractedStatusPending)
+`, query.SessionID, turnHotWindowSize, query.SessionID, logicdomain.TurnExtractedStatusPending)
 	if err != nil {
 		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("query sqlite cold turns for session %d: %w", query.SessionID, err)
 	}
@@ -267,33 +281,69 @@ ORDER BY tr.id ASC
 	if len(normalizedTurnIDs) == 0 {
 		return logicdomain.ColdTurnRecycleResult{SessionID: query.SessionID, ProjectID: session.ProjectID}, nil
 	}
-	turnIDList := sqlUint64List(normalizedTurnIDs)
+	turnIDPlaceholders := sqlitePlaceholders(len(normalizedTurnIDs))
+	turnIDParams := sqliteUint64Params(normalizedTurnIDs)
 
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
+	batchStatement := sqliteWriteStatement{
+		SQL: `
 INSERT INTO vmm_recycle_batches (
   id, recycle_type, session_id, project_id, reason, recycled_at, purged_at, created_timestamp, updated_timestamp
 )
-VALUES (%d, %s, %d, %d, %s, %d, 0, %d, %d);
-
+VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?);
+`,
+		Params: []any{batchID, logicdomain.RecycleTypeColdTurn, query.SessionID, session.ProjectID, reason, recycledAtMillis, recycledAtMillis, recycledAtMillis},
+	}
+	turnTrashStatement := sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 INSERT INTO vmm_turn_records_trash (
   batch_id, recycled_at, recycle_reason,
   id, session_id, project_id, dehydrated_content, dehydrated_budget,
   extracted_status, details, details_budget, created_timestamp, updated_timestamp
 )
-SELECT %d, %d, %s,
+SELECT ?, ?, ?,
        id, session_id, project_id, dehydrated_content, dehydrated_budget,
        extracted_status, details, details_budget, created_timestamp, updated_timestamp
 FROM vmm_turn_records
 WHERE id IN (%s);
-
+`, turnIDPlaceholders),
+		Params: append([]any{batchID, recycledAtMillis, reason}, turnIDParams...),
+	}
+	turnDeleteStatement := sqliteWriteStatement{
+		SQL: fmt.Sprintf(`
 DELETE FROM vmm_turn_records
 WHERE id IN (%s);
-COMMIT;
-`, batchID, sqlStringLiteral(logicdomain.RecycleTypeColdTurn), query.SessionID, session.ProjectID, sqlStringLiteral(reason), recycledAtMillis, recycledAtMillis, recycledAtMillis,
-		batchID, recycledAtMillis, sqlStringLiteral(reason), turnIDList, turnIDList)
-	if err := s.exec(ctx, script); err != nil {
-		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("recycle sqlite cold turns for session %d: %w", query.SessionID, err)
+`, turnIDPlaceholders),
+		Params: turnIDParams,
+	}
+	// Verify the batch metadata row with the shared single-insert classifier so over-reported inserts are not treated as clean retryable failures.
+	// 使用统一的单行插入分类器验收批次元数据，避免把超量插入报告误判为可干净重试的普通失败。
+	if err := s.execInsertOneRow(ctx, fmt.Sprintf("insert sqlite cold-turn recycle batch for session %d", query.SessionID), batchStatement.SQL, batchStatement.Params...); err != nil {
+		return logicdomain.ColdTurnRecycleResult{}, fmt.Errorf("insert sqlite cold-turn recycle batch for session %d: %w", query.SessionID, err)
+	}
+	expectedTurnRowsChanged := int64(len(normalizedTurnIDs))
+	turnTrashResult, err := s.execResult(ctx, turnTrashStatement.SQL, turnTrashStatement.Params...)
+	if err != nil {
+		return logicdomain.ColdTurnRecycleResult{}, sqlitePartialMutationError(true, "recycle cold turns", fmt.Errorf("copy sqlite cold turns to trash for session %d: %w", query.SessionID, err))
+	}
+	// Keep the claimed job retryable unless every selected cold turn is copied into trash before hot-table deletion.
+	// 除非所有已选 cold turn 都先复制进回收站，否则保持已领取任务可重试，不进入热表删除。
+	if turnTrashResult.RowsChanged != expectedTurnRowsChanged {
+		return logicdomain.ColdTurnRecycleResult{}, logicdomain.OutcomeUncertainError{
+			Operation: "recycle cold turns",
+			Message:   fmt.Sprintf("copy sqlite cold turns to trash for session %d affected %d rows, want %d", query.SessionID, turnTrashResult.RowsChanged, expectedTurnRowsChanged),
+		}
+	}
+	turnDeleteResult, err := s.execResult(ctx, turnDeleteStatement.SQL, turnDeleteStatement.Params...)
+	if err != nil {
+		return logicdomain.ColdTurnRecycleResult{}, sqlitePartialMutationError(true, "recycle cold turns", fmt.Errorf("delete recycled sqlite cold turns for session %d: %w", query.SessionID, err))
+	}
+	// Complete the recycle job only when the hot-table delete confirms every selected cold turn left the active table.
+	// 只有热表删除确认所有已选 cold turn 都离开 active 表后，才允许后续完成回收任务。
+	if turnDeleteResult.RowsChanged != expectedTurnRowsChanged {
+		return logicdomain.ColdTurnRecycleResult{}, logicdomain.OutcomeUncertainError{
+			Operation: "recycle cold turns",
+			Message:   fmt.Sprintf("delete recycled sqlite cold turns for session %d affected %d rows, want %d", query.SessionID, turnDeleteResult.RowsChanged, expectedTurnRowsChanged),
+		}
 	}
 	return logicdomain.ColdTurnRecycleResult{
 		BatchID:           batchID,
@@ -317,14 +367,20 @@ func (s *Store) CompleteRecycleJobs(ctx context.Context, jobIDs []uint64, _ time
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
+	jobIDParams := make([]any, 0, len(jobIDs))
+	for _, jobID := range jobIDs {
+		jobIDParams = append(jobIDParams, jobID)
+	}
+	deleteResult, err := s.execResult(ctx, fmt.Sprintf(`
 DELETE FROM vmm_recycle_jobs
 WHERE id IN (%s);
-COMMIT;
-`, sqlUint64List(jobIDs))
-	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("complete sqlite recycle jobs: %w", err)
+`, sqlitePlaceholders(len(jobIDs))), jobIDParams...)
+	if err != nil {
+		return sqliteQueueWriteError("complete recycle jobs", fmt.Errorf("complete sqlite recycle jobs: %w", err))
+	}
+	expectedRowsChanged := int64(len(jobIDs))
+	if err := sqliteAutocommitRowsChangedDriftError("complete recycle jobs", "complete sqlite recycle jobs", deleteResult.RowsChanged, expectedRowsChanged); err != nil {
+		return err
 	}
 	return nil
 }
@@ -346,33 +402,52 @@ func (s *Store) RetryRecycleJobs(ctx context.Context, jobIDs []uint64, nextRunAt
 	s.writeMu.Lock()
 	defer s.writeMu.Unlock()
 
-	script := fmt.Sprintf(`
-BEGIN IMMEDIATE;
+	params := make([]any, 0, 3+len(jobIDs))
+	params = append(params, nextRunMs, lastError, nowMs)
+	for _, jobID := range jobIDs {
+		params = append(params, jobID)
+	}
+	updateResult, err := s.execResult(ctx, fmt.Sprintf(`
 UPDATE vmm_recycle_jobs
 SET attempt_count = attempt_count + 1,
-    next_run_timestamp = %d,
+    next_run_timestamp = ?,
     claimed_timestamp = 0,
-    last_error = %s,
-    updated_timestamp = %d
+    last_error = ?,
+    updated_timestamp = ?
 WHERE id IN (%s);
-COMMIT;
-`, nextRunMs, sqlStringLiteral(lastError), nowMs, sqlUint64List(jobIDs))
-	if err := s.exec(ctx, script); err != nil {
-		return fmt.Errorf("retry sqlite recycle jobs: %w", err)
+`, sqlitePlaceholders(len(jobIDs))), params...)
+	if err != nil {
+		return sqliteQueueWriteError("retry recycle jobs", fmt.Errorf("retry sqlite recycle jobs: %w", err))
+	}
+	expectedRowsChanged := int64(len(jobIDs))
+	if err := sqliteAutocommitRowsChangedDriftError("retry recycle jobs", "retry sqlite recycle jobs", updateResult.RowsChanged, expectedRowsChanged); err != nil {
+		return err
 	}
 	return nil
+}
+
+// sqliteQueueWriteError preserves SQLite commit-boundary uncertainty for queue mutations while keeping ordinary execution failures retryable.
+// sqliteQueueWriteError 用于在队列写入中保留 SQLite 提交边界不确定语义，同时让普通执行失败保持可重试错误。
+func sqliteQueueWriteError(operation string, err error) error {
+	return sqliteQueuePartialWriteError(false, operation, err)
+}
+
+// sqliteQueuePartialWriteError preserves commit-boundary uncertainty before falling back to confirmed partial-mutation classification for queue writes.
+// sqliteQueuePartialWriteError 用于在队列写入中优先保留提交边界不确定语义，再按已确认局部写入进行分类。
+func sqliteQueuePartialWriteError(mutated bool, operation string, err error) error {
+	return sqliteWriteCommitOrPartialMutationError(mutated, operation, err)
 }
 
 // buildSQLiteColdTurnJobSessionAvailabilityClause renders the candidate predicate used by the independent cold-turn scan so only sessions with real recyclable turns enter the queue.
 // buildSQLiteColdTurnJobSessionAvailabilityClause 用于渲染独立冷 turn 扫描使用的候选谓词，确保只有确实存在可回收旧 turn 的 session 才会入队。
 func buildSQLiteColdTurnJobSessionAvailabilityClause(turnHotWindowSize int) (string, []any) {
-	return fmt.Sprintf(`EXISTS (
+	return `EXISTS (
   WITH recent_turns AS (
     SELECT id
     FROM vmm_turn_records
     WHERE session_id = vmm_sessions.id
     ORDER BY id DESC
-    LIMIT %d
+    LIMIT ?
   )
   SELECT 1
   FROM vmm_turn_records tr
@@ -381,5 +456,5 @@ func buildSQLiteColdTurnJobSessionAvailabilityClause(turnHotWindowSize int) (str
     AND tr.id NOT IN (SELECT id FROM recent_turns)
     AND NOT EXISTS (SELECT 1 FROM vmm_memory_nodes mn WHERE mn.source_turn_id = tr.id)
     AND NOT EXISTS (SELECT 1 FROM vmm_profile_nodes pn WHERE pn.turn_id = tr.id)
-)`, turnHotWindowSize), []any{logicdomain.TurnExtractedStatusPending}
+)`, []any{turnHotWindowSize, logicdomain.TurnExtractedStatusPending}
 }

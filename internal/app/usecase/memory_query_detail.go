@@ -96,8 +96,8 @@ func validateTurnDetailCommand(cmd TurnDetailCommand) error {
 	if len(cmd.TurnIDs) == 0 {
 		return logicdomain.ValidationError{Field: "turn_ids", Message: "must contain at least one id"}
 	}
-	if len(cmd.TurnIDs) > maxTurnDetailLookup {
-		return logicdomain.ValidationError{Field: "turn_ids", Message: fmt.Sprintf("must contain at most %d ids", maxTurnDetailLookup)}
+	if len(cmd.TurnIDs) > MaxTurnDetailLookup {
+		return logicdomain.ValidationError{Field: "turn_ids", Message: fmt.Sprintf("must contain at most %d ids", MaxTurnDetailLookup)}
 	}
 	for idx, turnID := range cmd.TurnIDs {
 		if turnID == 0 {

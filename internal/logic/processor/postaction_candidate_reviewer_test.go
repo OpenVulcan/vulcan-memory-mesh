@@ -27,7 +27,7 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
         "supersede_memory_ids": [501]
       }
     ],
-    "dropped_candidate_indexes": [],
+    "dropped_candidates": [],
     "reason": "新规则不是旧记忆的原样重复。"
   },
   "user": {
@@ -132,18 +132,86 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	}
 }
 
+// TestRenderPostActionCandidateReviewRequestKeepsMemoryMetadataFields verifies the L2 memory-candidate input shape keeps prompt-declared fields even when their values are empty.
+// TestRenderPostActionCandidateReviewRequestKeepsMemoryMetadataFields 用于验证 L2 记忆候选输入形状会保留提示词声明的字段，即使字段值为空。
+func TestRenderPostActionCandidateReviewRequestKeepsMemoryMetadataFields(t *testing.T) {
+	rendered, memoryCount, userCount, projectCount, err := renderPostActionCandidateReviewRequest(logicdomain.PostActionCandidateReviewInput{
+		MemoryCandidates: []logicdomain.PostActionMemoryReviewCandidate{{
+			CandidateIndex: 0,
+			Category:       logicdomain.MemoryNodeCategoryProjectContext,
+			Abstract:       "当前项目要求保持 L2 输入契约稳定。",
+			Details:        "当前项目要求保持 L2 输入契约稳定。",
+		}},
+	})
+	if err != nil {
+		t.Fatalf("render post-action candidate review request: %v", err)
+	}
+	if memoryCount != 1 || userCount != 0 || projectCount != 0 {
+		t.Fatalf("unexpected rendered counts: memory=%d user=%d project=%d", memoryCount, userCount, projectCount)
+	}
+	for _, fragment := range []string{`"candidate_datetime":""`, `"evidence_source":""`, `"admission_reason":""`, `"similar_memories":[]`} {
+		if !strings.Contains(rendered, fragment) {
+			t.Fatalf("expected rendered request to keep %s, got %s", fragment, rendered)
+		}
+	}
+}
+
 // TestParsePostActionCandidateReviewResponseRejectsMissingMemoryCoverage verifies every memory candidate must be classified exactly once by the unified reviewer.
 // TestParsePostActionCandidateReviewResponseRejectsMissingMemoryCoverage 用于验证统一 reviewer 必须且只能为每条记忆候选给出一次分类结果。
 func TestParsePostActionCandidateReviewResponseRejectsMissingMemoryCoverage(t *testing.T) {
 	_, err := parsePostActionCandidateReviewResponse(`{
   "memory": {
-    "accepted_candidate_indexes": [],
-    "dropped_candidate_indexes": [],
+    "accepted_candidates": [],
+    "dropped_candidates": [],
     "reason": "遗漏了记忆分类。"
   }
 }`, 1, 0, 0)
 	if err == nil || !strings.Contains(err.Error(), "must classify all 1 candidates exactly once") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestParsePostActionCandidateReviewResponseRejectsLegacyMemoryIndexLists verifies historical index-only arrays no longer satisfy the structured L2 output contract.
+// TestParsePostActionCandidateReviewResponseRejectsLegacyMemoryIndexLists 用于验证历史纯索引数组不再满足结构化 L2 输出契约。
+func TestParsePostActionCandidateReviewResponseRejectsLegacyMemoryIndexLists(t *testing.T) {
+	tests := []struct {
+		name          string
+		raw           string
+		expectedCount int
+	}{
+		{
+			name: "index-only payload",
+			raw: `{
+  "memory": {
+    "accepted_candidate_indexes": [0],
+    "dropped_candidate_indexes": [1],
+    "reason": "旧格式覆盖了所有候选。"
+  }
+}`,
+			expectedCount: 2,
+		},
+		{
+			name: "structured payload with empty legacy arrays",
+			raw: `{
+  "memory": {
+    "accepted_candidates": [{"candidate_index": 0, "supersede_memory_ids": []}],
+    "dropped_candidates": [],
+    "accepted_candidate_indexes": [],
+    "dropped_candidate_indexes": [],
+    "reason": "结构化结果不应夹带旧字段。"
+  }
+}`,
+			expectedCount: 1,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parsePostActionCandidateReviewResponse(tt.raw, tt.expectedCount, 0, 0)
+			if err == nil || !strings.Contains(err.Error(), "legacy candidate index lists are unsupported") {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 
@@ -173,6 +241,118 @@ func TestParsePostActionCandidateReviewResponseParsesDroppedMemoryDedupeTarget(t
 	}
 	if len(result.Memory.DroppedCandidateIndexes) != 1 || result.Memory.DroppedCandidateIndexes[0] != 0 {
 		t.Fatalf("expected dropped indexes to stay derived from structured payload, got %+v", result.Memory.DroppedCandidateIndexes)
+	}
+}
+
+// TestParsePostActionCandidateReviewResponseRejectsDuplicateProfileAcceptedCandidate verifies profile review output cannot merge repeated accepted candidate indexes.
+// TestParsePostActionCandidateReviewResponseRejectsDuplicateProfileAcceptedCandidate 用于验证画像评审输出不能合并重复的 accepted candidate index。
+func TestParsePostActionCandidateReviewResponseRejectsDuplicateProfileAcceptedCandidate(t *testing.T) {
+	_, err := parsePostActionCandidateReviewResponse(`{
+  "user": {
+    "accepted_candidates": [
+      {
+        "candidate_index": 0,
+        "normalized_content": "用户偏好本地部署。",
+        "priority": "P1",
+        "level": "L2",
+        "level_reason": "稳定偏好。",
+        "supersede_node_ids": []
+      },
+      {
+        "candidate_index": 0,
+        "normalized_content": "用户偏好离线部署。",
+        "priority": "P1",
+        "level": "L2",
+        "level_reason": "重复候选。",
+        "supersede_node_ids": []
+      }
+    ],
+    "invalid_candidate_indexes": [1],
+    "retire_only_node_ids": [],
+    "reason": "重复 accepted index 应失败。"
+  }
+}`, 0, 2, 0)
+	if err == nil || !strings.Contains(err.Error(), "duplicate candidate_index 0") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+// TestParsePostActionCandidateReviewResponseRejectsInvalidReviewerIDLists verifies reviewer id lists cannot hide zero or duplicate ids before use-case ownership checks.
+// TestParsePostActionCandidateReviewResponseRejectsInvalidReviewerIDLists 用于验证 reviewer id 列表不能在用例归属校验前隐藏零值或重复 id。
+func TestParsePostActionCandidateReviewResponseRejectsInvalidReviewerIDLists(t *testing.T) {
+	tests := []struct {
+		name        string
+		raw         string
+		memoryCount int
+		userCount   int
+		want        string
+	}{
+		{
+			name: "memory supersede zero id",
+			raw: `{
+  "memory": {
+    "accepted_candidates": [{"candidate_index": 0, "supersede_memory_ids": [0]}],
+    "dropped_candidates": [],
+    "reason": "zero id should fail"
+  }
+}`,
+			memoryCount: 1,
+			want:        "supersede_memory_ids contains zero id",
+		},
+		{
+			name: "memory supersede duplicate id",
+			raw: `{
+  "memory": {
+    "accepted_candidates": [{"candidate_index": 0, "supersede_memory_ids": [31, 31]}],
+    "dropped_candidates": [],
+    "reason": "duplicate id should fail"
+  }
+}`,
+			memoryCount: 1,
+			want:        "supersede_memory_ids contains duplicate id 31",
+		},
+		{
+			name: "profile supersede zero id",
+			raw: `{
+  "user": {
+    "accepted_candidates": [{
+      "candidate_index": 0,
+      "normalized_content": "用户偏好本地部署。",
+      "priority": "P1",
+      "level": "L2",
+      "level_reason": "稳定偏好。",
+      "supersede_node_ids": [0]
+    }],
+    "invalid_candidate_indexes": [],
+    "retire_only_node_ids": [],
+    "reason": "zero profile id should fail"
+  }
+}`,
+			userCount: 1,
+			want:      "supersede_node_ids contains zero id",
+		},
+		{
+			name: "profile retire duplicate id",
+			raw: `{
+  "user": {
+    "accepted_candidates": [],
+    "invalid_candidate_indexes": [0],
+    "retire_only_node_ids": [12, 12],
+    "reason": "duplicate retire id should fail"
+  }
+}`,
+			userCount: 1,
+			want:      "retire_only_node_ids contains duplicate id 12",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parsePostActionCandidateReviewResponse(tt.raw, tt.memoryCount, tt.userCount, 0)
+			if err == nil || !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
 	}
 }
 

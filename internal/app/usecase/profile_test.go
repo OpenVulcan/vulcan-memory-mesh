@@ -3,7 +3,9 @@
 package usecase
 
 import (
+	"bytes"
 	"context"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -12,6 +14,7 @@ import (
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/testutil"
 )
 
@@ -89,6 +92,25 @@ func TestProfileUseCaseGetNodesAggregatesAllScopes(t *testing.T) {
 		if len(limits) != 1 || limits[0] != 2 {
 			t.Fatalf("expected all-scope target %s to receive per-target limit 2, got %+v", key, limits)
 		}
+	}
+}
+
+// TestProfileUseCaseGetNodesRejectsNegativeLimit verifies direct use-case callers cannot turn invalid negative limits into unlimited profile-node scans.
+// TestProfileUseCaseGetNodesRejectsNegativeLimit 用于验证直接调用用例时，非法负数 limit 不会被转换成无限制画像节点扫描。
+func TestProfileUseCaseGetNodesRejectsNegativeLimit(t *testing.T) {
+	uc := NewProfileUseCase(&stubProfileStore{}, nil, nil)
+
+	_, err := uc.GetNodes(context.Background(), ProfileQueryCommand{
+		ProfileType: logicdomain.ProfileTypeUser,
+		UserID:      7,
+		Limit:       -1,
+	})
+	validationErr, ok := err.(logicdomain.ValidationError)
+	if !ok {
+		t.Fatalf("expected validation error for negative limit, got %T: %v", err, err)
+	}
+	if validationErr.Field != "limit" || validationErr.Message != "must be >= 0" {
+		t.Fatalf("unexpected negative limit validation error: %#v", validationErr)
 	}
 }
 
@@ -491,6 +513,72 @@ func TestManualInstructionProfileDateUsesLocalCalendarDay(t *testing.T) {
 	}
 }
 
+// TestProfileUseCaseApplyInstructionLogsReviewerInvalidOutput verifies manual profile reviewer contract failures keep raw model diagnostics in server logs and still mark the instruction failed.
+// TestProfileUseCaseApplyInstructionLogsReviewerInvalidOutput 用于验证手工画像 reviewer 契约失败会把原始模型诊断留在服务端日志中，并且仍会把指令标记为失败。
+func TestProfileUseCaseApplyInstructionLogsReviewerInvalidOutput(t *testing.T) {
+	store := &stubProfileStore{
+		target: logicdomain.ProfileTargetRef{
+			ProfileType: logicdomain.ProfileTypeProject,
+			BindID:      9,
+			UserID:      7,
+			ProjectID:   9,
+		},
+		nodes: []logicdomain.ProfileNodeRecord{
+			{ID: 41, ProfileType: logicdomain.ProfileTypeProject, BindID: 9, Content: "项目默认使用旧部署方式。", Status: logicdomain.ProfileStatusActive},
+		},
+	}
+	rawOutput := strings.Join([]string{
+		"```json",
+		"{\"accepted_nodes\":[{\"normalized_content\":\"项目默认使用新部署方式\"}]",
+		"```",
+	}, "\n")
+	reviewer := &stubManualProfileReviewer{
+		err: logicdomain.InvalidLLMOutputError{
+			Scene:   "profile_instruction_main",
+			Message: "json decode failed",
+			Raw:     rawOutput,
+		},
+		model: "Qwen/Qwen3-32B",
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := NewProfileUseCase(store, reviewer, logger)
+
+	_, err := uc.ApplyInstruction(context.Background(), ProfileInstructionCommand{
+		ProfileType: logicdomain.ProfileTypeProject,
+		UserID:      7,
+		ProjectID:   9,
+		Instruction: "项目默认使用新部署方式。",
+	})
+
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) || invalid.Scene != "profile_instruction_main" {
+		t.Fatalf("expected profile_instruction_main InvalidLLMOutputError, got %v", err)
+	}
+	if store.failInstructionCount() != 1 {
+		t.Fatalf("expected failed instruction persistence, got %d", store.failInstructionCount())
+	}
+	if store.applyInstructionCount() != 0 {
+		t.Fatalf("expected invalid reviewer output to stop before final apply, got %d", store.applyInstructionCount())
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "manual profile instruction reviewer output invalid") {
+		t.Fatalf("expected manual profile reviewer failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "llm_scene：\"profile_instruction_main\"") {
+		t.Fatalf("expected profile instruction scene in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
+		t.Fatalf("expected reviewer model in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
+		t.Fatalf("expected raw reviewer output in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "invalid llm output for profile_instruction_main: json decode failed") {
+		t.Fatalf("expected invalid llm output summary in failure log, got %s", logs)
+	}
+}
+
 // TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction verifies direct tests or manual integrations that bypass NewProfileUseCase still get lazily initialized dedupe state instead of crashing on nil maps.
 // TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction 用于验证当直接测试或手工集成绕过 NewProfileUseCase 时，画像用例仍会懒初始化去重状态，而不是因为 nil map 直接崩溃。
 func TestProfileUseCaseApplyInstructionInitializesStateForPartialConstruction(t *testing.T) {
@@ -551,8 +639,12 @@ func TestProfileUseCaseApplyInstructionRejectsAllTarget(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected all-target manual instruction to be rejected")
 	}
-	if !strings.Contains(err.Error(), "single profile target") {
+	validation, ok := err.(logicdomain.ValidationError)
+	if !ok {
 		t.Fatalf("expected single-target validation failure, got %v", err)
+	}
+	if validation.Field != "target" || validation.Message != "must be one supported single profile target" {
+		t.Fatalf("unexpected all-target validation details: %+v", validation)
 	}
 	if store.createInstructionCount() != 0 || store.applyInstructionCount() != 0 {
 		t.Fatalf("expected rejected all-target instruction to skip persistence, got create=%d apply=%d", store.createInstructionCount(), store.applyInstructionCount())
@@ -602,11 +694,9 @@ func TestProfileUseCaseApplyInstructionReusesSharedFlightWithNilContext(t *testi
 	}
 }
 
-// TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls verifies identical concurrent manual instructions
-// on the same target reuse one in-flight LLM review instead of creating duplicate instruction rows and duplicate node writes.
-// TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls 用于验证同一目标上的相同手工画像指令在并发时会复用同一条进行中的 LLM 评审，
-// 而不会创建重复 instruction 记录或重复写入节点。
-func TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls(t *testing.T) {
+// TestProfileUseCaseApplyInstructionSharesIdenticalInFlightResult verifies identical manual instructions reuse one registered flight instead of creating duplicate instruction rows and duplicate node writes.
+// TestProfileUseCaseApplyInstructionSharesIdenticalInFlightResult 用于验证同一目标上的相同手工画像指令会复用同一条已登记的进行中任务，而不会创建重复 instruction 记录或重复写入节点。
+func TestProfileUseCaseApplyInstructionSharesIdenticalInFlightResult(t *testing.T) {
 	store := &stubProfileStore{
 		target: logicdomain.ProfileTargetRef{
 			ProfileType: logicdomain.ProfileTypeProject,
@@ -647,11 +737,15 @@ func TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls(t *testin
 		firstDone <- callResult{result: result, err: err}
 	}()
 	<-reviewer.entered
+	flightKey := uc.profileInstructionFlightKey(store.target, cmd.Instruction)
+	sharedFlight, shared := uc.loadOrCreateProfileInstructionFlight(flightKey)
+	if !shared || sharedFlight == nil {
+		t.Fatalf("expected identical instruction to reuse registered in-flight work, shared=%v flight=%v", shared, sharedFlight)
+	}
 	go func() {
-		result, err := uc.ApplyInstruction(context.Background(), cmd)
+		result, err := uc.waitProfileInstructionFlight(context.Background(), sharedFlight)
 		secondDone <- callResult{result: result, err: err}
 	}()
-	time.Sleep(120 * time.Millisecond)
 
 	if reviewer.callCount() != 1 {
 		t.Fatalf("expected one reviewer call while identical request is in flight, got %d", reviewer.callCount())
@@ -680,10 +774,8 @@ func TestProfileUseCaseApplyInstructionDedupesIdenticalConcurrentCalls(t *testin
 	}
 }
 
-// TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget verifies different instructions
-// for the same target do not overlap; the second one waits until the first target-scoped review and writeback completes.
-// TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget 用于验证同一目标上的不同手工指令不会并发执行；
-// 第二条指令必须等待第一条目标级评审和写回完成后才会继续。
+// TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget verifies one in-flight instruction holds the target gate until its review and writeback complete.
+// TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget 用于验证进行中的手工指令会持续持有目标级闸门，直到评审和写回完成。
 func TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget(t *testing.T) {
 	store := &stubProfileStore{
 		target: logicdomain.ProfileTargetRef{
@@ -720,18 +812,14 @@ func TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget(t *tes
 		firstDone <- err
 	}()
 	<-reviewer.entered
-	go func() {
-		_, err := uc.ApplyInstruction(context.Background(), ProfileInstructionCommand{
-			ProfileType: logicdomain.ProfileTypeProject,
-			ProjectID:   9,
-			Instruction: "项目统一使用 Rust 语言实现。",
-		})
-		secondDone <- err
-	}()
-	time.Sleep(120 * time.Millisecond)
+	gate := uc.profileInstructionGate(store.target)
+	if gate.mu.TryLock() {
+		gate.mu.Unlock()
+		t.Fatal("expected target gate to stay locked while the first profile instruction is reviewing")
+	}
 
 	if reviewer.callCount() != 1 {
-		t.Fatalf("expected second instruction to stay blocked behind the same target gate, got %d reviewer calls", reviewer.callCount())
+		t.Fatalf("expected only the first reviewer call while the target gate is locked, got %d reviewer calls", reviewer.callCount())
 	}
 	if store.createInstructionCount() != 1 {
 		t.Fatalf("expected only the first instruction row before releasing the gate, got %d", store.createInstructionCount())
@@ -741,6 +829,14 @@ func TestProfileUseCaseApplyInstructionSerializesDifferentCallsSameTarget(t *tes
 	if err := <-firstDone; err != nil {
 		t.Fatalf("first serialized instruction failed: %v", err)
 	}
+	go func() {
+		_, err := uc.ApplyInstruction(context.Background(), ProfileInstructionCommand{
+			ProfileType: logicdomain.ProfileTypeProject,
+			ProjectID:   9,
+			Instruction: "项目统一使用 Rust 语言实现。",
+		})
+		secondDone <- err
+	}()
 	if err := <-secondDone; err != nil {
 		t.Fatalf("second serialized instruction failed: %v", err)
 	}
@@ -959,6 +1055,8 @@ func profileRenderKey(profileType int, bindID uint64) string {
 // stubManualProfileReviewer 用于回放预设的手工画像评审结果，并记录传入的权限地板。
 type stubManualProfileReviewer struct {
 	review        logicdomain.ManualProfileInstructionReview
+	err           error
+	model         string
 	floorPriority int
 	floorLevel    int
 }
@@ -968,11 +1066,23 @@ type stubManualProfileReviewer struct {
 func (s *stubManualProfileReviewer) Review(_ context.Context, _ logicdomain.ProfileTargetRef, _ []logicdomain.ProfileNodeRecord, _ string, floorPriority, floorLevel int) (logicdomain.ManualProfileInstructionReview, error) {
 	s.floorPriority = floorPriority
 	s.floorLevel = floorLevel
+	if s.err != nil {
+		return logicdomain.ManualProfileInstructionReview{}, s.err
+	}
 	return logicdomain.ManualProfileInstructionReview{
 		AcceptedNodes: append([]logicdomain.ManualProfileAcceptedNode(nil), s.review.AcceptedNodes...),
 		RetiredNodes:  append([]logicdomain.ProfileRetireDecision(nil), s.review.RetiredNodes...),
 		Reason:        s.review.Reason,
 	}, nil
+}
+
+// ReviewModel returns the configured stub reviewer model label so invalid-output log tests can assert model attribution.
+// ReviewModel 用于返回桩对象配置的 reviewer 模型标识，方便畸形输出日志测试断言模型归因。
+func (s *stubManualProfileReviewer) ReviewModel() string {
+	if s == nil {
+		return ""
+	}
+	return s.model
 }
 
 // blockingManualProfileReviewer lets concurrency tests pause one in-flight review so they can observe whether
@@ -1001,6 +1111,12 @@ func (s *blockingManualProfileReviewer) Review(_ context.Context, _ logicdomain.
 		RetiredNodes:  append([]logicdomain.ProfileRetireDecision(nil), s.review.RetiredNodes...),
 		Reason:        s.review.Reason,
 	}, nil
+}
+
+// ReviewModel returns an empty model label because concurrency tests only need the blocking reviewer behavior and do not exercise diagnostics.
+// ReviewModel 返回空模型标识，因为并发测试只需要阻塞式 reviewer 行为，不覆盖诊断字段。
+func (s *blockingManualProfileReviewer) ReviewModel() string {
+	return ""
 }
 
 // callCount returns how many reviewer invocations have started so far.

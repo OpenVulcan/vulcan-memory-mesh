@@ -52,6 +52,15 @@ func NewPreCheckMemoryReviewer(llm logicports.LLMClient, prompts logicports.Prom
 	return &PreCheckMemoryReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
 
+// ReviewModel returns the configured pre-check second-stage model label so use cases can attribute malformed review output to one route/model.
+// ReviewModel 用于返回当前配置的 pre-check 第二层模型标识，方便用例层把畸形评审输出归因到具体路由/模型。
+func (r *PreCheckMemoryReviewer) ReviewModel() string {
+	if r == nil {
+		return ""
+	}
+	return strings.TrimSpace(r.model)
+}
+
 // Review executes one structured memory-adoption review over the numbered pre-check candidates.
 // Review 用于对 pre-check 召回出来的带编号候选记忆执行一次结构化采纳评审。
 func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error) {
@@ -152,38 +161,43 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l2_main", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
-		SelectedCandidateNumbers []int    `json:"selected_candidate_numbers"`
-		SelectedMemoryIDs        []uint64 `json:"selected_memory_ids"`
-		Reason                   string   `json:"reason"`
+		SelectedCandidateNumbers *[]int `json:"selected_candidate_numbers"`
 	}
-	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
-		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l2_main", Message: "json decode failed", Raw: raw}
+	decoder := json.NewDecoder(strings.NewReader(jsonBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l2_main", Message: err.Error(), Raw: raw}
+	}
+	if payload.SelectedCandidateNumbers == nil {
+		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l2_main", Message: "selected_candidate_numbers is required", Raw: raw}
 	}
 
-	// Keep only deduplicated candidate numbers that belong to the current request so one bad model response cannot select foreign rows.
-	// 只保留去重后且属于当前请求的候选编号，避免错误模型响应选中外部记录。
-	allowed := make(map[int]uint64, len(input.Candidates))
-	memoryToNumber := make(map[uint64]int, len(input.Candidates))
+	// Validate candidate-number choices strictly against the current request so malformed partial output is diagnosed instead of silently repaired.
+	// 严格按当前请求校验候选编号，避免把部分畸形输出静默修复成看似成功的采纳结果。
+	allowed := make(map[int]struct{}, len(input.Candidates))
 	for _, candidate := range input.Candidates {
 		if candidate.CandidateNumber <= 0 {
 			continue
 		}
-		allowed[candidate.CandidateNumber] = candidate.MemoryID
-		if candidate.MemoryID > 0 {
-			memoryToNumber[candidate.MemoryID] = candidate.CandidateNumber
-		}
+		allowed[candidate.CandidateNumber] = struct{}{}
 	}
-	selectedNumbers := normalizeSelectedPreCheckCandidateNumbers(payload.SelectedCandidateNumbers, payload.SelectedMemoryIDs, allowed, memoryToNumber)
+	selectedNumbers := *payload.SelectedCandidateNumbers
 	selected := make([]int, 0, len(selectedNumbers))
 	seen := map[int]struct{}{}
-	invalidNumbers := make([]int, 0)
 	for _, candidateNumber := range selectedNumbers {
 		if candidateNumber <= 0 {
-			continue
+			return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{
+				Scene:   "precheck_l2_main",
+				Message: fmt.Sprintf("selected_candidate_numbers contains invalid number %d", candidateNumber),
+				Raw:     raw,
+			}
 		}
 		if _, ok := allowed[candidateNumber]; !ok {
-			invalidNumbers = append(invalidNumbers, candidateNumber)
-			continue
+			return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{
+				Scene:   "precheck_l2_main",
+				Message: fmt.Sprintf("selected_candidate_numbers contains unknown number %d", candidateNumber),
+				Raw:     raw,
+			}
 		}
 		if _, ok := seen[candidateNumber]; ok {
 			continue
@@ -191,54 +205,9 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 		seen[candidateNumber] = struct{}{}
 		selected = append(selected, candidateNumber)
 	}
-	if len(selected) == 0 && len(invalidNumbers) > 0 {
-		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{
-			Scene:   "precheck_l2_main",
-			Message: fmt.Sprintf("selected_candidate_numbers contains unknown number %d", invalidNumbers[0]),
-			Raw:     raw,
-		}
-	}
 	return logicdomain.PreCheckMemoryReviewResult{
 		SelectedCandidateNumbers: selected,
-		Reason:                   strings.TrimSpace(payload.Reason),
 	}, nil
-}
-
-// normalizeSelectedPreCheckCandidateNumbers merges reviewer-selected candidate numbers with memory-id fallbacks so partially malformed model output can still recover the intended picks.
-// normalizeSelectedPreCheckCandidateNumbers 用于把 reviewer 选择的候选编号与 memory-id 回退结果合并起来，让模型部分格式错误时仍能恢复预期选择。
-func normalizeSelectedPreCheckCandidateNumbers(candidateNumbers []int, memoryIDs []uint64, allowed map[int]uint64, memoryToNumber map[uint64]int) []int {
-	selected := make([]int, 0, len(candidateNumbers)+len(memoryIDs))
-	seen := make(map[int]struct{}, len(candidateNumbers)+len(memoryIDs))
-	appendNumber := func(number int) {
-		if number <= 0 {
-			return
-		}
-		if _, ok := seen[number]; ok {
-			return
-		}
-		seen[number] = struct{}{}
-		selected = append(selected, number)
-	}
-
-	// Keep any candidate-number choices the model emitted so valid structured output continues to drive the primary ordering.
-	// 先保留模型显式输出的 candidate number，让合法的结构化编号继续作为主排序来源。
-	for _, number := range candidateNumbers {
-		appendNumber(number)
-	}
-
-	// Add recoverable selections from memory ids as a secondary signal, so one malformed candidate number does not erase otherwise valid intent.
-	// 再补充可由 memory id 恢复出的选择，避免单个错误 candidate number 抹掉本来有效的模型意图。
-	for _, memoryID := range memoryIDs {
-		number, ok := memoryToNumber[memoryID]
-		if !ok {
-			continue
-		}
-		if _, ok := allowed[number]; !ok {
-			continue
-		}
-		appendNumber(number)
-	}
-	return selected
 }
 
 // normalizePreCheckReviewCandidates trims empty text noise and removes duplicate candidate numbers before the payload reaches the model.

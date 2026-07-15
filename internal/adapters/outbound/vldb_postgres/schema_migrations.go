@@ -132,9 +132,9 @@ func (r *maintenanceRepository) migrateCombinedSchemaDropRemovedWorkMemory(ctx c
 	if r == nil || r.shared == nil || r.shared.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	statements := []string{
-		fmt.Sprintf(`DROP TABLE IF EXISTS %s CASCADE`, r.maintenanceQualifiedTable("vmm_scratchpad_nodes")),
-		fmt.Sprintf(`DROP TABLE IF EXISTS %s CASCADE`, r.maintenanceQualifiedTable("vmm_scratchpad_plans")),
+	statements := []postgresDDLStatement{
+		{name: "vmm_scratchpad_nodes", sql: fmt.Sprintf(`DROP TABLE IF EXISTS %s CASCADE`, r.maintenanceQualifiedTable("vmm_scratchpad_nodes"))},
+		{name: "vmm_scratchpad_plans", sql: fmt.Sprintf(`DROP TABLE IF EXISTS %s CASCADE`, r.maintenanceQualifiedTable("vmm_scratchpad_plans"))},
 	}
 	if err := r.execDDLStatements(ctx, statements, "postgres removed work-memory schema cleanup"); err != nil {
 		return err
@@ -142,12 +142,12 @@ func (r *maintenanceRepository) migrateCombinedSchemaDropRemovedWorkMemory(ctx c
 	return nil
 }
 
-// execDDLStatements executes one deterministic DDL batch sequentially so migration errors stay attributable to one schema phase.
-// execDDLStatements 用于顺序执行一组确定性的 DDL，让迁移错误可以稳定归因到某个 schema 阶段。
-func (r *maintenanceRepository) execDDLStatements(ctx context.Context, statements []string, phase string) error {
+// execDDLStatements executes one deterministic named DDL batch sequentially so migration errors stay attributable to one schema phase and object.
+// execDDLStatements 用于顺序执行一组确定性的命名 DDL，让迁移错误可以稳定归因到某个 schema 阶段和对象。
+func (r *maintenanceRepository) execDDLStatements(ctx context.Context, statements []postgresDDLStatement, phase string) error {
 	for _, statement := range statements {
-		if _, err := r.shared.pool.Exec(ctx, strings.TrimSpace(statement)); err != nil {
-			return fmt.Errorf("%s: %w", strings.TrimSpace(phase), err)
+		if _, err := r.shared.pool.Exec(ctx, strings.TrimSpace(statement.sql)); err != nil {
+			return postgresDDLStatementExecutionError(phase, statement, err)
 		}
 	}
 	return nil

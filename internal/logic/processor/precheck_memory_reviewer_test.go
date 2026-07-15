@@ -13,7 +13,7 @@ import (
 // TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers verifies the reviewer parser keeps only valid deduplicated candidate numbers from the current candidate set.
 // TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers 用于验证评审器解析器只保留当前候选集合中合法且去重后的候选编号。
 func TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers(t *testing.T) {
-	result, err := parsePreCheckMemoryReviewResponse("```json\n{\"selected_candidate_numbers\":[1,2,1],\"reason\":\"useful\"}\n```", logicdomain.PreCheckMemoryReviewInput{
+	result, err := parsePreCheckMemoryReviewResponse("```json\n{\"selected_candidate_numbers\":[1,2,1]}\n```", logicdomain.PreCheckMemoryReviewInput{
 		Candidates: []logicdomain.PreCheckMemoryCandidate{
 			{CandidateNumber: 1, MemoryID: 12},
 			{CandidateNumber: 2, MemoryID: 15},
@@ -25,14 +25,11 @@ func TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers(t *testing.T) {
 	if len(result.SelectedCandidateNumbers) != 2 || result.SelectedCandidateNumbers[0] != 1 || result.SelectedCandidateNumbers[1] != 2 {
 		t.Fatalf("unexpected selected numbers: %#v", result.SelectedCandidateNumbers)
 	}
-	if result.Reason != "useful" {
-		t.Fatalf("unexpected reason: %q", result.Reason)
-	}
 }
 
-// TestParsePreCheckMemoryReviewResponseAllowsMissingReason verifies the reviewer parser still accepts the compact output shape where only candidate numbers are returned.
-// TestParsePreCheckMemoryReviewResponseAllowsMissingReason 用于验证当 reviewer 只返回候选编号、不再返回 reason 时，解析器仍能兼容通过。
-func TestParsePreCheckMemoryReviewResponseAllowsMissingReason(t *testing.T) {
+// TestParsePreCheckMemoryReviewResponseAcceptsNumberOnlyOutput verifies the current pre-check L2 contract only needs selected candidate numbers.
+// TestParsePreCheckMemoryReviewResponseAcceptsNumberOnlyOutput 用于验证当前 pre-check L2 契约只需要返回已选候选编号。
+func TestParsePreCheckMemoryReviewResponseAcceptsNumberOnlyOutput(t *testing.T) {
 	result, err := parsePreCheckMemoryReviewResponse(`{"selected_candidate_numbers":[2,1]}`, logicdomain.PreCheckMemoryReviewInput{
 		Candidates: []logicdomain.PreCheckMemoryCandidate{
 			{CandidateNumber: 1, MemoryID: 12},
@@ -44,9 +41,6 @@ func TestParsePreCheckMemoryReviewResponseAllowsMissingReason(t *testing.T) {
 	}
 	if len(result.SelectedCandidateNumbers) != 2 || result.SelectedCandidateNumbers[0] != 2 || result.SelectedCandidateNumbers[1] != 1 {
 		t.Fatalf("unexpected selected numbers: %#v", result.SelectedCandidateNumbers)
-	}
-	if result.Reason != "" {
-		t.Fatalf("expected empty reason, got %q", result.Reason)
 	}
 }
 
@@ -61,23 +55,56 @@ func TestParsePreCheckMemoryReviewResponseRejectsUnknownNumbers(t *testing.T) {
 	}
 }
 
-// TestParsePreCheckMemoryReviewResponseRecoversFromMixedNumberAndMemoryIDOutput verifies that when the model emits both candidate numbers and memory ids, valid memory-id mappings can rescue an otherwise partially malformed numbered selection.
-// TestParsePreCheckMemoryReviewResponseRecoversFromMixedNumberAndMemoryIDOutput 用于验证当模型同时输出 candidate number 和 memory id 时，合法的 memory-id 映射可以挽回部分格式错误的编号选择。
-func TestParsePreCheckMemoryReviewResponseRecoversFromMixedNumberAndMemoryIDOutput(t *testing.T) {
-	result, err := parsePreCheckMemoryReviewResponse(`{"selected_candidate_numbers":[99,2],"selected_memory_ids":[12],"reason":"useful"}`, logicdomain.PreCheckMemoryReviewInput{
+// TestParsePreCheckMemoryReviewResponseRejectsMixedUnknownNumbers verifies partially malformed selections fail instead of being silently repaired.
+// TestParsePreCheckMemoryReviewResponseRejectsMixedUnknownNumbers 用于验证部分畸形的选择会直接失败，而不是被静默修复。
+func TestParsePreCheckMemoryReviewResponseRejectsMixedUnknownNumbers(t *testing.T) {
+	_, err := parsePreCheckMemoryReviewResponse(`{"selected_candidate_numbers":[99,2]}`, logicdomain.PreCheckMemoryReviewInput{
 		Candidates: []logicdomain.PreCheckMemoryCandidate{
 			{CandidateNumber: 1, MemoryID: 12},
 			{CandidateNumber: 2, MemoryID: 15},
 		},
 	})
-	if err != nil {
-		t.Fatalf("expected parser to recover using selected_memory_ids, got %v", err)
+	if err == nil {
+		t.Fatal("expected invalid output error")
 	}
-	if len(result.SelectedCandidateNumbers) != 2 || result.SelectedCandidateNumbers[0] != 2 || result.SelectedCandidateNumbers[1] != 1 {
-		t.Fatalf("unexpected recovered selected numbers: %#v", result.SelectedCandidateNumbers)
+}
+
+// TestParsePreCheckMemoryReviewResponseRejectsLegacyMemoryIDOutput verifies the parser no longer accepts the removed memory-id fallback field.
+// TestParsePreCheckMemoryReviewResponseRejectsLegacyMemoryIDOutput 用于验证解析器不再接受已经移除的 memory-id 回退字段。
+func TestParsePreCheckMemoryReviewResponseRejectsLegacyMemoryIDOutput(t *testing.T) {
+	_, err := parsePreCheckMemoryReviewResponse(`{"selected_candidate_numbers":[2],"selected_memory_ids":[12]}`, logicdomain.PreCheckMemoryReviewInput{
+		Candidates: []logicdomain.PreCheckMemoryCandidate{
+			{CandidateNumber: 1, MemoryID: 12},
+			{CandidateNumber: 2, MemoryID: 15},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected invalid output error")
 	}
-	if result.Reason != "useful" {
-		t.Fatalf("unexpected reason: %q", result.Reason)
+}
+
+// TestParsePreCheckMemoryReviewResponseRejectsLegacyReasonOutput verifies the parser rejects old rationale-only compatibility fields after the prompt contract was narrowed.
+// TestParsePreCheckMemoryReviewResponseRejectsLegacyReasonOutput 用于验证 prompt 契约收窄后，解析器会拒绝旧的理由兼容字段。
+func TestParsePreCheckMemoryReviewResponseRejectsLegacyReasonOutput(t *testing.T) {
+	_, err := parsePreCheckMemoryReviewResponse(`{"selected_candidate_numbers":[2],"reason":"useful"}`, logicdomain.PreCheckMemoryReviewInput{
+		Candidates: []logicdomain.PreCheckMemoryCandidate{
+			{CandidateNumber: 1, MemoryID: 12},
+			{CandidateNumber: 2, MemoryID: 15},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected invalid output error")
+	}
+}
+
+// TestParsePreCheckMemoryReviewResponseRejectsMissingSelectedNumbers verifies selected_candidate_numbers is required even when the JSON object is syntactically valid.
+// TestParsePreCheckMemoryReviewResponseRejectsMissingSelectedNumbers 用于验证即使 JSON 对象语法合法，也必须显式提供 selected_candidate_numbers。
+func TestParsePreCheckMemoryReviewResponseRejectsMissingSelectedNumbers(t *testing.T) {
+	_, err := parsePreCheckMemoryReviewResponse(`{}`, logicdomain.PreCheckMemoryReviewInput{
+		Candidates: []logicdomain.PreCheckMemoryCandidate{{CandidateNumber: 1, MemoryID: 15}},
+	})
+	if err == nil {
+		t.Fatal("expected invalid output error")
 	}
 }
 

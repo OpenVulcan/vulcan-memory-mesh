@@ -24,6 +24,7 @@ type fakeRetentionStore struct {
 	claimJobLimit          int
 	coldTurnQuery          logicdomain.ColdTurnRecycleQuery
 	completedRecycleJobIDs []uint64
+	completedJobIDCalls    [][]uint64
 	completedRecycleAt     time.Time
 	retriedRecycleJobIDs   []uint64
 	recycleRetryAt         time.Time
@@ -140,6 +141,7 @@ func (f *fakeRetentionStore) ClaimPendingVectorGCJobs(_ context.Context, dueBefo
 // CompleteVectorGCJobs 用于记录已完成的重试任务 id，让测试断言成功重试删除后会关闭队列任务。
 func (f *fakeRetentionStore) CompleteVectorGCJobs(_ context.Context, jobIDs []uint64, completedAt time.Time) error {
 	f.completedJobIDs = append([]uint64(nil), jobIDs...)
+	f.completedJobIDCalls = append(f.completedJobIDCalls, append([]uint64(nil), jobIDs...))
 	f.completedAt = completedAt
 	return nil
 }
@@ -205,7 +207,7 @@ func TestRetentionUseCaseRunMaintenanceRecyclesAndPurges(t *testing.T) {
 			BatchID:              7,
 			RecycledMemoryCount:  2,
 			RecycledContextCount: 3,
-			RecycledVectorIDs:    []string{"vec-1", "vec-2"},
+			RecycledVectorIDs:    []string{" vec-1 ", "", "vec-1", "vec-2"},
 		},
 		idleSessionResult: logicdomain.SessionIdleRecycleResult{
 			BatchIDs:             []uint64{9},
@@ -213,7 +215,7 @@ func TestRetentionUseCaseRunMaintenanceRecyclesAndPurges(t *testing.T) {
 			RecycledMemoryCount:  1,
 			RecycledContextCount: 1,
 			RecycledTurnCount:    4,
-			RecycledVectorIDs:    []string{"vec-3"},
+			RecycledVectorIDs:    []string{"vec-3", "vec-3"},
 		},
 		purgeResult: logicdomain.RetentionTrashPurgeResult{
 			BatchIDs:           []uint64{7, 9},
@@ -357,6 +359,37 @@ func TestRetentionUseCaseRunMaintenanceSkipsColdRecycleVectorCleanupOnError(t *t
 	}
 }
 
+// TestRetentionUseCaseRunMaintenanceCleansColdRecycleVectorsOnOutcomeUncertain verifies late uncertain recycle failures still preserve obsolete vector cleanup.
+// TestRetentionUseCaseRunMaintenanceCleansColdRecycleVectorsOnOutcomeUncertain 用于验证后置结果不确定的回收失败仍会保留过时向量清理。
+func TestRetentionUseCaseRunMaintenanceCleansColdRecycleVectorsOnOutcomeUncertain(t *testing.T) {
+	store := &fakeRetentionStore{
+		recycleResult: logicdomain.MemoryRecycleResult{
+			BatchID:           7,
+			RecycledVectorIDs: []string{"vec-cold-1", "vec-cold-2"},
+		},
+		recycleErr: logicdomain.OutcomeUncertainError{
+			Operation: "recycle cold memories",
+			Message:   "sync sqlite memory fts after cold recycle: fts unavailable",
+		},
+	}
+	vector := &fakeVectorStore{}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	useCase.runMaintenance(context.Background())
+
+	if len(vector.deletedIDs) != 2 || vector.deletedIDs[0] != "vec-cold-1" || vector.deletedIDs[1] != "vec-cold-2" {
+		t.Fatalf("deleted vector ids = %v, want cold-memory cleanup despite outcome uncertainty", vector.deletedIDs)
+	}
+}
+
 // TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError verifies failed idle-session recycle never deletes vectors from a partially populated error result after the cold-memory pass already succeeded.
 // TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError 用于验证 idle-session 回收失败时不会删除错误结果中携带的部分向量，同时保留已成功完成的终态记忆向量清理。
 func TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError(t *testing.T) {
@@ -387,6 +420,42 @@ func TestRetentionUseCaseRunMaintenanceSkipsIdleSessionVectorCleanupOnError(t *t
 
 	if len(vector.deletedIDs) != 1 || vector.deletedIDs[0] != "vec-cold-1" {
 		t.Fatalf("deleted vector ids = %v, want only cold-memory cleanup", vector.deletedIDs)
+	}
+}
+
+// TestRetentionUseCaseRunMaintenanceCleansIdleSessionVectorsOnOutcomeUncertain verifies idle-session vectors are still cleaned when SQLite reports an uncertain late maintenance failure after archive rows are durable.
+// TestRetentionUseCaseRunMaintenanceCleansIdleSessionVectorsOnOutcomeUncertain 用于验证 SQLite 在归档行已经长期化后报告后置维护结果不确定时，idle-session 向量仍会被清理。
+func TestRetentionUseCaseRunMaintenanceCleansIdleSessionVectorsOnOutcomeUncertain(t *testing.T) {
+	store := &fakeRetentionStore{
+		recycleResult: logicdomain.MemoryRecycleResult{
+			BatchID:           7,
+			RecycledVectorIDs: []string{"vec-cold-1"},
+		},
+		idleSessionResult: logicdomain.SessionIdleRecycleResult{
+			BatchIDs:          []uint64{9},
+			SessionIDs:        []uint64{11},
+			RecycledVectorIDs: []string{"vec-idle-1", "vec-idle-2"},
+		},
+		idleSessionErr: logicdomain.OutcomeUncertainError{
+			Operation: "recycle idle-session memories",
+			Message:   "sync sqlite memory fts after idle recycle 11: fts unavailable",
+		},
+	}
+	vector := &fakeVectorStore{}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			SessionIdleRecycleAfter: 15 * 24 * time.Hour,
+			TurnHotWindowSize:       8,
+			TrashRetention:          30 * 24 * time.Hour,
+		},
+	}
+
+	useCase.runMaintenance(context.Background())
+
+	if len(vector.deletedIDs) != 3 || vector.deletedIDs[0] != "vec-cold-1" || vector.deletedIDs[1] != "vec-idle-1" || vector.deletedIDs[2] != "vec-idle-2" {
+		t.Fatalf("deleted vector ids = %v, want cold and idle cleanup despite idle outcome uncertainty", vector.deletedIDs)
 	}
 }
 
@@ -472,6 +541,43 @@ func TestRetentionUseCaseRunVectorGCMaintenanceCompletesClaimedVectorGCJobs(t *t
 	}
 	if store.claimUntil.Before(beforeRun.Add(defaultRetentionVectorGCClaimLease-time.Second)) || store.claimUntil.After(afterRun.Add(defaultRetentionVectorGCClaimLease+time.Second)) {
 		t.Fatalf("claim until = %v, want around maintenance time + lease", store.claimUntil)
+	}
+}
+
+// TestRetentionUseCaseRunVectorGCMaintenanceNormalizesClaimedVectorIDs verifies retry deletion receives clean unique vector ids while every valid claimed job is still completed.
+// TestRetentionUseCaseRunVectorGCMaintenanceNormalizesClaimedVectorIDs 用于验证重试删除只接收干净且唯一的向量 id，同时所有有效的已领取 job 仍会被完成。
+func TestRetentionUseCaseRunVectorGCMaintenanceNormalizesClaimedVectorIDs(t *testing.T) {
+	store := &fakeRetentionStore{
+		claimedJobs: []logicdomain.VectorGCJobRecord{
+			{ID: 53, BatchID: 7, VectorID: " vec-retry-1 ", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 1},
+			{ID: 54, BatchID: 7, VectorID: "vec-retry-1", JobType: logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup, AttemptCount: 1},
+			{ID: 55, BatchID: 8, VectorID: "vec-retry-2", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 1},
+			{ID: 56, BatchID: 8, VectorID: "   ", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 1},
+			{ID: 0, BatchID: 8, VectorID: "vec-missing-job-id", JobType: logicdomain.VectorGCJobTypeRetentionRecycle, AttemptCount: 1},
+		},
+	}
+	vector := &fakeVectorStore{}
+	useCase := &RetentionUseCase{
+		store:  store,
+		vector: vector,
+		cfg: RetentionConfig{
+			Enabled: false,
+		},
+	}
+
+	useCase.runVectorGCMaintenance(context.Background())
+
+	if len(vector.deletedIDs) != 2 || vector.deletedIDs[0] != "vec-retry-1" || vector.deletedIDs[1] != "vec-retry-2" {
+		t.Fatalf("deleted vector ids = %v, want normalized unique ids", vector.deletedIDs)
+	}
+	if len(store.completedJobIDCalls) != 2 {
+		t.Fatalf("completed job id calls = %v, want invalid and valid completion calls", store.completedJobIDCalls)
+	}
+	if got := store.completedJobIDCalls[0]; len(got) != 1 || got[0] != 56 {
+		t.Fatalf("invalid completed job ids = %v, want [56]", got)
+	}
+	if got := store.completedJobIDCalls[1]; len(got) != 3 || got[0] != 53 || got[1] != 54 || got[2] != 55 {
+		t.Fatalf("valid completed job ids = %v, want [53 54 55]", got)
 	}
 }
 

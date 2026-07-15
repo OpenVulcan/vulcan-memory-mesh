@@ -288,7 +288,7 @@ func (s *Store) LoadRecentDirectMemoryWrites(ctx context.Context, session logicd
 
 // ApplyMemoryAdoption delegates to the analysis repository so existing port interfaces continue to compile while ownership moves inward.
 // ApplyMemoryAdoption 用于委托给 analysis repository，让现有接口保持兼容的同时把职责向内迁移。
-func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error {
+func (s *Store) ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error) {
 	return s.repos.analysis.ApplyMemoryAdoption(ctx, session, memoryIDs, adoptedAt)
 }
 

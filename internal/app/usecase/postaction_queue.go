@@ -376,26 +376,63 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 	}
 }
 
-// appendQueuedTurnAnalysisFailureLogFields enriches queued post-action first-stage failures with the configured model and, for JSON decode failures, the verbatim model output needed for operator debugging.
-// appendQueuedTurnAnalysisFailureLogFields 用于为排队 post-action 第一层失败补充日志字段：默认带上当前模型；若是 JSON 解码失败，则追加排障所需的模型原始输出。
+// appendQueuedTurnAnalysisFailureLogFields enriches queued post-action failures with the model and raw output that belong to the failing LLM scene.
+// appendQueuedTurnAnalysisFailureLogFields 用于为排队 post-action 失败补充归属于失败 LLM 场景的模型标识和原始输出。
 func (u *PostActionUseCase) appendQueuedTurnAnalysisFailureLogFields(fields []any, err error) []any {
-	// Always surface the configured model so operators can correlate malformed outputs with one concrete route/model combination.
-	// 始终输出当前配置模型，便于运维把畸形响应快速关联到具体的路由/模型组合。
-	if u != nil && u.turnAnalyzer != nil {
-		if model := strings.TrimSpace(u.turnAnalyzer.AnalyzeModel()); model != "" {
+	var invalid logicdomain.InvalidLLMOutputError
+	if errors.As(err, &invalid) {
+		scene := strings.TrimSpace(invalid.Scene)
+		if scene != "" {
+			fields = append(fields, "llm_scene", scene)
+		}
+		if model := u.queuedLLMFailureModel(scene); model != "" {
 			fields = append(fields, "model", model)
 		}
-	}
-
-	// Only dump the raw provider body for postaction_l1_main JSON decode failures, because that class of issue cannot be diagnosed from the summary error text alone.
-	// 只有 postaction_l1_main 的 JSON 解码失败才追加原始 provider 响应，因为这类问题仅靠摘要错误文本无法定位实际返回体。
-	var invalid logicdomain.InvalidLLMOutputError
-	if errors.As(err, &invalid) && invalid.Scene == "postaction_l1_main" && invalid.Message == "json decode failed" {
+		// Invalid LLM output can fail either at JSON decoding or at stricter structural validation; both cases need the raw provider body for actionable operator debugging.
+		// LLM 畸形输出既可能失败在 JSON 解码，也可能失败在更严格的结构校验；两类问题都需要原始 provider 响应用于运维排障。
 		if raw := strings.TrimSpace(invalid.Raw); raw != "" {
 			fields = append(fields, "llm_raw_output", invalid.Raw)
 		}
+		return append(fields, "err", err)
+	}
+
+	// Preserve the historical analyzer model field for non-structured queue failures so storage or embedding failures still retain their original pipeline context.
+	// 对非结构化队列失败保留历史 analyzer 模型字段，让存储或 embedding 失败仍带有原本的流水线上下文。
+	if model := u.queuedTurnAnalyzerModel(); model != "" {
+		fields = append(fields, "model", model)
 	}
 	return append(fields, "err", err)
+}
+
+// queuedLLMFailureModel resolves the configured model for the exact LLM scene that produced one InvalidLLMOutputError.
+// queuedLLMFailureModel 用于根据产生 InvalidLLMOutputError 的具体 LLM 场景解析对应的配置模型。
+func (u *PostActionUseCase) queuedLLMFailureModel(scene string) string {
+	switch scene {
+	case "postaction_l1_main":
+		return u.queuedTurnAnalyzerModel()
+	case "postaction_l2_main":
+		return u.queuedCandidateReviewerModel()
+	default:
+		return ""
+	}
+}
+
+// queuedTurnAnalyzerModel returns the first-stage analyzer model label without exposing nil checks to the logging caller.
+// queuedTurnAnalyzerModel 用于返回第一层 analyzer 模型标识，并把 nil 检查封装在日志调用方之外。
+func (u *PostActionUseCase) queuedTurnAnalyzerModel() string {
+	if u == nil || u.turnAnalyzer == nil {
+		return ""
+	}
+	return strings.TrimSpace(u.turnAnalyzer.AnalyzeModel())
+}
+
+// queuedCandidateReviewerModel returns the second-stage reviewer model label without guessing when no reviewer is configured.
+// queuedCandidateReviewerModel 用于返回第二层 reviewer 模型标识；当 reviewer 未配置时不会猜测模型。
+func (u *PostActionUseCase) queuedCandidateReviewerModel() string {
+	if u == nil || u.candidateReviewer == nil {
+		return ""
+	}
+	return strings.TrimSpace(u.candidateReviewer.ReviewModel())
 }
 
 // queueMaintenanceBackoffActive reports whether the periodic maintenance ticker should temporarily stand down after a fatal storage-side deadlock symptom.

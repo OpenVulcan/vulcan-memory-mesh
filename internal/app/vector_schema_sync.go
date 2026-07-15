@@ -5,6 +5,7 @@ package app
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
@@ -70,12 +71,32 @@ func ensureVectorSchema(ctx context.Context, versions appports.SchemaVersionStor
 	}
 	for idx, record := range rebuildRecords {
 		if err := vector.Upsert(ctx, record); err != nil {
-			return fmt.Errorf("rebuild lancedb vector row %d/%d (%s): %w", idx+1, len(rebuildRecords), record.ID, err)
+			return vectorSchemaOutcomeUncertainError(fmt.Sprintf("lancedb table was recreated before vector row %d/%d (%s) rebuild failed", idx+1, len(rebuildRecords), record.ID), err)
 		}
 	}
 	if err := versions.SetSchemaComponentVersion(ctx, "lancedb", vldb_lancedb.CurrentSchemaVersion); err != nil {
-		return err
+		return vectorSchemaOutcomeUncertainError("lancedb vector rows were rebuilt before schema version persistence failed", err)
 	}
 	logger.Info("lancedb schema rebuild completed", "schema_version", vldb_lancedb.CurrentSchemaVersion, "record_count", len(rebuildRecords))
 	return nil
+}
+
+// vectorSchemaOutcomeUncertainError marks startup schema-sync failures that occur after the LanceDB table has already been recreated.
+// vectorSchemaOutcomeUncertainError 用于标记启动期 schema 同步中已经重建 LanceDB 表后才发生的失败。
+func vectorSchemaOutcomeUncertainError(message string, cause error) error {
+	message = strings.TrimSpace(message)
+	if cause != nil {
+		causeMessage := strings.TrimSpace(cause.Error())
+		if causeMessage != "" {
+			if message == "" {
+				message = causeMessage
+			} else {
+				message = message + ": " + causeMessage
+			}
+		}
+	}
+	return logicdomain.OutcomeUncertainError{
+		Operation: "sync lancedb vector schema",
+		Message:   message,
+	}
 }

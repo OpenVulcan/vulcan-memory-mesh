@@ -67,21 +67,70 @@ func scrubPreCheckMemoryCandidatesPII(scrubber PIIScrubber, candidates []logicdo
 	return out
 }
 
+// preCheckLogPreviewPIICache keeps per-request redacted memory previews for diagnostic logs so repeated query groups do not re-scrub the same durable memory text.
+// preCheckLogPreviewPIICache 用于在单次请求内缓存诊断日志用的已脱敏记忆预览，避免重复 query group 对同一条长期记忆正文反复脱敏。
+type preCheckLogPreviewPIICache struct {
+	// scrubber masks raw preview text before it can enter stage payload logs.
+	// scrubber 用于在预览文本进入阶段载荷日志前执行掩码。
+	scrubber PIIScrubber
+	// previewsByMemoryID stores redacted abstract/details pairs keyed by durable memory id.
+	// previewsByMemoryID 用于按长期 memory id 缓存已脱敏的 abstract/details 预览对。
+	previewsByMemoryID map[uint64]preCheckLogPreview
+}
+
+// preCheckLogPreview stores the redacted memory preview fields shared by raw-recall and threshold-debug log payloads.
+// preCheckLogPreview 用于保存 raw-recall 与 threshold-debug 日志载荷共享的已脱敏记忆预览字段。
+type preCheckLogPreview struct {
+	Abstract       string
+	DetailsPreview string
+}
+
+// newPreCheckLogPreviewPIICache creates one request-scoped log-preview redaction cache.
+// newPreCheckLogPreviewPIICache 用于创建一个请求级日志预览脱敏缓存。
+func newPreCheckLogPreviewPIICache(scrubber PIIScrubber) *preCheckLogPreviewPIICache {
+	return &preCheckLogPreviewPIICache{
+		scrubber:           scrubber,
+		previewsByMemoryID: make(map[uint64]preCheckLogPreview),
+	}
+}
+
+// scrubMemoryPreview returns redacted abstract/details text, reusing cached values when the same durable memory appears in multiple diagnostic payloads.
+// scrubMemoryPreview 用于返回已脱敏的 abstract/details 文本，并在同一条长期记忆出现在多个诊断载荷中时复用缓存值。
+func (c *preCheckLogPreviewPIICache) scrubMemoryPreview(memoryID uint64, abstract, detailsPreview string) preCheckLogPreview {
+	if c == nil {
+		return preCheckLogPreview{Abstract: abstract, DetailsPreview: detailsPreview}
+	}
+	if memoryID > 0 {
+		if preview, ok := c.previewsByMemoryID[memoryID]; ok {
+			return preview
+		}
+	}
+	preview := preCheckLogPreview{
+		Abstract:       scrubPIIText(c.scrubber, abstract),
+		DetailsPreview: scrubPIIText(c.scrubber, detailsPreview),
+	}
+	if memoryID > 0 {
+		c.previewsByMemoryID[memoryID] = preview
+	}
+	return preview
+}
+
 // scrubPreCheckThresholdHitLogPII redacts memory previews that only exist for threshold-debug logging, so diagnostic logs stay aligned with the same masking contract as reviewer-facing candidates.
 // scrubPreCheckThresholdHitLogPII 用于对仅服务于阈值调试日志的记忆预览做脱敏，确保诊断日志与 reviewer 可见候选保持同一掩码契约。
-func scrubPreCheckThresholdHitLogPII(scrubber PIIScrubber, payload *preCheckThresholdHitLogPayload) *preCheckThresholdHitLogPayload {
+func scrubPreCheckThresholdHitLogPII(cache *preCheckLogPreviewPIICache, payload *preCheckThresholdHitLogPayload) *preCheckThresholdHitLogPayload {
 	if payload == nil {
 		return nil
 	}
 	cloned := *payload
-	cloned.Abstract = scrubPIIText(scrubber, cloned.Abstract)
-	cloned.DetailsPreview = scrubPIIText(scrubber, cloned.DetailsPreview)
+	preview := cache.scrubMemoryPreview(cloned.MemoryID, cloned.Abstract, cloned.DetailsPreview)
+	cloned.Abstract = preview.Abstract
+	cloned.DetailsPreview = preview.DetailsPreview
 	return &cloned
 }
 
 // scrubPreCheckRawRecallGroupLogsPII redacts raw recall snapshots before they are written into stage logs, preventing debug payloads from bypassing the same masking boundary enforced for later reviewer inputs.
 // scrubPreCheckRawRecallGroupLogsPII 用于在原始召回快照写入阶段日志前完成脱敏，避免调试载荷绕过后续 reviewer 输入所遵守的同一脱敏边界。
-func scrubPreCheckRawRecallGroupLogsPII(scrubber PIIScrubber, groups []preCheckRawRecallGroupLogPayload) []preCheckRawRecallGroupLogPayload {
+func scrubPreCheckRawRecallGroupLogsPII(cache *preCheckLogPreviewPIICache, groups []preCheckRawRecallGroupLogPayload) []preCheckRawRecallGroupLogPayload {
 	if len(groups) == 0 {
 		return groups
 	}
@@ -91,9 +140,14 @@ func scrubPreCheckRawRecallGroupLogsPII(scrubber PIIScrubber, groups []preCheckR
 			continue
 		}
 		hit := *out[idx].TopRawHit
-		hit.Abstract = scrubPIIText(scrubber, hit.Abstract)
-		hit.DetailsPreview = scrubPIIText(scrubber, hit.DetailsPreview)
-		hit.TextPreview = scrubPIIText(scrubber, hit.TextPreview)
+		preview := cache.scrubMemoryPreview(hit.MemoryID, hit.Abstract, hit.DetailsPreview)
+		hit.Abstract = preview.Abstract
+		hit.DetailsPreview = preview.DetailsPreview
+		if cache == nil {
+			hit.TextPreview = scrubPIIText(nil, hit.TextPreview)
+		} else {
+			hit.TextPreview = scrubPIIText(cache.scrubber, hit.TextPreview)
+		}
 		out[idx].TopRawHit = &hit
 	}
 	return out

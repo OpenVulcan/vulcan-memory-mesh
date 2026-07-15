@@ -487,6 +487,31 @@ func memoryRecordMetadataFromNode(record logicdomain.MemoryNodeRecord) map[strin
 	return metadata
 }
 
+// memoryRecordFromNode converts one durable PostgreSQL memory row into the vector-store record used by rebuild, migration, and lifecycle sync paths.
+// memoryRecordFromNode 用于把一条 PostgreSQL 长期记忆行转换成重建、迁移和生命周期同步路径使用的向量记录。
+func memoryRecordFromNode(record logicdomain.MemoryNodeRecord) logicdomain.MemoryRecord {
+	filter := logicdomain.SearchFilter{
+		UserID:    record.UserID,
+		TeamID:    record.TeamID,
+		SpaceID:   record.SpaceID,
+		ProjectID: record.ProjectID,
+	}
+	if record.SourceKind == logicdomain.MemorySourceKindTurnExtract || record.ScopeLevel == logicdomain.MemoryScopeLevelSession {
+		filter.SessionID = record.OriginSessionID
+	}
+	return logicdomain.MemoryRecord{
+		ID:           record.VectorID,
+		Text:         record.Abstract,
+		Vector:       append([]float32(nil), record.Vector...),
+		Filter:       filter,
+		SourceTurnID: record.SourceTurnID,
+		Status:       record.Status,
+		ExpiresAt:    record.ExpiresAt,
+		Metadata:     memoryRecordMetadataFromNode(record),
+		CreatedAt:    record.CreatedAt,
+	}
+}
+
 // estimateTokenBudget applies the local domestic estimator to one text blob so PostgreSQL turn summaries and extracted payloads keep the same budget heuristic as SQLite mode.
 // estimateTokenBudget 用于对文本载荷应用本地估算器，让 PostgreSQL 下的 turn 总结和提炼结果与 SQLite 模式共享同一套预算口径。
 func estimateTokenBudget(text string) int {
@@ -545,69 +570,6 @@ func generateConfirmationCode() (string, error) {
 		return "", fmt.Errorf("generate confirmation code: %w", err)
 	}
 	return hex.EncodeToString(buf), nil
-}
-
-// normalizeTurnMemoryContextEdges aggregates one extracted candidate's situational evidence into durable per-context counters for later retrieval and supersede decisions.
-// normalizeTurnMemoryContextEdges 用于把单轮提炼候选上的情境证据聚合成长期逐情境计数，供后续检索和覆盖判断复用。
-func normalizeTurnMemoryContextEdges(memoryID uint64, candidates []logicdomain.MemoryContextEdgeCandidate, now time.Time) []logicdomain.MemoryContextEdge {
-	if memoryID == 0 || len(candidates) == 0 {
-		return nil
-	}
-	aggregated := make(map[string]logicdomain.MemoryContextEdge, len(candidates))
-	for _, candidate := range candidates {
-		contextKey := logicdomain.NormalizeMemoryContextKey(candidate.ContextKey)
-		contextValue := logicdomain.NormalizeMemoryContextValue(candidate.ContextValue)
-		relation := strings.TrimSpace(candidate.Relation)
-		if contextKey == "" || contextValue == "" || !logicdomain.ValidMemoryContextRelation(relation) {
-			continue
-		}
-		key := contextKey + "|" + contextValue
-		edge := aggregated[key]
-		if edge.MemoryID == 0 {
-			edge = logicdomain.MemoryContextEdge{
-				MemoryID:     memoryID,
-				ContextKey:   contextKey,
-				ContextValue: contextValue,
-				CreatedAt:    now.UTC(),
-				UpdatedAt:    now.UTC(),
-			}
-		}
-		switch relation {
-		case logicdomain.MemoryContextRelationRebuttal:
-			edge.RebuttalCount++
-			edge.LastRebuttedAt = now.UTC()
-		default:
-			edge.SupportCount++
-			edge.LastSupportedAt = now.UTC()
-		}
-		edge.UpdatedAt = now.UTC()
-		aggregated[key] = edge
-	}
-	if len(aggregated) == 0 {
-		return nil
-	}
-	keys := make([]string, 0, len(aggregated))
-	for key := range aggregated {
-		keys = append(keys, key)
-	}
-	sort.Strings(keys)
-	edges := make([]logicdomain.MemoryContextEdge, 0, len(keys))
-	for _, key := range keys {
-		edges = append(edges, aggregated[key])
-	}
-	return edges
-}
-
-// summarizeMemoryContextEdges folds one contextual-edge slice into memory-level support and rebuttal totals so hot-path ranking can stay single-table friendly.
-// summarizeMemoryContextEdges 用于把情境边切片折叠成记忆级 support / rebuttal 总数，让热路径排序尽量保持单表友好。
-func summarizeMemoryContextEdges(edges []logicdomain.MemoryContextEdge) (int, int) {
-	supportCount := 0
-	rebuttalCount := 0
-	for _, edge := range edges {
-		supportCount += edge.SupportCount
-		rebuttalCount += edge.RebuttalCount
-	}
-	return supportCount, rebuttalCount
 }
 
 // normalizeTurnMemoryNodeRecord fills one turn-extracted memory node with the resolved hierarchy, lifecycle defaults, and stable timestamps before PostgreSQL persistence.

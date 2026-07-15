@@ -31,16 +31,21 @@ func (standardDialect) EnsureSearchIndexes(ctx context.Context, store *Store) er
 	if store == nil || store.pool == nil {
 		return fmt.Errorf("postgres store is not initialized")
 	}
-	statements := []string{
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (abstract gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_abstract_trgm"), store.memoryNodesTable()),
-		fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (details gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_details_trgm"), store.memoryNodesTable()),
-	}
-	for _, statement := range statements {
-		if _, err := store.pool.Exec(ctx, statement); err != nil {
-			return fmt.Errorf("create standard postgres trigram index: %w", err)
+	for _, statement := range standardTrigramIndexStatements(store) {
+		if _, err := store.pool.Exec(ctx, strings.TrimSpace(statement.sql)); err != nil {
+			return postgresDDLStatementExecutionError("create standard postgres trigram index", statement, err)
 		}
 	}
 	return nil
+}
+
+// standardTrigramIndexStatements renders the standard PostgreSQL lexical index DDL with stable names for precise startup diagnostics.
+// standardTrigramIndexStatements 用于渲染 standard PostgreSQL lexical 索引 DDL，并提供稳定名称以便启动诊断精确定位。
+func standardTrigramIndexStatements(store *Store) []postgresDDLStatement {
+	return []postgresDDLStatement{
+		{name: "idx_vmm_memory_nodes_abstract_trgm", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (abstract gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_abstract_trgm"), store.memoryNodesTable())},
+		{name: "idx_vmm_memory_nodes_details_trgm", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS %s ON %s USING GIN (details gin_trgm_ops)`, quoteIdentifier("idx_vmm_memory_nodes_details_trgm"), store.memoryNodesTable())},
+	}
 }
 
 // BuildLexicalSearchSQL renders the pg_trgm-based lexical fallback SQL that combines ILIKE recall with similarity scoring.
@@ -62,13 +67,13 @@ func (standardDialect) BuildLexicalSearchSQL(r memoryTableResolver, query string
 	}
 	appendScopedMemoryFilter(&whereClauses, args, filter, "m")
 	sqlText := fmt.Sprintf(`
-SELECT m.id AS memory_id,
-       GREATEST(similarity(m.abstract, %s), similarity(m.details, %s)) AS score
+SELECT GREATEST(similarity(m.abstract, %s), similarity(m.details, %s)) AS score,
+       %s
 FROM %s AS m
 WHERE %s
 ORDER BY score DESC, m.id ASC
 LIMIT %s
-`, queryPlaceholder, queryPlaceholder, r.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
+`, queryPlaceholder, queryPlaceholder, memoryNodeSelectColumns("m"), r.memoryNodesTable(), strings.Join(whereClauses, " AND "), limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }
 
@@ -101,14 +106,6 @@ func (standardDialect) BuildHybridSearchSQL(r memoryTableResolver, query string,
 WITH vector_candidates AS (
 	SELECT
 		m.id AS memory_id,
-		m.vector_id,
-		m.abstract,
-		m.team_id,
-		m.space_id,
-		m.project_id,
-		m.origin_session_id,
-		m.user_id,
-		COALESCE(m.source_turn_id, 0) AS source_turn_id,
 		ROW_NUMBER() OVER (ORDER BY m.embedding <=> %s::vector ASC, m.id ASC) AS vector_rank
 	FROM %s AS m
 	WHERE %s
@@ -118,14 +115,6 @@ WITH vector_candidates AS (
 lexical_candidates AS (
 	SELECT
 		m.id AS memory_id,
-		m.vector_id,
-		m.abstract,
-		m.team_id,
-		m.space_id,
-		m.project_id,
-		m.origin_session_id,
-		m.user_id,
-		COALESCE(m.source_turn_id, 0) AS source_turn_id,
 		ROW_NUMBER() OVER (
 			ORDER BY GREATEST(similarity(m.abstract, %s), similarity(m.details, %s)) DESC, m.id ASC
 		) AS lexical_rank
@@ -137,14 +126,6 @@ lexical_candidates AS (
 fused_candidates AS (
 	SELECT
 		COALESCE(v.memory_id, l.memory_id) AS memory_id,
-		COALESCE(v.vector_id, l.vector_id) AS vector_id,
-		COALESCE(v.abstract, l.abstract) AS abstract,
-		COALESCE(v.team_id, l.team_id) AS team_id,
-		COALESCE(v.space_id, l.space_id) AS space_id,
-		COALESCE(v.project_id, l.project_id) AS project_id,
-		COALESCE(v.origin_session_id, l.origin_session_id) AS origin_session_id,
-		COALESCE(v.user_id, l.user_id) AS user_id,
-		COALESCE(v.source_turn_id, l.source_turn_id, 0) AS source_turn_id,
 		CASE
 			WHEN v.vector_rank IS NULL THEN 0
 			ELSE 1.0 / (%s::double precision + v.vector_rank::double precision)
@@ -164,19 +145,14 @@ fused_candidates AS (
 		ON l.memory_id = v.memory_id
 )
 SELECT
-	vector_id,
-	abstract,
-	team_id,
-	space_id,
-	project_id,
-	origin_session_id,
-	user_id,
-	source_turn_id,
-	fused_score,
-	origin
-FROM fused_candidates
-ORDER BY fused_score DESC, memory_id ASC
+	%s,
+	f.fused_score,
+	f.origin
+FROM fused_candidates AS f
+JOIN %s AS m
+	ON m.id = f.memory_id
+ORDER BY f.fused_score DESC, f.memory_id ASC
 LIMIT %s
-`, vectorPlaceholder, r.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, queryPlaceholder, queryPlaceholder, r.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), queryPlaceholder, queryPlaceholder, limitPlaceholder, rrfPlaceholder, rrfPlaceholder, limitPlaceholder)
+`, vectorPlaceholder, r.memoryNodesTable(), strings.Join(vectorWhereClauses, " AND "), vectorPlaceholder, limitPlaceholder, queryPlaceholder, queryPlaceholder, r.memoryNodesTable(), strings.Join(lexicalWhereClauses, " AND "), queryPlaceholder, queryPlaceholder, limitPlaceholder, rrfPlaceholder, rrfPlaceholder, memoryNodeSelectColumns("m"), r.memoryNodesTable(), limitPlaceholder)
 	return strings.TrimSpace(sqlText), args.Args()
 }

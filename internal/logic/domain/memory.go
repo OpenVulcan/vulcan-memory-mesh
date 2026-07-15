@@ -3,6 +3,7 @@
 package domain
 
 import (
+	"sort"
 	"strings"
 	"time"
 )
@@ -212,11 +213,18 @@ type MemorySearchRecord struct {
 	Score          float64
 }
 
-// MemoryLexicalHit stores one lexical-recall candidate returned by the relational search path before it is materialized back into a full durable memory row.
-// MemoryLexicalHit 用于保存关系检索路径返回的一条 lexical 召回候选，在它被回表成完整长期记忆行之前使用。
+// MemoryLexicalHit stores one ranked lexical-recall candidate together with the already materialized durable memory row needed by the app-layer fusion path.
+// MemoryLexicalHit 用于保存一条已排序的 lexical 召回候选，以及应用层融合路径所需的已物化长期记忆行。
 type MemoryLexicalHit struct {
+	// MemoryID mirrors Record.ID so callers can validate the search-rank coordinate without reloading the row.
+	// MemoryID 用于镜像 Record.ID，让调用方无需重新回表也能校验搜索排序坐标。
 	MemoryID uint64
-	Score    float64
+	// Record carries the active, unexpired durable memory row selected by the relational lexical search implementation.
+	// Record 用于携带关系 lexical 检索实现选中的 active 且未过期的长期记忆行。
+	Record MemoryNodeRecord
+	// Score keeps the store-native lexical score for diagnostics while app-facing scoring remains rank-normalized.
+	// Score 用于保留存储原生 lexical 分数以便诊断；对外分数仍保持按排名归一化。
+	Score float64
 }
 
 // NormalizeMemoryContextKey converts free-form context keys into stable lower snake-style labels so processors, stores, and retrieval all index the same contextual dimension name.
@@ -226,8 +234,8 @@ func NormalizeMemoryContextKey(raw string) string {
 	if raw == "" {
 		return ""
 	}
-	replacer := strings.NewReplacer(" ", "_", "-", "_", "/", "_", "\\", "_")
-	return replacer.Replace(raw)
+	replacer := strings.NewReplacer("_", " ", "-", " ", "/", " ", "\\", " ", ".", " ")
+	return strings.Join(strings.Fields(replacer.Replace(raw)), "_")
 }
 
 // NormalizeMemoryContextValue converts one free-form contextual value into the shared lexical surface used by durable edges and query-time matching, so equivalent labels do not fork into separate evidence rows.
@@ -261,6 +269,69 @@ func NormalizeMemoryContextEvidenceLabel(raw string) string {
 		return value
 	}
 	return key + "=" + value
+}
+
+// NormalizeMemoryContextEdges aggregates one extracted candidate's situational evidence into durable per-context counters using the shared key/value normalization contract.
+// NormalizeMemoryContextEdges 用于按共享 key/value 归一化契约，把一条提炼候选上的情境证据聚合成长期逐情境计数。
+func NormalizeMemoryContextEdges(memoryID uint64, candidates []MemoryContextEdgeCandidate, now time.Time) []MemoryContextEdge {
+	if memoryID == 0 || len(candidates) == 0 {
+		return nil
+	}
+	aggregated := make(map[string]MemoryContextEdge, len(candidates))
+	for _, candidate := range candidates {
+		contextKey := NormalizeMemoryContextKey(candidate.ContextKey)
+		contextValue := NormalizeMemoryContextValue(candidate.ContextValue)
+		relation := strings.TrimSpace(candidate.Relation)
+		if contextKey == "" || contextValue == "" || !ValidMemoryContextRelation(relation) {
+			continue
+		}
+		key := contextKey + "|" + contextValue
+		edge := aggregated[key]
+		if edge.MemoryID == 0 {
+			edge = MemoryContextEdge{
+				MemoryID:     memoryID,
+				ContextKey:   contextKey,
+				ContextValue: contextValue,
+				CreatedAt:    now.UTC(),
+				UpdatedAt:    now.UTC(),
+			}
+		}
+		switch relation {
+		case MemoryContextRelationRebuttal:
+			edge.RebuttalCount++
+			edge.LastRebuttedAt = now.UTC()
+		default:
+			edge.SupportCount++
+			edge.LastSupportedAt = now.UTC()
+		}
+		edge.UpdatedAt = now.UTC()
+		aggregated[key] = edge
+	}
+	if len(aggregated) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(aggregated))
+	for key := range aggregated {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	edges := make([]MemoryContextEdge, 0, len(keys))
+	for _, key := range keys {
+		edges = append(edges, aggregated[key])
+	}
+	return edges
+}
+
+// SummarizeMemoryContextEdges folds one context-edge slice into memory-level support and rebuttal totals for fast ranking and diagnostics.
+// SummarizeMemoryContextEdges 用于把情境边切片折叠成记忆级 support / rebuttal 总数，供快速排序和诊断使用。
+func SummarizeMemoryContextEdges(edges []MemoryContextEdge) (int, int) {
+	supportCount := 0
+	rebuttalCount := 0
+	for _, edge := range edges {
+		supportCount += edge.SupportCount
+		rebuttalCount += edge.RebuttalCount
+	}
+	return supportCount, rebuttalCount
 }
 
 // ValidMemoryRefType reports whether one memory reference type belongs to the supported enum set.

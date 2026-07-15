@@ -62,11 +62,12 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	}
 	ctx, cancel := withTimeout(ctx, s.preTimeout)
 	defer cancel()
-	s.logPreCheckReceipt(trace.IDFromContext(ctx), "pre-check received", req)
+	recallMode := usecase.NormalizePreCheckRecallMode(usecase.PreCheckRecallMode(req.GetRecallMode()))
+	s.logPreCheckReceipt(trace.IDFromContext(ctx), "pre-check received", req, recallMode)
 	result, err := s.preCheck.Execute(ctx, usecase.PreCheckCommand{
 		Session:     session,
 		UserContent: req.GetUserContent(),
-		RecallMode:  usecase.PreCheckRecallMode(req.GetRecallMode()),
+		RecallMode:  recallMode,
 	})
 	if err != nil {
 		return nil, toStatus(describeError(err))
@@ -91,9 +92,9 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 	}, nil
 }
 
-// logPreCheckReceipt writes one accepted pre-check request snapshot into the runtime logger, defaulting to redacted metadata and optionally appending plaintext or protected payload snapshots depending on the shared logger configuration.
-// logPreCheckReceipt 用于把已接收的 pre-check 请求快照写入运行时日志；默认只输出脱敏元信息，并根据共享日志配置选择追加明文或受保护的载荷快照。
-func (s *Server) logPreCheckReceipt(traceID, message string, req *vmmv1.PreCheckRequest) {
+// logPreCheckReceipt writes one accepted pre-check request snapshot into the runtime logger, including both raw and effective recall modes for contract debugging.
+// logPreCheckReceipt 用于把已接收的 pre-check 请求快照写入运行时日志，并同时记录原始与实际生效的 recall mode 以便排查契约行为。
+func (s *Server) logPreCheckReceipt(traceID, message string, req *vmmv1.PreCheckRequest, recallMode usecase.PreCheckRecallMode) {
 	if s == nil || s.logger == nil || req == nil {
 		return
 	}
@@ -101,13 +102,16 @@ func (s *Server) logPreCheckReceipt(traceID, message string, req *vmmv1.PreCheck
 		"trace_id", traceID,
 		"session_id", req.GetSessionId(),
 		"user_content_present", req.GetUserContent() != "",
-		"recall_mode", int32(req.GetRecallMode()),
+		"recall_mode", int32(recallMode),
+		"raw_recall_mode", int32(req.GetRecallMode()),
 	}
 	fields = s.logger.AppendPayloadFields(fields, "request_payload", map[string]any{
-		"session_id":   req.GetSessionId(),
-		"user_content": req.GetUserContent(),
-		"recall_mode":  int32(req.GetRecallMode()),
-		"recall_label": req.GetRecallMode().String(),
+		"session_id":             req.GetSessionId(),
+		"user_content":           req.GetUserContent(),
+		"recall_mode":            int32(recallMode),
+		"raw_recall_mode":        int32(req.GetRecallMode()),
+		"raw_recall_mode_label":  req.GetRecallMode().String(),
+		"effective_recall_label": vmmv1.PreCheckRecallMode(recallMode).String(),
 	})
 	s.logger.Info(message, fields...)
 }

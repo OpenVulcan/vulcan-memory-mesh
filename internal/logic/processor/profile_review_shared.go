@@ -41,12 +41,15 @@ func parseProfileReviewSection(payload *profileReviewSectionPayload, expectedCou
 		return nil, logicdomain.InvalidLLMOutputError{Scene: scene, Message: fmt.Sprintf("missing %s block", label), Raw: raw}
 	}
 
-	// Recover from duplicate candidate indexes before field validation so one repeated LLM item does not discard the whole review block.
-	// 先对重复 candidate_index 做恢复性去重，再进入字段校验，避免模型偶发重复输出一项时整块评审结果被直接丢弃。
-	acceptedPayloads := canonicalizeProfileReviewAcceptedPayloads(payload.AcceptedCandidates)
-	accepted := make([]logicdomain.ProfileReviewAcceptedCandidate, 0, len(acceptedPayloads))
+	// Validate accepted candidates in raw response order so duplicate candidate indexes surface as output errors instead of being merged.
+	// 按原始响应顺序校验接纳候选，让重复 candidate_index 作为输出错误暴露，而不是被合并掩盖。
+	accepted := make([]logicdomain.ProfileReviewAcceptedCandidate, 0, len(payload.AcceptedCandidates))
 	seenAccepted := map[int]struct{}{}
-	for idx, item := range acceptedPayloads {
+	for idx, item := range payload.AcceptedCandidates {
+		item.NormalizedContent = strings.TrimSpace(item.NormalizedContent)
+		item.Priority = strings.TrimSpace(item.Priority)
+		item.Level = strings.TrimSpace(item.Level)
+		item.LevelReason = strings.TrimSpace(item.LevelReason)
 		if item.CandidateIndex < 0 || item.CandidateIndex >= expectedCount {
 			return nil, logicdomain.InvalidLLMOutputError{Scene: scene, Message: fmt.Sprintf("%s.accepted_candidates[%d].candidate_index out of range", label, idx), Raw: raw}
 		}
@@ -66,13 +69,17 @@ func parseProfileReviewSection(payload *profileReviewSectionPayload, expectedCou
 		if normalizedContent == "" {
 			return nil, logicdomain.InvalidLLMOutputError{Scene: scene, Message: fmt.Sprintf("%s.accepted_candidates[%d].normalized_content is required", label, idx), Raw: raw}
 		}
+		supersedeNodeIDs, err := normalizeReviewerIDList(item.SupersedeNodeIDs, fmt.Sprintf("%s.accepted_candidates[%d].supersede_node_ids", label, idx), scene, raw)
+		if err != nil {
+			return nil, err
+		}
 		accepted = append(accepted, logicdomain.ProfileReviewAcceptedCandidate{
 			CandidateIndex:    item.CandidateIndex,
 			NormalizedContent: normalizedContent,
 			Priority:          priority,
 			ProfileLevel:      level,
 			LevelReason:       strings.TrimSpace(item.LevelReason),
-			SupersedeNodeIDs:  normalizeUint64IDs(item.SupersedeNodeIDs),
+			SupersedeNodeIDs:  supersedeNodeIDs,
 		})
 	}
 	invalidIndexes, err := normalizeProfileReviewIndexes(payload.InvalidCandidateIndexes, expectedCount, label+".invalid_candidate_indexes", scene, raw)
@@ -82,10 +89,14 @@ func parseProfileReviewSection(payload *profileReviewSectionPayload, expectedCou
 	if err := ensureProfileReviewCoverage(accepted, invalidIndexes, expectedCount, label, scene, raw); err != nil {
 		return nil, err
 	}
+	retireOnlyNodeIDs, err := normalizeReviewerIDList(payload.RetireOnlyNodeIDs, label+".retire_only_node_ids", scene, raw)
+	if err != nil {
+		return nil, err
+	}
 	return &logicdomain.ProfileReviewSection{
 		AcceptedCandidates:      accepted,
 		InvalidCandidateIndexes: invalidIndexes,
-		RetireOnlyNodeIDs:       normalizeUint64IDs(payload.RetireOnlyNodeIDs),
+		RetireOnlyNodeIDs:       retireOnlyNodeIDs,
 		Reason:                  strings.TrimSpace(payload.Reason),
 	}, nil
 }
@@ -107,97 +118,6 @@ func normalizeProfileReviewIndexes(values []int, expectedCount int, field, scene
 	}
 	sort.Ints(out)
 	return out, nil
-}
-
-// canonicalizeProfileReviewAcceptedPayloads collapses duplicate candidate_index entries into one deterministic winner so a repeated LLM item does not turn into a full review failure.
-// canonicalizeProfileReviewAcceptedPayloads 用于把重复的 candidate_index 项收敛成一个确定性的胜出结果，避免模型重复输出同一候选时整次评审失败。
-func canonicalizeProfileReviewAcceptedPayloads(items []profileReviewAcceptedPayload) []profileReviewAcceptedPayload {
-	if len(items) == 0 {
-		return nil
-	}
-	merged := make([]profileReviewAcceptedPayload, 0, len(items))
-	indexByCandidate := make(map[int]int, len(items))
-	for _, item := range items {
-		item = normalizeProfileReviewAcceptedPayload(item)
-		if existingIdx, ok := indexByCandidate[item.CandidateIndex]; ok {
-			merged[existingIdx] = preferProfileReviewAcceptedPayload(merged[existingIdx], item)
-			continue
-		}
-		indexByCandidate[item.CandidateIndex] = len(merged)
-		merged = append(merged, item)
-	}
-	return merged
-}
-
-// normalizeProfileReviewAcceptedPayload trims free-form text fields before duplicate recovery so semantically equivalent entries merge on stable content.
-// normalizeProfileReviewAcceptedPayload 用于在重复恢复前裁剪自由文本字段，让语义等价的项基于稳定内容完成合并。
-func normalizeProfileReviewAcceptedPayload(item profileReviewAcceptedPayload) profileReviewAcceptedPayload {
-	item.NormalizedContent = strings.TrimSpace(item.NormalizedContent)
-	item.Priority = strings.TrimSpace(item.Priority)
-	item.Level = strings.TrimSpace(item.Level)
-	item.LevelReason = strings.TrimSpace(item.LevelReason)
-	item.SupersedeNodeIDs = normalizeUint64IDs(item.SupersedeNodeIDs)
-	return item
-}
-
-// preferProfileReviewAcceptedPayload chooses the stronger duplicate accepted-candidate record and fills any missing fields from the weaker copy so runtime recovery stays deterministic.
-// preferProfileReviewAcceptedPayload 用于在重复 accepted-candidate 记录里选择更强的一条，并用较弱副本补齐缺失字段，保证运行时恢复保持确定性。
-func preferProfileReviewAcceptedPayload(primary, secondary profileReviewAcceptedPayload) profileReviewAcceptedPayload {
-	primary = normalizeProfileReviewAcceptedPayload(primary)
-	secondary = normalizeProfileReviewAcceptedPayload(secondary)
-
-	preferred := primary
-	fallback := secondary
-	if profileReviewAcceptedPayloadStrength(secondary) > profileReviewAcceptedPayloadStrength(primary) {
-		preferred = secondary
-		fallback = primary
-	}
-
-	preferred.NormalizedContent = richerProfileReviewContent(preferred.NormalizedContent, fallback.NormalizedContent)
-	if preferred.Priority == "" {
-		preferred.Priority = fallback.Priority
-	}
-	if preferred.Level == "" {
-		preferred.Level = fallback.Level
-	}
-	preferred.LevelReason = richerProfileReviewContent(preferred.LevelReason, fallback.LevelReason)
-	preferred.SupersedeNodeIDs = normalizeUint64IDs(append(preferred.SupersedeNodeIDs, fallback.SupersedeNodeIDs...))
-	return preferred
-}
-
-// profileReviewAcceptedPayloadStrength scores one duplicate accepted-candidate item so recovery prefers richer content and more complete lifecycle metadata.
-// profileReviewAcceptedPayloadStrength 用于给重复 accepted-candidate 项打分，让恢复逻辑优先保留内容更丰富、生命周期元数据更完整的结果。
-func profileReviewAcceptedPayloadStrength(item profileReviewAcceptedPayload) int {
-	score := 0
-	if text := strings.TrimSpace(item.NormalizedContent); text != "" {
-		score += 1000 + len(text)
-	}
-	if strings.TrimSpace(item.Priority) != "" {
-		score += 100
-	}
-	if strings.TrimSpace(item.Level) != "" {
-		score += 100
-	}
-	score += len(strings.TrimSpace(item.LevelReason))
-	score += len(normalizeUint64IDs(item.SupersedeNodeIDs)) * 10
-	return score
-}
-
-// richerProfileReviewContent keeps the more informative non-empty string so duplicate recovery preserves the highest-density wording returned by the reviewer.
-// richerProfileReviewContent 用于保留信息量更高的非空字符串，让重复恢复尽量继承 reviewer 返回的高密度表述。
-func richerProfileReviewContent(primary, secondary string) string {
-	primary = strings.TrimSpace(primary)
-	secondary = strings.TrimSpace(secondary)
-	switch {
-	case primary == "":
-		return secondary
-	case secondary == "":
-		return primary
-	case len([]rune(secondary)) > len([]rune(primary)):
-		return secondary
-	default:
-		return primary
-	}
 }
 
 // ensureProfileReviewCoverage enforces that every candidate is classified exactly once across accepted and invalid outputs.
@@ -279,20 +199,20 @@ func parseProfileLevelLabel(label string) (int, error) {
 	}
 }
 
-// normalizeUint64IDs removes zeros, duplicates, and unstable ordering from id lists returned by the reviewer.
-// normalizeUint64IDs 用于去掉评审输出中 id 列表的零值、重复项和不稳定顺序。
-func normalizeUint64IDs(values []uint64) []uint64 {
+// normalizeReviewerIDList validates one reviewer-returned id list, rejecting zero and duplicate ids before sorting it for deterministic downstream use.
+// normalizeReviewerIDList 用于校验 reviewer 返回的 id 列表，在排序供下游稳定使用前拒绝零值和重复 id。
+func normalizeReviewerIDList(values []uint64, field, scene, raw string) ([]uint64, error) {
 	if len(values) == 0 {
-		return nil
+		return nil, nil
 	}
 	seen := map[uint64]struct{}{}
 	out := make([]uint64, 0, len(values))
 	for _, value := range values {
 		if value == 0 {
-			continue
+			return nil, logicdomain.InvalidLLMOutputError{Scene: scene, Message: fmt.Sprintf("%s contains zero id", field), Raw: raw}
 		}
 		if _, ok := seen[value]; ok {
-			continue
+			return nil, logicdomain.InvalidLLMOutputError{Scene: scene, Message: fmt.Sprintf("%s contains duplicate id %d", field, value), Raw: raw}
 		}
 		seen[value] = struct{}{}
 		out = append(out, value)
@@ -300,5 +220,5 @@ func normalizeUint64IDs(values []uint64) []uint64 {
 	sort.Slice(out, func(i, j int) bool {
 		return out[i] < out[j]
 	})
-	return out
+	return out, nil
 }

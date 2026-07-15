@@ -155,10 +155,15 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 	if err != nil {
 		return report, err
 	}
-	report.DurableRowsUpdated, report.VectorRowsRebuilt, err = applySplitVectorRebuildRecords(ctx, report.Mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger)
+	applyResult, err := applySplitVectorRebuildRecords(ctx, report.Mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger)
+	report.DurableRowsUpdated = applyResult.DurableRowsUpdated
+	report.VectorRowsRebuilt = applyResult.VectorRowsRebuilt
 	if err != nil {
+		if !applyResult.ResetCompleted {
+			return report, err
+		}
 		if recoverErr := recoverSplitVectorRebuildAfterReset(ctx, err, report.Mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger); recoverErr != nil {
-			return report, fmt.Errorf("split vector rebuild failed after reset: %w; automatic repair failed: %v", err, recoverErr)
+			return report, vectorRebuildOutcomeUncertainError("split vector rebuild failed after reset", err, recoverErr)
 		}
 		report.DurableRowsUpdated = len(rebuiltRecords)
 		report.VectorRowsRebuilt = len(rebuiltRecords)
@@ -168,29 +173,44 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 	return report, nil
 }
 
+// splitVectorRebuildApplyResult records how far one destructive split-mode rebuild attempt progressed before returning.
+// splitVectorRebuildApplyResult 用于记录一次破坏性 split 重建尝试在返回前推进到了哪个阶段。
+type splitVectorRebuildApplyResult struct {
+	// DurableRowsUpdated counts durable vector rows whose replacement write has already succeeded.
+	// DurableRowsUpdated 用于统计已经成功完成替换写入的 durable 向量行数。
+	DurableRowsUpdated int
+	// VectorRowsRebuilt counts detached vector rows successfully written after the reset.
+	// VectorRowsRebuilt 用于统计 reset 后已经成功写入的独立向量行数。
+	VectorRowsRebuilt int
+	// ResetCompleted marks whether this attempt crossed the destructive table-reset boundary.
+	// ResetCompleted 用于标记本次尝试是否已经越过破坏性的表重置边界。
+	ResetCompleted bool
+}
+
 // applySplitVectorRebuildRecords performs the destructive split-mode reset plus refill using already-materialized target vectors so retries never need to call the embedding backend again.
 // applySplitVectorRebuildRecords 用于基于已准备好的目标向量执行 split 模式的破坏性 reset 与回填，让重试路径无需再次调用 embedding 后端。
-func applySplitVectorRebuildRecords(ctx context.Context, mode string, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger) (int, int, error) {
+func applySplitVectorRebuildRecords(ctx context.Context, mode string, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger) (splitVectorRebuildApplyResult, error) {
 	if logger == nil {
 		logger = logx.Default()
 	}
+	result := splitVectorRebuildApplyResult{}
 	logger.Info("vector rebuild reset phase starting", "mode", mode, "memory_count", len(rebuiltRecords))
 	if err := resetter.RecreateTable(ctx); err != nil {
-		return 0, 0, fmt.Errorf("recreate split vector table: %w", err)
+		result.ResetCompleted = logicdomain.IsOutcomeUncertain(err)
+		return result, fmt.Errorf("recreate split vector table: %w", err)
 	}
+	result.ResetCompleted = true
 	vectorIDs := collectVectorRebuildVectorIDs(rebuiltRecords)
 	if len(vectorIDs) > 0 {
 		if err := durableResetter.ClearMemoryVectors(ctx, vectorIDs); err != nil {
-			return 0, 0, fmt.Errorf("clear durable vectors before split rebuild: %w", err)
+			return result, fmt.Errorf("clear durable vectors before split rebuild: %w", err)
 		}
 	}
 	if len(rebuiltRecords) == 0 {
-		return 0, 0, nil
+		return result, nil
 	}
 
 	logger.Info("vector rebuild refill phase starting", "mode", mode, "memory_count", len(rebuiltRecords))
-	durableRowsUpdated := 0
-	vectorRowsRebuilt := 0
 	for start := 0; start < len(rebuiltRecords); start += vectorRebuildWriteBatchSize {
 		end := start + vectorRebuildWriteBatchSize
 		if end > len(rebuiltRecords) {
@@ -198,18 +218,42 @@ func applySplitVectorRebuildRecords(ctx context.Context, mode string, durable ap
 		}
 		batchRecords := cloneVectorRebuildRecords(rebuiltRecords[start:end])
 		if err := durable.ReplaceMemoryVectors(ctx, batchRecords); err != nil {
-			return durableRowsUpdated, vectorRowsRebuilt, fmt.Errorf("replace durable vectors for batch %d-%d: %w", start, end, err)
+			return result, fmt.Errorf("replace durable vectors for batch %d-%d: %w", start, end, err)
 		}
+
+		// Count the durable replacement as soon as it succeeds because later sidecar failures cannot roll that write back.
+		// durable 替换一旦成功就立即计数，因为后续 sidecar 失败无法回滚这次写入。
+		result.DurableRowsUpdated += len(batchRecords)
 		for idx, record := range batchRecords {
 			if err := vector.Upsert(ctx, record); err != nil {
-				return durableRowsUpdated, vectorRowsRebuilt, fmt.Errorf("upsert rebuilt vector row %d/%d (%s): %w", start+idx+1, len(rebuiltRecords), record.ID, err)
+				return result, fmt.Errorf("upsert rebuilt vector row %d/%d (%s): %w", start+idx+1, len(rebuiltRecords), record.ID, err)
 			}
-			vectorRowsRebuilt++
+			result.VectorRowsRebuilt++
 		}
-		durableRowsUpdated += len(batchRecords)
-		logger.Info("vector rebuild refill phase advanced", "mode", mode, "processed", durableRowsUpdated, "total", len(rebuiltRecords))
+		logger.Info("vector rebuild refill phase advanced", "mode", mode, "processed", result.DurableRowsUpdated, "total", len(rebuiltRecords))
 	}
-	return durableRowsUpdated, vectorRowsRebuilt, nil
+	return result, nil
+}
+
+// vectorRebuildOutcomeUncertainError marks split-mode rebuild failures that may have already changed durable vectors, the detached vector table, or both.
+// vectorRebuildOutcomeUncertainError 用于标记 split 模式重建中可能已经改变 durable 向量、独立向量表或二者的失败。
+func vectorRebuildOutcomeUncertainError(message string, causes ...error) error {
+	parts := make([]string, 0, 1+len(causes))
+	if trimmed := strings.TrimSpace(message); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	for _, cause := range causes {
+		if cause == nil {
+			continue
+		}
+		if trimmed := strings.TrimSpace(cause.Error()); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return logicdomain.OutcomeUncertainError{
+		Operation: "rebuild split vector table",
+		Message:   strings.Join(parts, "; "),
+	}
 }
 
 // recoverSplitVectorRebuildAfterReset replays the already-materialized target vectors after one intermediate split-mode failure so the command prefers converging to the new current-dimension state over leaving the runtime sidecar empty.
@@ -231,7 +275,7 @@ func recoverSplitVectorRebuildAfterReset(ctx context.Context, cause error, mode 
 	} else {
 		repairCtx = context.WithoutCancel(repairCtx)
 	}
-	if _, _, err := applySplitVectorRebuildRecords(repairCtx, mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger); err != nil {
+	if _, err := applySplitVectorRebuildRecords(repairCtx, mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger); err != nil {
 		logger.Error("split vector rebuild automatic repair failed", "mode", mode, "memory_count", len(rebuiltRecords), "err", err)
 		return err
 	}

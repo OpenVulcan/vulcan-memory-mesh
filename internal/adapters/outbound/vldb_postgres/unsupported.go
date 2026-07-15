@@ -112,8 +112,8 @@ func (unsupportedOperations) AdvanceSessionExtractWindow(context.Context, uint64
 
 // ApplyMemoryAdoption rejects PostgreSQL memory-adoption writes until the lifecycle update workflow is fully ported.
 // ApplyMemoryAdoption 用于在 PostgreSQL 生命周期更新工作流完整迁移前，显式拒绝记忆采纳回写。
-func (unsupportedOperations) ApplyMemoryAdoption(context.Context, logicdomain.SessionRef, []uint64, time.Time) error {
-	return unsupportedOperationError("ApplyMemoryAdoption")
+func (unsupportedOperations) ApplyMemoryAdoption(context.Context, logicdomain.SessionRef, []uint64, time.Time) ([]logicdomain.MemoryRecord, error) {
+	return nil, unsupportedOperationError("ApplyMemoryAdoption")
 }
 
 // ApplyTurnAnalysis rejects PostgreSQL analysis write-back until the post-action workflow is fully ported.

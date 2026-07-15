@@ -240,9 +240,10 @@ grpcurl -plaintext `
 
 说明：
 
-- 省略 `recallMode` 或传 `PRE_CHECK_RECALL_MODE_LEGACY` 时，服务端保持旧版召回行为
-- 传 `PRE_CHECK_RECALL_MODE_SESSION_COMPACT` 时，服务端按当前 session 的 compact 边界过滤同 session 的 turn-extract 记忆
-- 当前版本如果收到未来新增的非零枚举值，也会回退到 compact-aware 基线，而不是重新开放整个当前 session
+- 省略 `recallMode` 或传 `PRE_CHECK_RECALL_MODE_UNSPECIFIED` 时，服务端默认按 compact-aware 基线执行
+- 传 `PRE_CHECK_RECALL_MODE_SESSION_COMPACT` 时，服务端显式按当前 session 的 compact 边界过滤同 session 的 turn-extract 记忆
+- 只有传 `PRE_CHECK_RECALL_MODE_FULL` 时，服务端才会关闭当前 session compact 边界，在其他作用域与生命周期过滤条件内执行全量召回
+- 当前版本如果收到未来新增枚举值，也会回退到 compact-aware 基线，而不是重新开放整个当前 session
 - `PreCheckResponse` 已移除旧 `context_text` 字段
 - `PreCheckResponse.context_items[]` 当前会返回：
   - `text`
@@ -395,6 +396,8 @@ grpcurl -plaintext `
 
 说明：
 
+- `topK` 省略或传 `0` 时默认返回 `8` 条，最大值为 `32`
+- `topK` 超过 `32` 时会在传输层按 `32` 规范化后继续执行
 - `queries` 是简单字符串数组
 - 不再使用 `query_json`
 - 不再使用 `background`

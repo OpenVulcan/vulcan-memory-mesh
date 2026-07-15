@@ -1,19 +1,19 @@
-# OpenRouter test override configuration file.
-# OpenRouter 测试覆盖配置文件。
+# DeepSeek test override configuration file.
+# DeepSeek 测试覆盖配置文件。
 #
-# This file keeps the project-local runtime overrides and switches only the LLM test routes to OpenRouter.
-# 本文件保留项目本地运行覆盖，仅将 LLM 测试路由切换到 OpenRouter。
+# This file keeps the project-local runtime overrides and switches only the LLM test routes to DeepSeek's OpenAI-compatible endpoint.
+# 本文件保留项目本地运行覆盖，仅将 LLM 测试路由切换到 DeepSeek 的 OpenAI 兼容接口。
 #
 # Bailian embedding and rerank intentionally stay unchanged so existing vector and ranking test data remains stable.
 # embedding 与 rerank 有意保持百炼不变，确保现有向量与排序测试数据稳定。
 
 x-llm-deepseek: &llm_deepseek
-  # Shared OpenRouter LLM route defaults used by the scene-weighted test routes below.
-  # 下方分场景测试路由共用的 OpenRouter LLM 默认配置。
+  # Shared DeepSeek LLM route defaults used by the scene-weighted test routes below.
+  # 下方分场景测试路由共用的 DeepSeek LLM 默认配置。
   provider: "openai"
   endpoint: "https://api.deepseek.com/v1"
   api_keys:
-    - "sk-2734944e11264aec9a5dd54f0e306d7b"
+    - "${DEEPSEEK_API_KEY}"
   rpm: 0
   tpm: 0
   rpd: 0
@@ -21,8 +21,8 @@ x-llm-deepseek: &llm_deepseek
   organization: ""
   project: ""
   params:
-    # Disable reasoning for all configured OpenRouter test requests.
-    # 为当前 OpenRouter 测试请求统一关闭 reasoning。
+    # Disable reasoning for all configured DeepSeek test requests.
+    # 为当前 DeepSeek 测试请求统一关闭 reasoning。
     thinking:
       type: disabled
       
@@ -79,8 +79,8 @@ sqlite:
   # 为切回 split 的测试配置保留 SQLite 地址占位。
   address: "${VMM_SQLITE_ADDRESS}"
 
-  # Split-mode SQLite tokenizer default kept literal because this OpenRouter test file runs in combined mode.
-  # split 模式 SQLite 分词器默认值保持字面量，因为当前 OpenRouter 测试文件运行在 combined 模式。
+  # Split-mode SQLite tokenizer default kept literal because this DeepSeek test file runs in combined mode.
+  # split 模式 SQLite 分词器默认值保持字面量，因为当前 DeepSeek 测试文件运行在 combined 模式。
   tokenizer_mode: "jieba"
 
 lancedb:
@@ -94,30 +94,30 @@ postgres:
   dsn: "${VMM_POSTGRES_DSN}"
 
 llm:
-  # Project-local OpenRouter LLM test routes.
-  # 项目本地 OpenRouter LLM 测试路由。
+  # Project-local DeepSeek LLM test routes.
+  # 项目本地 DeepSeek LLM 测试路由。
   routes:
     - <<: *llm_deepseek
-      # Qwen flash is preferred for light extraction, first-pass post-action analysis, and profile instruction review.
-      # Qwen flash 优先承接轻量提取、PostAction 一层分析与手工画像指令评审。
+      # DeepSeek pro is preferred for post-action analysis and profile instruction review.
+      # DeepSeek pro 优先承接 PostAction 分析与手工画像指令评审。
       name: "deepseek-v4-pro"
       model: "deepseek-v4-pro"
       weights:
         precheck_l1: 100
-        precheck_l2: 150
+        precheck_l2: 80
         postaction_l1: 150
         postaction_l2: 150
         profile_instruction: 150
         reserve: 80
 
     - <<: *llm_deepseek
-      # DeepSeek flash is pinned to Novita and preferred for PreCheck L2 memory review.
-      # DeepSeek flash 固定走 Novita，并优先承接 PreCheck L2 记忆评审。
+      # DeepSeek flash is preferred for pre-check review and reserve capacity.
+      # DeepSeek flash 优先承接 PreCheck 评审与预留容量。
       name: "deepseek-v4-flash"
       model: "deepseek-v4-flash"
       weights:
         precheck_l1: 150
-        precheck_l2: 100
+        precheck_l2: 180
         postaction_l1: 100
         postaction_l2: 100
         profile_instruction: 100
@@ -164,8 +164,8 @@ rerank:
       model: "gte-rerank-v2"
 
 vector:
-  # Split-mode vector backend default kept literal because this OpenRouter test file runs in combined mode.
-  # split 模式向量后端默认值保持字面量，因为当前 OpenRouter 测试文件运行在 combined 模式。
+  # Split-mode vector backend default kept literal because this DeepSeek test file runs in combined mode.
+  # split 模式向量后端默认值保持字面量，因为当前 DeepSeek 测试文件运行在 combined 模式。
   provider: "lancedb"
 
 maintenance_tool:

@@ -5,6 +5,8 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"reflect"
+	"regexp"
 	"slices"
 	"strings"
 	"testing"
@@ -123,10 +125,10 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 }
 
-// TestLoadShippedOpenRouterTestConfig verifies the checked-in base/config pair keeps base generic while config.yaml supplies the OpenRouter test override and local deployment settings.
-// TestLoadShippedOpenRouterTestConfig 用于验证仓库内置 base/config 组合会保持 base 通用，并由 config.yaml 提供 OpenRouter 测试覆盖与本地部署设置。
-func TestLoadShippedOpenRouterTestConfig(t *testing.T) {
-	t.Setenv("OPENROUTER_KEY", "test-openrouter-key")
+// TestLoadShippedDeepSeekTestConfig verifies the checked-in base/config pair keeps base generic while config.yaml supplies the DeepSeek test override and local deployment settings.
+// TestLoadShippedDeepSeekTestConfig 用于验证仓库内置 base/config 组合会保持 base 通用，并由 config.yaml 提供 DeepSeek 测试覆盖与本地部署设置。
+func TestLoadShippedDeepSeekTestConfig(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "test-deepseek-key")
 	t.Setenv("BAILIAN_API_KEY", "test-bailian-key")
 	t.Setenv("BAILIAN_BASE_URL", "https://dashscope.aliyuncs.com/compatible-mode/v1")
 	t.Setenv("BAILIAN_RERANK_URL", defaultDashScopeRerankEndpoint)
@@ -138,7 +140,7 @@ func TestLoadShippedOpenRouterTestConfig(t *testing.T) {
 		filepath.Join(configDir, "config.yaml"),
 	}, Config{})
 	if err != nil {
-		t.Fatalf("load shipped openrouter base config: %v", err)
+		t.Fatalf("load shipped deepseek base config: %v", err)
 	}
 	if got, want := cfg.GRPC.ListenAddr, "127.0.0.1:17625"; got != want {
 		t.Fatalf("grpc listen addr = %q, want %q", got, want)
@@ -152,31 +154,42 @@ func TestLoadShippedOpenRouterTestConfig(t *testing.T) {
 	if got, want := cfg.MaintenanceTool.VectorRebuildBatchSize, 32; got != want {
 		t.Fatalf("vector rebuild batch size = %d, want %d", got, want)
 	}
-	if got, want := len(cfg.LLM.Routes), 3; got != want {
+	if got, want := len(cfg.LLM.Routes), 2; got != want {
 		t.Fatalf("llm route count = %d, want %d", got, want)
 	}
-	if got, want := cfg.LLM.Routes[0].Provider, "openrouter"; got != want {
-		t.Fatalf("llm route provider = %q, want %q", got, want)
+	for idx, route := range cfg.LLM.Routes {
+		if got, want := route.Provider, "openai"; got != want {
+			t.Fatalf("llm route %d provider = %q, want %q", idx, got, want)
+		}
+		if got, want := route.Endpoint, "https://api.deepseek.com/v1"; got != want {
+			t.Fatalf("llm route %d endpoint = %q, want %q", idx, got, want)
+		}
+		if got, want := route.APIKeys, []string{"test-deepseek-key"}; !slices.Equal(got, want) {
+			t.Fatalf("llm route %d api keys = %#v, want %#v", idx, got, want)
+		}
 	}
-	if got, want := cfg.LLM.Routes[0].APIKeys, []string{"test-openrouter-key"}; !slices.Equal(got, want) {
-		t.Fatalf("openrouter api keys = %#v, want %#v", got, want)
+	if got, want := cfg.LLM.Routes[0].Model, "deepseek-v4-pro"; got != want {
+		t.Fatalf("primary deepseek model = %q, want %q", got, want)
 	}
-	if got, want := cfg.LLM.Routes[0].Model, "qwen/qwen3.5-flash-02-23"; got != want {
-		t.Fatalf("primary openrouter model = %q, want %q", got, want)
+	if got, want := cfg.LLM.Routes[1].Model, "deepseek-v4-flash"; got != want {
+		t.Fatalf("deepseek flash model = %q, want %q", got, want)
 	}
-	if got, want := cfg.LLM.Routes[1].Model, "qwen/qwen3.6-plus"; got != want {
+	if got, want := cfg.LLM.PrimaryModelForSelection("postaction_l2"), "deepseek-v4-pro"; got != want {
 		t.Fatalf("postaction l2 model = %q, want %q", got, want)
 	}
-	if got, want := cfg.LLM.Routes[2].Model, "deepseek/deepseek-v4-flash"; got != want {
+	if got, want := cfg.LLM.PrimaryModelForSelection("precheck_l2"), "deepseek-v4-flash"; got != want {
 		t.Fatalf("precheck l2 model = %q, want %q", got, want)
 	}
-	providerPrefs, ok := cfg.LLM.Routes[2].Params["provider"].(map[string]any)
-	if !ok {
-		t.Fatalf("novita provider preferences = %#v", cfg.LLM.Routes[2].Params["provider"])
+	if got, want := cfg.LLM.PrimaryModel(), "deepseek-v4-flash"; got != want {
+		t.Fatalf("reserve model = %q, want %q", got, want)
 	}
-	only, ok := providerPrefs["only"].([]any)
-	if !ok || len(only) != 1 || only[0] != "novita" {
-		t.Fatalf("novita provider only = %#v", providerPrefs["only"])
+	providerPrefs, ok := cfg.LLM.Routes[0].Params["provider"].(map[string]any)
+	if !ok {
+		t.Fatalf("deepseek provider preferences = %#v", cfg.LLM.Routes[0].Params["provider"])
+	}
+	allowFallbacks, ok := providerPrefs["allow_fallbacks"].(bool)
+	if !ok || !allowFallbacks {
+		t.Fatalf("deepseek provider allow_fallbacks = %#v", providerPrefs["allow_fallbacks"])
 	}
 	if got, want := cfg.Embedding.Model, "text-embedding-v4"; got != want {
 		t.Fatalf("embedding model = %q, want %q", got, want)
@@ -278,6 +291,40 @@ func TestConfigNormalizePreservesExplicitZeroHardDedupeThreshold(t *testing.T) {
 
 	if cfg.MemoryPipeline.HardDedupeCosineThreshold == nil || *cfg.MemoryPipeline.HardDedupeCosineThreshold != 0 {
 		t.Fatalf("hard dedupe cosine threshold = %#v", cfg.MemoryPipeline.HardDedupeCosineThreshold)
+	}
+}
+
+// TestConfigNormalizeCanonicalizesMemoryReplaceScope verifies memory replacement scope follows the same default and canonical spelling that runtime wiring expects.
+// TestConfigNormalizeCanonicalizesMemoryReplaceScope 用于验证记忆更替作用域会归一到运行时装配期望的默认值和规范拼写。
+func TestConfigNormalizeCanonicalizesMemoryReplaceScope(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.MemoryReplaceScope = ""
+
+	cfg.Normalize()
+
+	if got, want := cfg.MemoryReplaceScope, "project"; got != want {
+		t.Fatalf("default memory replace scope = %q, want %q", got, want)
+	}
+
+	cfg = newValidConfigForTest()
+	cfg.MemoryReplaceScope = " TEAM "
+
+	cfg.Normalize()
+
+	if got, want := cfg.MemoryReplaceScope, "team"; got != want {
+		t.Fatalf("normalized memory replace scope = %q, want %q", got, want)
+	}
+}
+
+// TestConfigValidateRejectsUnsupportedMemoryReplaceScope verifies startup validation rejects replacement scopes that the post-action and direct-write runtime filters cannot interpret.
+// TestConfigValidateRejectsUnsupportedMemoryReplaceScope 用于验证启动校验会拒绝 post-action 与主动写入运行时过滤器无法解释的记忆更替作用域。
+func TestConfigValidateRejectsUnsupportedMemoryReplaceScope(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.MemoryReplaceScope = "workspace"
+	cfg.Normalize()
+
+	if err := cfg.Validate(); err == nil || err.Error() != "memory_replace_scope must be one of session, team, space, or project" {
+		t.Fatalf("unexpected memory replace scope validate error: %v", err)
 	}
 }
 
@@ -912,7 +959,279 @@ func TestLoadRejectsNonPositiveHardDedupePoolTopKFromEnvOverride(t *testing.T) {
 	configPath := filepath.Join(rootDir, "config.yaml")
 	configBody := `grpc:
   listen_addr: "127.0.0.1:8080"
-env_probe: "${VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K}"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["test-key"]
+      model: "test-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+  hard_dedupe_pool_top_k: ${VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K}
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(configPath, DefaultLocal())
+	if err == nil || !strings.Contains(err.Error(), "memory_pipeline.hard_dedupe_pool_top_k must be > 0") {
+		t.Fatalf("unexpected hard dedupe pool env-override error: %v", err)
+	}
+}
+
+// TestLoadAppliesMemoryReplaceScopeFromEnvOverride verifies the standard load chain applies the explicit memory replacement scope environment override before normalization and validation.
+// TestLoadAppliesMemoryReplaceScopeFromEnvOverride 用于验证标准加载链路会在归一化和校验前应用显式记忆更替作用域环境变量覆盖。
+func TestLoadAppliesMemoryReplaceScopeFromEnvOverride(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	restoreEnv(t, "VMM_MEMORY_REPLACE_SCOPE")
+	t.Setenv("VMM_MEMORY_REPLACE_SCOPE", " TEAM ")
+
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["test-key"]
+      model: "test-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_replace_scope: "${VMM_MEMORY_REPLACE_SCOPE}"
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+  hard_dedupe_pool_top_k: 16
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath, DefaultLocal())
+	if err != nil {
+		t.Fatalf("load memory replace scope env override: %v", err)
+	}
+	if got, want := cfg.MemoryReplaceScope, "team"; got != want {
+		t.Fatalf("memory replace scope env override = %q, want %q", got, want)
+	}
+}
+
+// TestApplyEnvOverridesReportsInvalidTypedValuesWhenReferenced verifies explicitly referenced typed environment overrides report parse failures instead of silently falling back to existing values.
+// TestApplyEnvOverridesReportsInvalidTypedValuesWhenReferenced 用于验证显式引用的类型化环境变量覆盖会报告解析失败，而不是静默回退到已有值。
+func TestApplyEnvOverridesReportsInvalidTypedValuesWhenReferenced(t *testing.T) {
+	cases := []struct {
+		name  string
+		key   string
+		value string
+	}{
+		{name: "int", key: "VMM_PRE_CHECK_TOPK", value: "not-int"},
+		{name: "float", key: "VMM_PRE_CHECK_SIMILARITY_THRESHOLD", value: "not-float"},
+		{name: "optional-float", key: "VMM_MEMORY_MIN_SIMILARITY_SCORE", value: "not-float"},
+		{name: "bool", key: "VMM_NOISE_ENABLED", value: "not-bool"},
+		{name: "duration", key: "VMM_GRPC_PRE_CHECK_TIMEOUT", value: "not-duration"},
+		{name: "dedupe-pool-int", key: "VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K", value: "not-int"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			restoreEnv(t, tc.key)
+			t.Setenv(tc.key, tc.value)
+
+			cfg := newValidConfigForTest()
+			failures := applyEnvOverrides(&cfg, map[string]struct{}{
+				tc.key: {},
+			})
+			if !slices.Contains(failures, tc.key) {
+				t.Fatalf("parse failures = %#v, want %q", failures, tc.key)
+			}
+		})
+	}
+}
+
+// TestSupportedEnvOverrideValuePathsCoverApplyEnvOverridesKeys verifies the path-gating table stays in lockstep with every supported process-level VMM override.
+// TestSupportedEnvOverrideValuePathsCoverApplyEnvOverridesKeys 用于验证路径门控表与所有受支持的进程级 VMM 覆盖保持同步。
+func TestSupportedEnvOverrideValuePathsCoverApplyEnvOverridesKeys(t *testing.T) {
+	body, err := os.ReadFile("config_validate.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	source := string(body)
+	supported := map[string]struct{}{}
+	for _, match := range regexp.MustCompile(`set(?:String|StringSlice|Int|Float|OptionalFloat|Bool|Duration)\("([A-Z0-9_]+)"`).FindAllStringSubmatch(source, -1) {
+		supported[match[1]] = struct{}{}
+	}
+	for _, match := range regexp.MustCompile(`envOverrideAllowed\(referencedEnvKeys, "([A-Z0-9_]+)"`).FindAllStringSubmatch(source, -1) {
+		supported[match[1]] = struct{}{}
+	}
+	mapped := map[string]struct{}{}
+	for key := range supportedEnvOverrideValuePaths {
+		mapped[key] = struct{}{}
+	}
+
+	missing := []string{}
+	for key := range supported {
+		if _, ok := mapped[key]; !ok {
+			missing = append(missing, key)
+		}
+	}
+	extra := []string{}
+	for key := range mapped {
+		if _, ok := supported[key]; !ok {
+			extra = append(extra, key)
+		}
+	}
+	slices.Sort(missing)
+	slices.Sort(extra)
+	if len(missing) > 0 || len(extra) > 0 {
+		t.Fatalf("env override path table mismatch: missing=%v extra=%v", missing, extra)
+	}
+}
+
+// TestSupportedEnvOverrideValuePathsExistInConfigSchema verifies every path-gating entry points at a real JSON-tagged Config field.
+// TestSupportedEnvOverrideValuePathsExistInConfigSchema 用于验证每个路径门控项都指向真实存在的 Config JSON 标签字段。
+func TestSupportedEnvOverrideValuePathsExistInConfigSchema(t *testing.T) {
+	rootType := reflect.TypeOf(Config{})
+	invalid := []string{}
+	for key, paths := range supportedEnvOverrideValuePaths {
+		for _, path := range paths {
+			if configSchemaPathExists(rootType, path) {
+				continue
+			}
+			invalid = append(invalid, key+"="+path)
+		}
+	}
+	slices.Sort(invalid)
+	if len(invalid) > 0 {
+		t.Fatalf("env override path table contains unknown config paths: %v", invalid)
+	}
+}
+
+// configSchemaPathExists walks one dot-separated JSON-tag path through the Config struct schema.
+// configSchemaPathExists 用于沿着 Config 结构体 schema 检查一个点分 JSON 标签路径是否存在。
+func configSchemaPathExists(rootType reflect.Type, path string) bool {
+	current := rootType
+	for _, segment := range strings.Split(path, ".") {
+		if strings.TrimSpace(segment) == "" {
+			return false
+		}
+		for current.Kind() == reflect.Pointer {
+			current = current.Elem()
+		}
+		if current.Kind() != reflect.Struct {
+			return false
+		}
+		field, ok := jsonTaggedFieldByName(current, segment)
+		if !ok {
+			return false
+		}
+		current = field.Type
+	}
+	return true
+}
+
+// jsonTaggedFieldByName returns the struct field whose JSON tag owns one config path segment.
+// jsonTaggedFieldByName 用于返回 JSON 标签归属于某个配置路径片段的结构体字段。
+func jsonTaggedFieldByName(structType reflect.Type, segment string) (reflect.StructField, bool) {
+	for idx := 0; idx < structType.NumField(); idx++ {
+		field := structType.Field(idx)
+		tagName := strings.Split(field.Tag.Get("json"), ",")[0]
+		if tagName == "" || tagName == "-" {
+			continue
+		}
+		if tagName == segment {
+			return field, true
+		}
+	}
+	return reflect.StructField{}, false
+}
+
+// TestLoadRejectsUnknownEnvProbeField verifies unknown config fields cannot be used as environment override opt-in probes.
+// TestLoadRejectsUnknownEnvProbeField 用于验证未知配置字段不能作为环境变量覆盖白名单的探针。
+func TestLoadRejectsUnknownEnvProbeField(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	restoreEnv(t, "VMM_PRE_CHECK_TOPK")
+	t.Setenv("VMM_PRE_CHECK_TOPK", "7")
+
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+env_probe: "${VMM_PRE_CHECK_TOPK}"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["test-key"]
+      model: "test-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+noise:
+  enabled: true
+  semantic_threshold: 0.75
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+  hard_dedupe_pool_top_k: 16
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := Load(configPath, DefaultLocal())
+	if err == nil || !strings.Contains(err.Error(), `json: unknown field "env_probe"`) {
+		t.Fatalf("unexpected unknown env probe field error: %v", err)
+	}
+}
+
+// TestLoadIgnoresTopLevelExtensionEnvReferences verifies YAML x-* anchor helpers do not participate in environment override opt-in unless merged into real config fields.
+// TestLoadIgnoresTopLevelExtensionEnvReferences 用于验证 YAML 顶层 x-* 锚点辅助块不会参与环境变量覆盖白名单，除非其内容被合并进真实配置字段。
+func TestLoadIgnoresTopLevelExtensionEnvReferences(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	restoreEnv(t, "VMM_PRE_CHECK_TOPK")
+	t.Setenv("VMM_PRE_CHECK_TOPK", "7")
+
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+x-env-probe:
+  top_k: "${VMM_PRE_CHECK_TOPK}"
 llm:
   routes:
     - provider: "openai"
@@ -941,9 +1260,106 @@ memory_pipeline:
 		t.Fatal(err)
 	}
 
+	cfg, err := Load(configPath, DefaultLocal())
+	if err != nil {
+		t.Fatalf("load config with top-level extension env reference: %v", err)
+	}
+	if got, want := cfg.PreCheck.TopK, 5; got != want {
+		t.Fatalf("pre-check top_k = %d, want %d", got, want)
+	}
+}
+
+// TestLoadIgnoresMismatchedFieldEnvReferences verifies one supported VMM override key cannot be enabled by mentioning it in an unrelated real config field.
+// TestLoadIgnoresMismatchedFieldEnvReferences 用于验证受支持的 VMM 覆盖键不能通过出现在不相关真实配置字段中而被启用。
+func TestLoadIgnoresMismatchedFieldEnvReferences(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	restoreEnv(t, "VMM_PRE_CHECK_TOPK")
+	t.Setenv("VMM_PRE_CHECK_TOPK", "7")
+
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+sqlite:
+  address: "${VMM_PRE_CHECK_TOPK}"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["test-key"]
+      model: "test-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+  hard_dedupe_pool_top_k: 16
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := Load(configPath, DefaultLocal())
+	if err != nil {
+		t.Fatalf("load config with mismatched env reference: %v", err)
+	}
+	if got, want := cfg.PreCheck.TopK, 5; got != want {
+		t.Fatalf("pre-check top_k = %d, want %d", got, want)
+	}
+}
+
+// TestLoadRejectsUnknownMemoryPipelineField verifies the memory-pipeline custom unmarshaller preserves strict unknown-field rejection.
+// TestLoadRejectsUnknownMemoryPipelineField 用于验证 memory_pipeline 的自定义反序列化仍然保持未知字段拒绝。
+func TestLoadRejectsUnknownMemoryPipelineField(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+llm:
+  routes:
+    - provider: "openai"
+      endpoint: "https://api.openai.com/v1"
+      api_keys: ["test-key"]
+      model: "test-model"
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+pre_check:
+  intent_timeout: "5s"
+  top_k: 5
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+  hard_dedupe_pool_top_k: 16
+  unknown_weight: 1
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
 	_, err := Load(configPath, DefaultLocal())
-	if err == nil || !strings.Contains(err.Error(), "memory_pipeline.hard_dedupe_pool_top_k must be > 0") {
-		t.Fatalf("unexpected hard dedupe pool env-override error: %v", err)
+	if err == nil || !strings.Contains(err.Error(), `json: unknown field "unknown_weight"`) {
+		t.Fatalf("unexpected unknown memory pipeline field error: %v", err)
 	}
 }
 
@@ -1381,6 +1797,72 @@ post_action:
 				t.Fatalf("expected env-specific error, got generic routing error: %q", message)
 			}
 		})
+	}
+}
+
+// TestLoadPathsReportsMergedAnchorEnvPlaceholderPath verifies placeholders declared in x-* YAML anchors still report the real merged field path when they feed required runtime fields.
+// TestLoadPathsReportsMergedAnchorEnvPlaceholderPath 用于验证声明在 x-* YAML 锚点中的占位符在合并到必填运行时字段后，仍会报告真实字段路径。
+func TestLoadPathsReportsMergedAnchorEnvPlaceholderPath(t *testing.T) {
+	clearRemovedAIEnvVars(t)
+	const key = "VMM_TEST_MISSING_ANCHOR_LLM_KEY"
+	restoreEnv(t, key)
+
+	rootDir := t.TempDir()
+	configPath := filepath.Join(rootDir, "config.yaml")
+	configBody := `grpc:
+  listen_addr: "127.0.0.1:8080"
+  request_timeout:
+    pre_check: "15s"
+    post_action: "15s"
+pre_check:
+  intent_timeout: "10s"
+  top_k: 5
+x-llm-defaults: &llm_defaults
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["${` + key + `}"]
+  model: "base-model"
+llm:
+  routes:
+    - <<: *llm_defaults
+embedding:
+  provider: "openai"
+  endpoint: "https://api.openai.com/v1"
+  api_keys: ["embed-key"]
+  model: "text-embedding-3-large"
+  dimension: 1024
+vector:
+  provider: "lancedb"
+relational:
+  provider: "sqlite"
+memory_pipeline:
+  max_search_keywords: 5
+  min_similarity_score: 0.75
+post_action:
+  input_mode: "strict"
+  session_analysis_turn_threshold: 2
+  session_analysis_token_threshold: 12000
+  session_analysis_idle_timeout: "15m"
+  session_analysis_history_turns: 3
+  session_analysis_max_input_tokens: 6000
+  max_queue_workers: 4
+`
+	if err := os.WriteFile(configPath, []byte(configBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := LoadPaths([]string{configPath}, Config{})
+	if err == nil {
+		t.Fatal("expected merged anchor env placeholder to fail")
+	}
+	message := err.Error()
+	for _, want := range []string{key, "llm.routes[0].api_keys[0]", "is not set"} {
+		if !strings.Contains(message, want) {
+			t.Fatalf("error %q does not contain %q", message, want)
+		}
+	}
+	if strings.Contains(message, "x-llm-defaults") {
+		t.Fatalf("expected merged runtime field path, got anchor helper path: %q", message)
 	}
 }
 

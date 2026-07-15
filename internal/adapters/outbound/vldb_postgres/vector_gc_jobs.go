@@ -168,7 +168,7 @@ RETURNING jobs.id, jobs.batch_id, jobs.vector_id, jobs.job_type, jobs.attempt_co
 		return nil, fmt.Errorf("iterate postgres vector gc jobs: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return nil, fmt.Errorf("commit postgres vector gc claim tx: %w", err)
+		return nil, postgresClaimCommitError("claim vector gc jobs", "commit postgres vector gc claim tx", len(claimed), err)
 	}
 	return claimed, nil
 }
@@ -187,8 +187,22 @@ func (r *vectorRepository) CompleteVectorGCJobs(ctx context.Context, jobIDs []ui
 
 	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs)); err != nil {
+	tx, err := r.shared.pool.Begin(callCtx)
+	if err != nil {
+		return fmt.Errorf("begin postgres vector gc completion tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+	tag, err := tx.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs))
+	if err != nil {
 		return fmt.Errorf("complete postgres vector gc jobs: %w", err)
+	}
+	if err := requirePostgresVectorGCJobRowsAffected("complete postgres vector gc jobs", tag.RowsAffected(), len(jobIDs)); err != nil {
+		return err
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return postgresCommitOutcomeUncertainError("complete vector gc jobs", "commit postgres vector gc completion tx", err)
 	}
 	return nil
 }
@@ -229,8 +243,28 @@ WHERE id = ANY($1)
 
 	callCtx, cancel := r.vectorQueryContext(ctx)
 	defer cancel()
-	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now); err != nil {
+	tx, err := r.shared.pool.Begin(callCtx)
+	if err != nil {
+		return fmt.Errorf("begin postgres vector gc retry tx: %w", err)
+	}
+	defer func() {
+		_ = tx.Rollback(context.Background())
+	}()
+	tag, err := tx.Exec(callCtx, strings.TrimSpace(sqlText), toInt64List(jobIDs), nextRunAt, lastError, now)
+	if err != nil {
 		return fmt.Errorf("retry postgres vector gc jobs: %w", err)
 	}
+	if err := requirePostgresVectorGCJobRowsAffected("retry postgres vector gc jobs", tag.RowsAffected(), len(jobIDs)); err != nil {
+		return err
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return postgresCommitOutcomeUncertainError("retry vector gc jobs", "commit postgres vector gc retry tx", err)
+	}
 	return nil
+}
+
+// requirePostgresVectorGCJobRowsAffected rejects queue state drift when a terminal vector-GC update did not touch every normalized job id.
+// requirePostgresVectorGCJobRowsAffected 用于在 vector-GC 终态更新未命中全部归一化 job id 时拒绝队列状态漂移。
+func requirePostgresVectorGCJobRowsAffected(messagePrefix string, rowsAffected int64, expectedRows int) error {
+	return postgresRowsAffectedDriftError(messagePrefix, rowsAffected, int64(expectedRows))
 }

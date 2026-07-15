@@ -424,6 +424,19 @@ func ValidTurnAnalysisAdmissionReason(reason string) bool {
 	}
 }
 
+// ValidTurnAnalysisAdmissionReasonForAdmission reports whether one first-pass rejection reason matches the analyzer admission decision.
+// ValidTurnAnalysisAdmissionReasonForAdmission 用于判断首轮拒绝原因是否与分析器准入结论匹配。
+func ValidTurnAnalysisAdmissionReasonForAdmission(admission, reason string) bool {
+	switch admission {
+	case TurnAnalysisAdmissionKeep:
+		return reason == ""
+	case TurnAnalysisAdmissionDrop:
+		return ValidTurnAnalysisAdmissionReason(reason)
+	default:
+		return false
+	}
+}
+
 // ValidProfileType reports whether one profile type id belongs to the supported profile-node enum set.
 // ValidProfileType 用于判断某个画像类型 ID 是否属于当前支持的画像节点枚举集合。
 func ValidProfileType(profileType int) bool {

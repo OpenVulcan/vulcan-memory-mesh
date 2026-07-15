@@ -28,7 +28,10 @@ type postgresIdleSessionRecycleResult struct {
 	RecycledMemoryCount  int
 	RecycledContextCount int
 	RecycledTurnCount    int
-	RecycledVectorIDs    []string
+	// TurnDriftCount remains zero for the PostgreSQL transaction path, but mirrors the domain result for cross-store aggregation.
+	// TurnDriftCount 在 PostgreSQL 事务路径中保持为零，但用于对齐跨存储聚合结果。
+	TurnDriftCount    int
+	RecycledVectorIDs []string
 }
 
 // RecycleColdMemories transactionally moves terminal durable memories and their context edges into PostgreSQL trash tables, then removes them from the hot tables.
@@ -104,6 +107,16 @@ RETURNING id
 	}
 
 	idArgs := toInt64List(normalizedMemoryIDs)
+	expectedMemoryRowsAffected := int64(len(normalizedMemoryIDs))
+
+	// Count context edges inside the same transaction so copy and delete can prove they handled one identical edge set.
+	// 在同一事务内统计 context 边，让复制和删除都能证明它们处理的是同一个完整边集合。
+	countContextSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE memory_id = ANY($1)`, r.memoryContextEdgesTable())
+	var expectedContextRowsAffected int64
+	if err := tx.QueryRow(callCtx, countContextSQL, idArgs).Scan(&expectedContextRowsAffected); err != nil {
+		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("count postgres cold memory context edges: %w", err)
+	}
+
 	insertTrashSQL := fmt.Sprintf(`
 INSERT INTO %s (
 	batch_id, recycled_at, recycle_reason,
@@ -126,6 +139,9 @@ WHERE id = ANY($4)
 	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("copy postgres memories into trash: %w", err)
 	}
+	if err := requirePostgresColdMemoryRowsAffected("copy postgres cold memories to trash", insertMemoryTag.RowsAffected(), expectedMemoryRowsAffected); err != nil {
+		return logicdomain.MemoryRecycleResult{}, err
+	}
 
 	insertContextTrashSQL := fmt.Sprintf(`
 INSERT INTO %s (
@@ -143,25 +159,43 @@ WHERE memory_id = ANY($4)
 	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("copy postgres memory context edges into trash: %w", err)
 	}
+	if err := requirePostgresColdMemoryRowsAffected("copy postgres cold memory contexts to trash", insertContextTag.RowsAffected(), expectedContextRowsAffected); err != nil {
+		return logicdomain.MemoryRecycleResult{}, err
+	}
 
 	deleteContextSQL := fmt.Sprintf(`DELETE FROM %s WHERE memory_id = ANY($1)`, r.memoryContextEdgesTable())
-	if _, err := tx.Exec(callCtx, deleteContextSQL, idArgs); err != nil {
+	deleteContextTag, err := tx.Exec(callCtx, deleteContextSQL, idArgs)
+	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("delete postgres memory context edges: %w", err)
 	}
+	if err := requirePostgresColdMemoryRowsAffected("delete postgres cold memory contexts", deleteContextTag.RowsAffected(), expectedContextRowsAffected); err != nil {
+		return logicdomain.MemoryRecycleResult{}, err
+	}
 	deleteMemorySQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.memoryNodesTable())
-	if _, err := tx.Exec(callCtx, deleteMemorySQL, idArgs); err != nil {
+	deleteMemoryTag, err := tx.Exec(callCtx, deleteMemorySQL, idArgs)
+	if err != nil {
 		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("delete postgres cold memories: %w", err)
 	}
+	if err := requirePostgresColdMemoryRowsAffected("delete postgres cold memories", deleteMemoryTag.RowsAffected(), expectedMemoryRowsAffected); err != nil {
+		return logicdomain.MemoryRecycleResult{}, err
+	}
+	result := logicdomain.MemoryRecycleResult{
+		BatchID:              batchID,
+		RecycledMemoryCount:  int(expectedMemoryRowsAffected),
+		RecycledContextCount: int(expectedContextRowsAffected),
+		RecycledVectorIDs:    normalizeStringList(vectorIDs),
+	}
 	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.MemoryRecycleResult{}, fmt.Errorf("commit postgres cold-memory recycle tx: %w", err)
+		return result, postgresCommitOutcomeUncertainError("recycle cold memories", "commit postgres cold-memory recycle tx", err)
 	}
 
-	return logicdomain.MemoryRecycleResult{
-		BatchID:              batchID,
-		RecycledMemoryCount:  int(insertMemoryTag.RowsAffected()),
-		RecycledContextCount: int(insertContextTag.RowsAffected()),
-		RecycledVectorIDs:    normalizeStringList(vectorIDs),
-	}, nil
+	return result, nil
+}
+
+// requirePostgresColdMemoryRowsAffected rejects cold-memory recycle drift before the transaction commits and vector cleanup coordinates are returned.
+// requirePostgresColdMemoryRowsAffected 用于在事务提交和返回向量清理坐标前拒绝 cold-memory 回收行数漂移。
+func requirePostgresColdMemoryRowsAffected(action string, rowsAffected, expectedRows int64) error {
+	return postgresRowsAffectedDriftError(action, rowsAffected, expectedRows)
 }
 
 // RecycleIdleSessions compacts long-idle PostgreSQL sessions by moving stale session memories and eligible old turns into trash tables before removing them from the hot tables.
@@ -196,6 +230,9 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 	for len(result.BatchIDs) < limit && inspectedSessionCount < inspectionBudget {
 		sessionResult, recycleErr := recycleOne(excludedSessionIDs)
 		if recycleErr != nil {
+			if sessionResult.BatchID != 0 {
+				appendPostgresIdleSessionRecycleResult(&result, sessionResult)
+			}
 			result.BatchIDs = normalizeUint64List(result.BatchIDs)
 			result.SessionIDs = normalizeUint64List(result.SessionIDs)
 			result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
@@ -211,17 +248,27 @@ func collectPostgresIdleSessionRecyclePass(limit int, recycleOne func(excludedSe
 			continue
 		}
 		inspectedSessionCount++
-		result.BatchIDs = append(result.BatchIDs, sessionResult.BatchID)
-		result.SessionIDs = append(result.SessionIDs, sessionResult.SessionID)
-		result.RecycledMemoryCount += sessionResult.RecycledMemoryCount
-		result.RecycledContextCount += sessionResult.RecycledContextCount
-		result.RecycledTurnCount += sessionResult.RecycledTurnCount
-		result.RecycledVectorIDs = append(result.RecycledVectorIDs, sessionResult.RecycledVectorIDs...)
+		appendPostgresIdleSessionRecycleResult(&result, sessionResult)
 	}
 	result.BatchIDs = normalizeUint64List(result.BatchIDs)
 	result.SessionIDs = normalizeUint64List(result.SessionIDs)
 	result.RecycledVectorIDs = normalizeStringList(result.RecycledVectorIDs)
 	return result, nil
+}
+
+// appendPostgresIdleSessionRecycleResult merges one single-session recycle result into the public aggregate while preserving vector cleanup coordinates for uncertain commit boundaries.
+// appendPostgresIdleSessionRecycleResult 用于把单个 session 回收结果合并进公开聚合结果，并在提交结果不明边界保留向量清理坐标。
+func appendPostgresIdleSessionRecycleResult(result *logicdomain.SessionIdleRecycleResult, sessionResult postgresIdleSessionRecycleResult) {
+	if result == nil || sessionResult.BatchID == 0 {
+		return
+	}
+	result.BatchIDs = append(result.BatchIDs, sessionResult.BatchID)
+	result.SessionIDs = append(result.SessionIDs, sessionResult.SessionID)
+	result.RecycledMemoryCount += sessionResult.RecycledMemoryCount
+	result.RecycledContextCount += sessionResult.RecycledContextCount
+	result.RecycledTurnCount += sessionResult.RecycledTurnCount
+	result.TurnDriftCount += sessionResult.TurnDriftCount
+	result.RecycledVectorIDs = append(result.RecycledVectorIDs, sessionResult.RecycledVectorIDs...)
 }
 
 // postgresIdleSessionInspectionBudget gives each recycle pass a small bounded amount of extra inspection headroom so a few race-window no-op sessions do not starve later real work, without turning one maintenance pass into an unbounded scan.
@@ -283,35 +330,73 @@ FOR UPDATE SKIP LOCKED
 	}
 
 	batchArgs := toInt64List(normalizedBatchIDs)
+	// Count trash rows before permanent deletion so every selected batch proves its data rows and metadata disappear together.
+	// 在永久删除前统计 trash 行，确保每个已选批次的数据行与元数据能够一起被确认清除。
+	countContextTrashSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE batch_id = ANY($1)`, r.memoryContextEdgesTrashTable())
+	var expectedContextRowsAffected int64
+	if err := tx.QueryRow(callCtx, countContextTrashSQL, batchArgs).Scan(&expectedContextRowsAffected); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("count postgres memory-context trash rows: %w", err)
+	}
+	countMemoryTrashSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE batch_id = ANY($1)`, r.memoryNodesTrashTable())
+	var expectedMemoryRowsAffected int64
+	if err := tx.QueryRow(callCtx, countMemoryTrashSQL, batchArgs).Scan(&expectedMemoryRowsAffected); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("count postgres memory trash rows: %w", err)
+	}
+	countTurnTrashSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE batch_id = ANY($1)`, r.turnsTrashTable())
+	var expectedTurnRowsAffected int64
+	if err := tx.QueryRow(callCtx, countTurnTrashSQL, batchArgs).Scan(&expectedTurnRowsAffected); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("count postgres turn trash rows: %w", err)
+	}
+
 	deleteContextTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, r.memoryContextEdgesTrashTable())
 	contextTag, err := tx.Exec(callCtx, deleteContextTrashSQL, batchArgs)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres memory-context trash rows: %w", err)
+	}
+	if err := requirePostgresTrashPurgeRowsAffected("delete postgres memory-context trash rows", contextTag.RowsAffected(), expectedContextRowsAffected); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
 	}
 	deleteMemoryTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, r.memoryNodesTrashTable())
 	memoryTag, err := tx.Exec(callCtx, deleteMemoryTrashSQL, batchArgs)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres memory trash rows: %w", err)
 	}
+	if err := requirePostgresTrashPurgeRowsAffected("delete postgres memory trash rows", memoryTag.RowsAffected(), expectedMemoryRowsAffected); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
+	}
 	deleteTurnTrashSQL := fmt.Sprintf(`DELETE FROM %s WHERE batch_id = ANY($1)`, r.turnsTrashTable())
 	turnTag, err := tx.Exec(callCtx, deleteTurnTrashSQL, batchArgs)
 	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres turn trash rows: %w", err)
 	}
+	if err := requirePostgresTrashPurgeRowsAffected("delete postgres turn trash rows", turnTag.RowsAffected(), expectedTurnRowsAffected); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
+	}
 	deleteBatchSQL := buildPostgresRecycleBatchDeleteSQL(r.recycleBatchesTable())
-	if _, err := tx.Exec(callCtx, deleteBatchSQL, batchArgs); err != nil {
+	batchTag, err := tx.Exec(callCtx, deleteBatchSQL, batchArgs)
+	if err != nil {
 		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("delete postgres recycle batch metadata: %w", err)
 	}
+	if err := requirePostgresTrashPurgeRowsAffected("delete postgres recycle batch metadata", batchTag.RowsAffected(), int64(len(normalizedBatchIDs))); err != nil {
+		return logicdomain.RetentionTrashPurgeResult{}, err
+	}
+	result := logicdomain.RetentionTrashPurgeResult{
+		BatchIDs:           normalizedBatchIDs,
+		PurgedMemoryCount:  int(expectedMemoryRowsAffected),
+		PurgedContextCount: int(expectedContextRowsAffected),
+		PurgedTurnCount:    int(expectedTurnRowsAffected),
+	}
 	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.RetentionTrashPurgeResult{}, fmt.Errorf("commit postgres trash purge tx: %w", err)
+		return result, postgresCommitOutcomeUncertainError("purge expired trash", "commit postgres trash purge tx", err)
 	}
 
-	return logicdomain.RetentionTrashPurgeResult{
-		BatchIDs:           normalizedBatchIDs,
-		PurgedMemoryCount:  int(memoryTag.RowsAffected()),
-		PurgedContextCount: int(contextTag.RowsAffected()),
-		PurgedTurnCount:    int(turnTag.RowsAffected()),
-	}, nil
+	return result, nil
+}
+
+// requirePostgresTrashPurgeRowsAffected rejects permanent trash purge drift before metadata deletion can commit an inconsistent purge boundary.
+// requirePostgresTrashPurgeRowsAffected 用于在批次元数据删除提交不一致 purge 边界前拒绝永久清理行数漂移。
+func requirePostgresTrashPurgeRowsAffected(action string, rowsAffected, expectedRows int64) error {
+	return postgresRowsAffectedDriftError(action, rowsAffected, expectedRows)
 }
 
 // buildPostgresRecycleBatchDeleteSQL builds the final metadata-delete statement used after one purge pass has already detached every trash row in the selected batch set.
@@ -415,10 +500,10 @@ FOR UPDATE
 	}
 	normalizedMemoryIDs := normalizeUint64List(memoryIDs)
 
-	contextCount := 0
+	expectedContextRowsAffected := int64(0)
 	if len(normalizedMemoryIDs) > 0 {
 		contextCountSQL := fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE memory_id = ANY($1)`, r.memoryContextEdgesTable())
-		if err := tx.QueryRow(callCtx, contextCountSQL, toInt64List(normalizedMemoryIDs)).Scan(&contextCount); err != nil {
+		if err := tx.QueryRow(callCtx, contextCountSQL, toInt64List(normalizedMemoryIDs)).Scan(&expectedContextRowsAffected); err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("count postgres idle-session context edges for session %d: %w", session.ID, err)
 		}
 	}
@@ -446,12 +531,19 @@ SELECT id, session_id, project_id, dehydrated_content, dehydrated_budget, extrac
 FROM %s AS tr
 WHERE %s
 ORDER BY tr.id ASC
+FOR UPDATE
 `, strings.TrimSpace(recentTurnsCTE), r.turnsTable(), strings.Join(turnWhereClauses, " AND "))
 	turnRows, err := (&turnRepository{shared: r.shared}).queryTurnRecordsWithQueryer(callCtx, tx, strings.TrimSpace(turnSQL), turnArgs.Args()...)
 	if err != nil {
 		return postgresIdleSessionRecycleResult{}, fmt.Errorf("query postgres idle-session turns for session %d: %w", session.ID, err)
 	}
-	if len(normalizedMemoryIDs) == 0 && len(turnRows) == 0 {
+
+	turnIDs := make([]uint64, 0, len(turnRows))
+	for _, row := range turnRows {
+		turnIDs = append(turnIDs, row.ID)
+	}
+	normalizedTurnIDs := normalizeUint64List(turnIDs)
+	if len(normalizedMemoryIDs) == 0 && len(normalizedTurnIDs) == 0 {
 		return postgresIdleSessionRecycleResult{SessionID: session.ID}, nil
 	}
 
@@ -469,6 +561,7 @@ RETURNING id
 	recycledTurnCount := 0
 	if len(normalizedMemoryIDs) > 0 {
 		idArgs := toInt64List(normalizedMemoryIDs)
+		expectedMemoryRowsAffected := int64(len(normalizedMemoryIDs))
 		insertMemoryTrashSQL := fmt.Sprintf(`
 INSERT INTO %s (
 	batch_id, recycled_at, recycle_reason,
@@ -491,7 +584,9 @@ WHERE id = ANY($4)
 		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("copy postgres idle-session memories into trash for session %d: %w", session.ID, err)
 		}
-		recycledMemoryCount = int(memoryTag.RowsAffected())
+		if err := requirePostgresIdleSessionRowsAffected("copy postgres idle-session memories to trash", session.ID, memoryTag.RowsAffected(), expectedMemoryRowsAffected); err != nil {
+			return postgresIdleSessionRecycleResult{}, err
+		}
 
 		insertContextTrashSQL := fmt.Sprintf(`
 INSERT INTO %s (
@@ -505,26 +600,35 @@ SELECT $1, $2, $3,
 FROM %s
 WHERE memory_id = ANY($4)
 `, r.memoryContextEdgesTrashTable(), r.memoryContextEdgesTable())
-		if _, err := tx.Exec(callCtx, strings.TrimSpace(insertContextTrashSQL), batchID, recycledAt, reason, idArgs); err != nil {
+		contextTag, err := tx.Exec(callCtx, strings.TrimSpace(insertContextTrashSQL), batchID, recycledAt, reason, idArgs)
+		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("copy postgres idle-session memory context edges into trash for session %d: %w", session.ID, err)
 		}
+		if err := requirePostgresIdleSessionRowsAffected("copy postgres idle-session memory contexts to trash", session.ID, contextTag.RowsAffected(), expectedContextRowsAffected); err != nil {
+			return postgresIdleSessionRecycleResult{}, err
+		}
 		deleteContextSQL := fmt.Sprintf(`DELETE FROM %s WHERE memory_id = ANY($1)`, r.memoryContextEdgesTable())
-		if _, err := tx.Exec(callCtx, deleteContextSQL, idArgs); err != nil {
+		deleteContextTag, err := tx.Exec(callCtx, deleteContextSQL, idArgs)
+		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("delete postgres idle-session memory context edges for session %d: %w", session.ID, err)
 		}
+		if err := requirePostgresIdleSessionRowsAffected("delete postgres idle-session memory contexts", session.ID, deleteContextTag.RowsAffected(), expectedContextRowsAffected); err != nil {
+			return postgresIdleSessionRecycleResult{}, err
+		}
 		deleteMemorySQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.memoryNodesTable())
-		if _, err := tx.Exec(callCtx, deleteMemorySQL, idArgs); err != nil {
+		deleteMemoryTag, err := tx.Exec(callCtx, deleteMemorySQL, idArgs)
+		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("delete postgres idle-session memories for session %d: %w", session.ID, err)
 		}
+		if err := requirePostgresIdleSessionRowsAffected("delete postgres idle-session memories", session.ID, deleteMemoryTag.RowsAffected(), expectedMemoryRowsAffected); err != nil {
+			return postgresIdleSessionRecycleResult{}, err
+		}
+		recycledMemoryCount = int(expectedMemoryRowsAffected)
 	}
 
-	if len(turnRows) > 0 {
-		turnIDs := make([]uint64, 0, len(turnRows))
-		for _, row := range turnRows {
-			turnIDs = append(turnIDs, row.ID)
-		}
-		normalizedTurnIDs := normalizeUint64List(turnIDs)
+	if len(normalizedTurnIDs) > 0 {
 		turnArgs := toInt64List(normalizedTurnIDs)
+		expectedTurnRowsAffected := int64(len(normalizedTurnIDs))
 		insertTurnTrashSQL := fmt.Sprintf(`
 INSERT INTO %s (
 	batch_id, recycled_at, recycle_reason,
@@ -541,24 +645,38 @@ WHERE id = ANY($4)
 		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("copy postgres idle-session turns into trash for session %d: %w", session.ID, err)
 		}
-		recycledTurnCount = int(turnTag.RowsAffected())
+		if err := requirePostgresIdleSessionRowsAffected("copy postgres idle-session turns to trash", session.ID, turnTag.RowsAffected(), expectedTurnRowsAffected); err != nil {
+			return postgresIdleSessionRecycleResult{}, err
+		}
 		deleteTurnSQL := fmt.Sprintf(`DELETE FROM %s WHERE id = ANY($1)`, r.turnsTable())
-		if _, err := tx.Exec(callCtx, deleteTurnSQL, turnArgs); err != nil {
+		deleteTurnTag, err := tx.Exec(callCtx, deleteTurnSQL, turnArgs)
+		if err != nil {
 			return postgresIdleSessionRecycleResult{}, fmt.Errorf("delete postgres idle-session turns for session %d: %w", session.ID, err)
 		}
+		if err := requirePostgresIdleSessionRowsAffected("delete postgres idle-session turns", session.ID, deleteTurnTag.RowsAffected(), expectedTurnRowsAffected); err != nil {
+			return postgresIdleSessionRecycleResult{}, err
+		}
+		recycledTurnCount = int(expectedTurnRowsAffected)
 	}
 
-	if err := tx.Commit(callCtx); err != nil {
-		return postgresIdleSessionRecycleResult{}, fmt.Errorf("commit postgres idle-session recycle tx for session %d: %w", session.ID, err)
-	}
-	return postgresIdleSessionRecycleResult{
+	result := postgresIdleSessionRecycleResult{
 		BatchID:              batchID,
 		SessionID:            session.ID,
 		RecycledMemoryCount:  recycledMemoryCount,
-		RecycledContextCount: contextCount,
+		RecycledContextCount: int(expectedContextRowsAffected),
 		RecycledTurnCount:    recycledTurnCount,
 		RecycledVectorIDs:    normalizeStringList(vectorIDs),
-	}, nil
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresCommitOutcomeUncertainError("recycle idle-session rows", fmt.Sprintf("commit postgres idle-session recycle tx for session %d", session.ID), err)
+	}
+	return result, nil
+}
+
+// requirePostgresIdleSessionRowsAffected rejects idle-session recycle drift before the transaction commits and vector cleanup coordinates are returned.
+// requirePostgresIdleSessionRowsAffected 用于在事务提交和返回向量清理坐标前拒绝 idle-session 回收行数漂移。
+func requirePostgresIdleSessionRowsAffected(action string, sessionID uint64, rowsAffected, expectedRows int64) error {
+	return postgresRowsAffectedDriftError(fmt.Sprintf("%s for session %d", action, sessionID), rowsAffected, expectedRows)
 }
 
 // buildPostgresIdleSessionCandidateAvailabilityClause prefilters idle-session candidates to only sessions that already expose recyclable stale session memories or old turns, so no-op oldest sessions do not block later useful work.

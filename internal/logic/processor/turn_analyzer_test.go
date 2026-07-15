@@ -235,7 +235,7 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 // TestParseTurnAnalysisResponseRejectsInvalidCategory verifies invalid enum values are surfaced as structured LLM output errors instead of being silently accepted.
 // TestParseTurnAnalysisResponseRejectsInvalidCategory 用于验证无效枚举值会被作为结构化 LLM 输出错误暴露，而不是被静默接受。
 func TestParseTurnAnalysisResponseRejectsInvalidCategory(t *testing.T) {
-	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":99,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep"}],"profile_nodes":[]}`)
+	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":99,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep","admission_reason":""}],"profile_nodes":[]}`)
 	if err == nil {
 		t.Fatal("expected invalid category error")
 	}
@@ -247,12 +247,54 @@ func TestParseTurnAnalysisResponseRejectsInvalidCategory(t *testing.T) {
 // TestParseTurnAnalysisResponseRejectsInvalidContextRelation verifies unsupported context-edge relations are rejected instead of leaking malformed evidence into persistence.
 // TestParseTurnAnalysisResponseRejectsInvalidContextRelation 用于验证不支持的 context-edge relation 会被拒绝，避免畸形证据漏进持久化层。
 func TestParseTurnAnalysisResponseRejectsInvalidContextRelation(t *testing.T) {
-	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep","context_edges":[{"context_key":"stage","context_value":"phase4","relation":"unknown"}]}],"profile_nodes":[]}`)
+	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep","admission_reason":"","context_edges":[{"context_key":"stage","context_value":"phase4","relation":"unknown"}]}],"profile_nodes":[]}`)
 	if err == nil {
 		t.Fatal("expected invalid context relation error")
 	}
 	if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
 		t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+	}
+}
+
+// TestParseTurnAnalysisResponseRejectsMissingContextRelation verifies context edges cannot silently default missing relation to support.
+// TestParseTurnAnalysisResponseRejectsMissingContextRelation 用于验证 context edge 不能把缺失 relation 静默默认为 support。
+func TestParseTurnAnalysisResponseRejectsMissingContextRelation(t *testing.T) {
+	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep","admission_reason":"","context_edges":[{"context_key":"stage","context_value":"phase4"}]}],"profile_nodes":[]}`)
+	if err == nil {
+		t.Fatal("expected missing context relation error")
+	}
+	if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
+		t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+	}
+}
+
+// TestParseTurnAnalysisResponseRejectsMissingContextKeyOrValue verifies malformed context edges surface as LLM output errors instead of being silently dropped.
+// TestParseTurnAnalysisResponseRejectsMissingContextKeyOrValue 用于验证畸形 context edge 会作为 LLM 输出错误暴露，而不是被静默丢弃。
+func TestParseTurnAnalysisResponseRejectsMissingContextKeyOrValue(t *testing.T) {
+	tests := []struct {
+		name string
+		edge string
+	}{
+		{
+			name: "missing key",
+			edge: `{"context_value":"phase4","relation":"support"}`,
+		},
+		{
+			name: "missing value",
+			edge: `{"context_key":"stage","relation":"support"}`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			raw := `{"user_input_kind":"mixed","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"bad","details":"bad","evidence_source":"mixed","admission":"keep","admission_reason":"","context_edges":[` + tt.edge + `]}],"profile_nodes":[]}`
+			_, err := parseTurnAnalysisResponse(raw)
+			if err == nil {
+				t.Fatal("expected missing context key/value error")
+			}
+			if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
+				t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+			}
+		})
 	}
 }
 
@@ -269,6 +311,7 @@ func TestParseTurnAnalysisResponseNormalizesEquivalentContextValues(t *testing.T
 			"details": "schema compatibility",
 			"evidence_source": "mixed",
 			"admission": "keep",
+			"admission_reason": "",
 			"context_edges": [
 				{"context_key":"deployment-mode","context_value":"LOCAL_OSS","relation":"support"},
 				{"context_key":"deployment mode","context_value":"local oss","relation":"support"}
@@ -444,11 +487,49 @@ func TestTurnAnalyzerPropagatesModelFailure(t *testing.T) {
 // TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata verifies the stricter postaction_l1_main contract rejects payloads that omit the new admission metadata fields.
 // TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata 用于验证更严格的 postaction_l1_main 契约会拒绝缺失新准入元数据字段的载荷。
 func TestParseTurnAnalysisResponseRejectsMissingAdmissionMetadata(t *testing.T) {
-	_, err := parseTurnAnalysisResponse(`{"turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"keep","details":"keep"}],"profile_nodes":[{"profile_type":1,"content":"项目事实"}]}`)
+	_, err := parseTurnAnalysisResponse(`{"user_input_kind":"statement","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"keep","details":"keep"}],"profile_nodes":[{"profile_type":1,"content":"项目事实"}]}`)
 	if err == nil {
 		t.Fatal("expected strict metadata validation error")
 	}
 	if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
 		t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+	}
+}
+
+// TestParseTurnAnalysisResponseValidatesAdmissionReasonContract verifies L1 parsing rejects admission_reason values that do not match the keep/drop decision semantics.
+// TestParseTurnAnalysisResponseValidatesAdmissionReasonContract 用于验证 L1 解析会拒绝不符合 keep/drop 结论语义的 admission_reason 值。
+func TestParseTurnAnalysisResponseValidatesAdmissionReasonContract(t *testing.T) {
+	tests := []struct {
+		name string
+		raw  string
+	}{
+		{
+			name: "memory keep requires explicit empty reason field",
+			raw:  `{"user_input_kind":"statement","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"keep","details":"keep","evidence_source":"user_asserted","admission":"keep"}],"profile_nodes":[]}`,
+		},
+		{
+			name: "memory drop requires supported rejection reason",
+			raw:  `{"user_input_kind":"statement","turn_id":1,"details":"","memory_nodes":[{"category":4,"abstract":"drop","details":"drop","evidence_source":"assistant_general_knowledge","admission":"drop","admission_reason":""}],"profile_nodes":[]}`,
+		},
+		{
+			name: "profile keep rejects rejection reason",
+			raw:  `{"user_input_kind":"statement","turn_id":1,"details":"","memory_nodes":[],"profile_nodes":[{"profile_type":1,"content":"项目事实","evidence_source":"user_asserted","admission":"keep","admission_reason":"non_durable"}]}`,
+		},
+		{
+			name: "profile drop requires reason field",
+			raw:  `{"user_input_kind":"statement","turn_id":1,"details":"","memory_nodes":[],"profile_nodes":[{"profile_type":1,"content":"短暂状态","evidence_source":"assistant_external_research","admission":"drop"}]}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := parseTurnAnalysisResponse(tt.raw)
+			if err == nil {
+				t.Fatal("expected admission_reason contract error")
+			}
+			if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
+				t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+			}
+		})
 	}
 }

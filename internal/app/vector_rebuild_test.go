@@ -387,6 +387,94 @@ func TestRunVectorRebuildWithPortsSplitRecoversAfterSidecarUpsertFailure(t *test
 	}
 }
 
+// TestRunVectorRebuildWithPortsSplitReportsOutcomeUncertainWhenAutomaticRepairFails verifies failed repair attempts preserve already-finished durable write counts and surface partial side effects.
+// TestRunVectorRebuildWithPortsSplitReportsOutcomeUncertainWhenAutomaticRepairFails 用于验证自动修复失败时会保留已经完成的 durable 写入计数，并显式暴露局部副作用。
+func TestRunVectorRebuildWithPortsSplitReportsOutcomeUncertainWhenAutomaticRepairFails(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.Embedding.Dimension = 2
+	initialRecords := []logicdomain.MemoryRecord{
+		{ID: "vec-31", Text: "memory thirty one", Vector: []float32{31, 31}},
+		{ID: "vec-32", Text: "memory thirty two", Vector: []float32{32, 32}},
+	}
+
+	workspace := &stubMaintenanceWorkspace{
+		projects: []logicdomain.ProjectRecord{{ID: 31}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{
+			31: initialRecords,
+		},
+	}
+	durable := newStubVectorDurableStore(initialRecords)
+	embedding := &stubVectorEmbeddingClient{
+		responses: []appports.EmbeddingResponse{{
+			Vectors: [][]float32{{3, 1}, {3, 2}},
+		}},
+	}
+	vector := newStubMaintenanceVectorStore(initialRecords)
+	vector.expectedVectorDimension = 3
+
+	report, err := runVectorRebuildWithPorts(context.Background(), cfg, embedding, workspace, durable, vector, nil)
+	if err == nil {
+		t.Fatal("expected failed automatic repair")
+	}
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain repair failure, got %T %v", err, err)
+	}
+	if report.DurableRowsUpdated != 2 || report.VectorRowsRebuilt != 0 {
+		t.Fatalf("unexpected partial report after failed repair: %+v", report)
+	}
+	if durable.replaceCalls != 2 {
+		t.Fatalf("expected initial replacement plus failed repair replacement, got %d", durable.replaceCalls)
+	}
+	if vector.recreateCalls != 2 {
+		t.Fatalf("expected initial reset plus failed repair reset, got %d", vector.recreateCalls)
+	}
+	if got := durable.current["vec-31"].Vector; len(got) != 2 || got[0] != 3 || got[1] != 1 {
+		t.Fatalf("expected durable vec-31 to reflect completed replacement, got %+v", got)
+	}
+}
+
+// TestRunVectorRebuildWithPortsSplitDoesNotRepairBeforeReset verifies pre-reset failures stop without launching a destructive repair attempt.
+// TestRunVectorRebuildWithPortsSplitDoesNotRepairBeforeReset 用于验证 reset 前失败会直接停止，不会启动破坏性修复尝试。
+func TestRunVectorRebuildWithPortsSplitDoesNotRepairBeforeReset(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.Embedding.Dimension = 2
+	initialRecords := []logicdomain.MemoryRecord{
+		{ID: "vec-33", Text: "memory thirty three", Vector: []float32{33, 33}},
+	}
+
+	workspace := &stubMaintenanceWorkspace{
+		projects: []logicdomain.ProjectRecord{{ID: 33}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{
+			33: initialRecords,
+		},
+	}
+	durable := newStubVectorDurableStore(initialRecords)
+	embedding := &stubVectorEmbeddingClient{
+		responses: []appports.EmbeddingResponse{{
+			Vectors: [][]float32{{3, 3}},
+		}},
+	}
+	vector := newStubMaintenanceVectorStore(initialRecords)
+	vector.recreateErr = errors.New("drop table failed before reset")
+
+	report, err := runVectorRebuildWithPorts(context.Background(), cfg, embedding, workspace, durable, vector, nil)
+	if err == nil {
+		t.Fatal("expected pre-reset recreate failure")
+	}
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected ordinary pre-reset failure, got %T %v", err, err)
+	}
+	if report.DurableRowsUpdated != 0 || report.VectorRowsRebuilt != 0 {
+		t.Fatalf("unexpected pre-reset report: %+v", report)
+	}
+	if vector.recreateCalls != 1 {
+		t.Fatalf("expected no automatic repair recreate, got %d calls", vector.recreateCalls)
+	}
+	if durable.clearCalls != 0 || durable.replaceCalls != 0 {
+		t.Fatalf("expected no durable side effects, got clear=%d replace=%d", durable.clearCalls, durable.replaceCalls)
+	}
+}
+
 // TestRunVectorRebuildWithPortsCombinedDelaysMigrationUntilEmbeddingsReady verifies combined mode does not touch PostgreSQL vector columns until every refreshed embedding has been prepared successfully.
 // TestRunVectorRebuildWithPortsCombinedDelaysMigrationUntilEmbeddingsReady 用于验证合并模式会等全部新 embedding 准备成功后才触碰 PostgreSQL 向量列。
 func TestRunVectorRebuildWithPortsCombinedDelaysMigrationUntilEmbeddingsReady(t *testing.T) {
@@ -437,7 +525,7 @@ func TestWaitVectorRebuildBudgetWindowHonorsContextCancellation(t *testing.T) {
 // TestLoadVectorRebuildRecordsPrefersMaintenanceProjectAndMemoryListers 用于验证当 workspace store 暴露维护专用的项目与记忆枚举能力时，一次性重建会优先走维护路径。
 func TestLoadVectorRebuildRecordsPrefersMaintenanceProjectAndMemoryListers(t *testing.T) {
 	workspace := &stubMaintenanceWorkspace{
-		projects: []logicdomain.ProjectRecord{{ID: 88}},
+		projects:            []logicdomain.ProjectRecord{{ID: 88}},
 		maintenanceProjects: []logicdomain.ProjectRecord{{ID: 99}},
 		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{
 			88: {{ID: "online-record"}},
@@ -664,6 +752,7 @@ type stubMaintenanceVectorStore struct {
 	upsertCalls             int
 	upsertErrAtCall         int
 	upsertErr               error
+	recreateErr             error
 	current                 map[string]logicdomain.MemoryRecord
 	expectedVectorDimension int
 }
@@ -729,8 +818,11 @@ func (*stubMaintenanceVectorStore) Shutdown(context.Context) error {
 // RecreateTable records one split-mode sidecar table recreation.
 // RecreateTable 用于记录一次分离模式旁路表重建。
 func (s *stubMaintenanceVectorStore) RecreateTable(context.Context) error {
-	s.recreated = true
 	s.recreateCalls++
+	if s.recreateErr != nil {
+		return s.recreateErr
+	}
+	s.recreated = true
 	s.current = make(map[string]logicdomain.MemoryRecord)
 	return nil
 }

@@ -64,7 +64,7 @@ func (r *vectorRepository) RebuildMemoryVectorDimensions(ctx context.Context, re
 		return fmt.Errorf("recreate postgres vector index inside dimension rebuild tx: %w", err)
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return fmt.Errorf("commit postgres vector dimension rebuild tx: %w", err)
+		return postgresCommitOutcomeUncertainError("rebuild vector dimensions", "commit postgres vector dimension rebuild tx", err)
 	}
 	return nil
 }

@@ -70,14 +70,14 @@ func buildScopedMemorySearchFilter(userTarget, projectTarget logicdomain.Profile
 	return filter
 }
 
-// normalizePreCheckRecallMode folds omitted and future mode values into the currently supported runtime branches so older servers can stay compatible with newer plugin payloads.
-// normalizePreCheckRecallMode 用于把省略值和未来模式值折叠到当前受支持的运行时分支中，让旧服务端也能兼容较新的插件载荷。
-func normalizePreCheckRecallMode(mode PreCheckRecallMode) PreCheckRecallMode {
+// NormalizePreCheckRecallMode preserves the two explicit runtime strategies and folds omitted or unknown values into the safe compact-aware default.
+// NormalizePreCheckRecallMode 用于保留两种显式运行策略，并把省略值或未知值折叠到安全的 compact-aware 默认策略。
+func NormalizePreCheckRecallMode(mode PreCheckRecallMode) PreCheckRecallMode {
 	switch mode {
-	case PreCheckRecallModeLegacy:
-		return PreCheckRecallModeLegacy
 	case PreCheckRecallModeSessionCompact:
 		return PreCheckRecallModeSessionCompact
+	case PreCheckRecallModeFull:
+		return PreCheckRecallModeFull
 	default:
 		return PreCheckRecallModeSessionCompact
 	}
@@ -89,7 +89,7 @@ func buildPreCheckSessionBoundaryFilter(session logicdomain.SessionRef, mode Pre
 	if session.SessionID == 0 {
 		return logicdomain.SearchFilter{}
 	}
-	if normalizePreCheckRecallMode(mode) == PreCheckRecallModeLegacy {
+	if NormalizePreCheckRecallMode(mode) == PreCheckRecallModeFull {
 		return logicdomain.SearchFilter{}
 	}
 	filter := logicdomain.SearchFilter{

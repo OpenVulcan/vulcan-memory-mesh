@@ -13,6 +13,121 @@ import (
 	"time"
 )
 
+// supportedEnvOverrideValuePaths maps process-level VMM_* overrides to the config fields that are allowed to opt into each override.
+// supportedEnvOverrideValuePaths 用于把进程级 VMM_* 覆盖映射到允许显式启用该覆盖的配置字段路径。
+var supportedEnvOverrideValuePaths = map[string][]string{
+	"VMM_GRPC_LISTEN_ADDR":                              {"grpc.listen_addr"},
+	"VMM_GRPC_MAX_RECEIVE_MESSAGE_BYTES":                {"grpc.max_receive_message_bytes"},
+	"VMM_GRPC_WORKSPACE_TIMEOUT":                        {"grpc.request_timeout.workspace"},
+	"VMM_GRPC_PRE_CHECK_TIMEOUT":                        {"grpc.request_timeout.pre_check"},
+	"VMM_GRPC_POST_ACTION_TIMEOUT":                      {"grpc.request_timeout.post_action"},
+	"VMM_GRPC_SHUTDOWN_TIMEOUT":                         {"grpc.shutdown_timeout"},
+	"VMM_GRPC_KEEPALIVE_ENABLED":                        {"grpc.keepalive.enabled"},
+	"VMM_GRPC_KEEPALIVE_TIME":                           {"grpc.keepalive.time"},
+	"VMM_GRPC_KEEPALIVE_TIMEOUT":                        {"grpc.keepalive.timeout"},
+	"VMM_GRPC_KEEPALIVE_MAX_CONNECTION_IDLE":            {"grpc.keepalive.max_connection_idle"},
+	"VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE":             {"grpc.keepalive.max_connection_age"},
+	"VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE_GRACE":       {"grpc.keepalive.max_connection_age_grace"},
+	"VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL":              {"grpc.keepalive.min_ping_interval"},
+	"VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM":          {"grpc.keepalive.permit_without_stream"},
+	"VMM_LOG_LEVEL":                                     {"logging.level"},
+	"VMM_LOG_FORMAT":                                    {"logging.format"},
+	"VMM_LOG_DEBUG_RPC_PAYLOADS":                        {"logging.debug_rpc_payloads"},
+	"VMM_LOG_LLM_OUTPUT_ENABLED":                        {"logging.llm_output_enabled"},
+	"VMM_LOG_PROTECT_PAYLOADS":                          {"logging.protect_payloads"},
+	"VMM_LOG_PAYLOAD_ENCRYPTION_KEY":                    {"logging.payload_encryption_key"},
+	"VMM_PII_DEFAULT_LANGUAGE":                          {"pii.default_language"},
+	"VMM_NOISE_ENABLED":                                 {"noise.enabled"},
+	"VMM_NOISE_DEFAULT_LANGUAGE":                        {"noise.default_language"},
+	"VMM_NOISE_SEMANTIC_ENABLED":                        {"noise.semantic_enabled"},
+	"VMM_NOISE_SEMANTIC_THRESHOLD":                      {"noise.semantic_threshold"},
+	"VMM_PROMPTS_PROMPT_LANGUAGE":                       {"prompts.prompt_language"},
+	"VMM_STORAGE_MODE":                                  {"storage.mode"},
+	"VMM_STORAGE_COMBINED_PROVIDER":                     {"storage.combined_provider"},
+	"VMM_SQLITE_ADDRESS":                                {"sqlite.address"},
+	"VMM_SQLITE_TIMEOUT":                                {"sqlite.timeout"},
+	"VMM_SQLITE_TOKENIZER_MODE":                         {"sqlite.tokenizer_mode"},
+	"VMM_LANCEDB_ADDRESS":                               {"lancedb.address"},
+	"VMM_LANCEDB_TIMEOUT":                               {"lancedb.timeout"},
+	"VMM_LANCEDB_TABLE_NAME":                            {"lancedb.table_name"},
+	"VMM_LANCEDB_VECTOR_COLUMN":                         {"lancedb.vector_column"},
+	"VMM_POSTGRES_DSN":                                  {"postgres.dsn"},
+	"VMM_POSTGRES_SCHEMA":                               {"postgres.schema"},
+	"VMM_POSTGRES_FLAVOR":                               {"postgres.flavor"},
+	"VMM_POSTGRES_QUERY_TIMEOUT":                        {"postgres.query_timeout"},
+	"VMM_POSTGRES_CONNECT_TIMEOUT":                      {"postgres.connect_timeout"},
+	"VMM_POSTGRES_MAX_OPEN_CONNS":                       {"postgres.max_open_conns"},
+	"VMM_POSTGRES_MIN_IDLE_CONNS":                       {"postgres.min_idle_conns"},
+	"VMM_POSTGRES_AUTO_CREATE_EXTENSIONS":               {"postgres.auto_create_extensions"},
+	"VMM_POSTGRES_BM25_INDEX_CONCURRENTLY":              {"postgres.bm25_index_concurrently"},
+	"VMM_POSTGRES_BM25_INDEX_NAME":                      {"postgres.bm25_index_name"},
+	"VMM_POSTGRES_TRGM_SIMILARITY_THRESHOLD":            {"postgres.trgm_similarity_threshold"},
+	"VMM_POSTGRES_VECTOR_LISTS":                         {"postgres.vector_lists"},
+	"VMM_POSTGRES_VECTOR_PROBES":                        {"postgres.vector_probes"},
+	"VMM_POSTGRES_MIGRATION_BATCH_SIZE":                 {"postgres.migration_batch_size"},
+	"VMM_MAINTENANCE_TOOL_POSTGRES_READ_TIMEOUT":        {"maintenance_tool.postgres.read_timeout"},
+	"VMM_MAINTENANCE_TOOL_POSTGRES_WRITE_TIMEOUT":       {"maintenance_tool.postgres.write_timeout"},
+	"VMM_MAINTENANCE_TOOL_VECTOR_REBUILD_BATCH_SIZE":    {"maintenance_tool.vector_rebuild_batch_size"},
+	"VMM_EMBED_PROVIDER":                                {"embedding.provider"},
+	"VMM_EMBED_ENDPOINT":                                {"embedding.endpoint"},
+	"VMM_EMBED_API_KEYS":                                {"embedding.api_keys"},
+	"VMM_EMBED_RPM":                                     {"embedding.rpm"},
+	"VMM_EMBED_TPM":                                     {"embedding.tpm"},
+	"VMM_EMBED_RPD":                                     {"embedding.rpd"},
+	"VMM_EMBED_MODEL":                                   {"embedding.model"},
+	"VMM_EMBED_DIMENSION":                               {"embedding.dimension"},
+	"VMM_EMBED_MAX_BATCH_SIZE":                          {"embedding.max_batch_size"},
+	"VMM_EMBED_ORGANIZATION":                            {"embedding.organization"},
+	"VMM_EMBED_PROJECT":                                 {"embedding.project"},
+	"VMM_EMBED_KEY_FAILOVER_ENABLED":                    {"embedding.key_failover.enabled"},
+	"VMM_EMBED_KEY_FAILOVER_POLICY":                     {"embedding.key_failover.policy"},
+	"VMM_EMBED_KEY_FAILOVER_RESPECT_RETRY_AFTER":        {"embedding.key_failover.respect_retry_after"},
+	"VMM_EMBED_KEY_FAILOVER_RATE_LIMIT_COOLDOWN":        {"embedding.key_failover.rate_limit_cooldown"},
+	"VMM_EMBED_KEY_FAILOVER_QUOTA_COOLDOWN":             {"embedding.key_failover.quota_cooldown"},
+	"VMM_EMBED_KEY_FAILOVER_AUTH_COOLDOWN":              {"embedding.key_failover.auth_cooldown"},
+	"VMM_EMBED_KEY_FAILOVER_PROBE_AFTER_COOLDOWN":       {"embedding.key_failover.probe_after_cooldown"},
+	"VMM_RERANK_ENABLED":                                {"rerank.enabled"},
+	"VMM_RERANK_TOP_N":                                  {"rerank.top_n"},
+	"VMM_VECTOR_PROVIDER":                               {"vector.provider"},
+	"VMM_RELATIONAL_PROVIDER":                           {"relational.provider"},
+	"VMM_POST_ACTION_INPUT_MODE":                        {"post_action.input_mode"},
+	"VMM_POST_ACTION_SESSION_ANALYSIS_TURN_THRESHOLD":   {"post_action.session_analysis_turn_threshold"},
+	"VMM_POST_ACTION_SESSION_ANALYSIS_TOKEN_THRESHOLD":  {"post_action.session_analysis_token_threshold"},
+	"VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT":     {"post_action.session_analysis_idle_timeout"},
+	"VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS":    {"post_action.session_analysis_history_turns"},
+	"VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS": {"post_action.session_analysis_max_input_tokens"},
+	"VMM_POST_ACTION_MAX_QUEUE_WORKERS":                 {"post_action.max_queue_workers"},
+	"VMM_MEMORY_REPLACE_SCOPE":                          {"memory_replace_scope"},
+	"VMM_PRE_CHECK_INTENT_TIMEOUT":                      {"pre_check.intent_timeout"},
+	"VMM_PRE_CHECK_TOPK":                                {"pre_check.top_k"},
+	"VMM_PRE_CHECK_SEARCH_SCOPE":                        {"pre_check.search_scope"},
+	"VMM_PRE_CHECK_SIMILARITY_THRESHOLD":                {"pre_check.similarity_threshold"},
+	"VMM_RETENTION_ENABLED":                             {"retention.enabled"},
+	"VMM_RETENTION_RECYCLE_SCAN_INTERVAL":               {"retention.recycle_scan_interval"},
+	"VMM_RETENTION_TURN_KEEP_EXTRA_TURNS":               {"retention.turn_keep_extra_turns"},
+	"VMM_RETENTION_SESSION_IDLE_RECYCLE_AFTER":          {"retention.session_idle_recycle_after"},
+	"VMM_RETENTION_TRASH_RETENTION":                     {"retention.trash_retention"},
+	"VMM_RETENTION_PROTECT_PRIORITY_FLOOR":              {"retention.protect_priority_floor"},
+	"VMM_RETENTION_PROTECT_MEMORY_LEVEL_FLOOR":          {"retention.protect_memory_level_floor"},
+	"VMM_RETENTION_SKIP_PROTECTED_SHARED_MEMORIES":      {"retention.skip_protected_shared_memories"},
+	"VMM_MEMORY_MAX_SEARCH_KEYWORDS":                    {"memory_pipeline.max_search_keywords"},
+	"VMM_MEMORY_MIN_SIMILARITY_SCORE":                   {"memory_pipeline.min_similarity_score"},
+	"VMM_MEMORY_REPLACE_MIN_SIMILARITY_SCORE":           {"memory_pipeline.replace_min_similarity_score"},
+	"VMM_MEMORY_HARD_DEDUPE_COSINE_THRESHOLD":           {"memory_pipeline.hard_dedupe_cosine_threshold"},
+	"VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K":                 {"memory_pipeline.hard_dedupe_pool_top_k"},
+	"VMM_MEMORY_HYBRID_ENABLED":                         {"memory_pipeline.hybrid_enabled"},
+	"VMM_MEMORY_LEXICAL_TOP_K":                          {"memory_pipeline.lexical_top_k"},
+	"VMM_MEMORY_RRF_K":                                  {"memory_pipeline.rrf_k"},
+	"VMM_MEMORY_MMR_ENABLED":                            {"memory_pipeline.mmr_enabled"},
+	"VMM_MEMORY_MMR_LAMBDA":                             {"memory_pipeline.mmr_lambda"},
+	"VMM_MEMORY_WEIBULL_ENABLED":                        {"memory_pipeline.weibull_enabled"},
+	"VMM_MEMORY_WEIBULL_SHAPE":                          {"memory_pipeline.weibull_shape"},
+	"VMM_MEMORY_WEIBULL_SCALE_HOURS":                    {"memory_pipeline.weibull_scale_hours"},
+	"VMM_MEMORY_WEIBULL_MIN_MULTIPLIER":                 {"memory_pipeline.weibull_min_multiplier"},
+	"VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT":               {"memory_pipeline.weibull_reinforce_weight"},
+	"VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST":            {"memory_pipeline.weibull_cross_session_boost"},
+}
+
 // Validate verifies that the normalized config still satisfies the runtime contract before adapters and workflows are wired.
 // Validate 用于校验归一化后的配置是否仍满足运行时契约，再进入适配器装配和工作流执行阶段。
 func (c Config) Validate() error {
@@ -352,7 +467,7 @@ func validateRemovedAIEnvOverrides(referencedEnvKeys map[string]struct{}) error 
 func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []string {
 	// Reapply explicit process-level overrides after file-based expansion.
 	// 在文件占位符展开之后，再次应用进程级显式覆盖。
-	var parseWarnings []string
+	var parseFailures []string
 	setString := func(k string, target *string) {
 		if !envOverrideAllowed(referencedEnvKeys, k) {
 			return
@@ -380,7 +495,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 			if n, err := strconv.Atoi(v); err == nil {
 				*target = n
 			} else {
-				parseWarnings = append(parseWarnings, k)
+				parseFailures = append(parseFailures, k)
 			}
 		}
 	}
@@ -391,6 +506,8 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.ParseFloat(v, 64); err == nil {
 				*target = n
+			} else {
+				parseFailures = append(parseFailures, k)
 			}
 		}
 	}
@@ -401,6 +518,8 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.ParseFloat(v, 64); err == nil {
 				*target = float64Ptr(n)
+			} else {
+				parseFailures = append(parseFailures, k)
 			}
 		}
 	}
@@ -411,6 +530,8 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := strconv.ParseBool(v); err == nil {
 				*target = n
+			} else {
+				parseFailures = append(parseFailures, k)
 			}
 		}
 	}
@@ -421,6 +542,8 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
 			if n, err := time.ParseDuration(v); err == nil {
 				target.Duration = n
+			} else {
+				parseFailures = append(parseFailures, k)
 			}
 		}
 	}
@@ -527,6 +650,8 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 			if n, err := strconv.Atoi(v); err == nil {
 				cfg.MemoryPipeline.HardDedupePoolTopK = n
 				cfg.MemoryPipeline.hardDedupePoolTopKSet = true
+			} else {
+				parseFailures = append(parseFailures, "VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K")
 			}
 		}
 	}
@@ -541,7 +666,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setFloat("VMM_MEMORY_WEIBULL_MIN_MULTIPLIER", &cfg.MemoryPipeline.WeibullMinMultiplier)
 	setFloat("VMM_MEMORY_WEIBULL_REINFORCE_WEIGHT", &cfg.MemoryPipeline.WeibullReinforceWeight)
 	setFloat("VMM_MEMORY_WEIBULL_CROSS_SESSION_BOOST", &cfg.MemoryPipeline.WeibullCrossSessionBoost)
-	return parseWarnings
+	return parseFailures
 }
 
 // envOverrideAllowed reports whether one supported environment override key was explicitly referenced by the loaded config layers.

@@ -26,6 +26,23 @@ type projectDeletePlan struct {
 	DeletedProfiles int
 }
 
+// projectMigrationPlan records the exact source rows that one confirmed project migration must move before reporting success.
+// projectMigrationPlan 用于记录一次已确认项目迁移在报告成功前必须移动的精确源行。
+type projectMigrationPlan struct {
+	// MigratedSessions records session rows whose hierarchy ids move to the target project.
+	// MigratedSessions 用于记录层级 ID 会迁移到目标项目的 session 行数。
+	MigratedSessions int
+	// MigratedMessages records turn rows whose project id moves to the target project.
+	// MigratedMessages 用于记录 project id 会迁移到目标项目的 turn 行数。
+	MigratedMessages int
+	// MigratedMemories records SQL-backed memory rows whose project scope moves to the target project.
+	// MigratedMemories 用于记录项目范围会迁移到目标项目的 SQL 侧 memory 行数。
+	MigratedMemories int
+	// MigratedProfiles records project-scope profile nodes rebound from the source project to the target project.
+	// MigratedProfiles 用于记录从源项目重新绑定到目标项目的项目级画像节点数。
+	MigratedProfiles int
+}
+
 // userDeletePlan records the exact row categories that one user deletion will remove.
 // userDeletePlan 用于记录一次用户删除将真正移除的行类别。
 type userDeletePlan struct {
@@ -34,6 +51,15 @@ type userDeletePlan struct {
 	DeletedMessages int
 	DeletedMemories int
 	DeletedProfiles int
+	// DetachedProfiles records shared-scope profile nodes whose turn references must be cleared before deleting the user turns.
+	// DetachedProfiles 用于记录在删除用户 turn 前必须清除 turn 引用的共享范围画像节点数量。
+	DetachedProfiles int
+}
+
+// requirePostgresWorkspaceRowsAffected rejects workspace-admin row drift before a transaction reports destructive or migration success.
+// requirePostgresWorkspaceRowsAffected 用于在事务报告删除或迁移成功前拒绝 workspace 管理写入的行数漂移。
+func requirePostgresWorkspaceRowsAffected(action string, rowsAffected, expectedRows int64) error {
+	return postgresRowsAffectedDriftError(action, rowsAffected, expectedRows)
 }
 
 // EnsureProjectPath resolves or creates a Team/Space/Project path according to the confirm flag rules required by the admin RPCs.
@@ -120,23 +146,31 @@ func (r *workspaceRepository) EnsureProjectPath(ctx context.Context, projectPath
 		}
 		createdProject = true
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.ProjectMutationResult{}, fmt.Errorf("commit postgres ensure-project tx: %w", err)
-	}
+	result := logicdomain.ProjectMutationResult{}
 	if !createdProject {
-		return logicdomain.ProjectMutationResult{
+		result = logicdomain.ProjectMutationResult{
 			Project: project,
 			Message: fmt.Sprintf("project %s already exists", project.Path()),
 			Exists:  true,
-		}, nil
+		}
+	} else {
+		result = logicdomain.ProjectMutationResult{
+			Project:        project,
+			Message:        fmt.Sprintf("project %s created", project.Path()),
+			CreatedTeam:    createdTeam,
+			CreatedSpace:   createdSpace,
+			CreatedProject: createdProject,
+		}
 	}
-	return logicdomain.ProjectMutationResult{
-		Project:        project,
-		Message:        fmt.Sprintf("project %s created", project.Path()),
-		CreatedTeam:    createdTeam,
-		CreatedSpace:   createdSpace,
-		CreatedProject: createdProject,
-	}, nil
+	if !createdTeam && !createdSpace && !createdProject {
+		// Let the deferred rollback close the read-only ensure-project transaction when the full path already exists.
+		// 当完整项目路径已经存在时，让延迟 rollback 关闭只读 ensure-project 事务即可。
+		return result, nil
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresCommitOutcomeUncertainError("ensure project path", "commit postgres ensure-project tx", err)
+	}
+	return result, nil
 }
 
 // DeleteProjectPath deletes one resolved project plus its sessions, turn records, and SQL-backed memories when confirmation is explicit.
@@ -173,35 +207,60 @@ func (r *workspaceRepository) DeleteProjectPath(ctx context.Context, projectPath
 	}
 	whereSQL, args := r.buildProjectProfileNodesWhere(project.ID, project.SpaceID, project.TeamID, deletePlan.DeletedSpaces > 0, deletePlan.DeletedTeams > 0)
 	deleteProfileSQL := fmt.Sprintf(`DELETE FROM %s WHERE %s`, r.profileNodesTable(), whereSQL)
-	if _, err := tx.Exec(callCtx, deleteProfileSQL, args...); err != nil {
+	profileTag, err := tx.Exec(callCtx, deleteProfileSQL, args...)
+	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project profile nodes: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.memoryNodesTable()), int64(project.ID)); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres project profile nodes", profileTag.RowsAffected(), int64(deletePlan.DeletedProfiles)); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
+	memoryTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.memoryNodesTable()), int64(project.ID))
+	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project memory nodes: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.turnsTable()), int64(project.ID)); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres project memory nodes", memoryTag.RowsAffected(), int64(deletePlan.DeletedMemories)); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
+	turnTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.turnsTable()), int64(project.ID))
+	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project turn records: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.sessionsTable()), int64(project.ID)); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres project turn records", turnTag.RowsAffected(), int64(deletePlan.DeletedMessages)); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
+	sessionTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE project_id = $1`, r.sessionsTable()), int64(project.ID))
+	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project sessions: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.projectsTable()), int64(project.ID)); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres project sessions", sessionTag.RowsAffected(), int64(deletePlan.DeletedSessions)); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
+	projectTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.projectsTable()), int64(project.ID))
+	if err != nil {
 		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres project row: %w", err)
 	}
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres project row", projectTag.RowsAffected(), int64(deletePlan.DeletedProjects)); err != nil {
+		return logicdomain.ProjectDeleteResult{}, err
+	}
 	if deletePlan.DeletedSpaces > 0 {
-		if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.spacesTable()), int64(project.SpaceID)); err != nil {
+		spaceTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.spacesTable()), int64(project.SpaceID))
+		if err != nil {
 			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres empty project space row: %w", err)
+		}
+		if err := requirePostgresWorkspaceRowsAffected("delete postgres empty project space row", spaceTag.RowsAffected(), int64(deletePlan.DeletedSpaces)); err != nil {
+			return logicdomain.ProjectDeleteResult{}, err
 		}
 	}
 	if deletePlan.DeletedTeams > 0 {
-		if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.teamsTable()), int64(project.TeamID)); err != nil {
+		teamTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.teamsTable()), int64(project.TeamID))
+		if err != nil {
 			return logicdomain.ProjectDeleteResult{}, fmt.Errorf("delete postgres empty project team row: %w", err)
 		}
+		if err := requirePostgresWorkspaceRowsAffected("delete postgres empty project team row", teamTag.RowsAffected(), int64(deletePlan.DeletedTeams)); err != nil {
+			return logicdomain.ProjectDeleteResult{}, err
+		}
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.ProjectDeleteResult{}, fmt.Errorf("commit postgres delete-project tx: %w", err)
-	}
-	return logicdomain.ProjectDeleteResult{
+	result := logicdomain.ProjectDeleteResult{
 		Project:         project,
 		Message:         fmt.Sprintf("project %s deleted", project.Path()),
 		DeletedProjects: deletePlan.DeletedProjects,
@@ -211,7 +270,11 @@ func (r *workspaceRepository) DeleteProjectPath(ctx context.Context, projectPath
 		DeletedMessages: deletePlan.DeletedMessages,
 		DeletedMemories: deletePlan.DeletedMemories,
 		DeletedProfiles: deletePlan.DeletedProfiles,
-	}, nil
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresCommitOutcomeUncertainError("delete project path", "commit postgres delete-project tx", err)
+	}
+	return result, nil
 }
 
 // MigrateProjectPath moves SQL-backed sessions, turn records, memories, and project-bound profile nodes from one project scope onto another when explicitly confirmed.
@@ -239,10 +302,6 @@ func (r *workspaceRepository) MigrateProjectPath(ctx context.Context, sourcePath
 			NeedsConfirm: true,
 		}, nil
 	}
-	sessions, messages, memories, err := r.countProjectRows(ctx, r.shared.pool, source.ID)
-	if err != nil {
-		return logicdomain.ProjectMigrationResult{}, err
-	}
 
 	callCtx, cancel := r.workspaceQueryContext(ctx)
 	defer cancel()
@@ -263,50 +322,71 @@ func (r *workspaceRepository) MigrateProjectPath(ctx context.Context, sourcePath
 	if len(conflictSessionKeys) > 0 {
 		return logicdomain.ProjectMigrationResult{}, buildProjectMigrationSessionConflict(source, target, conflictSessionKeys)
 	}
+	migrationPlan, err := r.planProjectMigration(callCtx, tx, source.ID)
+	if err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
+	}
 	now := time.Now().UTC()
 	updateSessionsSQL := fmt.Sprintf(`
 UPDATE %s
 SET team_id = $1, space_id = $2, project_id = $3, updated_at = $4
 WHERE project_id = $5
 `, r.sessionsTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateSessionsSQL), int64(target.TeamID), int64(target.SpaceID), int64(target.ID), now, int64(source.ID)); err != nil {
+	sessionTag, err := tx.Exec(callCtx, strings.TrimSpace(updateSessionsSQL), int64(target.TeamID), int64(target.SpaceID), int64(target.ID), now, int64(source.ID))
+	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
 			return logicdomain.ProjectMigrationResult{}, buildProjectMigrationSessionConflict(source, target, nil)
 		}
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres sessions: %w", err)
 	}
+	if err := requirePostgresWorkspaceRowsAffected("migrate postgres sessions", sessionTag.RowsAffected(), int64(migrationPlan.MigratedSessions)); err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
+	}
 	updateTurnsSQL := fmt.Sprintf(`UPDATE %s SET project_id = $1, updated_at = $2 WHERE project_id = $3`, r.turnsTable())
-	if _, err := tx.Exec(callCtx, updateTurnsSQL, int64(target.ID), now, int64(source.ID)); err != nil {
+	turnTag, err := tx.Exec(callCtx, updateTurnsSQL, int64(target.ID), now, int64(source.ID))
+	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres turn records: %w", err)
+	}
+	if err := requirePostgresWorkspaceRowsAffected("migrate postgres turn records", turnTag.RowsAffected(), int64(migrationPlan.MigratedMessages)); err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
 	}
 	updateMemoriesSQL := fmt.Sprintf(`
 UPDATE %s
 SET team_id = $1, space_id = $2, project_id = $3, updated_at = $4
 WHERE project_id = $5
 `, r.memoryNodesTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateMemoriesSQL), int64(target.TeamID), int64(target.SpaceID), int64(target.ID), now, int64(source.ID)); err != nil {
+	memoryTag, err := tx.Exec(callCtx, strings.TrimSpace(updateMemoriesSQL), int64(target.TeamID), int64(target.SpaceID), int64(target.ID), now, int64(source.ID))
+	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres memory nodes: %w", err)
+	}
+	if err := requirePostgresWorkspaceRowsAffected("migrate postgres memory nodes", memoryTag.RowsAffected(), int64(migrationPlan.MigratedMemories)); err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
 	}
 	updateProfileNodesSQL := fmt.Sprintf(`
 UPDATE %s
 SET bind_id = $1, updated_at = $2
 WHERE profile_type = $3 AND bind_id = $4
 `, r.profileNodesTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateProfileNodesSQL), int64(target.ID), now, logicdomain.ProfileTypeProject, int64(source.ID)); err != nil {
+	profileTag, err := tx.Exec(callCtx, strings.TrimSpace(updateProfileNodesSQL), int64(target.ID), now, logicdomain.ProfileTypeProject, int64(source.ID))
+	if err != nil {
 		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("migrate postgres project profile nodes: %w", err)
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.ProjectMigrationResult{}, fmt.Errorf("commit postgres migrate-project tx: %w", err)
+	if err := requirePostgresWorkspaceRowsAffected("migrate postgres project profile nodes", profileTag.RowsAffected(), int64(migrationPlan.MigratedProfiles)); err != nil {
+		return logicdomain.ProjectMigrationResult{}, err
 	}
-	return logicdomain.ProjectMigrationResult{
+	result := logicdomain.ProjectMigrationResult{
 		Source:           source,
 		Target:           target,
 		Message:          fmt.Sprintf("migrated project %s -> %s", source.Path(), target.Path()),
-		MigratedSessions: sessions,
-		MigratedMessages: messages,
-		MigratedMemories: memories,
-	}, nil
+		MigratedSessions: migrationPlan.MigratedSessions,
+		MigratedMessages: migrationPlan.MigratedMessages,
+		MigratedMemories: migrationPlan.MigratedMemories,
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresCommitOutcomeUncertainError("migrate project path", "commit postgres migrate-project tx", err)
+	}
+	return result, nil
 }
 
 // DeleteUserRef executes the protected two-phase user deletion flow and removes the user plus all SQL-side dependent data.
@@ -356,53 +436,51 @@ func (r *workspaceRepository) DeleteUserRef(ctx context.Context, userRef, confir
 	}
 	now := time.Now().UTC()
 	deleteUserProfilesSQL := fmt.Sprintf(`DELETE FROM %s WHERE profile_type = $1 AND bind_id = $2`, r.profileNodesTable())
-	if _, err := tx.Exec(callCtx, deleteUserProfilesSQL, logicdomain.ProfileTypeUser, int64(currentUser.ID)); err != nil {
+	userProfileTag, err := tx.Exec(callCtx, deleteUserProfilesSQL, logicdomain.ProfileTypeUser, int64(currentUser.ID))
+	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user profile nodes by bind: %w", err)
 	}
-	detachSharedSQL := fmt.Sprintf(`
-UPDATE %s
-SET turn_id = NULL,
-    source_kind = $1,
-    source_id = $2,
-    status_reason = $3,
-    updated_at = $4
-WHERE profile_type <> $5
-  AND turn_id IN (
-    SELECT tr.id
-    FROM %s tr
-    JOIN %s se ON se.id = tr.session_id
-    WHERE se.user_id = $6
-  )
-`, r.profileNodesTable(), r.turnsTable(), r.sessionsTable())
-	if _, err := tx.Exec(
-		callCtx,
-		strings.TrimSpace(detachSharedSQL),
-		logicdomain.ProfileSourceKindRetainedAfterUserDelete,
-		int64(currentUser.ID),
-		"source user deleted; shared scope node retained without original turn binding",
-		now,
-		logicdomain.ProfileTypeUser,
-		int64(currentUser.ID),
-	); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres user profile nodes by bind", userProfileTag.RowsAffected(), int64(deletePlan.DeletedProfiles)); err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	detachSharedSQL, detachSharedArgs := r.buildUserSharedProfileDetachUpdateSQL(currentUser.ID, now)
+	detachSharedTag, err := tx.Exec(callCtx, detachSharedSQL, detachSharedArgs...)
+	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("detach postgres shared profile nodes from deleted user turns: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.memoryNodesTable()), int64(currentUser.ID)); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("detach postgres shared profile nodes from deleted user turns", detachSharedTag.RowsAffected(), int64(deletePlan.DetachedProfiles)); err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	memoryTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.memoryNodesTable()), int64(currentUser.ID))
+	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user memory nodes: %w", err)
 	}
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres user memory nodes", memoryTag.RowsAffected(), int64(deletePlan.DeletedMemories)); err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
 	deleteTurnsSQL := fmt.Sprintf(`DELETE FROM %s WHERE session_id IN (SELECT id FROM %s WHERE user_id = $1)`, r.turnsTable(), r.sessionsTable())
-	if _, err := tx.Exec(callCtx, deleteTurnsSQL, int64(currentUser.ID)); err != nil {
+	turnTag, err := tx.Exec(callCtx, deleteTurnsSQL, int64(currentUser.ID))
+	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user turn records: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.sessionsTable()), int64(currentUser.ID)); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres user turn records", turnTag.RowsAffected(), int64(deletePlan.DeletedMessages)); err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	sessionTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE user_id = $1`, r.sessionsTable()), int64(currentUser.ID))
+	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user sessions: %w", err)
 	}
-	if _, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.usersTable()), int64(currentUser.ID)); err != nil {
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres user sessions", sessionTag.RowsAffected(), int64(deletePlan.DeletedSessions)); err != nil {
+		return logicdomain.UserDeleteResult{}, err
+	}
+	userTag, err := tx.Exec(callCtx, fmt.Sprintf(`DELETE FROM %s WHERE id = $1`, r.usersTable()), int64(currentUser.ID))
+	if err != nil {
 		return logicdomain.UserDeleteResult{}, fmt.Errorf("delete postgres user row: %w", err)
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("commit postgres delete-user tx: %w", err)
+	if err := requirePostgresWorkspaceRowsAffected("delete postgres user row", userTag.RowsAffected(), int64(deletePlan.DeletedUsers)); err != nil {
+		return logicdomain.UserDeleteResult{}, err
 	}
-	return logicdomain.UserDeleteResult{
+	result := logicdomain.UserDeleteResult{
 		User:            currentUser,
 		Message:         fmt.Sprintf("user %s deleted", currentUser.Name),
 		DeletedUsers:    deletePlan.DeletedUsers,
@@ -410,7 +488,11 @@ WHERE profile_type <> $5
 		DeletedMessages: deletePlan.DeletedMessages,
 		DeletedMemories: deletePlan.DeletedMemories,
 		DeletedProfiles: deletePlan.DeletedProfiles,
-	}, nil
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresCommitOutcomeUncertainError("delete user ref", "commit postgres delete-user tx", err)
+	}
+	return result, nil
 }
 
 // ensureUserDeleteConfirmation keeps the first delete step idempotent by generating one confirmation code only when the durable row still has none.
@@ -434,6 +516,7 @@ func (r *workspaceRepository) ensureUserDeleteConfirmation(ctx context.Context, 
 		return logicdomain.UserDeleteResult{}, err
 	}
 	code := strings.TrimSpace(currentUser.DeleteConfirmCode)
+	mutated := false
 	if code == "" {
 		generatedCode, err := generateConfirmationCode()
 		if err != nil {
@@ -450,6 +533,7 @@ WHERE id = $3
 		if err != nil {
 			return logicdomain.UserDeleteResult{}, fmt.Errorf("persist postgres user delete confirmation code: %w", err)
 		}
+		mutated = updateResult.RowsAffected() > 0
 		persistedCode := generatedCode
 		if updateResult.RowsAffected() == 0 {
 			// Re-read the durable row when the guarded update lost a race so the caller always receives the token that can actually authorize deletion.
@@ -466,15 +550,21 @@ WHERE id = $3
 		}
 		currentUser.DeleteConfirmCode = code
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.UserDeleteResult{}, fmt.Errorf("commit postgres user confirmation tx: %w", err)
-	}
-	return logicdomain.UserDeleteResult{
+	result := logicdomain.UserDeleteResult{
 		User:                 currentUser,
 		Message:              fmt.Sprintf("confirm deletion of user %s with the provided confirmation code", currentUser.Name),
 		RequiresConfirmation: true,
 		ConfirmationCode:     code,
-	}, nil
+	}
+	if !mutated {
+		// Let the deferred rollback close the read-only confirmation transaction when a durable code already exists.
+		// 当持久确认码已经存在时，让延迟 rollback 关闭只读确认事务即可。
+		return result, nil
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresCommitOutcomeUncertainError("confirm user deletion", "commit postgres user confirmation tx", err)
+	}
+	return result, nil
 }
 
 // buildProjectMigrationSessionConflict constructs one stable conflict error for migrations that would duplicate session_key values inside the target project.
@@ -756,6 +846,25 @@ func (r *workspaceRepository) planProjectDelete(ctx context.Context, q profileQu
 	return plan, nil
 }
 
+// planProjectMigration computes the concrete migration counts for one resolved source project, including project-bound profile nodes that are moved internally but not exposed in the public RPC summary.
+// planProjectMigration 用于为一个已解析源项目计算实际迁移计数，包括内部迁移但不暴露到公开 RPC 摘要中的项目绑定画像节点。
+func (r *workspaceRepository) planProjectMigration(ctx context.Context, q profileQueryer, sourceProjectID uint64) (projectMigrationPlan, error) {
+	sessions, messages, memories, err := r.countProjectRows(ctx, q, sourceProjectID)
+	if err != nil {
+		return projectMigrationPlan{}, err
+	}
+	profiles, err := r.countRows(ctx, q, fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE profile_type = $1 AND bind_id = $2`, r.profileNodesTable()), logicdomain.ProfileTypeProject, int64(sourceProjectID))
+	if err != nil {
+		return projectMigrationPlan{}, fmt.Errorf("count postgres project migration profile nodes: %w", err)
+	}
+	return projectMigrationPlan{
+		MigratedSessions: sessions,
+		MigratedMessages: messages,
+		MigratedMemories: memories,
+		MigratedProfiles: profiles,
+	}, nil
+}
+
 // planUserDelete computes the concrete delete counts for one resolved user while excluding shared-scope profile nodes that are retained after the user disappears.
 // planUserDelete 用于为一个已解析用户计算实际删除计数，并排除用户删除后仍会保留的共享范围画像节点。
 func (r *workspaceRepository) planUserDelete(ctx context.Context, q profileQueryer, userID uint64) (userDeletePlan, error) {
@@ -767,13 +876,61 @@ func (r *workspaceRepository) planUserDelete(ctx context.Context, q profileQuery
 	if err != nil {
 		return userDeletePlan{}, fmt.Errorf("count postgres user profile nodes: %w", err)
 	}
+	detachSQL, detachArgs := r.buildUserSharedProfileDetachCountSQL(userID)
+	detachedProfiles, err := r.countRows(ctx, q, detachSQL, detachArgs...)
+	if err != nil {
+		return userDeletePlan{}, fmt.Errorf("count postgres shared profile nodes detached from deleted user turns: %w", err)
+	}
 	return userDeletePlan{
-		DeletedUsers:    1,
-		DeletedSessions: sessions,
-		DeletedMessages: messages,
-		DeletedMemories: memories,
-		DeletedProfiles: deletedProfiles,
+		DeletedUsers:     1,
+		DeletedSessions:  sessions,
+		DeletedMessages:  messages,
+		DeletedMemories:  memories,
+		DeletedProfiles:  deletedProfiles,
+		DetachedProfiles: detachedProfiles,
 	}, nil
+}
+
+// buildUserSharedProfileDetachCountSQL renders the COUNT query for shared profile nodes that will survive a user delete but must lose their source turn pointer.
+// buildUserSharedProfileDetachCountSQL 用于渲染共享画像节点脱钩前的 COUNT 查询，这些节点会在用户删除后保留但必须失去源 turn 指针。
+func (r *workspaceRepository) buildUserSharedProfileDetachCountSQL(userID uint64) (string, []any) {
+	args := &sqlArgsBuilder{}
+	whereSQL := r.buildUserSharedProfileDetachWhere(args, userID)
+	return fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s`, r.profileNodesTable(), whereSQL), args.Args()
+}
+
+// buildUserSharedProfileDetachUpdateSQL renders the UPDATE that detaches surviving shared profile nodes from turns owned by the deleted user.
+// buildUserSharedProfileDetachUpdateSQL 用于渲染共享画像节点脱钩 UPDATE，将保留节点与被删除用户拥有的 turn 断开。
+func (r *workspaceRepository) buildUserSharedProfileDetachUpdateSQL(userID uint64, now time.Time) (string, []any) {
+	args := &sqlArgsBuilder{}
+	sourceKindParam := args.Add(logicdomain.ProfileSourceKindRetainedAfterUserDelete)
+	sourceIDParam := args.Add(int64(userID))
+	reasonParam := args.Add("source user deleted; shared scope node retained without original turn binding")
+	updatedAtParam := args.Add(now.UTC())
+	whereSQL := r.buildUserSharedProfileDetachWhere(args, userID)
+	return strings.TrimSpace(fmt.Sprintf(`
+UPDATE %s
+SET turn_id = NULL,
+    source_kind = %s,
+    source_id = %s,
+    status_reason = %s,
+    updated_at = %s
+WHERE %s
+`, r.profileNodesTable(), sourceKindParam, sourceIDParam, reasonParam, updatedAtParam, whereSQL)), args.Args()
+}
+
+// buildUserSharedProfileDetachWhere centralizes the shared-profile predicate so the detach count and update cannot drift apart.
+// buildUserSharedProfileDetachWhere 用于集中维护共享画像脱钩条件，避免脱钩计数与实际 UPDATE 范围发生漂移。
+func (r *workspaceRepository) buildUserSharedProfileDetachWhere(args *sqlArgsBuilder, userID uint64) string {
+	return fmt.Sprintf(`
+profile_type <> %s
+  AND turn_id IN (
+    SELECT tr.id
+    FROM %s tr
+    JOIN %s se ON se.id = tr.session_id
+    WHERE se.user_id = %s
+  )
+`, args.Add(logicdomain.ProfileTypeUser), r.turnsTable(), r.sessionsTable(), args.Add(int64(userID)))
 }
 
 // buildProjectProfileNodesWhere centralizes the delete/count predicate used by project deletion so statistics and actual row removal stay locked to the same scope definition.

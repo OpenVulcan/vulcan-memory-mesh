@@ -5,8 +5,11 @@ package usecase
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"math"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -1139,6 +1142,123 @@ func TestMemoryUseCaseSearchAppliesRerank(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchSkipsRerankWhenLessThanTwoProviderDocuments verifies rerank is not called when text normalization leaves fewer than two comparable provider documents.
+// TestMemoryUseCaseSearchSkipsRerankWhenLessThanTwoProviderDocuments 用于验证当文本归一化后少于两个可比较 provider 文档时，不会调用 rerank。
+func TestMemoryUseCaseSearchSkipsRerankWhenLessThanTwoProviderDocuments(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第一条", Details: "第一条详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, VectorID: "vec-2"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "第一条", Score: 0.91},
+			{ID: "vec-2", Text: "第二条", Score: 0.89},
+		},
+	}
+	reranker := &stubRerankerClient{
+		results: []appports.RerankerResult{{ID: "202", Score: 0.99}},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureRerank(reranker, 2)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"文本排序模型"},
+		TopK:      2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with one rerank document: %v", err)
+	}
+	if len(reranker.requests) != 0 {
+		t.Fatalf("expected rerank to be skipped with one provider document, got %+v", reranker.requests)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 2 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 201 || result.Results[0].Hits[0].Score != 0.91 {
+		t.Fatalf("expected original first hit to stay unchanged, got %+v", result.Results[0].Hits[0])
+	}
+	if result.Results[0].Hits[1].MemoryRef.ID != 202 || result.Results[0].Hits[1].Score != 0.89 {
+		t.Fatalf("expected original second hit to stay unchanged, got %+v", result.Results[0].Hits[1])
+	}
+}
+
+// TestMemoryUseCaseSearchPassesProviderDocumentCountToRerank verifies filtered-out empty candidates do not inflate the topN sent to the rerank provider.
+// TestMemoryUseCaseSearchPassesProviderDocumentCountToRerank 用于验证被过滤的空候选不会抬高传给 rerank provider 的 topN。
+func TestMemoryUseCaseSearchPassesProviderDocumentCountToRerank(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第一条", Details: "第一条详情", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "第二条", Details: "第二条详情", VectorID: "vec-2"},
+			{ID: 203, OriginSessionID: 12, SourceTurnID: 43, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, VectorID: "vec-3"},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "第一条", Score: 0.93},
+			{ID: "vec-2", Text: "第二条", Score: 0.92},
+			{ID: "vec-3", Text: "第三条", Score: 0.91},
+		},
+	}
+	reranker := &stubRerankerClient{
+		results: []appports.RerankerResult{
+			{ID: "202", Score: 0.99},
+			{ID: "201", Score: 0.88},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	uc.ConfigureRerank(reranker, 3)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"文本排序模型"},
+		TopK:      3,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with filtered rerank documents: %v", err)
+	}
+	if len(reranker.requests) != 1 {
+		t.Fatalf("expected one rerank request, got %+v", reranker.requests)
+	}
+	request := reranker.requests[0]
+	if request.topN != 2 || len(request.docs) != 2 {
+		t.Fatalf("expected rerank request to use two provider documents, got %+v", request)
+	}
+	if request.docs[0].ID != "201" || request.docs[1].ID != "202" {
+		t.Fatalf("expected empty third candidate to be excluded from provider docs, got %+v", request.docs)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 3 {
+		t.Fatalf("unexpected results: %+v", result.Results)
+	}
+	if result.Results[0].Hits[0].MemoryRef.ID != 202 || result.Results[0].Hits[1].MemoryRef.ID != 201 || result.Results[0].Hits[2].MemoryRef.ID != 203 {
+		t.Fatalf("expected reranked docs first and untouched empty-doc candidate last, got %+v", result.Results[0].Hits)
+	}
+}
+
 // TestMemoryUseCaseSearchClampsRerankScores verifies the final retrieval response keeps the shared 0..1 score contract even when a rerank provider returns out-of-range custom scores.
 // TestMemoryUseCaseSearchClampsRerankScores 用于验证即使 rerank provider 返回越界自定义分数，最终检索响应仍会保持统一的 0..1 分数契约。
 func TestMemoryUseCaseSearchClampsRerankScores(t *testing.T) {
@@ -1451,6 +1571,141 @@ func TestMemoryUseCaseSearchAppliesContextAwareScoring(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseSearchAppliesContextEvidenceToSingleHit verifies context evidence still enriches reviewer-facing fields when only one memory survives recall.
+// TestMemoryUseCaseSearchAppliesContextEvidenceToSingleHit 用于验证只有一条记忆穿过召回时，context evidence 仍会补充面向 reviewer 的字段。
+func TestMemoryUseCaseSearchAppliesContextEvidenceToSingleHit(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "本地 OSS 部署方案", Details: "这条记忆被当前场景支持", VectorID: "vec-1"},
+		},
+		memoryContextEdges: []logicdomain.MemoryContextEdge{
+			{MemoryID: 201, ContextKey: "deployment_mode", ContextValue: "local oss", SupportCount: 2},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "本地 OSS 部署方案", Score: 0.91},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries:   []string{"当前部署模式是 local_oss"},
+		TopK:      1,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with single context-aware hit: %v", err)
+	}
+	if len(result.Results) != 1 || len(result.Results[0].Hits) != 1 {
+		t.Fatalf("unexpected single-hit result: %+v", result.Results)
+	}
+	hit := result.Results[0].Hits[0]
+	if hit.MatchedContextSupportCount != 2 || hit.MatchedContextRebuttalCount != 0 || hit.MatchedContextScoreDelta <= 0 {
+		t.Fatalf("expected single hit to carry supportive context evidence, got %+v", hit)
+	}
+	if len(hit.MatchedContextValues) != 1 || hit.MatchedContextValues[0] != "deployment_mode=local oss" {
+		t.Fatalf("expected single hit to expose matched context value, got %+v", hit.MatchedContextValues)
+	}
+	if len(turns.contextLookupIDs) != 1 || turns.contextLookupIDs[0] != 201 {
+		t.Fatalf("expected context lookup for the single candidate, got %+v", turns.contextLookupIDs)
+	}
+}
+
+// TestMemoryQueryContextSignalsMatchLongBoundedPhrase verifies long context values can match inside a query without allowing substring-only false positives.
+// TestMemoryQueryContextSignalsMatchLongBoundedPhrase 用于验证较长 context value 可以在 query 内命中，同时不会允许仅子串相同的误命中。
+func TestMemoryQueryContextSignalsMatchLongBoundedPhrase(t *testing.T) {
+	signals := buildMemoryQueryContextSignals(MemoryQueryItem{
+		Query: "当前 local oss air gapped phase four 部署仍然有效",
+	})
+	if !signals.Match("local oss air gapped phase four") {
+		t.Fatalf("expected long bounded context phrase to match")
+	}
+
+	substringSignals := buildMemoryQueryContextSignals(MemoryQueryItem{Query: "boss mode"})
+	if substringSignals.Match("oss") {
+		t.Fatalf("did not expect substring-only context phrase to match")
+	}
+}
+
+// TestMemoryUseCaseSearchReusesContextEdgesAcrossQueryGroups verifies one request does not reload the same raw context edges when different query groups share the same candidate memories.
+// TestMemoryUseCaseSearchReusesContextEdgesAcrossQueryGroups 用于验证单次请求中不同 query 分组共享同一批候选记忆时，不会重复加载相同的原始 context edges。
+func TestMemoryUseCaseSearchReusesContextEdgesAcrossQueryGroups(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	turns := &stubTurnLookupStore{
+		memoryRowsByVector: []logicdomain.MemoryNodeRecord{
+			{ID: 201, OriginSessionID: 12, SourceTurnID: 41, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "phase4 旧方案", Details: "这条记忆被本地 OSS 场景反驳", VectorID: "vec-1"},
+			{ID: 202, OriginSessionID: 12, SourceTurnID: 42, SourceKind: logicdomain.MemorySourceKindTurnExtract, ScopeLevel: logicdomain.MemoryScopeLevelProject, Category: 3, Abstract: "phase4 新方案", Details: "这条记忆被本地 OSS 场景支持", VectorID: "vec-2"},
+		},
+		memoryContextEdges: []logicdomain.MemoryContextEdge{
+			{MemoryID: 201, ContextKey: "deployment_mode", ContextValue: "local oss", RebuttalCount: 2},
+			{MemoryID: 202, ContextKey: "deployment_mode", ContextValue: "local oss", SupportCount: 2},
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}, {0.4, 0.5, 0.6}}},
+	}
+	vector := &stubVectorStore{
+		searchHits: []logicdomain.MemoryHit{
+			{ID: "vec-1", Text: "phase4 旧方案", Score: 0.91},
+			{ID: "vec-2", Text: "phase4 新方案", Score: 0.91},
+		},
+	}
+
+	uc := NewMemoryUseCase(profiles, turns, embedding, vector, nil)
+
+	result, err := uc.Search(context.Background(), MemoryQueryCommand{
+		UserID:    7,
+		ProjectID: 9,
+		Queries: []string{
+			"当前部署模式仍然是 local_oss。 phase4 当前方案",
+			"local oss 部署排障清单仍然沿用 phase4 当前方案",
+		},
+		TopK: 2,
+	})
+	if err != nil {
+		t.Fatalf("search memory events with shared context edge cache: %v", err)
+	}
+	if len(result.Results) != 2 {
+		t.Fatalf("expected two query groups, got %+v", result.Results)
+	}
+	for idx, group := range result.Results {
+		if len(group.Hits) != 2 {
+			t.Fatalf("expected two hits in query group %d, got %+v", idx, group.Hits)
+		}
+		if group.Hits[0].MemoryRef.ID != 202 || group.Hits[1].MemoryRef.ID != 201 {
+			t.Fatalf("expected supportive context edge to win in query group %d, got %+v", idx, group.Hits)
+		}
+		if len(group.Hits[0].MatchedContextValues) != 1 || group.Hits[0].MatchedContextValues[0] != "deployment_mode=local oss" {
+			t.Fatalf("expected cached context edge to still score query group %d, got %+v", idx, group.Hits[0])
+		}
+	}
+	if len(vector.searchTopKs) != 2 {
+		t.Fatalf("expected two vector searches for distinct query groups, got %+v", vector.searchTopKs)
+	}
+	if len(turns.contextLookupIDCalls) != 1 {
+		t.Fatalf("expected one context edge lookup shared by both query groups, got %+v", turns.contextLookupIDCalls)
+	}
+	if len(turns.contextLookupIDCalls[0]) != 2 || turns.contextLookupIDCalls[0][0] != 201 || turns.contextLookupIDCalls[0][1] != 202 {
+		t.Fatalf("expected the initial context edge lookup to cover both candidate ids, got %+v", turns.contextLookupIDCalls)
+	}
+}
+
 // TestMemoryUseCaseSearchClampsContextAdjustedScores verifies supportive or rebutting context evidence cannot push the final caller-facing hit score outside the shared 0..1 range.
 // TestMemoryUseCaseSearchClampsContextAdjustedScores 用于验证支持或反驳型 context evidence 都不会把最终对外命中分数推到统一 0..1 区间之外。
 func TestMemoryUseCaseSearchClampsContextAdjustedScores(t *testing.T) {
@@ -1563,7 +1818,6 @@ func TestMemoryUseCaseSearchRedactsDegradedQueryLogs(t *testing.T) {
 		lexicalHits: []logicdomain.MemoryLexicalHit{
 			{MemoryID: 201, Score: 0.99},
 		},
-		memoryRowsByIDErr: errors.New("load lexical rows failed"),
 	}
 	secondQuery := "用户身份证 5678 的本地部署"
 	secondUseCase := NewMemoryUseCase(profiles, secondStore, embedding, vector, logger)
@@ -1707,35 +1961,33 @@ func TestMemoryUseCaseSearchSkipsContextScoringWhenNothingMatches(t *testing.T) 
 	}
 }
 
-// TestMaterializeLexicalHitsSkipsRetiredRows verifies lexical materialization keeps the active+unexpired hot-path contract even if one matched memory row becomes superseded before the relational backfill finishes.
-// TestMaterializeLexicalHitsSkipsRetiredRows 用于验证 lexical 回表补全会继续遵守 active+unexpired 热路径契约；即使某条命中记忆在关系回表完成前变成 superseded，也不会重新进入搜索结果。
-func TestMaterializeLexicalHitsSkipsRetiredRows(t *testing.T) {
-	uc := NewMemoryUseCase(nil, &stubTurnLookupStore{
-		memoryRowsByID: []logicdomain.MemoryNodeRecord{
-			{
-				ID:         201,
-				Status:     logicdomain.MemoryStatusSuperseded,
-				SourceKind: logicdomain.MemorySourceKindTurnExtract,
-				ScopeLevel: logicdomain.MemoryScopeLevelProject,
-				Abstract:   "旧阶段 A",
-				Details:    "这条记忆已经被新阶段覆盖。",
-				Vector:     []float32{0.1, 0.2, 0.3},
-			},
-			{
-				ID:         202,
-				Status:     logicdomain.MemoryStatusActive,
-				SourceKind: logicdomain.MemorySourceKindTurnExtract,
-				ScopeLevel: logicdomain.MemoryScopeLevelProject,
-				Abstract:   "当前阶段 B",
-				Details:    "这条记忆仍处于热路径。",
-				Vector:     []float32{0.4, 0.5, 0.6},
-			},
-		},
-	}, nil, nil, nil)
+// TestMaterializeLexicalHitsUsesEmbeddedRowsAndSkipsRetiredRows verifies lexical materialization consumes embedded rows directly while keeping the active+unexpired hot-path guard.
+// TestMaterializeLexicalHitsUsesEmbeddedRowsAndSkipsRetiredRows 用于验证 lexical 物化会直接消费命中自带的行，同时继续保留 active+unexpired 热路径守卫。
+func TestMaterializeLexicalHitsUsesEmbeddedRowsAndSkipsRetiredRows(t *testing.T) {
+	store := &stubTurnLookupStore{memoryRowsByIDErr: errors.New("unexpected lexical backfill")}
+	uc := NewMemoryUseCase(nil, store, nil, nil, nil)
+	retired := logicdomain.MemoryNodeRecord{
+		ID:         201,
+		Status:     logicdomain.MemoryStatusSuperseded,
+		SourceKind: logicdomain.MemorySourceKindTurnExtract,
+		ScopeLevel: logicdomain.MemoryScopeLevelProject,
+		Abstract:   "旧阶段 A",
+		Details:    "这条记忆已经被新阶段覆盖。",
+		Vector:     []float32{0.1, 0.2, 0.3},
+	}
+	active := logicdomain.MemoryNodeRecord{
+		ID:         202,
+		Status:     logicdomain.MemoryStatusActive,
+		SourceKind: logicdomain.MemorySourceKindTurnExtract,
+		ScopeLevel: logicdomain.MemoryScopeLevelProject,
+		Abstract:   "当前阶段 B",
+		Details:    "这条记忆仍处于热路径。",
+		Vector:     []float32{0.4, 0.5, 0.6},
+	}
 
-	hits, err := uc.materializeLexicalHits(context.Background(), []logicdomain.MemoryLexicalHit{
-		{MemoryID: 201, Score: 0.99},
-		{MemoryID: 202, Score: 0.98},
+	hits, err := uc.materializeLexicalHits([]logicdomain.MemoryLexicalHit{
+		{MemoryID: 201, Record: retired, Score: 0.99},
+		{MemoryID: 202, Record: active, Score: 0.98},
 	})
 	if err != nil {
 		t.Fatalf("materialize lexical hits: %v", err)
@@ -1743,52 +1995,139 @@ func TestMaterializeLexicalHitsSkipsRetiredRows(t *testing.T) {
 	if len(hits) != 1 || hits[0].MemoryRef.ID != 202 {
 		t.Fatalf("expected retired lexical row to be skipped, got %+v", hits)
 	}
+	if len(store.memoryRowsByIDCalls) != 0 {
+		t.Fatalf("expected lexical materialization to avoid row reloads, got %+v", store.memoryRowsByIDCalls)
+	}
 }
 
-// TestEnsureMMRVectorsSkipsRetiredRows verifies the MMR vector backfill path never loads vectors from durable memory rows that have already left the active+unexpired window.
-// TestEnsureMMRVectorsSkipsRetiredRows 用于验证 MMR 向量回填路径不会从已经退出 active+unexpired 窗口的长期记忆行加载向量。
-func TestEnsureMMRVectorsSkipsRetiredRows(t *testing.T) {
-	uc := NewMemoryUseCase(nil, &stubTurnLookupStore{
-		memoryRowsByID: []logicdomain.MemoryNodeRecord{
-			{
-				ID:         301,
-				Status:     logicdomain.MemoryStatusDeleted,
-				SourceKind: logicdomain.MemorySourceKindTurnExtract,
-				ScopeLevel: logicdomain.MemoryScopeLevelProject,
-				Abstract:   "已删除的旧约束",
-				Details:    "不应再参与 MMR 向量回填。",
-				Vector:     []float32{0.1, 0.2, 0.3},
-			},
-			{
-				ID:         302,
-				Status:     logicdomain.MemoryStatusActive,
-				SourceKind: logicdomain.MemorySourceKindTurnExtract,
-				ScopeLevel: logicdomain.MemoryScopeLevelProject,
-				Abstract:   "仍有效的新约束",
-				Details:    "允许回填向量。",
-				Vector:     []float32{0.4, 0.5, 0.6},
-			},
-		},
-	}, nil, nil, nil)
+// TestMapSearchHitsUsesEmbeddedRowsWithoutVectorReload verifies combined vector backends can pass materialized memory rows directly into app-layer mapping without a redundant vector-id reload.
+// TestMapSearchHitsUsesEmbeddedRowsWithoutVectorReload 用于验证组合向量后端可以把已物化记忆行直接传给应用层映射，而不会再次按 vector id 回表。
+func TestMapSearchHitsUsesEmbeddedRowsWithoutVectorReload(t *testing.T) {
+	store := &stubTurnLookupStore{}
+	uc := NewMemoryUseCase(nil, store, nil, nil, nil)
+	record := logicdomain.MemoryNodeRecord{
+		ID:              401,
+		Status:          logicdomain.MemoryStatusActive,
+		SourceKind:      logicdomain.MemorySourceKindTurnExtract,
+		ScopeLevel:      logicdomain.MemoryScopeLevelProject,
+		Category:        logicdomain.MemoryNodeCategoryProjectContext,
+		OriginSessionID: 31,
+		SourceTurnID:    3101,
+		VectorID:        "vec-401",
+		Vector:          []float32{0.1, 0.2, 0.3},
+		Abstract:        "当前阶段使用组合 PostgreSQL 检索。",
+		Details:         "完整记忆行已经随向量命中返回。",
+		CreatedAt:       time.Date(2026, 7, 6, 9, 0, 0, 0, time.UTC),
+	}
 
-	enriched := uc.ensureMMRVectors(context.Background(), []MemoryQueryHit{
+	hits, err := uc.mapSearchHits(context.Background(), []logicdomain.MemoryHit{{
+		ID:     "vec-401",
+		Score:  0.91,
+		Record: record,
+		Metadata: map[string]string{
+			"origin": "hybrid_rrf",
+		},
+	}})
+	if err != nil {
+		t.Fatalf("map search hits: %v", err)
+	}
+	if len(hits) != 1 || hits[0].MemoryRef.ID != 401 || hits[0].SourceRef.ID != 3101 {
+		t.Fatalf("unexpected mapped hits: %+v", hits)
+	}
+	if hits[0].Origin != "hybrid_rrf" || hits[0].SessionID != 31 || len(hits[0].Vector) != 3 {
+		t.Fatalf("expected embedded row fields to map through, got %+v", hits[0])
+	}
+	if len(store.memoryRowsByVectorCalls) != 0 {
+		t.Fatalf("expected embedded vector hit to avoid row reloads, got %+v", store.memoryRowsByVectorCalls)
+	}
+}
+
+// TestMapSearchHitsRejectsEmbeddedVectorIDMismatch verifies a combined backend cannot silently pair one vector hit with a different materialized memory row.
+// TestMapSearchHitsRejectsEmbeddedVectorIDMismatch 用于验证组合后端不能把向量命中与另一个 vector id 的物化记忆行静默配对。
+func TestMapSearchHitsRejectsEmbeddedVectorIDMismatch(t *testing.T) {
+	store := &stubTurnLookupStore{}
+	uc := NewMemoryUseCase(nil, store, nil, nil, nil)
+
+	_, err := uc.mapSearchHits(context.Background(), []logicdomain.MemoryHit{{
+		ID: "vec-actual",
+		Record: logicdomain.MemoryNodeRecord{
+			ID:       402,
+			Status:   logicdomain.MemoryStatusActive,
+			VectorID: "vec-other",
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "vector id mismatch") {
+		t.Fatalf("expected vector id mismatch error, got %v", err)
+	}
+	if len(store.memoryRowsByVectorCalls) != 0 {
+		t.Fatalf("expected mismatched embedded row to fail before reload, got %+v", store.memoryRowsByVectorCalls)
+	}
+}
+
+// TestMapSearchHitsRejectsMissingOriginMetadata verifies app-layer mapping refuses vector hits whose backend did not declare a retrieval channel.
+// TestMapSearchHitsRejectsMissingOriginMetadata 用于验证应用层映射会拒绝后端未声明检索通道的向量命中。
+func TestMapSearchHitsRejectsMissingOriginMetadata(t *testing.T) {
+	store := &stubTurnLookupStore{}
+	uc := NewMemoryUseCase(nil, store, nil, nil, nil)
+
+	_, err := uc.mapSearchHits(context.Background(), []logicdomain.MemoryHit{{
+		ID:    "vec-missing-origin",
+		Score: 0.88,
+		Record: logicdomain.MemoryNodeRecord{
+			ID:       403,
+			Status:   logicdomain.MemoryStatusActive,
+			VectorID: "vec-missing-origin",
+		},
+	}})
+	if err == nil || !strings.Contains(err.Error(), "missing origin metadata") {
+		t.Fatalf("expected missing origin metadata error, got %v", err)
+	}
+	if len(store.memoryRowsByVectorCalls) != 0 {
+		t.Fatalf("expected embedded row to fail before reload, got %+v", store.memoryRowsByVectorCalls)
+	}
+}
+
+// TestNormalizeSearchOriginsPreserveMissingAttribution verifies later ranking stages do not invent a source label when upstream mapping failed to provide one.
+// TestNormalizeSearchOriginsPreserveMissingAttribution 用于验证后续排序阶段不会在上游映射未提供来源时伪造来源标签。
+func TestNormalizeSearchOriginsPreserveMissingAttribution(t *testing.T) {
+	if got := normalizeRerankedOrigin(" "); got != "" {
+		t.Fatalf("normalize reranked empty origin = %q, want empty", got)
+	}
+	if got := normalizeMMROrigin(" "); got != "" {
+		t.Fatalf("normalize mmr empty origin = %q, want empty", got)
+	}
+}
+
+// TestApplyMMRSearchHitsDoesNotReloadMissingVectors verifies MMR consumes the vectors already carried by mapped hits instead of hiding a materialization gap with another memory-id lookup.
+// TestApplyMMRSearchHitsDoesNotReloadMissingVectors 用于验证 MMR 只消费映射命中已经携带的向量，而不是通过再次按 memory id 回表掩盖物化缺口。
+func TestApplyMMRSearchHitsDoesNotReloadMissingVectors(t *testing.T) {
+	store := &stubTurnLookupStore{memoryRowsByIDErr: errors.New("unexpected mmr vector backfill")}
+	uc := NewMemoryUseCase(nil, store, nil, nil, nil)
+	uc.ConfigureMMR(true, 0.75)
+
+	selected := uc.applyMMRSearchHits(2, []MemoryQueryHit{
 		{
 			MemoryRef: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 301},
-			Abstract:  "已删除的旧约束",
+			Abstract:  "已经携带向量的候选",
+			Score:     0.9,
+			Origin:    "vector_search",
+			Vector:    []float32{0.1, 0.2, 0.3},
 		},
 		{
 			MemoryRef: logicdomain.MemoryRef{Type: logicdomain.MemoryRefTypeMemory, ID: 302},
-			Abstract:  "仍有效的新约束",
+			Abstract:  "缺少向量的候选",
+			Score:     0.8,
+			Origin:    "lexical_search",
 		},
 	})
-	if len(enriched) != 2 {
-		t.Fatalf("unexpected hit count after mmr vector backfill: %+v", enriched)
+	if len(selected) != 2 {
+		t.Fatalf("unexpected mmr hit count: %+v", selected)
 	}
-	if len(enriched[0].Vector) != 0 {
-		t.Fatalf("expected retired row to stay without vector, got %+v", enriched[0])
+	if len(store.memoryRowsByIDCalls) != 0 {
+		t.Fatalf("expected mmr not to reload missing vectors, got %+v", store.memoryRowsByIDCalls)
 	}
-	if len(enriched[1].Vector) != 3 || enriched[1].Vector[0] != 0.4 {
-		t.Fatalf("expected active row to receive vector backfill, got %+v", enriched[1])
+	if len(selected[1].Vector) != 0 || selected[0].Origin != "vector_mmr" || selected[1].Origin != "lexical_mmr" {
+		t.Fatalf("unexpected mmr result without vector reload: %+v", selected)
 	}
 }
 
@@ -1983,6 +2322,83 @@ func TestMemoryUseCaseWriteSemanticReviewerReceivesCurrentTimestamp(t *testing.T
 	}
 	if reviewer.inputs[0].CurrentTurnDate == "" {
 		t.Fatalf("expected direct-write reviewer to receive current review date, got %+v", reviewer.inputs[0])
+	}
+}
+
+// TestMemoryUseCaseWriteLogsSemanticReviewerInvalidOutput verifies direct-write reviewer contract failures keep raw model diagnostics in server logs without continuing into vector or relational persistence.
+// TestMemoryUseCaseWriteLogsSemanticReviewerInvalidOutput 用于验证主动写 reviewer 契约失败会把原始模型诊断留在服务端日志中，并且不会继续执行向量或关系持久化。
+func TestMemoryUseCaseWriteLogsSemanticReviewerInvalidOutput(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	rawOutput := strings.Join([]string{
+		"```json",
+		"{\"memory\":{\"accepted_candidate_indexes\":[0]}",
+		"```",
+	}, "\n")
+	reviewer := &stubPostActionCandidateReviewer{
+		err: logicdomain.InvalidLLMOutputError{
+			Scene:   "postaction_l2_main",
+			Message: "json decode failed",
+			Raw:     rawOutput,
+		},
+		model: "Qwen/Qwen3-235B-A22B",
+	}
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, logger)
+	uc.ConfigureMemoryReplace(reviewer, 5, memoryReplaceScopeProject, 0.90, 0)
+
+	_, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  48,
+			SessionKey: "sess-direct-invalid-reviewer",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "记录一条新的工程规则。",
+			Details:    "记录一条新的工程规则。",
+			Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+		}},
+	})
+
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) || invalid.Scene != "postaction_l2_main" {
+		t.Fatalf("expected postaction_l2_main InvalidLLMOutputError, got %v", err)
+	}
+	if reviewer.calls != 1 {
+		t.Fatalf("expected one reviewer call, got %d", reviewer.calls)
+	}
+	if len(vector.upserts) != 0 || len(store.directWriteApplyCalls) != 0 || len(store.createdDirectMemoryNodes) != 0 {
+		t.Fatalf("expected reviewer invalid output to stop before persistence, upserts=%+v apply=%+v create=%+v", vector.upserts, store.directWriteApplyCalls, store.createdDirectMemoryNodes)
+	}
+	logs := logBuf.String()
+	if !strings.Contains(logs, "direct memory candidate reviewer output invalid") {
+		t.Fatalf("expected direct-write reviewer failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "llm_scene：\"postaction_l2_main\"") {
+		t.Fatalf("expected l2 scene in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "model：\"Qwen/Qwen3-235B-A22B\"") {
+		t.Fatalf("expected reviewer model in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
+		t.Fatalf("expected raw reviewer output in failure log, got %s", logs)
+	}
+	if !strings.Contains(logs, "invalid llm output for postaction_l2_main: json decode failed") {
+		t.Fatalf("expected invalid llm output summary in failure log, got %s", logs)
 	}
 }
 
@@ -2295,6 +2711,159 @@ func TestMemoryUseCaseWriteDeduplicatesSameRequestDuplicates(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseWriteKeepsFreshVectorOnDirectWriteOutcomeUncertain verifies a partial relational direct-write failure does not delete the vector that a durable memory row may already reference.
+// TestMemoryUseCaseWriteKeepsFreshVectorOnDirectWriteOutcomeUncertain 用于验证主动写关系侧结果不确定时，不会删除可能已被长期记忆行引用的新向量。
+func TestMemoryUseCaseWriteKeepsFreshVectorOnDirectWriteOutcomeUncertain(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyErr: logicdomain.OutcomeUncertainError{
+			Operation:            "apply direct memory write",
+			Message:              "supersede direct memory nodes affected 1 rows, want 2",
+			FreshVectorReference: true,
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	_, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  47,
+			SessionKey: "sess-direct-outcome-uncertain",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "记录新的稳定工程约束。",
+			Details:    "记录新的稳定工程约束。",
+			Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+		}},
+	})
+	if err == nil || !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected direct write outcome-uncertain error, got %v", err)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one fresh vector upsert before relational uncertainty, got %+v", vector.upserts)
+	}
+	if len(vector.deleteIDsCalls) != 0 {
+		t.Fatalf("did not expect uncertain relational outcome to rollback fresh vector, got %+v", vector.deleteIDsCalls)
+	}
+	if len(store.directWriteApplyCalls) != 1 {
+		t.Fatalf("expected one direct write persistence attempt, got %+v", store.directWriteApplyCalls)
+	}
+}
+
+// TestMemoryUseCaseWriteRollsBackFreshVectorWhenOutcomeUncertainButUnreferenced verifies direct-write rollback depends on durable vector references instead of the broad uncertain-outcome marker alone.
+// TestMemoryUseCaseWriteRollsBackFreshVectorWhenOutcomeUncertainButUnreferenced 用于验证主动写回滚取决于长期向量引用标记，而不是只看宽泛的结果不确定标记。
+func TestMemoryUseCaseWriteRollsBackFreshVectorWhenOutcomeUncertainButUnreferenced(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyErr: logicdomain.OutcomeUncertainError{
+			Operation: "apply direct memory write",
+			Message:   "pre-insert profile check became uncertain",
+		},
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	_, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  48,
+			SessionKey: "sess-direct-outcome-uncertain-unreferenced",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "记录新的稳定工程约束。",
+			Details:    "记录新的稳定工程约束。",
+			Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+		}},
+	})
+	if err == nil || !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected direct write outcome-uncertain error, got %v", err)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one fresh vector upsert before relational uncertainty, got %+v", vector.upserts)
+	}
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 {
+		t.Fatalf("expected fresh vector rollback when relation has no fresh vector reference, got %+v", vector.deleteIDsCalls)
+	}
+}
+
+// TestMemoryUseCaseWriteKeepsFreshVectorOnFallbackOutcomeUncertain verifies fallback direct-memory persistence uses the same fresh-reference rollback guard as the atomic path.
+// TestMemoryUseCaseWriteKeepsFreshVectorOnFallbackOutcomeUncertain 用于验证 fallback 主动记忆持久化与原子路径使用相同的新向量引用回滚保护。
+func TestMemoryUseCaseWriteKeepsFreshVectorOnFallbackOutcomeUncertain(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	inner := &stubTurnLookupStore{
+		createDirectMemoryErr: logicdomain.OutcomeUncertainError{
+			Operation:            "create direct memory node",
+			Message:              "sync memory fts after direct insert: fts unavailable",
+			FreshVectorReference: true,
+		},
+	}
+	store := &fallbackOnlyMemoryStore{inner: inner}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	_, err := uc.Write(context.Background(), WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  49,
+			SessionKey: "sess-direct-fallback-outcome-uncertain",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel: logicdomain.MemoryScopeLevelProject,
+			Abstract:   "记录新的稳定工程约束。",
+			Details:    "记录新的稳定工程约束。",
+			Category:   logicdomain.MemoryNodeCategoryTechSpecAPI,
+		}},
+	})
+	if err == nil || !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected fallback direct write outcome-uncertain error, got %v", err)
+	}
+	if len(vector.upserts) != 1 {
+		t.Fatalf("expected one fresh vector upsert before fallback uncertainty, got %+v", vector.upserts)
+	}
+	if len(vector.deleteIDsCalls) != 0 {
+		t.Fatalf("did not expect fallback fresh vector rollback when relation may reference it, got %+v", vector.deleteIDsCalls)
+	}
+	if len(inner.createdDirectMemoryNodes) != 0 {
+		t.Fatalf("expected errored fallback persistence not to record a created node in stub, got %+v", inner.createdDirectMemoryNodes)
+	}
+}
+
 // TestMemoryUseCaseWriteScrubsPIIBeforeEmbeddingAndPersistence verifies direct-write memories are redacted before the write flow computes embeddings and persists durable rows, so later post-action recall never reintroduces raw PII from this entry path.
 // TestMemoryUseCaseWriteScrubsPIIBeforeEmbeddingAndPersistence 用于验证主动写记忆会在进入 embedding 与长期持久化前先完成脱敏，避免后续 post-action 从这条入口重新读回明文 PII。
 func TestMemoryUseCaseWriteScrubsPIIBeforeEmbeddingAndPersistence(t *testing.T) {
@@ -2382,7 +2951,7 @@ func TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFail
 				Priority:    logicdomain.MemoryPriorityP1,
 				MemoryLevel: logicdomain.MemoryLevelStable,
 			},
-			SupersededVectorIDs: []string{"vec-old-direct-1", "vec-old-direct-2"},
+			SupersededVectorIDs: []string{" vec-old-direct-1 ", "", "vec-old-direct-1", "vec-old-direct-2"},
 		},
 	}
 	embedding := &stubEmbeddingClient{
@@ -2418,6 +2987,9 @@ func TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFail
 	if len(vector.deleteIDsCalls) != 1 {
 		t.Fatalf("expected one superseded-vector delete attempt, got %+v", vector.deleteIDsCalls)
 	}
+	if got, want := vector.deleteIDsCalls[0], []string{"vec-old-direct-1", "vec-old-direct-2"}; len(got) != len(want) || got[0] != want[0] || got[1] != want[1] {
+		t.Fatalf("superseded vector delete ids = %+v, want %+v", got, want)
+	}
 	if store.vectorGCEnqueueQuery.JobType != logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup {
 		t.Fatalf("vector gc job type = %q, want %q", store.vectorGCEnqueueQuery.JobType, logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup)
 	}
@@ -2426,6 +2998,81 @@ func TestMemoryUseCaseWriteEnqueuesVectorGCCompensationWhenSupersededCleanupFail
 	}
 	if store.vectorGCEnqueueQuery.NextRunAt.IsZero() {
 		t.Fatal("expected direct-write vector gc compensation to schedule a retry time")
+	}
+}
+
+// TestMemoryUseCaseWriteSupersededCleanupSurvivesCallerCancellationAfterCommit verifies post-commit direct-write vector cleanup does not inherit a caller context that is cancelled after the relational outcome commits.
+// TestMemoryUseCaseWriteSupersededCleanupSurvivesCallerCancellationAfterCommit 用于验证 direct-write 关系结果提交后的向量清理不会继承已在提交后取消的调用方 context。
+func TestMemoryUseCaseWriteSupersededCleanupSurvivesCallerCancellationAfterCommit(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
+			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
+				ID:          1403,
+				SourceKind:  logicdomain.MemorySourceKindGRPCAIWrite,
+				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+				Abstract:    "新的发布窗口已经确定。",
+				Details:     "新的发布窗口已经确定。",
+				VectorID:    "vec-new-direct",
+				Category:    logicdomain.MemoryNodeCategoryProjectContext,
+				Priority:    logicdomain.MemoryPriorityP1,
+				MemoryLevel: logicdomain.MemoryLevelStable,
+			},
+			SupersededVectorIDs: []string{"vec-old-direct"},
+		},
+		afterDirectWriteApply: cancel,
+	}
+	embedding := &stubEmbeddingClient{
+		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
+	}
+	vector := &stubVectorStore{deleteErr: errors.New("vector delete unavailable")}
+	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
+
+	result, err := uc.Write(ctx, WriteMemoriesCommand{
+		Session: logicdomain.SessionRef{
+			SessionID:  49,
+			SessionKey: "sess-direct-cleanup-detached",
+			UserID:     7,
+			TeamID:     3,
+			SpaceID:    5,
+			ProjectID:  9,
+		},
+		Items: []WriteMemoryItem{{
+			ScopeLevel:  logicdomain.MemoryScopeLevelProject,
+			Abstract:    "新的发布窗口已经确定。",
+			Details:     "新的发布窗口已经确定。",
+			Category:    logicdomain.MemoryNodeCategoryProjectContext,
+			Priority:    logicdomain.MemoryPriorityP1,
+			MemoryLevel: logicdomain.MemoryLevelStable,
+		}},
+	})
+	if err != nil {
+		t.Fatalf("write memories after caller cancellation at commit boundary: %v", err)
+	}
+	if ctx.Err() == nil {
+		t.Fatal("expected original caller context to be cancelled by the store hook")
+	}
+	if len(result.Items) != 1 || result.Items[0].Ref.ID != 1403 {
+		t.Fatalf("unexpected direct-write result: %+v", result.Items)
+	}
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDContextErrs) != 1 {
+		t.Fatalf("expected one detached superseded-vector delete attempt, got calls=%+v ctxErrs=%+v", vector.deleteIDsCalls, vector.deleteIDContextErrs)
+	}
+	if vector.deleteIDContextErrs[0] != nil {
+		t.Fatalf("expected vector cleanup to use a non-cancelled context, got %v", vector.deleteIDContextErrs[0])
+	}
+	if got, want := store.vectorGCEnqueueQuery.VectorIDs, []string{"vec-old-direct"}; len(got) != len(want) || got[0] != want[0] {
+		t.Fatalf("vector gc compensation ids = %+v, want %+v", got, want)
+	}
+	if len(store.vectorGCEnqueueCtxErrs) != 1 || store.vectorGCEnqueueCtxErrs[0] != nil {
+		t.Fatalf("expected vector gc compensation to use a non-cancelled context, got %+v", store.vectorGCEnqueueCtxErrs)
 	}
 }
 
@@ -2484,6 +3131,45 @@ func TestMemoryUseCaseDeleteMarksScopedMemoriesAndCleansVectors(t *testing.T) {
 	}
 }
 
+// TestMemoryUseCaseDeleteOrdersResultsByRequestMemoryIDs verifies store-level sorted delete results are projected back to the caller's first-seen memory id order.
+// TestMemoryUseCaseDeleteOrdersResultsByRequestMemoryIDs 用于验证存储层排序后的删除结果会投射回调用方 memory id 的首次出现顺序。
+func TestMemoryUseCaseDeleteOrdersResultsByRequestMemoryIDs(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		deleteMemoryResult: logicdomain.MemoryDeleteResult{
+			DeletedMemoryIDs:  []uint64{301, 302},
+			NotFoundMemoryIDs: []uint64{404, 405},
+		},
+	}
+	uc := NewMemoryUseCase(profiles, store, nil, nil, nil)
+
+	result, err := uc.Delete(context.Background(), DeleteMemoriesCommand{
+		UserID:    7,
+		ProjectID: 9,
+		MemoryIDs: []uint64{404, 302, 301, 405, 302},
+	})
+	if err != nil {
+		t.Fatalf("delete memories: %v", err)
+	}
+	if len(result.DeletedMemoryIDs) != 2 || result.DeletedMemoryIDs[0] != 302 || result.DeletedMemoryIDs[1] != 301 {
+		t.Fatalf("unexpected ordered deleted ids: %+v", result.DeletedMemoryIDs)
+	}
+	if len(result.NotFoundMemoryIDs) != 2 || result.NotFoundMemoryIDs[0] != 404 || result.NotFoundMemoryIDs[1] != 405 {
+		t.Fatalf("unexpected ordered not-found ids: %+v", result.NotFoundMemoryIDs)
+	}
+	if len(store.deleteMemoryCalls) != 1 {
+		t.Fatalf("delete call count = %d", len(store.deleteMemoryCalls))
+	}
+	if got := store.deleteMemoryCalls[0].MemoryIDs; len(got) != 4 || got[0] != 404 || got[1] != 302 || got[2] != 301 || got[3] != 405 {
+		t.Fatalf("unexpected memory ids passed to store: %+v", got)
+	}
+}
+
 // TestMemoryUseCaseDeleteEnqueuesVectorGCWhenCleanupFails verifies manual deletion remains successful after relational status changes and persists failed sidecar cleanup for retry.
 // TestMemoryUseCaseDeleteEnqueuesVectorGCWhenCleanupFails 用于验证关系状态变更成功后，即使旁路向量清理失败，手工删除仍成功并持久化重试任务。
 func TestMemoryUseCaseDeleteEnqueuesVectorGCWhenCleanupFails(t *testing.T) {
@@ -2524,6 +3210,50 @@ func TestMemoryUseCaseDeleteEnqueuesVectorGCWhenCleanupFails(t *testing.T) {
 	}
 	if store.vectorGCEnqueueQuery.NextRunAt.IsZero() {
 		t.Fatal("expected manual-delete vector gc compensation to schedule a retry time")
+	}
+}
+
+// TestMemoryUseCaseDeleteCleansVectorsBeforeReturningOutcomeUncertain verifies manual deletion compensates confirmed sidecar vectors before surfacing a post-delete uncertain store boundary.
+// TestMemoryUseCaseDeleteCleansVectorsBeforeReturningOutcomeUncertain 用于验证手工删除在返回删除后结果不确定错误前，会先补偿已经确认的旁路向量。
+func TestMemoryUseCaseDeleteCleansVectorsBeforeReturningOutcomeUncertain(t *testing.T) {
+	profiles := &stubProfileStore{
+		targets: map[int]logicdomain.ProfileTargetRef{
+			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
+			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
+		},
+	}
+	store := &stubTurnLookupStore{
+		deleteMemoryResult: logicdomain.MemoryDeleteResult{
+			DeletedMemoryIDs: []uint64{301},
+			DeletedVectorIDs: []string{"vec-301"},
+		},
+		deleteMemoryErr: logicdomain.OutcomeUncertainError{
+			Operation: "delete memory nodes",
+			Message:   "sync memory fts after manual delete: fts delete unavailable",
+		},
+	}
+	vector := &stubVectorStore{}
+	uc := NewMemoryUseCase(profiles, store, nil, vector, nil)
+
+	result, err := uc.Delete(context.Background(), DeleteMemoriesCommand{
+		UserID:    7,
+		ProjectID: 9,
+		MemoryIDs: []uint64{301},
+	})
+	if err == nil || !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected manual delete outcome-uncertain error, got %v", err)
+	}
+	if len(result.DeletedMemoryIDs) != 1 || result.DeletedMemoryIDs[0] != 301 {
+		t.Fatalf("unexpected deleted ids returned with outcome uncertainty: %+v", result.DeletedMemoryIDs)
+	}
+	if result.DeletedVectorRows != 1 {
+		t.Fatalf("deleted vector rows = %d", result.DeletedVectorRows)
+	}
+	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 || vector.deleteIDsCalls[0][0] != "vec-301" {
+		t.Fatalf("expected vector cleanup before returning uncertain delete error, got %+v", vector.deleteIDsCalls)
+	}
+	if store.vectorGCEnqueueQuery.JobType != "" || len(store.vectorGCEnqueueQuery.VectorIDs) != 0 {
+		t.Fatalf("did not expect vector gc compensation when immediate cleanup succeeds, got %+v", store.vectorGCEnqueueQuery)
 	}
 }
 
@@ -2662,9 +3392,23 @@ func TestMemoryUseCaseWriteSoftIdempotencyReusesCurrentSemanticHash(t *testing.T
 	}
 }
 
-// TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration verifies rows written before the semantic-hash hardening still participate in the short migration window when their lifecycle semantics truly match.
-// TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration 用于验证在语义哈希加固前写入的历史行，只要生命周期语义确实一致，仍能在短迁移窗口内继续参与软幂等。
-func TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration(t *testing.T) {
+// buildLegacyDirectMemoryDedupeHashForTest builds the retired direct-write hash layout so tests can prove production no longer probes it.
+// buildLegacyDirectMemoryDedupeHashForTest 用于构造已退役的主动写入哈希布局，让测试证明生产路径不再探测它。
+func buildLegacyDirectMemoryDedupeHashForTest(session logicdomain.SessionRef, item WriteMemoryItem) string {
+	body := strings.Join([]string{
+		strconv.Itoa(logicdomain.MemorySourceKindGRPCAIWrite),
+		strconv.Itoa(item.ScopeLevel),
+		strconv.FormatUint(session.SessionID, 10),
+		normalizeHashText(item.Abstract),
+		normalizeHashText(item.Details),
+	}, "\n")
+	sum := sha256.Sum256([]byte(body))
+	return hex.EncodeToString(sum[:])
+}
+
+// TestMemoryUseCaseWriteSoftIdempotencyIgnoresLegacyHashRows verifies retired legacy-hash rows no longer participate in direct-write soft idempotency.
+// TestMemoryUseCaseWriteSoftIdempotencyIgnoresLegacyHashRows 用于验证已退役的旧哈希行不再参与主动写入软幂等。
+func TestMemoryUseCaseWriteSoftIdempotencyIgnoresLegacyHashRows(t *testing.T) {
 	fixedNow := time.Date(2026, 4, 5, 10, 0, 0, 0, time.UTC)
 	session := logicdomain.SessionRef{
 		SessionID:  50,
@@ -2683,7 +3427,7 @@ func TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration(t *testing
 		MemoryLevel: logicdomain.MemoryLevelStable,
 	}, fixedNow)
 	currentHash := buildDirectMemoryDedupeHash(session, item, fixedNow)
-	legacyHash := buildLegacyDirectMemoryDedupeHash(session, item)
+	legacyHash := buildLegacyDirectMemoryDedupeHashForTest(session, item)
 
 	profiles := &stubProfileStore{
 		targets: map[int]logicdomain.ProfileTargetRef{
@@ -2707,86 +3451,9 @@ func TestMemoryUseCaseWriteSoftIdempotencySupportsLegacyHashMigration(t *testing
 				ExpiresAt:   fixedNow.Add(defaultMemoryTTL(logicdomain.MemoryScopeLevelProject)),
 			},
 		},
-	}
-	embedding := &stubEmbeddingClient{
-		response: appports.EmbeddingResponse{Vectors: [][]float32{{0.1, 0.2, 0.3}}},
-	}
-	vector := &stubVectorStore{}
-	uc := NewMemoryUseCase(profiles, store, embedding, vector, nil)
-
-	result, err := uc.Write(context.Background(), WriteMemoriesCommand{
-		Session: session,
-		Items: []WriteMemoryItem{{
-			ScopeLevel:  logicdomain.MemoryScopeLevelProject,
-			Abstract:    item.Abstract,
-			Details:     item.Details,
-			Category:    logicdomain.MemoryNodeCategoryProjectContext,
-			Priority:    logicdomain.MemoryPriorityP2,
-			MemoryLevel: logicdomain.MemoryLevelStable,
-		}},
-	})
-	if err != nil {
-		t.Fatalf("write memories: %v", err)
-	}
-	if len(result.Items) != 1 || !result.Items[0].Deduped || result.Items[0].Ref.ID != 1601 {
-		t.Fatalf("expected legacy hash migration path to reuse memory 1601, got %+v", result.Items)
-	}
-	if len(store.recentDedupeQueries) != 2 || store.recentDedupeQueries[0] != currentHash || store.recentDedupeQueries[1] != legacyHash {
-		t.Fatalf("expected current-hash lookup followed by legacy fallback, got %+v", store.recentDedupeQueries)
-	}
-	if len(vector.upserts) != 0 || len(store.directWriteApplyCalls) != 0 || len(embedding.requests) != 0 {
-		t.Fatalf("expected legacy soft idempotency to skip new writes, got upserts=%+v apply=%+v embeds=%+v", vector.upserts, store.directWriteApplyCalls, embedding.requests)
-	}
-}
-
-// TestMemoryUseCaseWriteSoftIdempotencyRejectsLegacyHashSemanticMismatch verifies the compatibility fallback never reuses one old coarse-hash row when the incoming direct write changes category or lifecycle semantics.
-// TestMemoryUseCaseWriteSoftIdempotencyRejectsLegacyHashSemanticMismatch 用于验证兼容回退不会因为旧版粗粒度哈希相同，就误复用已经改变 category 或生命周期语义的主动写入。
-func TestMemoryUseCaseWriteSoftIdempotencyRejectsLegacyHashSemanticMismatch(t *testing.T) {
-	fixedNow := time.Date(2026, 4, 5, 11, 0, 0, 0, time.UTC)
-	session := logicdomain.SessionRef{
-		SessionID:  51,
-		SessionKey: "sess-direct-legacy-soft-dedupe-mismatch",
-		UserID:     7,
-		TeamID:     3,
-		SpaceID:    5,
-		ProjectID:  9,
-	}
-	item := normalizeWriteMemoryItem(WriteMemoryItem{
-		ScopeLevel:  logicdomain.MemoryScopeLevelProject,
-		Abstract:    "记录默认生命周期下的部署约束。",
-		Details:     "记录默认生命周期下的部署约束。",
-		Category:    logicdomain.MemoryNodeCategoryProjectContext,
-		Priority:    logicdomain.MemoryPriorityP2,
-		MemoryLevel: logicdomain.MemoryLevelStable,
-	}, fixedNow)
-	currentHash := buildDirectMemoryDedupeHash(session, item, fixedNow)
-	legacyHash := buildLegacyDirectMemoryDedupeHash(session, item)
-
-	profiles := &stubProfileStore{
-		targets: map[int]logicdomain.ProfileTargetRef{
-			logicdomain.ProfileTypeUser:    {ProfileType: logicdomain.ProfileTypeUser, BindID: 7, UserID: 7},
-			logicdomain.ProfileTypeProject: {ProfileType: logicdomain.ProfileTypeProject, BindID: 9, UserID: 7, TeamID: 3, SpaceID: 5, ProjectID: 9},
-		},
-	}
-	store := &stubTurnLookupStore{
-		recentDedupeRowsByHash: map[string]logicdomain.MemoryNodeRecord{
-			legacyHash: {
-				ID:          1701,
-				Status:      logicdomain.MemoryStatusActive,
-				SourceKind:  logicdomain.MemorySourceKindGRPCAIWrite,
-				ScopeLevel:  logicdomain.MemoryScopeLevelProject,
-				Category:    logicdomain.MemoryNodeCategoryTechSpecAPI,
-				Priority:    logicdomain.MemoryPriorityP2,
-				MemoryLevel: logicdomain.MemoryLevelStable,
-				Abstract:    item.Abstract,
-				Details:     item.Details,
-				CreatedAt:   fixedNow,
-				ExpiresAt:   fixedNow.Add(defaultMemoryTTL(logicdomain.MemoryScopeLevelProject)),
-			},
-		},
 		directWriteApplyResult: logicdomain.DirectMemoryWriteApplyResult{
 			InsertedMemoryNode: logicdomain.MemoryNodeRecord{
-				ID:         1702,
+				ID:         1602,
 				SourceKind: logicdomain.MemorySourceKindGRPCAIWrite,
 				ScopeLevel: logicdomain.MemoryScopeLevelProject,
 				Abstract:   item.Abstract,
@@ -2815,14 +3482,14 @@ func TestMemoryUseCaseWriteSoftIdempotencyRejectsLegacyHashSemanticMismatch(t *t
 	if err != nil {
 		t.Fatalf("write memories: %v", err)
 	}
-	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1702 {
-		t.Fatalf("expected semantic mismatch to create a fresh row, got %+v", result.Items)
+	if len(result.Items) != 1 || result.Items[0].Deduped || result.Items[0].Ref.ID != 1602 {
+		t.Fatalf("expected legacy-only hash row to be ignored and a fresh row to be created, got %+v", result.Items)
 	}
-	if len(store.recentDedupeQueries) != 2 || store.recentDedupeQueries[0] != currentHash || store.recentDedupeQueries[1] != legacyHash {
-		t.Fatalf("expected current-hash lookup followed by legacy mismatch check, got %+v", store.recentDedupeQueries)
+	if len(store.recentDedupeQueries) != 1 || store.recentDedupeQueries[0] != currentHash {
+		t.Fatalf("expected only current-hash lookup and no legacy probe %q, got %+v", legacyHash, store.recentDedupeQueries)
 	}
-	if len(store.directWriteApplyCalls) != 1 || len(vector.upserts) != 1 || len(embedding.requests) != 1 {
-		t.Fatalf("expected semantic mismatch to persist a fresh row, got apply=%+v upserts=%+v embeds=%+v", store.directWriteApplyCalls, vector.upserts, embedding.requests)
+	if len(vector.upserts) != 1 || len(store.directWriteApplyCalls) != 1 || len(embedding.requests) != 1 {
+		t.Fatalf("expected legacy-only hash miss to persist a fresh row, got upserts=%+v apply=%+v embeds=%+v", vector.upserts, store.directWriteApplyCalls, embedding.requests)
 	}
 }
 
@@ -3234,19 +3901,24 @@ func TestMemoryUseCaseWriteStaleSemanticDedupeTargetFallsBackToCreate(t *testing
 // stubTurnLookupStore supplies deterministic turn rows for memory-query tests.
 // stubTurnLookupStore 用于为记忆查询测试提供确定性的 turn 行。
 type stubTurnLookupStore struct {
-	turnIDs                  []uint64
-	rows                     []logicdomain.SessionTurnRecord
-	windows                  map[uint64]logicdomain.TurnDetailWindow
-	memoryRowsByID           []logicdomain.MemoryNodeRecord
-	memoryRowsByIDErr        error
-	memoryContextEdges       []logicdomain.MemoryContextEdge
-	memoryRowsByVector       []logicdomain.MemoryNodeRecord
-	lexicalHits              []logicdomain.MemoryLexicalHit
-	lexicalErr               error
-	lexicalQueries           []string
-	lexicalTopKs             []int
-	lexicalFilters           []logicdomain.SearchFilter
-	contextLookupIDs         []uint64
+	turnIDs                 []uint64
+	rows                    []logicdomain.SessionTurnRecord
+	windows                 map[uint64]logicdomain.TurnDetailWindow
+	memoryRowsByID          []logicdomain.MemoryNodeRecord
+	memoryRowsByIDErr       error
+	memoryRowsByIDCalls     [][]uint64
+	memoryContextEdges      []logicdomain.MemoryContextEdge
+	memoryRowsByVector      []logicdomain.MemoryNodeRecord
+	memoryRowsByVectorCalls [][]string
+	lexicalHits             []logicdomain.MemoryLexicalHit
+	lexicalErr              error
+	lexicalQueries          []string
+	lexicalTopKs            []int
+	lexicalFilters          []logicdomain.SearchFilter
+	contextLookupIDs        []uint64
+	// contextLookupIDCalls records every context-edge lookup so multi-query tests can assert request-local cache behavior.
+	// contextLookupIDCalls 用于记录每一次 context-edge 查询，方便多 query 测试断言请求级缓存行为。
+	contextLookupIDCalls     [][]uint64
 	recentDedupeQueries      []string
 	recentDedupeRowsByHash   map[string]logicdomain.MemoryNodeRecord
 	recentDedupeRow          logicdomain.MemoryNodeRecord
@@ -3256,10 +3928,12 @@ type stubTurnLookupStore struct {
 	directWriteApplyCalls    []stubDirectMemoryWriteApplyCall
 	directWriteApplyResult   logicdomain.DirectMemoryWriteApplyResult
 	directWriteApplyErr      error
+	afterDirectWriteApply    func()
 	deleteMemoryCalls        []stubDeleteMemoryCall
 	deleteMemoryResult       logicdomain.MemoryDeleteResult
 	deleteMemoryErr          error
 	vectorGCEnqueueQuery     logicdomain.VectorGCJobEnqueueQuery
+	vectorGCEnqueueCtxErrs   []error
 	err                      error
 }
 
@@ -3278,6 +3952,66 @@ type stubDirectMemoryWriteApplyCall struct {
 	Session             logicdomain.SessionRef
 	Record              logicdomain.MemoryNodeRecord
 	SupersededMemoryIDs []uint64
+}
+
+// fallbackOnlyMemoryStore forwards the MemoryStore port without exposing the optional atomic direct-write applier.
+// fallbackOnlyMemoryStore 用于转发 MemoryStore 端口，但不暴露可选的原子主动写 applier。
+type fallbackOnlyMemoryStore struct {
+	inner *stubTurnLookupStore
+}
+
+// LoadTurnsByIDs forwards turn detail lookups to the inner store.
+// LoadTurnsByIDs 用于把 turn 详情查询转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) LoadTurnsByIDs(ctx context.Context, turnIDs []uint64) ([]logicdomain.SessionTurnRecord, error) {
+	return s.inner.LoadTurnsByIDs(ctx, turnIDs)
+}
+
+// LoadTurnWindows forwards neighboring-turn lookups to the inner store.
+// LoadTurnWindows 用于把相邻 turn 查询转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) LoadTurnWindows(ctx context.Context, turnIDs []uint64, radius int) (map[uint64]logicdomain.TurnDetailWindow, error) {
+	return s.inner.LoadTurnWindows(ctx, turnIDs, radius)
+}
+
+// LoadMemoryNodesByIDs forwards memory id lookups to the inner store.
+// LoadMemoryNodesByIDs 用于把 memory id 查询转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) LoadMemoryNodesByIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+	return s.inner.LoadMemoryNodesByIDs(ctx, memoryIDs)
+}
+
+// LoadMemoryContextEdgesByMemoryIDs forwards context-edge lookups to the inner store.
+// LoadMemoryContextEdgesByMemoryIDs 用于把情境边查询转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) LoadMemoryContextEdgesByMemoryIDs(ctx context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
+	return s.inner.LoadMemoryContextEdgesByMemoryIDs(ctx, memoryIDs)
+}
+
+// LoadMemoryNodesByVectorIDs forwards vector-id enrichment lookups to the inner store.
+// LoadMemoryNodesByVectorIDs 用于把 vector id 补全查询转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
+	return s.inner.LoadMemoryNodesByVectorIDs(ctx, vectorIDs)
+}
+
+// SearchLexicalMemory forwards lexical recall to the inner store.
+// SearchLexicalMemory 用于把 lexical 召回转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
+	return s.inner.SearchLexicalMemory(ctx, query, topK, filter)
+}
+
+// FindRecentActiveMemoryByDedupe forwards direct-write soft dedupe lookups to the inner store.
+// FindRecentActiveMemoryByDedupe 用于把主动写软幂等查询转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) FindRecentActiveMemoryByDedupe(ctx context.Context, session logicdomain.SessionRef, sourceKind, scopeLevel int, dedupeHash string, notBefore time.Time) (logicdomain.MemoryNodeRecord, bool, error) {
+	return s.inner.FindRecentActiveMemoryByDedupe(ctx, session, sourceKind, scopeLevel, dedupeHash, notBefore)
+}
+
+// CreateDirectMemoryNode forwards fallback direct-memory persistence to the inner store.
+// CreateDirectMemoryNode 用于把 fallback 主动记忆持久化转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error) {
+	return s.inner.CreateDirectMemoryNode(ctx, session, record)
+}
+
+// DeleteMemoryNodes forwards manual memory deletion to the inner store.
+// DeleteMemoryNodes 用于把手工记忆删除转发给内部存储桩。
+func (s *fallbackOnlyMemoryStore) DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error) {
+	return s.inner.DeleteMemoryNodes(ctx, memoryIDs, filter, deletedAt, reason)
 }
 
 // LoadTurnsByIDs records the requested ids and returns the canned rows.
@@ -3310,9 +4044,10 @@ func (s *stubTurnLookupStore) LoadTurnWindows(_ context.Context, _ []uint64, _ i
 	return cloned, nil
 }
 
-// LoadMemoryNodesByIDs returns canned memory rows for mixed memory-detail assertions.
-// LoadMemoryNodesByIDs 用于返回混合记忆详情断言所需的预设记忆行。
-func (s *stubTurnLookupStore) LoadMemoryNodesByIDs(_ context.Context, _ []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+// LoadMemoryNodesByIDs records requested memory ids and returns canned memory rows for mixed memory-detail assertions.
+// LoadMemoryNodesByIDs 用于记录请求的 memory id，并返回混合记忆详情断言所需的预设记忆行。
+func (s *stubTurnLookupStore) LoadMemoryNodesByIDs(_ context.Context, memoryIDs []uint64) ([]logicdomain.MemoryNodeRecord, error) {
+	s.memoryRowsByIDCalls = append(s.memoryRowsByIDCalls, append([]uint64(nil), memoryIDs...))
 	if s.memoryRowsByIDErr != nil {
 		return nil, s.memoryRowsByIDErr
 	}
@@ -3325,24 +4060,27 @@ func (s *stubTurnLookupStore) LoadMemoryNodesByIDs(_ context.Context, _ []uint64
 // LoadMemoryContextEdgesByMemoryIDs returns canned context edges for context-aware retrieval assertions.
 // LoadMemoryContextEdgesByMemoryIDs 用于返回情境感知检索断言需要的预设 context edges。
 func (s *stubTurnLookupStore) LoadMemoryContextEdgesByMemoryIDs(_ context.Context, memoryIDs []uint64) ([]logicdomain.MemoryContextEdge, error) {
-	s.contextLookupIDs = append([]uint64(nil), memoryIDs...)
+	copiedIDs := append([]uint64(nil), memoryIDs...)
+	s.contextLookupIDs = copiedIDs
+	s.contextLookupIDCalls = append(s.contextLookupIDCalls, copiedIDs)
 	if s.err != nil {
 		return nil, s.err
 	}
 	return append([]logicdomain.MemoryContextEdge(nil), s.memoryContextEdges...), nil
 }
 
-// LoadMemoryNodesByVectorIDs returns canned memory rows for search-hit enrichment assertions.
-// LoadMemoryNodesByVectorIDs 用于返回搜索命中补全断言所需的预设记忆行。
-func (s *stubTurnLookupStore) LoadMemoryNodesByVectorIDs(_ context.Context, _ []string) ([]logicdomain.MemoryNodeRecord, error) {
+// LoadMemoryNodesByVectorIDs records requested vector ids and returns canned memory rows for search-hit enrichment assertions.
+// LoadMemoryNodesByVectorIDs 用于记录请求的 vector id，并返回搜索命中补全断言所需的预设记忆行。
+func (s *stubTurnLookupStore) LoadMemoryNodesByVectorIDs(_ context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error) {
+	s.memoryRowsByVectorCalls = append(s.memoryRowsByVectorCalls, append([]string(nil), vectorIDs...))
 	if s.err != nil {
 		return nil, s.err
 	}
 	return append([]logicdomain.MemoryNodeRecord(nil), s.memoryRowsByVector...), nil
 }
 
-// SearchLexicalMemory records the lexical search request and returns canned lexical hits for hybrid-recall assertions.
-// SearchLexicalMemory 用于记录 lexical 搜索请求，并返回预设 lexical 命中，供混合召回断言使用。
+// SearchLexicalMemory records the lexical search request and returns canned materialized lexical hits for hybrid-recall assertions.
+// SearchLexicalMemory 用于记录 lexical 搜索请求，并返回预设的已物化 lexical 命中，供混合召回断言使用。
 func (s *stubTurnLookupStore) SearchLexicalMemory(_ context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error) {
 	s.lexicalQueries = append(s.lexicalQueries, query)
 	s.lexicalTopKs = append(s.lexicalTopKs, topK)
@@ -3353,7 +4091,37 @@ func (s *stubTurnLookupStore) SearchLexicalMemory(_ context.Context, query strin
 	if s.err != nil {
 		return nil, s.err
 	}
-	return append([]logicdomain.MemoryLexicalHit(nil), s.lexicalHits...), nil
+	return materializeStubLexicalHits(s.lexicalHits, s.memoryRowsByID), nil
+}
+
+// materializeStubLexicalHits mirrors the real lexical-store contract by attaching deterministic canned rows to test hits that only specify a memory id.
+// materializeStubLexicalHits 用于镜像真实 lexical 存储契约，把确定性的预设行补到只声明 memory id 的测试命中上。
+func materializeStubLexicalHits(hits []logicdomain.MemoryLexicalHit, rows []logicdomain.MemoryNodeRecord) []logicdomain.MemoryLexicalHit {
+	if len(hits) == 0 {
+		return []logicdomain.MemoryLexicalHit{}
+	}
+	rowsByID := make(map[uint64]logicdomain.MemoryNodeRecord, len(rows))
+	for _, row := range rows {
+		rowsByID[row.ID] = cloneMemoryNodeRecordForTest(row)
+	}
+	out := make([]logicdomain.MemoryLexicalHit, 0, len(hits))
+	for _, hit := range hits {
+		cloned := hit
+		if cloned.Record.ID == 0 {
+			cloned.Record = rowsByID[cloned.MemoryID]
+		} else {
+			cloned.Record = cloneMemoryNodeRecordForTest(cloned.Record)
+		}
+		out = append(out, cloned)
+	}
+	return out
+}
+
+// cloneMemoryNodeRecordForTest copies slice fields so test stubs cannot share mutable vector backing arrays across assertions.
+// cloneMemoryNodeRecordForTest 用于复制切片字段，避免测试桩在断言之间共享可变的向量底层数组。
+func cloneMemoryNodeRecordForTest(row logicdomain.MemoryNodeRecord) logicdomain.MemoryNodeRecord {
+	row.Vector = append([]float32(nil), row.Vector...)
+	return row
 }
 
 // FindRecentActiveMemoryByDedupe records short-window dedupe lookups and can return either hash-specific rows or the legacy canned row for older tests.
@@ -3404,6 +4172,9 @@ func (s *stubTurnLookupStore) ApplyDirectMemoryWrite(_ context.Context, session 
 	if s.directWriteApplyErr != nil {
 		return logicdomain.DirectMemoryWriteApplyResult{}, s.directWriteApplyErr
 	}
+	if s.afterDirectWriteApply != nil {
+		s.afterDirectWriteApply()
+	}
 	if s.directWriteApplyResult.InsertedMemoryNode.ID == 0 {
 		record.ID = uint64(len(s.directWriteApplyCalls))
 		return logicdomain.DirectMemoryWriteApplyResult{
@@ -3426,23 +4197,28 @@ func (s *stubTurnLookupStore) DeleteMemoryNodes(_ context.Context, memoryIDs []u
 		DeletedAt: deletedAt,
 		Reason:    reason,
 	})
-	if s.deleteMemoryErr != nil {
-		return logicdomain.MemoryDeleteResult{}, s.deleteMemoryErr
-	}
-	if s.err != nil {
-		return logicdomain.MemoryDeleteResult{}, s.err
-	}
 	result := s.deleteMemoryResult
 	result.DeletedMemoryIDs = append([]uint64(nil), result.DeletedMemoryIDs...)
 	result.NotFoundMemoryIDs = append([]uint64(nil), result.NotFoundMemoryIDs...)
 	result.DeletedVectorIDs = append([]string(nil), result.DeletedVectorIDs...)
+	if s.deleteMemoryErr != nil {
+		return result, s.deleteMemoryErr
+	}
+	if s.err != nil {
+		return logicdomain.MemoryDeleteResult{}, s.err
+	}
 	return result, nil
 }
 
 // EnqueueVectorGCJobs records the latest compensation enqueue request so direct-write tests can assert failed vector cleanup is persisted for later retry.
 // EnqueueVectorGCJobs 用于记录最近一次补偿入队请求，让 direct-write 测试验证失败的向量清理会被持久化等待后续重试。
-func (s *stubTurnLookupStore) EnqueueVectorGCJobs(_ context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
+func (s *stubTurnLookupStore) EnqueueVectorGCJobs(ctx context.Context, query logicdomain.VectorGCJobEnqueueQuery) error {
 	s.vectorGCEnqueueQuery = query
+	if ctx == nil {
+		s.vectorGCEnqueueCtxErrs = append(s.vectorGCEnqueueCtxErrs, nil)
+	} else {
+		s.vectorGCEnqueueCtxErrs = append(s.vectorGCEnqueueCtxErrs, ctx.Err())
+	}
 	return nil
 }
 

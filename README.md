@@ -188,11 +188,12 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - 当前服务端检索链是：`vector + lexical + RRF + rerank(optional) + Weibull + context-aware scoring + MMR`
   - 当前检索过滤范围是已解析出来的 `team_id + space_id + project_id`
   - 同时带 `user_id = 0 OR current_user_id` 过滤，允许共享记忆和当前用户私有记忆一起参与召回
-  - 当 `recall_mode=0` 或省略时，会回退到旧版行为，不读取 compact 边界
-  - 当 `recall_mode=1` 时：
-    - 若当前 session 尚未 compact，会排除当前 session 的 turn-extract 记忆
-    - 若当前 session 已 compact，只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
-  - 当 `recall_mode` 为未来新增的非零值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
+  - 省略 `recall_mode` 或传 `0/UNSPECIFIED` 时，当前运行时默认使用 compact-aware 基线
+  - `recall_mode=1/SESSION_COMPACT` 表示显式启用同一 compact-aware 基线：
+     - 若当前 session 尚未 compact，会排除当前 session 的 turn-extract 记忆
+     - 若当前 session 已 compact，只允许召回 `source_turn_id <= last_compacted_turn_id` 的同 session 历史记忆
+  - `recall_mode=2/FULL` 表示显式关闭当前 session compact 边界，在其他作用域与生命周期过滤条件内执行全量召回
+  - 当 `recall_mode` 为未来新增值时，当前版本会回退到 compact-aware 基线，避免整段当前 session 被重新开放召回
 - 第二层 `precheck_l2_main` 会结合按当前运行系统本地时间展开、且不显示时区后缀的当前 `datetime`、候选创建 `datetime`、候选摘要、最终分数解释、统一来源解释、累计 support/rebuttal 和当前 query 命中的 context evidence，只采纳对当前请求真正有帮助的候选编号
 - 仅对被采纳的记忆写回生命周期计数与有效期
 - 只把被采纳的记忆通过 gRPC `context_items[]` 返回给调用方
@@ -422,6 +423,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `user_id`
   - `queries[]`
   - `top_k`
+- `top_k` 省略或传 `0` 时默认返回 `8` 条，最大值为 `32`；超过上限时按 `32` 执行
 - `queries[]` 是简单字符串数组：
   - 每项代表一条独立检索语句
   - 不再使用 `query_json`
@@ -498,6 +500,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `deleted_memory_ids[]`
   - `not_found_memory_ids[]`
   - `deleted_vector_rows`
+- `deleted_memory_ids[]` 和 `not_found_memory_ids[]` 会按请求中 `memory_ids[]` 的首次出现顺序返回，重复 id 只按第一次出现参与结果排序
 
 ## 构建与运行
 
@@ -608,7 +611,7 @@ vmm-local service status [service-name]
   - 未传 `-config`：尝试加载 `~/.vmm/config.yaml`（仅当文件存在时）
   - `-config` 指向目录：尝试加载该目录下的 `config.yaml`（仅当文件存在时）
   - `-config` 指向 `.yaml` / `.yml` 文件：直接使用该文件（总是加载）
-- 环境变量覆盖：仅对配置文件中显式写成 `${VMM_...}` 的字段生效（按需 opt-in 模型），不是全局覆盖
+- 环境变量覆盖：仅对配置文件中对应字段显式写成 `${VMM_...}` 的字段生效（按需 opt-in 模型），不是全局覆盖；在不相关字段中引用同名变量不会解锁其他字段的覆盖
 - `.env` 文件：如果配置文件中存在 `${...}` 占位符，也会在同级目录下搜索 `.env` 文件作为补充来源
 
 说明：
@@ -620,6 +623,8 @@ vmm-local service status [service-name]
 - 当前测试覆盖中的 embedding 与 rerank 仍使用百炼变量 `BAILIAN_API_KEY`、`BAILIAN_BASE_URL`、`BAILIAN_RERANK_URL`。
 - `configs/bailian.config.example.yaml` 保留了此前的百炼 LLM、embedding、rerank 覆盖示例。
 - 必填运行字段中的 `${ENV_NAME}` 占位符如果缺失或为空，会在展开前直接报出变量名与配置路径，避免被归一化为空节点后产生误导性的路由错误。
+- 类型化的 `${VMM_...}` 覆盖值如果无法解析为目标字段所需的整数、浮点数、布尔值或时长，会在配置加载阶段直接失败，不会静默回退到文件值或默认值。
+- 未知配置字段会在配置加载阶段直接失败；顶层 `x-*` 仅作为 YAML 锚点辅助块被剥离，不进入运行时配置，也不会参与环境变量覆盖白名单。
 
 ### 维护工具
 

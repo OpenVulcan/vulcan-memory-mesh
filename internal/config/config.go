@@ -4,6 +4,7 @@ package config
 
 import (
 	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -454,6 +455,30 @@ func (c *MemoryPipelineConfig) UnmarshalJSON(data []byte) error {
 	rawFields := map[string]json.RawMessage{}
 	if err := json.Unmarshal(data, &rawFields); err != nil {
 		return err
+	}
+	// Reject unknown fields here because the custom unmarshaller bypasses json.Decoder.DisallowUnknownFields for this nested object.
+	// 这里显式拒绝未知字段，因为自定义反序列化会绕过 json.Decoder.DisallowUnknownFields 对该嵌套对象的检查。
+	for field := range rawFields {
+		switch field {
+		case "max_search_keywords",
+			"min_similarity_score",
+			"replace_min_similarity_score",
+			"hard_dedupe_cosine_threshold",
+			"hard_dedupe_pool_top_k",
+			"hybrid_enabled",
+			"lexical_top_k",
+			"rrf_k",
+			"mmr_enabled",
+			"mmr_lambda",
+			"weibull_enabled",
+			"weibull_shape",
+			"weibull_scale_hours",
+			"weibull_min_multiplier",
+			"weibull_reinforce_weight",
+			"weibull_cross_session_boost":
+		default:
+			return fmt.Errorf("json: unknown field %q", field)
+		}
 	}
 	next := memoryPipelineConfigAlias(*c)
 	if err := json.Unmarshal(data, &next); err != nil {

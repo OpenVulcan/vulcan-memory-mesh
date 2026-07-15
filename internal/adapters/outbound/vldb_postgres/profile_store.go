@@ -187,13 +187,36 @@ SET instruction_status = $1,
     failure_reason = $3,
     updated_at = $4
 WHERE id = $5
+  AND instruction_status = $6
 `, r.profileInstructionsTable())
 	callCtx, cancel := r.profileQueryContext(ctx)
 	defer cancel()
-	if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), logicdomain.ProfileInstructionStatusFailed, strings.TrimSpace(reviewResult), strings.TrimSpace(failureReason), time.Now().UTC(), int64(instructionID)); err != nil {
+	tag, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(sqlText), logicdomain.ProfileInstructionStatusFailed, strings.TrimSpace(reviewResult), strings.TrimSpace(failureReason), time.Now().UTC(), int64(instructionID), logicdomain.ProfileInstructionStatusPending)
+	if err != nil {
 		return fmt.Errorf("mark postgres profile instruction failed: %w", err)
 	}
+	if err := requirePostgresProfileInstructionRowsAffected("mark postgres profile instruction failed", instructionID, tag.RowsAffected(), 1); err != nil {
+		return err
+	}
 	return nil
+}
+
+// requirePostgresProfileInstructionRowsAffected rejects profile-instruction state drift when a known instruction transition did not touch its expected row.
+// requirePostgresProfileInstructionRowsAffected 用于在已知画像指令状态迁移未命中预期行时拒绝状态漂移。
+func requirePostgresProfileInstructionRowsAffected(action string, instructionID uint64, rowsAffected, expectedRows int64) error {
+	if rowsAffected == expectedRows {
+		return nil
+	}
+	return fmt.Errorf("%s for instruction %d affected %d rows, want %d", action, instructionID, rowsAffected, expectedRows)
+}
+
+// requirePostgresManualProfileRowsAffected rejects manual-profile transaction drift before the transaction commits.
+// requirePostgresManualProfileRowsAffected 用于在手工画像事务提交前拒绝行数漂移。
+func requirePostgresManualProfileRowsAffected(action string, rowsAffected, expectedRows int64) error {
+	if rowsAffected == expectedRows {
+		return nil
+	}
+	return fmt.Errorf("%s affected %d rows, want %d", action, rowsAffected, expectedRows)
 }
 
 // ApplyManualProfileInstruction persists the reviewed manual profile instruction inside one transaction so accepted nodes, retirements, instruction state, and rendered profile stay aligned.
@@ -224,6 +247,9 @@ func (r *profileRepository) ApplyManualProfileInstruction(ctx context.Context, t
 
 	now := time.Now().UTC()
 	accepted := make([]logicdomain.ProfileNodeRecord, 0, len(nodes))
+	// Track nodes already retired by a replacement node so the standalone retire loop does not update the same row twice.
+	// 记录已被替代节点退役的旧节点，避免独立 retire 循环再次更新同一行。
+	supersededNodeIDs := make(map[uint64]struct{})
 	for idx, node := range nodes {
 		if strings.TrimSpace(node.Content) == "" {
 			return logicdomain.ManualProfileInstructionApplyResult{}, logicdomain.ValidationError{Field: fmt.Sprintf("nodes[%d].content", idx), Message: "is required"}
@@ -300,7 +326,8 @@ RETURNING id, turn_id, profile_type, bind_id, content, profile_status, priority,
 			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("insert postgres manual profile node %d: %w", idx, err)
 		}
 		inserted := row.toRecord()
-		if len(node.SupersedeNodeIDs) > 0 {
+		supersedeNodeIDs := normalizeUint64List(node.SupersedeNodeIDs)
+		if len(supersedeNodeIDs) > 0 {
 			updateSupersededSQL := fmt.Sprintf(`
 UPDATE %s
 SET profile_status = $1,
@@ -310,7 +337,7 @@ SET profile_status = $1,
 WHERE profile_status = $5
   AND id = ANY($6)
 `, r.profileNodesTable())
-			if _, err := tx.Exec(
+			tag, err := tx.Exec(
 				callCtx,
 				strings.TrimSpace(updateSupersededSQL),
 				logicdomain.ProfileStatusSuperseded,
@@ -318,15 +345,22 @@ WHERE profile_status = $5
 				strings.TrimSpace(node.StatusReason),
 				now,
 				logicdomain.ProfileStatusActive,
-				toInt64List(normalizeUint64List(node.SupersedeNodeIDs)),
-			); err != nil {
+				toInt64List(supersedeNodeIDs),
+			)
+			if err != nil {
 				return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("supersede postgres manual profile nodes for %d: %w", inserted.ID, err)
+			}
+			if err := requirePostgresManualProfileRowsAffected(fmt.Sprintf("supersede postgres manual profile nodes for %d", inserted.ID), tag.RowsAffected(), int64(len(supersedeNodeIDs))); err != nil {
+				return logicdomain.ManualProfileInstructionApplyResult{}, err
+			}
+			for _, nodeID := range supersedeNodeIDs {
+				supersededNodeIDs[nodeID] = struct{}{}
 			}
 		}
 		accepted = append(accepted, inserted)
 	}
 
-	for _, decision := range retired {
+	for _, decision := range standalonePostgresProfileRetireDecisions(retired, supersededNodeIDs) {
 		if decision.NodeID == 0 {
 			continue
 		}
@@ -338,8 +372,12 @@ SET profile_status = $1,
 WHERE profile_status = $4
   AND id = $5
 `, r.profileNodesTable())
-		if _, err := tx.Exec(callCtx, strings.TrimSpace(retireSQL), logicdomain.ProfileStatusSuperseded, strings.TrimSpace(decision.Reason), now, logicdomain.ProfileStatusActive, int64(decision.NodeID)); err != nil {
+		tag, err := tx.Exec(callCtx, strings.TrimSpace(retireSQL), logicdomain.ProfileStatusSuperseded, strings.TrimSpace(decision.Reason), now, logicdomain.ProfileStatusActive, int64(decision.NodeID))
+		if err != nil {
 			return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("retire postgres manual profile node %d: %w", decision.NodeID, err)
+		}
+		if err := requirePostgresManualProfileRowsAffected(fmt.Sprintf("retire postgres manual profile node %d", decision.NodeID), tag.RowsAffected(), 1); err != nil {
+			return logicdomain.ManualProfileInstructionApplyResult{}, err
 		}
 	}
 
@@ -350,21 +388,49 @@ SET instruction_status = $1,
     failure_reason = '',
     updated_at = $3
 WHERE id = $4
+  AND instruction_status = $5
 `, r.profileInstructionsTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateInstructionSQL), logicdomain.ProfileInstructionStatusApplied, strings.TrimSpace(reviewResult), now, int64(instruction.ID)); err != nil {
+	tag, err := tx.Exec(callCtx, strings.TrimSpace(updateInstructionSQL), logicdomain.ProfileInstructionStatusApplied, strings.TrimSpace(reviewResult), now, int64(instruction.ID), logicdomain.ProfileInstructionStatusPending)
+	if err != nil {
 		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("mark postgres manual profile instruction applied: %w", err)
+	}
+	if err := requirePostgresProfileInstructionRowsAffected("mark postgres manual profile instruction applied", instruction.ID, tag.RowsAffected(), 1); err != nil {
+		return logicdomain.ManualProfileInstructionApplyResult{}, err
 	}
 	if err := r.updateRenderedProfileTarget(callCtx, tx, target.ProfileType, target.BindID, renderedProfile, now); err != nil {
 		return logicdomain.ManualProfileInstructionApplyResult{}, err
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return logicdomain.ManualProfileInstructionApplyResult{}, fmt.Errorf("commit postgres manual profile tx: %w", err)
-	}
-	return logicdomain.ManualProfileInstructionApplyResult{
+	result := logicdomain.ManualProfileInstructionApplyResult{
 		InstructionID: instruction.ID,
 		AcceptedNodes: accepted,
 		RetiredNodes:  retired,
-	}, nil
+	}
+	if err := tx.Commit(callCtx); err != nil {
+		return result, postgresManualProfileCommitOutcomeUncertainError(err)
+	}
+	return result, nil
+}
+
+// postgresManualProfileCommitOutcomeUncertainError marks manual-profile commits whose node, instruction, and rendered-profile writes may already be durable.
+// postgresManualProfileCommitOutcomeUncertainError 用于标记手工画像提交失败，此时节点、指令状态和渲染画像写入可能已经持久化。
+func postgresManualProfileCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("apply manual profile instruction", "commit postgres manual profile tx", err)
+}
+
+// standalonePostgresProfileRetireDecisions removes retire decisions already applied through a replacement-node supersede update.
+// standalonePostgresProfileRetireDecisions 用于移除已经通过替代节点 supersede 更新落库的退役决策。
+func standalonePostgresProfileRetireDecisions(retired []logicdomain.ProfileRetireDecision, supersededNodeIDs map[uint64]struct{}) []logicdomain.ProfileRetireDecision {
+	if len(retired) == 0 || len(supersededNodeIDs) == 0 {
+		return retired
+	}
+	standalone := make([]logicdomain.ProfileRetireDecision, 0, len(retired))
+	for _, decision := range retired {
+		if _, alreadySuperseded := supersededNodeIDs[decision.NodeID]; alreadySuperseded {
+			continue
+		}
+		standalone = append(standalone, decision)
+	}
+	return standalone
 }
 
 // ConvergeExpiredProfileNodes marks due active profile nodes as expired and returns the affected targets together with their remaining renderable active nodes.
@@ -440,8 +506,12 @@ SET profile_status = $1,
 WHERE profile_status = $4
   AND id = ANY($5)
 `, r.profileNodesTable())
-	if _, err := tx.Exec(callCtx, strings.TrimSpace(updateExpiredSQL), logicdomain.ProfileStatusExpired, "expired by lifecycle convergence", now, logicdomain.ProfileStatusActive, toInt64List(expiredIDs)); err != nil {
+	expireTag, err := tx.Exec(callCtx, strings.TrimSpace(updateExpiredSQL), logicdomain.ProfileStatusExpired, "expired by lifecycle convergence", now, logicdomain.ProfileStatusActive, toInt64List(expiredIDs))
+	if err != nil {
 		return nil, fmt.Errorf("mark postgres expired profile nodes: %w", err)
+	}
+	if err := requirePostgresManualProfileRowsAffected("expire postgres profile nodes by lifecycle convergence", expireTag.RowsAffected(), int64(len(expiredIDs))); err != nil {
+		return nil, err
 	}
 	for idx := range targets {
 		nodes, err := r.loadActiveProfileNodes(callCtx, tx, targets[idx].ProfileType, targets[idx].BindID, now, 0)
@@ -451,9 +521,15 @@ WHERE profile_status = $4
 		targets[idx].Nodes = nodes
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return nil, fmt.Errorf("commit postgres profile convergence tx: %w", err)
+		return targets, postgresProfileConvergenceCommitOutcomeUncertainError(err)
 	}
 	return targets, nil
+}
+
+// postgresProfileConvergenceCommitOutcomeUncertainError marks lifecycle convergence commits whose expired-node status flips may already be durable.
+// postgresProfileConvergenceCommitOutcomeUncertainError 用于标记画像生命周期收敛提交失败，此时过期节点状态切换可能已经持久化。
+func postgresProfileConvergenceCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("converge expired profile nodes", "commit postgres profile convergence tx", err)
 }
 
 // ReplaceRenderedProfiles writes the already rendered scope-level profile blobs back into PostgreSQL after lifecycle convergence, manual instruction review, or batch review.
@@ -489,9 +565,15 @@ func (r *profileRepository) ReplaceRenderedProfiles(ctx context.Context, updates
 		return err
 	}
 	if err := tx.Commit(callCtx); err != nil {
-		return fmt.Errorf("commit postgres rendered-profile replace tx: %w", err)
+		return postgresRenderedProfileReplaceCommitOutcomeUncertainError(err)
 	}
 	return nil
+}
+
+// postgresRenderedProfileReplaceCommitOutcomeUncertainError marks rendered-profile replace commits whose scope blobs may already be durable.
+// postgresRenderedProfileReplaceCommitOutcomeUncertainError 用于标记渲染画像替换提交失败，此时 scope 画像 Blob 可能已经持久化。
+func postgresRenderedProfileReplaceCommitOutcomeUncertainError(err error) error {
+	return postgresCommitOutcomeUncertainError("replace rendered profiles", "commit postgres rendered-profile replace tx", err)
 }
 
 // queryProfileNodes loads profile rows for one target and keeps the row order aligned with the calling workflow's needs.
@@ -583,8 +665,12 @@ func (r *profileRepository) updateRenderedProfileTarget(ctx context.Context, q p
 		return logicdomain.ValidationError{Field: "profile_type", Message: "must be one supported profile target"}
 	}
 	sqlText := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, table)
-	if _, err := q.Exec(ctx, sqlText, strings.TrimSpace(renderedProfile), updatedAt.UTC(), int64(bindID)); err != nil {
+	tag, err := q.Exec(ctx, sqlText, strings.TrimSpace(renderedProfile), updatedAt.UTC(), int64(bindID))
+	if err != nil {
 		return fmt.Errorf("update postgres rendered profile target: %w", err)
+	}
+	if err := requirePostgresManualProfileRowsAffected("update postgres rendered profile target", tag.RowsAffected(), 1); err != nil {
+		return err
 	}
 	return nil
 }

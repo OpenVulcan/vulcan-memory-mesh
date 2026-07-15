@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strconv"
 	"strings"
@@ -114,8 +115,8 @@ func (u *MemoryUseCase) Write(ctx context.Context, cmd WriteMemoriesCommand) (Wr
 	return WriteMemoriesResult{Items: results}, nil
 }
 
-// resolveRecentDirectWriteSoftDedupe evaluates the short-window soft-idempotency path for one direct-write item, preferring the current semantic hash while keeping a tightly validated legacy-hash fallback during the upgrade window.
-// resolveRecentDirectWriteSoftDedupe 用于为单条主动写记忆解析短窗口软幂等路径：优先命中当前语义哈希，同时在升级窗口内保留经过严格校验的旧哈希兼容回退。
+// resolveRecentDirectWriteSoftDedupe evaluates the short-window soft-idempotency path for one direct-write item using the current semantic hash as the only durable dedupe key.
+// resolveRecentDirectWriteSoftDedupe 用于为单条主动写记忆解析短窗口软幂等路径，并且只使用当前语义哈希作为长期持久化去重键。
 func (u *MemoryUseCase) resolveRecentDirectWriteSoftDedupe(ctx context.Context, session logicdomain.SessionRef, item WriteMemoryItem, now time.Time) (logicdomain.MemoryNodeRecord, bool, string, error) {
 	currentHash := buildDirectMemoryDedupeHash(session, item, now)
 	existing, ok, err := u.memories.FindRecentActiveMemoryByDedupe(
@@ -129,26 +130,7 @@ func (u *MemoryUseCase) resolveRecentDirectWriteSoftDedupe(ctx context.Context, 
 	if err != nil || ok {
 		return existing, ok, currentHash, err
 	}
-
-	legacyHash := buildLegacyDirectMemoryDedupeHash(session, item)
-	if legacyHash == currentHash {
-		return logicdomain.MemoryNodeRecord{}, false, currentHash, nil
-	}
-	existing, ok, err = u.memories.FindRecentActiveMemoryByDedupe(
-		ctx,
-		session,
-		logicdomain.MemorySourceKindGRPCAIWrite,
-		item.ScopeLevel,
-		legacyHash,
-		now.Add(-directMemoryDedupeWindow),
-	)
-	if err != nil {
-		return logicdomain.MemoryNodeRecord{}, false, currentHash, err
-	}
-	if !ok || !directWriteSoftDedupeMatchesMemoryRow(existing, item, now) {
-		return logicdomain.MemoryNodeRecord{}, false, currentHash, nil
-	}
-	return existing, true, currentHash, nil
+	return logicdomain.MemoryNodeRecord{}, false, currentHash, nil
 }
 
 // directWritePendingItem stores one post-soft-dedupe direct-write item together with every caller position that collapsed into the same in-request write and its stable short-window dedupe hash.
@@ -230,17 +212,59 @@ func (u *MemoryUseCase) reviewDirectWriteMemoryCandidates(ctx context.Context, s
 		MemoryCandidates:    reviewPartition.ReviewerCandidates,
 	})
 	if err != nil {
+		u.logDirectWriteReviewerInvalidOutput(session, len(reviewPartition.ReviewerCandidates), err)
 		return nil, err
 	}
 	remappedSection, err := remapPostActionMemoryReviewSectionToOriginal(reviewed.Memory, reviewPartition.ReviewerToOriginal)
 	if err != nil {
+		u.logDirectWriteReviewerInvalidOutput(session, len(reviewPartition.ReviewerCandidates), err)
 		return nil, err
 	}
 	fullSection, err := mergePostActionMemoryReviewSectionWithHardDropped(len(reviewBuild.Candidates), remappedSection, reviewBuild.HardDropped)
 	if err != nil {
+		u.logDirectWriteReviewerInvalidOutput(session, len(reviewPartition.ReviewerCandidates), err)
 		return nil, err
 	}
-	return buildDirectWriteMemoryDecisions(reviewBuild.Candidates, fullSection, reviewBuild.HardDropped)
+	decisions, err := buildDirectWriteMemoryDecisions(reviewBuild.Candidates, fullSection, reviewBuild.HardDropped)
+	if err != nil {
+		u.logDirectWriteReviewerInvalidOutput(session, len(reviewPartition.ReviewerCandidates), err)
+		return nil, err
+	}
+	return decisions, nil
+}
+
+// logDirectWriteReviewerInvalidOutput records structured reviewer contract failures on the server side so direct-write callers do not need raw model output in their gRPC response.
+// logDirectWriteReviewerInvalidOutput 用于在服务端记录结构化 reviewer 契约失败，避免 direct-write 调用方需要在 gRPC 响应中接收原始模型输出。
+func (u *MemoryUseCase) logDirectWriteReviewerInvalidOutput(session logicdomain.SessionRef, reviewerCandidateCount int, err error) {
+	if u == nil || u.logger == nil || err == nil {
+		return
+	}
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) {
+		return
+	}
+	fields := []any{
+		"session_key", session.SessionKey,
+		"session_id", session.SessionID,
+		"user_id", session.UserID,
+		"project_id", session.ProjectID,
+		"reviewer_candidate_count", reviewerCandidateCount,
+	}
+	if scene := strings.TrimSpace(invalid.Scene); scene != "" {
+		fields = append(fields, "llm_scene", scene)
+	}
+	if u.candidateReviewer != nil {
+		if model := strings.TrimSpace(u.candidateReviewer.ReviewModel()); model != "" {
+			fields = append(fields, "model", model)
+		}
+	}
+	// Direct-write clients should only receive the stable error summary; operators need the raw provider body in server logs to repair reviewer prompts or parser contracts.
+	// direct-write 客户端只应收到稳定错误摘要；运维需要在服务端日志中查看原始 provider 响应，以修复 reviewer 提示词或解析契约。
+	if raw := strings.TrimSpace(invalid.Raw); raw != "" {
+		fields = append(fields, "llm_raw_output", invalid.Raw)
+	}
+	fields = append(fields, "err", err)
+	u.logger.Error("direct memory candidate reviewer output invalid", fields...)
 }
 
 // buildDirectWriteFallbackDecisions degrades pending direct writes into unconditional persistence when semantic replacement review is unavailable.
@@ -468,6 +492,8 @@ func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session lo
 		Vector:       append([]float32(nil), vectorPayload...),
 		Filter:       buildDirectMemoryFilter(session, item.ScopeLevel),
 		SourceTurnID: 0,
+		Status:       logicdomain.MemoryStatusActive,
+		ExpiresAt:    item.ExpiresAt,
 		Metadata: map[string]string{
 			"category":     strconv.Itoa(item.Category),
 			"details":      item.Details,
@@ -510,24 +536,34 @@ func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session lo
 	if canApplyDirectWrite {
 		applyResult, err := applier.ApplyDirectMemoryWrite(ctx, session, memoryRecord, supersedeMemoryIDs)
 		if err != nil {
-			u.rollbackDirectWriteVector(ctx, vectorID, session.SessionID)
+			if !logicdomain.IsFreshVectorReferenceUncertain(err) {
+				u.rollbackDirectWriteVector(vectorID, session.SessionID)
+			} else if u.logger != nil {
+				u.logger.Warn("direct memory relational outcome uncertain; keeping fresh vector for possible durable memory row", "session_id", session.SessionID, "vector_id", vectorID, "err", err)
+			}
 			return WriteMemoryResultItem{}, err
 		}
 		created = applyResult.InsertedMemoryNode
-		supersededVectorIDs = applyResult.SupersededVectorIDs
+		supersededVectorIDs = normalizeVectorGCIDs(applyResult.SupersededVectorIDs)
 	} else {
 		created, err = u.memories.CreateDirectMemoryNode(ctx, session, memoryRecord)
 		if err != nil {
-			u.rollbackDirectWriteVector(ctx, vectorID, session.SessionID)
+			if !logicdomain.IsFreshVectorReferenceUncertain(err) {
+				u.rollbackDirectWriteVector(vectorID, session.SessionID)
+			} else if u.logger != nil {
+				u.logger.Warn("direct memory fallback outcome uncertain; keeping fresh vector for possible durable memory row", "session_id", session.SessionID, "vector_id", vectorID, "err", err)
+			}
 			return WriteMemoryResultItem{}, err
 		}
 	}
 	if len(supersededVectorIDs) > 0 {
-		if _, deleteErr := u.vector.DeleteByIDs(ctx, supersededVectorIDs); deleteErr != nil {
+		cleanupCtx, cleanupCancel := newPostCommitVectorCleanupContext()
+		defer cleanupCancel()
+		if _, deleteErr := u.vector.DeleteByIDs(cleanupCtx, supersededVectorIDs); deleteErr != nil {
 			if u.logger != nil {
 				u.logger.Error("direct memory superseded vector cleanup failed", "session_id", session.SessionID, "err", deleteErr)
 			}
-			enqueueVectorGCCompensation(ctx, u.memories, u.logger, logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup, supersededVectorIDs, now,
+			enqueueVectorGCCompensation(cleanupCtx, u.memories, u.logger, logicdomain.VectorGCJobTypeDirectWriteSupersedeCleanup, supersededVectorIDs, now,
 				"session_id", session.SessionID,
 			)
 		}
@@ -545,15 +581,17 @@ func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session lo
 
 // rollbackDirectWriteVector removes one freshly inserted vector row when the relational write failed after vector persistence succeeded.
 // rollbackDirectWriteVector 用于在向量已落库但关系写入失败时，回滚刚插入的新向量行。
-func (u *MemoryUseCase) rollbackDirectWriteVector(ctx context.Context, vectorID string, sessionID uint64) {
+func (u *MemoryUseCase) rollbackDirectWriteVector(vectorID string, sessionID uint64) {
 	if u == nil || u.vector == nil || strings.TrimSpace(vectorID) == "" {
 		return
 	}
-	if _, rollbackErr := u.vector.DeleteByIDs(ctx, []string{vectorID}); rollbackErr != nil {
+	cleanupCtx, cleanupCancel := newPostCommitVectorCleanupContext()
+	defer cleanupCancel()
+	if _, rollbackErr := u.vector.DeleteByIDs(cleanupCtx, []string{vectorID}); rollbackErr != nil {
 		if u.logger != nil {
 			u.logger.Error("direct memory vector rollback failed", "vector_id", vectorID, "session_id", sessionID, "err", rollbackErr)
 		}
-		enqueueVectorGCCompensation(ctx, u.memories, u.logger, logicdomain.VectorGCJobTypeDirectWriteRollback, []string{vectorID}, time.Now().UTC(),
+		enqueueVectorGCCompensation(cleanupCtx, u.memories, u.logger, logicdomain.VectorGCJobTypeDirectWriteRollback, []string{vectorID}, time.Now().UTC(),
 			"vector_id", vectorID,
 			"session_id", sessionID,
 		)
@@ -658,20 +696,6 @@ func buildDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemor
 	return hex.EncodeToString(sum[:])
 }
 
-// buildLegacyDirectMemoryDedupeHash preserves the pre-hardening hash layout so one short migration window can still dedupe rows written by older binaries when the semantic fields also match.
-// buildLegacyDirectMemoryDedupeHash 用于保留加固前的旧哈希布局，确保升级后的短迁移窗口内，历史版本写出的行在语义字段一致时仍能继续命中幂等。
-func buildLegacyDirectMemoryDedupeHash(session logicdomain.SessionRef, item WriteMemoryItem) string {
-	body := strings.Join([]string{
-		strconv.Itoa(logicdomain.MemorySourceKindGRPCAIWrite),
-		strconv.Itoa(item.ScopeLevel),
-		strconv.FormatUint(session.SessionID, 10),
-		normalizeHashText(item.Abstract),
-		normalizeHashText(item.Details),
-	}, "\n")
-	sum := sha256.Sum256([]byte(body))
-	return hex.EncodeToString(sum[:])
-}
-
 // buildDirectMemoryRequestCollapseKey keeps one-RPC duplicate collapse slightly stricter than the storage dedupe hash by preserving the exact expiry timestamp inside the current batch.
 // buildDirectMemoryRequestCollapseKey 用于让单个 RPC 内的重复折叠比存储层软幂等再严格一点：它会保留当前批次中的精确过期时间戳，避免同批显式不同过期点被误并。
 func buildDirectMemoryRequestCollapseKey(item WriteMemoryItem) string {
@@ -690,31 +714,6 @@ func buildDirectMemoryRequestCollapseKey(item WriteMemoryItem) string {
 	}, "\n")
 	sum := sha256.Sum256([]byte(body))
 	return hex.EncodeToString(sum[:])
-}
-
-// directWriteSoftDedupeMatchesMemoryRow validates whether one hot-path memory row is semantically equivalent to the incoming direct-write item before the legacy hash fallback is allowed to reuse it.
-// directWriteSoftDedupeMatchesMemoryRow 用于在启用旧哈希兼容回退前，校验热路径记忆行是否与当前主动写入条目语义等价，避免继续复用旧版过粗的幂等键。
-func directWriteSoftDedupeMatchesMemoryRow(row logicdomain.MemoryNodeRecord, item WriteMemoryItem, now time.Time) bool {
-	if row.ID == 0 || row.SourceKind != logicdomain.MemorySourceKindGRPCAIWrite {
-		return false
-	}
-	if row.ScopeLevel != item.ScopeLevel ||
-		row.Category != item.Category ||
-		row.Priority != item.Priority ||
-		row.MemoryLevel != item.MemoryLevel {
-		return false
-	}
-	if normalizeHashText(row.Abstract) != normalizeHashText(item.Abstract) ||
-		normalizeHashText(row.Details) != normalizeHashText(item.Details) {
-		return false
-	}
-	return buildStoredDirectMemoryExpiryDedupeSignature(row) == buildDirectMemoryExpiryDedupeSignature(item.ScopeLevel, item.ExpiresAt, now)
-}
-
-// buildStoredDirectMemoryExpiryDedupeSignature normalizes one persisted direct-write expiry into the same semantic signature used by the request-side soft-idempotency hash.
-// buildStoredDirectMemoryExpiryDedupeSignature 用于把已持久化主动记忆的过期信息归一成与请求侧软幂等哈希相同的语义签名。
-func buildStoredDirectMemoryExpiryDedupeSignature(row logicdomain.MemoryNodeRecord) string {
-	return buildDirectMemoryExpiryDedupeSignature(row.ScopeLevel, row.ExpiresAt, row.CreatedAt)
 }
 
 // buildDirectMemoryExpiryDedupeSignature keeps default TTL-based writes stable across separate RPCs while still distinguishing explicit absolute-expiry writes from each other.

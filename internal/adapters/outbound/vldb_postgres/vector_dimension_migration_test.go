@@ -3,8 +3,11 @@
 package vldb_postgres
 
 import (
+	"errors"
 	"strings"
 	"testing"
+
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
 // TestBuildReplaceMemoryVectorSQLTargetsEmbeddingByVectorID verifies combined-mode durable rebuilds only rewrite the embedding payload identified by stable vector_id.
@@ -61,5 +64,22 @@ func TestBuildVectorDimensionRebuildStatementsCoversNoiseActiveAndTrashTables(t 
 		if !strings.Contains(joined, fragment) {
 			t.Fatalf("expected dimension rebuild sql to contain %q, got %q", fragment, joined)
 		}
+	}
+}
+
+// TestPostgresVectorDimensionRebuildCommitErrorMarksOutcomeUncertain verifies schema/data rebuild commit ambiguity reports maintenance uncertainty without fresh-vector retention.
+// TestPostgresVectorDimensionRebuildCommitErrorMarksOutcomeUncertain 用于验证 schema/data 重建提交结果不明时会上报维护结果不确定，但不会标记新向量保留。
+func TestPostgresVectorDimensionRebuildCommitErrorMarksOutcomeUncertain(t *testing.T) {
+	// err represents a failed commit after vector-bearing columns and active memory embeddings may already be rebuilt.
+	// err 表示向量列与 active memory embedding 可能已经重建后的提交失败。
+	err := postgresCommitOutcomeUncertainError("rebuild vector dimensions", "commit postgres vector dimension rebuild tx", errors.New("commit acknowledgement lost"))
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected vector dimension rebuild commit to be outcome-uncertain, got %v", err)
+	}
+	if logicdomain.IsFreshVectorReferenceUncertain(err) {
+		t.Fatalf("did not expect vector dimension rebuild commit to mark fresh-vector uncertainty, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "commit postgres vector dimension rebuild tx: commit acknowledgement lost") {
+		t.Fatalf("unexpected vector dimension rebuild commit detail: %v", err)
 	}
 }

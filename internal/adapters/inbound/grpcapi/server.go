@@ -332,10 +332,12 @@ func toProtoProfileSourceKind(sourceKind int) vmmv1.ProfileNodeSourceKind {
 	}
 }
 
-// memoryCategoryLabel converts one internal memory category id into the stable English label exposed to AI tools so callers do not need to understand internal numeric enums.
-// memoryCategoryLabel 用于把内部记忆分类编号转换成暴露给 AI 工具的稳定英文标签，避免调用方理解内部数字枚举。
+// memoryCategoryLabel converts one internal memory category id into the stable English label exposed to AI tools, preserving unknown for corrupted or unsupported stored values.
+// memoryCategoryLabel 用于把内部记忆分类编号转换成暴露给 AI 工具的稳定英文标签，并对损坏或不支持的存储值保留 unknown。
 func memoryCategoryLabel(category int) string {
 	switch category {
+	case logicdomain.MemoryNodeCategoryGeneral:
+		return "general"
 	case logicdomain.MemoryNodeCategoryArchitectureDecision:
 		return "architecture_decision"
 	case logicdomain.MemoryNodeCategoryTechSpecAPI:
@@ -351,7 +353,7 @@ func memoryCategoryLabel(category int) string {
 	case logicdomain.MemoryNodeCategorySecurityPolicy:
 		return "security_policy"
 	default:
-		return "general"
+		return "unknown"
 	}
 }
 
@@ -370,6 +372,12 @@ func normalizeTransportMemoryScopeLevel(scopeLevel int32) int {
 	}
 }
 
+// validTransportMemoryScopeLevel reports whether one compact AI-facing scope value is omitted or mapped by normalizeTransportMemoryScopeLevel.
+// validTransportMemoryScopeLevel 用于判断一个面向 AI 的紧凑作用域值是否为省略值或能被 normalizeTransportMemoryScopeLevel 映射。
+func validTransportMemoryScopeLevel(scopeLevel int32) bool {
+	return scopeLevel == 0 || normalizeTransportMemoryScopeLevel(scopeLevel) >= 0
+}
+
 // normalizeTransportMemoryPriority maps the compact numeric P-level sent by AI tools into the internal priority enum while preserving -1 for omitted values.
 // normalizeTransportMemoryPriority 用于把 AI 工具传来的紧凑数字 P 级别映射成内部 priority 枚举；省略时保留 -1。
 func normalizeTransportMemoryPriority(priority int32) int {
@@ -383,6 +391,12 @@ func normalizeTransportMemoryPriority(priority int32) int {
 	default:
 		return -1
 	}
+}
+
+// validTransportMemoryPriority reports whether one compact AI-facing priority value is omitted or mapped by normalizeTransportMemoryPriority.
+// validTransportMemoryPriority 用于判断一个面向 AI 的紧凑优先级值是否为省略值或能被 normalizeTransportMemoryPriority 映射。
+func validTransportMemoryPriority(priority int32) bool {
+	return priority == 0 || normalizeTransportMemoryPriority(priority) >= 0
 }
 
 // normalizeTransportMemoryLevel maps the compact numeric L-level sent by AI tools into the internal lifecycle enum while preserving -1 for omitted values.
@@ -400,6 +414,12 @@ func normalizeTransportMemoryLevel(level int32) int {
 	default:
 		return -1
 	}
+}
+
+// validTransportMemoryLevel reports whether one compact AI-facing lifecycle value is omitted or mapped by normalizeTransportMemoryLevel.
+// validTransportMemoryLevel 用于判断一个面向 AI 的紧凑生命周期值是否为省略值或能被 normalizeTransportMemoryLevel 映射。
+func validTransportMemoryLevel(level int32) bool {
+	return level == 0 || normalizeTransportMemoryLevel(level) >= 0
 }
 
 // fromUnixMillis converts one transport millisecond timestamp into UTC time, preserving zero as the empty time.

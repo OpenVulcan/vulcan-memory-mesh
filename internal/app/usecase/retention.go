@@ -183,6 +183,11 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 	})
 	if recycleErr != nil {
 		u.logError("retention cold memory recycle failed", recycleErr)
+		// Clean obsolete vectors when the store reports an uncertain post-delete boundary while still returning the durable recycle coordinates.
+		// 当存储层在删除后边界报告结果不确定、但仍返回长期回收坐标时，继续清理已过时向量。
+		if logicdomain.IsOutcomeUncertain(recycleErr) {
+			u.cleanupVectors(ctx, recycleResult, now)
+		}
 	} else {
 		u.cleanupVectors(ctx, recycleResult, now)
 		u.logRecycleResult(recycleResult)
@@ -198,6 +203,11 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 	})
 	if enqueueErr != nil {
 		u.logError("retention cold turn job enqueue failed", enqueueErr)
+		// Preserve the confirmed autocommit enqueue count even when a later SQLite candidate failed, because those jobs will still be claimable in this maintenance pass.
+		// 即使后续 SQLite 候选入队失败，也保留已确认的自动提交入队数量，因为这些任务仍会在本轮维护中被领取。
+		if enqueuedJobCount > 0 {
+			u.logRecycleJobEnqueueCount(enqueuedJobCount)
+		}
 	} else {
 		u.logRecycleJobEnqueueCount(enqueuedJobCount)
 	}
@@ -215,6 +225,11 @@ func (u *RetentionUseCase) runMaintenance(ctx context.Context) {
 	})
 	if sessionErr != nil {
 		u.logError("retention idle session recycle failed", sessionErr)
+		// Preserve vector cleanup for already-archived idle-session memories even when a late SQLite maintenance index step is uncertain.
+		// 即使后置 SQLite 维护索引步骤结果不确定，也要保留已归档 idle-session memory 的向量清理。
+		if logicdomain.IsOutcomeUncertain(sessionErr) {
+			u.cleanupIdleSessionVectors(ctx, sessionResult, now)
+		}
 	} else {
 		u.cleanupIdleSessionVectors(ctx, sessionResult, now)
 		u.logIdleSessionRecycleResult(sessionResult)
@@ -298,36 +313,39 @@ func (u *RetentionUseCase) runPendingColdTurnRecycleJobs(ctx context.Context, no
 // cleanupVectors removes obsolete vector rows after the relational recycle transaction has succeeded; if the sidecar delete fails, the vector ids are persisted into the retry queue instead of being lost after trash purge.
 // cleanupVectors 用于在关系回收事务成功后清理过时向量；若旁路删除失败，则把向量 id 持久化到重试队列，避免在回收站 purge 后永久丢失清理坐标。
 func (u *RetentionUseCase) cleanupVectors(ctx context.Context, result logicdomain.MemoryRecycleResult, now time.Time) {
-	if u == nil || u.vector == nil || len(result.RecycledVectorIDs) == 0 {
+	vectorIDs := normalizeVectorGCIDs(result.RecycledVectorIDs)
+	if u == nil || u.vector == nil || len(vectorIDs) == 0 {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, err := u.vector.DeleteByIDs(ctx, result.RecycledVectorIDs); err != nil {
+	if _, err := u.vector.DeleteByIDs(ctx, vectorIDs); err != nil {
 		u.logError("retention vector cleanup failed", err)
-		u.enqueueVectorGCJobs(ctx, retentionVectorGCBatchID(result.BatchID), result.RecycledVectorIDs, now)
+		u.enqueueVectorGCJobs(ctx, retentionVectorGCBatchID(result.BatchID), vectorIDs, now)
 	}
 }
 
 // cleanupIdleSessionVectors removes obsolete vector rows after one idle-session recycle pass succeeds; failures are bridged into the same persistent retry queue so stale session compaction cannot strand orphan vectors.
 // cleanupIdleSessionVectors 用于在一次 idle-session 回收成功后删除过时向量；若失败则写入同一持久化重试队列，避免空闲 session 压缩留下孤儿向量。
 func (u *RetentionUseCase) cleanupIdleSessionVectors(ctx context.Context, result logicdomain.SessionIdleRecycleResult, now time.Time) {
-	if u == nil || u.vector == nil || len(result.RecycledVectorIDs) == 0 {
+	vectorIDs := normalizeVectorGCIDs(result.RecycledVectorIDs)
+	if u == nil || u.vector == nil || len(vectorIDs) == 0 {
 		return
 	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if _, err := u.vector.DeleteByIDs(ctx, result.RecycledVectorIDs); err != nil {
+	if _, err := u.vector.DeleteByIDs(ctx, vectorIDs); err != nil {
 		u.logError("retention idle-session vector cleanup failed", err)
-		u.enqueueVectorGCJobs(ctx, retentionVectorGCBatchID(singleBatchIDOrZero(result.BatchIDs)), result.RecycledVectorIDs, now)
+		u.enqueueVectorGCJobs(ctx, retentionVectorGCBatchID(singleBatchIDOrZero(result.BatchIDs)), vectorIDs, now)
 	}
 }
 
 // enqueueVectorGCJobs persists one batch of failed sidecar vector deletes so later maintenance passes can retry them even after the source rows have already left the hot tables.
 // enqueueVectorGCJobs 用于持久化一批失败的旁路向量删除任务，让后续维护轮次即使在源行已离开热表后仍能继续重试。
 func (u *RetentionUseCase) enqueueVectorGCJobs(ctx context.Context, batchID uint64, vectorIDs []string, now time.Time) {
+	vectorIDs = normalizeVectorGCIDs(vectorIDs)
 	if u == nil || u.store == nil || len(vectorIDs) == 0 {
 		return
 	}
@@ -379,12 +397,13 @@ func (u *RetentionUseCase) retryPendingVectorGCJobs(ctx context.Context, now tim
 		jobIDs = append(jobIDs, job.ID)
 	}
 	// Complete invalid jobs (empty vector ID) to prevent them from staying claimed forever.
-	// 完成无效的画像 GC 任务（向量 ID 为空），防止它们永远停留在 claimed 状态。
+	// 完成无效的 vector-GC 任务（向量 ID 为空），防止它们永远停留在 claimed 状态。
 	if len(invalidJobIDs) > 0 {
 		if err := u.store.CompleteVectorGCJobs(ctx, invalidJobIDs, now); err != nil {
 			u.logError("retention complete invalid vector gc jobs failed", err)
 		}
 	}
+	vectorIDs = normalizeVectorGCIDs(vectorIDs)
 	if len(jobIDs) == 0 || len(vectorIDs) == 0 {
 		return
 	}
@@ -448,7 +467,7 @@ func (u *RetentionUseCase) logIdleSessionRecycleResult(result logicdomain.Sessio
 	if u == nil || u.logger == nil {
 		return
 	}
-	if result.RecycledMemoryCount == 0 && result.RecycledContextCount == 0 && result.RecycledTurnCount == 0 {
+	if result.RecycledMemoryCount == 0 && result.RecycledContextCount == 0 && result.RecycledTurnCount == 0 && result.TurnDriftCount == 0 {
 		return
 	}
 	u.logger.Info(
@@ -458,6 +477,7 @@ func (u *RetentionUseCase) logIdleSessionRecycleResult(result logicdomain.Sessio
 		"memory_count", result.RecycledMemoryCount,
 		"context_count", result.RecycledContextCount,
 		"turn_count", result.RecycledTurnCount,
+		"turn_drift_count", result.TurnDriftCount,
 		"vector_count", len(result.RecycledVectorIDs),
 	)
 }

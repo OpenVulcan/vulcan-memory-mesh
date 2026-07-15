@@ -3,6 +3,7 @@
 package vldb_postgres
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -228,6 +229,202 @@ func TestBuildPostgresDeleteCompletedVectorGCJobsSQLDeletesRows(t *testing.T) {
 	}
 	if strings.Contains(strings.ToUpper(sql), "UPDATE ") {
 		t.Fatalf("delete completed vector gc jobs sql should not update metadata rows: %q", sql)
+	}
+}
+
+// TestRequirePostgresVectorGCJobRowsAffectedRejectsDrift verifies vector-GC completion and retry updates cannot silently miss claimed jobs.
+// TestRequirePostgresVectorGCJobRowsAffectedRejectsDrift 用于验证 vector-GC 完成和重试更新不能静默漏掉已领取的 job。
+func TestRequirePostgresVectorGCJobRowsAffectedRejectsDrift(t *testing.T) {
+	if err := requirePostgresVectorGCJobRowsAffected("complete postgres vector gc jobs", 2, 2); err != nil {
+		t.Fatalf("expected matching row count to succeed, got %v", err)
+	}
+	err := requirePostgresVectorGCJobRowsAffected("retry postgres vector gc jobs", 1, 2)
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("did not expect vector-GC row drift to be outcome-uncertain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "retry postgres vector gc jobs affected 1 rows, want 2") {
+		t.Fatalf("unexpected row drift error: %v", err)
+	}
+}
+
+// TestRequirePostgresRecycleJobRowsAffectedRejectsDrift verifies cold-turn recycle completion and retry updates cannot silently miss claimed jobs.
+// TestRequirePostgresRecycleJobRowsAffectedRejectsDrift 用于验证冷 turn 回收完成和重试更新不能静默漏掉已领取的 job。
+func TestRequirePostgresRecycleJobRowsAffectedRejectsDrift(t *testing.T) {
+	if err := requirePostgresRecycleJobRowsAffected("complete postgres recycle jobs", 2, 2); err != nil {
+		t.Fatalf("expected matching row count to succeed, got %v", err)
+	}
+	err := requirePostgresRecycleJobRowsAffected("retry postgres recycle jobs", 1, 2)
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("did not expect recycle-job row drift to be outcome-uncertain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "retry postgres recycle jobs affected 1 rows, want 2") {
+		t.Fatalf("unexpected row drift error: %v", err)
+	}
+}
+
+// TestPostgresClaimCommitErrorMarksOutcomeUncertainOnlyAfterLeases verifies claim commits are uncertain only when a returned lease row may already be durable.
+// TestPostgresClaimCommitErrorMarksOutcomeUncertainOnlyAfterLeases 用于验证只有已返回租约行可能持久化后，claim 提交错误才会标记为结果不确定。
+func TestPostgresClaimCommitErrorMarksOutcomeUncertainOnlyAfterLeases(t *testing.T) {
+	// claimedErr represents a failed commit after at least one lease row was returned by UPDATE ... RETURNING.
+	// claimedErr 表示 UPDATE ... RETURNING 已返回至少一条租约行后的提交失败。
+	claimedErr := postgresClaimCommitError("claim recycle jobs", "commit postgres recycle-job claim tx", 1, errors.New("commit acknowledgement lost"))
+	if !logicdomain.IsOutcomeUncertain(claimedErr) {
+		t.Fatalf("expected claimed lease commit to be outcome-uncertain, got %v", claimedErr)
+	}
+	if logicdomain.IsFreshVectorReferenceUncertain(claimedErr) {
+		t.Fatalf("did not expect claim commit ambiguity to mark fresh-vector uncertainty, got %v", claimedErr)
+	}
+
+	// emptyErr represents a failed commit after the claim query returned no lease rows.
+	// emptyErr 表示 claim 查询未返回任何租约行后的提交失败。
+	emptyErr := postgresClaimCommitError("claim vector gc jobs", "commit postgres vector gc claim tx", 0, errors.New("commit acknowledgement lost"))
+	if logicdomain.IsOutcomeUncertain(emptyErr) {
+		t.Fatalf("did not expect no-op claim commit to be outcome-uncertain, got %v", emptyErr)
+	}
+	if !strings.Contains(emptyErr.Error(), "commit postgres vector gc claim tx: commit acknowledgement lost") {
+		t.Fatalf("unexpected no-op claim error detail: %v", emptyErr)
+	}
+}
+
+// TestPostgresQueueMutationCommitErrorMarksOutcomeUncertain verifies terminal queue updates report ambiguous commits without pretending to know the final queue state.
+// TestPostgresQueueMutationCommitErrorMarksOutcomeUncertain 用于验证终态队列更新在提交结果不明时会上报结果不确定，而不是假装已知最终队列状态。
+func TestPostgresQueueMutationCommitErrorMarksOutcomeUncertain(t *testing.T) {
+	// err represents a failed commit after a queue completion or retry update already matched every intended row.
+	// err 表示队列完成或重试更新已经命中全部目标行后的提交失败。
+	err := postgresCommitOutcomeUncertainError("complete vector gc jobs", "commit postgres vector gc completion tx", errors.New("commit acknowledgement lost"))
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected queue mutation commit to be outcome-uncertain, got %v", err)
+	}
+	if logicdomain.IsFreshVectorReferenceUncertain(err) {
+		t.Fatalf("did not expect queue mutation commit to mark fresh-vector uncertainty, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "commit postgres vector gc completion tx: commit acknowledgement lost") {
+		t.Fatalf("unexpected queue mutation commit error detail: %v", err)
+	}
+}
+
+// TestRequirePostgresColdTurnRowsAffectedRejectsDrift verifies cold-turn recycle cannot commit when trash copy or hot-table delete misses selected turns.
+// TestRequirePostgresColdTurnRowsAffectedRejectsDrift 用于验证当 trash 复制或热表删除漏掉已选 turn 时，cold-turn 回收不能继续提交。
+func TestRequirePostgresColdTurnRowsAffectedRejectsDrift(t *testing.T) {
+	if err := requirePostgresColdTurnRowsAffected("copy postgres cold turns into trash", 42, 2, 2); err != nil {
+		t.Fatalf("expected matching row count to succeed, got %v", err)
+	}
+	err := requirePostgresColdTurnRowsAffected("delete postgres cold turns", 42, 1, 2)
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("did not expect cold-turn row drift to be outcome-uncertain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "delete postgres cold turns for session 42 affected 1 rows, want 2") {
+		t.Fatalf("unexpected row drift error: %v", err)
+	}
+}
+
+// TestPostgresColdTurnRecycleCommitErrorMarksOutcomeUncertain verifies cold-turn archive commits expose ambiguous trash-copy and hot-table delete state.
+// TestPostgresColdTurnRecycleCommitErrorMarksOutcomeUncertain 用于验证冷 turn 归档提交会暴露 trash 复制与热表删除结果不确定。
+func TestPostgresColdTurnRecycleCommitErrorMarksOutcomeUncertain(t *testing.T) {
+	err := postgresColdTurnRecycleCommitOutcomeUncertainError(42, errors.New("commit acknowledgement lost"))
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain cold-turn recycle commit error, got %v", err)
+	}
+	if logicdomain.IsFreshVectorReferenceUncertain(err) {
+		t.Fatalf("did not expect cold-turn recycle commit ambiguity to mark fresh-vector uncertainty, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "commit postgres cold-turn recycle tx for session 42: commit acknowledgement lost") {
+		t.Fatalf("unexpected cold-turn recycle commit error detail: %v", err)
+	}
+}
+
+// TestRequirePostgresColdMemoryRowsAffectedRejectsDrift verifies cold-memory recycle cannot commit when memory or context rows drift after selection.
+// TestRequirePostgresColdMemoryRowsAffectedRejectsDrift 用于验证当 memory 或 context 行在选定后发生漂移时，cold-memory 回收不能继续提交。
+func TestRequirePostgresColdMemoryRowsAffectedRejectsDrift(t *testing.T) {
+	if err := requirePostgresColdMemoryRowsAffected("copy postgres cold memories to trash", 2, 2); err != nil {
+		t.Fatalf("expected matching row count to succeed, got %v", err)
+	}
+	err := requirePostgresColdMemoryRowsAffected("delete postgres cold memories", 1, 2)
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("did not expect cold-memory row drift to be outcome-uncertain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "delete postgres cold memories affected 1 rows, want 2") {
+		t.Fatalf("unexpected row drift error: %v", err)
+	}
+}
+
+// TestRequirePostgresIdleSessionRowsAffectedRejectsDrift verifies idle-session recycle cannot commit when copied or deleted rows drift inside the transaction.
+// TestRequirePostgresIdleSessionRowsAffectedRejectsDrift 用于验证当事务内复制或删除行数漂移时，idle-session 回收不能继续提交。
+func TestRequirePostgresIdleSessionRowsAffectedRejectsDrift(t *testing.T) {
+	if err := requirePostgresIdleSessionRowsAffected("copy postgres idle-session turns to trash", 42, 2, 2); err != nil {
+		t.Fatalf("expected matching row count to succeed, got %v", err)
+	}
+	err := requirePostgresIdleSessionRowsAffected("delete postgres idle-session memories", 42, 1, 2)
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("did not expect idle-session row drift to be outcome-uncertain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "delete postgres idle-session memories for session 42 affected 1 rows, want 2") {
+		t.Fatalf("unexpected row drift error: %v", err)
+	}
+}
+
+// TestCollectPostgresIdleSessionRecyclePassPreservesErroredSessionResult verifies commit-uncertain session results still expose vector cleanup coordinates to the usecase.
+// TestCollectPostgresIdleSessionRecyclePassPreservesErroredSessionResult 用于验证提交结果不明的 session 回收结果仍会向用例层暴露向量清理坐标。
+func TestCollectPostgresIdleSessionRecyclePassPreservesErroredSessionResult(t *testing.T) {
+	// uncertainErr represents a commit boundary where PostgreSQL may have already archived the idle-session rows.
+	// uncertainErr 表示 PostgreSQL 可能已经归档 idle-session 行后的提交结果不明边界。
+	uncertainErr := logicdomain.OutcomeUncertainError{Operation: "recycle idle-session rows", Message: "commit acknowledgement lost"}
+	result, err := collectPostgresIdleSessionRecyclePass(1, func(_ []uint64) (postgresIdleSessionRecycleResult, error) {
+		return postgresIdleSessionRecycleResult{
+			BatchID:              9,
+			SessionID:            11,
+			RecycledMemoryCount:  1,
+			RecycledContextCount: 2,
+			RecycledTurnCount:    3,
+			RecycledVectorIDs:    []string{"vec-idle-1", "vec-idle-2"},
+		}, uncertainErr
+	})
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain recycle error, got %v", err)
+	}
+	if len(result.BatchIDs) != 1 || result.BatchIDs[0] != 9 {
+		t.Fatalf("batch ids = %+v, want [9]", result.BatchIDs)
+	}
+	if len(result.SessionIDs) != 1 || result.SessionIDs[0] != 11 {
+		t.Fatalf("session ids = %+v, want [11]", result.SessionIDs)
+	}
+	if result.RecycledMemoryCount != 1 || result.RecycledContextCount != 2 || result.RecycledTurnCount != 3 {
+		t.Fatalf("unexpected recycle counts: %+v", result)
+	}
+	if len(result.RecycledVectorIDs) != 2 || result.RecycledVectorIDs[0] != "vec-idle-1" || result.RecycledVectorIDs[1] != "vec-idle-2" {
+		t.Fatalf("vector ids = %+v, want idle cleanup coordinates", result.RecycledVectorIDs)
+	}
+}
+
+// TestRequirePostgresTrashPurgeRowsAffectedRejectsDrift verifies permanent trash purge cannot commit when trash or batch metadata deletes drift.
+// TestRequirePostgresTrashPurgeRowsAffectedRejectsDrift 用于验证当 trash 行或批次元数据删除漂移时，永久清理不能继续提交。
+func TestRequirePostgresTrashPurgeRowsAffectedRejectsDrift(t *testing.T) {
+	if err := requirePostgresTrashPurgeRowsAffected("delete postgres memory trash rows", 2, 2); err != nil {
+		t.Fatalf("expected matching row count to succeed, got %v", err)
+	}
+	err := requirePostgresTrashPurgeRowsAffected("delete postgres recycle batch metadata", 1, 2)
+	if logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("did not expect trash purge row drift to be outcome-uncertain, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "delete postgres recycle batch metadata affected 1 rows, want 2") {
+		t.Fatalf("unexpected row drift error: %v", err)
+	}
+}
+
+// TestPostgresTrashPurgeCommitErrorMarksOutcomeUncertain verifies permanent-delete commit ambiguity reports the final trash state as uncertain without fresh-vector retention.
+// TestPostgresTrashPurgeCommitErrorMarksOutcomeUncertain 用于验证永久删除提交结果不明时会报告最终 trash 状态不确定，但不会标记新向量保留。
+func TestPostgresTrashPurgeCommitErrorMarksOutcomeUncertain(t *testing.T) {
+	// err represents a failed commit after selected trash rows and batch metadata may already be permanently deleted.
+	// err 表示已选 trash 行与批次元数据可能已经永久删除后的提交失败。
+	err := postgresCommitOutcomeUncertainError("purge expired trash", "commit postgres trash purge tx", errors.New("commit acknowledgement lost"))
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected trash purge commit to be outcome-uncertain, got %v", err)
+	}
+	if logicdomain.IsFreshVectorReferenceUncertain(err) {
+		t.Fatalf("did not expect trash purge commit to mark fresh-vector uncertainty, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "commit postgres trash purge tx: commit acknowledgement lost") {
+		t.Fatalf("unexpected trash purge commit error detail: %v", err)
 	}
 }
 

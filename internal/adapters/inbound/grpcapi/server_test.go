@@ -5,6 +5,7 @@ package grpcapi
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"net"
 	"strings"
 	"testing"
@@ -470,6 +471,64 @@ func TestSearchMemoryEventsReturnsHits(t *testing.T) {
 	}
 }
 
+// TestMemoryCategoryLabelDistinguishesGeneralFromUnknown verifies unsupported stored category values are not silently reported as the valid general category.
+// TestMemoryCategoryLabelDistinguishesGeneralFromUnknown 用于验证不支持的存储分类值不会被静默报告成合法的 general 分类。
+func TestMemoryCategoryLabelDistinguishesGeneralFromUnknown(t *testing.T) {
+	if memoryCategoryLabel(logicdomain.MemoryNodeCategoryGeneral) != "general" {
+		t.Fatalf("expected general category label")
+	}
+	if memoryCategoryLabel(logicdomain.MemoryNodeCategorySecurityPolicy+1) != "unknown" {
+		t.Fatalf("expected unknown category label for unsupported category")
+	}
+}
+
+// TestSearchMemoryEventsClampsTopKAboveUseCaseCap verifies transport normalization converts oversized caller hints into the shared maximum before validation and execution.
+// TestSearchMemoryEventsClampsTopKAboveUseCaseCap 用于验证传输层规范化会在校验和执行前把过大的调用方提示钳制到共享上限。
+func TestSearchMemoryEventsClampsTopKAboveUseCaseCap(t *testing.T) {
+	req := &vmmv1.SearchMemoryEventsRequest{
+		UserId:    7,
+		ProjectId: 9,
+		Queries:   []string{"最近确认过的架构决策"},
+		TopK:      uint32(usecase.MaxMemorySearchTopK + 1),
+	}
+
+	NormalizeSearchMemoryEventsRequest(req)
+	if got, want := req.GetTopK(), uint32(usecase.MaxMemorySearchTopK); got != want {
+		t.Fatalf("normalized top_k = %d, want %d", got, want)
+	}
+	if err := NewRequestValidator().ValidateSearchMemoryEvents(req); err != nil {
+		t.Fatalf("validate clamped top_k: %v", err)
+	}
+}
+
+// TestSearchMemoryEventsValidationCountsUnicodeCharacters verifies query limits are measured in user-visible characters rather than UTF-8 bytes.
+// TestSearchMemoryEventsValidationCountsUnicodeCharacters 用于验证查询长度限制按用户可见字符计数，而不是按 UTF-8 字节计数。
+func TestSearchMemoryEventsValidationCountsUnicodeCharacters(t *testing.T) {
+	validator := NewRequestValidator()
+	validChineseQuery := strings.Repeat("界", 4000)
+	if err := validator.ValidateSearchMemoryEvents(&vmmv1.SearchMemoryEventsRequest{
+		UserId:    7,
+		ProjectId: 9,
+		Queries:   []string{validChineseQuery},
+	}); err != nil {
+		t.Fatalf("expected 4000 CJK characters to pass query validation, got %v", err)
+	}
+
+	tooLongChineseQuery := validChineseQuery + "界"
+	err := validator.ValidateSearchMemoryEvents(&vmmv1.SearchMemoryEventsRequest{
+		UserId:    7,
+		ProjectId: 9,
+		Queries:   []string{tooLongChineseQuery},
+	})
+	validationErr, ok := err.(logicdomain.ValidationError)
+	if !ok {
+		t.Fatalf("expected validation error for overlong CJK query, got %T: %v", err, err)
+	}
+	if validationErr.Field != "queries[0]" || validationErr.Message != "must be at most 4000 characters" {
+		t.Fatalf("unexpected overlong CJK query error: %#v", validationErr)
+	}
+}
+
 // TestGetTurnDetailsReturnsRows verifies the turn-detail RPC returns structured AI-facing fields so callers do not need to parse dehydrated storage JSON themselves.
 // TestGetTurnDetailsReturnsRows 用于验证 turn 详情 RPC 会直接返回面向 AI 的结构化字段，避免调用方再自行解析脱水存储 JSON。
 func TestGetTurnDetailsReturnsRows(t *testing.T) {
@@ -519,6 +578,24 @@ func TestGetTurnDetailsReturnsRows(t *testing.T) {
 	}
 	if len(resp.GetTurns()[0].GetPreviousTurnIds()) != 3 || len(resp.GetTurns()[0].GetNextTurnIds()) != 3 || len(resp.GetTurns()[0].GetTimeline()) != 1 {
 		t.Fatalf("expected neighboring turn ids and timeline, got %+v", resp.GetTurns()[0])
+	}
+}
+
+// TestGetTurnDetailsValidationRejectsAboveUseCaseCap verifies transport validation uses the app-layer turn-detail batch limit as its single source of truth.
+// TestGetTurnDetailsValidationRejectsAboveUseCaseCap 用于验证传输层校验使用应用层 turn 详情批量上限作为唯一事实来源。
+func TestGetTurnDetailsValidationRejectsAboveUseCaseCap(t *testing.T) {
+	turnIDs := make([]uint64, usecase.MaxTurnDetailLookup+1)
+	for idx := range turnIDs {
+		turnIDs[idx] = uint64(idx + 1)
+	}
+
+	err := NewRequestValidator().ValidateGetTurnDetails(&vmmv1.GetTurnDetailsRequest{TurnIds: turnIDs})
+	validationErr, ok := err.(logicdomain.ValidationError)
+	if !ok {
+		t.Fatalf("expected validation error for over-limit turn ids, got %T: %v", err, err)
+	}
+	if validationErr.Field != "turn_ids" || validationErr.Message != fmt.Sprintf("must contain at most %d ids", usecase.MaxTurnDetailLookup) {
+		t.Fatalf("unexpected turn id limit error: %#v", validationErr)
 	}
 }
 
@@ -590,6 +667,107 @@ func TestWriteMemoriesRejectsNilItem(t *testing.T) {
 	}
 }
 
+// TestWriteMemoriesValidationAllowsOmittedCompactEnums verifies zero-valued compact enum fields stay available for use-case defaults.
+// TestWriteMemoriesValidationAllowsOmittedCompactEnums 用于验证零值紧凑枚举字段仍可作为省略值交由用例层补默认值。
+func TestWriteMemoriesValidationAllowsOmittedCompactEnums(t *testing.T) {
+	validator := NewRequestValidator()
+	err := validator.ValidateWriteMemories(&vmmv1.WriteMemoriesRequest{
+		SessionId: "sess-1",
+		UserId:    7,
+		ProjectId: 9,
+		Items: []*vmmv1.WriteMemoryItem{
+			{
+				Abstract: "用户偏好本地部署。",
+				Details:  "用户明确确认当前项目优先使用本地部署。",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("expected omitted compact enums to pass validation, got %v", err)
+	}
+}
+
+// TestWriteMemoriesValidationRejectsUnsupportedCategory verifies category validation rejects values outside the domain category set before use-case execution.
+// TestWriteMemoriesValidationRejectsUnsupportedCategory 用于验证 category 校验会在用例执行前拒绝领域分类集合之外的值。
+func TestWriteMemoriesValidationRejectsUnsupportedCategory(t *testing.T) {
+	validator := NewRequestValidator()
+	err := validator.ValidateWriteMemories(&vmmv1.WriteMemoriesRequest{
+		SessionId: "sess-1",
+		UserId:    7,
+		ProjectId: 9,
+		Items: []*vmmv1.WriteMemoryItem{
+			{
+				Abstract: "用户偏好本地部署。",
+				Details:  "用户明确确认当前项目优先使用本地部署。",
+				Category: int32(logicdomain.MemoryNodeCategorySecurityPolicy + 1),
+			},
+		},
+	})
+	validationErr, ok := err.(logicdomain.ValidationError)
+	if !ok {
+		t.Fatalf("expected validation error for unsupported category, got %T: %v", err, err)
+	}
+	if validationErr.Field != "items[0].category" || validationErr.Message != "must be one supported memory category" {
+		t.Fatalf("unexpected unsupported category error: %#v", validationErr)
+	}
+}
+
+// TestWriteMemoriesValidationRejectsUnsupportedCompactEnums verifies transport enum validation stays aligned with the compact-to-domain mapping helpers.
+// TestWriteMemoriesValidationRejectsUnsupportedCompactEnums 用于验证传输层枚举校验与紧凑值到领域枚举的映射辅助函数保持一致。
+func TestWriteMemoriesValidationRejectsUnsupportedCompactEnums(t *testing.T) {
+	validator := NewRequestValidator()
+	cases := []struct {
+		name  string
+		item  *vmmv1.WriteMemoryItem
+		field string
+	}{
+		{
+			name: "scope-level",
+			item: &vmmv1.WriteMemoryItem{
+				ScopeLevel: 4,
+				Abstract:   "用户偏好本地部署。",
+				Details:    "用户明确确认当前项目优先使用本地部署。",
+			},
+			field: "items[0].scope_level",
+		},
+		{
+			name: "priority",
+			item: &vmmv1.WriteMemoryItem{
+				Priority: 4,
+				Abstract: "用户偏好本地部署。",
+				Details:  "用户明确确认当前项目优先使用本地部署。",
+			},
+			field: "items[0].priority",
+		},
+		{
+			name: "memory-level",
+			item: &vmmv1.WriteMemoryItem{
+				MemoryLevel: 5,
+				Abstract:    "用户偏好本地部署。",
+				Details:     "用户明确确认当前项目优先使用本地部署。",
+			},
+			field: "items[0].memory_level",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := validator.ValidateWriteMemories(&vmmv1.WriteMemoriesRequest{
+				SessionId: "sess-1",
+				UserId:    7,
+				ProjectId: 9,
+				Items:     []*vmmv1.WriteMemoryItem{tc.item},
+			})
+			validationErr, ok := err.(logicdomain.ValidationError)
+			if !ok {
+				t.Fatalf("expected validation error for unsupported compact enum, got %T: %v", err, err)
+			}
+			if validationErr.Field != tc.field {
+				t.Fatalf("validation field = %q, want %q", validationErr.Field, tc.field)
+			}
+		})
+	}
+}
+
 // TestDeleteMemoriesReturnsDeletedAndMissingIDs verifies the transport forwards manual memory deletes without requiring a session-scoped interceptor.
 // TestDeleteMemoriesReturnsDeletedAndMissingIDs 用于验证传输层会转发手工删除记忆请求，并且不要求走 session 范围拦截器。
 func TestDeleteMemoriesReturnsDeletedAndMissingIDs(t *testing.T) {
@@ -625,6 +803,28 @@ func TestDeleteMemoriesReturnsDeletedAndMissingIDs(t *testing.T) {
 	}
 	if memory.deleteCmd.UserID != 7 || memory.deleteCmd.ProjectID != 9 || memory.deleteCmd.Reason != "无用记忆" {
 		t.Fatalf("unexpected delete command: %+v", memory.deleteCmd)
+	}
+}
+
+// TestDeleteMemoriesValidationRejectsAboveUseCaseCap verifies transport validation uses the app-layer manual-delete batch limit as its single source of truth.
+// TestDeleteMemoriesValidationRejectsAboveUseCaseCap 用于验证传输层校验使用应用层手工删除批量上限作为唯一事实来源。
+func TestDeleteMemoriesValidationRejectsAboveUseCaseCap(t *testing.T) {
+	memoryIDs := make([]uint64, usecase.MaxDeleteMemoryIDs+1)
+	for idx := range memoryIDs {
+		memoryIDs[idx] = uint64(idx + 1)
+	}
+
+	err := NewRequestValidator().ValidateDeleteMemories(&vmmv1.DeleteMemoriesRequest{
+		UserId:    7,
+		ProjectId: 9,
+		MemoryIds: memoryIDs,
+	})
+	validationErr, ok := err.(logicdomain.ValidationError)
+	if !ok {
+		t.Fatalf("expected validation error for over-limit memory ids, got %T: %v", err, err)
+	}
+	if validationErr.Field != "memory_ids" || validationErr.Message != fmt.Sprintf("must contain at most %d ids", usecase.MaxDeleteMemoryIDs) {
+		t.Fatalf("unexpected memory id limit error: %#v", validationErr)
 	}
 }
 
@@ -731,6 +931,39 @@ func TestPreCheckRejectsMissingUserContent(t *testing.T) {
 	}
 }
 
+// TestDescribeErrorMapsInvalidLLMOutput verifies malformed upstream model output gets a stable ErrorInfo reason without exposing the raw provider body to clients.
+// TestDescribeErrorMapsInvalidLLMOutput 用于验证上游模型畸形输出会映射为稳定 ErrorInfo 原因，同时不会把原始 provider 响应暴露给客户端。
+func TestDescribeErrorMapsInvalidLLMOutput(t *testing.T) {
+	err := logicdomain.InvalidLLMOutputError{
+		Scene:   "precheck_l1_main",
+		Message: "json decode failed",
+		Raw:     "raw provider body with private text",
+	}
+	st, ok := status.FromError(toStatus(describeError(err)))
+	if !ok {
+		t.Fatalf("expected grpc status")
+	}
+	if st.Code() != codes.Internal {
+		t.Fatalf("status code = %s", st.Code())
+	}
+	if !strings.Contains(st.Message(), "invalid llm output for precheck_l1_main: json decode failed") {
+		t.Fatalf("unexpected status message: %s", st.Message())
+	}
+	if strings.Contains(st.Message(), "raw provider body") {
+		t.Fatalf("status message leaked raw provider body: %s", st.Message())
+	}
+	if len(st.Details()) != 1 {
+		t.Fatalf("expected one status detail, got %d", len(st.Details()))
+	}
+	info, ok := st.Details()[0].(*errdetails.ErrorInfo)
+	if !ok {
+		t.Fatalf("expected ErrorInfo detail, got %T", st.Details()[0])
+	}
+	if info.Reason != "UPSTREAM_INVALID_LLM_OUTPUT" || info.Metadata["category"] != "upstream" {
+		t.Fatalf("unexpected error info: %+v", info)
+	}
+}
+
 // TestPreCheckUsesResolvedSession verifies the scope interceptor injects one resolved session into the current pre-check use case.
 // TestPreCheckUsesResolvedSession 用于验证范围拦截器会把解析后的 session 注入当前 pre-check 用例。
 func TestPreCheckUsesResolvedSession(t *testing.T) {
@@ -761,16 +994,16 @@ func TestPreCheckUsesResolvedSession(t *testing.T) {
 		if cmd.UserContent != "当前项目怎么样" {
 			t.Fatalf("unexpected user content: %q", cmd.UserContent)
 		}
-		if cmd.RecallMode != usecase.PreCheckRecallModeLegacy {
-			t.Fatalf("expected default recall mode legacy, got %d", cmd.RecallMode)
+		if cmd.RecallMode != usecase.PreCheckRecallModeSessionCompact {
+			t.Fatalf("expected default recall mode to use compact-aware filtering, got %d", cmd.RecallMode)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pre-check use case was not invoked")
 	}
 }
 
-// TestPreCheckPassesRecallMode verifies the transport forwards one explicit recall mode into the use case without rewriting the caller's selected strategy.
-// TestPreCheckPassesRecallMode 用于验证传输层会把显式 recall mode 原样透传到用例，而不会重写调用方选择的策略。
+// TestPreCheckPassesRecallMode verifies the transport forwards the supported compact-aware recall mode into the use case.
+// TestPreCheckPassesRecallMode 用于验证传输层会把受支持的 compact-aware recall mode 传入用例层。
 func TestPreCheckPassesRecallMode(t *testing.T) {
 	calls := make(chan usecase.PreCheckCommand, 1)
 	fixture := newTestFixture(t, Dependencies{
@@ -796,6 +1029,39 @@ func TestPreCheckPassesRecallMode(t *testing.T) {
 	case cmd := <-calls:
 		if cmd.RecallMode != usecase.PreCheckRecallModeSessionCompact {
 			t.Fatalf("expected session compact recall mode, got %d", cmd.RecallMode)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("pre-check use case was not invoked")
+	}
+}
+
+// TestPreCheckPassesFullRecallMode verifies an explicit FULL request reaches the use case without being collapsed into the compact-aware default.
+// TestPreCheckPassesFullRecallMode 用于验证显式 FULL 请求会原样进入用例层，而不会被折叠成 compact-aware 默认策略。
+func TestPreCheckPassesFullRecallMode(t *testing.T) {
+	calls := make(chan usecase.PreCheckCommand, 1)
+	fixture := newTestFixture(t, Dependencies{
+		IDs: xid.NewGenerator(),
+		PreCheck: preCheckFunc(func(_ context.Context, cmd usecase.PreCheckCommand) (usecase.PreCheckResult, error) {
+			calls <- cmd
+			return usecase.PreCheckResult{ShouldInject: false}, nil
+		}),
+		ScopeResolver: stubScopeResolver{},
+	}, testBufSize)
+
+	_, err := fixture.client.PreCheck(context.Background(), &vmmv1.PreCheckRequest{
+		SessionId:   "sess-1",
+		UserId:      7,
+		ProjectId:   9,
+		UserContent: "当前项目怎么样",
+		RecallMode:  vmmv1.PreCheckRecallMode_PRE_CHECK_RECALL_MODE_FULL,
+	})
+	if err != nil {
+		t.Fatalf("pre-check: %v", err)
+	}
+	select {
+	case cmd := <-calls:
+		if cmd.RecallMode != usecase.PreCheckRecallModeFull {
+			t.Fatalf("expected full recall mode, got %d", cmd.RecallMode)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("pre-check use case was not invoked")

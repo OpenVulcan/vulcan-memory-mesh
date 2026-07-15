@@ -224,6 +224,46 @@ type memoryNodeScanRow struct {
 	UpdatedAt                time.Time
 }
 
+// memoryNodeScanDestinations returns the stable scan destination order matching memoryNodeSelectColumns.
+// memoryNodeScanDestinations 用于返回与 memoryNodeSelectColumns 对齐的稳定扫描目标顺序。
+func memoryNodeScanDestinations(row *memoryNodeScanRow) []any {
+	return []any{
+		&row.ID,
+		&row.TeamID,
+		&row.SpaceID,
+		&row.ProjectID,
+		&row.UserID,
+		&row.OriginSessionID,
+		&row.SourceTurnID,
+		&row.VectorID,
+		&row.EmbeddingText,
+		&row.SourceKind,
+		&row.ScopeLevel,
+		&row.Category,
+		&row.Abstract,
+		&row.Details,
+		&row.MemoryStatus,
+		&row.Priority,
+		&row.MemoryLevel,
+		&row.RefreshWeight,
+		&row.SupportCount,
+		&row.RebuttalCount,
+		&row.StatusReason,
+		&row.ExpiresAt,
+		&row.LastRecalledAt,
+		&row.LastAdoptedAt,
+		&row.LastReinforcedAt,
+		&row.RecalledCount,
+		&row.AdoptedCount,
+		&row.ReinforcementCount,
+		&row.CrossSessionAdoptedCount,
+		&row.DecayDisabled,
+		&row.DedupeHash,
+		&row.CreatedAt,
+		&row.UpdatedAt,
+	}
+}
+
 // toMemoryNodeRecord converts one scanned memory row into the shared durable-memory model used by query and write flows.
 // toMemoryNodeRecord 用于把扫描得到的记忆行转换成查询与写入流程使用的共享长期记忆模型。
 func (r memoryNodeScanRow) toMemoryNodeRecord() logicdomain.MemoryNodeRecord {

@@ -4,6 +4,7 @@ package usecase
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strconv"
@@ -43,13 +44,17 @@ const (
 type PreCheckRecallMode int32
 
 const (
-	// PreCheckRecallModeLegacy keeps the pre-check flow in its historical mode and never applies compact-boundary filtering.
-	// PreCheckRecallModeLegacy 用于让 pre-check 保持历史模式，不应用 compact 边界过滤。
-	PreCheckRecallModeLegacy PreCheckRecallMode = 0
+	// PreCheckRecallModeUnspecified applies the compact-aware default when the transport omits one recall mode.
+	// PreCheckRecallModeUnspecified 用于在传输层省略召回模式时应用 compact-aware 默认策略。
+	PreCheckRecallModeUnspecified PreCheckRecallMode = 0
 
 	// PreCheckRecallModeSessionCompact enables the session-level compact boundary so recall reopens only the turn history that may have fallen out of the compressed context.
 	// PreCheckRecallModeSessionCompact 用于启用 session 级 compact 边界，让召回只重新开放可能已从压缩上下文中丢失的 turn 历史。
 	PreCheckRecallModeSessionCompact PreCheckRecallMode = 1
+
+	// PreCheckRecallModeFull explicitly disables the current-session compact boundary while preserving the resolved search scope and lifecycle filters.
+	// PreCheckRecallModeFull 用于显式关闭当前 session 的 compact 边界，同时保留已解析检索作用域与生命周期过滤条件。
+	PreCheckRecallModeFull PreCheckRecallMode = 2
 )
 
 // PreCheckCommand carries the resolved session scope plus the current user text into the pre-check workflow.
@@ -80,12 +85,18 @@ type PreCheckExecutor interface {
 // PreCheckIntentExtractor 用于表示第一层处理器，负责判断是否需要记忆以及该用哪些检索语句驱动召回。
 type PreCheckIntentExtractor interface {
 	Extract(ctx context.Context, turns []logicdomain.PreCheckTurnContext, current string) (logicdomain.IntentResult, error)
+	// ExtractModel returns the configured pre-check first-stage model label so degraded malformed-output logs can identify the exact route/model.
+	// ExtractModel 用于返回当前 pre-check 第一层模型标识，便于降级的畸形输出日志定位准确路由/模型。
+	ExtractModel() string
 }
 
 // PreCheckMemoryReviewer is the second-stage processor used to adopt truly useful numbered memory candidates from the recalled pool.
 // PreCheckMemoryReviewer 用于表示第二层处理器，负责从召回池中的编号候选里采纳真正有用的记忆。
 type PreCheckMemoryReviewer interface {
 	Review(ctx context.Context, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error)
+	// ReviewModel returns the configured pre-check second-stage model label so degraded malformed-output logs can identify the exact route/model.
+	// ReviewModel 用于返回当前 pre-check 第二层模型标识，便于降级的畸形输出日志定位准确路由/模型。
+	ReviewModel() string
 }
 
 // PreCheckContextAssembler turns adopted memories into the final injection payload returned by the RPC.
@@ -104,7 +115,13 @@ type PreCheckMemorySearcher interface {
 // PreCheckStore 用于加载最近的混合 session turn，并为被采纳的记忆行写回生命周期更新。
 type PreCheckStore interface {
 	LoadRecentSessionTurns(ctx context.Context, session logicdomain.SessionRef, limit int) ([]logicdomain.SessionTurnRecord, error)
-	ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) error
+	ApplyMemoryAdoption(ctx context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error)
+}
+
+// PreCheckMemoryLifecycleVectorStore is the narrow vector-side sync port used after relational adoption extends memory lifetimes.
+// PreCheckMemoryLifecycleVectorStore 用于在关系侧采纳延长记忆生命周期后，同步旁路向量库的最小向量端口。
+type PreCheckMemoryLifecycleVectorStore interface {
+	Upsert(ctx context.Context, record logicdomain.MemoryRecord) error
 }
 
 // PreCheckConfig keeps the timeout, turn-window, and recall knobs local to the live pre-check workflow.
@@ -127,6 +144,7 @@ type PreCheckUseCase struct {
 	intent      PreCheckIntentExtractor
 	reviewer    PreCheckMemoryReviewer
 	assembler   PreCheckContextAssembler
+	lifecycle   PreCheckMemoryLifecycleVectorStore
 	config      PreCheckConfig
 	logger      *logx.Logger
 	piiScrubber PIIScrubber
@@ -172,6 +190,15 @@ func (u *PreCheckUseCase) ConfigurePIIScrubber(scrubber PIIScrubber) {
 		return
 	}
 	u.piiScrubber = scrubber
+}
+
+// ConfigureMemoryAdoptionVectorSync wires the optional vector-side lifecycle sync used by split storage after adoption updates durable expiry values.
+// ConfigureMemoryAdoptionVectorSync 用于接入可选的向量侧生命周期同步，让 split 存储在采纳更新长期过期时间后同步旁路表。
+func (u *PreCheckUseCase) ConfigureMemoryAdoptionVectorSync(lifecycle PreCheckMemoryLifecycleVectorStore) {
+	if u == nil {
+		return
+	}
+	u.lifecycle = lifecycle
 }
 
 // Execute validates the resolved scope, runs the turn-centric two-stage memory flow, and returns only adopted memory context instead of mixing in the separate profile bundle.
@@ -256,7 +283,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 
 	// Let the second-stage reviewer choose candidate numbers in priority order, then map them back to memory ids for lifecycle write-back and final injection.
 	// 让第二层评审器按优先顺序选择候选编号，再映射回 memory id，用于生命周期回写和最终注入。
-	selectedCandidates, reviewReason, err := u.reviewMemoryCandidates(ctx, cmd, intent, candidates)
+	selectedCandidates, err := u.reviewMemoryCandidates(ctx, cmd, intent, candidates)
 	if err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, cmd.UserContent, err)
@@ -268,13 +295,11 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		}
 		u.logPreCheckStage("pre-check memory candidates reviewed", traceID, cmd.Session, []any{
 			"selected_candidate_count", len(selectedCandidates),
-			"review_reason_present", strings.TrimSpace(reviewReason) != "",
 		}, map[string]any{
 			"current_user_input":  cmd.UserContent,
 			"intent_queries":      normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent),
 			"candidates":          candidates,
 			"selected_memory_ids": selectedIDs,
-			"review_reason":       strings.TrimSpace(reviewReason),
 		})
 	}
 	if len(selectedCandidates) == 0 {
@@ -406,11 +431,13 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		return []logicdomain.PreCheckMemoryCandidate{}, nil
 	}
 	queries := buildPreCheckMemoryQueries(intent, cmd.UserContent)
+	recallMode := NormalizePreCheckRecallMode(cmd.RecallMode)
 	u.logPreCheckStage("pre-check memory query prepared", trace.IDFromContext(ctx), cmd.Session, []any{
 		"top_k", u.config.TopK,
 		"search_scope", u.config.SearchScope,
 		"normalized_query_count", len(queries),
-		"recall_mode", int32(cmd.RecallMode),
+		"recall_mode", int32(recallMode),
+		"raw_recall_mode", int32(cmd.RecallMode),
 		"last_compacted_turn_id", cmd.Session.LastCompactedTurnID,
 	}, map[string]any{
 		"current_user_input": cmd.UserContent,
@@ -418,7 +445,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		"search_scope":       u.config.SearchScope,
 		"queries":            queries,
 	})
-	boundaryFilter := buildPreCheckSessionBoundaryFilter(cmd.Session, cmd.RecallMode)
+	boundaryFilter := buildPreCheckSessionBoundaryFilter(cmd.Session, recallMode)
 	result, err := u.memories.Search(ctx, MemoryQueryCommand{
 		UserID:              cmd.Session.UserID,
 		ProjectID:           cmd.Session.ProjectID,
@@ -432,9 +459,11 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 	if err != nil {
 		return nil, err
 	}
+	logPreviewPIICache := newPreCheckLogPreviewPIICache(u.piiScrubber)
 	rawGroups, rawHitCount := buildPreCheckRawRecallLogs(result.Results)
-	rawGroups = scrubPreCheckRawRecallGroupLogsPII(u.piiScrubber, rawGroups)
+	rawGroups = scrubPreCheckRawRecallGroupLogsPII(logPreviewPIICache, rawGroups)
 	merged := make(map[uint64]logicdomain.PreCheckMemoryCandidate)
+	mergedCandidateIDs := make(map[uint64]struct{})
 	firstSeenOrder := make(map[uint64]int)
 	nextSeenOrder := 0
 	belowThresholdCount := 0
@@ -446,7 +475,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				continue
 			}
 			candidateScore := normalizePreCheckReviewScore(hit.Score, hit.Origin, hitIdx+1, len(group.Hits))
-			logHit := scrubPreCheckThresholdHitLogPII(u.piiScrubber, summarizePreCheckThresholdHitForLog(hit, candidateScore))
+			logHit := scrubPreCheckThresholdHitLogPII(logPreviewPIICache, summarizePreCheckThresholdHitForLog(hit, candidateScore))
 			bestRawHit = choosePreferredPreCheckThresholdHit(bestRawHit, logHit)
 			if candidateScore < u.config.MinSimilarityScore {
 				belowThresholdCount++
@@ -481,7 +510,6 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 				MatchedContextRebuttalCount: hit.MatchedContextRebuttalCount,
 				MatchedContextScoreDelta:    hit.MatchedContextScoreDelta,
 			}
-			candidate = scrubPreCheckMemoryCandidatesPII(u.piiScrubber, []logicdomain.PreCheckMemoryCandidate{candidate})[0]
 			if candidate.Abstract == "" && candidate.Details == "" {
 				continue
 			}
@@ -494,11 +522,21 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 			}
 			if existing, ok := merged[candidate.MemoryID]; ok {
 				merged[candidate.MemoryID] = mergePreCheckCandidate(existing, candidate)
+				mergedCandidateIDs[candidate.MemoryID] = struct{}{}
 				continue
 			}
 			merged[candidate.MemoryID] = candidate
 		}
 	}
+
+	// Redact the deduplicated candidate set once, after repeated query-group hits have been merged, so PII masking cost scales with reviewer candidates instead of raw recall hits.
+	// 在重复 query group 命中合并之后，仅对去重后的候选集合执行一次脱敏，让 PII 掩码成本随 reviewer 候选数增长，而不是随原始召回命中数增长。
+	mergedCandidates := make([]logicdomain.PreCheckMemoryCandidate, 0, len(merged))
+	for _, candidate := range merged {
+		mergedCandidates = append(mergedCandidates, candidate)
+	}
+	mergedCandidates = scrubPreCheckMemoryCandidatesPII(u.piiScrubber, mergedCandidates)
+
 	u.logPreCheckStage("pre-check raw memory hits returned", trace.IDFromContext(ctx), cmd.Session, []any{
 		"group_count", len(result.Results),
 		"raw_hit_count", rawHitCount,
@@ -511,11 +549,25 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		"raw_groups":         rawGroups,
 		"best_raw_hit":       bestRawHit,
 	})
-	out := make([]logicdomain.PreCheckMemoryCandidate, 0, len(merged))
-	for _, candidate := range merged {
+	out := make([]logicdomain.PreCheckMemoryCandidate, 0, len(mergedCandidates))
+	for _, candidate := range mergedCandidates {
+		// Re-apply the text guard after redaction because a runtime scrubber may remove an entire sensitive fragment.
+		// 脱敏后重新执行文本守卫，因为运行时脱敏器可能会移除整段敏感片段。
+		if candidate.Abstract == "" && candidate.Details == "" {
+			continue
+		}
+		if candidate.Details == "" {
+			candidate.Details = candidate.Abstract
+		}
+		// Context labels are merged before redaction only for repeated-memory hits, so normalize those merged sets after masking to collapse values that become equivalent once secrets are hidden while preserving untouched single-hit labels verbatim.
+		// 只有重复 memory 命中会先合并 context 标签再脱敏，因此仅对这些已合并集合在掩码后重新归一去重，折叠隐藏密文后变得等价的值，同时保留未合并单命中标签的原始写法。
+		if _, wasMerged := mergedCandidateIDs[candidate.MemoryID]; wasMerged && len(candidate.MatchedContextValues) > 1 {
+			candidate.MatchedContextValues = appendSortedUniquePreCheckValues(candidate.MatchedContextValues)
+		}
 		candidate = normalizePreCheckCandidateDerivedFields(candidate, u.config.MinSimilarityScore)
 		out = append(out, candidate)
 	}
+	deduplicatedCandidateCount := len(out)
 	sort.SliceStable(out, func(i, j int) bool {
 		if out[i].Score != out[j].Score {
 			return out[i].Score > out[j].Score
@@ -538,7 +590,7 @@ func (u *PreCheckUseCase) searchMemoryCandidates(ctx context.Context, cmd PreChe
 		"raw_hit_count", rawHitCount,
 		"search_scope", u.config.SearchScope,
 		"below_threshold_count", belowThresholdCount,
-		"deduplicated_candidate_count", len(merged),
+		"deduplicated_candidate_count", deduplicatedCandidateCount,
 		"review_candidate_count", len(out),
 		"similarity_threshold", u.config.MinSimilarityScore,
 	}, map[string]any{
@@ -657,11 +709,11 @@ func normalizePreCheckCandidateDerivedFields(candidate logicdomain.PreCheckMemor
 	return candidate
 }
 
-// reviewMemoryCandidates lets the second-stage reviewer choose candidate numbers, restores the selected candidate order for final injection, and returns the reviewer rationale for stage logging.
-// reviewMemoryCandidates 用于让第二层评审器选择候选编号、恢复最终注入使用的候选顺序，并返回评审理由供阶段日志记录。
-func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult, candidates []logicdomain.PreCheckMemoryCandidate) ([]logicdomain.PreCheckMemoryCandidate, string, error) {
+// reviewMemoryCandidates lets the second-stage reviewer choose candidate numbers and restores the selected candidate order for final injection.
+// reviewMemoryCandidates 用于让第二层评审器选择候选编号，并恢复最终注入使用的候选顺序。
+func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreCheckCommand, intent logicdomain.IntentResult, candidates []logicdomain.PreCheckMemoryCandidate) ([]logicdomain.PreCheckMemoryCandidate, error) {
 	if u.reviewer == nil {
-		return nil, "", fmt.Errorf("pre-check memory reviewer is nil")
+		return nil, fmt.Errorf("pre-check memory reviewer is nil")
 	}
 	searchQueries := normalizePreCheckMemoryQueries(intent.Queries, cmd.UserContent)
 	review, err := u.reviewer.Review(ctx, logicdomain.PreCheckMemoryReviewInput{
@@ -672,19 +724,26 @@ func (u *PreCheckUseCase) reviewMemoryCandidates(ctx context.Context, cmd PreChe
 		Candidates:       append([]logicdomain.PreCheckMemoryCandidate(nil), candidates...),
 	})
 	if err != nil {
-		return nil, "", err
+		return nil, err
 	}
 	candidatesByNumber := make(map[int]logicdomain.PreCheckMemoryCandidate, len(candidates))
 	for _, candidate := range candidates {
 		candidatesByNumber[candidate.CandidateNumber] = candidate
 	}
 	selected := make([]logicdomain.PreCheckMemoryCandidate, 0, len(review.SelectedCandidateNumbers))
+	seenNumbers := make(map[int]struct{}, len(review.SelectedCandidateNumbers))
 	for _, number := range review.SelectedCandidateNumbers {
+		// Re-enforce reviewer boundary uniqueness here so alternate reviewer implementations cannot duplicate lifecycle write-back or final injection by repeating a candidate number.
+		// 在 reviewer 边界重新保证编号唯一性，避免替代 reviewer 实现通过重复候选编号造成生命周期写回或最终注入重复。
+		if _, ok := seenNumbers[number]; ok {
+			continue
+		}
 		if candidate, ok := candidatesByNumber[number]; ok {
+			seenNumbers[number] = struct{}{}
 			selected = append(selected, candidate)
 		}
 	}
-	return selected, strings.TrimSpace(review.Reason), nil
+	return selected, nil
 }
 
 // deduplicateSelectedCandidatesByTurnID removes repeated adopted candidates that point to the same source turn so final injection does not surface multiple summaries for one underlying dialogue.
@@ -724,7 +783,24 @@ func (u *PreCheckUseCase) writeMemoryAdoption(ctx context.Context, session logic
 			memoryIDs = append(memoryIDs, candidate.MemoryID)
 		}
 	}
-	return u.store.ApplyMemoryAdoption(ctx, session, memoryIDs, time.Now().UTC())
+	// Stop before the store port when no durable memory id survived filtering, so lifecycle adoption remains a no-op instead of delegating an empty mutation.
+	// 当过滤后没有任何长期 memory id 时，在进入存储端口前停止，让生命周期采纳保持无操作，而不是下放一个空写入。
+	if len(memoryIDs) == 0 {
+		return nil
+	}
+	updatedRecords, err := u.store.ApplyMemoryAdoption(ctx, session, memoryIDs, time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if u.lifecycle == nil || len(updatedRecords) == 0 {
+		return nil
+	}
+	for _, record := range updatedRecords {
+		if err := u.lifecycle.Upsert(ctx, record); err != nil {
+			return fmt.Errorf("sync adopted memory vector %s: %w", record.ID, err)
+		}
+	}
+	return nil
 }
 
 // finalizePreCheck assembles the final context text and item list from adopted memories only, and short-circuits to an empty result when no memory survives the pipeline.
@@ -961,8 +1037,8 @@ func (u *PreCheckUseCase) logPreCheckWarn(message, traceID string, session logic
 		"session_id", session.SessionID,
 		"project_id", session.ProjectID,
 		"user_id", session.UserID,
-		"err", err,
 	}
+	fields = u.appendPreCheckInvalidLLMOutputLogFields(fields, err)
 	if u.logger.PayloadDebugEnabled() {
 		fields = append(fields, "user_content", strings.TrimSpace(userContent))
 	} else {
@@ -970,7 +1046,49 @@ func (u *PreCheckUseCase) logPreCheckWarn(message, traceID string, session logic
 			"user_content": strings.TrimSpace(userContent),
 		})
 	}
+	fields = append(fields, "err", err)
 	u.logger.Warn(message, fields...)
+}
+
+// appendPreCheckInvalidLLMOutputLogFields adds scene-specific LLM diagnostics to degraded pre-check warnings without changing non-LLM warning logs.
+// appendPreCheckInvalidLLMOutputLogFields 用于把按场景归属的 LLM 诊断字段追加到 pre-check 降级警告中，同时不改变非 LLM 警告日志。
+func (u *PreCheckUseCase) appendPreCheckInvalidLLMOutputLogFields(fields []any, err error) []any {
+	var invalid logicdomain.InvalidLLMOutputError
+	if !errors.As(err, &invalid) {
+		return fields
+	}
+	scene := strings.TrimSpace(invalid.Scene)
+	if scene != "" {
+		fields = append(fields, "llm_scene", scene)
+	}
+	if model := u.preCheckLLMFailureModel(scene); model != "" {
+		fields = append(fields, "model", model)
+	}
+	// Pre-check intentionally degrades malformed model output into an empty result, so raw provider output must remain available in server logs for prompt and parser repair.
+	// pre-check 会把畸形模型输出降级为空结果，因此原始 provider 响应必须留在服务端日志中，供修复提示词和解析器使用。
+	if raw := strings.TrimSpace(invalid.Raw); raw != "" {
+		fields = append(fields, "llm_raw_output", invalid.Raw)
+	}
+	return fields
+}
+
+// preCheckLLMFailureModel resolves the configured model for the exact pre-check LLM scene that produced one InvalidLLMOutputError.
+// preCheckLLMFailureModel 用于根据产生 InvalidLLMOutputError 的具体 pre-check LLM 场景解析对应的配置模型。
+func (u *PreCheckUseCase) preCheckLLMFailureModel(scene string) string {
+	switch scene {
+	case "precheck_l1_main":
+		if u == nil || u.intent == nil {
+			return ""
+		}
+		return strings.TrimSpace(u.intent.ExtractModel())
+	case "precheck_l2_main":
+		if u == nil || u.reviewer == nil {
+			return ""
+		}
+		return strings.TrimSpace(u.reviewer.ReviewModel())
+	default:
+		return ""
+	}
 }
 
 // logPreCheckStage records one structured stage checkpoint so operators can follow the full pre-check flow, while payload details stay plaintext in debug mode or encrypted in protected mode.

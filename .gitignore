@@ -1,4 +1,5 @@
 *.log
+TASK_LOG*.md
 *.out
 *.test
 bin/

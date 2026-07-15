@@ -4,13 +4,16 @@ package vldb_sqlite
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
+	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
 )
 
 const debugCleanManagedSchemaSQL = `
+BEGIN IMMEDIATE;
 DROP TABLE IF EXISTS vmm_profile_nodes;
 DROP TABLE IF EXISTS vmm_profile_instructions;
 DROP TABLE IF EXISTS vmm_turn_records_trash;
@@ -35,6 +38,7 @@ DROP TABLE IF EXISTS vmm_users;
 DROP TABLE IF EXISTS vmm_noise_embeddings;
 DROP TABLE IF EXISTS vmm_version;
 DROP TABLE IF EXISTS vmm_schema_versions;
+COMMIT;
 `
 
 // DebugCleanManagedSchema opens the local SQLite FFI library, drops all VMM-managed tables, and then returns immediately.
@@ -90,13 +94,28 @@ func debugCleanWithDatabase(ctx context.Context, database sqliteDatabaseHandle, 
 	defer cancel()
 	resp, err := database.ExecuteScript(debugCleanManagedSchemaSQL, nil, "")
 	if err != nil {
-		return fmt.Errorf("debug clean sqlite schema: %w", err)
+		return sqliteDebugCleanError(err)
 	}
 	if !resp.Success {
-		return fmt.Errorf("debug clean sqlite schema: %s", resp.Message)
+		return sqliteDebugCleanError(errors.New(resp.Message))
 	}
 	if err := checkSQLiteContext(callCtx); err != nil {
 		return err
 	}
 	return nil
+}
+
+// sqliteDebugCleanError classifies destructive SQLite cleanup failures after the transactional drop script may have reached its commit boundary.
+// sqliteDebugCleanError 用于分类事务化删表脚本可能已经到达提交边界后的 SQLite 破坏性清理失败。
+func sqliteDebugCleanError(err error) error {
+	if err == nil {
+		return nil
+	}
+	if isSQLiteOutcomeUncertainError(err) {
+		return logicdomain.OutcomeUncertainError{
+			Operation: "clean sqlite managed schema",
+			Message:   fmt.Sprintf("debug clean sqlite schema: %v", err),
+		}
+	}
+	return fmt.Errorf("debug clean sqlite schema: %w", err)
 }

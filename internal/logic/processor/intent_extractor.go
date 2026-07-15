@@ -33,6 +33,15 @@ func NewIntentExtractor(llm logicports.LLMClient, prompts logicports.PromptSourc
 	return &IntentExtractor{llm: llm, prompts: prompts, model: strings.TrimSpace(model), maxKws: maxKeywords}
 }
 
+// ExtractModel returns the configured pre-check first-stage model label so use cases can attribute malformed intent output to one route/model.
+// ExtractModel 用于返回当前配置的 pre-check 第一层模型标识，方便用例层把畸形意图输出归因到具体路由/模型。
+func (e *IntentExtractor) ExtractModel() string {
+	if e == nil {
+		return ""
+	}
+	return strings.TrimSpace(e.model)
+}
+
 // Extract runs the first-stage pre-check prompt over the mixed recent-turn window plus the current user request.
 // Extract 用于基于混合最近 turn 窗口和当前用户请求，执行 pre-check 第一层提示词。
 func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCheckTurnContext, current string) (logicdomain.IntentResult, error) {
@@ -68,8 +77,8 @@ func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCh
 	return intent, nil
 }
 
-// parseIntentResponse executes the parseIntentResponse logic.
-// parseIntentResponse 用于执行 parseIntentResponse 逻辑。
+// parseIntentResponse validates the first-stage pre-check output against the current reason/need_memory/queries contract.
+// parseIntentResponse 用于按当前 reason/need_memory/queries 契约校验 pre-check 第一层输出。
 func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 	// Extract the JSON object from noisy model output before decoding fields.
 	// 先从带噪声的模型输出中抽取 JSON 对象，再解码字段。
@@ -78,27 +87,33 @@ func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: err.Error(), Raw: raw}
 	}
 	var payload struct {
-		Queries    []string `json:"queries"`
-		Keywords   []string `json:"keywords"`
-		NeedMemory *bool    `json:"need_memory"`
-		Reason     string   `json:"reason"`
+		Reason     *string   `json:"reason"`
+		NeedMemory *bool     `json:"need_memory"`
+		Queries    *[]string `json:"queries"`
 	}
-	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
-		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "json decode failed", Raw: raw}
+	decoder := json.NewDecoder(strings.NewReader(jsonBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: err.Error(), Raw: raw}
 	}
 
-	// Validate required fields and normalize keywords into a de-duplicated list.
-	// 校验必填字段，并将关键词归一为去重后的列表。
+	// Validate required fields before normalization so missing contract fields are diagnosed as malformed model output.
+	// 归一前先校验必填字段，让缺失契约字段的问题被诊断为模型畸形输出。
+	if payload.Reason == nil || strings.TrimSpace(*payload.Reason) == "" {
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "reason is required", Raw: raw}
+	}
 	if payload.NeedMemory == nil {
 		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "missing need_memory", Raw: raw}
 	}
-	sourceQueries := payload.Queries
-	if len(sourceQueries) == 0 {
-		sourceQueries = payload.Keywords
+	if payload.Queries == nil {
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "queries is required", Raw: raw}
 	}
-	queries := make([]string, 0, len(sourceQueries))
+
+	// Normalize and de-duplicate query sentences while preserving the prompt-level need_memory/query consistency checks.
+	// 归一并去重检索句，同时保留提示词层面对 need_memory 与 queries 一致性的约束。
+	queries := make([]string, 0, len(*payload.Queries))
 	seen := map[string]struct{}{}
-	for _, query := range sourceQueries {
+	for _, query := range *payload.Queries {
 		query = strings.TrimSpace(query)
 		if query == "" {
 			continue
@@ -109,7 +124,13 @@ func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 		seen[query] = struct{}{}
 		queries = append(queries, query)
 	}
-	return logicdomain.IntentResult{Queries: queries, NeedMemory: *payload.NeedMemory, Reason: strings.TrimSpace(payload.Reason)}, nil
+	if *payload.NeedMemory && len(queries) == 0 {
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "queries is required when need_memory is true", Raw: raw}
+	}
+	if !*payload.NeedMemory && len(queries) > 0 {
+		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: "queries must be empty when need_memory is false", Raw: raw}
+	}
+	return logicdomain.IntentResult{Queries: queries, NeedMemory: *payload.NeedMemory, Reason: strings.TrimSpace(*payload.Reason)}, nil
 }
 
 // extractJSONObject extracts the target data.

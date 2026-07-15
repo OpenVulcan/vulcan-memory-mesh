@@ -10,8 +10,8 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
-// SearchHybridMemory executes one dialect-aware SQL fusion query so combined PostgreSQL mode can exploit its single-store advantage before application-side rerank and MMR continue.
-// SearchHybridMemory 用于执行一条带方言感知的 SQL 融合查询，让 PostgreSQL 组合模式在进入应用层 rerank 与 MMR 前先利用单库优势完成首轮融合。
+// SearchHybridMemory executes one dialect-aware SQL fusion query and returns fully materialized memory rows so combined PostgreSQL mode does not reload the same rows by vector id.
+// SearchHybridMemory 用于执行一条带方言感知的 SQL 融合查询，并返回完整物化的记忆行，让 PostgreSQL 组合模式无需再按 vector id 重复回表。
 func (r *memoryRepository) SearchHybridMemory(ctx context.Context, query string, vector []float32, topK int, filter logicdomain.SearchFilter, rrfK int) ([]logicdomain.MemoryHit, error) {
 	if r == nil || r.shared.pool == nil {
 		return nil, fmt.Errorf("postgres store is not initialized")
@@ -41,7 +41,7 @@ func (r *memoryRepository) SearchHybridMemory(ctx context.Context, query string,
 		return nil, fmt.Errorf("begin postgres hybrid search tx: %w", err)
 	}
 	defer func() {
-		_ = tx.Rollback(context.Background())
+		_ = tx.Rollback(callCtx)
 	}()
 
 	// Apply the ANN probe count to the current transaction so the vector candidate CTE respects runtime tuning without leaking settings across pooled connections.
@@ -64,43 +64,21 @@ func (r *memoryRepository) SearchHybridMemory(ctx context.Context, query string,
 	hits := make([]logicdomain.MemoryHit, 0)
 	for rows.Next() {
 		var (
-			vectorID      string
-			abstract      string
-			teamID        uint64
-			spaceID       uint64
-			projectID     uint64
-			originSession uint64
-			userID        uint64
-			sourceTurnID  uint64
-			score         float64
-			origin        string
+			row    memoryNodeScanRow
+			score  float64
+			origin string
 		)
-		if err := rows.Scan(&vectorID, &abstract, &teamID, &spaceID, &projectID, &originSession, &userID, &sourceTurnID, &score, &origin); err != nil {
+		scanTargets := append(memoryNodeScanDestinations(&row), &score, &origin)
+		if err := rows.Scan(scanTargets...); err != nil {
 			return nil, fmt.Errorf("scan postgres hybrid memory hit: %w", err)
 		}
-		hits = append(hits, logicdomain.MemoryHit{
-			ID:    strings.TrimSpace(vectorID),
-			Text:  strings.TrimSpace(abstract),
-			Score: score,
-			Filter: logicdomain.SearchFilter{
-				TeamID:    teamID,
-				SpaceID:   spaceID,
-				ProjectID: projectID,
-				SessionID: originSession,
-				UserID:    userID,
-			},
-			Metadata: map[string]string{
-				"origin":  strings.TrimSpace(origin),
-				"turn_id": fmt.Sprintf("%d", sourceTurnID),
-			},
-		})
+		hits = append(hits, postgresMemoryHitFromRecord(row.toMemoryNodeRecord(), score, origin))
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("iterate postgres hybrid memory hits: %w", err)
 	}
-	if err := tx.Commit(callCtx); err != nil {
-		return nil, fmt.Errorf("commit postgres hybrid search tx: %w", err)
-	}
+	// Let the deferred rollback close the read-only transaction because it exists only to scope SET LOCAL probe tuning, not to commit durable state.
+	// 让延迟 rollback 关闭只读事务，因为该事务只用于限定 SET LOCAL 探针参数作用域，而不是提交持久状态。
 	return hits, nil
 }
 

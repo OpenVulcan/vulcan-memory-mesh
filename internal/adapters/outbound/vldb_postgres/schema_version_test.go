@@ -2,7 +2,11 @@
 // schema_version_test.go 用于验证 PostgreSQL 组合库的 schema 版本辅助逻辑，且无需真实数据库连接。
 package vldb_postgres
 
-import "testing"
+import (
+	"errors"
+	"strings"
+	"testing"
+)
 
 // TestTrackedSchemaComponentsReturnsSharedAndFlavorEntries verifies the runtime always tracks one shared component plus one flavor-scoped search component.
 // TestTrackedSchemaComponentsReturnsSharedAndFlavorEntries 用于验证运行时始终会跟踪一条共享版本记录和一条 flavor 作用域的搜索版本记录。
@@ -147,5 +151,32 @@ func TestPostgresManagedTableNamesForDebugCleanIncludesLegacyWorkMemoryTables(t 
 	}
 	if !foundNodes || !foundPlans {
 		t.Fatalf("postgres debug-clean legacy work-memory tables: nodes=%t plans=%t", foundNodes, foundPlans)
+	}
+}
+
+// TestPostgresSchemaObjectBootstrapErrorIncludesDDLName verifies startup table-creation failures identify the exact schema object that failed.
+// TestPostgresSchemaObjectBootstrapErrorIncludesDDLName 用于验证启动期建表失败会标明具体失败的 schema 对象。
+func TestPostgresSchemaObjectBootstrapErrorIncludesDDLName(t *testing.T) {
+	err := postgresSchemaObjectBootstrapError(postgresDDLStatement{name: "vmm_users"}, errors.New("permission denied"))
+	if err == nil {
+		t.Fatalf("postgresSchemaObjectBootstrapError returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "bootstrap postgres schema object vmm_users: permission denied") {
+		t.Fatalf("unexpected bootstrap schema object error: %v", err)
+	}
+}
+
+// TestPostgresDDLStatementExecutionErrorIncludesPhaseAndName verifies shared DDL diagnostics include both the schema phase and the failed object label.
+// TestPostgresDDLStatementExecutionErrorIncludesPhaseAndName 用于验证共享 DDL 诊断会同时包含 schema 阶段与失败对象标签。
+func TestPostgresDDLStatementExecutionErrorIncludesPhaseAndName(t *testing.T) {
+	err := postgresDDLStatementExecutionError("bootstrap postgres schema version table", postgresDDLStatement{name: "vmm_schema_versions"}, errors.New("permission denied"))
+	if err == nil {
+		t.Fatalf("postgresDDLStatementExecutionError returned nil, want error")
+	}
+	if !strings.Contains(err.Error(), "bootstrap postgres schema version table vmm_schema_versions: permission denied") {
+		t.Fatalf("unexpected ddl execution error: %v", err)
+	}
+	if nilErr := postgresDDLStatementExecutionError("bootstrap postgres schema version table", postgresDDLStatement{name: "vmm_schema_versions"}, nil); nilErr != nil {
+		t.Fatalf("postgresDDLStatementExecutionError nil error = %v, want nil", nilErr)
 	}
 }

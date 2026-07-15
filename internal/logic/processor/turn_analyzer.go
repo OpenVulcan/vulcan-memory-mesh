@@ -90,24 +90,24 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		TurnID        uint64 `json:"turn_id"`
 		Details       string `json:"details"`
 		MemoryNodes   []struct {
-			Category        int    `json:"category"`
-			Abstract        string `json:"abstract"`
-			Details         string `json:"details"`
-			EvidenceSource  string `json:"evidence_source"`
-			Admission       string `json:"admission"`
-			AdmissionReason string `json:"admission_reason"`
-			ContextEdges       []struct {
+			Category        int     `json:"category"`
+			Abstract        string  `json:"abstract"`
+			Details         string  `json:"details"`
+			EvidenceSource  string  `json:"evidence_source"`
+			Admission       string  `json:"admission"`
+			AdmissionReason *string `json:"admission_reason"`
+			ContextEdges    []struct {
 				ContextKey   string `json:"context_key"`
 				ContextValue string `json:"context_value"`
 				Relation     string `json:"relation"`
 			} `json:"context_edges"`
 		} `json:"memory_nodes"`
 		ProfileNodes []struct {
-			ProfileType     int    `json:"profile_type"`
-			Content         string `json:"content"`
-			EvidenceSource  string `json:"evidence_source"`
-			Admission       string `json:"admission"`
-			AdmissionReason string `json:"admission_reason"`
+			ProfileType     int     `json:"profile_type"`
+			Content         string  `json:"content"`
+			EvidenceSource  string  `json:"evidence_source"`
+			Admission       string  `json:"admission"`
+			AdmissionReason *string `json:"admission_reason"`
 		} `json:"profile_nodes"`
 	}
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
@@ -120,11 +120,11 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 	// Validate and de-duplicate extracted items so the persistence layer only receives canonical node candidates.
 	// 校验并去重提炼项，让持久化层只接收规范化后的节点候选。
 	analysis := logicdomain.TurnAnalysis{
-		UserInputKind:       normalizeTurnAnalysisUserInputKind(payload.UserInputKind),
-		TurnID:              payload.TurnID,
-		Details:             strings.TrimSpace(payload.Details),
-		MemoryNodes:         make([]logicdomain.MemoryNodeCandidate, 0, len(payload.MemoryNodes)),
-		ProfileNodes:        make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
+		UserInputKind: normalizeTurnAnalysisUserInputKind(payload.UserInputKind),
+		TurnID:        payload.TurnID,
+		Details:       strings.TrimSpace(payload.Details),
+		MemoryNodes:   make([]logicdomain.MemoryNodeCandidate, 0, len(payload.MemoryNodes)),
+		ProfileNodes:  make([]logicdomain.ProfileNodeCandidate, 0, len(payload.ProfileNodes)),
 	}
 	if !logicdomain.ValidTurnAnalysisUserInputKind(analysis.UserInputKind) {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid user_input_kind %q", payload.UserInputKind), Raw: raw}
@@ -150,9 +150,12 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid memory admission %q", node.Admission), Raw: raw}
 		}
-		admissionReason := normalizeTurnAnalysisAdmissionReason(node.AdmissionReason)
-		if admissionReason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(admissionReason) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid memory admission_reason %q", node.AdmissionReason), Raw: raw}
+		if node.AdmissionReason == nil {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "memory admission_reason is required", Raw: raw}
+		}
+		admissionReason := normalizeTurnAnalysisAdmissionReason(*node.AdmissionReason)
+		if !logicdomain.ValidTurnAnalysisAdmissionReasonForAdmission(admission, admissionReason) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid memory admission_reason %q for admission %q", *node.AdmissionReason, node.Admission), Raw: raw}
 		}
 		contextEdges, err := normalizeMemoryContextEdgeCandidates(node.ContextEdges)
 		if err != nil {
@@ -191,9 +194,12 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if !logicdomain.ValidTurnAnalysisAdmission(admission) {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile admission %q", node.Admission), Raw: raw}
 		}
-		admissionReason := normalizeTurnAnalysisAdmissionReason(node.AdmissionReason)
-		if admissionReason != "" && !logicdomain.ValidTurnAnalysisAdmissionReason(admissionReason) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile admission_reason %q", node.AdmissionReason), Raw: raw}
+		if node.AdmissionReason == nil {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "profile admission_reason is required", Raw: raw}
+		}
+		admissionReason := normalizeTurnAnalysisAdmissionReason(*node.AdmissionReason)
+		if !logicdomain.ValidTurnAnalysisAdmissionReasonForAdmission(admission, admissionReason) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile admission_reason %q for admission %q", *node.AdmissionReason, node.Admission), Raw: raw}
 		}
 		key := fmt.Sprintf("%d|%s", node.ProfileType, node.Content)
 		if _, ok := profileSeen[key]; ok {
@@ -230,8 +236,8 @@ func normalizeTurnAnalysisAdmission(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
 
-// normalizeTurnAnalysisAdmissionReason trims the optional first-pass rejection reason without inventing one when the model did not provide it.
-// normalizeTurnAnalysisAdmissionReason 用于裁剪可选的首轮拒绝原因；如果模型未提供，则不凭空补造一个原因。
+// normalizeTurnAnalysisAdmissionReason trims and lowercases the declared first-pass rejection reason while keeping field-presence validation at the JSON boundary.
+// normalizeTurnAnalysisAdmissionReason 用于裁剪并小写化声明的首轮拒绝原因，同时把字段存在性校验保留在 JSON 边界。
 func normalizeTurnAnalysisAdmissionReason(raw string) string {
 	return strings.ToLower(strings.TrimSpace(raw))
 }
@@ -251,13 +257,13 @@ func normalizeMemoryContextEdgeCandidates(rawEdges []struct {
 	for _, edge := range rawEdges {
 		contextKey := normalizeMemoryContextKey(edge.ContextKey)
 		contextValue := normalizeMemoryContextValue(edge.ContextValue)
-		if contextKey == "" || contextValue == "" {
-			continue
+		if contextKey == "" {
+			return nil, fmt.Errorf("invalid context edge key %q", edge.ContextKey)
+		}
+		if contextValue == "" {
+			return nil, fmt.Errorf("invalid context edge value %q", edge.ContextValue)
 		}
 		relation := strings.ToLower(strings.TrimSpace(edge.Relation))
-		if relation == "" {
-			relation = logicdomain.MemoryContextRelationSupport
-		}
 		if !logicdomain.ValidMemoryContextRelation(relation) {
 			return nil, fmt.Errorf("invalid context edge relation %q", edge.Relation)
 		}

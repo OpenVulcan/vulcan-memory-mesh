@@ -16,6 +16,32 @@ type latestTurnRow struct {
 	LatestTurnID uint64 `json:"latest_turn_id"`
 }
 
+// sameCompactedSessionBoundary reports whether a read-back session row proves the compact-boundary update from this call became durable.
+// sameCompactedSessionBoundary 用于判断回读 session 行是否能够证明本次 compact 边界更新已经持久化。
+func sameCompactedSessionBoundary(row logicdomain.SessionRecord, sessionID, latestTurnID uint64, compactedMs int64) bool {
+	return row.ID == sessionID &&
+		row.LastCompactedTurnID == latestTurnID &&
+		sessionTimestampReached(row.LastCompactedAt, compactedMs) &&
+		sessionTimestampReached(row.UpdatedAt, compactedMs)
+}
+
+// parameterizedSessionCompactBoundaryUpdateStatement builds the single SQLite statement that advances one session compact boundary with typed params.
+// parameterizedSessionCompactBoundaryUpdateStatement 用于构造推进单个 session compact 边界的 SQLite 单语句强类型参数写入。
+func parameterizedSessionCompactBoundaryUpdateStatement(sessionID, latestTurnID uint64, compactedMs int64) sqliteWriteStatement {
+	return sqliteWriteStatement{
+		SQL: `
+UPDATE vmm_sessions
+SET last_compacted_turn_id = ?,
+    last_compacted_timestamp = ?,
+    updated_timestamp = CASE
+      WHEN updated_timestamp < ? THEN ? ELSE updated_timestamp
+    END
+WHERE id = ?
+`,
+		Params: []any{latestTurnID, compactedMs, compactedMs, compactedMs, sessionID},
+	}
+}
+
 // MarkSessionCompacted stores the latest persisted turn id as the current compact boundary for one resolved session and keeps repeated calls idempotent.
 // MarkSessionCompacted 用于把某个已解析 session 的最新持久化 turn id 记录为当前 compact 边界，并保持重复调用幂等。
 func (s *Store) MarkSessionCompacted(ctx context.Context, session logicdomain.SessionRef, compactedAt time.Time) (uint64, bool, error) {
@@ -49,20 +75,40 @@ WHERE session_id = ?
 	if latestTurnID == 0 {
 		return 0, false, nil
 	}
-	if latestTurnID == session.LastCompactedTurnID {
+
+	// Read the durable session boundary under the same write lock because SessionRef is only a caller snapshot and may be stale by the time compaction runs.
+	// 在同一个写锁内读取持久化 session 边界，因为 SessionRef 只是调用方快照，compact 执行时可能已经过期。
+	currentSession, err := s.loadSessionByID(ctx, session.SessionID)
+	if err != nil {
+		return 0, false, fmt.Errorf("load session compact boundary: %w", err)
+	}
+	if latestTurnID == currentSession.LastCompactedTurnID {
 		return latestTurnID, false, nil
 	}
 
 	compactedMs := compactedAt.UTC().UnixMilli()
-	if err := s.exec(ctx, `
-UPDATE vmm_sessions
-SET last_compacted_turn_id = ?,
-    last_compacted_timestamp = ?,
-    updated_timestamp = CASE
-      WHEN updated_timestamp < ? THEN ? ELSE updated_timestamp
-    END
-WHERE id = ?
-`, latestTurnID, compactedMs, compactedMs, compactedMs, session.SessionID); err != nil {
+	statement := parameterizedSessionCompactBoundaryUpdateStatement(session.SessionID, latestTurnID, compactedMs)
+	result, err := s.execResult(ctx, statement.SQL, statement.Params...)
+	if err != nil {
+		if isSQLiteOutcomeUncertainError(err) {
+			recoveredSession, reconcileErr := s.loadSessionByID(ctx, session.SessionID)
+			if reconcileErr != nil {
+				return latestTurnID, true, logicdomain.OutcomeUncertainError{
+					Operation: "mark session compacted",
+					Message:   err.Error() + "; reconcile failed: " + reconcileErr.Error(),
+				}
+			}
+			if sameCompactedSessionBoundary(recoveredSession, session.SessionID, latestTurnID, compactedMs) {
+				return latestTurnID, true, nil
+			}
+			return latestTurnID, true, logicdomain.OutcomeUncertainError{
+				Operation: "mark session compacted",
+				Message:   err.Error(),
+			}
+		}
+		return 0, false, fmt.Errorf("update session compact boundary: %w", err)
+	}
+	if err := sqliteAutocommitRowsChangedDriftError("mark session compacted", "update session compact boundary", result.RowsChanged, 1); err != nil {
 		return 0, false, fmt.Errorf("update session compact boundary: %w", err)
 	}
 	return latestTurnID, true, nil

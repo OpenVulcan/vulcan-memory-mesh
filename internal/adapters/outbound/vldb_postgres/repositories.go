@@ -718,41 +718,7 @@ func scanMemoryNodeRows(ctx context.Context, q profileQueryer, sqlText string, a
 	var items []memoryNodeScanRow
 	for rows.Next() {
 		var row memoryNodeScanRow
-		if err := rows.Scan(
-			&row.ID,
-			&row.TeamID,
-			&row.SpaceID,
-			&row.ProjectID,
-			&row.UserID,
-			&row.OriginSessionID,
-			&row.SourceTurnID,
-			&row.VectorID,
-			&row.EmbeddingText,
-			&row.SourceKind,
-			&row.ScopeLevel,
-			&row.Category,
-			&row.Abstract,
-			&row.Details,
-			&row.MemoryStatus,
-			&row.Priority,
-			&row.MemoryLevel,
-			&row.RefreshWeight,
-			&row.SupportCount,
-			&row.RebuttalCount,
-			&row.StatusReason,
-			&row.ExpiresAt,
-			&row.LastRecalledAt,
-			&row.LastAdoptedAt,
-			&row.LastReinforcedAt,
-			&row.RecalledCount,
-			&row.AdoptedCount,
-			&row.ReinforcementCount,
-			&row.CrossSessionAdoptedCount,
-			&row.DecayDisabled,
-			&row.DedupeHash,
-			&row.CreatedAt,
-			&row.UpdatedAt,
-		); err != nil {
+		if err := rows.Scan(memoryNodeScanDestinations(&row)...); err != nil {
 			return nil, fmt.Errorf("scan postgres memory node row: %w", err)
 		}
 		items = append(items, row)
