@@ -123,27 +123,6 @@ func TestPostActionShutdownAcceptsNilContext(t *testing.T) {
 	}
 }
 
-// TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext verifies a partially constructed queue path can still absorb one overflowing enqueue attempt without panicking when the worker lifetime context is missing.
-// TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext 用于验证在缺少工作器生命周期 context 的部分装配场景下，队列满载时的兜底入队会被安全跳过，而不是 panic。
-func TestPostActionPushQueueIDSkipsFallbackWithoutQueueContext(t *testing.T) {
-	uc := &PostActionUseCase{
-		queueCh: make(chan uint64, 1),
-	}
-	uc.queueCh <- 1
-
-	uc.pushQueueID(2)
-
-	if got := len(uc.queueCh); got != 1 {
-		t.Fatalf("expected queue length to remain 1, got %d", got)
-	}
-	if len(uc.deferredQueueIDs) != 0 {
-		t.Fatalf("expected missing queue context to skip deferred queue, got %v", uc.deferredQueueIDs)
-	}
-	if len(uc.deferredQueueSet) != 0 {
-		t.Fatalf("expected missing queue context to skip deferred set, got %v", uc.deferredQueueSet)
-	}
-}
-
 // TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns verifies queue overflow is captured in the in-memory deferred backlog and later flushed back into the worker channel without spawning one blocked goroutine per missed send.
 // TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns 用于验证队列溢出会先进入内存延迟 backlog，并在容量恢复后重新刷回工作通道，而不是为每次失败发送都启动一个阻塞 goroutine。
 func TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns(t *testing.T) {

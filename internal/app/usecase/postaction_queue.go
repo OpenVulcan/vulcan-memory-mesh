@@ -117,14 +117,6 @@ func (u *PostActionUseCase) pushQueueID(sessionID uint64) {
 	select {
 	case u.queueCh <- sessionID:
 	default:
-		// Only remember deferred ids when the queue worker lifetime context exists.
-		// Partially constructed test instances may provide queueCh without queueCtx, and
-		// in that case the safer behavior is to skip the overflow path instead of silently retaining dead deferred work.
-		// 只有在队列工作器生命周期 context 已存在时才记录延迟项。
-		// 部分装配的测试实例可能只提供 queueCh 而没有 queueCtx，这时跳过溢出路径比悄悄保留永远无法刷新的延迟任务更安全。
-		if u.queueCtx == nil {
-			return
-		}
 		u.queueDeferredSessionID(sessionID)
 	}
 }
