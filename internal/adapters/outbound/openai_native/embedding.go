@@ -21,8 +21,8 @@ type EmbeddingClient struct {
 	modelParams map[string]map[string]any
 }
 
-// NewEmbeddingClient creates a EmbeddingClient instance.
-// NewEmbeddingClient 用于创建 EmbeddingClient 实例。
+// NewEmbeddingClient binds one model and cloned provider hints to the native OpenAI embedding adapter.
+// NewEmbeddingClient 用于把单个模型及克隆后的 provider hint 绑定到原生 OpenAI 向量适配器。
 func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, organization, project string, params map[string]any, modelParams map[string]map[string]any) *EmbeddingClient {
 	return &EmbeddingClient{
 		client:      NewClient(endpoint, apiKey, organization, project, nil),
@@ -33,8 +33,8 @@ func NewEmbeddingClient(endpoint, apiKey, model string, dimension int, organizat
 	}
 }
 
-// Embed executes the Embed logic.
-// Embed 用于执行 Embed 逻辑。
+// Embed sends a batch embedding request, validates the provider response shape, and restores input ordering.
+// Embed 用于发送批量向量请求、校验 provider 响应结构并恢复输入顺序。
 func (c *EmbeddingClient) Embed(ctx context.Context, req appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
 	// Sanitize the input batch first so the raw SDK request only carries the concrete non-empty texts chosen by the caller or by the outer embedding controller.
 	// 先清洗输入批次，确保真正送进 SDK 请求的只是不为空的实际文本，并把拆批/回退策略继续留给外层 embedding 控制器。

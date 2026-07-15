@@ -20,8 +20,8 @@ type ManualProfileReviewer struct {
 	model   string
 }
 
-// NewManualProfileReviewer creates a ManualProfileReviewer instance.
-// NewManualProfileReviewer 用于创建 ManualProfileReviewer 实例。
+// NewManualProfileReviewer binds the manual profile instruction prompt and model to the shared LLM port.
+// NewManualProfileReviewer 用于把人工画像指令提示词与模型绑定到共享 LLM 端口。
 func NewManualProfileReviewer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *ManualProfileReviewer {
 	return &ManualProfileReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }

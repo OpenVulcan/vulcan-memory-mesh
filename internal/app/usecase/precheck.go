@@ -150,8 +150,8 @@ type PreCheckUseCase struct {
 	piiScrubber PIIScrubber
 }
 
-// NewPreCheckUseCase creates a PreCheckUseCase instance.
-// NewPreCheckUseCase 用于创建 PreCheckUseCase 实例。
+// NewPreCheckUseCase wires recall, intent, review, and context assembly dependencies while normalizing pre-check limits.
+// NewPreCheckUseCase 用于装配召回、意图、评审和上下文组装依赖，并规范化 pre-check 限制项。
 func NewPreCheckUseCase(memories PreCheckMemorySearcher, store PreCheckStore, intent PreCheckIntentExtractor, reviewer PreCheckMemoryReviewer, assembler PreCheckContextAssembler, cfg PreCheckConfig, logger *logx.Logger) *PreCheckUseCase {
 	if logger == nil {
 		logger = logx.Default()

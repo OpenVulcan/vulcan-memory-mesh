@@ -110,8 +110,8 @@ type PersonaContext struct {
 	Preferences        []string
 }
 
-// Empty executes the Empty logic.
-// Empty 用于执行 Empty 逻辑。
+// Empty reports whether the persona contributes no project constraints, profile facts, or preferences to context assembly.
+// Empty 用于报告画像是否没有为上下文组装提供项目约束、画像事实或偏好。
 func (p PersonaContext) Empty() bool {
 	return len(p.ProjectConstraints) == 0 && len(p.Profile) == 0 && len(p.Preferences) == 0
 }

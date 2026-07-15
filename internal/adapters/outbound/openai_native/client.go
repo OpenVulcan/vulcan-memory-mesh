@@ -17,8 +17,8 @@ type Client struct {
 	sdkClient *openai.Client
 }
 
-// NewClient creates a Client instance.
-// NewClient 用于创建 Client 实例。
+// NewClient configures the official SDK with trimmed endpoint credentials and a bounded default HTTP timeout.
+// NewClient 用于使用清理后的端点凭据配置官方 SDK，并提供有界的默认 HTTP 超时。
 func NewClient(endpoint, apiKey, organization, project string, httpClient *http.Client) *Client {
 	if httpClient == nil {
 		httpClient = &http.Client{Timeout: 20 * time.Second}

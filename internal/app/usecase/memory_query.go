@@ -281,8 +281,8 @@ type directMemoryWriteApplier interface {
 	ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error)
 }
 
-// NewMemoryUseCase creates a MemoryUseCase instance.
-// NewMemoryUseCase 用于创建 MemoryUseCase 实例。
+// NewMemoryUseCase wires profile resolution, relational memory, embedding, and vector stores with conservative search defaults.
+// NewMemoryUseCase 用于装配画像解析、关系记忆、向量生成和向量存储，并设置保守的检索默认值。
 func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemoryStore, embedding appports.EmbeddingClient, vector appports.VectorStore, logger *logx.Logger) *MemoryUseCase {
 	if logger == nil {
 		logger = logx.Default()

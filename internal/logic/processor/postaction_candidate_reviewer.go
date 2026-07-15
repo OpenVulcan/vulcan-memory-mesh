@@ -22,8 +22,8 @@ type PostActionCandidateReviewer struct {
 	model   string
 }
 
-// NewPostActionCandidateReviewer creates a PostActionCandidateReviewer instance.
-// NewPostActionCandidateReviewer 用于创建 PostActionCandidateReviewer 实例。
+// NewPostActionCandidateReviewer binds the unified post-action candidate review prompt and model to the LLM port.
+// NewPostActionCandidateReviewer 用于把统一 post-action 候选评审提示词与模型绑定到 LLM 端口。
 func NewPostActionCandidateReviewer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *PostActionCandidateReviewer {
 	return &PostActionCandidateReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }

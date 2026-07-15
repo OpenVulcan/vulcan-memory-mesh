@@ -82,20 +82,20 @@ type ValidationErrors struct {
 	Items []string
 }
 
-// Add executes the Add logic.
-// Add 用于执行 Add 逻辑。
+// Add formats and appends one prompt-layout validation failure.
+// Add 用于格式化并追加一项提示词布局校验失败。
 func (e *ValidationErrors) Add(format string, args ...any) {
 	e.Items = append(e.Items, fmt.Sprintf(format, args...))
 }
 
-// HasAny reports whether the condition is true.
-// HasAny 用于返回条件是否成立。
+// HasAny reports whether startup validation collected at least one failure.
+// HasAny 用于报告启动校验是否已收集至少一项失败。
 func (e *ValidationErrors) HasAny() bool {
 	return len(e.Items) > 0
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders all collected validation failures as one bullet-list error message.
+// Error 用于把所有已收集的校验失败渲染为一条项目列表错误消息。
 func (e *ValidationErrors) Error() string {
 	if len(e.Items) == 0 {
 		return ""
@@ -143,8 +143,8 @@ func ResolvePromptLayout(executablePath, cwd, configArg string) (PromptLayout, e
 	}, nil
 }
 
-// ConfigPaths executes the ConfigPaths logic.
-// ConfigPaths 用于执行 ConfigPaths 逻辑。
+// ConfigPaths returns the unique base, packaged, and user override config layers in merge order.
+// ConfigPaths 用于按合并顺序返回去重后的基础、打包和用户覆盖配置层。
 func (l PromptLayout) ConfigPaths() []string {
 	paths := make([]string, 0, 3)
 	addPath := func(path string) {
@@ -165,8 +165,8 @@ func (l PromptLayout) ConfigPaths() []string {
 	return paths
 }
 
-// resolveSystemDir resolves the target value.
-// resolveSystemDir 用于解析目标值。
+// resolveSystemDir locates a valid packaged or go-run configs root from the executable path and working directory.
+// resolveSystemDir 用于根据可执行文件路径和工作目录定位有效的打包或 go-run configs 根目录。
 func resolveSystemDir(executablePath, cwd string) (string, error) {
 	// Prefer the packaged ../configs layout next to the executable.
 	// 优先命中位于可执行文件旁边的 ../configs 打包结构。
@@ -207,8 +207,8 @@ func resolveSystemDir(executablePath, cwd string) (string, error) {
 	return "", fmt.Errorf("cannot locate system config dir from executable=%q cwd=%q", executablePath, cwd)
 }
 
-// resolveUserDir resolves the target value.
-// resolveUserDir 用于解析目标值。
+// resolveUserDir interprets the optional override as a config root or YAML file and otherwise falls back to the user VMM directory.
+// resolveUserDir 用于把可选覆盖参数解释为配置根目录或 YAML 文件，否则回退到用户 VMM 目录。
 func resolveUserDir(cwd, configArg string) (string, string, error) {
 	// Default to ~/.vmm when the caller does not provide an explicit override path.
 	// 当调用方未提供显式覆盖路径时，默认使用 ~/.vmm。
@@ -250,8 +250,8 @@ func resolveUserDir(cwd, configArg string) (string, string, error) {
 	}
 }
 
-// defaultUserDir executes the defaultUserDir logic.
-// defaultUserDir 用于执行 defaultUserDir 逻辑。
+// defaultUserDir returns the current user's ~/.vmm override root and home directory.
+// defaultUserDir 用于返回当前用户的 ~/.vmm 覆盖根目录及主目录。
 func defaultUserDir() (string, string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -260,14 +260,14 @@ func defaultUserDir() (string, string, error) {
 	return filepath.Join(home, ".vmm"), "", nil
 }
 
-// userDirWithConfig executes the userDirWithConfig logic.
-// userDirWithConfig 用于执行 userDirWithConfig 逻辑。
+// userDirWithConfig returns the directory that owns an explicitly selected config file.
+// userDirWithConfig 用于返回显式配置文件所属的目录。
 func userDirWithConfig(configPath string) string {
 	return filepath.Dir(filepath.Clean(configPath))
 }
 
-// normalizePath executes the normalizePath logic.
-// normalizePath 用于执行 normalizePath 逻辑。
+// normalizePath expands home-relative input and resolves relative paths against the supplied working directory.
+// normalizePath 用于展开主目录相对路径，并基于给定工作目录解析相对路径。
 func normalizePath(cwd, raw string) (string, error) {
 	path, err := expandHome(raw)
 	if err != nil {
@@ -286,8 +286,8 @@ func normalizePath(cwd, raw string) (string, error) {
 	return filepath.Abs(filepath.Join(base, path))
 }
 
-// expandHome executes the expandHome logic.
-// expandHome 用于执行 expandHome 逻辑。
+// expandHome replaces a leading tilde with the current user's home directory while leaving other paths unchanged.
+// expandHome 用于把开头的波浪号替换为当前用户主目录，并保持其他路径不变。
 func expandHome(path string) (string, error) {
 	if path == "" || path[0] != '~' {
 		return path, nil
@@ -325,8 +325,8 @@ func validateExplicitMainConfigFilePath(path string) error {
 	return fmt.Errorf("explicit -config file %q must end with .yaml or .yml", path)
 }
 
-// looksLikeGoRunExecutable executes the looksLikeGoRunExecutable logic.
-// looksLikeGoRunExecutable 用于执行 looksLikeGoRunExecutable 逻辑。
+// looksLikeGoRunExecutable detects temporary go-build executable paths used by go run.
+// looksLikeGoRunExecutable 用于识别 go run 使用的临时 go-build 可执行文件路径。
 func looksLikeGoRunExecutable(path string) bool {
 	slashPath := strings.ToLower(filepath.ToSlash(path))
 	return strings.Contains(slashPath, "/go-build")
@@ -346,8 +346,8 @@ func resolveBundledConfigPath(systemDir, name string) string {
 	return candidate
 }
 
-// resolveOverrideConfigPath resolves the target value.
-// resolveOverrideConfigPath 用于解析目标值。
+// resolveOverrideConfigPath prefers an explicit YAML file and otherwise selects an existing config.yaml under the user root.
+// resolveOverrideConfigPath 用于优先选择显式 YAML 文件，否则选择用户根目录下已存在的 config.yaml。
 func resolveOverrideConfigPath(userDir, explicitConfigPath string) string {
 	// Prefer the explicit config file when the caller passed one.
 	// 当调用方显式传入配置文件时优先使用该文件。
@@ -375,8 +375,8 @@ func hasSystemConfigBase(systemDir string) bool {
 	return err == nil && !info.IsDir()
 }
 
-// missingScenes executes the missingScenes logic.
-// missingScenes 用于执行 missingScenes 逻辑。
+// missingScenes lists required prompt scene files that are absent from one bundle directory.
+// missingScenes 用于列出一个提示词包目录中缺失的必需场景文件。
 func missingScenes(dir string) []string {
 	missing := make([]string, 0, len(RequiredScenes))
 	for _, scene := range RequiredScenes {
@@ -389,8 +389,8 @@ func missingScenes(dir string) []string {
 	return missing
 }
 
-// dirExists executes the dirExists logic.
-// dirExists 用于执行 dirExists 逻辑。
+// dirExists reports whether a path exists and is a directory.
+// dirExists 用于报告路径是否存在且为目录。
 func dirExists(path string) bool {
 	info, err := os.Stat(path)
 	return err == nil && info.IsDir()

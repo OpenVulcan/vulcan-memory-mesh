@@ -44,8 +44,8 @@ type ChatCompactUseCase struct {
 	store ChatCompactStore
 }
 
-// NewChatCompactUseCase creates a ChatCompactUseCase instance.
-// NewChatCompactUseCase 用于创建 ChatCompactUseCase 实例。
+// NewChatCompactUseCase binds compact-boundary persistence to the chat compaction workflow.
+// NewChatCompactUseCase 用于把 compact 边界持久化能力绑定到对话压缩流程。
 func NewChatCompactUseCase(store ChatCompactStore) *ChatCompactUseCase {
 	return &ChatCompactUseCase{store: store}
 }

@@ -21,8 +21,8 @@ type IntentExtractor struct {
 	maxKws  int
 }
 
-// NewIntentExtractor creates a IntentExtractor instance.
-// NewIntentExtractor 用于创建 IntentExtractor 实例。
+// NewIntentExtractor binds the pre-check prompt source and model while enforcing a positive keyword limit.
+// NewIntentExtractor 用于绑定 pre-check 提示词来源与模型，并保证关键词数量限制为正数。
 func NewIntentExtractor(llm logicports.LLMClient, prompts logicports.PromptSource, model string, maxKeywords int) *IntentExtractor {
 	if maxKeywords <= 0 {
 		maxKeywords = 5

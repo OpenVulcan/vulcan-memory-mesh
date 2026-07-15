@@ -34,8 +34,8 @@ var (
 	htmlAnyTagPattern     = regexp.MustCompile(`(?is)<[^>]+>`)
 )
 
-// NormalizeWhitespace executes the NormalizeWhitespace logic.
-// NormalizeWhitespace 用于执行 NormalizeWhitespace 逻辑。
+// NormalizeWhitespace collapses all Unicode whitespace runs into single ASCII spaces for comparison and indexing.
+// NormalizeWhitespace 用于把所有 Unicode 空白段压缩为单个 ASCII 空格，供比较与索引使用。
 func NormalizeWhitespace(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -143,8 +143,8 @@ func CleanConversationText(s string) string {
 	return StripThoughtTags(out)
 }
 
-// Tokenize executes the Tokenize logic.
-// Tokenize 用于执行 Tokenize 逻辑。
+// Tokenize lowercases and splits text into non-empty whitespace-delimited search tokens.
+// Tokenize 用于把文本转为小写并拆分成非空的空白分隔搜索 token。
 func Tokenize(s string) []string {
 	out := make([]string, 0)
 	for _, token := range tokenPattern.FindAllString(strings.ToLower(NormalizeWhitespace(s)), -1) {

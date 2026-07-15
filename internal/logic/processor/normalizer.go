@@ -14,12 +14,12 @@ import (
 // MessageNormalizer 用于把原始对话快照转换成可持久化的干净用户-助手轮次。
 type MessageNormalizer struct{}
 
-// NewMessageNormalizer creates a MessageNormalizer instance.
-// NewMessageNormalizer 用于创建 MessageNormalizer 实例。
+// NewMessageNormalizer returns the stateless adapter that groups already-sanitized messages into standard turns.
+// NewMessageNormalizer 用于返回无状态适配器，把已经清洗的消息归组为标准轮次。
 func NewMessageNormalizer() *MessageNormalizer { return &MessageNormalizer{} }
 
-// Normalize executes the Normalize logic.
-// Normalize 用于执行 Normalize 逻辑。
+// Normalize trims sanitized message content and pairs user/assistant messages without performing inbound text cleaning.
+// Normalize 用于清理已净化消息的首尾空白并配对用户与助手消息，不承担入站文本清洗。
 func (n *MessageNormalizer) Normalize(messages []logicdomain.RawMessage) []logicdomain.NormalizedTurn {
 	type cleaned struct{ role, text string }
 

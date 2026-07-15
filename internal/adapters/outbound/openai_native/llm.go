@@ -25,8 +25,8 @@ type LLMClient struct {
 	modelParams map[string]map[string]any
 }
 
-// NewLLMClient creates a LLMClient instance.
-// NewLLMClient 用于创建 LLMClient 实例。
+// NewLLMClient binds one chat model and cloned provider hints to the native OpenAI generation adapter.
+// NewLLMClient 用于把单个对话模型及克隆后的 provider hint 绑定到原生 OpenAI 生成适配器。
 func NewLLMClient(endpoint, apiKey, model, organization, project string, params map[string]any, modelParams map[string]map[string]any) *LLMClient {
 	return &LLMClient{
 		client:      NewClient(endpoint, apiKey, organization, project, nil),
@@ -36,8 +36,8 @@ func NewLLMClient(endpoint, apiKey, model, organization, project string, params 
 	}
 }
 
-// Generate executes the Generate logic.
-// Generate 用于执行 Generate 逻辑。
+// Generate merges configured and request-level hints, calls Chat Completions, and maps usage into the application port response.
+// Generate 用于合并配置级与请求级 hint、调用 Chat Completions，并把用量映射为应用端口响应。
 func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
 	// Resolve the target model and translate the internal request into SDK params.
 	// 解析目标模型，并将内部请求翻译成 SDK 参数。
@@ -265,8 +265,8 @@ func cloneNestedHintMap(input map[string]map[string]any) map[string]map[string]a
 	return cloned
 }
 
-// requestOptionsFromContext executes the requestOptionsFromContext logic.
-// requestOptionsFromContext 用于执行 requestOptionsFromContext 逻辑。
+// requestOptionsFromContext forwards the current trace ID through both provider correlation headers.
+// requestOptionsFromContext 用于通过两个 provider 关联请求头透传当前 trace ID。
 func requestOptionsFromContext(ctx context.Context) []option.RequestOption {
 	// Forward trace identifiers to the provider for cross-system request correlation.
 	// 将 trace 标识透传给模型提供方，便于跨系统请求关联。
@@ -280,8 +280,8 @@ func requestOptionsFromContext(ctx context.Context) []option.RequestOption {
 	}
 }
 
-// floatHint executes the floatHint logic.
-// floatHint 用于执行 floatHint 逻辑。
+// floatHint converts supported integer and floating-point hint values into float64 without accepting strings.
+// floatHint 用于把受支持的整数与浮点 hint 值转换为 float64，且不接受字符串。
 func floatHint(value any) (float64, bool) {
 	switch tv := value.(type) {
 	case float64:
@@ -299,8 +299,8 @@ func floatHint(value any) (float64, bool) {
 	}
 }
 
-// intHint executes the intHint logic.
-// intHint 用于执行 intHint 逻辑。
+// intHint converts supported numeric hint values into the SDK's int64 representation.
+// intHint 用于把受支持的数值 hint 转换为 SDK 使用的 int64 表示。
 func intHint(value any) (int64, bool) {
 	switch tv := value.(type) {
 	case int:
@@ -318,15 +318,15 @@ func intHint(value any) (int64, bool) {
 	}
 }
 
-// boolHint executes the boolHint logic.
-// boolHint 用于执行 boolHint 逻辑。
+// boolHint accepts only native boolean hint values so configuration type errors remain visible.
+// boolHint 仅接受原生布尔 hint 值，使配置类型错误保持可见。
 func boolHint(value any) (bool, bool) {
 	tv, ok := value.(bool)
 	return tv, ok
 }
 
-// stringHint executes the stringHint logic.
-// stringHint 用于执行 stringHint 逻辑。
+// stringHint returns a trimmed non-empty string hint and rejects other value types.
+// stringHint 用于返回清理后的非空字符串 hint，并拒绝其他值类型。
 func stringHint(value any) (string, bool) {
 	tv, ok := value.(string)
 	if !ok {
@@ -339,8 +339,8 @@ func stringHint(value any) (string, bool) {
 	return tv, true
 }
 
-// stopHint executes the stopHint logic.
-// stopHint 用于执行 stopHint 逻辑。
+// stopHint normalizes one string or a string list into the SDK stop-sequence union while dropping blank entries.
+// stopHint 用于把单个字符串或字符串列表规范为 SDK 停止序列联合类型，并丢弃空项。
 func stopHint(value any) (openai.ChatCompletionNewParamsStopUnion, bool) {
 	switch tv := value.(type) {
 	case string:

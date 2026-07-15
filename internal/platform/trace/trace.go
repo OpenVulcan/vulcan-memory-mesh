@@ -21,8 +21,8 @@ func WithTraceID(ctx context.Context, traceID string) context.Context {
 	return context.WithValue(ctx, traceIDKey, traceID)
 }
 
-// IDFromContext executes the IDFromContext logic.
-// IDFromContext 用于执行 IDFromContext 逻辑。
+// IDFromContext returns the trace identifier stored on a context, or an empty string when none is present.
+// IDFromContext 用于返回上下文中保存的追踪标识；不存在时返回空字符串。
 func IDFromContext(ctx context.Context) string {
 	if ctx == nil {
 		return ""

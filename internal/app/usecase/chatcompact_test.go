@@ -86,8 +86,8 @@ type stubChatCompactStore struct {
 	err             error
 }
 
-// MarkSessionCompacted executes the stubbed compact persistence logic.
-// MarkSessionCompacted 用于执行桩化的 compact 持久化逻辑。
+// MarkSessionCompacted records the requested session and returns the configured compact-boundary outcome.
+// MarkSessionCompacted 用于记录请求的 session，并返回预设的 compact 边界结果。
 func (s *stubChatCompactStore) MarkSessionCompacted(_ context.Context, session logicdomain.SessionRef, _ time.Time) (uint64, bool, error) {
 	s.session = session
 	return s.compactedTurnID, s.updated, s.err

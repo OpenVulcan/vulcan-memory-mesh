@@ -2411,8 +2411,8 @@ type stubPreCheckMemories struct {
 	err         error
 }
 
-// Search executes the stubbed Search logic.
-// Search 用于执行桩化的 Search 逻辑。
+// Search records the memory query command and returns the configured recall outcome.
+// Search 用于记录记忆查询命令并返回预设的召回结果。
 func (s *stubPreCheckMemories) Search(_ context.Context, cmd MemoryQueryCommand) (MemoryQueryResult, error) {
 	s.searchCalls++
 	s.cmd = cmd
@@ -2456,14 +2456,14 @@ type stubPreCheckStore struct {
 	adoptionCalls  int
 }
 
-// LoadRecentSessionTurns executes the stubbed LoadRecentSessionTurns logic.
-// LoadRecentSessionTurns 用于执行桩化的 LoadRecentSessionTurns 逻辑。
+// LoadRecentSessionTurns returns a copy of the configured recent-turn window and error.
+// LoadRecentSessionTurns 用于返回预设最近轮次窗口及错误的副本。
 func (s *stubPreCheckStore) LoadRecentSessionTurns(context.Context, logicdomain.SessionRef, int) ([]logicdomain.SessionTurnRecord, error) {
 	return append([]logicdomain.SessionTurnRecord(nil), s.recentTurns...), s.recentTurnsErr
 }
 
-// ApplyMemoryAdoption executes the stubbed ApplyMemoryAdoption logic.
-// ApplyMemoryAdoption 用于执行桩化的 ApplyMemoryAdoption 逻辑。
+// ApplyMemoryAdoption captures lifecycle write-back arguments and returns configured adopted records.
+// ApplyMemoryAdoption 用于捕获生命周期回写参数并返回预设的已采纳记录。
 func (s *stubPreCheckStore) ApplyMemoryAdoption(_ context.Context, session logicdomain.SessionRef, memoryIDs []uint64, adoptedAt time.Time) ([]logicdomain.MemoryRecord, error) {
 	s.adoptionCalls++
 	s.adoptedSession = session
@@ -2479,8 +2479,8 @@ type stubPreCheckLifecycleVectorStore struct {
 	err     error
 }
 
-// Upsert executes the stubbed vector lifecycle synchronization.
-// Upsert 用于执行桩化的向量生命周期同步。
+// Upsert records successful lifecycle vector writes and returns configured failures before mutation.
+// Upsert 用于记录成功的生命周期向量写入，并在预设失败时于变更前返回。
 func (s *stubPreCheckLifecycleVectorStore) Upsert(_ context.Context, record logicdomain.MemoryRecord) error {
 	if s.err != nil {
 		return s.err
@@ -2499,8 +2499,8 @@ type stubPreCheckIntentExtractor struct {
 	model   string
 }
 
-// Extract executes the stubbed Extract logic.
-// Extract 用于执行桩化的 Extract 逻辑。
+// Extract captures recent-turn inputs and returns the configured first-stage intent outcome.
+// Extract 用于捕获最近轮次输入并返回预设的第一层意图结果。
 func (s *stubPreCheckIntentExtractor) Extract(_ context.Context, turns []logicdomain.PreCheckTurnContext, current string) (logicdomain.IntentResult, error) {
 	s.turns = append([]logicdomain.PreCheckTurnContext(nil), turns...)
 	s.current = current
@@ -2525,8 +2525,8 @@ type stubPreCheckReviewer struct {
 	model  string
 }
 
-// Review executes the stubbed Review logic.
-// Review 用于执行桩化的 Review 逻辑。
+// Review captures the reviewer input and returns the configured second-stage selection outcome.
+// Review 用于捕获评审输入并返回预设的第二层筛选结果。
 func (s *stubPreCheckReviewer) Review(_ context.Context, input logicdomain.PreCheckMemoryReviewInput) (logicdomain.PreCheckMemoryReviewResult, error) {
 	s.input = input
 	return s.result, s.err
@@ -2552,8 +2552,8 @@ type stubPreCheckAssembler struct {
 	err     error
 }
 
-// Assemble executes the stubbed Assemble logic.
-// Assemble 用于执行桩化的 Assemble 逻辑。
+// Assemble records persona and memory inputs before returning configured context text and item copies.
+// Assemble 用于记录画像与记忆输入，并返回预设上下文文本及条目副本。
 func (s *stubPreCheckAssembler) Assemble(_ context.Context, persona logicdomain.PersonaContext, hits []logicdomain.MemoryHit) (string, []logicdomain.ContextItem, error) {
 	s.called = true
 	s.persona = persona

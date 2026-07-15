@@ -74,8 +74,8 @@ const (
 // Duration 用于包装 time.Duration，让配置文件既能接受时长字符串，也能接受毫秒数。
 type Duration struct{ time.Duration }
 
-// UnmarshalJSON executes the UnmarshalJSON logic.
-// UnmarshalJSON 用于执行 UnmarshalJSON 逻辑。
+// UnmarshalJSON accepts either a Go duration string or an integer millisecond value from layered configuration.
+// UnmarshalJSON 用于从分层配置中解析 Go 时长字符串或整数毫秒值。
 func (d *Duration) UnmarshalJSON(data []byte) error {
 	if len(data) == 0 {
 		return nil
@@ -100,8 +100,8 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	return nil
 }
 
-// MarshalJSON executes the MarshalJSON logic.
-// MarshalJSON 用于执行 MarshalJSON 逻辑。
+// MarshalJSON emits the wrapped duration as a stable Go duration string.
+// MarshalJSON 用于把包装后的时长输出为稳定的 Go 时长字符串。
 func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()) }
 
 // Config is the root runtime configuration loaded before the local application starts.

@@ -13,12 +13,12 @@ import (
 // Generator 用于为 trace、记忆记录和其他本地运行时实体生成轻量前缀 ID。
 type Generator struct{}
 
-// NewGenerator creates a Generator instance.
-// NewGenerator 用于创建 Generator 实例。
+// NewGenerator returns the stateless identifier generator used by inbound request and persistence flows.
+// NewGenerator 用于返回入站请求与持久化链路使用的无状态标识生成器。
 func NewGenerator() Generator { return Generator{} }
 
-// NewID creates a ID instance.
-// NewID 用于创建 ID 实例。
+// NewID combines the caller's prefix, current UTC milliseconds, and cryptographic randomness into a sortable identifier.
+// NewID 用于把调用方前缀、当前 UTC 毫秒时间与密码学随机数组合成可排序标识。
 func (Generator) NewID(prefix string) string {
 	if strings.TrimSpace(prefix) == "" {
 		prefix = "id"

@@ -17,8 +17,8 @@ type PromptManager struct {
 	selectedFolder string
 }
 
-// NewPromptManager creates a PromptManager instance from the selected prompt-bundle token.
-// NewPromptManager 用于基于选中的提示词包标识创建 PromptManager 实例。
+// NewPromptManager resolves and validates the selected prompt bundle before exposing scene reads to processors.
+// NewPromptManager 用于解析并校验选定的提示词包，再向处理器开放场景读取能力。
 func NewPromptManager(systemDir, userDir, promptLanguage string) (*PromptManager, error) {
 	// Resolve the runtime-selected prompt bundle and verify the active directory is complete before the manager becomes usable.
 	// 解析运行时选中的提示词包，并在管理器可用前校验当前生效目录完整无缺。
@@ -36,8 +36,8 @@ func NewPromptManager(systemDir, userDir, promptLanguage string) (*PromptManager
 	}, nil
 }
 
-// GetPrompt executes the GetPrompt logic.
-// GetPrompt 用于执行 GetPrompt 逻辑。
+// GetPrompt reads one scene from the selected user-or-system prompt bundle without applying legacy language switching.
+// GetPrompt 用于从选定的用户层或系统层提示词包读取场景，不再执行旧式语言切换。
 func (m *PromptManager) GetPrompt(scene, _ string) (string, error) {
 	// Normalize the requested scene name into an on-disk markdown filename.
 	// 将请求的场景名归一成磁盘上的 markdown 文件名。

@@ -46,8 +46,8 @@ type preCheckMemoryReviewCandidateInput struct {
 	MatchedContextScoreDelta    float64  `json:"matched_context_score_delta,omitempty"`
 }
 
-// NewPreCheckMemoryReviewer creates a PreCheckMemoryReviewer instance.
-// NewPreCheckMemoryReviewer 用于创建 PreCheckMemoryReviewer 实例。
+// NewPreCheckMemoryReviewer binds the pre-check memory selection prompt and model to the LLM port.
+// NewPreCheckMemoryReviewer 用于把 pre-check 记忆筛选提示词与模型绑定到 LLM 端口。
 func NewPreCheckMemoryReviewer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *PreCheckMemoryReviewer {
 	return &PreCheckMemoryReviewer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }

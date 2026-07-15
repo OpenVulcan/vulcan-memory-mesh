@@ -28,8 +28,8 @@ type ValidationError struct {
 	Message string
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders the validation field and its failure message for transport-level mapping.
+// Error 用于渲染校验字段及失败消息，供传输层映射使用。
 func (e ValidationError) Error() string {
 	if e.Field == "" {
 		return e.Message
@@ -37,12 +37,12 @@ func (e ValidationError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Field, e.Message)
 }
 
-// Unwrap executes the Unwrap logic.
-// Unwrap 用于执行 Unwrap 逻辑。
+// Unwrap exposes the validation sentinel so callers can classify the typed error with errors.Is.
+// Unwrap 用于暴露校验哨兵错误，使调用方可通过 errors.Is 分类该类型错误。
 func (e ValidationError) Unwrap() error { return ErrValidation }
 
-// IsValidationError reports whether the condition is true.
-// IsValidationError 用于返回条件是否成立。
+// IsValidationError reports whether an error belongs to the request-validation category.
+// IsValidationError 用于报告错误是否属于请求校验类别。
 func IsValidationError(err error) bool { return errors.Is(err, ErrValidation) }
 
 // NotFoundError marks one hierarchy or user lookup failure that should be surfaced as a stable not-found response.
@@ -52,8 +52,8 @@ type NotFoundError struct {
 	Message  string
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders the missing resource name and lookup key for diagnostics.
+// Error 用于渲染缺失资源名称及查询键，便于诊断。
 func (e NotFoundError) Error() string {
 	if e.Resource == "" {
 		return e.Message
@@ -64,12 +64,12 @@ func (e NotFoundError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Resource, e.Message)
 }
 
-// Unwrap executes the Unwrap logic.
-// Unwrap 用于执行 Unwrap 逻辑。
+// Unwrap exposes the not-found sentinel for errors.Is classification.
+// Unwrap 用于暴露未找到哨兵错误，供 errors.Is 分类。
 func (e NotFoundError) Unwrap() error { return ErrNotFound }
 
-// IsNotFoundError reports whether the condition is true.
-// IsNotFoundError 用于返回条件是否成立。
+// IsNotFoundError reports whether an error belongs to the missing-resource category.
+// IsNotFoundError 用于报告错误是否属于资源未找到类别。
 func IsNotFoundError(err error) bool { return errors.Is(err, ErrNotFound) }
 
 // ConflictError marks one duplicate or scope-mismatch failure that should surface as a conflict response.
@@ -79,8 +79,8 @@ type ConflictError struct {
 	Message  string
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders the conflicting resource and reason without losing the domain category.
+// Error 用于渲染发生冲突的资源及原因，同时保留领域错误类别。
 func (e ConflictError) Error() string {
 	if e.Resource == "" {
 		return e.Message
@@ -91,12 +91,12 @@ func (e ConflictError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Resource, e.Message)
 }
 
-// Unwrap executes the Unwrap logic.
-// Unwrap 用于执行 Unwrap 逻辑。
+// Unwrap exposes the conflict sentinel for errors.Is classification.
+// Unwrap 用于暴露冲突哨兵错误，供 errors.Is 分类。
 func (e ConflictError) Unwrap() error { return ErrConflict }
 
-// IsConflictError reports whether the condition is true.
-// IsConflictError 用于返回条件是否成立。
+// IsConflictError reports whether an error represents a domain resource conflict.
+// IsConflictError 用于报告错误是否表示领域资源冲突。
 func IsConflictError(err error) bool { return errors.Is(err, ErrConflict) }
 
 // ProtectedResourceError marks one built-in resource invariant that forbids destructive admin operations even when the caller supplied otherwise valid parameters.
@@ -106,8 +106,8 @@ type ProtectedResourceError struct {
 	Message  string
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders why a protected resource cannot be mutated by the requested operation.
+// Error 用于渲染受保护资源无法执行请求变更的原因。
 func (e ProtectedResourceError) Error() string {
 	if e.Resource == "" {
 		return e.Message
@@ -118,12 +118,12 @@ func (e ProtectedResourceError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Resource, e.Message)
 }
 
-// Unwrap executes the Unwrap logic.
-// Unwrap 用于执行 Unwrap 逻辑。
+// Unwrap exposes the protected-resource sentinel for errors.Is classification.
+// Unwrap 用于暴露受保护资源哨兵错误，供 errors.Is 分类。
 func (e ProtectedResourceError) Unwrap() error { return ErrProtectedResource }
 
-// IsProtectedResourceError reports whether the condition is true.
-// IsProtectedResourceError 用于返回条件是否成立。
+// IsProtectedResourceError reports whether a requested mutation targets a protected resource.
+// IsProtectedResourceError 用于报告请求的变更是否作用于受保护资源。
 func IsProtectedResourceError(err error) bool { return errors.Is(err, ErrProtectedResource) }
 
 // ConfirmationRequiredError marks one destructive or hierarchy-creating action that requires an explicit second confirmation.
@@ -134,8 +134,8 @@ type ConfirmationRequiredError struct {
 	Code     string
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders the destructive operation and confirmation token required from the caller.
+// Error 用于渲染破坏性操作及调用方必须提供的确认令牌。
 func (e ConfirmationRequiredError) Error() string {
 	if e.Resource == "" {
 		return e.Message
@@ -146,12 +146,12 @@ func (e ConfirmationRequiredError) Error() string {
 	return fmt.Sprintf("%s: %s", e.Resource, e.Message)
 }
 
-// Unwrap executes the Unwrap logic.
-// Unwrap 用于执行 Unwrap 逻辑。
+// Unwrap exposes the confirmation-required sentinel for errors.Is classification.
+// Unwrap 用于暴露需要确认的哨兵错误，供 errors.Is 分类。
 func (e ConfirmationRequiredError) Unwrap() error { return ErrConfirm }
 
-// IsConfirmationRequired reports whether the condition is true.
-// IsConfirmationRequired 用于返回条件是否成立。
+// IsConfirmationRequired reports whether a destructive operation still requires caller confirmation.
+// IsConfirmationRequired 用于报告破坏性操作是否仍需调用方确认。
 func IsConfirmationRequired(err error) bool { return errors.Is(err, ErrConfirm) }
 
 // OutcomeUncertainError marks one persistence step whose upstream storage engine reported an error after the commit outcome became ambiguous.
@@ -168,8 +168,8 @@ type OutcomeUncertainError struct {
 	FreshVectorReference bool
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders an operation whose final persistence outcome cannot be proven after a partial failure.
+// Error 用于渲染发生局部失败后无法确认最终持久化结果的操作。
 func (e OutcomeUncertainError) Error() string {
 	if strings.TrimSpace(e.Operation) == "" {
 		return "storage outcome uncertain"
@@ -180,12 +180,12 @@ func (e OutcomeUncertainError) Error() string {
 	return fmt.Sprintf("%s: storage outcome uncertain: %s", e.Operation, strings.TrimSpace(e.Message))
 }
 
-// Unwrap executes the Unwrap logic.
-// Unwrap 用于执行 Unwrap 逻辑。
+// Unwrap exposes the outcome-uncertain sentinel for errors.Is classification.
+// Unwrap 用于暴露结果不确定哨兵错误，供 errors.Is 分类。
 func (e OutcomeUncertainError) Unwrap() error { return ErrOutcomeUncertain }
 
-// IsOutcomeUncertain reports whether the condition is true.
-// IsOutcomeUncertain 用于返回条件是否成立。
+// IsOutcomeUncertain reports whether a persistence operation may have partially committed.
+// IsOutcomeUncertain 用于报告持久化操作是否可能已经局部提交。
 func IsOutcomeUncertain(err error) bool { return errors.Is(err, ErrOutcomeUncertain) }
 
 // IsFreshVectorReferenceUncertain reports whether a failed persistence step may already reference freshly written vectors.
@@ -206,8 +206,8 @@ type InvalidLLMOutputError struct {
 	Raw     string
 }
 
-// Error executes the Error logic.
-// Error 用于执行 Error 逻辑。
+// Error renders the model-output validation failure while keeping raw output out of the message.
+// Error 用于渲染模型输出校验失败，同时避免在错误消息中包含原始输出。
 func (e InvalidLLMOutputError) Error() string {
 	if e.Scene == "" {
 		return "invalid llm output: " + e.Message
@@ -215,10 +215,10 @@ func (e InvalidLLMOutputError) Error() string {
 	return fmt.Sprintf("invalid llm output for %s: %s", e.Scene, e.Message)
 }
 
-// Unwrap executes the Unwrap logic.
-// Unwrap 用于执行 Unwrap 逻辑。
+// Unwrap exposes the invalid-model-output sentinel for errors.Is classification.
+// Unwrap 用于暴露无效模型输出哨兵错误，供 errors.Is 分类。
 func (e InvalidLLMOutputError) Unwrap() error { return ErrInvalidLLMOutput }
 
-// IsInvalidLLMOutputError reports whether the condition is true.
-// IsInvalidLLMOutputError 用于返回条件是否成立。
+// IsInvalidLLMOutputError reports whether model output failed a structured contract check.
+// IsInvalidLLMOutputError 用于报告模型输出是否未通过结构化契约校验。
 func IsInvalidLLMOutputError(err error) bool { return errors.Is(err, ErrInvalidLLMOutput) }

@@ -12,8 +12,8 @@ import (
 	"github.com/openvulcan/vmm/internal/config"
 )
 
-// main executes the main logic.
-// main 用于执行 main 逻辑。
+// main runs the local runtime CLI and exits with the status returned by argument parsing or application startup.
+// main 用于运行本地运行时 CLI，并以参数解析或应用启动返回的状态码退出。
 func main() {
 	if code := runMain(os.Args[1:]); code != 0 {
 		os.Exit(code)

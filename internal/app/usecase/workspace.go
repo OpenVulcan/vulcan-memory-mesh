@@ -31,8 +31,8 @@ type WorkspaceUseCase struct {
 	vector appports.VectorStore
 }
 
-// NewWorkspaceUseCase creates a WorkspaceUseCase instance.
-// NewWorkspaceUseCase 用于创建 WorkspaceUseCase 实例。
+// NewWorkspaceUseCase coordinates relational workspace mutations with vector cleanup through the two storage ports.
+// NewWorkspaceUseCase 用于通过两个存储端口协调关系工作区变更与向量清理。
 func NewWorkspaceUseCase(store appports.WorkspaceStore, vector appports.VectorStore) *WorkspaceUseCase {
 	return &WorkspaceUseCase{store: store, vector: vector}
 }

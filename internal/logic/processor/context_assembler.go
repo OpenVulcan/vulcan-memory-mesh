@@ -13,8 +13,8 @@ import (
 // ContextAssembler 用于通过本地确定性渲染器，把画像数据和召回记忆合并成 pre-check 返回的最终上下文载荷。
 type ContextAssembler struct{}
 
-// NewContextAssembler creates a ContextAssembler instance.
-// NewContextAssembler 用于创建 ContextAssembler 实例。
+// NewContextAssembler creates the deterministic local assembler used by the pre-check context path.
+// NewContextAssembler 用于创建 pre-check 上下文链路使用的确定性本地组装器。
 func NewContextAssembler() *ContextAssembler { return &ContextAssembler{} }
 
 // Assemble satisfies the cancellable pre-check assembler contract while this deterministic local implementation performs no blocking work.
@@ -24,8 +24,8 @@ func (a *ContextAssembler) Assemble(_ context.Context, persona logicdomain.Perso
 	return renderContextSummary(items), items, nil
 }
 
-// personaToItems executes the personaToItems logic.
-// personaToItems 用于执行 personaToItems 逻辑。
+// personaToItems converts each persona section into labeled context items while preserving section order.
+// personaToItems 用于把各画像分区转换为带标签的上下文条目，并保持分区顺序。
 func personaToItems(persona logicdomain.PersonaContext) []logicdomain.ContextItem {
 	items := make([]logicdomain.ContextItem, 0, len(persona.ProjectConstraints)+len(persona.Profile)+len(persona.Preferences))
 	for _, text := range persona.ProjectConstraints {
@@ -46,8 +46,8 @@ func personaToItems(persona logicdomain.PersonaContext) []logicdomain.ContextIte
 	return items
 }
 
-// memoryHitsToItems executes the memoryHitsToItems logic.
-// memoryHitsToItems 用于执行 memoryHitsToItems 逻辑。
+// memoryHitsToItems maps recalled memories into context items with stable memory and source-turn identifiers.
+// memoryHitsToItems 用于把召回记忆映射为带稳定记忆 ID 与来源轮次 ID 的上下文条目。
 func memoryHitsToItems(hits []logicdomain.MemoryHit) []logicdomain.ContextItem {
 	items := make([]logicdomain.ContextItem, 0, len(hits))
 	for _, hit := range hits {

@@ -85,8 +85,8 @@ type ProfileUseCase struct {
 	gates    map[string]*profileInstructionGate
 }
 
-// NewProfileUseCase creates a ProfileUseCase instance.
-// NewProfileUseCase 用于创建 ProfileUseCase 实例。
+// NewProfileUseCase wires profile persistence and manual-instruction review with isolated in-flight coordination state.
+// NewProfileUseCase 用于装配画像持久化与人工指令评审，并初始化隔离的进行中协调状态。
 func NewProfileUseCase(store appports.ProfileStore, reviewer ManualProfileInstructionReviewer, logger *logx.Logger) *ProfileUseCase {
 	if logger == nil {
 		logger = logx.Default()

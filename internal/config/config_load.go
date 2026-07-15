@@ -447,8 +447,8 @@ func parseSectionFields(sectionBody []byte) (map[string]json.RawMessage, error) 
 	return fields, nil
 }
 
-// normalizeConfigPaths executes the normalizeConfigPaths logic.
-// normalizeConfigPaths 用于执行 normalizeConfigPaths 逻辑。
+// normalizeConfigPaths trims, cleans, and de-duplicates layered config paths while preserving their precedence order.
+// normalizeConfigPaths 用于清理并去重分层配置路径，同时保持原有优先级顺序。
 func normalizeConfigPaths(paths []string) []string {
 	normalized := make([]string, 0, len(paths))
 	for _, raw := range paths {
@@ -712,8 +712,8 @@ func loadDotEnv(configPaths []string, referencedEnvKeys map[string]struct{}) err
 	return nil
 }
 
-// dotEnvCandidates executes the dotEnvCandidates logic.
-// dotEnvCandidates 用于执行 dotEnvCandidates 逻辑。
+// dotEnvCandidates returns de-duplicated .env locations beside the config file and above a packaged configs directory.
+// dotEnvCandidates 用于返回配置文件旁及打包 configs 目录上级的去重 .env 候选路径。
 func dotEnvCandidates(configPath string) []string {
 	candidates := make([]string, 0, 2)
 	seen := map[string]struct{}{}
@@ -741,5 +741,5 @@ func dotEnvCandidates(configPath string) []string {
 	return candidates
 }
 
-// float64Ptr executes the float64Ptr logic.
-// float64Ptr 用于执行 float64Ptr 逻辑。
+// float64Ptr allocates a pointer for optional floating-point SDK parameters.
+// float64Ptr 用于为可选浮点 SDK 参数分配指针。

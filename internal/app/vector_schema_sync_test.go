@@ -136,14 +136,14 @@ type stubSchemaVersionStore struct {
 	setErr        error
 }
 
-// GetSchemaComponentVersion executes the stubbed version lookup logic.
-// GetSchemaComponentVersion 用于执行桩化的版本查询逻辑。
+// GetSchemaComponentVersion returns the in-memory version configured by the schema-sync test.
+// GetSchemaComponentVersion 用于返回 schema 协调测试配置的内存版本号。
 func (s *stubSchemaVersionStore) GetSchemaComponentVersion(context.Context, string) (int, error) {
 	return s.version, nil
 }
 
-// SetSchemaComponentVersion executes the stubbed version persistence logic.
-// SetSchemaComponentVersion 用于执行桩化的版本持久化逻辑。
+// SetSchemaComponentVersion records successful version writes and preserves the old value on configured failure.
+// SetSchemaComponentVersion 用于记录成功的版本写入，并在预设失败时保留旧值。
 func (s *stubSchemaVersionStore) SetSchemaComponentVersion(_ context.Context, component string, version int) error {
 	s.setCalls++
 	if s.setErr != nil {
@@ -162,8 +162,8 @@ type stubVectorSchemaWorkspaceStore struct {
 	projectMemories map[uint64][]logicdomain.MemoryRecord
 }
 
-// ListProjects executes the stubbed project listing logic.
-// ListProjects 用于执行桩化的项目列表逻辑。
+// ListProjects returns a copy of the deterministic project rows used by rebuild tests.
+// ListProjects 用于返回重建测试使用的确定性项目行副本。
 func (s *stubVectorSchemaWorkspaceStore) ListProjects(context.Context) ([]logicdomain.ProjectRecord, error) {
 	return append([]logicdomain.ProjectRecord(nil), s.projects...), nil
 }
@@ -174,8 +174,8 @@ func (s *stubVectorSchemaWorkspaceStore) ResolveProjectRef(context.Context, stri
 	return logicdomain.ProjectRecord{}, nil
 }
 
-// ListProjectMemories executes the stubbed per-project memory listing logic.
-// ListProjectMemories 用于执行桩化的按项目记忆列表逻辑。
+// ListProjectMemories returns a copy of the configured memory rows for one project.
+// ListProjectMemories 用于返回指定项目的预设记忆行副本。
 func (s *stubVectorSchemaWorkspaceStore) ListProjectMemories(_ context.Context, projectID uint64) ([]logicdomain.MemoryRecord, error) {
 	rows := s.projectMemories[projectID]
 	return append([]logicdomain.MemoryRecord(nil), rows...), nil

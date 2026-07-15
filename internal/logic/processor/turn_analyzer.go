@@ -20,8 +20,8 @@ type TurnAnalyzer struct {
 	model   string
 }
 
-// NewTurnAnalyzer creates a TurnAnalyzer instance.
-// NewTurnAnalyzer 用于创建 TurnAnalyzer 实例。
+// NewTurnAnalyzer binds the static turn-analysis prompt and configured model to the LLM port.
+// NewTurnAnalyzer 用于把静态轮次分析提示词与配置模型绑定到 LLM 端口。
 func NewTurnAnalyzer(llm logicports.LLMClient, prompts logicports.PromptSource, model string) *TurnAnalyzer {
 	return &TurnAnalyzer{llm: llm, prompts: prompts, model: strings.TrimSpace(model)}
 }
