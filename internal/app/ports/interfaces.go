@@ -15,6 +15,12 @@ type Shutdowner interface {
 	Shutdown(ctx context.Context) error
 }
 
+// HealthChecker verifies whether one runtime dependency is ready to serve application requests.
+// HealthChecker 用于校验某个运行时依赖是否已经准备好承载应用请求。
+type HealthChecker interface {
+	CheckHealth(ctx context.Context) error
+}
+
 // NoiseTurnFilter is the port used by post-action flows to drop noisy normalized turns before relational persistence.
 // NoiseTurnFilter 用于让 post-action 流程在关系持久化前过滤掉噪声标准化轮次。
 type NoiseTurnFilter interface {

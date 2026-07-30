@@ -54,13 +54,19 @@ func runMaintenanceVectorRebuild(ctx context.Context, cfg config.Config, input i
 // acquireVectorRebuildRuntimeGuard binds the configured runtime listen address for the whole maintenance window so vector rebuild can only start after the service stops and no later restart can race with the destructive rewrite.
 // acquireVectorRebuildRuntimeGuard 用于在整个维护窗口期间占用配置里的运行时监听地址，确保向量重建只能在服务停掉后开始，并阻止后续重建过程中服务被重新拉起与破坏性改写并发。
 func acquireVectorRebuildRuntimeGuard(cfg config.Config) (net.Listener, error) {
+	return acquireMaintenanceRuntimeGuard(cfg, "vector rebuild")
+}
+
+// acquireMaintenanceRuntimeGuard binds the configured VMM listener for one maintenance action so the runtime cannot concurrently mutate the same stores.
+// acquireMaintenanceRuntimeGuard 为一次维护动作占用 VMM 监听地址，防止运行时并发修改相同存储。
+func acquireMaintenanceRuntimeGuard(cfg config.Config, action string) (net.Listener, error) {
 	listenAddr := strings.TrimSpace(cfg.GRPC.ListenAddr)
 	if listenAddr == "" {
-		return nil, fmt.Errorf("grpc.listen_addr is required before vector rebuild can verify the runtime is stopped")
+		return nil, fmt.Errorf("grpc.listen_addr is required before %s can verify the runtime is stopped", action)
 	}
 	probe, err := net.Listen("tcp", listenAddr)
 	if err != nil {
-		return nil, fmt.Errorf("vector rebuild requires the runtime service to be stopped first: grpc.listen_addr %q is still occupied or unavailable: %w", listenAddr, err)
+		return nil, fmt.Errorf("%s requires the runtime service to be stopped first: grpc.listen_addr %q is still occupied or unavailable: %w", action, listenAddr, err)
 	}
 	return probe, nil
 }

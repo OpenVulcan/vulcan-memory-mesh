@@ -115,6 +115,7 @@ type Config struct {
 	Storage            StorageConfig         `json:"storage"`
 	SQLite             SQLiteConfig          `json:"sqlite"`
 	LanceDB            LanceDBConfig         `json:"lancedb"`
+	Controller         ControllerConfig      `json:"controller"`
 	Postgres           PostgresConfig        `json:"postgres"`
 	MaintenanceTool    MaintenanceToolConfig `json:"maintenance_tool"`
 	LLM                LLMConfig             `json:"llm"`
@@ -214,6 +215,53 @@ type LanceDBConfig struct {
 	Timeout      Duration `json:"timeout"`
 	TableName    string   `json:"table_name"`
 	VectorColumn string   `json:"vector_column"`
+}
+
+// ControllerConfig holds the shared controller endpoint, process lifecycle, lease, and installation-space settings.
+// ControllerConfig 用于保存共享 controller 端点、进程生命周期、租约与安装级空间配置。
+type ControllerConfig struct {
+	// Endpoint is the loopback gRPC endpoint exposed by vldb-controller.
+	// Endpoint 是 vldb-controller 暴露的 loopback gRPC 端点。
+	Endpoint string `json:"endpoint"`
+	// AutoSpawn allows the VMM process to start a managed controller when the endpoint is unavailable.
+	// AutoSpawn 允许 VMM 在端点不可用时启动 managed controller。
+	AutoSpawn bool `json:"auto_spawn"`
+	// Executable optionally overrides the packaged controller executable path.
+	// Executable 可选覆盖打包后的 controller 可执行文件路径。
+	Executable string `json:"executable"`
+	// ProcessMode selects managed or service controller process behavior.
+	// ProcessMode 选择 managed 或 service controller 进程行为。
+	ProcessMode string `json:"process_mode"`
+	// MinimumUptime is passed to an automatically spawned managed controller.
+	// MinimumUptime 会传递给自动启动的 managed controller。
+	MinimumUptime Duration `json:"minimum_uptime"`
+	// IdleTimeout is passed to an automatically spawned managed controller.
+	// IdleTimeout 会传递给自动启动的 managed controller。
+	IdleTimeout Duration `json:"idle_timeout"`
+	// LeaseTTL controls the VMM client lease registered with the controller.
+	// LeaseTTL 控制 VMM 客户端向 controller 注册的租约时长。
+	LeaseTTL Duration `json:"lease_ttl"`
+	// ConnectTimeout bounds each controller connection attempt.
+	// ConnectTimeout 限制每次 controller 连接尝试。
+	ConnectTimeout Duration `json:"connect_timeout"`
+	// StartupTimeout bounds automatic controller startup.
+	// StartupTimeout 限制自动启动 controller 的总时长。
+	StartupTimeout Duration `json:"startup_timeout"`
+	// StartupRetryInterval controls controller readiness polling.
+	// StartupRetryInterval 控制 controller 就绪探测间隔。
+	StartupRetryInterval Duration `json:"startup_retry_interval"`
+	// LeaseRenewInterval controls background lease renewal.
+	// LeaseRenewInterval 控制后台租约续期间隔。
+	LeaseRenewInterval Duration `json:"lease_renew_interval"`
+	// RequestTimeout bounds each proxied SQLite or LanceDB operation.
+	// RequestTimeout 限制每次被代理的 SQLite 或 LanceDB 操作。
+	RequestTimeout Duration `json:"request_timeout"`
+	// SpaceID is the stable VMM installation-level controller space identifier.
+	// SpaceID 是 VMM 安装级稳定 controller 空间标识。
+	SpaceID string `json:"space_id"`
+	// SpaceLabel is the diagnostic label shown by controller status APIs.
+	// SpaceLabel 是 controller 状态接口显示的诊断标签。
+	SpaceLabel string `json:"space_label"`
 }
 
 // PostgresConfig holds the combined-store connection settings shared by the PostgreSQL dialect runtime.
@@ -524,6 +572,21 @@ func DefaultBase() Config {
 			TokenizerMode: "jieba",
 		},
 		LanceDB: LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
+		Controller: ControllerConfig{
+			Endpoint:             "http://127.0.0.1:19801",
+			AutoSpawn:            true,
+			ProcessMode:          "managed",
+			MinimumUptime:        Duration{5 * time.Minute},
+			IdleTimeout:          Duration{15 * time.Minute},
+			LeaseTTL:             Duration{2 * time.Minute},
+			ConnectTimeout:       Duration{5 * time.Second},
+			StartupTimeout:       Duration{15 * time.Second},
+			StartupRetryInterval: Duration{250 * time.Millisecond},
+			LeaseRenewInterval:   Duration{30 * time.Second},
+			RequestTimeout:       Duration{30 * time.Second},
+			SpaceID:              "vmm-local-default",
+			SpaceLabel:           "VulcanMemoryMesh",
+		},
 		Postgres: PostgresConfig{
 			Schema:                  "public",
 			Flavor:                  "paradedb",

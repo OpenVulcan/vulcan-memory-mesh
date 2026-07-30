@@ -33,6 +33,18 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.SQLite.Address = ""
 	cfg.SQLite.TokenizerMode = ""
 	cfg.LanceDB.Address = ""
+	cfg.Controller.Endpoint = ""
+	cfg.Controller.ProcessMode = ""
+	cfg.Controller.MinimumUptime = Duration{}
+	cfg.Controller.IdleTimeout = Duration{}
+	cfg.Controller.LeaseTTL = Duration{}
+	cfg.Controller.ConnectTimeout = Duration{}
+	cfg.Controller.StartupTimeout = Duration{}
+	cfg.Controller.StartupRetryInterval = Duration{}
+	cfg.Controller.LeaseRenewInterval = Duration{}
+	cfg.Controller.RequestTimeout = Duration{}
+	cfg.Controller.SpaceID = ""
+	cfg.Controller.SpaceLabel = ""
 	cfg.MemoryPipeline.MaxSearchKeywords = 0
 	cfg.MemoryPipeline.MinSimilarityScore = nil
 	cfg.MemoryPipeline.ReplaceMinSimilarityScore = nil
@@ -81,6 +93,24 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.LanceDB.Address != "" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
 	}
+	if got, want := cfg.Controller.Endpoint, "http://127.0.0.1:19801"; got != want {
+		t.Fatalf("controller endpoint = %q, want %q", got, want)
+	}
+	if got, want := cfg.Controller.ProcessMode, "managed"; got != want {
+		t.Fatalf("controller process mode = %q, want %q", got, want)
+	}
+	if got, want := cfg.Controller.LeaseTTL.Duration, 2*time.Minute; got != want {
+		t.Fatalf("controller lease ttl = %v, want %v", got, want)
+	}
+	if got, want := cfg.Controller.LeaseRenewInterval.Duration, 30*time.Second; got != want {
+		t.Fatalf("controller lease renew interval = %v, want %v", got, want)
+	}
+	if got, want := cfg.Controller.RequestTimeout.Duration, 30*time.Second; got != want {
+		t.Fatalf("controller request timeout = %v, want %v", got, want)
+	}
+	if got, want := cfg.Controller.SpaceID, "vmm-local-default"; got != want {
+		t.Fatalf("controller space id = %q, want %q", got, want)
+	}
 	if got, want := cfg.Prompts.PromptLanguage, defaultPromptBundle; got != want {
 		t.Fatalf("prompt language = %q, want %q", got, want)
 	}
@@ -122,6 +152,49 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	}
 	if got, want := cfg.Rerank.Routes[0].Timeout.Duration, 8*time.Second; got != want {
 		t.Fatalf("rerank default timeout = %v, want %v", got, want)
+	}
+}
+
+// TestConfigValidateAcceptsControllerMode verifies one loopback controller can own both split-store backends without activating PostgreSQL validation.
+// TestConfigValidateAcceptsControllerMode 用于验证 loopback controller 可以统一持有两种 split 后端，且不会触发 PostgreSQL 校验。
+func TestConfigValidateAcceptsControllerMode(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "controller"
+	cfg.Postgres.DSN = ""
+	cfg.Normalize()
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate controller mode: %v", err)
+	}
+	if !cfg.UsesController() {
+		t.Fatal("expected controller mode helper to be enabled")
+	}
+}
+
+// TestConfigValidateRejectsRemoteControllerEndpoint verifies the unauthenticated first release cannot expose its database control plane on a remote host.
+// TestConfigValidateRejectsRemoteControllerEndpoint 用于验证首版无认证控制面不能通过远程主机暴露数据库能力。
+func TestConfigValidateRejectsRemoteControllerEndpoint(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "controller"
+	cfg.Controller.Endpoint = "http://192.168.31.10:19801"
+	cfg.Normalize()
+
+	if err := cfg.Validate(); err == nil || err.Error() != "controller.endpoint must use a loopback host when storage.mode=controller" {
+		t.Fatalf("expected loopback controller endpoint error, got %v", err)
+	}
+}
+
+// TestConfigValidateRejectsControllerLeaseRenewalAtTTL verifies renewal must happen before the registered lease expires.
+// TestConfigValidateRejectsControllerLeaseRenewalAtTTL 用于验证续租必须早于已注册租约到期。
+func TestConfigValidateRejectsControllerLeaseRenewalAtTTL(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "controller"
+	cfg.Controller.LeaseTTL = Duration{30 * time.Second}
+	cfg.Controller.LeaseRenewInterval = Duration{30 * time.Second}
+	cfg.Normalize()
+
+	if err := cfg.Validate(); err == nil || err.Error() != "controller.lease_renew_interval must be less than controller.lease_ttl" {
+		t.Fatalf("expected controller lease interval error, got %v", err)
 	}
 }
 

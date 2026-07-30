@@ -157,6 +157,7 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 		PreCheck:          pre,
 		PostAction:        post,
 		ScopeResolver:     storage.ScopeResolver,
+		Health:            storage.Health,
 		Logger:            logger,
 		Validator:         grpcapi.NewRequestValidator(),
 		DebugRPCPayloads:  cfg.Logging.DebugRPCPayloads,

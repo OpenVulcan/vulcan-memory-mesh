@@ -61,7 +61,7 @@
 6. 后台 `PostActionUseCase`
 7. PII 脱敏
 8. **NoiseGate**
-9. 关系库存写入（默认 `split` 模式为 SQLite；`combined` 模式为 PostgreSQL）
+9. 关系库存写入（默认 `split` 模式为进程内 SQLite；`controller` 模式为经 controller 透传的 SQLite；`combined` 模式为 PostgreSQL）
 
 也就是说：
 

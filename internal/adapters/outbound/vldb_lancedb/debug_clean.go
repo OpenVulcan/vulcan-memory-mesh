@@ -63,6 +63,18 @@ func DebugDropConfiguredTable(ctx context.Context, libraryPath string, databaseD
 	return tableName, nil
 }
 
+// DebugDropConfiguredTable drops the configured table through the engine handle already owned by this store.
+// DebugDropConfiguredTable 通过当前存储已经持有的引擎句柄删除配置指定的表。
+func (s *Store) DebugDropConfiguredTable(ctx context.Context) (string, error) {
+	if s == nil || s.engine == nil {
+		return "", fmt.Errorf("lancedb store is not initialized")
+	}
+	if err := debugDropTableWithEngine(ctx, s.engine, s.tableName, s.timeout); err != nil {
+		return "", err
+	}
+	return s.tableName, nil
+}
+
 // debugDropTableWithEngine sends one drop-table request through an already prepared LanceDB engine handle.
 // debugDropTableWithEngine 用于通过已准备好的 LanceDB engine 句柄发送删表请求。
 func debugDropTableWithEngine(ctx context.Context, engine lancedbEngineHandle, tableName string, timeout time.Duration) error {

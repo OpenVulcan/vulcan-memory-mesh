@@ -28,15 +28,25 @@ func BuildMaintenanceDependencies(cfg config.Config) (MaintenanceDependencies, e
 	if err != nil {
 		return MaintenanceDependencies{}, fmt.Errorf("build maintenance embedding: %w", err)
 	}
-	storageDeps, err := buildMaintenanceStorageDependencies(cfg)
+	dependencies, err := BuildMaintenanceStorageDependencies(cfg)
 	if err != nil {
 		return MaintenanceDependencies{}, fmt.Errorf("build maintenance storage: %w", err)
 	}
+	dependencies.Embedding = embedding
+	return dependencies, nil
+}
+
+// BuildMaintenanceStorageDependencies composes only the storage adapters for cleanup and export commands that do not need an embedding provider.
+// BuildMaintenanceStorageDependencies 仅装配清理与导出命令需要的存储适配器，不要求配置 embedding provider。
+func BuildMaintenanceStorageDependencies(cfg config.Config) (MaintenanceDependencies, error) {
+	storageDeps, err := buildMaintenanceStorageDependencies(cfg)
+	if err != nil {
+		return MaintenanceDependencies{}, err
+	}
 	return MaintenanceDependencies{
-		Embedding:  embedding,
 		Relational: storageDeps.Relational,
 		Vector:     storageDeps.Vector,
-		Shutdowns:  buildUniqueShutdownSequence(storageDeps.Relational, storageDeps.Vector),
+		Shutdowns:  buildUniqueShutdownSequence(storageDeps.Lifecycle, storageDeps.Relational, storageDeps.Vector),
 	}, nil
 }
 
@@ -46,6 +56,9 @@ func buildMaintenanceStorageDependencies(cfg config.Config) (storageDependencies
 	if cfg.UsesCombinedPostgres() {
 		return buildStorageDependencies(cfg, config.PromptLayout{})
 	}
+	if cfg.UsesController() {
+		return buildControllerStorageDependenciesWithVectorInit(cfg, config.PromptLayout{}, false, true)
+	}
 
 	relational, err := buildRelational(cfg)
 	if err != nil {
@@ -53,6 +66,7 @@ func buildMaintenanceStorageDependencies(cfg config.Config) (storageDependencies
 	}
 	vector, err := buildMaintenanceVector(cfg)
 	if err != nil {
+		_ = relational.Shutdown(context.Background())
 		return storageDependencies{}, err
 	}
 	return storageDependencies{

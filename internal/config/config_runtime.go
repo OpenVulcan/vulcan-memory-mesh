@@ -125,6 +125,8 @@ func normalizeStorageModeValue(mode string) string {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "combined":
 		return "combined"
+	case "controller":
+		return "controller"
 	case "split", "":
 		return "split"
 	default:
@@ -347,6 +349,42 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
 		c.LanceDB.VectorColumn = "vector"
 	}
+	if strings.TrimSpace(c.Controller.Endpoint) == "" {
+		c.Controller.Endpoint = "http://127.0.0.1:19801"
+	}
+	if strings.TrimSpace(c.Controller.ProcessMode) == "" {
+		c.Controller.ProcessMode = "managed"
+	}
+	if c.Controller.MinimumUptime.Duration <= 0 {
+		c.Controller.MinimumUptime = Duration{5 * time.Minute}
+	}
+	if c.Controller.IdleTimeout.Duration <= 0 {
+		c.Controller.IdleTimeout = Duration{15 * time.Minute}
+	}
+	if c.Controller.LeaseTTL.Duration <= 0 {
+		c.Controller.LeaseTTL = Duration{2 * time.Minute}
+	}
+	if c.Controller.ConnectTimeout.Duration <= 0 {
+		c.Controller.ConnectTimeout = Duration{5 * time.Second}
+	}
+	if c.Controller.StartupTimeout.Duration <= 0 {
+		c.Controller.StartupTimeout = Duration{15 * time.Second}
+	}
+	if c.Controller.StartupRetryInterval.Duration <= 0 {
+		c.Controller.StartupRetryInterval = Duration{250 * time.Millisecond}
+	}
+	if c.Controller.LeaseRenewInterval.Duration <= 0 {
+		c.Controller.LeaseRenewInterval = Duration{30 * time.Second}
+	}
+	if c.Controller.RequestTimeout.Duration <= 0 {
+		c.Controller.RequestTimeout = Duration{30 * time.Second}
+	}
+	if strings.TrimSpace(c.Controller.SpaceID) == "" {
+		c.Controller.SpaceID = "vmm-local-default"
+	}
+	if strings.TrimSpace(c.Controller.SpaceLabel) == "" {
+		c.Controller.SpaceLabel = "VulcanMemoryMesh"
+	}
 	if strings.TrimSpace(c.Postgres.Schema) == "" {
 		c.Postgres.Schema = "public"
 	}
@@ -416,6 +454,11 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.LanceDB.Address = strings.TrimSpace(c.LanceDB.Address)
 	c.LanceDB.TableName = strings.TrimSpace(c.LanceDB.TableName)
 	c.LanceDB.VectorColumn = strings.TrimSpace(c.LanceDB.VectorColumn)
+	c.Controller.Endpoint = strings.TrimSpace(c.Controller.Endpoint)
+	c.Controller.Executable = strings.TrimSpace(c.Controller.Executable)
+	c.Controller.ProcessMode = strings.ToLower(strings.TrimSpace(c.Controller.ProcessMode))
+	c.Controller.SpaceID = strings.TrimSpace(c.Controller.SpaceID)
+	c.Controller.SpaceLabel = strings.TrimSpace(c.Controller.SpaceLabel)
 	c.Postgres.DSN = strings.TrimSpace(c.Postgres.DSN)
 	c.Postgres.Schema = strings.TrimSpace(c.Postgres.Schema)
 	c.Postgres.Flavor = strings.TrimSpace(c.Postgres.Flavor)

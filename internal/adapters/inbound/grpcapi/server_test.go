@@ -41,6 +41,18 @@ type grpcFixture struct {
 	logs   *bytes.Buffer
 }
 
+// stubHealthChecker returns one configured dependency-health result to the gRPC health endpoint.
+// stubHealthChecker 用于向 gRPC 健康检查端点返回预设的依赖健康结果。
+type stubHealthChecker struct {
+	err error
+}
+
+// CheckHealth returns the configured health result.
+// CheckHealth 返回预设的健康检查结果。
+func (s stubHealthChecker) CheckHealth(context.Context) error {
+	return s.err
+}
+
 // close releases all bufconn resources after one test finishes.
 // close 用于在测试结束后释放全部 bufconn 资源。
 func (f *grpcFixture) close() {
@@ -125,6 +137,20 @@ func TestHealthzReturnsTraceHeader(t *testing.T) {
 	}
 	if resp.GetTraceId() != "trace-z" {
 		t.Fatalf("trace id = %q", resp.GetTraceId())
+	}
+}
+
+// TestHealthzReportsStorageUnavailable verifies controller-backed dependency failures are visible instead of being masked by process liveness.
+// TestHealthzReportsStorageUnavailable 用于验证 controller 存储依赖故障会被明确暴露，而不会被进程仍存活所掩盖。
+func TestHealthzReportsStorageUnavailable(t *testing.T) {
+	fixture := newTestFixture(t, Dependencies{
+		IDs:    xid.NewGenerator(),
+		Health: stubHealthChecker{err: fmt.Errorf("controller unavailable")},
+	}, testBufSize)
+
+	_, err := fixture.client.Healthz(context.Background(), &emptypb.Empty{})
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("healthz code = %s, err = %v", status.Code(err), err)
 	}
 }
 

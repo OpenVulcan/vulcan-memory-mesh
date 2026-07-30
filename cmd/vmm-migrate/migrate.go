@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -19,6 +20,12 @@ const (
 	// maintenanceMigrateSplitToCombined 用于表示当前支持的存储迁移动作：把 split 模式 SQLite 事实库回放到 PostgreSQL 组合库。
 	maintenanceMigrateSplitToCombined = "split-to-combined"
 )
+
+// managedSQLiteSnapshotExporter exposes fact-store export for direct and controller-backed relational stores.
+// managedSQLiteSnapshotExporter 为直接关系存储与 controller 关系存储暴露事实库导出能力。
+type managedSQLiteSnapshotExporter interface {
+	DebugExportManagedSnapshot(context.Context, int) (storagemigrate.Snapshot, error)
+}
 
 // parseMaintenanceMigrateTarget normalizes the maintenance selector so unsupported migration actions fail before any storage connection is opened.
 // parseMaintenanceMigrateTarget 用于规范化迁移动作选择器，让不受支持的迁移动作在建立任何存储连接前就失败。
@@ -52,6 +59,13 @@ func runMaintenanceMigrate(ctx context.Context, cfg config.Config, target string
 // runSplitToCombinedMigration treats SQLite as the only migration fact source, parses vectors in Go memory, and writes them into PostgreSQL native vector columns.
 // runSplitToCombinedMigration 用于把 SQLite 作为唯一迁移事实源，在 Go 内存中解析向量，并把它们写入 PostgreSQL 原生向量列。
 func runSplitToCombinedMigration(ctx context.Context, cfg config.Config) error {
+	runtimeGuard, err := acquireMaintenanceRuntimeGuard(cfg, "split-to-combined migration")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = runtimeGuard.Close()
+	}()
 	postgresCfg, err := buildPostgresMaintenanceConfig(cfg)
 	if err != nil {
 		return err
@@ -61,7 +75,12 @@ func runSplitToCombinedMigration(ctx context.Context, cfg config.Config) error {
 		return err
 	}
 
-	snapshot, err := vldb_sqlite.DebugExportManagedSnapshot(ctx, localLayout.SQLiteLibrary, localLayout.SQLiteDatabase, cfg.SQLite.Timeout.Duration, cfg.Postgres.MigrationBatchSize)
+	var snapshot storagemigrate.Snapshot
+	if cfg.UsesController() {
+		snapshot, err = exportControllerManagedSnapshot(ctx, cfg)
+	} else {
+		snapshot, err = vldb_sqlite.DebugExportManagedSnapshot(ctx, localLayout.SQLiteLibrary, localLayout.SQLiteDatabase, cfg.SQLite.Timeout.Duration, cfg.Postgres.MigrationBatchSize)
+	}
 	if err != nil {
 		return fmt.Errorf("export split sqlite snapshot: %w", err)
 	}
@@ -78,6 +97,26 @@ func runSplitToCombinedMigration(ctx context.Context, cfg config.Config) error {
 		fmt.Printf("[vmm-migrate] %s\n", line)
 	}
 	return nil
+}
+
+// exportControllerManagedSnapshot reads the SQLite fact source through one controller-owned maintenance session and always releases its bindings.
+// exportControllerManagedSnapshot 通过 controller 持有的维护会话读取 SQLite 事实源，并始终释放对应绑定。
+func exportControllerManagedSnapshot(ctx context.Context, cfg config.Config) (storagemigrate.Snapshot, error) {
+	dependencies, err := app.BuildMaintenanceStorageDependencies(cfg)
+	if err != nil {
+		return storagemigrate.Snapshot{}, fmt.Errorf("build controller maintenance storage: %w", err)
+	}
+	exporter, ok := dependencies.Relational.(managedSQLiteSnapshotExporter)
+	if !ok {
+		shutdownErr := dependencies.Shutdown(context.Background())
+		return storagemigrate.Snapshot{}, errors.Join(fmt.Errorf("controller relational store does not support managed snapshot export"), shutdownErr)
+	}
+	snapshot, exportErr := exporter.DebugExportManagedSnapshot(ctx, cfg.Postgres.MigrationBatchSize)
+	shutdownErr := dependencies.Shutdown(context.Background())
+	if err := errors.Join(exportErr, shutdownErr); err != nil {
+		return storagemigrate.Snapshot{}, err
+	}
+	return snapshot, nil
 }
 
 // formatMigrationReportErrorDetail renders the same row-count facts for failed imports whose PostgreSQL adapter can still report the attempted durable import scale.

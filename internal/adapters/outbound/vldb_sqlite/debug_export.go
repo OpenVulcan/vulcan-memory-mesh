@@ -39,6 +39,12 @@ func DebugExportManagedSnapshot(ctx context.Context, libraryPath string, databas
 	return store.buildManagedMigrationSnapshot(ctx, batchSize)
 }
 
+// DebugExportManagedSnapshot exports all managed rows through the database handle already owned by this store.
+// DebugExportManagedSnapshot 通过当前存储已经持有的数据库句柄导出全部受管数据。
+func (s *Store) DebugExportManagedSnapshot(ctx context.Context, batchSize int) (storagemigrate.Snapshot, error) {
+	return s.buildManagedMigrationSnapshot(ctx, batchSize)
+}
+
 // buildManagedMigrationSnapshot gathers the whole managed dataset from SQLite while keeping larger tables paged by id or rowid to avoid one giant query response.
 // buildManagedMigrationSnapshot 用于从 SQLite 汇总整套受管数据，同时对较大表按 id 或 rowid 分页，避免单次查询返回过大的载荷。
 func (s *Store) buildManagedMigrationSnapshot(ctx context.Context, batchSize int) (storagemigrate.Snapshot, error) {

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_controller"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_postgres"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
@@ -22,6 +23,8 @@ import (
 type storageDependencies struct {
 	Relational         appports.RelationalStore
 	Vector             appports.VectorStore
+	Lifecycle          appports.Shutdowner
+	Health             appports.HealthChecker
 	ManageVectorSchema bool
 }
 
@@ -38,6 +41,8 @@ type runtimeStorageCapabilities struct {
 	MemoryStore        appports.MemoryStore
 	ChatCompactStore   usecase.ChatCompactStore
 	RetentionStore     appports.RetentionStore
+	Lifecycle          appports.Shutdowner
+	Health             appports.HealthChecker
 	ManageVectorSchema bool
 }
 
@@ -50,12 +55,14 @@ func initRuntimeStorageCapabilities(cfg config.Config, logger *logx.Logger, layo
 	}
 	caps, err := resolveRuntimeStorageCapabilities(storageDeps)
 	if err != nil {
+		shutdownStorageDependencies(storageDeps)
 		return runtimeStorageCapabilities{}, err
 	}
 	if caps.ManageVectorSchema {
 		schemaCtx, schemaCancel := context.WithTimeout(context.Background(), 5*time.Minute)
 		defer schemaCancel()
 		if err := ensureVectorSchema(schemaCtx, caps.SchemaVersions, caps.WorkspaceStore, caps.Vector, logger); err != nil {
+			shutdownStorageDependencies(storageDeps)
 			return runtimeStorageCapabilities{}, err
 		}
 	}
@@ -116,6 +123,8 @@ func resolveRuntimeStorageCapabilities(storageDeps storageDependencies) (runtime
 		MemoryStore:        memoryStore,
 		ChatCompactStore:   chatCompactStore,
 		RetentionStore:     retentionStore,
+		Lifecycle:          storageDeps.Lifecycle,
+		Health:             storageDeps.Health,
 		ManageVectorSchema: storageDeps.ManageVectorSchema,
 	}, nil
 }
@@ -140,6 +149,9 @@ func buildStorageDependencies(cfg config.Config, layout config.PromptLayout) (st
 			ManageVectorSchema: false,
 		}, nil
 	}
+	if cfg.UsesController() {
+		return buildControllerStorageDependencies(cfg, layout)
+	}
 	relational, err := buildRelationalForLayout(cfg, layout)
 	if err != nil {
 		return storageDependencies{}, err
@@ -153,6 +165,93 @@ func buildStorageDependencies(cfg config.Config, layout config.PromptLayout) (st
 		Vector:             vector,
 		ManageVectorSchema: true,
 	}, nil
+}
+
+// buildControllerStorageDependencies creates one shared controller session and reuses the existing SQLite/LanceDB stores above RPC-backed handles.
+// buildControllerStorageDependencies 创建一个共享 controller 会话，并让现有 SQLite/LanceDB 存储复用 RPC 后端句柄。
+func buildControllerStorageDependencies(cfg config.Config, promptLayout config.PromptLayout) (storageDependencies, error) {
+	return buildControllerStorageDependenciesWithVectorInit(cfg, promptLayout, true, false)
+}
+
+// buildControllerStorageDependenciesWithVectorInit lets maintenance flows defer destructive-table initialization while retaining one shared controller owner.
+// buildControllerStorageDependenciesWithVectorInit 允许维护流程延迟破坏性表初始化，同时保持单一共享 controller 所有者。
+func buildControllerStorageDependenciesWithVectorInit(cfg config.Config, promptLayout config.PromptLayout, ensureVectorTable bool, requireExclusiveSpace bool) (storageDependencies, error) {
+	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	if err != nil {
+		return storageDependencies{}, err
+	}
+	executable := strings.TrimSpace(cfg.Controller.Executable)
+	if executable == "" {
+		executable = layout.ControllerBinary
+	}
+	startupBudget := cfg.Controller.StartupTimeout.Duration + cfg.Controller.ConnectTimeout.Duration + 10*time.Second
+	if startupBudget <= 0 {
+		startupBudget = 30 * time.Second
+	}
+	startupCtx, startupCancel := context.WithTimeout(context.Background(), startupBudget)
+	defer startupCancel()
+	controllerRuntime, err := vldb_controller.New(startupCtx, vldb_controller.Config{
+		Endpoint:              cfg.Controller.Endpoint,
+		AutoSpawn:             cfg.Controller.AutoSpawn,
+		Executable:            executable,
+		ProcessMode:           cfg.Controller.ProcessMode,
+		MinimumUptime:         cfg.Controller.MinimumUptime.Duration,
+		IdleTimeout:           cfg.Controller.IdleTimeout.Duration,
+		LeaseTTL:              cfg.Controller.LeaseTTL.Duration,
+		ConnectTimeout:        cfg.Controller.ConnectTimeout.Duration,
+		StartupTimeout:        cfg.Controller.StartupTimeout.Duration,
+		StartupRetryInterval:  cfg.Controller.StartupRetryInterval.Duration,
+		LeaseRenewInterval:    cfg.Controller.LeaseRenewInterval.Duration,
+		RequestTimeout:        cfg.Controller.RequestTimeout.Duration,
+		RequireExclusiveSpace: requireExclusiveSpace,
+		SpaceID:               cfg.Controller.SpaceID,
+		SpaceLabel:            cfg.Controller.SpaceLabel,
+		SpaceRoot:             layout.DatabaseDir,
+		SQLiteDatabase:        layout.SQLiteDatabase,
+		LanceDBDirectory:      layout.LanceDBDirectory,
+	})
+	if err != nil {
+		return storageDependencies{}, err
+	}
+	relational, err := vldb_sqlite.NewControllerStore(controllerRuntime, cfg.SQLite.Timeout.Duration, vldb_sqlite.StoreOptions{
+		TokenizerMode: cfg.SQLite.TokenizerMode,
+	})
+	if err != nil {
+		_ = controllerRuntime.Shutdown(context.Background())
+		return storageDependencies{}, fmt.Errorf("build controller sqlite store: %w", err)
+	}
+	var vector *vldb_lancedb.Store
+	if ensureVectorTable {
+		vector, err = vldb_lancedb.NewControllerStore(controllerRuntime, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
+	} else {
+		vector, err = vldb_lancedb.NewControllerStoreWithoutInit(controllerRuntime, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
+	}
+	if err != nil {
+		_ = relational.Shutdown(context.Background())
+		_ = controllerRuntime.Shutdown(context.Background())
+		return storageDependencies{}, fmt.Errorf("build controller lancedb store: %w", err)
+	}
+	return storageDependencies{
+		Relational:         relational,
+		Vector:             vector,
+		Lifecycle:          controllerRuntime,
+		Health:             controllerRuntime,
+		ManageVectorSchema: true,
+	}, nil
+}
+
+// shutdownStorageDependencies releases partially built storage resources in reverse ownership order.
+// shutdownStorageDependencies 按所有权逆序释放部分构建完成的存储资源。
+func shutdownStorageDependencies(storageDeps storageDependencies) {
+	if storageDeps.Vector != nil {
+		_ = storageDeps.Vector.Shutdown(context.Background())
+	}
+	if storageDeps.Relational != nil {
+		_ = storageDeps.Relational.Shutdown(context.Background())
+	}
+	if storageDeps.Lifecycle != nil {
+		_ = storageDeps.Lifecycle.Shutdown(context.Background())
+	}
 }
 
 // buildCombinedStore selects the unified PostgreSQL-backed combined store used by the new dialect pattern runtime.

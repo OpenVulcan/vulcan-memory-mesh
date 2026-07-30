@@ -28,6 +28,7 @@ type localStorageLayout struct {
 	DatabaseDir      string
 	SQLiteLibrary    string
 	LanceDBLibrary   string
+	ControllerBinary string
 	SQLiteDatabase   string
 	LanceDBDirectory string
 }
@@ -79,9 +80,11 @@ func resolveLocalStorageLayoutForPromptLayout(promptLayout config.PromptLayout) 
 	}
 
 	sqliteLibraryName, lanceDBLibraryName := resolveHostLibraryNames()
+	controllerBinaryName := resolveControllerBinaryName()
 	actualArtifactRoot := filepath.Clean(filepath.Join(actualLayout.SystemDir, ".."))
 	sqliteLibraryPath := resolveHostLibraryPath([]string{artifactRoot, actualArtifactRoot}, sqliteLibraryName)
 	lanceDBLibraryPath := resolveHostLibraryPath([]string{artifactRoot, actualArtifactRoot}, lanceDBLibraryName)
+	controllerBinaryPath := resolveControllerBinaryPath([]string{artifactRoot, actualArtifactRoot}, controllerBinaryName)
 
 	return localStorageLayout{
 		OutputRoot:       outputRoot,
@@ -90,6 +93,7 @@ func resolveLocalStorageLayoutForPromptLayout(promptLayout config.PromptLayout) 
 		DatabaseDir:      databaseDir,
 		SQLiteLibrary:    sqliteLibraryPath,
 		LanceDBLibrary:   lanceDBLibraryPath,
+		ControllerBinary: controllerBinaryPath,
 		SQLiteDatabase:   sqliteDatabase,
 		LanceDBDirectory: lanceDBDirectory,
 	}, nil
@@ -171,6 +175,32 @@ func resolveHostLibraryNames() (string, string) {
 	default:
 		return "libvldb_sqlite.so", "libvldb_lancedb.so"
 	}
+}
+
+// resolveControllerBinaryName returns the controller executable filename for the current host OS.
+// resolveControllerBinaryName 用于返回当前宿主操作系统对应的 controller 可执行文件名。
+func resolveControllerBinaryName() string {
+	if runtime.GOOS == "windows" {
+		return "vldb-controller.exe"
+	}
+	return "vldb-controller"
+}
+
+// resolveControllerBinaryPath prefers the packaged bin directory and then a workspace dependency cache before falling back to PATH lookup.
+// resolveControllerBinaryPath 优先解析打包 bin 目录，其次解析工作区依赖缓存，最后回退到 PATH 查找。
+func resolveControllerBinaryPath(candidateRoots []string, binaryName string) string {
+	for _, root := range candidateRoots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		if packaged := filepath.Join(root, "bin", binaryName); fileExists(packaged) {
+			return packaged
+		}
+		if cached := filepath.Join(root, "third_party", "deps", binaryName); fileExists(cached) {
+			return cached
+		}
+	}
+	return binaryName
 }
 
 // fileExists reports whether one regular file currently exists.

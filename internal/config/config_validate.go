@@ -7,6 +7,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"os"
 	"strconv"
 	"strings"
@@ -51,6 +53,20 @@ var supportedEnvOverrideValuePaths = map[string][]string{
 	"VMM_LANCEDB_TIMEOUT":                               {"lancedb.timeout"},
 	"VMM_LANCEDB_TABLE_NAME":                            {"lancedb.table_name"},
 	"VMM_LANCEDB_VECTOR_COLUMN":                         {"lancedb.vector_column"},
+	"VMM_CONTROLLER_ENDPOINT":                           {"controller.endpoint"},
+	"VMM_CONTROLLER_AUTO_SPAWN":                         {"controller.auto_spawn"},
+	"VMM_CONTROLLER_EXECUTABLE":                         {"controller.executable"},
+	"VMM_CONTROLLER_PROCESS_MODE":                       {"controller.process_mode"},
+	"VMM_CONTROLLER_MINIMUM_UPTIME":                     {"controller.minimum_uptime"},
+	"VMM_CONTROLLER_IDLE_TIMEOUT":                       {"controller.idle_timeout"},
+	"VMM_CONTROLLER_LEASE_TTL":                          {"controller.lease_ttl"},
+	"VMM_CONTROLLER_CONNECT_TIMEOUT":                    {"controller.connect_timeout"},
+	"VMM_CONTROLLER_STARTUP_TIMEOUT":                    {"controller.startup_timeout"},
+	"VMM_CONTROLLER_STARTUP_RETRY_INTERVAL":             {"controller.startup_retry_interval"},
+	"VMM_CONTROLLER_LEASE_RENEW_INTERVAL":               {"controller.lease_renew_interval"},
+	"VMM_CONTROLLER_REQUEST_TIMEOUT":                    {"controller.request_timeout"},
+	"VMM_CONTROLLER_SPACE_ID":                           {"controller.space_id"},
+	"VMM_CONTROLLER_SPACE_LABEL":                        {"controller.space_label"},
 	"VMM_POSTGRES_DSN":                                  {"postgres.dsn"},
 	"VMM_POSTGRES_SCHEMA":                               {"postgres.schema"},
 	"VMM_POSTGRES_FLAVOR":                               {"postgres.flavor"},
@@ -143,9 +159,9 @@ func (c Config) Validate() error {
 		return errors.New("noise.default_language is required")
 	}
 	switch normalizeStorageModeValue(c.Storage.Mode) {
-	case "split", "combined":
+	case "split", "controller", "combined":
 	default:
-		return errors.New("storage.mode must be either split or combined")
+		return errors.New("storage.mode must be one of split, controller, or combined")
 	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
@@ -251,7 +267,7 @@ func (c Config) Validate() error {
 	if !isSupportedAIProvider(c.Embedding.Provider) {
 		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, google_ai_studio, or openrouter")
 	}
-	if normalizeStorageModeValue(c.Storage.Mode) == "split" {
+	if normalizeStorageModeValue(c.Storage.Mode) != "combined" {
 		if strings.TrimSpace(c.LanceDB.TableName) == "" {
 			return errors.New("lancedb.table_name is required")
 		}
@@ -272,6 +288,52 @@ func (c Config) Validate() error {
 			}
 		default:
 			return errors.New("relational.provider must be sqlite")
+		}
+		if normalizeStorageModeValue(c.Storage.Mode) == "controller" {
+			if strings.TrimSpace(c.Controller.Endpoint) == "" {
+				return errors.New("controller.endpoint is required when storage.mode=controller")
+			}
+			if !isLoopbackControllerEndpoint(c.Controller.Endpoint) {
+				return errors.New("controller.endpoint must use a loopback host when storage.mode=controller")
+			}
+			switch strings.ToLower(strings.TrimSpace(c.Controller.ProcessMode)) {
+			case "managed", "service":
+			default:
+				return errors.New("controller.process_mode must be either managed or service")
+			}
+			if c.Controller.MinimumUptime.Duration <= 0 {
+				return errors.New("controller.minimum_uptime must be > 0")
+			}
+			if c.Controller.IdleTimeout.Duration <= 0 {
+				return errors.New("controller.idle_timeout must be > 0")
+			}
+			if c.Controller.LeaseTTL.Duration <= 0 {
+				return errors.New("controller.lease_ttl must be > 0")
+			}
+			if c.Controller.ConnectTimeout.Duration <= 0 {
+				return errors.New("controller.connect_timeout must be > 0")
+			}
+			if c.Controller.StartupTimeout.Duration <= 0 {
+				return errors.New("controller.startup_timeout must be > 0")
+			}
+			if c.Controller.StartupRetryInterval.Duration <= 0 {
+				return errors.New("controller.startup_retry_interval must be > 0")
+			}
+			if c.Controller.LeaseRenewInterval.Duration <= 0 {
+				return errors.New("controller.lease_renew_interval must be > 0")
+			}
+			if c.Controller.LeaseRenewInterval.Duration >= c.Controller.LeaseTTL.Duration {
+				return errors.New("controller.lease_renew_interval must be less than controller.lease_ttl")
+			}
+			if c.Controller.RequestTimeout.Duration <= 0 {
+				return errors.New("controller.request_timeout must be > 0")
+			}
+			if strings.TrimSpace(c.Controller.SpaceID) == "" {
+				return errors.New("controller.space_id is required when storage.mode=controller")
+			}
+			if strings.TrimSpace(c.Controller.SpaceLabel) == "" {
+				return errors.New("controller.space_label is required when storage.mode=controller")
+			}
 		}
 	} else {
 		switch normalizeCombinedProviderValue(c.Storage.CombinedProvider) {
@@ -582,6 +644,20 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
 	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
 	setString("VMM_LANCEDB_VECTOR_COLUMN", &cfg.LanceDB.VectorColumn)
+	setString("VMM_CONTROLLER_ENDPOINT", &cfg.Controller.Endpoint)
+	setBool("VMM_CONTROLLER_AUTO_SPAWN", &cfg.Controller.AutoSpawn)
+	setString("VMM_CONTROLLER_EXECUTABLE", &cfg.Controller.Executable)
+	setString("VMM_CONTROLLER_PROCESS_MODE", &cfg.Controller.ProcessMode)
+	setDuration("VMM_CONTROLLER_MINIMUM_UPTIME", &cfg.Controller.MinimumUptime)
+	setDuration("VMM_CONTROLLER_IDLE_TIMEOUT", &cfg.Controller.IdleTimeout)
+	setDuration("VMM_CONTROLLER_LEASE_TTL", &cfg.Controller.LeaseTTL)
+	setDuration("VMM_CONTROLLER_CONNECT_TIMEOUT", &cfg.Controller.ConnectTimeout)
+	setDuration("VMM_CONTROLLER_STARTUP_TIMEOUT", &cfg.Controller.StartupTimeout)
+	setDuration("VMM_CONTROLLER_STARTUP_RETRY_INTERVAL", &cfg.Controller.StartupRetryInterval)
+	setDuration("VMM_CONTROLLER_LEASE_RENEW_INTERVAL", &cfg.Controller.LeaseRenewInterval)
+	setDuration("VMM_CONTROLLER_REQUEST_TIMEOUT", &cfg.Controller.RequestTimeout)
+	setString("VMM_CONTROLLER_SPACE_ID", &cfg.Controller.SpaceID)
+	setString("VMM_CONTROLLER_SPACE_LABEL", &cfg.Controller.SpaceLabel)
 	setString("VMM_POSTGRES_DSN", &cfg.Postgres.DSN)
 	setString("VMM_POSTGRES_SCHEMA", &cfg.Postgres.Schema)
 	setString("VMM_POSTGRES_FLAVOR", &cfg.Postgres.Flavor)
@@ -685,10 +761,44 @@ func (c Config) StorageMode() string {
 	return normalizeStorageModeValue(c.Storage.Mode)
 }
 
+// UsesController reports whether the runtime should route both split-store APIs through one shared vldb-controller process.
+// UsesController 用于判断运行时是否应把两套 split 存储 API 统一路由到共享 vldb-controller 进程。
+func (c Config) UsesController() bool {
+	return c.StorageMode() == "controller"
+}
+
 // UsesCombinedPostgres reports whether the runtime should build the unified PostgreSQL-backed combined store.
 // UsesCombinedPostgres 用于判断运行时是否应装配统一的 PostgreSQL 组合库。
 func (c Config) UsesCombinedPostgres() bool {
 	return c.StorageMode() == "combined" && normalizeCombinedProviderValue(c.Storage.CombinedProvider) == "postgres"
+}
+
+// isLoopbackControllerEndpoint verifies an explicit TCP endpoint without resolving arbitrary hostnames over the network.
+// isLoopbackControllerEndpoint 在不通过网络解析任意主机名的前提下校验显式 TCP loopback 端点。
+func isLoopbackControllerEndpoint(endpoint string) bool {
+	trimmed := strings.TrimSpace(endpoint)
+	if trimmed == "" {
+		return false
+	}
+	if !strings.Contains(trimmed, "://") {
+		trimmed = "http://" + trimmed
+	}
+	parsed, err := url.Parse(trimmed)
+	if err != nil || parsed.User != nil {
+		return false
+	}
+	if parsed.Scheme != "http" {
+		return false
+	}
+	host, port, err := net.SplitHostPort(parsed.Host)
+	if err != nil || strings.TrimSpace(port) == "" {
+		return false
+	}
+	if strings.EqualFold(strings.TrimSpace(host), "localhost") {
+		return true
+	}
+	ip := net.ParseIP(strings.TrimSpace(host))
+	return ip != nil && ip.IsLoopback()
 }
 
 // isOpenAIProvider reports whether one provider alias resolves to the supported OpenAI-compatible adapter.

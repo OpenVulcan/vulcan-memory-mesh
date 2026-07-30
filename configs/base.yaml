@@ -166,6 +166,8 @@ storage:
   # 支持取值：
   # - split: relational storage uses sqlite and vector storage uses lancedb.
   # - split：关系存储使用 sqlite，向量存储使用 lancedb。
+  # - controller: sqlite and lancedb keep the same APIs while one vldb-controller process owns both database handles.
+  # - controller：sqlite 与 lancedb 保持同等接口，但由一个 vldb-controller 进程统一持有两套数据库句柄。
   # - combined: relational and vector capabilities both use the unified PostgreSQL combined store.
   # - combined：关系与向量能力统一走 PostgreSQL 组合库存储。
   mode: "split"
@@ -217,6 +219,42 @@ lancedb:
   # Column name used to store vectors.
   # 存储向量的列名。
   vector_column: "vector"
+
+controller:
+  # Loopback-only controller endpoint used when storage.mode=controller.
+  # storage.mode=controller 时使用的仅 loopback controller 端点。
+  endpoint: "http://127.0.0.1:19801"
+
+  # Allow desktop/development runs to start the packaged controller automatically.
+  # 允许桌面与开发运行自动启动随包分发的 controller。
+  auto_spawn: true
+
+  # Optional absolute controller path; empty resolves output/bin/vldb-controller for packaged runs.
+  # 可选 controller 绝对路径；留空时正式打包运行会解析 output/bin/vldb-controller。
+  executable: ""
+
+  # Controller lifecycle mode used by automatic startup: managed or service.
+  # 自动启动使用的 controller 生命周期模式：managed 或 service。
+  process_mode: "managed"
+
+  # Managed-process lifecycle and client lease settings.
+  # managed 进程生命周期与客户端租约配置。
+  minimum_uptime: "5m"
+  idle_timeout: "15m"
+  lease_ttl: "2m"
+  connect_timeout: "5s"
+  startup_timeout: "15s"
+  startup_retry_interval: "250ms"
+  lease_renew_interval: "30s"
+
+  # Timeout for one SQLite or LanceDB operation proxied through the controller.
+  # 单次经 controller 代理的 SQLite 或 LanceDB 操作超时。
+  request_timeout: "30s"
+
+  # Stable installation-level space identity; VMM business team/space/project rows remain inside the same database.
+  # 稳定的安装级空间身份；VMM 业务 team/space/project 记录仍位于同一数据库内。
+  space_id: "vmm-local-default"
+  space_label: "VulcanMemoryMesh"
 
 postgres:
   # Connection string for the combined PostgreSQL storage backend.

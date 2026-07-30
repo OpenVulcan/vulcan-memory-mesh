@@ -72,6 +72,8 @@ logging:
 storage:
   # This project override keeps the local combined PostgreSQL topology used by the existing test setup.
   # 本项目覆盖层保留现有测试环境使用的本地 PostgreSQL combined 拓扑。
+  # Set controller to route the same SQLite and LanceDB data root through the pinned local vldb-controller.
+  # 设置为 controller 时会通过固定版本的本地 vldb-controller 访问同一 SQLite 与 LanceDB 数据根。
   mode: "combined"
 
 sqlite:

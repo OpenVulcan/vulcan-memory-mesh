@@ -4,6 +4,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -21,6 +22,18 @@ type maintenanceCleanSelection struct {
 	SQLite   bool
 	LanceDB  bool
 	Postgres bool
+}
+
+// managedSQLiteCleaner exposes destructive managed-schema cleanup without leaking a concrete local FFI implementation into the command.
+// managedSQLiteCleaner 暴露受管 schema 破坏性清理能力，避免命令依赖具体本地 FFI 实现。
+type managedSQLiteCleaner interface {
+	DebugCleanManagedSchema(context.Context) error
+}
+
+// configuredLanceTableDropper exposes configured-table deletion for either direct FFI or controller-backed stores.
+// configuredLanceTableDropper 为直接 FFI 与 controller 存储暴露配置表删除能力。
+type configuredLanceTableDropper interface {
+	DebugDropConfiguredTable(context.Context) (string, error)
 }
 
 // parseMaintenanceCleanSelection normalizes the CLI value and translates it into the concrete cleanup targets requested by the operator.
@@ -65,9 +78,26 @@ func runMaintenanceClean(ctx context.Context, cfg config.Config, layout config.P
 	if err != nil {
 		return err
 	}
+	runtimeGuard, err := acquireMaintenanceRuntimeGuard(cfg, "storage clean")
+	if err != nil {
+		return err
+	}
+	defer func() {
+		_ = runtimeGuard.Close()
+	}()
 	localLayout, err := app.ResolveLocalStorageLayoutForPromptLayout(layout)
 	if err != nil {
 		return err
+	}
+
+	// Route controller-mode cleanup through one maintenance session so the command never opens either database directly.
+	// controller 模式清理统一经一个维护会话执行，确保命令不会直接打开任一数据库。
+	if cfg.UsesController() && (selection.SQLite || selection.LanceDB) {
+		if err := runControllerMaintenanceClean(ctx, cfg, localLayout.SQLiteDatabase, localLayout.LanceDBDirectory, selection); err != nil {
+			return err
+		}
+		selection.SQLite = false
+		selection.LanceDB = false
 	}
 
 	// Execute each destructive cleanup sequentially so operators can see exactly which backend blocked the wipe.
@@ -96,4 +126,39 @@ func runMaintenanceClean(ctx context.Context, cfg config.Config, layout config.P
 		fmt.Printf("[vmm-migrate] PostgreSQL managed schema cleaned via %s (schema=%s, flavor=%s)\n", strings.TrimSpace(postgresCfg.DSN), strings.TrimSpace(postgresCfg.Schema), strings.TrimSpace(postgresCfg.Flavor))
 	}
 	return nil
+}
+
+// runControllerMaintenanceClean executes selected local-store cleanup operations through one controller-owned maintenance dependency set.
+// runControllerMaintenanceClean 通过一组 controller 持有的维护依赖执行选中的本地存储清理操作。
+func runControllerMaintenanceClean(ctx context.Context, cfg config.Config, sqliteDatabase string, lanceDBDirectory string, selection maintenanceCleanSelection) error {
+	dependencies, err := app.BuildMaintenanceStorageDependencies(cfg)
+	if err != nil {
+		return fmt.Errorf("build controller maintenance storage: %w", err)
+	}
+	var operationErr error
+	if selection.SQLite {
+		cleaner, ok := dependencies.Relational.(managedSQLiteCleaner)
+		if !ok {
+			operationErr = fmt.Errorf("controller relational store does not support managed schema cleanup")
+		} else if err := cleaner.DebugCleanManagedSchema(ctx); err != nil {
+			operationErr = err
+		} else {
+			fmt.Printf("[vmm-migrate] SQLite managed schema cleaned via controller: %s\n", strings.TrimSpace(sqliteDatabase))
+		}
+	}
+	if operationErr == nil && selection.LanceDB {
+		dropper, ok := dependencies.Vector.(configuredLanceTableDropper)
+		if !ok {
+			operationErr = fmt.Errorf("controller vector store does not support configured table cleanup")
+		} else {
+			tableName, err := dropper.DebugDropConfiguredTable(ctx)
+			if err != nil {
+				operationErr = err
+			} else {
+				fmt.Printf("[vmm-migrate] LanceDB table dropped via controller: %s via %s\n", tableName, strings.TrimSpace(lanceDBDirectory))
+			}
+		}
+	}
+	shutdownErr := dependencies.Shutdown(context.Background())
+	return errors.Join(operationErr, shutdownErr)
 }

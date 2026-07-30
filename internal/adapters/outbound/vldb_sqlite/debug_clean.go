@@ -77,6 +77,15 @@ func DebugCleanManagedSchema(ctx context.Context, libraryPath string, databasePa
 	return debugCleanWithDatabase(ctx, databaseHandle, timeout)
 }
 
+// DebugCleanManagedSchema drops all VMM-managed tables through the database handle already owned by this store.
+// DebugCleanManagedSchema 通过当前存储已经持有的数据库句柄删除全部 VMM 受管表。
+func (s *Store) DebugCleanManagedSchema(ctx context.Context) error {
+	if s == nil {
+		return fmt.Errorf("sqlite store is not initialized")
+	}
+	return debugCleanWithDatabase(ctx, s.database, s.timeout)
+}
+
 // debugCleanWithDatabase sends the destructive cleanup script through an already prepared SQLite database handle.
 // debugCleanWithDatabase 用于通过已准备好的 SQLite 数据库句柄发送破坏性清理脚本。
 func debugCleanWithDatabase(ctx context.Context, database sqliteDatabaseHandle, timeout time.Duration) error {

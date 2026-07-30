@@ -10,7 +10,7 @@
 - 业务接口应该传什么
 - 管理接口应该传什么
 - trace、大小限制、超时和 TLS 应该怎么处理
-- 默认运行模式是 `split(SQLite + LanceDB)`，显式切换 `storage.mode=combined` 时会改为 PostgreSQL 组合库
+- 默认运行模式是 `split(SQLite + LanceDB)`；`storage.mode=controller` 保持同等接口但由单个 controller 进程持库；`storage.mode=combined` 改为 PostgreSQL 组合库
 
 ## 一、当前服务模型
 
@@ -211,6 +211,9 @@
 - `WriteMemories` 用于让 AI 工具主动写入长期记忆，不生成 turn
 - 如果默认 SQLite provider 返回 `SQLITE_BUSY / SQLITE_LOCKED / SQLITE_SCHEMA`，并通过 trailer 标记为可重试：
   - 服务端适配层会先做有界指数退避重试
+- `storage.mode=controller` 下，查询和幂等控制面请求可以在会话恢复后重试；SQLite/LanceDB 写请求遇到可恢复传输失败时不会自动重放：
+  - 适配层会把 SDK 的 `MutationOutcomeUncertainError` 映射成现有 `OutcomeUncertainError`
+  - 上层继续执行既有的按业务主键回查与补偿流程，避免响应丢失后重复提交写操作
 - 如果手工画像持久化阶段遇到关系库存储 provider 返回的“提交结果不确定”错误：
   - 服务端会先回查 instruction 行、profile node 行、退役状态和最终 profile Blob
   - 如果副作用其实已经存在，则会把这次请求收敛成成功
@@ -355,6 +358,7 @@
 用途：
 
 - 健康检查
+- 当 `storage.mode=controller` 时，还会检查 controller 会话可达、目标 space 存在且 SQLite/LanceDB 两个 backend 均已启用；任一条件不满足时返回 gRPC `Unavailable`
 
 ### ListProjects
 

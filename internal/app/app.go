@@ -89,6 +89,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	if err != nil {
 		return nil, err
 	}
+	trackStartupShutdown(storageCaps.Lifecycle)
 	trackStartupShutdown(storageCaps.Relational)
 	trackStartupShutdown(storageCaps.Vector)
 
@@ -113,7 +114,7 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	trackStartupShutdown(useCases.Retention)
 
 	server := buildRuntimeGRPCServer(cfg, grpcDeps)
-	shutdowns := buildUniqueShutdownSequence(fileWriter, llmOutputShutdowner, storageCaps.Relational, storageCaps.Vector, useCases.PostAction, useCases.Retention)
+	shutdowns := buildUniqueShutdownSequence(fileWriter, llmOutputShutdowner, storageCaps.Lifecycle, storageCaps.Relational, storageCaps.Vector, useCases.PostAction, useCases.Retention)
 	initSucceeded = true
 	return &Application{
 		Config:    cfg,

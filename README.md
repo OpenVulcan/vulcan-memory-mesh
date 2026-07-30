@@ -10,6 +10,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
 - 默认 `split` 模式使用 SQLite 保存关系数据、用 LanceDB 保存向量数据
+- `storage.mode=controller` 保持 SQLite/LanceDB 接口与数据布局不变，但由单个 `vldb-controller` 进程统一持有两套数据库句柄
 - 显式切换 `storage.mode=combined` 后，会改为由 PostgreSQL 统一承载关系与向量能力
 - 由 Caddy 等外部反向代理负责 TLS
 
@@ -114,7 +115,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 ### 数据后端
 
-当前主线保留两种正式运行模式：
+当前主线保留三种正式运行模式：
 
   - `split`（默认）
   - SQLite：关系库存储，负责层级、用户、session、turn、长期记忆、画像与回收治理元数据
@@ -131,6 +132,15 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 数据目录固定为 `output/database/lancedb/`
     - 向量 schema 版本与 SQLite 独立跟踪
     - 只有 LanceDB 列结构变化时，启动期才会触发表重建与 SQLite 回灌
+- `controller`（显式启用）
+  - 业务层仍使用与 `split` 完全相同的 SQLite 关系接口和 LanceDB 向量接口
+  - VMM 进程不再加载或打开数据库动态库；SQLite 与 LanceDB 调用统一透传给 `vldb-controller`
+  - 多个 VMM 客户端会话可以复用 controller 内按规范化物理路径注册的数据库资源，从而避免多个宿主进程分别持有同一个数据库文件
+  - SQLite 继续使用 `output/database/sqlite.db`，LanceDB 继续使用 `output/database/lancedb/`，切换模式不迁移业务 schema
+  - 启动时必须同时启用 SQLite 与 LanceDB binding；任一失败都会令 VMM 启动失败，绝不会静默回退到直接 FFI
+  - SQLite 强制启用数据库文件锁校验，底层固定对齐 `vldb-sqlite v0.1.6`
+  - controller 固定为 `v0.2.3`，LanceDB 固定为 `v0.1.5`
+  - 开发环境可使用 `controller.auto_spawn=true` 与 `managed` 模式；正式系统服务优先独立运行 controller，并把 VMM 设置为 `auto_spawn=false`
 - `combined`（显式启用）
   - PostgreSQL：统一承载关系数据、检索索引与向量能力
   - 该模式只在 `storage.mode=combined` 且 `storage.combined_provider=postgres` 时启用
@@ -519,6 +529,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 标准运行产物：
 
 - `output/bin/vmm-local.exe`
+- `output/bin/vldb-controller.exe`
 - `output/libs/`
 - `output/database/sqlite.db`
 - `output/database/lancedb/`
@@ -532,7 +543,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 - 运行时日志会同时输出到 stdout 和文件。
 - `split` 模式依赖的 SQLite / LanceDB 动态库会从 `output/libs/` 加载。
-- `split` 模式数据库文件会落到 `output/database/`。
+- `controller` 模式使用 `output/bin/vldb-controller(.exe)`，不会由 VMM 进程直接加载数据库动态库。
+- `split` 与 `controller` 模式使用相同的 `output/database/` 数据布局。
 - 标准打包产物默认写入 `output/logs/`。
 - 如果是 `go run` 或直接在仓库内调试，日志会写入仓库根目录下的 `logs/`。
 
@@ -552,6 +564,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 标准构建会产出以下可执行文件：
 
 - `output/bin/vmm-local.exe`：正常 gRPC 运行时
+- `output/bin/vldb-controller.exe`：统一持有 SQLite/LanceDB 资源的本地控制器
 - `output/bin/vmm-migrate.exe`：一次性维护工具
 - `output/bin/vmm-pii-tester.exe`：PII 规则测试器
 
@@ -594,6 +607,7 @@ vmm-local service status [service-name]
 - 服务运行时会自动把工作目录切到 `output/bin/`，保持与正式手工启动规则一致。
 - 服务不传递 `-config`，因此配置加载顺序仍是：打包配置 `output/configs/` 加上服务运行账户的默认用户覆盖目录 `~/.vmm`。Windows 默认服务账户、Linux systemd system unit 和 macOS LaunchDaemon 往往不是当前交互式登录用户。
 - 如果配置文件中引用了 `OPENROUTER_KEY`、`BAILIAN_API_KEY` 等环境变量，需要确保服务运行账户能读取这些系统环境变量。
+- `storage.mode=controller` 用于正式服务时，优先把 controller 注册为独立系统服务，并设置 `controller.auto_spawn=false`；当前 VMM 安装命令不会代替运维自动注册 controller 服务。
 
 ### 用户覆盖目录
 
@@ -643,6 +657,8 @@ vmm-local service status [service-name]
 
 - `-clean` 会只连接目标后端并执行受管数据清理
 - `split` 模式下可以分别清理 SQLite 和 LanceDB
+- `controller` 模式使用独立维护 client/session/binding，经 controller 执行 SQLite、LanceDB 清理与迁移导出，不会绕过控制器直接开库
+- `controller` 模式的维护会话要求目标 space 独占；如果仍有其他活跃 VMM client 附着同一数据根，维护命令会直接拒绝执行
 - `combined` 模式下可以单独清理 PostgreSQL 受管 schema
 
 #### 存储迁移
@@ -655,7 +671,7 @@ vmm-local service status [service-name]
 
 说明：
 
-- 迁移源固定为 SQLite，不依赖 LanceDB
+- 迁移源固定为 SQLite，不依赖 LanceDB；controller 模式下 SQLite 快照经 controller 读取
 - 迁移过程中会在 Go 内存中解析 `vector_json`，然后直接写入 PostgreSQL 原生 `embedding` 向量列
 - 迁移目标使用 `postgres.*` 配置，不要求当前 `storage.mode` 已经切到 `combined`
 
@@ -672,7 +688,7 @@ vmm-local service status [service-name]
 - 执行前必须先停止 `vmm-local` / gRPC 运行时服务；如果 `grpc.listen_addr` 仍被占用，命令会直接拒绝执行，并在整个重建期间继续占住该监听地址
 - 执行前必须手工输入 `Y` 明确确认；未确认会立即退出
 - 只会处理 `active` 且未过期的长期记忆，不会重建失活数据，也不会对垃圾箱数据做语义重建
-- `split` 模式会先清空 SQLite 中的 durable 向量并重建 LanceDB 表，再按当前模型重新生成 active 向量并同步回填两边
+- `split` 与 `controller` 模式都会先清空 SQLite 中的 durable 向量并重建 LanceDB 表，再按当前模型重新生成 active 向量并同步回填两边；controller 模式全程经独立维护会话执行
 - `combined` 模式会先重建 PostgreSQL `embedding` 列的向量维度，再为当前有效记忆重新生成向量
 - 重建时直接复用当前配置里的 embedding 路由与预算；如果所有 Key 都因为预算耗尽暂时不可用，会自动等待 30 秒后继续
 - 该命令的目标是“维度迁移型重建”，默认围绕模型切换后的向量维度变化执行
@@ -693,6 +709,7 @@ vmm-local service status [service-name]
 - `prompts.prompt_language`
 - `storage.mode`
 - `storage.combined_provider`
+- `controller.*`
 - `relational.provider`
 - `sqlite.timeout`
 - `sqlite.tokenizer_mode`

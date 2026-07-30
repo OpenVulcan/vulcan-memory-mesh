@@ -10,6 +10,8 @@
 - `ExecuteBatch`
 - sqlite 网关标记为可重试错误时的有界退避
 
+切换为 `storage.mode=controller` 后，上述业务 SQL、FTS、批量写入与补偿语义不变；区别仅在最底层 SQLite/LanceDB 句柄由 controller 进程持有。controller 写请求发生可恢复传输失败时不会自动重放，而是进入现有“结果不确定→按业务主键回查或补偿”链路。
+
 当前相关方法只有：
 
 - `vmm.v1.VMMService/PostAction`

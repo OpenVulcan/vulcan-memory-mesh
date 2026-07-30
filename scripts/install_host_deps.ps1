@@ -17,9 +17,18 @@ $ThirdPartyDir = Join-Path $ProjectDir "third_party"
 $DepsDir = Join-Path $ThirdPartyDir "deps"
 $LanceDBDir = Join-Path $ThirdPartyDir "vldb_lancedb"
 $SQLiteDir = Join-Path $ThirdPartyDir "vldb_sqlite"
+$ControllerDir = Join-Path $ThirdPartyDir "vldb_controller"
 $LanceDBRepo = "OpenVulcan/vldb-lancedb"
 $SQLiteRepo = "OpenVulcan/vldb-sqlite"
+$ControllerRepo = "OpenVulcan/vldb-controller"
+# Pinned dependency tags keep direct split mode aligned with the versions embedded by vldb-controller.
+# 固定依赖标签用于确保直接 split 模式与 vldb-controller 内嵌的版本保持一致。
+$LanceDBTag = "v0.1.5"
+$SQLiteTag = "v0.1.6"
+$ControllerTag = "v0.2.3"
 
+# Ensure-Dir creates one dependency workspace directory when it does not already exist.
+# Ensure-Dir 在依赖工作区目录尚不存在时创建该目录。
 function Ensure-Dir {
     param([string]$Path)
 
@@ -28,6 +37,8 @@ function Ensure-Dir {
     }
 }
 
+# Find-LocalArchive resolves only the exact pinned release archive from known dependency cache directories.
+# Find-LocalArchive 仅从已知依赖缓存目录中解析精确匹配的固定版本 release 压缩包。
 function Find-LocalArchive {
     param([string]$AssetName)
 
@@ -43,6 +54,8 @@ function Find-LocalArchive {
     return $null
 }
 
+# Get-AvailableTarPath locates the host tar executable used to unpack release assets.
+# Get-AvailableTarPath 用于定位解压 release 资产所需的宿主 tar 可执行文件。
 function Get-AvailableTarPath {
     $SystemTar = "$env:SystemRoot\System32\tar.exe"
     if (Test-Path -LiteralPath $SystemTar) {
@@ -55,6 +68,8 @@ function Get-AvailableTarPath {
     throw "tar.exe is required to extract host dependency archives / 解压宿主依赖需要 tar.exe"
 }
 
+# Get-CurrentArchitectureKey maps the current process architecture to one supported release architecture key.
+# Get-CurrentArchitectureKey 把当前进程架构映射为受支持的 release 架构标识。
 function Get-CurrentArchitectureKey {
     $Arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
     switch ($Arch) {
@@ -64,25 +79,8 @@ function Get-CurrentArchitectureKey {
     }
 }
 
-function Get-LatestRepoTag {
-    param(
-        [string]$Repo,
-        [string]$DisplayName
-    )
-
-    $ApiURL = "https://api.github.com/repos/$Repo/tags?per_page=1"
-    Write-Host "==> Querying latest $DisplayName tag..."
-    $Tags = Invoke-RestMethod -Uri $ApiURL -UseBasicParsing
-    if (-not $Tags) {
-        throw "latest $DisplayName tag lookup returned no results / 最新 $DisplayName tag 查询结果为空"
-    }
-    $FirstTag = @($Tags)[0]
-    if (-not $FirstTag.name) {
-        throw "latest $DisplayName tag is missing name / 最新 $DisplayName tag 缺少 name 字段"
-    }
-    return $FirstTag.name
-}
-
+# Get-ReleaseByTagOrNull loads one exact GitHub release and returns null only when that tag does not exist.
+# Get-ReleaseByTagOrNull 加载一个精确 GitHub release，仅在目标标签不存在时返回空值。
 function Get-ReleaseByTagOrNull {
     param(
         [string]$Repo,
@@ -108,8 +106,10 @@ function Get-ReleaseByTagOrNull {
     }
 }
 
+# Get-VldbAssetInfo returns the exact target triple, archive format, and installed filename for one pinned component.
+# Get-VldbAssetInfo 返回某个固定组件对应的精确 target triple、压缩格式与安装文件名。
 function Get-VldbAssetInfo {
-    param([ValidateSet("sqlite", "lancedb")] [string]$Kind)
+    param([ValidateSet("sqlite", "lancedb", "controller")] [string]$Kind)
 
     $ArchKey = Get-CurrentArchitectureKey
     if ($script:IsWindowsPlatform) {
@@ -119,76 +119,82 @@ function Get-VldbAssetInfo {
         return @{
             target = "x86_64-pc-windows-msvc"
             archive_ext = ".zip"
-            library_name = if ($Kind -eq "sqlite") { "vldb_sqlite.dll" } else { "vldb_lancedb.dll" }
+            library_name = if ($Kind -eq "sqlite") { "vldb_sqlite.dll" } elseif ($Kind -eq "lancedb") { "vldb_lancedb.dll" } else { "vldb-controller.exe" }
         }
     }
     if ($script:IsLinuxPlatform) {
         return @{
             target = if ($ArchKey -eq "aarch64") { "aarch64-unknown-linux-gnu" } else { "x86_64-unknown-linux-gnu" }
             archive_ext = ".tar.gz"
-            library_name = if ($Kind -eq "sqlite") { "libvldb_sqlite.so" } else { "libvldb_lancedb.so" }
+            library_name = if ($Kind -eq "sqlite") { "libvldb_sqlite.so" } elseif ($Kind -eq "lancedb") { "libvldb_lancedb.so" } else { "vldb-controller" }
         }
     }
     if ($script:IsMacOSPlatform) {
         return @{
             target = if ($ArchKey -eq "aarch64") { "aarch64-apple-darwin" } else { "x86_64-apple-darwin" }
             archive_ext = ".tar.gz"
-            library_name = if ($Kind -eq "sqlite") { "libvldb_sqlite.dylib" } else { "libvldb_lancedb.dylib" }
+            library_name = if ($Kind -eq "sqlite") { "libvldb_sqlite.dylib" } elseif ($Kind -eq "lancedb") { "libvldb_lancedb.dylib" } else { "vldb-controller" }
         }
     }
     throw "unsupported platform for host dependency bootstrap"
 }
 
+# Install-VldbLibrary downloads, verifies, extracts, and records one pinned database library or controller binary.
+# Install-VldbLibrary 下载、校验、解压并记录一个固定版本数据库动态库或 controller 二进制。
 function Install-VldbLibrary {
-    param([ValidateSet("sqlite", "lancedb")] [string]$Kind)
+    param([ValidateSet("sqlite", "lancedb", "controller")] [string]$Kind)
 
     Ensure-Dir $ThirdPartyDir
     Ensure-Dir $DepsDir
 
     $Info = Get-VldbAssetInfo -Kind $Kind
     $TarPath = Get-AvailableTarPath
-    $TargetDir = if ($Kind -eq "sqlite") { $SQLiteDir } else { $LanceDBDir }
-    $Repo = if ($Kind -eq "sqlite") { $SQLiteRepo } else { $LanceDBRepo }
-    $RepoPrefix = if ($Kind -eq "sqlite") { "vldb-sqlite" } else { "vldb-lancedb" }
+    switch ($Kind) {
+        "sqlite" {
+            $TargetDir = $SQLiteDir
+            $Repo = $SQLiteRepo
+            $RepoPrefix = "vldb-sqlite"
+            $TagName = $SQLiteTag
+        }
+        "lancedb" {
+            $TargetDir = $LanceDBDir
+            $Repo = $LanceDBRepo
+            $RepoPrefix = "vldb-lancedb"
+            $TagName = $LanceDBTag
+        }
+        "controller" {
+            $TargetDir = $ControllerDir
+            $Repo = $ControllerRepo
+            $RepoPrefix = "vldb-controller"
+            $TagName = $ControllerTag
+        }
+    }
 
     Ensure-Dir $TargetDir
 
-    $LocalPattern = "$RepoPrefix-lib-v*-$($Info.target)$($Info.archive_ext)"
-    $LocalArchive = Get-ChildItem -Path $ThirdPartyDir -File -Filter $LocalPattern -ErrorAction SilentlyContinue |
-        Sort-Object Name -Descending |
-        Select-Object -First 1
-    if (-not $LocalArchive) {
-        $LocalArchive = Get-ChildItem -Path $ThirdPartyDir -Directory -ErrorAction SilentlyContinue |
-            ForEach-Object { Get-ChildItem -Path $_.FullName -File -Filter $LocalPattern -ErrorAction SilentlyContinue } |
-            Sort-Object Name -Descending |
-            Select-Object -First 1
-    }
-
-    $TagName = $null
-    $AssetName = $null
-    $LocalArchivePath = $null
-    if ($LocalArchive) {
-        $AssetName = $LocalArchive.Name
-        if ($AssetName -match "^$RepoPrefix-lib-(v.+)-[^-]+(?:-[^-]+){2,3}(\\.zip|\\.tar\\.gz)$") {
-            $TagName = $Matches[1]
-        } else {
-            throw "unable to parse $Kind tag from local archive name: $AssetName"
-        }
-        $LocalArchivePath = $LocalArchive.FullName
+    # Resolve only the pinned asset so an unrelated newer local archive cannot silently change runtime behavior.
+    # 只解析固定版本资产，避免无关的较新本地压缩包静默改变运行时行为。
+    $AssetName = if ($Kind -eq "controller") {
+        "$RepoPrefix-$TagName-$($Info.target)$($Info.archive_ext)"
     } else {
-        $TagName = Get-LatestRepoTag -Repo $Repo -DisplayName $RepoPrefix
-        $AssetName = "$RepoPrefix-lib-$TagName-$($Info.target)$($Info.archive_ext)"
-        $LocalArchivePath = Find-LocalArchive -AssetName $AssetName
+        "$RepoPrefix-lib-$TagName-$($Info.target)$($Info.archive_ext)"
     }
+    $LocalArchivePath = Find-LocalArchive -AssetName $AssetName
 
     $MarkerFile = Join-Path $TargetDir ".installed-$TagName-$($Info.target)"
     $LibraryDest = Join-Path $DepsDir $Info.library_name
     if ((Test-Path -LiteralPath $MarkerFile) -and (Test-Path -LiteralPath $LibraryDest)) {
-        Write-Host "==> $RepoPrefix library already installed ($AssetName)."
-        return
+        $MarkerContent = Get-Content -LiteralPath $MarkerFile -Raw -ErrorAction SilentlyContinue
+        $ExpectedInstalledHash = if ($null -eq $MarkerContent) { "" } else { ([string]$MarkerContent).Trim().ToLowerInvariant() }
+        $ActualInstalledHash = (Get-FileHash -LiteralPath $LibraryDest -Algorithm SHA256).Hash.ToLowerInvariant()
+        if ($ExpectedInstalledHash -and $ExpectedInstalledHash -eq $ActualInstalledHash) {
+            Write-Host "==> $RepoPrefix library already installed and verified ($AssetName)."
+            return
+        }
     }
 
     $Release = $null
+    $ChecksumAsset = $null
     if (-not $LocalArchivePath) {
         $Release = Get-ReleaseByTagOrNull -Repo $Repo -TagName $TagName
         if (-not $Release) {
@@ -198,6 +204,11 @@ function Install-VldbLibrary {
         if (-not $Asset) {
             $Available = ($Release.assets | ForEach-Object { $_.name }) -join ", "
             throw "$RepoPrefix asset '$AssetName' not found in release '$TagName'. Available assets: $Available / 目标 tag 对应 Release 中未找到该库资产。"
+        }
+        $ChecksumAssetName = "$AssetName.sha256"
+        $ChecksumAsset = $Release.assets | Where-Object { $_.name -eq $ChecksumAssetName } | Select-Object -First 1
+        if (-not $ChecksumAsset) {
+            throw "$RepoPrefix checksum asset '$ChecksumAssetName' not found in release '$TagName' / 目标 tag 对应 Release 中未找到校验和资产。"
         }
     }
 
@@ -212,9 +223,23 @@ function Install-VldbLibrary {
         if ($LocalArchivePath) {
             Write-Host "==> Using local $RepoPrefix library package: $LocalArchivePath"
             Copy-Item -Path $LocalArchivePath -Destination $ArchivePath -Force
+            $LocalChecksumPath = "$LocalArchivePath.sha256"
+            if (!(Test-Path -LiteralPath $LocalChecksumPath)) {
+                throw "local dependency archive requires checksum sidecar: $LocalChecksumPath / 本地依赖压缩包缺少校验和旁文件。"
+            }
+            Copy-Item -Path $LocalChecksumPath -Destination "$ArchivePath.sha256" -Force
         } else {
             Write-Host "==> Downloading $RepoPrefix library package: $AssetName"
             Invoke-WebRequest -Uri $Asset.browser_download_url -OutFile $ArchivePath -UseBasicParsing
+            Invoke-WebRequest -Uri $ChecksumAsset.browser_download_url -OutFile "$ArchivePath.sha256" -UseBasicParsing
+        }
+
+        # Verify the release archive before extraction so corrupted or substituted assets never reach the packaged dependency directory.
+        # 在解压前校验 release 压缩包，确保损坏或被替换的资产不会进入打包依赖目录。
+        $ExpectedArchiveHash = ((Get-Content -LiteralPath "$ArchivePath.sha256" -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
+        $ActualArchiveHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        if (-not $ExpectedArchiveHash -or $ExpectedArchiveHash -ne $ActualArchiveHash) {
+            throw "$RepoPrefix archive checksum mismatch for $AssetName / 依赖压缩包 SHA256 校验失败。"
         }
 
         if ($Info.archive_ext -eq ".zip") {
@@ -232,7 +257,8 @@ function Install-VldbLibrary {
 
         Get-ChildItem -Path $TargetDir -Filter ".installed-*" -File -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
-        New-Item -ItemType File -Path $MarkerFile -Force | Out-Null
+        $InstalledHash = (Get-FileHash -LiteralPath $LibraryDest -Algorithm SHA256).Hash.ToLowerInvariant()
+        Set-Content -LiteralPath $MarkerFile -Value $InstalledHash -Encoding ascii -NoNewline
         Write-Host "==> $RepoPrefix library installed successfully."
     } finally {
         Remove-Item -Path $TempDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -241,3 +267,4 @@ function Install-VldbLibrary {
 
 Install-VldbLibrary -Kind "sqlite"
 Install-VldbLibrary -Kind "lancedb"
+Install-VldbLibrary -Kind "controller"

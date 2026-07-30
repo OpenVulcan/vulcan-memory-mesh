@@ -85,6 +85,8 @@ storage:
   # 支持取值：
   # - split: relational storage uses sqlite and vector storage uses lancedb.
   # - split：关系存储使用 sqlite，向量存储使用 lancedb。
+  # - controller: sqlite and lancedb use one shared local vldb-controller process.
+  # - controller：sqlite 与 lancedb 统一经由一个本地 vldb-controller 进程访问。
   # - combined: relational and vector capabilities both use the unified PostgreSQL combined store.
   # - combined：关系与向量能力统一走 PostgreSQL 组合库存储。
   mode: "combined"

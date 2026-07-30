@@ -12,6 +12,15 @@
 
 - `127.0.0.1:17625`
 
+当测试 `storage.mode=controller` 时，启动前还应确认：
+
+- `output/bin/vldb-controller(.exe)` 来自锁定的 `v0.2.3` release
+- SQLite 安装标记为 `v0.1.6`，LanceDB 安装标记为 `v0.1.5`
+- controller endpoint 仅绑定 loopback
+- VMM 启动后 controller 状态中同时存在 SQLite 与 LanceDB backend
+- 启动第二个使用相同 `controller.space_id` 和数据库根的 VMM 测试进程后，两端都能读取同一项目与向量数据，且不会出现数据库文件锁争用
+- controller 被停止后请求必须显式失败或完成 SDK 会话恢复，不允许切换为直接 FFI；写请求响应丢失时不得自动重放
+
 ## 一、Healthz
 
 ```powershell
@@ -20,6 +29,11 @@ grpcurl -plaintext `
   127.0.0.1:17625 `
   vmm.v1.VMMService/Healthz
 ```
+
+预期结果：
+
+- `split` / `combined` 模式在 VMM gRPC 服务可用时返回 `status: "ok"`
+- `controller` 模式还会检查 controller 会话、目标 space、SQLite backend 和 LanceDB backend；任一项不可用时返回 gRPC `Unavailable`
 
 ## 二、ListProjects
 

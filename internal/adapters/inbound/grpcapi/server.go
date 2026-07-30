@@ -18,6 +18,8 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/textutil"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/types/known/emptypb"
 )
 
@@ -32,6 +34,7 @@ type Dependencies struct {
 	PreCheck          usecase.PreCheckExecutor
 	PostAction        usecase.PostActionExecutor
 	ScopeResolver     appports.RequestScopeResolver
+	Health            appports.HealthChecker
 	Logger            *logx.Logger
 	Validator         *RequestValidator
 	DebugRPCPayloads  bool
@@ -52,6 +55,7 @@ type Server struct {
 	chatCompact      usecase.ChatCompactExecutor
 	preCheck         usecase.PreCheckExecutor
 	postAction       usecase.PostActionExecutor
+	health           appports.HealthChecker
 	workspaceTimeout time.Duration
 	preTimeout       time.Duration
 	postTimeout      time.Duration
@@ -81,6 +85,7 @@ func NewServer(deps Dependencies) *Server {
 		chatCompact:      deps.ChatCompact,
 		preCheck:         deps.PreCheck,
 		postAction:       deps.PostAction,
+		health:           deps.Health,
 		workspaceTimeout: deps.WorkspaceTimeout,
 		preTimeout:       deps.PreCheckTimeout,
 		postTimeout:      deps.PostActionTimeout,
@@ -150,6 +155,11 @@ func (s *Server) requireReceiver() error {
 func (s *Server) Healthz(ctx context.Context, _ *emptypb.Empty) (*vmmv1.HealthzResponse, error) {
 	if err := s.requireReceiver(); err != nil {
 		return nil, err
+	}
+	if s.health != nil {
+		if err := s.health.CheckHealth(ctx); err != nil {
+			return nil, status.Errorf(codes.Unavailable, "runtime storage is unavailable: %v", err)
+		}
 	}
 	return &vmmv1.HealthzResponse{Status: "ok", TraceId: trace.IDFromContext(ctx)}, nil
 }

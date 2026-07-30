@@ -83,6 +83,28 @@ function Sync-HostLibraries {
     }
 }
 
+# Get-ControllerBinaryName returns the vldb-controller executable filename for the current host platform.
+# Get-ControllerBinaryName 用于返回当前宿主平台对应的 vldb-controller 可执行文件名。
+function Get-ControllerBinaryName {
+    $HostIsWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    if ($HostIsWindows) {
+        return "vldb-controller.exe"
+    }
+    return "vldb-controller"
+}
+
+# Sync-ControllerBinary copies the pinned controller executable into output/bin beside the VMM binaries.
+# Sync-ControllerBinary 用于把固定版本 controller 可执行文件复制到 VMM 二进制旁的 output/bin。
+function Sync-ControllerBinary {
+    Write-Host "=> 📦 Syncing vldb-controller..." -ForegroundColor Gray
+    $BinaryName = Get-ControllerBinaryName
+    $SourcePath = Join-Path $ThirdPartyDepsDir $BinaryName
+    if (!(Test-Path -LiteralPath $SourcePath)) {
+        throw "missing controller executable: $SourcePath. Run '.\\make.ps1 deps host' first."
+    }
+    Copy-Item -Path $SourcePath -Destination (Join-Path $BinDir $BinaryName) -Force
+}
+
 # Ensure-DatabaseLayout creates the packaged database root next to the binary so local SQLite and LanceDB backends share one deterministic storage layout.
 # Ensure-DatabaseLayout 用于在二进制旁边创建统一的 database 根目录，让本地 SQLite 与 LanceDB 后端共享稳定存储布局。
 function Ensure-DatabaseLayout {
@@ -134,6 +156,7 @@ function Do-Build {
     
     Sync-Configs
     Sync-HostLibraries
+    Sync-ControllerBinary
     Ensure-DatabaseLayout
     
     Write-Host "=> ✅ Build Success!" -ForegroundColor Green

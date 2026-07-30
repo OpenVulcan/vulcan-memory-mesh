@@ -13,7 +13,7 @@
 
 ## 一、当前正式运行模式
 
-当前主线保留两种正式运行模式：
+当前主线保留三种正式运行模式：
 
 ### 1. `split`（默认）
 
@@ -21,12 +21,20 @@
 - 向量数据：LanceDB
 - 适合本地默认部署与最小依赖运行
 
-### 2. `combined`（显式启用）
+### 2. `controller`（显式启用）
+
+- 关系数据仍由 SQLite 承载，向量数据仍由 LanceDB 承载
+- SQLite/LanceDB 的业务接口、schema 与 `output/database/` 物理布局和 `split` 模式完全对等
+- VMM 进程不直接打开数据库；单个 `vldb-controller` 进程按规范化物理路径复用资源并承接所有数据面调用
+- 多个 VMM 客户端使用各自的 session 与 binding，但共享 controller 内的底层数据库资源，从所有权边界上避免多宿主进程争用同一数据库文件
+- controller 不可用或任一 backend 启用失败时直接启动失败，不回退到 `split`
+
+### 3. `combined`（显式启用）
 
 - 关系与向量：统一落 PostgreSQL
 - 仅在 `storage.mode=combined` 且 `storage.combined_provider=postgres` 时启用
 
-两种模式共享同一套 gRPC 契约、同一套 usecase 语义和同一套层级模型。
+三种模式共享同一套 gRPC 契约、同一套 usecase 语义和同一套层级模型。
 
 ## 二、层级模型与确定性寻址
 
