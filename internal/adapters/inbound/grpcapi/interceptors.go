@@ -4,6 +4,7 @@ package grpcapi
 
 import (
 	"context"
+	"crypto/subtle"
 	"fmt"
 	"strings"
 	"time"
@@ -23,6 +24,31 @@ import (
 const traceIDHeader = "x-trace-id"
 
 type resolvedSessionContextKey struct{}
+
+// BearerTokenInterceptor requires one exact authorization token before any managed-runtime RPC reaches business logic.
+// BearerTokenInterceptor 用于在任何托管运行时 RPC 进入业务逻辑前校验精确的授权令牌。
+func BearerTokenInterceptor(expectedToken string) grpc.UnaryServerInterceptor {
+	expectedAuthorization := []byte("Bearer " + strings.TrimSpace(expectedToken))
+	return func(ctx context.Context, req any, info *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+		ctx = normalizedUnaryContext(ctx)
+		if len(expectedAuthorization) == len("Bearer ") {
+			return nil, status.Error(codes.Internal, "managed grpc access token is not configured")
+		}
+		authorization := ""
+		if incoming, ok := metadata.FromIncomingContext(ctx); ok {
+			values := incoming.Get("authorization")
+			if len(values) == 1 {
+				authorization = strings.TrimSpace(values[0])
+			}
+		}
+		providedAuthorization := []byte(authorization)
+		if len(providedAuthorization) != len(expectedAuthorization) ||
+			subtle.ConstantTimeCompare(providedAuthorization, expectedAuthorization) != 1 {
+			return nil, status.Error(codes.Unauthenticated, "managed grpc authorization failed")
+		}
+		return invokeUnaryHandler(ctx, req, handler)
+	}
+}
 
 // scopeResolvedRequest is the narrow request shape used by the scope interceptor to resolve project/user/session coordinates.
 // scopeResolvedRequest 用于描述范围拦截器解析 project/user/session 坐标时需要的最小请求形态。

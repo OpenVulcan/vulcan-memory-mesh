@@ -10,8 +10,10 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 
+	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/platform/logx"
@@ -22,10 +24,19 @@ import (
 // Application holds the fully wired local runtime, including the gRPC server and shutdown hooks.
 // Application 用于持有完整装配后的本地运行时，包括 gRPC 服务和关闭钩子。
 type Application struct {
-	Config    config.Config
-	Logger    *logx.Logger
-	Server    *grpc.Server
-	Shutdowns []appports.Shutdowner
+	Config                 config.Config
+	Logger                 *logx.Logger
+	Server                 *grpc.Server
+	Shutdowns              []appports.Shutdowner
+	AllowEphemeralFallback bool
+}
+
+// applicationOptions carries the composition differences that are exclusive to a managed child runtime.
+// applicationOptions 用于承载仅属于托管子运行时的组合差异。
+type applicationOptions struct {
+	ManagedConfig   *config.ManagedConfig
+	DataRoot        string
+	GRPCAccessToken string
 }
 
 // NewLocal creates the local application instance.
@@ -34,12 +45,29 @@ func NewLocal(cfg config.Config, prompts appports.PromptSource, layout config.Pr
 	return newApplication(cfg, prompts, layout)
 }
 
+// NewManaged creates a child runtime that uses Vulcan Code inference, an explicit data root, and authenticated gRPC.
+// NewManaged 用于创建使用 Vulcan Code 推理、显式数据根与 gRPC 鉴权的子运行时。
+func NewManaged(bundle config.ManagedRuntimeBundle, prompts appports.PromptSource) (*Application, error) {
+	manifest := bundle.Manifest
+	return newApplicationWithOptions(bundle.Config, prompts, bundle.Layout, applicationOptions{
+		ManagedConfig:   &manifest,
+		DataRoot:        bundle.DataRoot,
+		GRPCAccessToken: bundle.Manifest.Runtime.GRPC.AccessToken,
+	})
+}
+
 // newApplication composes the runtime dependencies for the local gRPC server while delegating adapter, pipeline, and transport construction to focused builders.
 // newApplication 用于为本地 gRPC 服务装配运行时依赖，并把适配器、pipeline 与传输层构建委派给更聚焦的 builder。
 func newApplication(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
+	return newApplicationWithOptions(cfg, prompts, layout, applicationOptions{})
+}
+
+// newApplicationWithOptions composes either the standalone runtime or the explicitly managed child runtime from one verified option set.
+// newApplicationWithOptions 用于根据一组已验证选项装配独立运行时或显式托管子运行时。
+func newApplicationWithOptions(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout, options applicationOptions) (*Application, error) {
 	// Initialize shared runtime utilities such as logging and ID generation first.
 	// 先初始化日志和 ID 生成器等共享运行时能力。
-	logDir, err := resolveRuntimeLogDir(layout)
+	logDir, err := resolveRuntimeLogDirWithDataRoot(layout, options.DataRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -81,11 +109,11 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 
 	// Build the low-level AI and storage foundations before composing the business pipeline.
 	// 先构建底层 AI 与存储基础设施，再装配业务 pipeline。
-	aiDeps, err := buildRuntimeAIDependencies(cfg)
+	aiDeps, err := buildRuntimeAIDependenciesForOptions(cfg, options)
 	if err != nil {
 		return nil, err
 	}
-	storageCaps, err := initRuntimeStorageCapabilities(cfg, logger, layout)
+	storageCaps, err := initRuntimeStorageCapabilitiesWithDataRoot(cfg, logger, layout, options.DataRoot)
 	if err != nil {
 		return nil, err
 	}
@@ -113,6 +141,12 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 	trackStartupShutdown(useCases.PostAction)
 	trackStartupShutdown(useCases.Retention)
 
+	if strings.TrimSpace(options.GRPCAccessToken) != "" {
+		grpcDeps.ExtraInterceptors = append(
+			[]grpc.UnaryServerInterceptor{grpcapi.BearerTokenInterceptor(options.GRPCAccessToken)},
+			grpcDeps.ExtraInterceptors...,
+		)
+	}
 	server := buildRuntimeGRPCServer(cfg, grpcDeps)
 	shutdowns := buildUniqueShutdownSequence(fileWriter, llmOutputShutdowner, storageCaps.Lifecycle, storageCaps.Relational, storageCaps.Vector, useCases.PostAction, useCases.Retention)
 	initSucceeded = true
@@ -121,6 +155,8 @@ func newApplication(cfg config.Config, prompts appports.PromptSource, layout con
 		Logger:    logger,
 		Server:    server,
 		Shutdowns: shutdowns,
+		AllowEphemeralFallback: options.ManagedConfig != nil &&
+			options.ManagedConfig.Runtime.GRPC.AllowEphemeralFallback,
 	}, nil
 }
 
@@ -133,6 +169,17 @@ func (a *Application) Run(ctx context.Context) error {
 // RunWithReady starts the gRPC server and invokes ready after the listener is bound so service managers can report accurate startup state.
 // RunWithReady 用于启动 gRPC 服务，并在监听器绑定成功后调用 ready，让服务管理器可以报告准确的启动状态。
 func (a *Application) RunWithReady(ctx context.Context, ready func()) error {
+	return a.RunWithReadyAddress(ctx, func(_ string) error {
+		if ready != nil {
+			ready()
+		}
+		return nil
+	})
+}
+
+// RunWithReadyAddress starts the gRPC server and reports the operating-system-resolved listener address.
+// RunWithReadyAddress 用于启动 gRPC 服务，并回报由操作系统最终解析出的监听地址。
+func (a *Application) RunWithReadyAddress(ctx context.Context, ready func(string) error) error {
 	// Fail fast on obviously incomplete runtime state so callers receive one deterministic error instead of a goroutine panic from grpc.Server.
 	// 对明显不完整的运行时状态提前失败，让调用方拿到确定性错误，而不是在 goroutine 里被 grpc.Server 触发 panic。
 	if a == nil {
@@ -150,13 +197,21 @@ func (a *Application) RunWithReady(ctx context.Context, ready func()) error {
 		// Bind the TCP listener at start time so TLS can be terminated by an external proxy such as Caddy.
 		// 在启动时绑定 TCP 监听器，让 TLS 由外部代理如 Caddy 终止。
 		listener, err := net.Listen("tcp", a.Config.GRPC.ListenAddr)
+		if err != nil && a.AllowEphemeralFallback {
+			a.Logger.Warn("preferred grpc address unavailable; using ephemeral loopback", "preferred_addr", a.Config.GRPC.ListenAddr, "error", err.Error())
+			listener, err = net.Listen("tcp", "127.0.0.1:0")
+		}
 		if err != nil {
 			errCh <- err
 			return
 		}
 		a.Logger.Info("grpc server listening", "addr", listener.Addr().String())
 		if ready != nil {
-			ready()
+			if err := ready(listener.Addr().String()); err != nil {
+				_ = listener.Close()
+				errCh <- fmt.Errorf("managed ready callback: %w", err)
+				return
+			}
 		}
 		if err := a.Server.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
 			errCh <- err

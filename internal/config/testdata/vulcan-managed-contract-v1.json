@@ -1,0 +1,139 @@
+{
+  "contract_version": 1,
+  "owner": "vulcan-code",
+  "instance_id": "fixture-instance",
+  "generation": 1,
+  "parent": {
+    "process_id": 4242,
+    "started_at_unix_ms": 1700000000000
+  },
+  "assets": {
+    "system_root": "C:\\fixtures\\vmm-assets"
+  },
+  "runtime": {
+    "data_root": "C:\\fixtures\\vmm-data",
+    "status_file": "C:\\fixtures\\vmm-runtime\\managed-status.json",
+    "shutdown_file": "C:\\fixtures\\vmm-runtime\\managed-shutdown",
+    "grpc": {
+      "preferred_listen_addr": "127.0.0.1:17901",
+      "allow_ephemeral_fallback": true,
+      "access_token": "fixture-token",
+      "max_receive_message_bytes": 1048576,
+      "request_timeout": {
+        "workspace": "15s",
+        "pre_check": "15s",
+        "post_action": "15s"
+      },
+      "shutdown_timeout": "10s",
+      "keepalive": {
+        "enabled": true,
+        "time": "5m0s",
+        "timeout": "20s",
+        "max_connection_idle": "0s",
+        "max_connection_age": "0s",
+        "max_connection_age_grace": "0s",
+        "min_ping_interval": "20s",
+        "permit_without_stream": false
+      }
+    },
+    "storage": {
+      "mode": "controller",
+      "controller_endpoint": "127.0.0.1:17625",
+      "controller_auto_spawn": false,
+      "controller_space_id": "vmm-memory",
+      "controller_space_label": "VulcanMemoryMesh",
+      "controller_lease": {
+        "endpoint": "http://127.0.0.1:19801",
+        "auto_spawn": false,
+        "executable": "",
+        "process_mode": "managed",
+        "minimum_uptime": "5m0s",
+        "idle_timeout": "15m0s",
+        "lease_ttl": "10s",
+        "connect_timeout": "5s",
+        "startup_timeout": "15s",
+        "startup_retry_interval": "250ms",
+        "lease_renew_interval": "2s",
+        "request_timeout": "30s",
+        "space_id": "vmm-memory",
+        "space_label": "VulcanMemoryMesh"
+      }
+    },
+    "inference": {
+      "mode": "vulcan_code",
+      "discovery_file": "C:\\fixtures\\inference-service.json",
+      "expected_caller_id": "vmm-local",
+      "consumer_profile_id": "vmm",
+      "startup_timeout": "30s",
+      "embedding_dimension": 1024
+    },
+    "logging": {
+      "level": "info",
+      "format": "text",
+      "debug_rpc_payloads": false,
+      "llm_output_enabled": false,
+      "protect_payloads": false
+    },
+    "pii": {
+      "default_language": "zh-CN"
+    },
+    "noise": {
+      "enabled": true,
+      "default_language": "zh-CN",
+      "semantic_enabled": true,
+      "semantic_threshold": 0.88
+    },
+    "prompts": {
+      "prompt_language": "default_en"
+    },
+    "vector": {
+      "provider": "lancedb"
+    },
+    "relational": {
+      "provider": "sqlite"
+    },
+    "pre_check": {
+      "intent_timeout": "5s",
+      "top_k": 5,
+      "search_scope": "space",
+      "similarity_threshold": 0.0
+    },
+    "post_action": {
+      "input_mode": "compat",
+      "session_analysis_turn_threshold": 2,
+      "session_analysis_token_threshold": 12000,
+      "session_analysis_idle_timeout": "15m0s",
+      "session_analysis_history_turns": 3,
+      "session_analysis_max_input_tokens": 6000,
+      "max_queue_workers": 4
+    },
+    "memory_pipeline": {
+      "max_search_keywords": 5,
+      "min_similarity_score": 0.75,
+      "replace_min_similarity_score": 0.8,
+      "hard_dedupe_cosine_threshold": 0.99,
+      "hard_dedupe_pool_top_k": 16,
+      "hybrid_enabled": true,
+      "lexical_top_k": 8,
+      "rrf_k": 60,
+      "mmr_enabled": true,
+      "mmr_lambda": 0.75,
+      "weibull_enabled": true,
+      "weibull_shape": 1.35,
+      "weibull_scale_hours": 2160.0,
+      "weibull_min_multiplier": 0.4,
+      "weibull_reinforce_weight": 0.18,
+      "weibull_cross_session_boost": 0.12
+    },
+    "retention": {
+      "enabled": true,
+      "recycle_scan_interval": "30m0s",
+      "turn_keep_extra_turns": 5,
+      "session_idle_recycle_after": "360h0m0s",
+      "trash_retention": "720h0m0s",
+      "protect_priority_floor": "P1",
+      "protect_memory_level_floor": "stable",
+      "skip_protected_shared_memories": true
+    }
+  }
+}

@@ -49,7 +49,13 @@ type runtimeStorageCapabilities struct {
 // initRuntimeStorageCapabilities builds the configured storage adapters, resolves the runtime-facing capabilities, and runs vector schema synchronization when the selected mode requires it.
 // initRuntimeStorageCapabilities 用于构建当前配置下的存储适配器、解析运行时需要的能力集合，并在所选模式需要时执行向量 schema 同步。
 func initRuntimeStorageCapabilities(cfg config.Config, logger *logx.Logger, layout config.PromptLayout) (runtimeStorageCapabilities, error) {
-	storageDeps, err := buildStorageDependencies(cfg, layout)
+	return initRuntimeStorageCapabilitiesWithDataRoot(cfg, logger, layout, "")
+}
+
+// initRuntimeStorageCapabilitiesWithDataRoot builds managed storage against one explicit isolated root when supplied.
+// initRuntimeStorageCapabilitiesWithDataRoot 用于在提供显式隔离根时基于该目录构建托管存储。
+func initRuntimeStorageCapabilitiesWithDataRoot(cfg config.Config, logger *logx.Logger, layout config.PromptLayout, dataRoot string) (runtimeStorageCapabilities, error) {
+	storageDeps, err := buildStorageDependenciesWithDataRoot(cfg, layout, dataRoot)
 	if err != nil {
 		return runtimeStorageCapabilities{}, err
 	}
@@ -138,6 +144,12 @@ func normalizeProviderAlias(provider string) string {
 // buildStorageDependencies selects either the historical split stores or the unified PostgreSQL combined store and returns the matching runtime ports.
 // buildStorageDependencies 用于选择历史分离存储或统一 PostgreSQL 组合库，并返回对应的运行时端口集合。
 func buildStorageDependencies(cfg config.Config, layout config.PromptLayout) (storageDependencies, error) {
+	return buildStorageDependenciesWithDataRoot(cfg, layout, "")
+}
+
+// buildStorageDependenciesWithDataRoot selects managed controller storage without falling back to executable-derived database paths.
+// buildStorageDependenciesWithDataRoot 用于选择托管 Controller 存储，同时禁止回退到由可执行文件推导的数据库路径。
+func buildStorageDependenciesWithDataRoot(cfg config.Config, layout config.PromptLayout, dataRoot string) (storageDependencies, error) {
 	if cfg.UsesCombinedPostgres() {
 		combined, err := buildCombinedStore(cfg)
 		if err != nil {
@@ -150,6 +162,9 @@ func buildStorageDependencies(cfg config.Config, layout config.PromptLayout) (st
 		}, nil
 	}
 	if cfg.UsesController() {
+		if strings.TrimSpace(dataRoot) != "" {
+			return buildManagedControllerStorageDependencies(cfg, layout, dataRoot)
+		}
 		return buildControllerStorageDependencies(cfg, layout)
 	}
 	relational, err := buildRelationalForLayout(cfg, layout)
@@ -167,6 +182,16 @@ func buildStorageDependencies(cfg config.Config, layout config.PromptLayout) (st
 	}, nil
 }
 
+// buildManagedControllerStorageDependencies attaches one exclusive VMM space rooted at the Vulcan Code-owned data directory.
+// buildManagedControllerStorageDependencies 用于挂载一个以 Vulcan Code 所有数据目录为根的独占 VMM Space。
+func buildManagedControllerStorageDependencies(cfg config.Config, promptLayout config.PromptLayout, dataRoot string) (storageDependencies, error) {
+	layout, err := resolveManagedStorageLayout(promptLayout, dataRoot)
+	if err != nil {
+		return storageDependencies{}, err
+	}
+	return buildControllerStorageDependenciesForLayout(cfg, layout, true, true)
+}
+
 // buildControllerStorageDependencies creates one shared controller session and reuses the existing SQLite/LanceDB stores above RPC-backed handles.
 // buildControllerStorageDependencies 创建一个共享 controller 会话，并让现有 SQLite/LanceDB 存储复用 RPC 后端句柄。
 func buildControllerStorageDependencies(cfg config.Config, promptLayout config.PromptLayout) (storageDependencies, error) {
@@ -180,6 +205,12 @@ func buildControllerStorageDependenciesWithVectorInit(cfg config.Config, promptL
 	if err != nil {
 		return storageDependencies{}, err
 	}
+	return buildControllerStorageDependenciesForLayout(cfg, layout, ensureVectorTable, requireExclusiveSpace)
+}
+
+// buildControllerStorageDependenciesForLayout creates controller-backed stores from one already-authoritative storage layout.
+// buildControllerStorageDependenciesForLayout 用于基于一份已具权威性的存储布局创建 Controller 后端存储。
+func buildControllerStorageDependenciesForLayout(cfg config.Config, layout localStorageLayout, ensureVectorTable bool, requireExclusiveSpace bool) (storageDependencies, error) {
 	executable := strings.TrimSpace(cfg.Controller.Executable)
 	if executable == "" {
 		executable = layout.ControllerBinary

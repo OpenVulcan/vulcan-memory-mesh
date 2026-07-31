@@ -15,9 +15,16 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 )
 
-// runMaintenanceVectorRebuild prompts for confirmation, rebuilds active durable vectors with the currently configured embedding model, and exits without booting the gRPC runtime.
-// runMaintenanceVectorRebuild 用于执行确认提示、按当前配置的 embedding 模型重建 active durable 向量，并在不启动 gRPC 运行时的情况下退出。
-func runMaintenanceVectorRebuild(ctx context.Context, cfg config.Config, input io.Reader, output io.Writer) error {
+// runMaintenanceVectorRebuild rebuilds durable vectors with either standalone provider inference or the exact managed Vulcan Code inference authority.
+// runMaintenanceVectorRebuild 用于通过独立供应商推理或准确的 Vulcan Code 托管推理权威重建持久向量。
+func runMaintenanceVectorRebuild(
+	ctx context.Context,
+	cfg config.Config,
+	managedConfig *config.ManagedConfig,
+	input io.Reader,
+	output io.Writer,
+	confirmed bool,
+) error {
 	if input == nil {
 		input = strings.NewReader("")
 	}
@@ -29,11 +36,15 @@ func runMaintenanceVectorRebuild(ctx context.Context, cfg config.Config, input i
 		return err
 	}
 	defer func() { _ = runtimeGuard.Close() }()
-	if err := confirmVectorRebuild(input, output, cfg); err != nil {
-		return err
+	if !confirmed {
+		if err := confirmVectorRebuild(input, output, cfg); err != nil {
+			return err
+		}
+	} else {
+		fmt.Fprintln(output, "[vmm-migrate] vector rebuild confirmation accepted from the explicit host flag")
 	}
 
-	deps, err := app.BuildMaintenanceDependencies(cfg)
+	deps, err := app.BuildMaintenanceDependencies(cfg, managedConfig)
 	if err != nil {
 		return fmt.Errorf("build maintenance dependencies: %w", err)
 	}

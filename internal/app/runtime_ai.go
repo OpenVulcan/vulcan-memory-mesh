@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vulcan_inference"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 )
@@ -18,6 +19,31 @@ type runtimeAIDependencies struct {
 	LLM       appports.LLMClient
 	Embedding appports.EmbeddingClient
 	Reranker  appports.RerankerClient
+}
+
+// buildRuntimeAIDependenciesForOptions selects either standalone provider adapters or the managed Vulcan inference bridge.
+// buildRuntimeAIDependenciesForOptions 用于在独立供应商适配器与托管 Vulcan 推理桥接之间进行选择。
+func buildRuntimeAIDependenciesForOptions(cfg config.Config, options applicationOptions) (runtimeAIDependencies, error) {
+	if options.ManagedConfig == nil {
+		return buildRuntimeAIDependencies(cfg)
+	}
+	managed := options.ManagedConfig
+	client, err := vulcan_inference.New(vulcan_inference.Config{
+		DiscoveryFile:     managed.Runtime.Inference.DiscoveryFile,
+		ExpectedProcessID: managed.Parent.ProcessID,
+		ExpectedStartedAt: managed.Parent.StartedAtUnixMS,
+		ExpectedCallerID:  managed.Runtime.Inference.ExpectedCallerID,
+		ConsumerProfileID: managed.Runtime.Inference.ConsumerProfileID,
+		StartupTimeout:    managed.Runtime.Inference.StartupTimeout.Duration,
+	})
+	if err != nil {
+		return runtimeAIDependencies{}, fmt.Errorf("build Vulcan managed inference client: %w", err)
+	}
+	return runtimeAIDependencies{
+		LLM:       client,
+		Embedding: client,
+		Reranker:  client,
+	}, nil
 }
 
 // routeFailoverAwareLLMClient preserves prompt-side model routing while clearing request-level model pins in multi-route mode so processor calls can still fan out across heterogeneous llm.routes.

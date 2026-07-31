@@ -92,7 +92,7 @@ func TestRunMaintenanceVectorRebuildRejectsRunningRuntimeBeforeConfirmation(t *t
 	cfg := config.DefaultLocal()
 	cfg.GRPC.ListenAddr = listener.Addr().String()
 	output := &bytes.Buffer{}
-	err = runMaintenanceVectorRebuild(context.Background(), cfg, strings.NewReader("Y\n"), output)
+	err = runMaintenanceVectorRebuild(context.Background(), cfg, nil, strings.NewReader("Y\n"), output, false)
 	if err == nil || !strings.Contains(err.Error(), "requires the runtime service to be stopped first") {
 		t.Fatalf("unexpected runMaintenanceVectorRebuild error: %v", err)
 	}

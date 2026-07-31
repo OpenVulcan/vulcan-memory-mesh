@@ -2,7 +2,7 @@ module github.com/openvulcan/vmm
 
 go 1.26.1
 
-replace github.com/OpenVulcan/vldb-controller/client-go => D:/projects/vldb-controller/client-go
+replace github.com/OpenVulcan/vldb-controller/client-go => ./third_party/vldb-controller-client-go
 
 require (
 	github.com/OpenRouterTeam/go-sdk v0.4.1

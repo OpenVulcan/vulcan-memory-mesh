@@ -21,10 +21,10 @@ type MaintenanceDependencies struct {
 	Shutdowns  []appports.Shutdowner
 }
 
-// BuildMaintenanceDependencies composes the shared embedding, relational, and vector adapters needed by standalone maintenance tools without constructing the gRPC runtime.
-// BuildMaintenanceDependencies 用于为独立维护工具装配共享的 embedding、关系库与向量适配器，而不会构建 gRPC 运行时。
-func BuildMaintenanceDependencies(cfg config.Config) (MaintenanceDependencies, error) {
-	embedding, err := buildEmbedding(cfg)
+// BuildMaintenanceDependencies composes maintenance storage and selects the same embedding authority as the owning standalone or managed runtime.
+// BuildMaintenanceDependencies 用于装配维护存储，并选择与所属独立或托管运行时一致的向量推理权威。
+func BuildMaintenanceDependencies(cfg config.Config, managedConfig *config.ManagedConfig) (MaintenanceDependencies, error) {
+	embedding, err := buildMaintenanceEmbedding(cfg, managedConfig)
 	if err != nil {
 		return MaintenanceDependencies{}, fmt.Errorf("build maintenance embedding: %w", err)
 	}
@@ -34,6 +34,21 @@ func BuildMaintenanceDependencies(cfg config.Config) (MaintenanceDependencies, e
 	}
 	dependencies.Embedding = embedding
 	return dependencies, nil
+}
+
+// buildMaintenanceEmbedding prevents managed vector rebuilds from falling back to empty standalone provider key pools.
+// buildMaintenanceEmbedding 用于防止托管向量重建错误回退到没有密钥的独立供应商节点池。
+func buildMaintenanceEmbedding(cfg config.Config, managedConfig *config.ManagedConfig) (appports.EmbeddingClient, error) {
+	if managedConfig == nil {
+		return buildEmbedding(cfg)
+	}
+	dependencies, err := buildRuntimeAIDependenciesForOptions(cfg, applicationOptions{
+		ManagedConfig: managedConfig,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return dependencies.Embedding, nil
 }
 
 // BuildMaintenanceStorageDependencies composes only the storage adapters for cleanup and export commands that do not need an embedding provider.

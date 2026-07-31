@@ -15,5 +15,9 @@ configs/.env
 .claude
 .vulcan
 third_party/
+!third_party/
+third_party/*
+!third_party/vldb-controller-client-go/
+!third_party/vldb-controller-client-go/**
 docs/plan/
 docs/completed/
