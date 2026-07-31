@@ -146,15 +146,18 @@ func runRuntime(ctx context.Context, exePath string, wd string, cfgPath string, 
 // managedRuntimeStatus is the authenticated-parent handshake written after the child listener is bound.
 // managedRuntimeStatus 用于表示子进程监听成功后写出的已鉴别父进程握手。
 type managedRuntimeStatus struct {
-	ContractVersion          int    `json:"contract_version"`
-	InstanceID               string `json:"instance_id"`
-	Generation               uint64 `json:"generation"`
-	ProcessID                int    `json:"process_id"`
-	ParentProcessID          int    `json:"parent_process_id"`
-	ManifestDigest           string `json:"manifest_digest"`
-	GRPCListenAddr           string `json:"grpc_listen_addr"`
-	GRPCProtoVersion         int    `json:"grpc_proto_version"`
-	InferenceProtocolVersion int    `json:"inference_protocol_version"`
+	ContractVersion           int    `json:"contract_version"`
+	InstanceID                string `json:"instance_id"`
+	Generation                uint64 `json:"generation"`
+	ProcessID                 int    `json:"process_id"`
+	ParentProcessID           int    `json:"parent_process_id"`
+	ManifestDigest            string `json:"manifest_digest"`
+	GRPCListenAddr            string `json:"grpc_listen_addr"`
+	GRPCProtoVersion          int    `json:"grpc_proto_version"`
+	ManagementListenAddr      string `json:"management_listen_addr"`
+	ManagementProtocolVersion int    `json:"management_protocol_version"`
+	ManagementReady           bool   `json:"management_ready"`
+	InferenceProtocolVersion  int    `json:"inference_protocol_version"`
 }
 
 // runManagedRuntime loads the single manifest, builds managed adapters, and reports the resolved listener address atomically.
@@ -191,17 +194,20 @@ func runManagedRuntime(ctx context.Context, managedConfigPath string) error {
 		bundle.Manifest.Runtime.Inference.DiscoveryFile,
 		bundle.Manifest.Runtime.ShutdownFile,
 	)
-	return application.RunWithReadyAddress(managedContext, func(address string) error {
+	return application.RunWithReadyEndpoints(managedContext, func(endpoints app.RuntimeEndpoints) error {
 		status := managedRuntimeStatus{
-			ContractVersion:          config.ManagedContractVersion,
-			InstanceID:               bundle.Manifest.InstanceID,
-			Generation:               bundle.Manifest.Generation,
-			ProcessID:                os.Getpid(),
-			ParentProcessID:          bundle.Manifest.Parent.ProcessID,
-			ManifestDigest:           bundle.Manifest.Digest,
-			GRPCListenAddr:           address,
-			GRPCProtoVersion:         1,
-			InferenceProtocolVersion: 2,
+			ContractVersion:           config.ManagedContractVersion,
+			InstanceID:                bundle.Manifest.InstanceID,
+			Generation:                bundle.Manifest.Generation,
+			ProcessID:                 os.Getpid(),
+			ParentProcessID:           bundle.Manifest.Parent.ProcessID,
+			ManifestDigest:            bundle.Manifest.Digest,
+			GRPCListenAddr:            endpoints.GRPCListenAddr,
+			GRPCProtoVersion:          1,
+			ManagementListenAddr:      endpoints.ManagementListenAddr,
+			ManagementProtocolVersion: 1,
+			ManagementReady:           endpoints.ManagementListenAddr != "",
+			InferenceProtocolVersion:  2,
 		}
 		return writeManagedStatus(bundle.Manifest.Runtime.StatusFile, status)
 	})

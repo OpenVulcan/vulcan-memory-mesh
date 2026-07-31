@@ -7,6 +7,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"strings"
@@ -896,6 +897,58 @@ func TestApplicationShutdownAllowsNilServer(t *testing.T) {
 	}
 }
 
+// TestApplicationShutdownUsesManagementBudgetAndForceCloses verifies an expired graceful HTTP shutdown is surfaced and followed by a forced close.
+// TestApplicationShutdownUsesManagementBudgetAndForceCloses 用于验证 HTTP 优雅关闭超时会被显式报告并继续强制关闭连接。
+func TestApplicationShutdownUsesManagementBudgetAndForceCloses(t *testing.T) {
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen management test server: %v", err)
+	}
+	requestStarted := make(chan struct{})
+	requestFinished := make(chan struct{})
+	serverFinished := make(chan struct{})
+	managementServer := &http.Server{
+		Handler: http.HandlerFunc(func(_ http.ResponseWriter, request *http.Request) {
+			close(requestStarted)
+			<-request.Context().Done()
+		}),
+	}
+	go func() {
+		_ = managementServer.Serve(listener)
+		close(serverFinished)
+	}()
+	go func() {
+		response, requestErr := http.Get("http://" + listener.Addr().String())
+		if requestErr == nil {
+			_ = response.Body.Close()
+		}
+		close(requestFinished)
+	}()
+	select {
+	case <-requestStarted:
+	case <-time.After(time.Second):
+		t.Fatal("management request did not start")
+	}
+
+	cfg := config.DefaultLocal()
+	cfg.Management.ShutdownTimeout = config.Duration{Duration: 20 * time.Millisecond}
+	application := &Application{Config: cfg, ManagementServer: managementServer}
+	shutdownErr := application.Shutdown(context.Background())
+	if shutdownErr == nil || !strings.Contains(shutdownErr.Error(), "shutdown management server") {
+		t.Fatalf("expected management shutdown timeout, got %v", shutdownErr)
+	}
+	select {
+	case <-requestFinished:
+	case <-time.After(time.Second):
+		t.Fatal("forced management close did not release the active request")
+	}
+	select {
+	case <-serverFinished:
+	case <-time.After(time.Second):
+		t.Fatal("forced management close did not stop the server")
+	}
+}
+
 // TestApplicationShutdownAllowsNilReceiver verifies nil application pointers do not crash shared cleanup paths.
 // TestApplicationShutdownAllowsNilReceiver 用于验证空应用指针不会把共享清理路径直接打崩。
 func TestApplicationShutdownAllowsNilReceiver(t *testing.T) {
@@ -1038,6 +1091,67 @@ func TestApplicationRunWithReadySignalsAfterListen(t *testing.T) {
 		}
 	case <-time.After(3 * time.Second):
 		t.Fatal("run did not return after stop")
+	}
+}
+
+// TestApplicationRunWithReadyEndpointsStartsAuthenticatedManagementServer verifies readiness includes two live listeners and the management listener enforces its separate token.
+// TestApplicationRunWithReadyEndpointsStartsAuthenticatedManagementServer 用于验证就绪状态包含两个存活监听器，且管理监听器会校验独立 Token。
+func TestApplicationRunWithReadyEndpointsStartsAuthenticatedManagementServer(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.GRPC.ListenAddr = "127.0.0.1:0"
+	cfg.Management.Enabled = true
+	cfg.Management.ListenAddr = "127.0.0.1:0"
+	cfg.Management.AccessToken = "management-test-token"
+	application := &Application{
+		Config:           cfg,
+		Logger:           logx.Default(),
+		Server:           grpc.NewServer(),
+		ManagementServer: buildManagementHTTPServer(cfg, nil),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	endpointsCh := make(chan RuntimeEndpoints, 1)
+	runErrCh := make(chan error, 1)
+	go func() {
+		runErrCh <- application.RunWithReadyEndpoints(ctx, func(endpoints RuntimeEndpoints) error {
+			endpointsCh <- endpoints
+			return nil
+		})
+	}()
+
+	var endpoints RuntimeEndpoints
+	select {
+	case endpoints = <-endpointsCh:
+	case err := <-runErrCh:
+		t.Fatalf("run returned before readiness: %v", err)
+	case <-time.After(3 * time.Second):
+		t.Fatal("endpoint readiness callback was not invoked")
+	}
+	if endpoints.GRPCListenAddr == "" || endpoints.ManagementListenAddr == "" || endpoints.GRPCListenAddr == endpoints.ManagementListenAddr {
+		t.Fatalf("runtime endpoints = %#v", endpoints)
+	}
+	request, err := http.NewRequest(http.MethodGet, "http://"+endpoints.ManagementListenAddr+"/management/v1/capabilities", nil)
+	if err != nil {
+		t.Fatalf("build management request: %v", err)
+	}
+	request.Header.Set("Authorization", "Bearer management-test-token")
+	response, err := http.DefaultClient.Do(request)
+	if err != nil {
+		t.Fatalf("call management endpoint: %v", err)
+	}
+	_ = response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("management status = %d, want %d", response.StatusCode, http.StatusOK)
+	}
+
+	cancel()
+	select {
+	case err := <-runErrCh:
+		if err != nil {
+			t.Fatalf("run after cancellation: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("run did not return after cancellation")
 	}
 }
 

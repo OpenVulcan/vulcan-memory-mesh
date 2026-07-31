@@ -32,6 +32,16 @@ var supportedEnvOverrideValuePaths = map[string][]string{
 	"VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE_GRACE":       {"grpc.keepalive.max_connection_age_grace"},
 	"VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL":              {"grpc.keepalive.min_ping_interval"},
 	"VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM":          {"grpc.keepalive.permit_without_stream"},
+	"VMM_MANAGEMENT_ENABLED":                            {"management.enabled"},
+	"VMM_MANAGEMENT_LISTEN_ADDR":                        {"management.listen_addr"},
+	"VMM_MANAGEMENT_ACCESS_TOKEN":                       {"management.access_token"},
+	"VMM_MANAGEMENT_MAX_REQUEST_BODY_BYTES":             {"management.max_request_body_bytes"},
+	"VMM_MANAGEMENT_DEFAULT_PAGE_SIZE":                  {"management.default_page_size"},
+	"VMM_MANAGEMENT_MAX_PAGE_SIZE":                      {"management.max_page_size"},
+	"VMM_MANAGEMENT_READ_HEADER_TIMEOUT":                {"management.read_header_timeout"},
+	"VMM_MANAGEMENT_REQUEST_TIMEOUT":                    {"management.request_timeout"},
+	"VMM_MANAGEMENT_IDLE_TIMEOUT":                       {"management.idle_timeout"},
+	"VMM_MANAGEMENT_SHUTDOWN_TIMEOUT":                   {"management.shutdown_timeout"},
 	"VMM_LOG_LEVEL":                                     {"logging.level"},
 	"VMM_LOG_FORMAT":                                    {"logging.format"},
 	"VMM_LOG_DEBUG_RPC_PAYLOADS":                        {"logging.debug_rpc_payloads"},
@@ -151,6 +161,23 @@ func (c Config) Validate() error {
 	// 在应用启动前验证最小运行时契约。
 	if strings.TrimSpace(c.GRPC.ListenAddr) == "" {
 		return errors.New("grpc.listen_addr is required")
+	}
+	if c.Management.Enabled {
+		if strings.TrimSpace(c.Management.ListenAddr) == "" {
+			return errors.New("management.listen_addr is required when management.enabled is true")
+		}
+		if strings.TrimSpace(c.Management.AccessToken) == "" {
+			return errors.New("management.access_token is required when management.enabled is true")
+		}
+		if c.Management.MaxRequestBodyBytes <= 0 {
+			return errors.New("management.max_request_body_bytes must be > 0")
+		}
+		if c.Management.DefaultPageSize <= 0 || c.Management.MaxPageSize <= 0 || c.Management.DefaultPageSize > c.Management.MaxPageSize {
+			return errors.New("management page sizes must be positive and default_page_size must not exceed max_page_size")
+		}
+		if c.Management.ReadHeaderTimeout.Duration <= 0 || c.Management.RequestTimeout.Duration <= 0 || c.Management.IdleTimeout.Duration <= 0 || c.Management.ShutdownTimeout.Duration <= 0 {
+			return errors.New("management timeouts must be > 0")
+		}
 	}
 	if strings.TrimSpace(c.PII.DefaultLanguage) == "" {
 		return errors.New("pii.default_language is required")
@@ -561,6 +588,18 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 			}
 		}
 	}
+	setInt64 := func(k string, target *int64) {
+		if !envOverrideAllowed(referencedEnvKeys, k) {
+			return
+		}
+		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
+			if n, err := strconv.ParseInt(v, 10, 64); err == nil {
+				*target = n
+			} else {
+				parseFailures = append(parseFailures, k)
+			}
+		}
+	}
 	setFloat := func(k string, target *float64) {
 		if !envOverrideAllowed(referencedEnvKeys, k) {
 			return
@@ -623,6 +662,16 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setDuration("VMM_GRPC_KEEPALIVE_MAX_CONNECTION_AGE_GRACE", &cfg.GRPC.Keepalive.MaxConnectionAgeGrace)
 	setDuration("VMM_GRPC_KEEPALIVE_MIN_PING_INTERVAL", &cfg.GRPC.Keepalive.MinPingInterval)
 	setBool("VMM_GRPC_KEEPALIVE_PERMIT_WITHOUT_STREAM", &cfg.GRPC.Keepalive.PermitWithoutStream)
+	setBool("VMM_MANAGEMENT_ENABLED", &cfg.Management.Enabled)
+	setString("VMM_MANAGEMENT_LISTEN_ADDR", &cfg.Management.ListenAddr)
+	setString("VMM_MANAGEMENT_ACCESS_TOKEN", &cfg.Management.AccessToken)
+	setInt64("VMM_MANAGEMENT_MAX_REQUEST_BODY_BYTES", &cfg.Management.MaxRequestBodyBytes)
+	setInt("VMM_MANAGEMENT_DEFAULT_PAGE_SIZE", &cfg.Management.DefaultPageSize)
+	setInt("VMM_MANAGEMENT_MAX_PAGE_SIZE", &cfg.Management.MaxPageSize)
+	setDuration("VMM_MANAGEMENT_READ_HEADER_TIMEOUT", &cfg.Management.ReadHeaderTimeout)
+	setDuration("VMM_MANAGEMENT_REQUEST_TIMEOUT", &cfg.Management.RequestTimeout)
+	setDuration("VMM_MANAGEMENT_IDLE_TIMEOUT", &cfg.Management.IdleTimeout)
+	setDuration("VMM_MANAGEMENT_SHUTDOWN_TIMEOUT", &cfg.Management.ShutdownTimeout)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
 	setBool("VMM_LOG_DEBUG_RPC_PAYLOADS", &cfg.Logging.DebugRPCPayloads)

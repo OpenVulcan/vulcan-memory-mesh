@@ -56,6 +56,10 @@ const (
 	// VectorGCJobTypeManualMemoryDelete keeps the stable vector-GC job type used when a manual memory delete committed relational removal but could not delete sidecar vectors immediately.
 	// VectorGCJobTypeManualMemoryDelete 用于保存手工删除记忆已提交关系侧移除、但无法立即删除旁路向量时使用的稳定向量 GC 任务类型。
 	VectorGCJobTypeManualMemoryDelete = "manual_memory_delete_vector_delete"
+
+	// VectorGCJobTypeManagementPurge keeps the stable vector-GC job type used after a restorable management batch is permanently purged.
+	// VectorGCJobTypeManagementPurge 用于保存可恢复管理批次被永久清理后使用的稳定向量 GC 任务类型。
+	VectorGCJobTypeManagementPurge = "management_purge_vector_delete"
 )
 
 // MemoryRecycleQuery describes one cold-memory recycle pass, including batch size, timestamps, and protection knobs.

@@ -8,6 +8,10 @@ import logicports "github.com/openvulcan/vmm/internal/logic/ports"
 // LLMResponseFormat 用于描述处理器期望模型返回的响应形态。
 type LLMResponseFormat = logicports.LLMResponseFormat
 
+// LLMStructuredOutput declares one exact JSON Schema that the selected provider must enforce.
+// LLMStructuredOutput 用于声明一份必须由所选供应商强制执行的精确 JSON Schema。
+type LLMStructuredOutput = logicports.LLMStructuredOutput
+
 // Constants enumerate the supported response formats for the LLM port.
 // Constants 用于枚举 LLM 端口支持的响应格式。
 const (

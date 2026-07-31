@@ -316,6 +316,7 @@ CREATE TABLE IF NOT EXISTS %s (
 	UNIQUE(vector_id, job_type, batch_id)
 )`, r.vectorGCJobsTable())},
 	}
+	statements = append(statements, postgresManagementSchemaStatements(r)...)
 	for _, statement := range statements {
 		if _, err := r.shared.pool.Exec(callCtx, strings.TrimSpace(statement.sql)); err != nil {
 			return postgresSchemaObjectBootstrapError(statement, err)
@@ -337,6 +338,115 @@ CREATE TABLE IF NOT EXISTS %s (
 		return err
 	}
 	return r.backfillTrackedSchemaVersions(callCtx)
+}
+
+// postgresManagementSchemaStatements returns the shared management schema used by fresh bootstrap and upgrades.
+// postgresManagementSchemaStatements 用于返回全新初始化与升级共同使用的管理 schema。
+func postgresManagementSchemaStatements(r *maintenanceRepository) []postgresDDLStatement {
+	return []postgresDDLStatement{
+		{name: "vmm_management_session_states", sql: fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+  session_id BIGINT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'active',
+  revision BIGINT NOT NULL DEFAULT 1,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+)`, r.maintenanceQualifiedTable("vmm_management_session_states"))},
+		{name: "vmm_management_previews", sql: fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+  preview_token TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL,
+  target_ids_json TEXT NOT NULL,
+  action TEXT NOT NULL,
+  source TEXT NOT NULL,
+  impact_json TEXT NOT NULL,
+  impact_revision TEXT NOT NULL,
+  confirm_text TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  expires_at TIMESTAMPTZ NOT NULL,
+  consumed_at TIMESTAMPTZ NULL
+)`, r.maintenanceQualifiedTable("vmm_management_previews"))},
+		{name: "vmm_management_operations", sql: fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+  operation_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_ids_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  batch_id BIGINT NOT NULL DEFAULT 0,
+  error_code TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  completed_at TIMESTAMPTZ NULL
+)`, r.maintenanceQualifiedTable("vmm_management_operations"))},
+		{name: "vmm_management_recycle_batches", sql: fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+  batch_id BIGINT PRIMARY KEY REFERENCES %s(id) ON DELETE CASCADE,
+  source TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_ids_json TEXT NOT NULL,
+  restorable BOOLEAN NOT NULL DEFAULT FALSE,
+  state TEXT NOT NULL,
+  expires_at TIMESTAMPTZ NULL,
+  restored_at TIMESTAMPTZ NULL,
+  operation_id TEXT NOT NULL DEFAULT ''
+)`, r.maintenanceQualifiedTable("vmm_management_recycle_batches"), r.recycleBatchesTable())},
+		{name: "vmm_sessions_trash", sql: fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+  batch_id BIGINT NOT NULL REFERENCES %s(id) ON DELETE CASCADE,
+  recycled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  recycle_reason TEXT NOT NULL DEFAULT '',
+  id BIGINT NOT NULL,
+  session_key TEXT NOT NULL,
+  user_id BIGINT NOT NULL,
+  team_id BIGINT NOT NULL,
+  space_id BIGINT NOT NULL,
+  project_id BIGINT NOT NULL,
+  turn_count INTEGER NOT NULL DEFAULT 0,
+  last_summarized_id BIGINT NOT NULL DEFAULT 0,
+  last_compacted_turn_id BIGINT NOT NULL DEFAULT 0,
+  summarize_content TEXT NOT NULL DEFAULT '',
+  summarize_budget INTEGER NOT NULL DEFAULT 0,
+  last_extract_observed_at TIMESTAMPTZ NULL,
+  last_extract_completed_at TIMESTAMPTZ NULL,
+  last_compacted_at TIMESTAMPTZ NULL,
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (batch_id, id)
+)`, r.maintenanceQualifiedTable("vmm_sessions_trash"), r.recycleBatchesTable())},
+		{name: "vmm_profile_nodes_trash", sql: fmt.Sprintf(`
+CREATE TABLE IF NOT EXISTS %s (
+  batch_id BIGINT NOT NULL REFERENCES %s(id) ON DELETE CASCADE,
+  recycled_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  recycle_reason TEXT NOT NULL DEFAULT '',
+  id BIGINT NOT NULL,
+  turn_id BIGINT NULL,
+  profile_type SMALLINT NOT NULL,
+  bind_id BIGINT NOT NULL,
+  content TEXT NOT NULL,
+  profile_status SMALLINT NOT NULL DEFAULT 1,
+  priority SMALLINT NOT NULL DEFAULT 2,
+  profile_level SMALLINT NOT NULL DEFAULT 0,
+  level_reason TEXT NOT NULL DEFAULT '',
+  refresh_weight INTEGER NOT NULL DEFAULT 0,
+  source_kind SMALLINT NOT NULL DEFAULT 0,
+  source_id BIGINT NOT NULL DEFAULT 0,
+  status_reason TEXT NOT NULL DEFAULT '',
+  expires_at TIMESTAMPTZ NULL,
+  superseded_by_id BIGINT NOT NULL DEFAULT 0,
+  profile_date TEXT NOT NULL DEFAULT '',
+  created_at TIMESTAMPTZ NOT NULL,
+  updated_at TIMESTAMPTZ NOT NULL,
+  PRIMARY KEY (batch_id, id)
+)`, r.maintenanceQualifiedTable("vmm_profile_nodes_trash"), r.recycleBatchesTable())},
+		{name: "idx_vmm_management_session_states_status", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_management_session_states_status ON %s (status, updated_at, session_id)`, r.maintenanceQualifiedTable("vmm_management_session_states"))},
+		{name: "idx_vmm_management_previews_expiry", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_management_previews_expiry ON %s (expires_at, preview_token)`, r.maintenanceQualifiedTable("vmm_management_previews"))},
+		{name: "idx_vmm_management_operations_status", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_management_operations_status ON %s (status, updated_at, operation_id)`, r.maintenanceQualifiedTable("vmm_management_operations"))},
+		{name: "idx_vmm_management_recycle_batches_state", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_management_recycle_batches_state ON %s (state, batch_id)`, r.maintenanceQualifiedTable("vmm_management_recycle_batches"))},
+		{name: "idx_vmm_sessions_trash_batch", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_sessions_trash_batch ON %s (batch_id, id)`, r.maintenanceQualifiedTable("vmm_sessions_trash"))},
+		{name: "idx_vmm_profile_nodes_trash_batch", sql: fmt.Sprintf(`CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_trash_batch ON %s (batch_id, id)`, r.maintenanceQualifiedTable("vmm_profile_nodes_trash"))},
+	}
 }
 
 // postgresSchemaObjectBootstrapError attaches the named table DDL label to startup schema errors so operators can repair the exact failed object.

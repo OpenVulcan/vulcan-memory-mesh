@@ -111,6 +111,12 @@ func buildSQLiteSchemaMigrationPlan() schemaMigrationPlan {
 				Name:        "drop removed work-memory tables",
 				Up:          migrateSQLiteSchema19To20,
 			},
+			{
+				FromVersion: 20,
+				ToVersion:   21,
+				Name:        "add human-management recycle and operation tables",
+				Up:          migrateSQLiteSchema20To21,
+			},
 		},
 	}
 }
@@ -498,6 +504,88 @@ COMMIT;
 `
 	if err := s.exec(ctx, statement); err != nil {
 		return sqliteSchemaMigrationError("migrate sqlite schema 19 to 20", fmt.Errorf("drop removed sqlite work-memory tables: %w", err))
+	}
+	return nil
+}
+
+// migrateSQLiteSchema20To21 adds the isolated management schema to existing stores.
+// migrateSQLiteSchema20To21 用于向现有存储增加独立管理 schema。
+func migrateSQLiteSchema20To21(ctx context.Context, s *Store) error {
+	const script = `
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS vmm_management_session_states (
+  session_id BIGINT PRIMARY KEY,
+  status TEXT NOT NULL DEFAULT 'active',
+  revision BIGINT NOT NULL DEFAULT 1,
+  updated_timestamp BIGINT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_management_session_states_status ON vmm_management_session_states(status, updated_timestamp, session_id);
+CREATE TABLE IF NOT EXISTS vmm_management_previews (
+  preview_token TEXT PRIMARY KEY,
+  target_type TEXT NOT NULL,
+  target_ids_json TEXT NOT NULL,
+  action TEXT NOT NULL,
+  source TEXT NOT NULL,
+  impact_json TEXT NOT NULL,
+  impact_revision TEXT NOT NULL,
+  confirm_text TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  expires_timestamp BIGINT NOT NULL,
+  consumed_timestamp BIGINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_management_previews_expiry ON vmm_management_previews(expires_timestamp, preview_token);
+CREATE TABLE IF NOT EXISTS vmm_management_operations (
+  operation_id TEXT PRIMARY KEY,
+  idempotency_key TEXT NOT NULL UNIQUE,
+  action TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_ids_json TEXT NOT NULL,
+  status TEXT NOT NULL,
+  batch_id BIGINT NOT NULL DEFAULT 0,
+  error_code TEXT NOT NULL DEFAULT '',
+  error_message TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL,
+  updated_timestamp BIGINT NOT NULL,
+  completed_timestamp BIGINT NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_management_operations_status ON vmm_management_operations(status, updated_timestamp, operation_id);
+CREATE TABLE IF NOT EXISTS vmm_management_recycle_batches (
+  batch_id BIGINT PRIMARY KEY,
+  source TEXT NOT NULL,
+  target_type TEXT NOT NULL,
+  target_ids_json TEXT NOT NULL,
+  restorable INTEGER NOT NULL DEFAULT 0,
+  state TEXT NOT NULL,
+  expires_timestamp BIGINT NOT NULL DEFAULT 0,
+  restored_timestamp BIGINT NOT NULL DEFAULT 0,
+  operation_id TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_management_recycle_batches_state ON vmm_management_recycle_batches(state, batch_id);
+CREATE TABLE IF NOT EXISTS vmm_sessions_trash (
+  batch_id BIGINT NOT NULL, recycled_at BIGINT NOT NULL DEFAULT 0, recycle_reason TEXT NOT NULL DEFAULT '',
+  id BIGINT NOT NULL, session_key TEXT NOT NULL, user_id BIGINT NOT NULL, team_id BIGINT NOT NULL,
+  space_id BIGINT NOT NULL, project_id BIGINT NOT NULL, turn_count INTEGER NOT NULL DEFAULT 0,
+  last_summarized_id BIGINT NOT NULL DEFAULT 0, last_compacted_turn_id BIGINT NOT NULL DEFAULT 0,
+  summarize_content TEXT NOT NULL DEFAULT '', summarize_budget INTEGER NOT NULL DEFAULT 0,
+  last_extract_observed_timestamp BIGINT NOT NULL DEFAULT 0, last_extract_completed_timestamp BIGINT NOT NULL DEFAULT 0,
+  last_compacted_timestamp BIGINT NOT NULL DEFAULT 0, created_timestamp BIGINT NOT NULL, updated_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (batch_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_sessions_trash_batch ON vmm_sessions_trash(batch_id, id);
+CREATE TABLE IF NOT EXISTS vmm_profile_nodes_trash (
+  batch_id BIGINT NOT NULL, recycled_at BIGINT NOT NULL DEFAULT 0, recycle_reason TEXT NOT NULL DEFAULT '',
+  id BIGINT NOT NULL, turn_id BIGINT, profile_type TINYINT NOT NULL, bind_id BIGINT NOT NULL,
+  content TEXT NOT NULL, profile_status TINYINT NOT NULL DEFAULT 1, priority TINYINT NOT NULL DEFAULT 2,
+  profile_level TINYINT NOT NULL DEFAULT 0, level_reason TEXT NOT NULL DEFAULT '', refresh_weight INTEGER NOT NULL DEFAULT 0,
+  source_kind TINYINT NOT NULL DEFAULT 0, source_id BIGINT NOT NULL DEFAULT 0, status_reason TEXT NOT NULL DEFAULT '',
+  expires_timestamp BIGINT NOT NULL DEFAULT 0, superseded_by_id BIGINT NOT NULL DEFAULT 0, profile_date TEXT NOT NULL DEFAULT '',
+  created_timestamp BIGINT NOT NULL, updated_timestamp BIGINT NOT NULL, PRIMARY KEY (batch_id, id)
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_trash_batch ON vmm_profile_nodes_trash(batch_id, id);
+COMMIT;
+`
+	if err := s.exec(ctx, script); err != nil {
+		return sqliteSchemaMigrationError("migrate sqlite schema 20 to 21", err)
 	}
 	return nil
 }

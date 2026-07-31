@@ -107,6 +107,7 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	if llm.request.SystemPrompt != "return json only" {
 		t.Fatalf("expected runtime to preserve prompt file content without shared injection, got %s", llm.request.SystemPrompt)
 	}
+	assertStructuredOutputRequest(t, llm.request, "vmm_postaction_candidate_review")
 	if !strings.Contains(llm.request.UserPrompt, `"similar_memories"`) || !strings.Contains(llm.request.UserPrompt, `"new_candidates"`) {
 		t.Fatalf("expected memory dedupe and profile candidate sections, got %s", llm.request.UserPrompt)
 	}
@@ -208,7 +209,7 @@ func TestParsePostActionCandidateReviewResponseRejectsLegacyMemoryIndexLists(t *
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			_, err := parsePostActionCandidateReviewResponse(tt.raw, tt.expectedCount, 0, 0)
-			if err == nil || !strings.Contains(err.Error(), "legacy candidate index lists are unsupported") {
+			if err == nil || !strings.Contains(err.Error(), "json decode failed") {
 				t.Fatalf("unexpected error: %v", err)
 			}
 		})

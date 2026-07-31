@@ -215,6 +215,30 @@ func (c *Config) Normalize() {
 	if c.GRPC.Keepalive.MinPingInterval.Duration <= 0 {
 		c.GRPC.Keepalive.MinPingInterval = Duration{20 * time.Second}
 	}
+	if c.Management.MaxRequestBodyBytes <= 0 {
+		c.Management.MaxRequestBodyBytes = 1 << 20
+	}
+	if c.Management.DefaultPageSize <= 0 {
+		c.Management.DefaultPageSize = 30
+	}
+	if c.Management.MaxPageSize <= 0 {
+		c.Management.MaxPageSize = 100
+	}
+	if c.Management.DefaultPageSize > c.Management.MaxPageSize {
+		c.Management.DefaultPageSize = c.Management.MaxPageSize
+	}
+	if c.Management.ReadHeaderTimeout.Duration <= 0 {
+		c.Management.ReadHeaderTimeout = Duration{5 * time.Second}
+	}
+	if c.Management.RequestTimeout.Duration <= 0 {
+		c.Management.RequestTimeout = Duration{30 * time.Second}
+	}
+	if c.Management.IdleTimeout.Duration <= 0 {
+		c.Management.IdleTimeout = Duration{60 * time.Second}
+	}
+	if c.Management.ShutdownTimeout.Duration <= 0 {
+		c.Management.ShutdownTimeout = Duration{10 * time.Second}
+	}
 	if c.PreCheck.IntentTimeout.Duration <= 0 {
 		c.PreCheck.IntentTimeout = Duration{5 * time.Second}
 	}
@@ -441,6 +465,8 @@ func (c *Config) Normalize() {
 // normalizeRuntimeStrings 用于裁剪参与运行时装配的用户字符串字段，保证即使配置里带了意外的首尾空白，配置校验与运行时装配也能保持一致。
 func (c *Config) normalizeRuntimeStrings() {
 	c.GRPC.ListenAddr = strings.TrimSpace(c.GRPC.ListenAddr)
+	c.Management.ListenAddr = strings.TrimSpace(c.Management.ListenAddr)
+	c.Management.AccessToken = strings.TrimSpace(c.Management.AccessToken)
 	c.Logging.Level = strings.TrimSpace(c.Logging.Level)
 	c.Logging.Format = strings.TrimSpace(c.Logging.Format)
 	c.Logging.PayloadEncryptionKey = strings.TrimSpace(c.Logging.PayloadEncryptionKey)

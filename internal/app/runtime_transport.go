@@ -3,8 +3,12 @@
 package app
 
 import (
+	"net/http"
+
 	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	vmmv1 "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi/proto/v1"
+	managementapi "github.com/openvulcan/vmm/internal/adapters/inbound/managementapi"
+	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/config"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/keepalive"
@@ -29,6 +33,26 @@ func buildGRPCKeepaliveConfiguration(cfg config.GRPCKeepaliveConfig) (keepalive.
 		PermitWithoutStream: cfg.PermitWithoutStream,
 	}
 	return params, policy, true
+}
+
+// buildManagementHTTPServer creates the isolated human-management server from normalized runtime limits.
+// buildManagementHTTPServer 用于根据规范化运行时限制创建隔离的人工管理服务。
+func buildManagementHTTPServer(cfg config.Config, management *usecase.ManagementUseCase) *http.Server {
+	return managementapi.NewServer(managementapi.Dependencies{
+		Config:     cfg.Management,
+		Management: management,
+		Capabilities: managementapi.Capabilities{
+			ProtocolVersion:     managementapi.ProtocolVersion,
+			ServiceVersion:      "development",
+			Resources:           []string{"capabilities", "users", "projects", "sessions", "turns", "turn_content", "removal_previews", "operations", "recycle_batches", "restores", "purges"},
+			TrashRetentionHours: int64(cfg.Retention.TrashRetention.Duration.Hours()),
+			MaxPageSize:         cfg.Management.MaxPageSize,
+			ContentChunkBytes:   256 << 10,
+			FullTextIndexStatus: "fallback_scan",
+			RestoreSupported:    true,
+			StorageMode:         cfg.StorageMode(),
+		},
+	})
 }
 
 // buildGRPCServerOptions assembles the transport-level gRPC server options so runtime composition stays deterministic and tests can assert keepalive wiring without booting the full app.

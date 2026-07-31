@@ -52,11 +52,19 @@ func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalys
 		return logicdomain.TurnAnalysis{}, fmt.Errorf("load postaction_l1_main prompt: %w", err)
 	}
 	prompt = renderTurnAnalysisSystemPrompt(prompt)
+	structuredOutput, err := structuredOutputFor[turnAnalysisResponsePayload](
+		"vmm_turn_analysis",
+		"VMM post-action turn analysis result.",
+	)
+	if err != nil {
+		return logicdomain.TurnAnalysis{}, err
+	}
 	resp, err := a.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               a.model,
 		SystemPrompt:        prompt,
 		UserPrompt:          requestBody,
 		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		StructuredOutput:    structuredOutput,
 		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPostActionL1,
 	})
 	if err != nil {
@@ -85,31 +93,7 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 	if err != nil {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: err.Error(), Raw: raw}
 	}
-	var payload struct {
-		UserInputKind string `json:"user_input_kind"`
-		TurnID        uint64 `json:"turn_id"`
-		Details       string `json:"details"`
-		MemoryNodes   []struct {
-			Category        int     `json:"category"`
-			Abstract        string  `json:"abstract"`
-			Details         string  `json:"details"`
-			EvidenceSource  string  `json:"evidence_source"`
-			Admission       string  `json:"admission"`
-			AdmissionReason *string `json:"admission_reason"`
-			ContextEdges    []struct {
-				ContextKey   string `json:"context_key"`
-				ContextValue string `json:"context_value"`
-				Relation     string `json:"relation"`
-			} `json:"context_edges"`
-		} `json:"memory_nodes"`
-		ProfileNodes []struct {
-			ProfileType     int     `json:"profile_type"`
-			Content         string  `json:"content"`
-			EvidenceSource  string  `json:"evidence_source"`
-			Admission       string  `json:"admission"`
-			AdmissionReason *string `json:"admission_reason"`
-		} `json:"profile_nodes"`
-	}
+	var payload turnAnalysisResponsePayload
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "json decode failed", Raw: raw}
 	}
@@ -244,11 +228,7 @@ func normalizeTurnAnalysisAdmissionReason(raw string) string {
 
 // normalizeMemoryContextEdgeCandidates validates and de-duplicates one raw context-edge slice so persistence only sees canonical support/rebuttal evidence labels.
 // normalizeMemoryContextEdgeCandidates 用于校验并去重原始 context-edge 切片，保证持久化层只接收规范化的支持/反驳情境证据标签。
-func normalizeMemoryContextEdgeCandidates(rawEdges []struct {
-	ContextKey   string `json:"context_key"`
-	ContextValue string `json:"context_value"`
-	Relation     string `json:"relation"`
-}) ([]logicdomain.MemoryContextEdgeCandidate, error) {
+func normalizeMemoryContextEdgeCandidates(rawEdges []turnAnalysisContextEdgePayload) ([]logicdomain.MemoryContextEdgeCandidate, error) {
 	if len(rawEdges) == 0 {
 		return nil, nil
 	}

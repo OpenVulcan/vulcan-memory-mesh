@@ -108,6 +108,7 @@ func (d Duration) MarshalJSON() ([]byte, error) { return json.Marshal(d.String()
 // Config 用于表示本地应用启动前加载的根配置对象。
 type Config struct {
 	GRPC               GRPCConfig            `json:"grpc"`
+	Management         ManagementConfig      `json:"management"`
 	Logging            LoggingConfig         `json:"logging"`
 	PII                PIIConfig             `json:"pii"`
 	Noise              NoiseConfig           `json:"noise"`
@@ -128,6 +129,21 @@ type Config struct {
 	MemoryPipeline     MemoryPipelineConfig  `json:"memory_pipeline"`
 	Retention          RetentionConfig       `json:"retention"`
 	MemoryReplaceScope string                `json:"memory_replace_scope,omitempty"`
+}
+
+// ManagementConfig holds the isolated HTTP management listener, authentication, pagination, and timeout limits.
+// ManagementConfig 用于保存隔离的 HTTP 管理监听器、鉴权、分页与超时限制。
+type ManagementConfig struct {
+	Enabled             bool     `json:"enabled"`
+	ListenAddr          string   `json:"listen_addr"`
+	AccessToken         string   `json:"access_token"`
+	MaxRequestBodyBytes int64    `json:"max_request_body_bytes"`
+	DefaultPageSize     int      `json:"default_page_size"`
+	MaxPageSize         int      `json:"max_page_size"`
+	ReadHeaderTimeout   Duration `json:"read_header_timeout"`
+	RequestTimeout      Duration `json:"request_timeout"`
+	IdleTimeout         Duration `json:"idle_timeout"`
+	ShutdownTimeout     Duration `json:"shutdown_timeout"`
 }
 
 // PromptConfig keeps the selected prompt bundle token inside the main config tree so runtime prompt behavior stays explicit and no longer depends on model-name routing.
@@ -558,6 +574,17 @@ func DefaultBase() Config {
 				MinPingInterval:       Duration{20 * time.Second},
 				PermitWithoutStream:   true,
 			},
+		},
+		Management: ManagementConfig{
+			Enabled:             false,
+			ListenAddr:          "127.0.0.1:0",
+			MaxRequestBodyBytes: 1 << 20,
+			DefaultPageSize:     30,
+			MaxPageSize:         100,
+			ReadHeaderTimeout:   Duration{5 * time.Second},
+			RequestTimeout:      Duration{30 * time.Second},
+			IdleTimeout:         Duration{60 * time.Second},
+			ShutdownTimeout:     Duration{10 * time.Second},
 		},
 		Logging: LoggingConfig{Level: "info", Format: "text", DebugRPCPayloads: false, LLMOutputEnabled: false, ProtectPayloads: false},
 		PII:     PIIConfig{DefaultLanguage: "zh-CN"},

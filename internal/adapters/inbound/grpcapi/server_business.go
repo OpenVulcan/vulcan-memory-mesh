@@ -85,10 +85,11 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 		})
 	}
 	return &vmmv1.PreCheckResponse{
-		ShouldInject: result.ShouldInject,
-		ContextItems: items,
-		Degraded:     result.Degraded,
-		TraceId:      trace.IDFromContext(ctx),
+		ShouldInject:        result.ShouldInject,
+		ContextItems:        items,
+		Degraded:            result.Degraded,
+		TraceId:             trace.IDFromContext(ctx),
+		SessionMemoryStatus: toProtoSessionMemoryStatus(session.MemoryStatus),
 	}, nil
 }
 
@@ -206,9 +207,27 @@ func (s *Server) PostAction(ctx context.Context, req *vmmv1.PostActionRequest) (
 		return nil, toStatus(describeError(err))
 	}
 	return &vmmv1.PostActionResponse{
-		Accepted: result.Accepted,
-		TraceId:  traceID,
+		Accepted:            result.Accepted,
+		TraceId:             traceID,
+		SessionMemoryStatus: toProtoSessionMemoryStatus(session.MemoryStatus),
 	}, nil
+}
+
+// toProtoSessionMemoryStatus maps the validated domain lifecycle state to the public gRPC enum.
+// toProtoSessionMemoryStatus 用于把已校验的领域生命周期状态映射为公开 gRPC 枚举。
+func toProtoSessionMemoryStatus(status logicdomain.SessionMemoryStatus) vmmv1.SessionMemoryStatus {
+	switch status.Effective() {
+	case logicdomain.SessionMemoryStatusActive:
+		return vmmv1.SessionMemoryStatus_SESSION_MEMORY_STATUS_ACTIVE
+	case logicdomain.SessionMemoryStatusArchived:
+		return vmmv1.SessionMemoryStatus_SESSION_MEMORY_STATUS_ARCHIVED
+	case logicdomain.SessionMemoryStatusRecycled:
+		return vmmv1.SessionMemoryStatus_SESSION_MEMORY_STATUS_RECYCLED
+	case logicdomain.SessionMemoryStatusForgotten:
+		return vmmv1.SessionMemoryStatus_SESSION_MEMORY_STATUS_FORGOTTEN
+	default:
+		return vmmv1.SessionMemoryStatus_SESSION_MEMORY_STATUS_UNSPECIFIED
+	}
 }
 
 // sanitizePostActionRequest clones the validated request into one storage-ready copy so raw logs and persisted text can diverge safely.

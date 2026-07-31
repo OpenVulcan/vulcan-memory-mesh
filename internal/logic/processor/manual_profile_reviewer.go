@@ -52,11 +52,19 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err
 	}
+	structuredOutput, err := structuredOutputFor[manualProfileReviewResponsePayload](
+		"vmm_manual_profile_review",
+		"VMM manual profile instruction review result.",
+	)
+	if err != nil {
+		return logicdomain.ManualProfileInstructionReview{}, err
+	}
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               r.model,
 		SystemPrompt:        prompt,
 		UserPrompt:          requestBody,
 		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		StructuredOutput:    structuredOutput,
 		RouteSelectionLevel: logicports.LLMRouteSelectionLevelProfileInstruction,
 	})
 	if err != nil {
@@ -134,23 +142,7 @@ func parseManualProfileReviewResponse(raw string, activeNodes []logicdomain.Prof
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: err.Error(), Raw: raw}
 	}
-	var payload struct {
-		AcceptedNodes []struct {
-			NormalizedContent string `json:"normalized_content"`
-			Priority          string `json:"priority"`
-			Level             string `json:"level"`
-			LevelReason       string `json:"level_reason"`
-			SupersedeNodes    []struct {
-				NodeID uint64 `json:"node_id"`
-				Reason string `json:"reason"`
-			} `json:"supersede_nodes"`
-		} `json:"accepted_nodes"`
-		RetiredNodes []struct {
-			NodeID uint64 `json:"node_id"`
-			Reason string `json:"reason"`
-		} `json:"retired_nodes"`
-		Reason string `json:"reason"`
-	}
+	var payload manualProfileReviewResponsePayload
 	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, logicdomain.InvalidLLMOutputError{Scene: "profile_instruction_main", Message: "json decode failed", Raw: raw}
 	}

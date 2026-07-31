@@ -3,12 +3,27 @@
 package processor
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"testing"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
+
+// TestIntentExtractorSendsExactStructuredOutput verifies the intent scene cannot regress to schema-free JSON mode.
+// TestIntentExtractorSendsExactStructuredOutput 用于验证意图场景不会退回无 Schema 的 JSON 模式。
+func TestIntentExtractorSendsExactStructuredOutput(t *testing.T) {
+	llm := &stubProfileMergerLLM{response: logicports.LLMResponse{Content: `{"reason":"no lookup needed","need_memory":false,"queries":[]}`}}
+	prompts := &stubProfilePromptSource{prompt: "return json only"}
+	extractor := NewIntentExtractor(llm, prompts, "test-model", 5)
+
+	if _, err := extractor.Extract(context.Background(), nil, "hello"); err != nil {
+		t.Fatalf("extract intent: %v", err)
+	}
+	assertStructuredOutputRequest(t, llm.request, "vmm_precheck_intent")
+}
 
 // TestParseIntentResponseParsesMarkdownJSON verifies that fenced JSON model output is accepted and de-duplicated correctly.
 // TestParseIntentResponseParsesMarkdownJSON 用于验证带 fenced code 的 JSON 模型输出能被正确解析并去重。

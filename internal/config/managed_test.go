@@ -62,10 +62,10 @@ func TestLoadVulcanManagedConfigRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-// TestManagedContractFixtureRoundTripsSemantically verifies the shared version-one fixture loses no fields in Go.
-// TestManagedContractFixtureRoundTripsSemantically 用于验证共享的一版固定夹具经过 Go 往返后不会丢失字段。
+// TestManagedContractFixtureRoundTripsSemantically verifies the shared version-two fixture loses no fields in Go.
+// TestManagedContractFixtureRoundTripsSemantically 用于验证共享的二版固定夹具经过 Go 往返后不会丢失字段。
 func TestManagedContractFixtureRoundTripsSemantically(t *testing.T) {
-	path := filepath.Join("testdata", "vulcan-managed-contract-v1.json")
+	path := filepath.Join("testdata", "vulcan-managed-contract-v2.json")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read managed contract fixture: %v", err)
@@ -131,6 +131,13 @@ func TestManagedConfigRejectsIdentityVersionAndNestedRuntimeViolations(t *testin
 				manifest.Runtime.Inference.StartupTimeout = Duration{}
 			},
 			wantErr: "runtime.inference.startup_timeout must be positive",
+		},
+		{
+			name: "management shutdown timeout",
+			mutate: func(manifest *ManagedConfig) {
+				manifest.Runtime.Management.ShutdownTimeout = Duration{}
+			},
+			wantErr: "runtime management timeouts must be positive",
 		},
 		{
 			name: "managed pipeline",
@@ -221,6 +228,18 @@ func validManagedConfig(t *testing.T) ManagedConfig {
 				RequestTimeout:         base.GRPC.RequestTimeout,
 				ShutdownTimeout:        base.GRPC.ShutdownTimeout,
 				Keepalive:              base.GRPC.Keepalive,
+			},
+			Management: ManagedManagementConfig{
+				PreferredListenAddr:    "127.0.0.1:0",
+				AllowEphemeralFallback: true,
+				AccessToken:            "managed-management-test-token",
+				MaxRequestBodyBytes:    base.Management.MaxRequestBodyBytes,
+				DefaultPageSize:        base.Management.DefaultPageSize,
+				MaxPageSize:            base.Management.MaxPageSize,
+				ReadHeaderTimeout:      base.Management.ReadHeaderTimeout,
+				RequestTimeout:         base.Management.RequestTimeout,
+				IdleTimeout:            base.Management.IdleTimeout,
+				ShutdownTimeout:        base.Management.ShutdownTimeout,
 			},
 			Storage: ManagedStorageConfig{
 				Mode:                 "controller",

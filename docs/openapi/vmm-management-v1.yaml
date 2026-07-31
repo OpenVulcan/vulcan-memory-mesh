@@ -1,0 +1,891 @@
+openapi: 3.1.0
+info:
+  title: Vulcan Memory Mesh Management API
+  version: 1.0.0
+  description: 独立于运行时 gRPC 的 VMM 人工管理接口。
+servers:
+  - url: http://127.0.0.1:{port}/management/v1
+    variables:
+      port:
+        default: "0"
+security:
+  - bearerAuth: []
+paths:
+  /capabilities:
+    get:
+      operationId: getManagementCapabilities
+      summary: 读取管理协议能力与资源限制
+      responses:
+        "200":
+          description: 管理能力
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /users:
+    get:
+      operationId: listManagementUsers
+      summary: 列出可用于管理筛选的记忆用户
+      responses:
+        "200":
+          description: 记忆用户列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/IdentityList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /projects:
+    get:
+      operationId: listManagementProjects
+      summary: 列出可用于管理筛选的记忆项目
+      responses:
+        "200":
+          description: 记忆项目列表
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ProjectList"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sessions:
+    get:
+      operationId: listManagementSessions
+      summary: 按稳定游标列出会话摘要
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/ProjectID"
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/CreatedFrom"
+        - $ref: "#/components/parameters/CreatedTo"
+        - $ref: "#/components/parameters/UpdatedFrom"
+        - $ref: "#/components/parameters/UpdatedTo"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+        - name: sort
+          in: query
+          schema:
+            type: string
+            enum: [updated_desc, updated_asc]
+      responses:
+        "200":
+          description: 会话摘要页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SessionPage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+  /sessions/{session_id}:
+    get:
+      operationId: getManagementSession
+      summary: 读取单条会话详情
+      parameters:
+        - $ref: "#/components/parameters/SessionID"
+      responses:
+        "200":
+          description: 会话详情
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Session"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /sessions/{session_id}/turns:
+    get:
+      operationId: listManagementSessionTurns
+      summary: 按稳定游标列出指定会话的回合摘要
+      parameters:
+        - $ref: "#/components/parameters/SessionID"
+        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 回合摘要页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TurnPage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+  /turns:
+    get:
+      operationId: listManagementTurns
+      summary: 跨会话列出回合摘要
+      parameters:
+        - $ref: "#/components/parameters/UserID"
+        - $ref: "#/components/parameters/ProjectID"
+        - name: session_id
+          in: query
+          schema:
+            type: string
+            pattern: "^[1-9][0-9]*$"
+        - $ref: "#/components/parameters/Query"
+        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/CreatedFrom"
+        - $ref: "#/components/parameters/CreatedTo"
+        - name: has_memory
+          in: query
+          schema:
+            type: boolean
+        - name: has_profile
+          in: query
+          schema:
+            type: boolean
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 全局回合摘要页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TurnPage"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+  /turns/{turn_id}:
+    get:
+      operationId: getManagementTurn
+      summary: 读取单条回合元数据
+      parameters:
+        - $ref: "#/components/parameters/TurnID"
+      responses:
+        "200":
+          description: 回合元数据
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Turn"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /turns/{turn_id}/content:
+    get:
+      operationId: getManagementTurnContent
+      summary: 按 UTF-8 安全边界读取回合内容分片
+      parameters:
+        - $ref: "#/components/parameters/TurnID"
+        - name: section
+          in: query
+          required: true
+          schema:
+            type: string
+            enum: [user, assistant, timeline]
+        - name: index
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            minimum: 0
+            default: 0
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 262144
+            default: 262144
+      responses:
+        "200":
+          description: 内容分片
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/TurnContentChunk"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+  /removal-previews:
+    post:
+      operationId: createManagementRemovalPreview
+      summary: 创建归档、回收或永久清理影响预览
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/RemovalPreviewRequest"
+      responses:
+        "201":
+          description: 影响预览
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RemovalPreview"
+        "400":
+          $ref: "#/components/responses/InvalidRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /removals:
+    post:
+      operationId: executeManagementRemoval
+      summary: 执行预览约束的归档、取消归档或回收
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecutePreviewRequest"
+      responses:
+        "200":
+          description: 操作终态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /restores:
+    post:
+      operationId: restoreManagementRecycleBatch
+      summary: 恢复一个人工可恢复批次
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              additionalProperties: false
+              required: [batch_id]
+              properties:
+                batch_id:
+                  type: string
+                  pattern: "^[1-9][0-9]*$"
+      responses:
+        "200":
+          description: 恢复操作终态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /purges:
+    post:
+      operationId: purgeManagementRecycleBatch
+      summary: 永久清理预览约束的回收批次
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecutePreviewRequest"
+      responses:
+        "200":
+          description: 永久清理操作终态
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "409":
+          $ref: "#/components/responses/Conflict"
+  /operations/{operation_id}:
+    get:
+      operationId: getManagementOperation
+      summary: 查询管理操作终态
+      parameters:
+        - name: operation_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        "200":
+          description: 管理操作
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Operation"
+        "404":
+          $ref: "#/components/responses/NotFound"
+  /recycle-batches:
+    get:
+      operationId: listManagementRecycleBatches
+      summary: 列出人工与历史系统回收批次
+      parameters:
+        - $ref: "#/components/parameters/Cursor"
+        - $ref: "#/components/parameters/Limit"
+      responses:
+        "200":
+          description: 回收批次页
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecycleBatchPage"
+  /recycle-batches/{batch_id}:
+    get:
+      operationId: getManagementRecycleBatch
+      summary: 读取回收批次详情
+      parameters:
+        - name: batch_id
+          in: path
+          required: true
+          schema:
+            type: string
+            pattern: "^[1-9][0-9]*$"
+      responses:
+        "200":
+          description: 回收批次
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RecycleBatch"
+        "404":
+          $ref: "#/components/responses/NotFound"
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: opaque
+  responses:
+    Unauthorized:
+      description: 管理 Token 缺失或无效
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    InvalidRequest:
+      description: 请求参数无效
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    NotFound:
+      description: 资源不存在
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+    Conflict:
+      description: 预览过期、状态变化、资源受保护或恢复冲突
+      content:
+        application/problem+json:
+          schema:
+            $ref: "#/components/schemas/Problem"
+  parameters:
+    SessionID:
+      name: session_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[1-9][0-9]*$"
+    TurnID:
+      name: turn_id
+      in: path
+      required: true
+      schema:
+        type: string
+        pattern: "^[1-9][0-9]*$"
+    UserID:
+      name: user_id
+      in: query
+      schema:
+        type: string
+        pattern: "^[1-9][0-9]*$"
+    ProjectID:
+      name: project_id
+      in: query
+      schema:
+        type: string
+        pattern: "^[1-9][0-9]*$"
+    Query:
+      name: query
+      in: query
+      schema:
+        type: string
+    Status:
+      name: status
+      in: query
+      schema:
+        type: string
+    Cursor:
+      name: cursor
+      in: query
+      schema:
+        type: string
+    Limit:
+      name: limit
+      in: query
+      schema:
+        type: integer
+        minimum: 1
+        maximum: 100
+    CreatedFrom:
+      name: created_from
+      in: query
+      schema:
+        type: string
+        format: date-time
+    CreatedTo:
+      name: created_to
+      in: query
+      schema:
+        type: string
+        format: date-time
+    UpdatedFrom:
+      name: updated_from
+      in: query
+      schema:
+        type: string
+        format: date-time
+    UpdatedTo:
+      name: updated_to
+      in: query
+      schema:
+        type: string
+        format: date-time
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 200
+  schemas:
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required:
+        - protocol_version
+        - service_version
+        - resources
+        - trash_retention_hours
+        - max_page_size
+        - content_chunk_bytes
+        - full_text_index_status
+        - restore_supported
+        - storage_mode
+      properties:
+        protocol_version:
+          type: integer
+          const: 1
+        service_version:
+          type: string
+        resources:
+          type: array
+          items:
+            type: string
+        trash_retention_hours:
+          type: integer
+          format: int64
+        max_page_size:
+          type: integer
+        content_chunk_bytes:
+          type: integer
+        full_text_index_status:
+          type: string
+        restore_supported:
+          type: boolean
+        storage_mode:
+          type: string
+    Problem:
+      type: object
+      additionalProperties: false
+      required:
+        - type
+        - title
+        - status
+        - code
+        - detail
+        - request_id
+        - retryable
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        code:
+          type: string
+        detail:
+          type: string
+        request_id:
+          type: string
+        retryable:
+          type: boolean
+    Identity:
+      type: object
+      additionalProperties: false
+      required: [id, name]
+      properties:
+        id:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+        name:
+          type: string
+    IdentityList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Identity"
+    Project:
+      type: object
+      additionalProperties: false
+      required: [id, name, path]
+      properties:
+        id:
+          type: string
+          pattern: "^[1-9][0-9]*$"
+        name:
+          type: string
+        path:
+          type: string
+    ProjectList:
+      type: object
+      additionalProperties: false
+      required: [items]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Project"
+    Session:
+      type: object
+      additionalProperties: false
+      required:
+        - session_id
+        - session_key
+        - display_title
+        - user
+        - project
+        - status
+        - created_at
+        - updated_at
+        - historical_turn_count
+        - visible_turn_count
+        - pending_turn_count
+        - active_memory_count
+        - profile_reference_count
+      properties:
+        session_id:
+          type: string
+        session_key:
+          type: string
+          description: 后端消费者用于关联本地会话的稳定键；浏览器代理必须移除。
+        display_title:
+          type: string
+        user:
+          $ref: "#/components/schemas/Identity"
+        project:
+          $ref: "#/components/schemas/Project"
+        status:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        historical_turn_count:
+          type: integer
+        visible_turn_count:
+          type: integer
+        pending_turn_count:
+          type: integer
+        active_memory_count:
+          type: integer
+        profile_reference_count:
+          type: integer
+        last_summarized_turn_id:
+          type: string
+        last_compacted_turn_id:
+          type: string
+        last_compacted_at:
+          type: string
+          format: date-time
+    SessionPage:
+      type: object
+      additionalProperties: false
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Session"
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    Turn:
+      type: object
+      additionalProperties: false
+      required:
+        - turn_id
+        - session_id
+        - project_id
+        - user
+        - project
+        - display_excerpt
+        - extraction_status
+        - created_at
+        - updated_at
+        - content_bytes
+        - extracted_detail_bytes
+      properties:
+        turn_id:
+          type: string
+        session_id:
+          type: string
+        project_id:
+          type: string
+        user:
+          $ref: "#/components/schemas/Identity"
+        project:
+          $ref: "#/components/schemas/Project"
+        display_excerpt:
+          type: string
+        extraction_status:
+          type: string
+          enum: [pending, extracted]
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        content_bytes:
+          type: integer
+        extracted_detail_bytes:
+          type: integer
+        derived_memories:
+          type: integer
+        profile_references:
+          type: integer
+    TurnPage:
+      type: object
+      additionalProperties: false
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/Turn"
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean
+    TurnContentChunk:
+      type: object
+      additionalProperties: false
+      required: [turn_id, section, offset, next_offset, has_more, chunk]
+      properties:
+        turn_id:
+          type: string
+        section:
+          type: string
+        index:
+          type: integer
+        offset:
+          type: integer
+        next_offset:
+          type: integer
+        has_more:
+          type: boolean
+        chunk:
+          type: string
+    RemovalPreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [target_type, target_ids, action]
+      properties:
+        target_type:
+          type: string
+          enum: [session, turn, recycle_batch]
+        target_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          uniqueItems: true
+          items:
+            type: string
+            pattern: "^[1-9][0-9]*$"
+        action:
+          type: string
+          enum: [archive, unarchive, recycle, purge]
+        source:
+          type: string
+    RemovalPreview:
+      type: object
+      additionalProperties: false
+      required:
+        - preview_token
+        - expires_at
+        - impact_revision
+        - target_type
+        - target_ids
+        - action
+        - session_count
+        - turn_count
+        - memory_count
+        - context_edge_count
+        - vector_count
+        - profile_node_count
+        - pending_turn_count
+        - hot_window_turn_count
+        - protected_count
+      properties:
+        preview_token:
+          type: string
+        expires_at:
+          type: string
+          format: date-time
+        impact_revision:
+          type: string
+        target_type:
+          type: string
+        target_ids:
+          type: array
+          items:
+            type: string
+        action:
+          type: string
+        session_count:
+          type: integer
+        turn_count:
+          type: integer
+        memory_count:
+          type: integer
+        context_edge_count:
+          type: integer
+        vector_count:
+          type: integer
+        profile_node_count:
+          type: integer
+        pending_turn_count:
+          type: integer
+        hot_window_turn_count:
+          type: integer
+        protected_count:
+          type: integer
+        required_confirmation:
+          type: string
+    ExecutePreviewRequest:
+      type: object
+      additionalProperties: false
+      required: [preview_token]
+      properties:
+        preview_token:
+          type: string
+        confirm_text:
+          type: string
+    Operation:
+      type: object
+      additionalProperties: false
+      required: [operation_id, action, target_type, target_ids, status, created_at, updated_at]
+      properties:
+        operation_id:
+          type: string
+        action:
+          type: string
+        target_type:
+          type: string
+        target_ids:
+          type: array
+          items:
+            type: string
+        status:
+          type: string
+          enum: [running, succeeded, failed]
+        batch_id:
+          type: string
+        error_code:
+          type: string
+        error_message:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        updated_at:
+          type: string
+          format: date-time
+        completed_at:
+          type: string
+          format: date-time
+    RecycleBatch:
+      type: object
+      additionalProperties: false
+      required:
+        - batch_id
+        - source
+        - target_ids
+        - restorable
+        - state
+        - reason
+        - session_count
+        - turn_count
+        - memory_count
+        - profile_count
+        - recycled_at
+      properties:
+        batch_id:
+          type: string
+        source:
+          type: string
+        target_type:
+          type: string
+        target_ids:
+          type: array
+          items:
+            type: string
+        restorable:
+          type: boolean
+        state:
+          type: string
+        reason:
+          type: string
+        session_count:
+          type: integer
+        turn_count:
+          type: integer
+        memory_count:
+          type: integer
+        profile_count:
+          type: integer
+        recycled_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        restored_at:
+          type: string
+          format: date-time
+        purged_at:
+          type: string
+          format: date-time
+    RecycleBatchPage:
+      type: object
+      additionalProperties: false
+      required: [items, has_more]
+      properties:
+        items:
+          type: array
+          items:
+            $ref: "#/components/schemas/RecycleBatch"
+        next_cursor:
+          type: string
+        has_more:
+          type: boolean

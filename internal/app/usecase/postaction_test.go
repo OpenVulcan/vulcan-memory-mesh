@@ -56,6 +56,26 @@ func TestPostActionExecuteRejectsNilStore(t *testing.T) {
 	}
 }
 
+// TestPostActionExecuteSkipsRecycledSession verifies a recycled tombstone accepts the request without appending a new turn.
+// TestPostActionExecuteSkipsRecycledSession 用于验证回收墓碑会接受请求但不会追加新回合。
+func TestPostActionExecuteSkipsRecycledSession(t *testing.T) {
+	store := &testRelationalStore{}
+	uc := newPostActionUseCase(nil, store, nil, nil, nil, nil, nil, PostActionAnalysisConfig{}, nil)
+	result, err := uc.Execute(context.Background(), PostActionCommand{
+		Session: logicdomain.SessionRef{
+			SessionID: 41, SessionKey: "sess-recycled", UserID: 7, ProjectID: 9,
+			MemoryStatus: logicdomain.SessionMemoryStatusRecycled,
+		},
+		UserContent: "不会写入", AssistantContent: "已停止记忆",
+	})
+	if err != nil || !result.Accepted {
+		t.Fatalf("Execute(recycled) = %+v, %v", result, err)
+	}
+	if store.turn.UserContent != "" || store.turn.AssistantContent != "" {
+		t.Fatalf("recycled session appended turn: %+v", store.turn)
+	}
+}
+
 // TestValidateTurnAnalysisRejectsAdmissionReasonContractDrift verifies the use-case boundary rejects analyzer outputs whose rejection reason no longer matches the keep/drop decision.
 // TestValidateTurnAnalysisRejectsAdmissionReasonContractDrift 用于验证用例边界会拒绝拒绝原因与 keep/drop 结论不再匹配的分析器输出。
 func TestValidateTurnAnalysisRejectsAdmissionReasonContractDrift(t *testing.T) {

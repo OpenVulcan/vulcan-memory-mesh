@@ -1155,7 +1155,7 @@ func TestSupportedEnvOverrideValuePathsCoverApplyEnvOverridesKeys(t *testing.T) 
 	}
 	source := string(body)
 	supported := map[string]struct{}{}
-	for _, match := range regexp.MustCompile(`set(?:String|StringSlice|Int|Float|OptionalFloat|Bool|Duration)\("([A-Z0-9_]+)"`).FindAllStringSubmatch(source, -1) {
+	for _, match := range regexp.MustCompile(`set(?:String|StringSlice|Int|Int64|Float|OptionalFloat|Bool|Duration)\("([A-Z0-9_]+)"`).FindAllStringSubmatch(source, -1) {
 		supported[match[1]] = struct{}{}
 	}
 	for _, match := range regexp.MustCompile(`envOverrideAllowed\(referencedEnvKeys, "([A-Z0-9_]+)"`).FindAllStringSubmatch(source, -1) {

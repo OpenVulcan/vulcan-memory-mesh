@@ -40,7 +40,22 @@ func trackedSchemaMigrationSteps(flavor string) []trackedSchemaMigrationStep {
 				return r.migrateCombinedSchemaDropRemovedWorkMemory(ctx)
 			},
 		},
+		{
+			Component:   defaultSchemaVersionComponent,
+			FromVersion: 3,
+			ToVersion:   4,
+			Name:        "add human-management recycle and operation tables",
+			Up: func(ctx context.Context, r *maintenanceRepository) error {
+				return r.migrateCombinedSchemaAddManagement(ctx)
+			},
+		},
 	}
+}
+
+// migrateCombinedSchemaAddManagement creates the isolated management tables without reclassifying historical system recycle batches.
+// migrateCombinedSchemaAddManagement 用于创建独立管理表，同时不重新分类历史系统回收批次。
+func (r *maintenanceRepository) migrateCombinedSchemaAddManagement(ctx context.Context) error {
+	return r.execDDLStatements(ctx, postgresManagementSchemaStatements(r), "postgres management schema migration")
 }
 
 // validateTrackedSchemaVersion rejects impossible newer rows while allowing older rows to continue into the explicit migration stage.

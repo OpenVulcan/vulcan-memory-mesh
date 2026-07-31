@@ -30,6 +30,9 @@ func (u *PostActionUseCase) Execute(ctx context.Context, cmd PostActionCommand) 
 	if err := validatePostAction(cmd); err != nil {
 		return PostActionResult{}, err
 	}
+	if !cmd.Session.MemoryStatus.AllowsRuntimeMemory() {
+		return PostActionResult{Accepted: true, TraceID: trace.IDFromContext(ctx)}, nil
+	}
 	cmd = scrubPostActionCommandPII(u.piiScrubber, cmd)
 	traceID := trace.IDFromContext(ctx)
 

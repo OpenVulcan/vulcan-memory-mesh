@@ -54,11 +54,19 @@ func (r *PostActionCandidateReviewer) Review(ctx context.Context, input logicdom
 	if err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, fmt.Errorf("load postaction_l2_main prompt: %w", err)
 	}
+	structuredOutput, err := structuredOutputFor[postActionCandidateReviewResponsePayload](
+		"vmm_postaction_candidate_review",
+		"VMM post-action memory and profile candidate review result.",
+	)
+	if err != nil {
+		return logicdomain.PostActionCandidateReviewResult{}, err
+	}
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               r.model,
 		SystemPrompt:        prompt,
 		UserPrompt:          requestBody,
 		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		StructuredOutput:    structuredOutput,
 		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPostActionL2,
 	})
 	if err != nil {
@@ -270,24 +278,10 @@ func parsePostActionCandidateReviewResponse(raw string, memoryCount, userCount, 
 	if err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: err.Error(), Raw: raw}
 	}
-	var payload struct {
-		Memory *struct {
-			AcceptedCandidates []struct {
-				CandidateIndex     int      `json:"candidate_index"`
-				SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
-			} `json:"accepted_candidates"`
-			DroppedCandidates []struct {
-				CandidateIndex int    `json:"candidate_index"`
-				DedupeMemoryID uint64 `json:"dedupe_memory_id"`
-			} `json:"dropped_candidates"`
-			AcceptedCandidateIndexes *[]int `json:"accepted_candidate_indexes"`
-			DroppedCandidateIndexes  *[]int `json:"dropped_candidate_indexes"`
-			Reason                   string `json:"reason"`
-		} `json:"memory"`
-		User    *profileReviewSectionPayload `json:"user"`
-		Project *profileReviewSectionPayload `json:"project"`
-	}
-	if err := json.Unmarshal([]byte(jsonBody), &payload); err != nil {
+	var payload postActionCandidateReviewResponsePayload
+	decoder := json.NewDecoder(strings.NewReader(jsonBody))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&payload); err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "json decode failed", Raw: raw}
 	}
 
@@ -306,29 +300,12 @@ func parsePostActionCandidateReviewResponse(raw string, memoryCount, userCount, 
 
 // parsePostActionMemoryReviewSection validates one memory review block and requires every memory candidate to be classified exactly once.
 // parsePostActionMemoryReviewSection 用于校验单个记忆评审块，并要求每条记忆候选都且仅被分类一次。
-func parsePostActionMemoryReviewSection(payload *struct {
-	AcceptedCandidates []struct {
-		CandidateIndex     int      `json:"candidate_index"`
-		SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
-	} `json:"accepted_candidates"`
-	DroppedCandidates []struct {
-		CandidateIndex int    `json:"candidate_index"`
-		DedupeMemoryID uint64 `json:"dedupe_memory_id"`
-	} `json:"dropped_candidates"`
-	AcceptedCandidateIndexes *[]int `json:"accepted_candidate_indexes"`
-	DroppedCandidateIndexes  *[]int `json:"dropped_candidate_indexes"`
-	Reason                   string `json:"reason"`
-}, expectedCount int, raw string) (*logicdomain.PostActionMemoryReviewSection, error) {
+func parsePostActionMemoryReviewSection(payload *postActionMemoryReviewPayload, expectedCount int, raw string) (*logicdomain.PostActionMemoryReviewSection, error) {
 	if expectedCount == 0 {
 		return nil, nil
 	}
 	if payload == nil {
 		return nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "missing memory block", Raw: raw}
-	}
-	// Reject index-only legacy arrays so the reviewer output cannot bypass structured dedupe and supersede payloads.
-	// 拒绝旧的纯索引数组，避免 reviewer 输出绕过结构化去重与替代载荷。
-	if payload.AcceptedCandidateIndexes != nil || payload.DroppedCandidateIndexes != nil {
-		return nil, logicdomain.InvalidLLMOutputError{Scene: "postaction_l2_main", Message: "memory legacy candidate index lists are unsupported", Raw: raw}
 	}
 	acceptedCandidates, accepted, err := normalizePostActionAcceptedMemoryCandidates(payload.AcceptedCandidates, expectedCount, raw)
 	if err != nil {
@@ -352,10 +329,7 @@ func parsePostActionMemoryReviewSection(payload *struct {
 
 // normalizePostActionAcceptedMemoryCandidates validates the structured accepted memory payload and returns one normalized section plus its derived index list.
 // normalizePostActionAcceptedMemoryCandidates 用于校验结构化的被接纳记忆载荷，并返回归一化结果及其派生索引列表。
-func normalizePostActionAcceptedMemoryCandidates(items []struct {
-	CandidateIndex     int      `json:"candidate_index"`
-	SupersedeMemoryIDs []uint64 `json:"supersede_memory_ids"`
-}, expectedCount int, raw string) ([]logicdomain.PostActionAcceptedMemoryCandidate, []int, error) {
+func normalizePostActionAcceptedMemoryCandidates(items []postActionMemoryAcceptedPayload, expectedCount int, raw string) ([]logicdomain.PostActionAcceptedMemoryCandidate, []int, error) {
 	if len(items) == 0 {
 		return nil, nil, nil
 	}
@@ -390,10 +364,7 @@ func normalizePostActionAcceptedMemoryCandidates(items []struct {
 
 // normalizePostActionDroppedMemoryCandidates validates the structured dropped memory payload and returns one normalized section plus its derived index list.
 // normalizePostActionDroppedMemoryCandidates 用于校验结构化的被丢弃记忆载荷，并返回归一化结果及其派生索引列表。
-func normalizePostActionDroppedMemoryCandidates(items []struct {
-	CandidateIndex int    `json:"candidate_index"`
-	DedupeMemoryID uint64 `json:"dedupe_memory_id"`
-}, expectedCount int, raw string) ([]logicdomain.PostActionDroppedMemoryCandidate, []int, error) {
+func normalizePostActionDroppedMemoryCandidates(items []postActionMemoryDroppedPayload, expectedCount int, raw string) ([]logicdomain.PostActionDroppedMemoryCandidate, []int, error) {
 	if len(items) == 0 {
 		return nil, nil, nil
 	}

@@ -211,9 +211,25 @@ func (c *Client) Generate(ctx context.Context, request appports.LLMRequest) (app
 	if err != nil {
 		return appports.LLMResponse{}, err
 	}
-	structuredMode := "none"
+	structuredOutput := map[string]any{"mode": "none"}
 	if request.ResponseFormat == appports.LLMResponseFormatJSON {
-		structuredMode = "json_object"
+		if request.StructuredOutput == nil {
+			return appports.LLMResponse{}, errors.New("Vulcan inference JSON request requires an explicit structured-output schema")
+		}
+		var schema map[string]any
+		if err := json.Unmarshal(request.StructuredOutput.Schema, &schema); err != nil {
+			return appports.LLMResponse{}, fmt.Errorf("decode Vulcan inference structured-output schema: %w", err)
+		}
+		if strings.TrimSpace(request.StructuredOutput.Name) == "" || len(schema) == 0 {
+			return appports.LLMResponse{}, errors.New("Vulcan inference structured-output schema name and object must not be empty")
+		}
+		structuredOutput = map[string]any{
+			"mode":        "json_schema",
+			"name":        strings.TrimSpace(request.StructuredOutput.Name),
+			"description": strings.TrimSpace(request.StructuredOutput.Description),
+			"schema":      schema,
+			"strict":      request.StructuredOutput.Strict,
+		}
 	}
 	body := map[string]any{
 		"contract_version":    inferenceContractVersion,
@@ -224,7 +240,7 @@ func (c *Client) Generate(ctx context.Context, request appports.LLMRequest) (app
 			map[string]any{"role": "system", "content": []any{map[string]any{"type": "text", "text": request.SystemPrompt}}},
 			map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": request.UserPrompt}}},
 		},
-		"structured_output": map[string]any{"mode": structuredMode},
+		"structured_output": structuredOutput,
 		"prompt_cache":      map[string]any{"mode": "provider_default"},
 		"reasoning_output":  "hidden",
 	}

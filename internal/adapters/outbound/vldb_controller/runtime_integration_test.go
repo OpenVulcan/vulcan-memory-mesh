@@ -49,8 +49,8 @@ func TestRuntimeOwnsSQLiteAndLanceDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query controller sqlite schema version: %v", err)
 	}
-	if schemaVersion != 20 {
-		t.Fatalf("sqlite schema version = %d, want 20", schemaVersion)
+	if schemaVersion != 21 {
+		t.Fatalf("sqlite schema version = %d, want 21", schemaVersion)
 	}
 	projectResult, err := sqliteStore.EnsureProjectPath(ctx, "ControllerTeam/ControllerSpace/ControllerProject", true)
 	if err != nil {

@@ -39,6 +39,7 @@ type runtimeStorageCapabilities struct {
 	SchemaVersions     appports.SchemaVersionStore
 	ProfileStore       appports.ProfileStore
 	MemoryStore        appports.MemoryStore
+	ManagementStore    appports.ManagementStore
 	ChatCompactStore   usecase.ChatCompactStore
 	RetentionStore     appports.RetentionStore
 	Lifecycle          appports.Shutdowner
@@ -110,6 +111,10 @@ func resolveRuntimeStorageCapabilities(storageDeps storageDependencies) (runtime
 	if !ok {
 		return runtimeStorageCapabilities{}, fmt.Errorf("relational store does not support unified memory lookup")
 	}
+	managementStore, ok := relational.(appports.ManagementStore)
+	if !ok {
+		return runtimeStorageCapabilities{}, fmt.Errorf("relational store does not support management reads")
+	}
 	chatCompactStore, ok := relational.(usecase.ChatCompactStore)
 	if !ok {
 		return runtimeStorageCapabilities{}, fmt.Errorf("relational store does not support session compact updates")
@@ -127,6 +132,7 @@ func resolveRuntimeStorageCapabilities(storageDeps storageDependencies) (runtime
 		SchemaVersions:     schemaVersions,
 		ProfileStore:       profileStore,
 		MemoryStore:        memoryStore,
+		ManagementStore:    managementStore,
 		ChatCompactStore:   chatCompactStore,
 		RetentionStore:     retentionStore,
 		Lifecycle:          storageDeps.Lifecycle,

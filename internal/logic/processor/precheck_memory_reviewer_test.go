@@ -3,12 +3,27 @@
 package processor
 
 import (
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	logicports "github.com/openvulcan/vmm/internal/logic/ports"
 )
+
+// TestPreCheckMemoryReviewerSendsExactStructuredOutput verifies the second-stage pre-check carries its decoder-derived schema.
+// TestPreCheckMemoryReviewerSendsExactStructuredOutput 用于验证第二阶段预检查携带由解码结构生成的 Schema。
+func TestPreCheckMemoryReviewerSendsExactStructuredOutput(t *testing.T) {
+	llm := &stubProfileMergerLLM{response: logicports.LLMResponse{Content: `{"selected_candidate_numbers":[]}`}}
+	prompts := &stubProfilePromptSource{prompt: "return json only"}
+	reviewer := NewPreCheckMemoryReviewer(llm, prompts, "test-model")
+
+	if _, err := reviewer.Review(context.Background(), logicdomain.PreCheckMemoryReviewInput{}); err != nil {
+		t.Fatalf("review pre-check memory: %v", err)
+	}
+	assertStructuredOutputRequest(t, llm.request, "vmm_precheck_memory_review")
+}
 
 // TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers verifies the reviewer parser keeps only valid deduplicated candidate numbers from the current candidate set.
 // TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers 用于验证评审器解析器只保留当前候选集合中合法且去重后的候选编号。

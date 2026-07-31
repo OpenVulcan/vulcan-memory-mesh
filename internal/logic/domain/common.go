@@ -4,6 +4,66 @@ package domain
 
 import "time"
 
+// SessionMemoryStatus is the authoritative lifecycle state applied to one runtime session scope.
+// SessionMemoryStatus 是应用到单个运行时会话范围的权威生命周期状态。
+type SessionMemoryStatus string
+
+const (
+	// SessionMemoryStatusActive allows normal recall and post-action persistence.
+	// SessionMemoryStatusActive 允许正常召回和 PostAction 持久化。
+	SessionMemoryStatusActive SessionMemoryStatus = "active"
+	// SessionMemoryStatusArchived hides the session from default management lists without changing runtime behavior.
+	// SessionMemoryStatusArchived 从默认管理列表隐藏会话，但不改变运行时行为。
+	SessionMemoryStatusArchived SessionMemoryStatus = "archived"
+	// SessionMemoryStatusRecycled pauses recall and persistence while recoverable data remains in the recycle bin.
+	// SessionMemoryStatusRecycled 在可恢复数据仍位于回收站期间暂停召回与持久化。
+	SessionMemoryStatusRecycled SessionMemoryStatus = "recycled"
+	// SessionMemoryStatusForgotten preserves only a no-content tombstone after permanent purge.
+	// SessionMemoryStatusForgotten 在永久清理后仅保留无内容墓碑。
+	SessionMemoryStatusForgotten SessionMemoryStatus = "forgotten"
+)
+
+// AllowsRuntimeMemory reports whether the status participates in ordinary recall and persistence.
+// AllowsRuntimeMemory 用于判断该状态是否参与常规召回与持久化。
+func (s SessionMemoryStatus) AllowsRuntimeMemory() bool {
+	status := s.Effective()
+	return status == SessionMemoryStatusActive || status == SessionMemoryStatusArchived
+}
+
+// Effective maps the zero value used by existing in-process callers to the historical active behavior.
+// Effective 用于把既有进程内调用方使用的零值映射为历史上的 active 行为。
+func (s SessionMemoryStatus) Effective() SessionMemoryStatus {
+	if s == "" {
+		return SessionMemoryStatusActive
+	}
+	return s
+}
+
+// ValidateManagementAction rejects lifecycle transitions that would bypass restore or explicit restart semantics.
+// ValidateManagementAction 用于拒绝会绕过恢复流程或显式重新开始语义的生命周期转换。
+func (s SessionMemoryStatus) ValidateManagementAction(action string) error {
+	s = s.Effective()
+	switch action {
+	case ManagementActionArchive:
+		if s != SessionMemoryStatusActive {
+			return ConflictError{Resource: "session", Message: "only active sessions can be archived"}
+		}
+	case ManagementActionUnarchive:
+		if s != SessionMemoryStatusArchived {
+			return ConflictError{Resource: "session", Message: "only archived sessions can be unarchived"}
+		}
+	case ManagementActionRecycle:
+		if s != SessionMemoryStatusActive && s != SessionMemoryStatusArchived {
+			return ConflictError{Resource: "session", Message: "only active or archived sessions can be recycled"}
+		}
+	case ManagementActionRestart:
+		if s != SessionMemoryStatusForgotten {
+			return ConflictError{Resource: "session", Message: "only forgotten sessions can restart memory"}
+		}
+	}
+	return nil
+}
+
 // SessionRef carries the resolved numeric hierarchy identifiers plus the external session key used by business RPCs.
 // SessionRef 用于承载业务 RPC 使用的外部 session_key，以及解析后的数字层级标识。
 type SessionRef struct {
@@ -27,6 +87,7 @@ type SessionRef struct {
 	TeamName               string
 	SpaceName              string
 	ProjectName            string
+	MemoryStatus           SessionMemoryStatus
 }
 
 // SearchFilter derives the concrete vector-scope coordinates used by recall and cleanup flows.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"os"
 	"os/signal"
 	"strings"
@@ -15,6 +16,7 @@ import (
 
 	grpcapi "github.com/openvulcan/vmm/internal/adapters/inbound/grpcapi"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
+	"github.com/openvulcan/vmm/internal/app/usecase"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/platform/logx"
 	"github.com/openvulcan/vmm/internal/platform/xid"
@@ -24,11 +26,20 @@ import (
 // Application holds the fully wired local runtime, including the gRPC server and shutdown hooks.
 // Application 用于持有完整装配后的本地运行时，包括 gRPC 服务和关闭钩子。
 type Application struct {
-	Config                 config.Config
-	Logger                 *logx.Logger
-	Server                 *grpc.Server
-	Shutdowns              []appports.Shutdowner
-	AllowEphemeralFallback bool
+	Config                           config.Config
+	Logger                           *logx.Logger
+	Server                           *grpc.Server
+	ManagementServer                 *http.Server
+	Shutdowns                        []appports.Shutdowner
+	AllowEphemeralFallback           bool
+	AllowManagementEphemeralFallback bool
+}
+
+// RuntimeEndpoints contains the operating-system-resolved addresses for every required runtime listener.
+// RuntimeEndpoints 用于保存每个必需运行时监听器由操作系统最终解析出的地址。
+type RuntimeEndpoints struct {
+	GRPCListenAddr       string
+	ManagementListenAddr string
 }
 
 // applicationOptions carries the composition differences that are exclusive to a managed child runtime.
@@ -148,15 +159,35 @@ func newApplicationWithOptions(cfg config.Config, prompts appports.PromptSource,
 		)
 	}
 	server := buildRuntimeGRPCServer(cfg, grpcDeps)
+	var managementServer *http.Server
+	if cfg.Management.Enabled {
+		managementUseCase, managementErr := usecase.NewManagementUseCase(storageCaps.ManagementStore, cfg.Management.DefaultPageSize, cfg.Management.MaxPageSize)
+		if managementErr != nil {
+			return nil, fmt.Errorf("initialize management use case: %w", managementErr)
+		}
+		managementUseCase.ConfigureMutationPolicy(
+			cfg.PostAction.SessionAnalysisHistoryTurns+cfg.Retention.TurnKeepExtraTurns,
+			cfg.Retention.TrashRetention.Duration,
+		)
+		if storageCaps.ManageVectorSchema {
+			if managementErr := managementUseCase.ConfigureVectorQuarantine(storageCaps.Vector); managementErr != nil {
+				return nil, fmt.Errorf("initialize management vector quarantine: %w", managementErr)
+			}
+		}
+		managementServer = buildManagementHTTPServer(cfg, managementUseCase)
+	}
 	shutdowns := buildUniqueShutdownSequence(fileWriter, llmOutputShutdowner, storageCaps.Lifecycle, storageCaps.Relational, storageCaps.Vector, useCases.PostAction, useCases.Retention)
 	initSucceeded = true
 	return &Application{
-		Config:    cfg,
-		Logger:    logger,
-		Server:    server,
-		Shutdowns: shutdowns,
+		Config:           cfg,
+		Logger:           logger,
+		Server:           server,
+		ManagementServer: managementServer,
+		Shutdowns:        shutdowns,
 		AllowEphemeralFallback: options.ManagedConfig != nil &&
 			options.ManagedConfig.Runtime.GRPC.AllowEphemeralFallback,
+		AllowManagementEphemeralFallback: options.ManagedConfig != nil &&
+			options.ManagedConfig.Runtime.Management.AllowEphemeralFallback,
 	}, nil
 }
 
@@ -180,6 +211,17 @@ func (a *Application) RunWithReady(ctx context.Context, ready func()) error {
 // RunWithReadyAddress starts the gRPC server and reports the operating-system-resolved listener address.
 // RunWithReadyAddress 用于启动 gRPC 服务，并回报由操作系统最终解析出的监听地址。
 func (a *Application) RunWithReadyAddress(ctx context.Context, ready func(string) error) error {
+	return a.RunWithReadyEndpoints(ctx, func(endpoints RuntimeEndpoints) error {
+		if ready == nil {
+			return nil
+		}
+		return ready(endpoints.GRPCListenAddr)
+	})
+}
+
+// RunWithReadyEndpoints binds every required listener before reporting readiness and serving requests.
+// RunWithReadyEndpoints 用于在回报就绪并开始处理请求前绑定每个必需监听器。
+func (a *Application) RunWithReadyEndpoints(ctx context.Context, ready func(RuntimeEndpoints) error) error {
 	// Fail fast on obviously incomplete runtime state so callers receive one deterministic error instead of a goroutine panic from grpc.Server.
 	// 对明显不完整的运行时状态提前失败，让调用方拿到确定性错误，而不是在 goroutine 里被 grpc.Server 触发 panic。
 	if a == nil {
@@ -192,33 +234,65 @@ func (a *Application) RunWithReadyAddress(ctx context.Context, ready func(string
 		return errors.New("grpc server is not initialized")
 	}
 
-	errCh := make(chan error, 1)
-	go func() {
-		// Bind the TCP listener at start time so TLS can be terminated by an external proxy such as Caddy.
-		// 在启动时绑定 TCP 监听器，让 TLS 由外部代理如 Caddy 终止。
-		listener, err := net.Listen("tcp", a.Config.GRPC.ListenAddr)
-		if err != nil && a.AllowEphemeralFallback {
-			a.Logger.Warn("preferred grpc address unavailable; using ephemeral loopback", "preferred_addr", a.Config.GRPC.ListenAddr, "error", err.Error())
-			listener, err = net.Listen("tcp", "127.0.0.1:0")
+	// Bind the TCP listeners before starting either server so readiness always represents the complete required endpoint set.
+	// 在启动任一服务前先绑定全部 TCP 监听器，确保就绪状态始终代表完整的必需端点集合。
+	grpcListener, err := net.Listen("tcp", a.Config.GRPC.ListenAddr)
+	if err != nil && a.AllowEphemeralFallback {
+		a.Logger.Warn("preferred grpc address unavailable; using ephemeral loopback", "preferred_addr", a.Config.GRPC.ListenAddr, "error", err.Error())
+		grpcListener, err = net.Listen("tcp", "127.0.0.1:0")
+	}
+	if err != nil {
+		return fmt.Errorf("bind grpc listener: %w", err)
+	}
+	var managementListener net.Listener
+	if a.ManagementServer != nil {
+		managementListener, err = net.Listen("tcp", a.Config.Management.ListenAddr)
+		if err != nil && a.AllowManagementEphemeralFallback {
+			a.Logger.Warn("preferred management address unavailable; using ephemeral loopback", "preferred_addr", a.Config.Management.ListenAddr, "error", err.Error())
+			managementListener, err = net.Listen("tcp", "127.0.0.1:0")
 		}
 		if err != nil {
-			errCh <- err
-			return
+			_ = grpcListener.Close()
+			return fmt.Errorf("bind management listener: %w", err)
 		}
-		a.Logger.Info("grpc server listening", "addr", listener.Addr().String())
-		if ready != nil {
-			if err := ready(listener.Addr().String()); err != nil {
-				_ = listener.Close()
-				errCh <- fmt.Errorf("managed ready callback: %w", err)
-				return
+	}
+	endpoints := RuntimeEndpoints{GRPCListenAddr: grpcListener.Addr().String()}
+	if managementListener != nil {
+		endpoints.ManagementListenAddr = managementListener.Addr().String()
+	}
+	if ready != nil {
+		if err := ready(endpoints); err != nil {
+			_ = grpcListener.Close()
+			if managementListener != nil {
+				_ = managementListener.Close()
 			}
+			return fmt.Errorf("managed ready callback: %w", err)
 		}
-		if err := a.Server.Serve(listener); err != nil && !errors.Is(err, grpc.ErrServerStopped) {
-			errCh <- err
+	}
+
+	serverCount := 1
+	if managementListener != nil {
+		serverCount++
+	}
+	errCh := make(chan error, serverCount)
+	a.Logger.Info("grpc server listening", "addr", endpoints.GRPCListenAddr)
+	go func() {
+		if serveErr := a.Server.Serve(grpcListener); serveErr != nil && !errors.Is(serveErr, grpc.ErrServerStopped) {
+			errCh <- fmt.Errorf("serve grpc: %w", serveErr)
 			return
 		}
 		errCh <- nil
 	}()
+	if managementListener != nil {
+		a.Logger.Info("management server listening", "addr", endpoints.ManagementListenAddr)
+		go func() {
+			if serveErr := a.ManagementServer.Serve(managementListener); serveErr != nil && !errors.Is(serveErr, http.ErrServerClosed) {
+				errCh <- fmt.Errorf("serve management http: %w", serveErr)
+				return
+			}
+			errCh <- nil
+		}()
+	}
 
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -255,27 +329,43 @@ func (a *Application) Shutdown(ctx context.Context) error {
 	if timeout <= 0 {
 		timeout = config.DefaultLocal().GRPC.ShutdownTimeout.Duration
 	}
-	shutdownCtx, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
+	var shutdownErrors []error
 
 	// Only stop gRPC when the runtime actually finished wiring the server, so partial construction or test doubles can still reuse the shutdown path safely.
 	// 只有在运行时确实完成 gRPC 服务装配时才执行停服，这样部分装配对象或测试替身也能安全复用 shutdown 路径。
 	if a.Server != nil {
+		grpcShutdownCtx, cancelGRPCShutdown := context.WithTimeout(ctx, timeout)
 		stopped := make(chan struct{})
 		go func() {
 			a.Server.GracefulStop()
 			close(stopped)
 		}()
 		select {
-		case <-shutdownCtx.Done():
+		case <-grpcShutdownCtx.Done():
 			a.Server.Stop()
 		case <-stopped:
 		}
+		cancelGRPCShutdown()
+	}
+	if a.ManagementServer != nil {
+		managementTimeout := a.Config.Management.ShutdownTimeout.Duration
+		if managementTimeout <= 0 {
+			managementTimeout = config.DefaultLocal().Management.ShutdownTimeout.Duration
+		}
+		managementShutdownCtx, cancelManagementShutdown := context.WithTimeout(ctx, managementTimeout)
+		if err := a.ManagementServer.Shutdown(managementShutdownCtx); err != nil {
+			shutdownErrors = append(shutdownErrors, fmt.Errorf("shutdown management server: %w", err))
+			if closeErr := a.ManagementServer.Close(); closeErr != nil && !errors.Is(closeErr, http.ErrServerClosed) {
+				shutdownErrors = append(shutdownErrors, fmt.Errorf("force close management server: %w", closeErr))
+			}
+		}
+		cancelManagementShutdown()
 	}
 
 	// Continue draining every dependency even if one shutdown step fails, so later resources do not leak simply because an earlier adapter returned an error.
 	// 即便某个关闭步骤失败，也继续释放后续依赖，避免前一个适配器报错后导致后面的资源直接泄漏。
-	var shutdownErrors []error
+	dependencyShutdownCtx, cancelDependencyShutdown := context.WithTimeout(ctx, timeout)
+	defer cancelDependencyShutdown()
 	seenShutdowners := map[string]struct{}{}
 	for i := len(a.Shutdowns) - 1; i >= 0; i-- {
 		shutdowner := a.Shutdowns[i]
@@ -287,7 +377,7 @@ func (a *Application) Shutdown(ctx context.Context) error {
 			continue
 		}
 		seenShutdowners[id] = struct{}{}
-		if err := shutdowner.Shutdown(shutdownCtx); err != nil {
+		if err := shutdowner.Shutdown(dependencyShutdownCtx); err != nil {
 			shutdownErrors = append(shutdownErrors, fmt.Errorf("shutdown dependency[%d]: %w", i, err))
 		}
 	}

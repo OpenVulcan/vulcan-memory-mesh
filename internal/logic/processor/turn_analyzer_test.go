@@ -166,6 +166,7 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	if llm.request.ResponseFormat != logicports.LLMResponseFormatJSON {
 		t.Fatalf("expected json response format, got %q", llm.request.ResponseFormat)
 	}
+	assertStructuredOutputRequest(t, llm.request, "vmm_turn_analysis")
 	if !strings.Contains(llm.request.UserPrompt, `"reference_turns"`) || !strings.Contains(llm.request.UserPrompt, `"recent_grpc_memory_writes"`) {
 		t.Fatalf("expected structured turn-analysis request body, got %s", llm.request.UserPrompt)
 	}

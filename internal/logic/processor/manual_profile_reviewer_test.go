@@ -70,6 +70,7 @@ func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	if llm.request.RouteSelectionLevel != logicports.LLMRouteSelectionLevelProfileInstruction {
 		t.Fatalf("expected profile instruction route selection level, got %q", llm.request.RouteSelectionLevel)
 	}
+	assertStructuredOutputRequest(t, llm.request, "vmm_manual_profile_review")
 	assertCompactJSONPrompt(t, llm.request.UserPrompt)
 	if !strings.Contains(llm.request.UserPrompt, `"target":"TEAM"`) {
 		t.Fatalf("expected TEAM target in request body, got %s", llm.request.UserPrompt)

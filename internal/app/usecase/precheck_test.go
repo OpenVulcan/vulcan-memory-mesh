@@ -129,6 +129,25 @@ func TestPreCheckExecuteReturnsEmptyContextWhenMemoryIsNotNeeded(t *testing.T) {
 	}
 }
 
+// TestPreCheckExecuteSkipsForgottenSession verifies a forgotten tombstone returns success without touching recall dependencies.
+// TestPreCheckExecuteSkipsForgottenSession 用于验证遗忘墓碑会直接成功返回且不访问召回依赖。
+func TestPreCheckExecuteSkipsForgottenSession(t *testing.T) {
+	uc := NewPreCheckUseCase(nil, nil, nil, nil, nil, PreCheckConfig{}, nil)
+	result, err := uc.Execute(trace.WithTraceID(context.Background(), "trace-forgotten"), PreCheckCommand{
+		Session: logicdomain.SessionRef{
+			SessionID: 41, SessionKey: "sess-forgotten", UserID: 7, ProjectID: 9,
+			MemoryStatus: logicdomain.SessionMemoryStatusForgotten,
+		},
+		UserContent: "不会触发召回",
+	})
+	if err != nil {
+		t.Fatalf("Execute(forgotten) error = %v", err)
+	}
+	if result.ShouldInject || len(result.ContextItems) != 0 || result.TraceID != "trace-forgotten" {
+		t.Fatalf("Execute(forgotten) = %+v", result)
+	}
+}
+
 // TestPreCheckExecuteLogsIntentInvalidOutput verifies degraded pre-check intent failures keep raw first-stage model diagnostics in server logs.
 // TestPreCheckExecuteLogsIntentInvalidOutput 用于验证 pre-check 第一层意图失败降级时，会把原始模型诊断留在服务端日志中。
 func TestPreCheckExecuteLogsIntentInvalidOutput(t *testing.T) {

@@ -4,6 +4,7 @@ package processor
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 
@@ -50,5 +51,24 @@ func assertCompactJSONPrompt(t *testing.T, rendered string) {
 	t.Helper()
 	if strings.ContainsAny(rendered, "\r\n") {
 		t.Fatalf("expected compact single-line JSON prompt, got %s", rendered)
+	}
+}
+
+// assertStructuredOutputRequest verifies one processor request carries a named, strict, closed JSON Schema.
+// assertStructuredOutputRequest 用于验证处理器请求携带具名、严格且封闭的 JSON Schema。
+func assertStructuredOutputRequest(t *testing.T, request logicports.LLMRequest, expectedName string) {
+	t.Helper()
+	if request.StructuredOutput == nil {
+		t.Fatal("expected explicit structured output schema")
+	}
+	if request.StructuredOutput.Name != expectedName || !request.StructuredOutput.Strict {
+		t.Fatalf("unexpected structured output: %#v", request.StructuredOutput)
+	}
+	var schema map[string]any
+	if err := json.Unmarshal(request.StructuredOutput.Schema, &schema); err != nil {
+		t.Fatalf("decode structured output schema: %v", err)
+	}
+	if schema["type"] != "object" || schema["additionalProperties"] != false {
+		t.Fatalf("expected closed object schema, got %#v", schema)
 	}
 }

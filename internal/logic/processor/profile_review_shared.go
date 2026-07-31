@@ -14,10 +14,10 @@ import (
 // profileReviewSectionPayload mirrors one target block in the raw LLM JSON response before internal validation.
 // profileReviewSectionPayload 用于映射 LLM 原始 JSON 响应中的单个目标块，随后再进入内部校验。
 type profileReviewSectionPayload struct {
-	AcceptedCandidates      []profileReviewAcceptedPayload `json:"accepted_candidates"`
-	InvalidCandidateIndexes []int                          `json:"invalid_candidate_indexes"`
-	RetireOnlyNodeIDs       []uint64                       `json:"retire_only_node_ids"`
-	Reason                  string                         `json:"reason"`
+	AcceptedCandidates      []profileReviewAcceptedPayload `json:"accepted_candidates,omitempty"`
+	InvalidCandidateIndexes []int                          `json:"invalid_candidate_indexes,omitempty"`
+	RetireOnlyNodeIDs       []uint64                       `json:"retire_only_node_ids,omitempty"`
+	Reason                  string                         `json:"reason,omitempty"`
 }
 
 // profileReviewAcceptedPayload mirrors one accepted candidate item before field-level validation.
@@ -27,8 +27,8 @@ type profileReviewAcceptedPayload struct {
 	NormalizedContent string   `json:"normalized_content"`
 	Priority          string   `json:"priority"`
 	Level             string   `json:"level"`
-	LevelReason       string   `json:"level_reason"`
-	SupersedeNodeIDs  []uint64 `json:"supersede_node_ids"`
+	LevelReason       string   `json:"level_reason,omitempty"`
+	SupersedeNodeIDs  []uint64 `json:"supersede_node_ids,omitempty"`
 }
 
 // parseProfileReviewSection validates one target block and returns nil when the corresponding input side had no candidates.

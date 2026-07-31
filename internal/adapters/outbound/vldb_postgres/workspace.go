@@ -489,7 +489,16 @@ RETURNING id, session_key, user_id, team_id, space_id, project_id,
 // ResolveRequestScope delegates to the workspace repository for request-scope resolution.
 // ResolveRequestScope 用于把请求范围解析委托给 workspace 仓储。
 func (s *Store) ResolveRequestScope(ctx context.Context, sessionKey string, userID, projectID uint64) (logicdomain.SessionRef, error) {
-	return s.repos.workspace.ResolveRequestScope(ctx, sessionKey, userID, projectID)
+	session, err := s.repos.workspace.ResolveRequestScope(ctx, sessionKey, userID, projectID)
+	if err != nil {
+		return logicdomain.SessionRef{}, err
+	}
+	status, err := s.loadPostgresSessionMemoryStatus(ctx, session.SessionID)
+	if err != nil {
+		return logicdomain.SessionRef{}, err
+	}
+	session.MemoryStatus = status
+	return session, nil
 }
 
 // ResolveProfileTarget delegates to the workspace repository for profile-target resolution.

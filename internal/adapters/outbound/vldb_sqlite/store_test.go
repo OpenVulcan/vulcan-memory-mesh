@@ -7395,7 +7395,7 @@ func TestStoreEnsureSQLiteSchemaBootstrapsFreshDatabaseToCurrentBaseline(t *test
 		t.Fatalf("expected fresh bootstrap SQL, got %q", joined)
 	}
 	if !strings.Contains(joined, "BEGIN IMMEDIATE;\nCREATE TABLE IF NOT EXISTS vmm_noise_embeddings") ||
-		!strings.Contains(joined, "CREATE INDEX IF NOT EXISTS idx_vmm_profile_instructions_target ON vmm_profile_instructions(profile_type, bind_id, id);\n\nCOMMIT;") {
+		!strings.Contains(joined, "CREATE INDEX IF NOT EXISTS idx_vmm_profile_nodes_trash_batch ON vmm_profile_nodes_trash(batch_id, id);\n\nCOMMIT;") {
 		t.Fatalf("expected fresh bootstrap schema SQL to run inside one transaction, got %q", joined)
 	}
 	if strings.Contains(joined, "vmm_version") {

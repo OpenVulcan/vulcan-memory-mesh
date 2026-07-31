@@ -524,6 +524,16 @@ message ContextItem {
   uint64 memory_id = 6;
 }
 
+// SessionMemoryStatus is the authoritative runtime lifecycle state for one resolved conversation session.
+// SessionMemoryStatus 是单个已解析会话的权威运行时生命周期状态。
+enum SessionMemoryStatus {
+  SESSION_MEMORY_STATUS_UNSPECIFIED = 0;
+  SESSION_MEMORY_STATUS_ACTIVE = 1;
+  SESSION_MEMORY_STATUS_ARCHIVED = 2;
+  SESSION_MEMORY_STATUS_RECYCLED = 3;
+  SESSION_MEMORY_STATUS_FORGOTTEN = 4;
+}
+
 // PreCheckResponse returns the injection decision and assembled context payload.
 // PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
 message PreCheckResponse {
@@ -531,6 +541,7 @@ message PreCheckResponse {
   repeated ContextItem context_items = 2;
   bool degraded = 3;
   string trace_id = 4;
+  SessionMemoryStatus session_memory_status = 5;
 }
 
 // PostActionTimelineItem carries one middle timeline node from the text-only contract.
@@ -556,4 +567,5 @@ message PostActionRequest {
 message PostActionResponse {
   bool accepted = 1;
   string trace_id = 2;
+  SessionMemoryStatus session_memory_status = 3;
 }

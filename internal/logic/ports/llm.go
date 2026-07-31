@@ -4,9 +4,19 @@ package ports
 
 import (
 	"context"
+	"encoding/json"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
+
+// LLMStructuredOutput declares one exact JSON Schema that the selected provider must enforce.
+// LLMStructuredOutput 用于声明一份必须由所选供应商强制执行的精确 JSON Schema。
+type LLMStructuredOutput struct {
+	Name        string
+	Description string
+	Schema      json.RawMessage
+	Strict      bool
+}
 
 // LLMResponseFormat describes the response shape that processors expect from the model call.
 // LLMResponseFormat 用于描述处理器期望模型返回的响应形态。
@@ -43,6 +53,7 @@ type LLMRequest struct {
 	SystemPrompt        string
 	UserPrompt          string
 	ResponseFormat      LLMResponseFormat
+	StructuredOutput    *LLMStructuredOutput
 	RouteSelectionLevel LLMRouteSelectionLevel
 	ProviderHints       map[string]any
 }

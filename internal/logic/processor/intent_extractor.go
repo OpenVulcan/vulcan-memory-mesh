@@ -54,11 +54,19 @@ func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCh
 	if err != nil {
 		return logicdomain.IntentResult{}, fmt.Errorf("load precheck_l1_main prompt: %w", err)
 	}
+	structuredOutput, err := structuredOutputFor[intentResponsePayload](
+		"vmm_precheck_intent",
+		"VMM pre-check intent extraction result.",
+	)
+	if err != nil {
+		return logicdomain.IntentResult{}, err
+	}
 	resp, err := e.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               e.model,
 		SystemPrompt:        prompt,
 		UserPrompt:          renderIntentUserPrompt(turns, current, e.maxKws),
 		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		StructuredOutput:    structuredOutput,
 		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPreCheckL1,
 	})
 	if err != nil {
@@ -86,11 +94,7 @@ func parseIntentResponse(raw string) (logicdomain.IntentResult, error) {
 	if err != nil {
 		return logicdomain.IntentResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l1_main", Message: err.Error(), Raw: raw}
 	}
-	var payload struct {
-		Reason     *string   `json:"reason"`
-		NeedMemory *bool     `json:"need_memory"`
-		Queries    *[]string `json:"queries"`
-	}
+	var payload intentResponsePayload
 	decoder := json.NewDecoder(strings.NewReader(jsonBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {

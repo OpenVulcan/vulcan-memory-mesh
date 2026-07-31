@@ -77,11 +77,19 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 	if err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, fmt.Errorf("load precheck_l2_main prompt: %w", err)
 	}
+	structuredOutput, err := structuredOutputFor[preCheckMemoryReviewResponsePayload](
+		"vmm_precheck_memory_review",
+		"VMM pre-check memory candidate review result.",
+	)
+	if err != nil {
+		return logicdomain.PreCheckMemoryReviewResult{}, err
+	}
 	resp, err := r.llm.Generate(ctx, logicports.LLMRequest{
 		Model:               r.model,
 		SystemPrompt:        prompt,
 		UserPrompt:          requestBody,
 		ResponseFormat:      logicports.LLMResponseFormatJSON,
+		StructuredOutput:    structuredOutput,
 		RouteSelectionLevel: logicports.LLMRouteSelectionLevelPreCheckL2,
 	})
 	if err != nil {
@@ -160,9 +168,7 @@ func parsePreCheckMemoryReviewResponse(raw string, input logicdomain.PreCheckMem
 	if err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, logicdomain.InvalidLLMOutputError{Scene: "precheck_l2_main", Message: err.Error(), Raw: raw}
 	}
-	var payload struct {
-		SelectedCandidateNumbers *[]int `json:"selected_candidate_numbers"`
-	}
+	var payload preCheckMemoryReviewResponsePayload
 	decoder := json.NewDecoder(strings.NewReader(jsonBody))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&payload); err != nil {

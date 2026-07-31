@@ -159,6 +159,14 @@ func TestClientCancelsDispatchedExecutionWithCallerContext(t *testing.T) {
 		response.Header().Set("Content-Type", "application/json")
 		switch {
 		case request.Method == http.MethodPost && request.URL.Path == "/inference/v1/llm/start":
+			var body map[string]any
+			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+				t.Fatalf("decode structured LLM request: %v", err)
+			}
+			structured, ok := body["structured_output"].(map[string]any)
+			if !ok || structured["mode"] != "json_schema" || structured["name"] != "cancellation_test" {
+				t.Fatalf("structured_output = %#v", body["structured_output"])
+			}
 			writeInferenceResult(t, response, map[string]any{"execution_id": "execution-cancel"})
 		case request.Method == http.MethodGet && request.URL.Path == "/inference/v1/llm/execution-cancel":
 			firstPoll <- struct{}{}
@@ -180,9 +188,14 @@ func TestClientCancelsDispatchedExecutionWithCallerContext(t *testing.T) {
 	result := make(chan error, 1)
 	go func() {
 		_, err := client.Generate(ctx, appports.LLMRequest{
-			SystemPrompt:        "system",
-			UserPrompt:          "user",
-			ResponseFormat:      appports.LLMResponseFormatJSON,
+			SystemPrompt:   "system",
+			UserPrompt:     "user",
+			ResponseFormat: appports.LLMResponseFormatJSON,
+			StructuredOutput: &appports.LLMStructuredOutput{
+				Name:   "cancellation_test",
+				Schema: json.RawMessage(`{"type":"object","properties":{},"additionalProperties":false}`),
+				Strict: true,
+			},
 			RouteSelectionLevel: appports.LLMRouteSelectionLevelPostActionL1,
 		})
 		result <- err

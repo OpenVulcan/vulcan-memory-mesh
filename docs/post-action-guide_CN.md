@@ -192,6 +192,9 @@ message PostActionTimelineItem {
     - `vmm_turn_records`
     - 同步更新 `vmm_sessions.turn_count / summarize_budget / updated_timestamp`
 15. turn 写入成功后，会由后台队列异步发起一次单轮 `postaction_l1_main`
+    - 所有 JSON 场景都会从该场景实际解码使用的 Go 响应结构体生成 Draft 2020-12 JSON Schema
+    - 托管推理请求使用 `structured_output.mode=json_schema` 传递 Schema 名称、说明、精确结构和严格模式
+    - 不再把需要结构化解析的请求降级成无 Schema 的 `json_object`
 16. `postaction_l1_main` 请求会包含：
     - 服务端当前时间锚点（按当前运行系统本地时间展开、且不显示时区后缀的 `datetime`，不再传原始毫秒时间戳）
     - 最近若干条已提炼历史 `details`

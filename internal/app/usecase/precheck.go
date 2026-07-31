@@ -210,6 +210,12 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if err := validatePreCheck(cmd); err != nil {
 		return PreCheckResult{}, err
 	}
+	if !cmd.Session.MemoryStatus.AllowsRuntimeMemory() {
+		return PreCheckResult{
+			ShouldInject: false,
+			TraceID:      trace.IDFromContext(ctx),
+		}, nil
+	}
 	cmd.UserContent = scrubPIIText(u.piiScrubber, cmd.UserContent)
 	traceID := trace.IDFromContext(ctx)
 	degraded := false
