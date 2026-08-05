@@ -47,9 +47,33 @@ type VectorRebuildReport struct {
 	VectorRowsRebuilt  int
 }
 
+// VectorRebuildProgress describes one bounded progress update emitted by the rebuild workflow.
+// VectorRebuildProgress 描述重建流程发出的一次有界进度更新。
+type VectorRebuildProgress struct {
+	// Stage identifies the current embedding, writing, or commit sub-stage.
+	// Stage 标识当前的 embedding、写入或提交子阶段。
+	Stage string
+	// Processed counts records completed in the current sub-stage.
+	// Processed 统计当前子阶段已经完成的记录数。
+	Processed int
+	// Total counts records in the current sub-stage.
+	// Total 统计当前子阶段的记录总数。
+	Total int
+}
+
+// VectorRebuildProgressReporter receives machine-readable progress without changing rebuild data semantics.
+// VectorRebuildProgressReporter 接收机器可读进度，且不改变重建数据语义。
+type VectorRebuildProgressReporter func(VectorRebuildProgress)
+
 // RunVectorRebuild refreshes active durable memory vectors with the currently configured embedding model and then rebuilds the active vector backend when the runtime uses split storage.
 // RunVectorRebuild 用于使用当前配置的 embedding 模型刷新 active 长期记忆向量；若运行时使用分离存储，则继续重建当前向量后端。
 func RunVectorRebuild(ctx context.Context, cfg config.Config, deps MaintenanceDependencies, logger *logx.Logger) (VectorRebuildReport, error) {
+	return RunVectorRebuildWithProgress(ctx, cfg, deps, logger, nil)
+}
+
+// RunVectorRebuildWithProgress runs the rebuild and reports each completed preparation or refill batch.
+// RunVectorRebuildWithProgress 执行重建，并报告每个完成的准备或回填批次。
+func RunVectorRebuildWithProgress(ctx context.Context, cfg config.Config, deps MaintenanceDependencies, logger *logx.Logger, reporter VectorRebuildProgressReporter) (VectorRebuildReport, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -73,12 +97,18 @@ func RunVectorRebuild(ctx context.Context, cfg config.Config, deps MaintenanceDe
 	if !ok {
 		return VectorRebuildReport{}, fmt.Errorf("relational store does not support durable vector replacement")
 	}
-	return runVectorRebuildWithPorts(ctx, cfg, deps.Embedding, workspace, durable, deps.Vector, logger)
+	return runVectorRebuildWithPortsAndProgress(ctx, cfg, deps.Embedding, workspace, durable, deps.Vector, logger, reporter)
 }
 
 // runVectorRebuildWithPorts executes the rebuild workflow against the already-resolved narrow ports so tests can verify the orchestration without constructing the full maintenance dependency bundle.
 // runVectorRebuildWithPorts 用于针对已经解析好的狭窄端口执行重建流程，让测试无需构造完整维护依赖包也能验证编排行为。
 func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding appports.EmbeddingClient, workspace appports.WorkspaceStore, durable appports.MemoryVectorRebuildStore, vector appports.VectorStore, logger *logx.Logger) (VectorRebuildReport, error) {
+	return runVectorRebuildWithPortsAndProgress(ctx, cfg, embedding, workspace, durable, vector, logger, nil)
+}
+
+// runVectorRebuildWithPortsAndProgress keeps the testable narrow-port workflow and adds an optional progress channel.
+// runVectorRebuildWithPortsAndProgress 保留可测试的窄端口流程，并增加可选进度通道。
+func runVectorRebuildWithPortsAndProgress(ctx context.Context, cfg config.Config, embedding appports.EmbeddingClient, workspace appports.WorkspaceStore, durable appports.MemoryVectorRebuildStore, vector appports.VectorStore, logger *logx.Logger, reporter VectorRebuildProgressReporter) (VectorRebuildReport, error) {
 	// Load only active/unexpired durable memories because inactive rows and trash data are intentionally outside the current recall surface and do not need rebuilding.
 	// 只加载 active 且未过期的长期记忆，因为 inactive 行和垃圾箱数据本就不在当前召回面上，没有重建意义。
 	projects, records, err := loadVectorRebuildRecords(ctx, workspace)
@@ -102,6 +132,7 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 		if len(records) == 0 {
 			// Still migrate the combined-store vector columns even on an empty active dataset, because operators usually invoke this command after changing the configured embedding dimension.
 			// 即使当前 active 数据集为空，也仍然要迁移组合库存储的向量列，因为运维通常是在切换 embedding 维度后执行该命令。
+			publishVectorRebuildProgress(reporter, "committing", 0, 0)
 			if err := migrator.RebuildMemoryVectorDimensions(ctx, nil); err != nil {
 				return report, fmt.Errorf("rebuild combined vector dimensions: %w", err)
 			}
@@ -111,10 +142,11 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 
 		// Materialize every rebuilt vector first so combined mode can keep the old live embeddings untouched until the final PostgreSQL schema swap is ready to commit atomically.
 		// 先把全部重建后的向量载荷准备好，确保组合模式在最终 PostgreSQL schema 交换准备原子提交前，不会提前触碰线上仍在使用的旧 embedding。
-		rebuiltRecords, err := materializeVectorRebuildRecords(ctx, embedding, records, cfg.Embedding.Dimension, cfg.MaintenanceTool.VectorRebuildBatchSize, logger)
+		rebuiltRecords, err := materializeVectorRebuildRecordsWithProgress(ctx, embedding, records, cfg.Embedding.Dimension, cfg.MaintenanceTool.VectorRebuildBatchSize, logger, reporter)
 		if err != nil {
 			return report, err
 		}
+		publishVectorRebuildProgress(reporter, "committing", len(rebuiltRecords), len(rebuiltRecords))
 		if err := migrator.RebuildMemoryVectorDimensions(ctx, rebuiltRecords); err != nil {
 			return report, fmt.Errorf("rebuild combined vector dimensions: %w", err)
 		}
@@ -141,6 +173,7 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 	}
 	if len(records) == 0 {
 		logger.Info("vector rebuild reset phase starting", "mode", report.Mode, "memory_count", report.MemoryCount)
+		publishVectorRebuildProgress(reporter, "writing", 0, 0)
 		if err := resetter.RecreateTable(ctx); err != nil {
 			return report, fmt.Errorf("recreate split vector table: %w", err)
 		}
@@ -151,18 +184,18 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 	// Materialize the target vectors before any destructive split reset starts so model-switch failures never leave the current-dimension sidecar empty just because embedding or validation failed midway.
 	// 在任何破坏性的 split reset 开始前，先把目标向量全部准备好，避免模型切换时仅因 embedding 或维度校验中途失败，就把当前维度 sidecar 留成空表。
 	logger.Info("vector rebuild materialization phase starting", "mode", report.Mode, "project_count", report.ProjectCount, "memory_count", report.MemoryCount)
-	rebuiltRecords, err := materializeVectorRebuildRecords(ctx, embedding, records, cfg.Embedding.Dimension, cfg.MaintenanceTool.VectorRebuildBatchSize, logger)
+	rebuiltRecords, err := materializeVectorRebuildRecordsWithProgress(ctx, embedding, records, cfg.Embedding.Dimension, cfg.MaintenanceTool.VectorRebuildBatchSize, logger, reporter)
 	if err != nil {
 		return report, err
 	}
-	applyResult, err := applySplitVectorRebuildRecords(ctx, report.Mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger)
+	applyResult, err := applySplitVectorRebuildRecordsWithProgress(ctx, report.Mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger, reporter)
 	report.DurableRowsUpdated = applyResult.DurableRowsUpdated
 	report.VectorRowsRebuilt = applyResult.VectorRowsRebuilt
 	if err != nil {
 		if !applyResult.ResetCompleted {
 			return report, err
 		}
-		if recoverErr := recoverSplitVectorRebuildAfterReset(ctx, err, report.Mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger); recoverErr != nil {
+		if recoverErr := recoverSplitVectorRebuildAfterResetWithProgress(ctx, err, report.Mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger, reporter); recoverErr != nil {
 			return report, vectorRebuildOutcomeUncertainError("split vector rebuild failed after reset", err, recoverErr)
 		}
 		report.DurableRowsUpdated = len(rebuiltRecords)
@@ -190,6 +223,12 @@ type splitVectorRebuildApplyResult struct {
 // applySplitVectorRebuildRecords performs the destructive split-mode reset plus refill using already-materialized target vectors so retries never need to call the embedding backend again.
 // applySplitVectorRebuildRecords 用于基于已准备好的目标向量执行 split 模式的破坏性 reset 与回填，让重试路径无需再次调用 embedding 后端。
 func applySplitVectorRebuildRecords(ctx context.Context, mode string, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger) (splitVectorRebuildApplyResult, error) {
+	return applySplitVectorRebuildRecordsWithProgress(ctx, mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger, nil)
+}
+
+// applySplitVectorRebuildRecordsWithProgress performs split refill and publishes completed write batches.
+// applySplitVectorRebuildRecordsWithProgress 执行 split 回填，并发布已完成的写入批次。
+func applySplitVectorRebuildRecordsWithProgress(ctx context.Context, mode string, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger, reporter VectorRebuildProgressReporter) (splitVectorRebuildApplyResult, error) {
 	if logger == nil {
 		logger = logx.Default()
 	}
@@ -211,6 +250,7 @@ func applySplitVectorRebuildRecords(ctx context.Context, mode string, durable ap
 	}
 
 	logger.Info("vector rebuild refill phase starting", "mode", mode, "memory_count", len(rebuiltRecords))
+	publishVectorRebuildProgress(reporter, "writing", 0, len(rebuiltRecords))
 	for start := 0; start < len(rebuiltRecords); start += vectorRebuildWriteBatchSize {
 		end := start + vectorRebuildWriteBatchSize
 		if end > len(rebuiltRecords) {
@@ -231,6 +271,7 @@ func applySplitVectorRebuildRecords(ctx context.Context, mode string, durable ap
 			result.VectorRowsRebuilt++
 		}
 		logger.Info("vector rebuild refill phase advanced", "mode", mode, "processed", result.DurableRowsUpdated, "total", len(rebuiltRecords))
+		publishVectorRebuildProgress(reporter, "writing", result.DurableRowsUpdated, len(rebuiltRecords))
 	}
 	return result, nil
 }
@@ -259,6 +300,12 @@ func vectorRebuildOutcomeUncertainError(message string, causes ...error) error {
 // recoverSplitVectorRebuildAfterReset replays the already-materialized target vectors after one intermediate split-mode failure so the command prefers converging to the new current-dimension state over leaving the runtime sidecar empty.
 // recoverSplitVectorRebuildAfterReset 用于在 split 模式中途失败后，重放已经准备好的目标向量，让命令优先收敛到新的当前维度状态，而不是把运行时 sidecar 留成空表。
 func recoverSplitVectorRebuildAfterReset(ctx context.Context, cause error, mode string, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger) error {
+	return recoverSplitVectorRebuildAfterResetWithProgress(ctx, cause, mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger, nil)
+}
+
+// recoverSplitVectorRebuildAfterResetWithProgress retries an interrupted refill while retaining progress reporting.
+// recoverSplitVectorRebuildAfterResetWithProgress 在保留进度报告的同时重试中断的回填。
+func recoverSplitVectorRebuildAfterResetWithProgress(ctx context.Context, cause error, mode string, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger, reporter VectorRebuildProgressReporter) error {
 	if cause == nil {
 		return nil
 	}
@@ -275,7 +322,7 @@ func recoverSplitVectorRebuildAfterReset(ctx context.Context, cause error, mode 
 	} else {
 		repairCtx = context.WithoutCancel(repairCtx)
 	}
-	if _, err := applySplitVectorRebuildRecords(repairCtx, mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger); err != nil {
+	if _, err := applySplitVectorRebuildRecordsWithProgress(repairCtx, mode, durable, durableResetter, resetter, vector, rebuiltRecords, logger, reporter); err != nil {
 		logger.Error("split vector rebuild automatic repair failed", "mode", mode, "memory_count", len(rebuiltRecords), "err", err)
 		return err
 	}
@@ -336,10 +383,17 @@ func loadVectorRebuildRecords(ctx context.Context, workspace appports.WorkspaceS
 // materializeVectorRebuildRecords prepares one fully rebuilt in-memory durable snapshot in bounded batches before combined PostgreSQL mode starts its atomic schema swap, so later maintenance writes never expose half-finished live vectors or unbounded temporary vector payloads.
 // materializeVectorRebuildRecords 用于在组合 PostgreSQL 模式开始原子 schema 交换前，以有界批次准备完整的内存态 durable 重建快照，既避免后续维护写入暴露“只重建了一半”的线上向量，也避免临时向量载荷无限膨胀。
 func materializeVectorRebuildRecords(ctx context.Context, embedding appports.EmbeddingClient, records []logicdomain.MemoryRecord, expectedDimension, batchSize int, logger *logx.Logger) ([]logicdomain.MemoryRecord, error) {
+	return materializeVectorRebuildRecordsWithProgress(ctx, embedding, records, expectedDimension, batchSize, logger, nil)
+}
+
+// materializeVectorRebuildRecordsWithProgress embeds bounded batches and reports each completed batch.
+// materializeVectorRebuildRecordsWithProgress 按有界批次生成向量，并报告每个已完成批次。
+func materializeVectorRebuildRecordsWithProgress(ctx context.Context, embedding appports.EmbeddingClient, records []logicdomain.MemoryRecord, expectedDimension, batchSize int, logger *logx.Logger, reporter VectorRebuildProgressReporter) ([]logicdomain.MemoryRecord, error) {
 	if batchSize <= 0 {
 		batchSize = len(records)
 	}
 	rebuilt := make([]logicdomain.MemoryRecord, 0, len(records))
+	publishVectorRebuildProgress(reporter, "embedding", 0, len(records))
 	for start := 0; start < len(records); start += batchSize {
 		end := start + batchSize
 		if end > len(records) {
@@ -353,8 +407,27 @@ func materializeVectorRebuildRecords(ctx context.Context, embedding appports.Emb
 			return nil, fmt.Errorf("validate rebuild batch %d-%d dimensions: %w", start, end, err)
 		}
 		rebuilt = append(rebuilt, cloneVectorRebuildBatch(records[start:end], vectors)...)
+		publishVectorRebuildProgress(reporter, "embedding", end, len(records))
 	}
 	return rebuilt, nil
+}
+
+// publishVectorRebuildProgress forwards one validated workflow update to the optional observer.
+// publishVectorRebuildProgress 将一条经过边界控制的流程更新转发给可选观察者。
+func publishVectorRebuildProgress(reporter VectorRebuildProgressReporter, stage string, processed, total int) {
+	if reporter == nil {
+		return
+	}
+	if total < 0 {
+		total = 0
+	}
+	if processed < 0 {
+		processed = 0
+	}
+	if processed > total {
+		processed = total
+	}
+	reporter(VectorRebuildProgress{Stage: stage, Processed: processed, Total: total})
 }
 
 // embedVectorRebuildBatch embeds one durable-memory batch and patiently waits when every configured key is only temporarily blocked by runtime budgets.

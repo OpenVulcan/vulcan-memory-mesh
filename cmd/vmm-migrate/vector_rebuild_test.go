@@ -5,12 +5,49 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/openvulcan/vmm/internal/app"
 	"github.com/openvulcan/vmm/internal/config"
 )
+
+// TestVectorRebuildProgressReporterWritesContract verifies the host-facing progress file is replaced with complete JSON records.
+// TestVectorRebuildProgressReporterWritesContract 验证宿主进度文件会被完整 JSON 记录替换。
+func TestVectorRebuildProgressReporterWritesContract(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "progress.json")
+	reporter := newVectorRebuildProgressReporter(path)
+	if reporter == nil {
+		t.Fatal("expected progress reporter")
+	}
+	reporter(app.VectorRebuildProgress{Stage: "embedding", Processed: 2, Total: 7})
+	bytes, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read progress file: %v", err)
+	}
+	var payload vectorRebuildProgressFilePayload
+	if err := json.Unmarshal(bytes, &payload); err != nil {
+		t.Fatalf("decode progress file: %v", err)
+	}
+	if payload.Stage != "embedding" || payload.Processed != 2 || payload.Total != 7 || payload.UpdatedAtUnixMs <= 0 {
+		t.Fatalf("unexpected progress payload: %+v", payload)
+	}
+	reporter(app.VectorRebuildProgress{Stage: "writing", Processed: 7, Total: 7})
+	bytes, err = os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read replacement progress file: %v", err)
+	}
+	if err := json.Unmarshal(bytes, &payload); err != nil {
+		t.Fatalf("decode replacement progress file: %v", err)
+	}
+	if payload.Stage != "writing" || payload.Processed != 7 || payload.Total != 7 {
+		t.Fatalf("unexpected replacement payload: %+v", payload)
+	}
+}
 
 // TestConfirmVectorRebuildRequiresExplicitY verifies destructive rebuilds only continue after the operator explicitly enters Y.
 // TestConfirmVectorRebuildRequiresExplicitY 用于验证破坏性重建只有在操作者显式输入 Y 后才会继续。

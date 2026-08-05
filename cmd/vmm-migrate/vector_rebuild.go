@@ -5,10 +5,15 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/openvulcan/vmm/internal/app"
 	"github.com/openvulcan/vmm/internal/config"
@@ -24,6 +29,20 @@ func runMaintenanceVectorRebuild(
 	input io.Reader,
 	output io.Writer,
 	confirmed bool,
+) error {
+	return runMaintenanceVectorRebuildWithProgressFile(ctx, cfg, managedConfig, input, output, confirmed, "")
+}
+
+// runMaintenanceVectorRebuildWithProgressFile runs vector rebuild with an optional host-owned progress file.
+// runMaintenanceVectorRebuildWithProgressFile 使用可选的宿主进度文件执行向量重建。
+func runMaintenanceVectorRebuildWithProgressFile(
+	ctx context.Context,
+	cfg config.Config,
+	managedConfig *config.ManagedConfig,
+	input io.Reader,
+	output io.Writer,
+	confirmed bool,
+	progressFile string,
 ) error {
 	if input == nil {
 		input = strings.NewReader("")
@@ -53,13 +72,77 @@ func runMaintenanceVectorRebuild(
 	}()
 
 	logger := logx.New(output, logx.Config{Level: "info", Format: "text"})
-	report, err := app.RunVectorRebuild(ctx, cfg, deps, logger)
+	report, err := app.RunVectorRebuildWithProgress(ctx, cfg, deps, logger, newVectorRebuildProgressReporter(progressFile))
 	if err != nil {
 		return fmt.Errorf("vector rebuild: %w", err)
 	}
 	fmt.Fprintf(output, "[vmm-migrate] vector rebuild completed: mode=%s projects=%d memories=%d durable_rows=%d vector_rows=%d\n",
 		report.Mode, report.ProjectCount, report.MemoryCount, report.DurableRowsUpdated, report.VectorRowsRebuilt)
 	return nil
+}
+
+// vectorRebuildProgressFilePayload is the stable machine-readable contract consumed by the host.
+// vectorRebuildProgressFilePayload 是宿主消费的稳定机器可读契约。
+type vectorRebuildProgressFilePayload struct {
+	// Stage identifies the current machine-readable rebuild sub-stage.
+	// Stage 标识机器可读的当前重建子阶段。
+	Stage string `json:"stage"`
+	// Processed records the completed items in the current sub-stage.
+	// Processed 记录当前子阶段已完成的项目数。
+	Processed int `json:"processed"`
+	// Total records the total items in the current sub-stage.
+	// Total 记录当前子阶段的项目总数。
+	Total int `json:"total"`
+	// UpdatedAtUnixMs prevents the host from accepting an empty or uninitialized record.
+	// UpdatedAtUnixMs 防止宿主接受空记录或未初始化记录。
+	UpdatedAtUnixMs int64 `json:"updated_at_unix_ms"`
+}
+
+// newVectorRebuildProgressReporter creates an atomic JSON writer for completed rebuild batches.
+// newVectorRebuildProgressReporter 为已完成的重建批次创建原子 JSON 写入器。
+func newVectorRebuildProgressReporter(path string) app.VectorRebuildProgressReporter {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil
+	}
+	// writeMu serializes replacement writes so one progress record is always complete.
+	// writeMu 串行化替换写入，确保每条进度记录始终完整。
+	var writeMu sync.Mutex
+	return func(progress app.VectorRebuildProgress) {
+		writeMu.Lock()
+		defer writeMu.Unlock()
+		// payload is the bounded record exchanged between the child and host.
+		// payload 是子进程与宿主之间交换的有界记录。
+		payload := vectorRebuildProgressFilePayload{
+			Stage:           progress.Stage,
+			Processed:       progress.Processed,
+			Total:           progress.Total,
+			UpdatedAtUnixMs: time.Now().UnixMilli(),
+		}
+		// bytes is serialized before the destination is replaced, preventing partial JSON reads.
+		// bytes 在替换目标前完成序列化，防止宿主读到半截 JSON。
+		bytes, err := json.Marshal(payload)
+		if err != nil {
+			return
+		}
+		if parent := filepath.Dir(path); parent != "." {
+			if err := os.MkdirAll(parent, 0o700); err != nil {
+				return
+			}
+		}
+		// temporary is the private staging file used for the atomic handoff.
+		// temporary 是用于原子交接的私有暂存文件。
+		temporary := path + ".partial"
+		if err := os.WriteFile(temporary, bytes, 0o600); err != nil {
+			return
+		}
+		// Windows cannot rename over an existing destination, so remove only the exact host-owned target before the final rename.
+		// Windows 不能直接覆盖已有目标，因此只删除宿主明确提供的目标，再完成最终改名。
+		_ = os.Remove(path)
+		if err := os.Rename(temporary, path); err != nil {
+			_ = os.Remove(temporary)
+		}
+	}
 }
 
 // acquireVectorRebuildRuntimeGuard binds the configured runtime listen address for the whole maintenance window so vector rebuild can only start after the service stops and no later restart can race with the destructive rewrite.

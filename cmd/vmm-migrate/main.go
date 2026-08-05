@@ -31,12 +31,15 @@ func main() {
 	migrateTarget := flag.String("migrate", "", "maintenance migration target: split-to-combined")
 	vectorRebuild := flag.Bool("vector-rebuild", false, "rebuild vectors with the currently configured embedding model")
 	confirmVectorRebuild := flag.Bool("confirm-vector-rebuild", false, "explicitly confirms vector rebuild for non-interactive host orchestration")
+	// vectorRebuildProgressFile carries the host-owned progress destination into the vector rebuild action.
+	// vectorRebuildProgressFile 将宿主持有的进度目标传入向量重建动作。
+	vectorRebuildProgressFile := flag.String("vector-rebuild-progress-file", "", "host-owned JSON file for machine-readable vector rebuild progress")
 	flag.Parse()
 
 	ctx, stop := buildSignalAwareMainContext()
 	defer stop()
 
-	if err := run(ctx, os.Args[0], *cfgPath, *managedConfigPath, *cleanTarget, *migrateTarget, *vectorRebuild, *confirmVectorRebuild); err != nil {
+	if err := runWithProgressFile(ctx, os.Args[0], *cfgPath, *managedConfigPath, *cleanTarget, *migrateTarget, *vectorRebuild, *confirmVectorRebuild, *vectorRebuildProgressFile); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
@@ -51,6 +54,12 @@ func buildSignalAwareMainContext() (context.Context, context.CancelFunc) {
 // run resolves config layering once and dispatches exactly one maintenance action without booting the gRPC runtime.
 // run 用于一次性解析配置层，并在不启动 gRPC 运行时的前提下分发唯一的维护动作。
 func run(ctx context.Context, argv0, cfgPath, managedConfigPath, cleanTarget, migrateTarget string, vectorRebuild, vectorRebuildConfirmed bool) error {
+	return runWithProgressFile(ctx, argv0, cfgPath, managedConfigPath, cleanTarget, migrateTarget, vectorRebuild, vectorRebuildConfirmed, "")
+}
+
+// runWithProgressFile resolves configuration and optionally supplies a progress side channel to vector rebuild.
+// runWithProgressFile 解析配置，并在向量重建时可选地提供进度旁路文件。
+func runWithProgressFile(ctx context.Context, argv0, cfgPath, managedConfigPath, cleanTarget, migrateTarget string, vectorRebuild, vectorRebuildConfirmed bool, progressFile string) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -63,6 +72,9 @@ func run(ctx context.Context, argv0, cfgPath, managedConfigPath, cleanTarget, mi
 	}
 	if vectorRebuild {
 		actionCount++
+	}
+	if strings.TrimSpace(progressFile) != "" && !vectorRebuild {
+		return fmt.Errorf("-vector-rebuild-progress-file requires -vector-rebuild")
 	}
 	if actionCount != 1 {
 		return fmt.Errorf("exactly one maintenance action is required: use one of -clean, -migrate, or -vector-rebuild")
@@ -79,13 +91,14 @@ func run(ctx context.Context, argv0, cfgPath, managedConfigPath, cleanTarget, mi
 	case strings.TrimSpace(migrateTarget) != "":
 		return runMaintenanceMigrate(ctx, runtimeConfig.Config, migrateTarget)
 	case vectorRebuild:
-		return runMaintenanceVectorRebuild(
+		return runMaintenanceVectorRebuildWithProgressFile(
 			ctx,
 			runtimeConfig.Config,
 			runtimeConfig.ManagedConfig,
 			os.Stdin,
 			os.Stdout,
 			vectorRebuildConfirmed,
+			progressFile,
 		)
 	default:
 		return fmt.Errorf("no maintenance action selected")
