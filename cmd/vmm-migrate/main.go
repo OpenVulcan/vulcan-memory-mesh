@@ -11,6 +11,7 @@ import (
 	"strings"
 	"syscall"
 
+	"github.com/openvulcan/vmm/internal/buildinfo"
 	"github.com/openvulcan/vmm/internal/config"
 )
 
@@ -25,6 +26,13 @@ type maintenanceRuntimeConfiguration struct {
 // main executes the standalone maintenance bootstrap and dispatches to the selected one-shot action.
 // main 用于执行独立维护工具的启动流程，并分发到选中的一次性动作。
 func main() {
+	if hasVersionJSONFlag(os.Args[1:]) {
+		if err := buildinfo.WriteVersionJSON(os.Stdout, "vmm-migrate"); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write version document: %v\n", err)
+			os.Exit(1)
+		}
+		return
+	}
 	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config files must use .yaml or .yml")
 	managedConfigPath := flag.String("vulcan-managed-config", "", "strict Vulcan Code managed-runtime manifest used instead of layered config")
 	cleanTarget := flag.String("clean", "", "maintenance cleanup target: sqlite, lancedb, postgres, or all")
@@ -43,6 +51,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+}
+
+// hasVersionJSONFlag detects the standalone version-document switch before maintenance flag parsing.
+// hasVersionJSONFlag 在维护参数解析前检测独立版本文档开关。
+func hasVersionJSONFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-version-json" {
+			return true
+		}
+	}
+	return false
 }
 
 // buildSignalAwareMainContext creates one process-lifetime context that is canceled by operator interrupts so destructive maintenance flows can observe aborts and unwind through their existing rollback paths.

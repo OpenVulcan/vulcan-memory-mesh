@@ -94,41 +94,33 @@ func TestClientMapsPartialEmbeddingAndRerank(t *testing.T) {
 	}
 }
 
-// TestClientGeneratesThroughOneStableExecution verifies start, poll, output, route, and usage mapping without redispatch.
-// TestClientGeneratesThroughOneStableExecution 用于验证启动、轮询、输出、路由与用量映射，且不会重复分派。
-func TestClientGeneratesThroughOneStableExecution(t *testing.T) {
-	var startCount int
+// TestClientGeneratesThroughStandardResponses verifies request, output, model, and usage mapping without a private envelope.
+// TestClientGeneratesThroughStandardResponses 验证不使用私有信封时的请求、输出、模型与用量映射。
+func TestClientGeneratesThroughStandardResponses(t *testing.T) {
+	var requestCount int
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
-		switch {
-		case request.Method == http.MethodPost && request.URL.Path == "/inference/v1/llm/start":
-			startCount++
+		if request.Method == http.MethodPost && request.URL.Path == "/v1/responses" {
+			requestCount++
 			var body map[string]any
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-				t.Fatalf("decode LLM start request: %v", err)
+				t.Fatalf("decode Responses request: %v", err)
 			}
-			if body["purpose_id"] != "precheck_l1" || body["reasoning_output"] != "hidden" {
-				t.Fatalf("LLM start body = %#v", body)
+			if body["model"] != "precheck_l1" || body["instructions"] != "system" || body["input"] != "user" {
+				t.Fatalf("Responses body = %#v", body)
 			}
-			writeInferenceResult(t, response, map[string]any{"execution_id": "execution-one"})
-		case request.Method == http.MethodGet && request.URL.Path == "/inference/v1/llm/execution-one":
-			writeInferenceResult(t, response, map[string]any{
-				"execution_id": "execution-one",
-				"phase":        "completed",
-				"response": map[string]any{
-					"route":             map[string]any{"model_id": "managed-model"},
-					"output_text":       "managed output",
-					"structured_output": nil,
-					"usage": map[string]any{
-						"input_tokens":  map[string]any{"state": "known", "value": 11},
-						"output_tokens": map[string]any{"state": "known", "value": 7},
-						"total_tokens":  map[string]any{"state": "known", "value": 18},
-					},
-				},
+			_ = json.NewEncoder(response).Encode(map[string]any{
+				"id": "resp_one", "object": "response", "status": "completed", "model": "managed-model",
+				"output": []any{map[string]any{
+					"type": "message", "role": "assistant",
+					"content": []any{map[string]any{"type": "output_text", "text": "managed output"}},
+				}},
+				"usage": map[string]any{"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+				"error": nil,
 			})
-		default:
-			http.NotFound(response, request)
+			return
 		}
+		http.NotFound(response, request)
 	}))
 	defer server.Close()
 
@@ -142,44 +134,37 @@ func TestClientGeneratesThroughOneStableExecution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if startCount != 1 || result.Content != "managed output" || result.Model != "managed-model" {
-		t.Fatalf("Generate() response = %#v, start count = %d", result, startCount)
+	if requestCount != 1 || result.Content != "managed output" || result.Model != "managed-model" {
+		t.Fatalf("Generate() response = %#v, request count = %d", result, requestCount)
 	}
 	if result.Usage.PromptTokens != 11 || result.Usage.CompletionTokens != 7 || result.Usage.TotalTokens != 18 {
 		t.Fatalf("Generate() usage = %#v", result.Usage)
 	}
 }
 
-// TestClientCancelsDispatchedExecutionWithCallerContext verifies cancellation targets the original execution id.
-// TestClientCancelsDispatchedExecutionWithCallerContext 用于验证取消操作会指向原始执行标识。
-func TestClientCancelsDispatchedExecutionWithCallerContext(t *testing.T) {
-	firstPoll := make(chan struct{}, 1)
-	cancelSeen := make(chan struct{}, 1)
+// TestClientCancelsResponsesRequestWithCallerContext verifies context cancellation closes the standard HTTP request.
+// TestClientCancelsResponsesRequestWithCallerContext 验证上下文取消会关闭标准 HTTP 请求。
+func TestClientCancelsResponsesRequestWithCallerContext(t *testing.T) {
+	requestSeen := make(chan struct{}, 1)
+	requestCancelled := make(chan struct{}, 1)
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
-		switch {
-		case request.Method == http.MethodPost && request.URL.Path == "/inference/v1/llm/start":
+		if request.Method == http.MethodPost && request.URL.Path == "/v1/responses" {
 			var body map[string]any
 			if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
-				t.Fatalf("decode structured LLM request: %v", err)
+				t.Fatalf("decode structured Responses request: %v", err)
 			}
-			structured, ok := body["structured_output"].(map[string]any)
-			if !ok || structured["mode"] != "json_schema" || structured["name"] != "cancellation_test" {
-				t.Fatalf("structured_output = %#v", body["structured_output"])
+			text, ok := body["text"].(map[string]any)
+			format, formatOK := text["format"].(map[string]any)
+			if !ok || !formatOK || format["type"] != "json_schema" || format["name"] != "cancellation_test" {
+				t.Fatalf("text = %#v", body["text"])
 			}
-			writeInferenceResult(t, response, map[string]any{"execution_id": "execution-cancel"})
-		case request.Method == http.MethodGet && request.URL.Path == "/inference/v1/llm/execution-cancel":
-			firstPoll <- struct{}{}
-			writeInferenceResult(t, response, map[string]any{
-				"execution_id": "execution-cancel",
-				"phase":        "running",
-			})
-		case request.Method == http.MethodPost && request.URL.Path == "/inference/v1/llm/execution-cancel/cancel":
-			cancelSeen <- struct{}{}
-			writeInferenceResult(t, response, map[string]any{"cancelled": true})
-		default:
-			http.NotFound(response, request)
+			requestSeen <- struct{}{}
+			<-request.Context().Done()
+			requestCancelled <- struct{}{}
+			return
 		}
+		http.NotFound(response, request)
 	}))
 	defer server.Close()
 
@@ -202,10 +187,10 @@ func TestClientCancelsDispatchedExecutionWithCallerContext(t *testing.T) {
 	}()
 
 	select {
-	case <-firstPoll:
+	case <-requestSeen:
 		cancel()
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the first LLM execution poll")
+		t.Fatal("timed out waiting for the Responses request")
 	}
 	select {
 	case err := <-result:
@@ -216,9 +201,9 @@ func TestClientCancelsDispatchedExecutionWithCallerContext(t *testing.T) {
 		t.Fatal("timed out waiting for cancelled Generate()")
 	}
 	select {
-	case <-cancelSeen:
+	case <-requestCancelled:
 	case <-time.After(2 * time.Second):
-		t.Fatal("timed out waiting for the exact execution cancellation")
+		t.Fatal("timed out waiting for the Responses request cancellation")
 	}
 }
 
@@ -374,6 +359,25 @@ func writeDiscovery(t *testing.T, path string, baseURL string, token string) {
 	}
 	if err := os.WriteFile(path, body, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+// TestClientRejectsNonV1InferenceServiceAPIVersion verifies that the unpublished v1 discovery contract rejects every other version.
+// TestClientRejectsNonV1InferenceServiceAPIVersion 验证未发布 v1 发现契约会拒绝其他所有版本。
+func TestClientRejectsNonV1InferenceServiceAPIVersion(t *testing.T) {
+	t.Helper()
+	client := &Client{}
+	for _, apiVersion := range []int{2, 3} {
+		err := client.validateDiscovery(discoverySnapshot{
+			APIVersion: apiVersion,
+			Status:     "ready",
+		}, time.Now().UnixMilli())
+		if err == nil {
+			t.Fatalf("validateDiscovery() accepted non-v1 inference service API %d", apiVersion)
+		}
+		if got, want := err.Error(), "Vulcan inference discovery is not a supported ready document"; got != want {
+			t.Fatalf("validateDiscovery(%d) error = %q, want %q", apiVersion, got, want)
+		}
 	}
 }
 

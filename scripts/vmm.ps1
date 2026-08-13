@@ -1,4 +1,4 @@
-# scripts/vmm.ps1
+﻿# scripts/vmm.ps1
 Param(
     [Parameter(Position=0)]
     [ValidateSet("build", "run", "clean", "tester")]
@@ -18,6 +18,43 @@ $ExePath = Join-Path $BinDir "vmm-local.exe"
 $MigrateExePath = Join-Path $BinDir "vmm-migrate.exe"
 $TesterExePath = Join-Path $BinDir "vmm-pii-tester.exe"
 $ThirdPartyDepsDir = Join-Path (Join-Path $RootDir "third_party") "deps"
+$SourceRevision = "unknown"
+$SourceStateDigest = "unknown"
+
+# Resolve-SourceIdentity captures the exact source revision and source-state digest used for a local build.
+# Resolve-SourceIdentity 记录本次本地构建使用的精确源码版本与源码状态摘要。
+function Resolve-SourceIdentity {
+    $revision = (& git -C $RootDir rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($revision)) {
+        throw "cannot resolve VMM source revision from git"
+    }
+    $script:SourceRevision = $revision.Trim()
+    $relativeFiles = @(& git -C $RootDir ls-files -co --exclude-standard)
+    if ($LASTEXITCODE -ne 0) {
+        throw "cannot enumerate VMM source files from git"
+    }
+    $lines = New-Object System.Collections.Generic.List[string]
+    foreach ($relativeFile in $relativeFiles) {
+        if ([string]::IsNullOrWhiteSpace($relativeFile)) {
+            continue
+        }
+        $absoluteFile = Join-Path $RootDir $relativeFile
+        if (-not (Test-Path -LiteralPath $absoluteFile -PathType Leaf)) {
+            continue
+        }
+        $fileDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $absoluteFile).Hash.ToLowerInvariant()
+        $lines.Add(($relativeFile.Replace("\", "/") + "`0" + $fileDigest))
+    }
+    $lines.Sort()
+    $digest = [Security.Cryptography.SHA256]::Create()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
+        $script:SourceStateDigest = [Convert]::ToHexString($digest.ComputeHash($bytes)).ToLowerInvariant()
+    }
+    finally {
+        $digest.Dispose()
+    }
+}
 
 # Resolve-GoExe locates go.exe lazily so run/clean actions can keep working on machines that only carry packaged binaries.
 # Resolve-GoExe 用于按需解析 go.exe，确保只携带打包产物的机器仍然可以正常执行 run/clean 动作。
@@ -118,13 +155,19 @@ function Invoke-GoBuild {
         [Parameter(Mandatory=$true)]
         [string]$OutputPath,
         [Parameter(Mandatory=$true)]
-        [string]$PackagePath
+        [string]$PackagePath,
+        [string]$Ldflags = ""
     )
 
     # Build a single Go entrypoint through the resolved go.exe path so packaging never silently skips a binary because of shell alias or function shadowing.
     # 通过已解析的 go.exe 路径构建单个 Go 入口，避免因为 shell 别名或函数遮蔽导致打包静默跳过某个二进制。
     $GoExe = Resolve-GoExe
-    & $GoExe build -o $OutputPath $PackagePath
+    if ([string]::IsNullOrWhiteSpace($Ldflags)) {
+        & $GoExe build -o $OutputPath $PackagePath
+    }
+    else {
+        & $GoExe build -ldflags $Ldflags -o $OutputPath $PackagePath
+    }
     if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
     if (!(Test-Path -LiteralPath $OutputPath)) {
         throw "expected build artifact was not produced: $OutputPath"
@@ -139,16 +182,18 @@ function Do-Clean {
 }
 
 function Do-Build {
+    Resolve-SourceIdentity
+    $BuildLdflags = "-X github.com/openvulcan/vmm/internal/buildinfo.SourceRevision=$SourceRevision -X github.com/openvulcan/vmm/internal/buildinfo.SourceStateDigest=$SourceStateDigest"
     Write-Host "=> 🚀 Building VMM Gateway..." -ForegroundColor Cyan
     if (!(Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
     
     # Compile the full main package so debug helpers and future entrypoint files are linked into the final binary.
     # 编译完整的 main 包，确保调试辅助文件和后续入口文件都会被链接进最终二进制。
-    Invoke-GoBuild -OutputPath $ExePath -PackagePath "$RootDir\cmd\vmm-local"
+    Invoke-GoBuild -OutputPath $ExePath -PackagePath "$RootDir\cmd\vmm-local" -Ldflags $BuildLdflags
 
     # Build the standalone maintenance tool together with the main binary so packaged output keeps destructive cleanup, migration, and vector rebuild workflows outside the runtime process.
     # 同时编译独立维护工具，确保标准打包产物把清库、迁移和向量重建工作流放在运行时进程之外。
-    Invoke-GoBuild -OutputPath $MigrateExePath -PackagePath "$RootDir\cmd\vmm-migrate"
+    Invoke-GoBuild -OutputPath $MigrateExePath -PackagePath "$RootDir\cmd\vmm-migrate" -Ldflags $BuildLdflags
 
     # Build the standalone PII tester together with the main binary so packaged output keeps the validator tooling available.
     # 同时编译独立 PII 测试器，确保标准构建产物里保留验证规则所需的工具链。

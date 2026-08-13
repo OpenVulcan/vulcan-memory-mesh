@@ -182,6 +182,34 @@ func TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns(t *testing.T) {
 	}
 }
 
+// TestNewPostActionUseCaseImmediatelyScansIdlePendingSessions verifies startup recovery does not wait for the first maintenance ticker.
+// TestNewPostActionUseCaseImmediatelyScansIdlePendingSessions 用于验证启动恢复不会等待第一个维护 ticker。
+func TestNewPostActionUseCaseImmediatelyScansIdlePendingSessions(t *testing.T) {
+	store := &testRelationalStore{
+		idleSessions: []logicdomain.SessionRef{{SessionID: 41, SessionKey: "idle-pending"}},
+	}
+	useCase := NewPostActionUseCase(
+		nil,
+		store,
+		nil,
+		nil,
+		nil,
+		nil,
+		nil,
+		PostActionAnalysisConfig{
+			IdleTimeout:       time.Minute,
+			QueueScanInterval: time.Hour,
+		},
+		nil,
+	)
+	if err := useCase.Shutdown(context.Background()); err != nil {
+		t.Fatalf("shutdown startup recovery worker: %v", err)
+	}
+	if store.idleScanCalls != 1 {
+		t.Fatalf("startup idle scan calls = %d, want 1", store.idleScanCalls)
+	}
+}
+
 // TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation verifies a relational failure after vector upsert persists a retry job when the immediate rollback delete also fails, so vector rows cannot become untracked orphans.
 // TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation 用于验证当关系写入在向量 upsert 之后失败，且即时回滚删除也失败时，会持久化一个重试任务，避免向量行变成无主孤儿。
 func TestPostActionApplyImmediateTurnAnalysisEnqueuesVectorRollbackCompensation(t *testing.T) {
@@ -1580,6 +1608,7 @@ type testRelationalStore struct {
 	historyTurns            []logicdomain.SessionTurnRecord
 	recentDirectWrites      []logicdomain.TurnAnalysisDirectWrite
 	idleSessions            []logicdomain.SessionRef
+	idleScanCalls           int
 	idleSessionsErr         error
 	profileTargets          logicdomain.ProfileTargetsSnapshot
 	profileReviewTargets    logicdomain.ProfileReviewTargetsSnapshot
@@ -1653,6 +1682,7 @@ func (s *testRelationalStore) LoadRecentDirectMemoryWrites(_ context.Context, _ 
 // ListIdlePendingSessions returns the canned idle sessions used by queue-scan tests.
 // ListIdlePendingSessions 用于返回队列扫描测试中预设的空闲 session。
 func (s *testRelationalStore) ListIdlePendingSessions(_ context.Context, _ time.Duration, _ int) ([]logicdomain.SessionRef, error) {
+	s.idleScanCalls++
 	if s.idleSessionsErr != nil {
 		return nil, s.idleSessionsErr
 	}

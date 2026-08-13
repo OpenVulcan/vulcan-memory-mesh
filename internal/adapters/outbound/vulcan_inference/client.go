@@ -27,12 +27,12 @@ import (
 
 const (
 	// inferenceContractVersion is the exact public inference request contract consumed by this adapter.
-	// inferenceContractVersion 是当前适配器消费的精确公共推理请求契约版本。
-	inferenceContractVersion = 2
+	// inferenceContractVersion 是当前适配器消费的精确公共推理请求契约版本；未发布内部契约统一为 v1。
+	inferenceContractVersion = 1
 
-	// inferenceServiceAPIVersion is the exact discovery and response-envelope version consumed by this adapter.
-	// inferenceServiceAPIVersion 是当前适配器消费的精确发现与响应封装版本。
-	inferenceServiceAPIVersion = 2
+	// inferenceServiceAPIVersion is the exact discovery and response-envelope API published by Vulcan Code.
+	// inferenceServiceAPIVersion 是 Vulcan Code 当前未发布内部发现文档与响应封装 API 版本；统一为 v1。
+	inferenceServiceAPIVersion = 1
 )
 
 // Config binds the adapter to one protected discovery file and exact caller identity.
@@ -91,49 +91,50 @@ type errorEnvelope struct {
 	Message    string `json:"message"`
 }
 
-// routeSnapshot contains the non-secret route fields used by VMM diagnostics.
-// routeSnapshot 用于保存 VMM 诊断需要的非秘密路由字段。
-type routeSnapshot struct {
-	ModelID string `json:"model_id"`
+// responsesUsage mirrors the standard Responses token dimensions consumed by VMM.
+// responsesUsage 镜像 VMM 消费的标准 Responses Token 维度。
+type responsesUsage struct {
+	InputTokens  *uint64 `json:"input_tokens"`
+	OutputTokens *uint64 `json:"output_tokens"`
+	TotalTokens  *uint64 `json:"total_tokens"`
 }
 
-// usageValue mirrors one known-or-unknown normalized token count.
-// usageValue 用于镜像一项已知或未知的规范化 Token 数量。
-type usageValue struct {
-	State string `json:"state"`
-	Value uint64 `json:"value,omitempty"`
+// responsesContent mirrors one standard Responses output content part.
+// responsesContent 镜像一项标准 Responses 输出内容分片。
+type responsesContent struct {
+	Type string `json:"type"`
+	Text string `json:"text"`
 }
 
-// requestUsage contains the token fields that VMM can represent in its narrower usage contract.
-// requestUsage 用于保存 VMM 较窄用量契约可以表达的 Token 字段。
-type requestUsage struct {
-	InputTokens  usageValue `json:"input_tokens"`
-	OutputTokens usageValue `json:"output_tokens"`
-	TotalTokens  usageValue `json:"total_tokens"`
+// responsesOutputItem mirrors the standard output items needed by VMM.
+// responsesOutputItem 镜像 VMM 所需的标准输出项目。
+type responsesOutputItem struct {
+	Type    string             `json:"type"`
+	Role    string             `json:"role"`
+	Content []responsesContent `json:"content"`
 }
 
-// llmResponse mirrors one completed restricted LLM response.
-// llmResponse 用于镜像一项已完成的受限 LLM 响应。
-type llmResponse struct {
-	Route            routeSnapshot   `json:"route"`
-	OutputText       string          `json:"output_text"`
-	StructuredOutput json.RawMessage `json:"structured_output"`
-	Usage            requestUsage    `json:"usage"`
+// responsesCreateResponse mirrors one completed standard Responses object.
+// responsesCreateResponse 镜像一个已完成的标准 Responses 对象。
+type responsesCreateResponse struct {
+	ID     string                `json:"id"`
+	Object string                `json:"object"`
+	Status string                `json:"status"`
+	Model  string                `json:"model"`
+	Output []responsesOutputItem `json:"output"`
+	Usage  responsesUsage        `json:"usage"`
+	Error  json.RawMessage       `json:"error"`
 }
 
-// llmStartResult contains the stable host execution identifier.
-// llmStartResult 用于保存稳定的宿主执行标识。
-type llmStartResult struct {
-	ExecutionID string `json:"execution_id"`
-}
-
-// llmExecutionSnapshot mirrors one caller-owned execution status.
-// llmExecutionSnapshot 用于镜像一项调用方所有的执行状态。
-type llmExecutionSnapshot struct {
-	ExecutionID string          `json:"execution_id"`
-	Phase       string          `json:"phase"`
-	Response    *llmResponse    `json:"response"`
-	Error       json.RawMessage `json:"error"`
+// responsesErrorEnvelope mirrors the standard OpenAI-compatible error envelope.
+// responsesErrorEnvelope 镜像标准 OpenAI 兼容错误信封。
+type responsesErrorEnvelope struct {
+	Error struct {
+		Type    string  `json:"type"`
+		Code    string  `json:"code"`
+		Param   *string `json:"param"`
+		Message string  `json:"message"`
+	} `json:"error"`
 }
 
 // embeddingResult mirrors one dense float result with stable source identity.
@@ -204,54 +205,70 @@ func New(config Config) (*Client, error) {
 	}, nil
 }
 
-// Generate starts one host-owned LLM execution, polls the same execution to terminal state, and cancels it when the VMM context ends.
-// Generate 用于启动一项宿主管理的 LLM 执行、轮询同一执行直到终态，并在 VMM 上下文结束时取消执行。
+// Generate executes one standard Responses request through the managed Vulcan endpoint.
+// Generate 通过托管 Vulcan 端点执行一项标准 Responses 请求。
 func (c *Client) Generate(ctx context.Context, request appports.LLMRequest) (appports.LLMResponse, error) {
-	requestID, err := newRequestID("vmm-llm")
-	if err != nil {
-		return appports.LLMResponse{}, err
-	}
-	structuredOutput := map[string]any{"mode": "none"}
+	textConfig := map[string]any{"format": map[string]any{"type": "text"}}
 	if request.ResponseFormat == appports.LLMResponseFormatJSON {
 		if request.StructuredOutput == nil {
-			return appports.LLMResponse{}, errors.New("Vulcan inference JSON request requires an explicit structured-output schema")
+			return appports.LLMResponse{}, errors.New("Vulcan Responses JSON request requires an explicit structured-output schema")
 		}
 		var schema map[string]any
 		if err := json.Unmarshal(request.StructuredOutput.Schema, &schema); err != nil {
-			return appports.LLMResponse{}, fmt.Errorf("decode Vulcan inference structured-output schema: %w", err)
+			return appports.LLMResponse{}, fmt.Errorf("decode Vulcan Responses structured-output schema: %w", err)
 		}
 		if strings.TrimSpace(request.StructuredOutput.Name) == "" || len(schema) == 0 {
-			return appports.LLMResponse{}, errors.New("Vulcan inference structured-output schema name and object must not be empty")
+			return appports.LLMResponse{}, errors.New("Vulcan Responses structured-output schema name and object must not be empty")
 		}
-		structuredOutput = map[string]any{
-			"mode":        "json_schema",
-			"name":        strings.TrimSpace(request.StructuredOutput.Name),
-			"description": strings.TrimSpace(request.StructuredOutput.Description),
-			"schema":      schema,
-			"strict":      request.StructuredOutput.Strict,
+		format := map[string]any{
+			"type":   "json_schema",
+			"name":   strings.TrimSpace(request.StructuredOutput.Name),
+			"schema": schema,
+			"strict": request.StructuredOutput.Strict,
 		}
+		if description := strings.TrimSpace(request.StructuredOutput.Description); description != "" {
+			format["description"] = description
+		}
+		textConfig = map[string]any{"format": format}
 	}
 	body := map[string]any{
-		"contract_version":    inferenceContractVersion,
-		"request_id":          requestID,
-		"consumer_profile_id": c.config.ConsumerProfileID,
-		"purpose_id":          string(request.RouteSelectionLevel),
-		"messages": []any{
-			map[string]any{"role": "system", "content": []any{map[string]any{"type": "text", "text": request.SystemPrompt}}},
-			map[string]any{"role": "user", "content": []any{map[string]any{"type": "text", "text": request.UserPrompt}}},
-		},
-		"structured_output": structuredOutput,
-		"prompt_cache":      map[string]any{"mode": "provider_default"},
-		"reasoning_output":  "hidden",
+		"model":        string(request.RouteSelectionLevel),
+		"instructions": request.SystemPrompt,
+		"input":        request.UserPrompt,
+		"store":        false,
+		"stream":       false,
+		"text":         textConfig,
 	}
-	var started llmStartResult
-	if err := c.call(ctx, http.MethodPost, "inference/v1/llm/start", body, &started); err != nil {
+	var response responsesCreateResponse
+	if err := c.callResponses(ctx, body, &response); err != nil {
 		return appports.LLMResponse{}, err
 	}
-	if strings.TrimSpace(started.ExecutionID) == "" {
-		return appports.LLMResponse{}, errors.New("Vulcan inference returned an empty LLM execution id")
+	if response.Object != "response" || response.Status != "completed" || strings.TrimSpace(response.ID) == "" {
+		return appports.LLMResponse{}, errors.New("Vulcan Responses returned an invalid or incomplete response object")
 	}
-	return c.waitForLLM(ctx, started.ExecutionID)
+	var content strings.Builder
+	for _, item := range response.Output {
+		if item.Type != "message" || item.Role != "assistant" {
+			continue
+		}
+		for _, part := range item.Content {
+			if part.Type == "output_text" {
+				content.WriteString(part.Text)
+			}
+		}
+	}
+	if content.Len() == 0 {
+		return appports.LLMResponse{}, errors.New("Vulcan Responses completed without assistant output text")
+	}
+	return appports.LLMResponse{
+		Content: content.String(),
+		Model:   response.Model,
+		Usage: logicdomain.LLMUsage{
+			PromptTokens:     optionalUsageInt(response.Usage.InputTokens),
+			CompletionTokens: optionalUsageInt(response.Usage.OutputTokens),
+			TotalTokens:      optionalUsageInt(response.Usage.TotalTokens),
+		},
+	}, nil
 }
 
 // Embed creates one dense float vector for every accepted text and restores the exact source order.
@@ -399,65 +416,57 @@ func (c *Client) Rerank(ctx context.Context, query string, documents []appports.
 	return results, nil
 }
 
-// waitForLLM polls one immutable execution identity and never creates a replacement execution after dispatch.
-// waitForLLM 用于轮询一个不可变执行身份，并保证分派后绝不创建替代执行。
-func (c *Client) waitForLLM(ctx context.Context, executionID string) (appports.LLMResponse, error) {
-	ticker := time.NewTicker(100 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		var snapshot llmExecutionSnapshot
-		path := "inference/v1/llm/" + url.PathEscape(executionID)
-		if err := c.call(ctx, http.MethodGet, path, nil, &snapshot); err != nil {
-			if ctx.Err() != nil {
-				c.cancelLLM(executionID)
-			}
-			return appports.LLMResponse{}, err
-		}
-		switch snapshot.Phase {
-		case "completed":
-			if snapshot.Response == nil {
-				return appports.LLMResponse{}, errors.New("Vulcan inference completed without an LLM response")
-			}
-			content := snapshot.Response.OutputText
-			if len(snapshot.Response.StructuredOutput) > 0 && string(snapshot.Response.StructuredOutput) != "null" {
-				content = string(snapshot.Response.StructuredOutput)
-			}
-			return appports.LLMResponse{
-				Content: content,
-				Model:   snapshot.Response.Route.ModelID,
-				Usage: logicdomain.LLMUsage{
-					PromptTokens:     knownUsageInt(snapshot.Response.Usage.InputTokens),
-					CompletionTokens: knownUsageInt(snapshot.Response.Usage.OutputTokens),
-					TotalTokens:      knownUsageInt(snapshot.Response.Usage.TotalTokens),
-				},
-			}, nil
-		case "failed":
-			return appports.LLMResponse{}, controlledExecutionError(snapshot.Error)
-		case "cancelled":
-			return appports.LLMResponse{}, context.Canceled
-		case "running":
-		default:
-			return appports.LLMResponse{}, fmt.Errorf("Vulcan inference returned unknown LLM phase %q", snapshot.Phase)
-		}
-		select {
-		case <-ctx.Done():
-			c.cancelLLM(executionID)
-			return appports.LLMResponse{}, ctx.Err()
-		case <-ticker.C:
-		}
+// callResponses sends one authenticated standard Responses Create request without a private envelope.
+// callResponses 发送一项不带私有信封的已鉴权标准 Responses Create 请求。
+func (c *Client) callResponses(ctx context.Context, body any, output *responsesCreateResponse) error {
+	encodedBody, err := json.Marshal(body)
+	if err != nil {
+		return err
 	}
-}
-
-// cancelLLM best-effort cancels one already-dispatched execution without reusing the cancelled caller context.
-// cancelLLM 用于尽力取消一项已分派执行，并避免复用已取消的调用方上下文。
-func (c *Client) cancelLLM(executionID string) {
-	cancelContext, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	path := "inference/v1/llm/" + url.PathEscape(executionID) + "/cancel"
-	var result struct {
-		Cancelled bool `json:"cancelled"`
+	for attempt := 0; attempt < 2; attempt++ {
+		discovery, err := c.discovery(attempt > 0)
+		if err != nil {
+			return err
+		}
+		endpoint, err := url.JoinPath(discovery.BaseURL, "v1/responses")
+		if err != nil {
+			return fmt.Errorf("build Vulcan Responses endpoint: %w", err)
+		}
+		request, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader(encodedBody))
+		if err != nil {
+			return err
+		}
+		request.Header.Set("Authorization", "Bearer "+discovery.AccessToken)
+		request.Header.Set("Accept", "application/json")
+		request.Header.Set("Content-Type", "application/json")
+		response, err := c.http.Do(request)
+		if err != nil {
+			return fmt.Errorf("call Vulcan Responses: %w", err)
+		}
+		responseBody, readErr := io.ReadAll(io.LimitReader(response.Body, 16<<20))
+		closeErr := response.Body.Close()
+		if readErr != nil {
+			return readErr
+		}
+		if closeErr != nil {
+			return closeErr
+		}
+		if response.StatusCode == http.StatusUnauthorized && attempt == 0 {
+			continue
+		}
+		if response.StatusCode < 200 || response.StatusCode >= 300 {
+			var serviceError responsesErrorEnvelope
+			if json.Unmarshal(responseBody, &serviceError) == nil && strings.TrimSpace(serviceError.Error.Message) != "" {
+				return fmt.Errorf("Vulcan Responses %s: %s", serviceError.Error.Code, serviceError.Error.Message)
+			}
+			return fmt.Errorf("Vulcan Responses returned HTTP %d", response.StatusCode)
+		}
+		if err := json.Unmarshal(responseBody, output); err != nil {
+			return fmt.Errorf("decode Vulcan Responses object: %w", err)
+		}
+		return nil
 	}
-	_ = c.call(cancelContext, http.MethodPost, path, nil, &result)
+	return errors.New("Vulcan Responses authorization refresh did not produce a usable grant")
 }
 
 // call sends one closed authenticated operation and strictly decodes its versioned envelope.
@@ -617,31 +626,15 @@ func newRequestID(prefix string) (string, error) {
 	return prefix + "-" + hex.EncodeToString(random), nil
 }
 
-// knownUsageInt narrows one known token count into the legacy VMM integer range.
-// knownUsageInt 用于把一项已知 Token 数量收窄到旧版 VMM 整数范围。
-func knownUsageInt(value usageValue) int {
-	if value.State != "known" {
+// optionalUsageInt narrows one optional standard token count into the legacy VMM integer range.
+// optionalUsageInt 用于把一个可选标准 Token 数量收窄到旧版 VMM 整数范围。
+func optionalUsageInt(value *uint64) int {
+	if value == nil {
 		return 0
 	}
 	maximum := uint64(^uint(0) >> 1)
-	if value.Value > maximum {
+	if *value > maximum {
 		return int(maximum)
 	}
-	return int(value.Value)
-}
-
-// controlledExecutionError extracts only the host-controlled message from one terminal execution failure.
-// controlledExecutionError 用于仅从一项终态执行失败中提取宿主控制的消息。
-func controlledExecutionError(raw json.RawMessage) error {
-	if len(raw) == 0 || string(raw) == "null" {
-		return errors.New("Vulcan inference LLM execution failed")
-	}
-	var value struct {
-		Category string `json:"category"`
-		Message  string `json:"message"`
-	}
-	if json.Unmarshal(raw, &value) == nil && strings.TrimSpace(value.Message) != "" {
-		return fmt.Errorf("Vulcan inference LLM %s: %s", value.Category, value.Message)
-	}
-	return errors.New("Vulcan inference LLM execution failed with an invalid error payload")
+	return int(*value)
 }

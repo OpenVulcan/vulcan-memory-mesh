@@ -44,6 +44,9 @@ func (u *PostActionUseCase) startQueueWorker() {
 	// 只启动一个维护 goroutine，确保画像过期收敛、idle session 补扫和 deferred flush 每个周期只执行一次，而不是 N 倍重复。
 	u.queueWG.Add(1)
 	go u.maintenanceLoop()
+	// Run one bounded recovery scan immediately so persisted pending turns do not wait for the first ticker interval after startup.
+	// 启动后立即执行一次有界恢复扫描，避免持久化的 pending turn 必须等待第一个 ticker 周期。
+	u.scanIdlePendingSessions()
 }
 
 // Shutdown drains the post-action queue worker before relational and vector dependencies are closed.

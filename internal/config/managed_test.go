@@ -62,10 +62,10 @@ func TestLoadVulcanManagedConfigRejectsUnknownFields(t *testing.T) {
 	}
 }
 
-// TestManagedContractFixtureRoundTripsSemantically verifies the shared version-two fixture loses no fields in Go.
-// TestManagedContractFixtureRoundTripsSemantically 用于验证共享的二版固定夹具经过 Go 往返后不会丢失字段。
+// TestManagedContractFixtureRoundTripsSemantically verifies the shared version-one fixture loses no fields in Go.
+// TestManagedContractFixtureRoundTripsSemantically 用于验证共享的三版固定夹具经过 Go 往返后不会丢失字段。
 func TestManagedContractFixtureRoundTripsSemantically(t *testing.T) {
-	path := filepath.Join("testdata", "vulcan-managed-contract-v2.json")
+	path := filepath.Join("testdata", "vulcan-managed-contract-v1.json")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read managed contract fixture: %v", err)
@@ -208,6 +208,7 @@ func validManagedConfig(t *testing.T) ManagedConfig {
 	base.Controller.SpaceLabel = "VulcanMemoryMesh"
 	return ManagedConfig{
 		ContractVersion: ManagedContractVersion,
+		RuntimeBuildID:  ManagedRuntimeBuildID,
 		Owner:           ManagedContractOwner,
 		InstanceID:      "managed-test",
 		Generation:      1,

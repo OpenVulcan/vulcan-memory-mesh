@@ -16,6 +16,8 @@ func TestBuildMaintenanceEmbeddingUsesManagedInference(t *testing.T) {
 	cfg := config.DefaultLocal()
 	cfg.Embedding.APIKeys = nil
 	managed := &config.ManagedConfig{
+		ContractVersion: config.ManagedContractVersion,
+		RuntimeBuildID:  config.ManagedRuntimeBuildID,
 		Parent: config.ManagedParent{
 			ProcessID:       1,
 			StartedAtUnixMS: 1,

@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"github.com/openvulcan/vmm/internal/app"
+	"github.com/openvulcan/vmm/internal/buildinfo"
 	"github.com/openvulcan/vmm/internal/config"
 )
 
@@ -53,6 +54,13 @@ func runMain(args []string) int {
 		}
 		return 0
 	}
+	if hasVersionJSONFlag(args) {
+		if err := buildinfo.WriteVersionJSON(os.Stdout, "vmm-local"); err != nil {
+			fmt.Fprintf(os.Stderr, "failed to write version document: %v\n", err)
+			return 1
+		}
+		return 0
+	}
 
 	runtimeArgs, err := parseRuntimeArguments(args)
 	if err != nil {
@@ -78,6 +86,17 @@ func runMain(args []string) int {
 type runtimeArguments struct {
 	ConfigPath        string
 	ManagedConfigPath string
+}
+
+// hasVersionJSONFlag detects the standalone version-document switch before foreground flag parsing.
+// hasVersionJSONFlag 在前台参数解析前检测独立版本文档开关。
+func hasVersionJSONFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-version-json" {
+			return true
+		}
+	}
+	return false
 }
 
 // parseRuntimeArguments parses only foreground runtime flags and rejects any attempt to mix standalone and managed configuration.
@@ -147,6 +166,7 @@ func runRuntime(ctx context.Context, exePath string, wd string, cfgPath string, 
 // managedRuntimeStatus 用于表示子进程监听成功后写出的已鉴别父进程握手。
 type managedRuntimeStatus struct {
 	ContractVersion           int    `json:"contract_version"`
+	RuntimeBuildID            string `json:"runtime_build_id"`
 	InstanceID                string `json:"instance_id"`
 	Generation                uint64 `json:"generation"`
 	ProcessID                 int    `json:"process_id"`
@@ -197,6 +217,7 @@ func runManagedRuntime(ctx context.Context, managedConfigPath string) error {
 	return application.RunWithReadyEndpoints(managedContext, func(endpoints app.RuntimeEndpoints) error {
 		status := managedRuntimeStatus{
 			ContractVersion:           config.ManagedContractVersion,
+			RuntimeBuildID:            bundle.Manifest.RuntimeBuildID,
 			InstanceID:                bundle.Manifest.InstanceID,
 			Generation:                bundle.Manifest.Generation,
 			ProcessID:                 os.Getpid(),
@@ -207,7 +228,7 @@ func runManagedRuntime(ctx context.Context, managedConfigPath string) error {
 			ManagementListenAddr:      endpoints.ManagementListenAddr,
 			ManagementProtocolVersion: 1,
 			ManagementReady:           endpoints.ManagementListenAddr != "",
-			InferenceProtocolVersion:  2,
+			InferenceProtocolVersion:  buildinfo.InferenceProtocolVersion,
 		}
 		return writeManagedStatus(bundle.Manifest.Runtime.StatusFile, status)
 	})

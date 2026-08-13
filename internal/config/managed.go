@@ -18,13 +18,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/buildinfo"
 	"gopkg.in/yaml.v3"
 )
 
 const (
 	// ManagedContractVersion is the only managed-runtime manifest version accepted by this build.
 	// ManagedContractVersion 是当前构建唯一接受的托管运行时清单版本。
-	ManagedContractVersion = 2
+	ManagedContractVersion = 1
+
+	// ManagedRuntimeBuildID identifies the exact packaged runtime family accepted by the host manifest.
+	// ManagedRuntimeBuildID 用于标识宿主清单接受的精确打包运行时族。
+	ManagedRuntimeBuildID = buildinfo.BuildID
 
 	// ManagedContractOwner identifies Vulcan Code as the authoritative managed-runtime owner.
 	// ManagedContractOwner 用于把 Vulcan Code 标识为托管运行时的权威所有者。
@@ -133,6 +138,7 @@ type ManagedRuntime struct {
 // ManagedConfig 是 Vulcan Code 为某一代子进程生成的版本化单文档契约。
 type ManagedConfig struct {
 	ContractVersion int            `json:"contract_version" yaml:"contract_version"`
+	RuntimeBuildID  string         `json:"runtime_build_id" yaml:"runtime_build_id"`
 	Owner           string         `json:"owner" yaml:"owner"`
 	InstanceID      string         `json:"instance_id" yaml:"instance_id"`
 	Generation      uint64         `json:"generation" yaml:"generation"`
@@ -202,6 +208,9 @@ func LoadVulcanManagedConfig(path string) (ManagedRuntimeBundle, error) {
 func (c ManagedConfig) Validate() error {
 	if c.ContractVersion != ManagedContractVersion {
 		return fmt.Errorf("unsupported managed contract version %d", c.ContractVersion)
+	}
+	if strings.TrimSpace(c.RuntimeBuildID) != ManagedRuntimeBuildID {
+		return fmt.Errorf("managed config runtime_build_id must be %q", ManagedRuntimeBuildID)
 	}
 	if c.Owner != ManagedContractOwner {
 		return fmt.Errorf("managed config owner must be %q", ManagedContractOwner)
