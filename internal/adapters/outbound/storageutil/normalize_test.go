@@ -5,7 +5,9 @@ package storageutil
 import (
 	"errors"
 	"reflect"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
@@ -18,6 +20,30 @@ func TestNormalizeListsFiltersDeduplicatesAndSorts(t *testing.T) {
 	}
 	if got, want := NormalizeStringList([]string{" b ", "", "a", "b"}), []string{"a", "b"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("NormalizeStringList() = %#v, want %#v", got, want)
+	}
+}
+
+// TestTruncateUTF8BytesPreservesValidBoundary verifies storage truncation never splits a multibyte error message or exceeds its byte ceiling.
+// TestTruncateUTF8BytesPreservesValidBoundary 用于验证持久化截断不会切断多字节错误信息，也不会超过字节上限。
+func TestTruncateUTF8BytesPreservesValidBoundary(t *testing.T) {
+	// source places one three-byte Chinese rune across the requested boundary.
+	// source 将一个三字节中文字符放在指定截断边界上。
+	source := strings.Repeat("a", 3999) + "错" + "tail"
+	truncated := TruncateUTF8Bytes(source, 4000)
+	if !utf8.ValidString(truncated) {
+		t.Fatal("truncated text is invalid UTF-8")
+	}
+	if len(truncated) != 3999 || len(truncated) > 4000 {
+		t.Fatalf("truncated byte length = %d, want 3999", len(truncated))
+	}
+	if got := TruncateUTF8Bytes("unchanged", 4000); got != "unchanged" {
+		t.Fatalf("short text changed to %q", got)
+	}
+	if got := TruncateUTF8Bytes("value", 0); got != "" {
+		t.Fatalf("zero byte ceiling returned %q", got)
+	}
+	if got := TruncateUTF8Bytes(string([]byte{'a', 0xff, 'b'}), 4000); !utf8.ValidString(got) {
+		t.Fatalf("invalid source was not normalized: %q", got)
 	}
 }
 

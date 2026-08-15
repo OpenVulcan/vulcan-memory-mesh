@@ -204,6 +204,9 @@ type InvalidLLMOutputError struct {
 	Scene   string
 	Message string
 	Raw     string
+	// Execution preserves the completed physical call facts when parsing or validation rejects its semantic payload.
+	// Execution 用于在解析或校验拒绝语义载荷时保留已完成物理调用事实。
+	Execution *LLMExecutionMetadata
 }
 
 // Error renders the model-output validation failure while keeping raw output out of the message.
@@ -222,3 +225,27 @@ func (e InvalidLLMOutputError) Unwrap() error { return ErrInvalidLLMOutput }
 // IsInvalidLLMOutputError reports whether model output failed a structured contract check.
 // IsInvalidLLMOutputError 用于报告模型输出是否未通过结构化契约校验。
 func IsInvalidLLMOutputError(err error) bool { return errors.Is(err, ErrInvalidLLMOutput) }
+
+// LLMExecutionContextError preserves completed LLM identities when a later post-processing or persistence stage fails.
+// LLMExecutionContextError 用于在后续处理或持久化阶段失败时保留已经完成的 LLM 身份事实。
+type LLMExecutionContextError struct {
+	// Cause is the original post-processing or persistence failure.
+	// Cause 是原始后处理或持久化失败。
+	Cause error
+	// Executions preserves every completed physical LLM call that preceded the failure.
+	// Executions 保留失败前已经完成的每一次物理 LLM 调用。
+	Executions []LLMExecutionMetadata
+}
+
+// Error returns the original failure text without serializing model output or usage into the public message.
+// Error 用于返回原始失败文本，不把模型输出或用量序列化到公开错误消息中。
+func (e LLMExecutionContextError) Error() string {
+	if e.Cause == nil {
+		return "llm post-processing failed"
+	}
+	return e.Cause.Error()
+}
+
+// Unwrap exposes the original failure for errors.Is and errors.As classification.
+// Unwrap 用于暴露原始失败，供 errors.Is 与 errors.As 分类。
+func (e LLMExecutionContextError) Unwrap() error { return e.Cause }

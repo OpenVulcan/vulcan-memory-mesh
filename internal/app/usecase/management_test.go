@@ -17,6 +17,7 @@ import (
 type testManagementStore struct {
 	sessionPage      logicdomain.ManagementSessionPage
 	lastSessionQuery logicdomain.ManagementSessionQuery
+	lastTurnQuery    logicdomain.ManagementTurnQuery
 }
 
 // testManagementMutationStore records preview-bound writes without a database.
@@ -165,8 +166,25 @@ func (s *testManagementStore) GetManagementSession(context.Context, uint64) (log
 
 // ListManagementTurns returns an empty page for interface completeness.
 // ListManagementTurns 为满足接口返回空分页。
-func (s *testManagementStore) ListManagementTurns(context.Context, logicdomain.ManagementTurnQuery) (logicdomain.ManagementTurnPage, error) {
+func (s *testManagementStore) ListManagementTurns(_ context.Context, query logicdomain.ManagementTurnQuery) (logicdomain.ManagementTurnPage, error) {
+	s.lastTurnQuery = query
 	return logicdomain.ManagementTurnPage{}, nil
+}
+
+// TestManagementTurnsAcceptPassedStatus verifies management readers can explicitly select durable analysis Pass terminals.
+// TestManagementTurnsAcceptPassedStatus 用于验证管理读取端可以显式筛选持久化分析 Pass 终态。
+func TestManagementTurnsAcceptPassedStatus(t *testing.T) {
+	store := &testManagementStore{}
+	management, err := NewManagementUseCase(store, 30, 100)
+	if err != nil {
+		t.Fatalf("NewManagementUseCase() error = %v", err)
+	}
+	if _, err := management.ListTurns(context.Background(), ManagementTurnFilters{Status: "passed"}); err != nil {
+		t.Fatalf("ListTurns() error = %v", err)
+	}
+	if store.lastTurnQuery.Status != "passed" {
+		t.Fatalf("turn status query = %q, want passed", store.lastTurnQuery.Status)
+	}
 }
 
 // GetManagementTurn returns an empty record for interface completeness.

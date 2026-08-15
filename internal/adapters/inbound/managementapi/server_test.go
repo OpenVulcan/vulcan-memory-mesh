@@ -20,6 +20,25 @@ import (
 // managementHTTPReadStore 为传输测试提供确定的字符串安全标识与有界内容。
 type managementHTTPReadStore struct{}
 
+// TestProjectManagementTurnProjectsPassedStatus verifies terminal analysis failures are never mislabeled as pending in HTTP responses.
+// TestProjectManagementTurnProjectsPassedStatus 用于验证终止分析失败不会在 HTTP 响应中被错误标记为 pending。
+func TestProjectManagementTurnProjectsPassedStatus(t *testing.T) {
+	management, err := usecase.NewManagementUseCase(&managementHTTPReadStore{}, 30, 100)
+	if err != nil {
+		t.Fatalf("NewManagementUseCase() error = %v", err)
+	}
+	response := projectManagementTurn(management, logicdomain.ManagementTurnRecord{
+		SessionTurnRecord: logicdomain.SessionTurnRecord{
+			ID:              9,
+			SessionID:       10,
+			ExtractedStatus: logicdomain.TurnExtractedStatusPassed,
+		},
+	})
+	if response.ExtractionStatus != "passed" {
+		t.Fatalf("extraction status = %q, want passed", response.ExtractionStatus)
+	}
+}
+
 // ListManagementSessions returns one identifier above JavaScript's safe integer range.
 // ListManagementSessions 返回一个超过 JavaScript 安全整数范围的标识。
 func (*managementHTTPReadStore) ListManagementSessions(context.Context, logicdomain.ManagementSessionQuery) (logicdomain.ManagementSessionPage, error) {

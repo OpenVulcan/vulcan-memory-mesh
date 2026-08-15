@@ -21,6 +21,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/httpclient"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
@@ -44,6 +45,9 @@ type Config struct {
 	ExpectedCallerID  string
 	ConsumerProfileID string
 	StartupTimeout    time.Duration
+	// MaxConnectionsPerHost is the host-authored ceiling shared by this managed inference client's generation, embedding, and rerank calls.
+	// MaxConnectionsPerHost 是该托管推理客户端的生成、向量与重排调用共同遵守的宿主配置每主机连接上限。
+	MaxConnectionsPerHost int
 }
 
 // Client implements VMM LLM, embedding, and rerank ports over one restricted inference service.
@@ -94,9 +98,115 @@ type errorEnvelope struct {
 // responsesUsage mirrors the standard Responses token dimensions consumed by VMM.
 // responsesUsage 镜像 VMM 消费的标准 Responses Token 维度。
 type responsesUsage struct {
-	InputTokens  *uint64 `json:"input_tokens"`
-	OutputTokens *uint64 `json:"output_tokens"`
-	TotalTokens  *uint64 `json:"total_tokens"`
+	InputTokens *uint64 `json:"input_tokens"`
+	// InputTokensDetails carries the standard cache-read token breakdown.
+	// InputTokensDetails 承载标准缓存读取 token 明细。
+	InputTokensDetails responsesInputTokensDetails `json:"input_tokens_details"`
+	OutputTokens       *uint64                     `json:"output_tokens"`
+	// OutputTokensDetails carries the standard hidden-reasoning token breakdown.
+	// OutputTokensDetails 承载标准隐藏推理 token 明细。
+	OutputTokensDetails responsesOutputTokensDetails `json:"output_tokens_details"`
+	TotalTokens         *uint64                      `json:"total_tokens"`
+}
+
+// responsesInputTokensDetails mirrors standard cached-input token accounting.
+// responsesInputTokensDetails 用于映射标准缓存输入 token 统计。
+type responsesInputTokensDetails struct {
+	// CachedTokens is the provider-reported cache-read token count when available.
+	// CachedTokens 是供应商在可用时上报的缓存读取 token 数量。
+	CachedTokens *uint64 `json:"cached_tokens"`
+}
+
+// responsesOutputTokensDetails mirrors standard reasoning-token accounting.
+// responsesOutputTokensDetails 用于映射标准推理 token 统计。
+type responsesOutputTokensDetails struct {
+	// ReasoningTokens is the provider-reported hidden reasoning token count when available.
+	// ReasoningTokens 是供应商在可用时上报的隐藏推理 token 数量。
+	ReasoningTokens *uint64 `json:"reasoning_tokens"`
+}
+
+// capabilitySnapshot mirrors the consumer-scoped configured inference routes published by Vulcan Code.
+// capabilitySnapshot 用于映射 Vulcan Code 发布的消费者作用域已配置推理路由。
+type capabilitySnapshot struct {
+	// ContractVersion identifies the exact configured-inference contract generation.
+	// ContractVersion 用于标识精确的已配置推理契约代际。
+	ContractVersion int `json:"contract_version"`
+
+	// ConsumerProfileID identifies the profile represented by this snapshot.
+	// ConsumerProfileID 用于标识该快照表示的消费者配置档。
+	ConsumerProfileID string `json:"consumer_profile_id"`
+
+	// Operations contains every configured operation and purpose route.
+	// Operations 包含全部已配置操作与用途路由。
+	Operations []capabilityOperation `json:"operations"`
+}
+
+// capabilityOperation mirrors one configured operation route needed for managed model synchronization.
+// capabilityOperation 用于映射托管模型同步所需的一条已配置操作路由。
+type capabilityOperation struct {
+	// Operation is the configured semantic operation identifier.
+	// Operation 是已配置的语义操作标识。
+	Operation string `json:"operation"`
+
+	// PurposeID is the consumer-owned LLM purpose when this is a restricted generation route.
+	// PurposeID 是受限生成路由对应的消费者自有 LLM 用途。
+	PurposeID string `json:"purpose_id"`
+
+	// Available reports whether the route can execute now.
+	// Available 表示该路由当前是否可执行。
+	Available bool `json:"available"`
+
+	// Route carries the immutable physical model identity when resolution succeeds.
+	// Route 在解析成功时承载不可变的物理模型身份。
+	Route *capabilityRoute `json:"route"`
+}
+
+// capabilityRoute mirrors the immutable physical route identity exposed by one configured operation.
+// capabilityRoute 用于映射一条已配置操作暴露的不可变物理路由身份。
+type capabilityRoute struct {
+	// ProviderID is the exact provider identifier selected by Vulcan Code.
+	// ProviderID 是 Vulcan Code 选择的精确供应商标识。
+	ProviderID string `json:"provider_id"`
+
+	// ServiceEntryID is the exact provider service entry selected by Vulcan Code.
+	// ServiceEntryID 是 Vulcan Code 选择的精确供应商服务入口。
+	ServiceEntryID string `json:"service_entry_id"`
+
+	// ConnectionID is the exact credential connection selected by Vulcan Code.
+	// ConnectionID 是 Vulcan Code 选择的精确凭据连接。
+	ConnectionID string `json:"connection_id"`
+
+	// ModelID is the exact model identifier selected by Vulcan Code.
+	// ModelID 是 Vulcan Code 选择的精确模型标识。
+	ModelID string `json:"model_id"`
+
+	// ProtocolBindingID is the exact protocol binding used to project the provider request.
+	// ProtocolBindingID 是用于投影供应商请求的精确协议绑定。
+	ProtocolBindingID string `json:"protocol_binding_id"`
+}
+
+// PurposeRoute is the frozen non-secret route identity synchronized for one managed VMM LLM purpose.
+// PurposeRoute 是为一个托管 VMM LLM 用途同步的冻结非秘密路由身份。
+type PurposeRoute struct {
+	// ProviderID is the exact configured provider.
+	// ProviderID 是精确的已配置供应商。
+	ProviderID string
+
+	// ServiceEntryID is the exact configured provider service entry.
+	// ServiceEntryID 是精确的已配置供应商服务入口。
+	ServiceEntryID string
+
+	// ConnectionID is the exact configured credential connection.
+	// ConnectionID 是精确的已配置凭据连接。
+	ConnectionID string
+
+	// ModelID is the exact configured physical model.
+	// ModelID 是精确的已配置物理模型。
+	ModelID string
+
+	// ProtocolBindingID is the exact configured provider protocol binding.
+	// ProtocolBindingID 是精确的已配置供应商协议绑定。
+	ProtocolBindingID string
 }
 
 // responsesContent mirrors one standard Responses output content part.
@@ -197,17 +307,60 @@ func New(config Config) (*Client, error) {
 	if config.StartupTimeout <= 0 {
 		config.StartupTimeout = 30 * time.Second
 	}
+	if config.MaxConnectionsPerHost <= 0 {
+		config.MaxConnectionsPerHost = 8
+	}
 	return &Client{
 		config: config,
-		http: &http.Client{
-			Timeout: config.StartupTimeout,
-		},
+		http:   httpclient.NewBounded(config.MaxConnectionsPerHost),
 	}, nil
+}
+
+// PurposeRoutes loads the authoritative purpose-to-route mapping from the managed capability endpoint.
+// PurposeRoutes 用于从托管能力端点加载权威的用途到路由映射。
+func (c *Client) PurposeRoutes(ctx context.Context) (map[string]PurposeRoute, error) {
+	if c == nil {
+		return nil, errors.New("managed inference client is nil")
+	}
+	var snapshot capabilitySnapshot
+	path := "inference/v1/capabilities/" + url.PathEscape(c.config.ConsumerProfileID)
+	if err := c.call(ctx, http.MethodGet, path, nil, &snapshot); err != nil {
+		return nil, err
+	}
+	if snapshot.ContractVersion != inferenceContractVersion || snapshot.ConsumerProfileID != c.config.ConsumerProfileID {
+		return nil, errors.New("Vulcan inference capability identity is invalid")
+	}
+	routes := make(map[string]PurposeRoute)
+	for _, operation := range snapshot.Operations {
+		purposeID := strings.TrimSpace(operation.PurposeID)
+		if operation.Operation != "conversation_respond" || purposeID == "" || !operation.Available || operation.Route == nil {
+			continue
+		}
+		route := PurposeRoute{
+			ProviderID:        strings.TrimSpace(operation.Route.ProviderID),
+			ServiceEntryID:    strings.TrimSpace(operation.Route.ServiceEntryID),
+			ConnectionID:      strings.TrimSpace(operation.Route.ConnectionID),
+			ModelID:           strings.TrimSpace(operation.Route.ModelID),
+			ProtocolBindingID: strings.TrimSpace(operation.Route.ProtocolBindingID),
+		}
+		if route.ProviderID == "" || route.ServiceEntryID == "" || route.ConnectionID == "" || route.ModelID == "" || route.ProtocolBindingID == "" {
+			return nil, fmt.Errorf("Vulcan inference purpose %s has incomplete physical route identity", purposeID)
+		}
+		if existing, exists := routes[purposeID]; exists && existing != route {
+			return nil, fmt.Errorf("Vulcan inference purpose %s resolves to multiple physical routes", purposeID)
+		}
+		routes[purposeID] = route
+	}
+	return routes, nil
 }
 
 // Generate executes one standard Responses request through the managed Vulcan endpoint.
 // Generate 通过托管 Vulcan 端点执行一项标准 Responses 请求。
 func (c *Client) Generate(ctx context.Context, request appports.LLMRequest) (appports.LLMResponse, error) {
+	requestID, err := newRequestID("vmm-llm")
+	if err != nil {
+		return appports.LLMResponse{}, err
+	}
 	textConfig := map[string]any{"format": map[string]any{"type": "text"}}
 	if request.ResponseFormat == appports.LLMResponseFormatJSON {
 		if request.StructuredOutput == nil {
@@ -232,19 +385,21 @@ func (c *Client) Generate(ctx context.Context, request appports.LLMRequest) (app
 		textConfig = map[string]any{"format": format}
 	}
 	body := map[string]any{
-		"model":        string(request.RouteSelectionLevel),
-		"instructions": request.SystemPrompt,
-		"input":        request.UserPrompt,
-		"store":        false,
-		"stream":       false,
-		"text":         textConfig,
+		"model":           string(request.RouteSelectionLevel),
+		"instructions":    request.SystemPrompt,
+		"input":           request.UserPrompt,
+		"reasoning":       map[string]any{"effort": "none"},
+		"store":           false,
+		"stream":          false,
+		"text":            textConfig,
+		"client_metadata": map[string]any{"vmm_request_id": requestID},
 	}
 	var response responsesCreateResponse
 	if err := c.callResponses(ctx, body, &response); err != nil {
-		return appports.LLMResponse{}, err
+		return appports.LLMResponse{RequestID: requestID}, err
 	}
 	if response.Object != "response" || response.Status != "completed" || strings.TrimSpace(response.ID) == "" {
-		return appports.LLMResponse{}, errors.New("Vulcan Responses returned an invalid or incomplete response object")
+		return appports.LLMResponse{RequestID: requestID}, errors.New("Vulcan Responses returned an invalid or incomplete response object")
 	}
 	var content strings.Builder
 	for _, item := range response.Output {
@@ -258,17 +413,29 @@ func (c *Client) Generate(ctx context.Context, request appports.LLMRequest) (app
 		}
 	}
 	if content.Len() == 0 {
-		return appports.LLMResponse{}, errors.New("Vulcan Responses completed without assistant output text")
+		return appports.LLMResponse{RequestID: requestID}, errors.New("Vulcan Responses completed without assistant output text")
 	}
-	return appports.LLMResponse{
-		Content: content.String(),
-		Model:   response.Model,
+	result := appports.LLMResponse{
+		Content:   content.String(),
+		Model:     response.Model,
+		RequestID: requestID,
 		Usage: logicdomain.LLMUsage{
-			PromptTokens:     optionalUsageInt(response.Usage.InputTokens),
-			CompletionTokens: optionalUsageInt(response.Usage.OutputTokens),
-			TotalTokens:      optionalUsageInt(response.Usage.TotalTokens),
+			PromptTokens:      optionalUsageInt(response.Usage.InputTokens),
+			CompletionTokens:  optionalUsageInt(response.Usage.OutputTokens),
+			TotalTokens:       optionalUsageInt(response.Usage.TotalTokens),
+			CachedInputTokens: optionalUsageInt(response.Usage.InputTokensDetails.CachedTokens),
+			ReasoningTokens:   optionalUsageInt(response.Usage.OutputTokensDetails.ReasoningTokens),
 		},
-	}, nil
+	}
+	configuredModel := strings.TrimSpace(request.Model)
+	responseModel := strings.TrimSpace(response.Model)
+	if responseModel == "" {
+		return result, errors.New("Vulcan Responses completed without a physical response model")
+	}
+	if configuredModel != "" && responseModel != configuredModel {
+		return result, fmt.Errorf("Vulcan Responses physical model drifted from %s to %s", configuredModel, responseModel)
+	}
+	return result, nil
 }
 
 // Embed creates one dense float vector for every accepted text and restores the exact source order.

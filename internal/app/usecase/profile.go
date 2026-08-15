@@ -258,6 +258,7 @@ func (u *ProfileUseCase) applyInstructionLocked(ctx context.Context, target logi
 	// 把评审结果翻译成长期节点候选，并在任何 SQL 写入前先施加目标级别的权限地板规则。
 	candidates, retired, renderedProfile, err := u.materializeManualInstructionReview(target, instructionRecord.ID, activeNodes, review, floorPriority, floorLevel)
 	if err != nil {
+		err = attachUseCaseLLMExecutionToInvalidOutput(err, review.LLMExecution)
 		u.logManualProfileInstructionInvalidOutput(target, instructionRecord.ID, len(activeNodes), err)
 		u.failProfileInstruction(ctx, instructionRecord.ID, err.Error(), reviewJSON)
 		return ProfileInstructionResult{}, err
@@ -298,12 +299,16 @@ func (u *ProfileUseCase) logManualProfileInstructionInvalidOutput(target logicdo
 		"project_id", target.ProjectID,
 		"active_node_count", activeNodeCount,
 	}
-	if scene := strings.TrimSpace(invalid.Scene); scene != "" {
+	executionFound := invalid.Execution != nil
+	if scene := strings.TrimSpace(invalid.Scene); !executionFound && scene != "" {
 		fields = append(fields, "llm_scene", scene)
 	}
-	if u.reviewer != nil {
+	if executionFound {
+		fields = appendLLMExecutionLogFields(fields, *invalid.Execution)
+	}
+	if !executionFound && u.reviewer != nil {
 		if model := strings.TrimSpace(u.reviewer.ReviewModel()); model != "" {
-			fields = append(fields, "model", model)
+			fields = append(fields, "configured_model", model)
 		}
 	}
 	// Manual profile instructions are synchronous RPCs; raw provider output belongs in operator logs rather than caller-facing status text.

@@ -15,7 +15,7 @@ const (
 
 	// ManagedContractVersion is the single-file managed manifest revision.
 	// ManagedContractVersion 是单文件托管清单版本。
-	ManagedContractVersion = 1
+	ManagedContractVersion = 2
 
 	// InferenceProtocolVersion is the protected loopback inference contract revision.
 	// InferenceProtocolVersion 是受保护回环推理契约版本。

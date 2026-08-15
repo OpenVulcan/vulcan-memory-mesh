@@ -49,6 +49,15 @@ func trackedSchemaMigrationSteps(flavor string) []trackedSchemaMigrationStep {
 				return r.migrateCombinedSchemaAddManagement(ctx)
 			},
 		},
+		{
+			Component:   defaultSchemaVersionComponent,
+			FromVersion: 4,
+			ToVersion:   5,
+			Name:        "add durable turn-analysis failure state",
+			Up: func(ctx context.Context, r *maintenanceRepository) error {
+				return r.migrateCombinedSchemaAddTurnAnalysisFailures(ctx)
+			},
+		},
 	}
 }
 
@@ -56,6 +65,12 @@ func trackedSchemaMigrationSteps(flavor string) []trackedSchemaMigrationStep {
 // migrateCombinedSchemaAddManagement 用于创建独立管理表，同时不重新分类历史系统回收批次。
 func (r *maintenanceRepository) migrateCombinedSchemaAddManagement(ctx context.Context) error {
 	return r.execDDLStatements(ctx, postgresManagementSchemaStatements(r), "postgres management schema migration")
+}
+
+// migrateCombinedSchemaAddTurnAnalysisFailures creates the durable per-turn retry state used by background PostAction analysis.
+// migrateCombinedSchemaAddTurnAnalysisFailures 用于创建后台 PostAction 分析使用的逐 turn 持久化重试状态。
+func (r *maintenanceRepository) migrateCombinedSchemaAddTurnAnalysisFailures(ctx context.Context) error {
+	return r.execDDLStatements(ctx, postgresTurnAnalysisFailureSchemaStatements(r), "postgres turn-analysis failure schema migration")
 }
 
 // validateTrackedSchemaVersion rejects impossible newer rows while allowing older rows to continue into the explicit migration stage.

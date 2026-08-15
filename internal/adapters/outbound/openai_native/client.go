@@ -5,10 +5,10 @@ package openai_native
 import (
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/openai/openai-go/v3"
 	"github.com/openai/openai-go/v3/option"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/httpclient"
 )
 
 // Client holds the official OpenAI SDK client plus compatibility-mode flags for OpenAI-compatible endpoints.
@@ -17,11 +17,11 @@ type Client struct {
 	sdkClient *openai.Client
 }
 
-// NewClient configures the official SDK with trimmed endpoint credentials and a bounded default HTTP timeout.
-// NewClient 用于使用清理后的端点凭据配置官方 SDK，并提供有界的默认 HTTP 超时。
+// NewClient configures the official SDK with trimmed endpoint credentials and a bounded connection pool.
+// NewClient 用于使用清理后的端点凭据配置官方 SDK，并提供连接数有界的连接池。
 func NewClient(endpoint, apiKey, organization, project string, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 20 * time.Second}
+		httpClient = httpclient.SharedDefault()
 	}
 	trimmed := strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	opts := []option.RequestOption{option.WithHTTPClient(httpClient)}

@@ -122,6 +122,8 @@ var supportedEnvOverrideValuePaths = map[string][]string{
 	"VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT":     {"post_action.session_analysis_idle_timeout"},
 	"VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS":    {"post_action.session_analysis_history_turns"},
 	"VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS": {"post_action.session_analysis_max_input_tokens"},
+	"VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT":          {"post_action.session_analysis_timeout"},
+	"VMM_POST_ACTION_FAILURE_PASS_THRESHOLD":            {"post_action.failure_pass_threshold"},
 	"VMM_POST_ACTION_MAX_QUEUE_WORKERS":                 {"post_action.max_queue_workers"},
 	"VMM_MEMORY_REPLACE_SCOPE":                          {"memory_replace_scope"},
 	"VMM_PRE_CHECK_INTENT_TIMEOUT":                      {"pre_check.intent_timeout"},
@@ -472,6 +474,12 @@ func (c Config) Validate() error {
 	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
 		return errors.New("post_action.session_analysis_max_input_tokens must be > 0")
 	}
+	if c.PostAction.SessionAnalysisTimeout.Duration < 2*time.Minute {
+		return errors.New("post_action.session_analysis_timeout must be >= 2m")
+	}
+	if c.PostAction.FailurePassThreshold <= 0 {
+		return errors.New("post_action.failure_pass_threshold must be > 0")
+	}
 	if c.PostAction.MaxQueueWorkers <= 0 {
 		return errors.New("post_action.max_queue_workers must be > 0")
 	}
@@ -752,6 +760,18 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", &cfg.PostAction.SessionAnalysisIdleTimeout)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS", &cfg.PostAction.SessionAnalysisHistoryTurns)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", &cfg.PostAction.SessionAnalysisMaxInputTokens)
+	if envOverrideAllowed(referencedEnvKeys, "VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT") && strings.TrimSpace(os.Getenv("VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT")) != "" {
+		// The explicit marker prevents a parsed zero duration from being silently replaced during normalization.
+		// 显式标记用于防止已解析的零时长在归一化时被静默替换。
+		cfg.PostAction.sessionAnalysisTimeoutSet = true
+	}
+	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT", &cfg.PostAction.SessionAnalysisTimeout)
+	if envOverrideAllowed(referencedEnvKeys, "VMM_POST_ACTION_FAILURE_PASS_THRESHOLD") && strings.TrimSpace(os.Getenv("VMM_POST_ACTION_FAILURE_PASS_THRESHOLD")) != "" {
+		// The explicit marker preserves invalid zero or negative thresholds for fail-closed validation.
+		// 显式标记用于保留无效的零值或负数阈值，以便执行封闭校验。
+		cfg.PostAction.failurePassThresholdSet = true
+	}
+	setInt("VMM_POST_ACTION_FAILURE_PASS_THRESHOLD", &cfg.PostAction.FailurePassThreshold)
 	setInt("VMM_POST_ACTION_MAX_QUEUE_WORKERS", &cfg.PostAction.MaxQueueWorkers)
 	setString("VMM_MEMORY_REPLACE_SCOPE", &cfg.MemoryReplaceScope)
 	setDuration("VMM_PRE_CHECK_INTENT_TIMEOUT", &cfg.PreCheck.IntentTimeout)

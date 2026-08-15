@@ -134,6 +134,109 @@ ORDER BY id ASC
 	return rows, nil
 }
 
+// RecordTurnAnalysisFailure atomically increments one PostAction failure counter and moves terminal attempts out of the pending set.
+// RecordTurnAnalysisFailure 用于原子递增一条 PostAction 失败计数，并把终止尝试移出待处理集合。
+func (r *turnRepository) RecordTurnAnalysisFailure(
+	ctx context.Context,
+	session logicdomain.SessionRef,
+	turnID uint64,
+	stage string,
+	errorMessage string,
+	failurePassThreshold int,
+	forcePass bool,
+) (logicdomain.TurnAnalysisFailureResult, error) {
+	if r == nil || r.shared == nil || r.shared.pool == nil {
+		return logicdomain.TurnAnalysisFailureResult{}, fmt.Errorf("postgres store is not initialized")
+	}
+	if session.SessionID == 0 {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if turnID == 0 {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+	}
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "stage", Message: "must not be empty"}
+	}
+	if failurePassThreshold <= 0 {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "failure_pass_threshold", Message: "must be > 0"}
+	}
+	errorMessage = storageutil.TruncateUTF8Bytes(errorMessage, 4000)
+
+	// Keep the counter mutation and terminal pending-to-pass transition in one data-modifying CTE so no retry can observe a half-applied decision.
+	// 将计数变更与终止 pending-to-pass 迁移放进同一个数据修改 CTE，避免任何重试看见半应用判定。
+	callCtx, cancel := r.turnQueryContext(ctx)
+	defer cancel()
+	sqlText := fmt.Sprintf(`
+WITH target_turn AS (
+  SELECT id, session_id
+  FROM %s
+  WHERE id = $1 AND session_id = $2 AND extracted_status = $3
+  FOR UPDATE
+), recorded AS (
+  INSERT INTO %s (
+    turn_id, session_id, stage, attempt_count, terminal_status, last_error, last_attempt_at
+  )
+  SELECT id, session_id, $4, 1,
+    CASE WHEN $5 THEN $6 WHEN 1 >= $7 THEN $8 ELSE $9 END,
+    $10, $11
+  FROM target_turn
+  ON CONFLICT (turn_id, stage) DO UPDATE SET
+    attempt_count = %s.attempt_count + 1,
+    terminal_status = CASE
+      WHEN $5 THEN $6
+      WHEN %s.attempt_count + 1 >= $7 THEN $8
+      ELSE $9
+    END,
+    last_error = EXCLUDED.last_error,
+    last_attempt_at = EXCLUDED.last_attempt_at
+  WHERE %s.terminal_status = $9
+  RETURNING attempt_count, terminal_status
+), passed AS (
+  UPDATE %s AS turns
+  SET extracted_status = $12,
+      updated_at = GREATEST(turns.updated_at, $11)
+  FROM recorded
+  WHERE turns.id = $1
+    AND turns.session_id = $2
+    AND turns.extracted_status = $3
+    AND recorded.terminal_status IN ($6, $8)
+  RETURNING turns.id
+)
+SELECT attempt_count, terminal_status
+FROM recorded
+`, r.turnsTable(), r.turnAnalysisFailuresTable(), r.turnAnalysisFailuresTable(), r.turnAnalysisFailuresTable(), r.turnAnalysisFailuresTable(), r.turnsTable())
+	var (
+		attemptCount int
+		status       string
+	)
+	err := r.shared.pool.QueryRow(
+		callCtx,
+		strings.TrimSpace(sqlText),
+		int64(turnID),
+		int64(session.SessionID),
+		logicdomain.TurnExtractedStatusPending,
+		stage,
+		forcePass,
+		logicdomain.TurnAnalysisFailureStatusPassedUncertain,
+		failurePassThreshold,
+		logicdomain.TurnAnalysisFailureStatusPassed,
+		logicdomain.TurnAnalysisFailureStatusRetrying,
+		errorMessage,
+		time.Now().UTC(),
+		logicdomain.TurnExtractedStatusPassed,
+	).Scan(&attemptCount, &status)
+	if err != nil {
+		return logicdomain.TurnAnalysisFailureResult{}, fmt.Errorf("record postgres turn analysis failure: %w", err)
+	}
+	status = strings.TrimSpace(status)
+	return logicdomain.TurnAnalysisFailureResult{
+		AttemptCount: attemptCount,
+		Status:       status,
+		Passed:       status == logicdomain.TurnAnalysisFailureStatusPassed || status == logicdomain.TurnAnalysisFailureStatusPassedUncertain,
+	}, nil
+}
+
 // MarkTurnAsCorrupted marks one pending turn whose dehydrated payload cannot be decoded as done so queued analysis can continue.
 // MarkTurnAsCorrupted 用于将无法解码脱水载荷的 pending turn 标记为已处理，让排队分析可以继续推进。
 func (r *turnRepository) MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error {
@@ -609,6 +712,12 @@ func (s *Store) LoadPendingSessionTurns(ctx context.Context, session logicdomain
 // MarkTurnAsCorrupted 用于委托给 turn repository，让排队 post-action worker 能消化 PostgreSQL 中不可读的 turn。
 func (s *Store) MarkTurnAsCorrupted(ctx context.Context, session logicdomain.SessionRef, turnID uint64) error {
 	return s.repos.turns.MarkTurnAsCorrupted(ctx, session, turnID)
+}
+
+// RecordTurnAnalysisFailure delegates durable PostAction failure accounting to the turn repository.
+// RecordTurnAnalysisFailure 用于把持久化 PostAction 失败计数委托给 turn repository。
+func (s *Store) RecordTurnAnalysisFailure(ctx context.Context, session logicdomain.SessionRef, turnID uint64, stage, errorMessage string, failurePassThreshold int, forcePass bool) (logicdomain.TurnAnalysisFailureResult, error) {
+	return s.repos.turns.RecordTurnAnalysisFailure(ctx, session, turnID, stage, errorMessage, failurePassThreshold, forcePass)
 }
 
 // LoadRecentSessionTurns delegates to the turn repository so existing port interfaces continue to compile while ownership moves inward.

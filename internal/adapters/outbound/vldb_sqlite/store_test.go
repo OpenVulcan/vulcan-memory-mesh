@@ -8439,3 +8439,76 @@ func TestParameterizedMemoryContextEdgesReplaceStatementsBindExtractedLabels(t *
 		}
 	}
 }
+
+// TestStoreRecordTurnAnalysisFailureProjectsTerminalPass verifies the fifth durable failure is projected as one terminal Pass result.
+// TestStoreRecordTurnAnalysisFailureProjectsTerminalPass 用于验证第 5 次持久化失败会投影为终止 Pass 结果。
+func TestStoreRecordTurnAnalysisFailureProjectsTerminalPass(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	var capturedExecute *fakeExecuteRequest
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
+		capturedExecute = req
+		return &fakeExecuteResponse{Success: true, RowsChanged: 1}, nil
+	}
+	fake.queryJSONFunc = func(_ context.Context, req *fakeQueryRequest) (*fakeQueryJSONResponse, error) {
+		if !strings.Contains(req.GetSql(), "FROM vmm_turn_analysis_failures") {
+			t.Fatalf("unexpected turn-analysis failure query: %q", req.GetSql())
+		}
+		return &fakeQueryJSONResponse{
+			JsonData: `[{"turn_id":77,"session_id":88,"stage":"post_action","attempt_count":5,"terminal_status":"passed"}]`,
+			RowCount: 1,
+		}, nil
+	}
+
+	result, err := store.RecordTurnAnalysisFailure(
+		context.Background(),
+		logicdomain.SessionRef{SessionID: 88},
+		77,
+		"post_action",
+		"slow model timed out",
+		5,
+		false,
+	)
+	if err != nil {
+		t.Fatalf("RecordTurnAnalysisFailure returned error: %v", err)
+	}
+	if !result.Passed || result.AttemptCount != 5 || result.Status != logicdomain.TurnAnalysisFailureStatusPassed {
+		t.Fatalf("unexpected terminal failure result: %+v", result)
+	}
+	if capturedExecute == nil {
+		t.Fatal("expected failure UPSERT to be captured")
+	}
+	if !strings.Contains(capturedExecute.GetSql(), "attempt_count = vmm_turn_analysis_failures.attempt_count + 1") ||
+		!strings.Contains(capturedExecute.GetSql(), "vmm_turn_analysis_failures.attempt_count + 1 >= ?") {
+		t.Fatalf("failure UPSERT does not atomically increment and compare the threshold: %q", capturedExecute.GetSql())
+	}
+}
+
+// TestMigrateSQLiteSchema21To22InstallsFailureLifecycleTriggers verifies upgrade SQL installs both terminal Pass and success cleanup transitions.
+// TestMigrateSQLiteSchema21To22InstallsFailureLifecycleTriggers 用于验证升级 SQL 同时安装终止 Pass 与成功清理状态迁移。
+func TestMigrateSQLiteSchema21To22InstallsFailureLifecycleTriggers(t *testing.T) {
+	fake := &fakeSQLiteDatabase{}
+	store := &Store{database: fake, timeout: time.Second}
+
+	var capturedScript string
+	fake.executeScriptFunc = func(_ context.Context, req *fakeExecuteRequest) (*fakeExecuteResponse, error) {
+		capturedScript = req.GetSql()
+		return &fakeExecuteResponse{Success: true, StatementsExecuted: 5}, nil
+	}
+
+	if err := migrateSQLiteSchema21To22(context.Background(), store); err != nil {
+		t.Fatalf("migrateSQLiteSchema21To22 returned error: %v", err)
+	}
+	for _, requiredSQL := range []string{
+		"CREATE TABLE IF NOT EXISTS vmm_turn_analysis_failures",
+		"CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_failure_pass",
+		"CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_failure_update_pass",
+		"CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_success_clear",
+		"DELETE FROM vmm_turn_analysis_failures",
+	} {
+		if !strings.Contains(capturedScript, requiredSQL) {
+			t.Fatalf("schema 21-to-22 migration is missing %q: %s", requiredSQL, capturedScript)
+		}
+	}
+}

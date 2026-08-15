@@ -402,8 +402,127 @@ func validateLLMRouteConfigs(routes []LLMRouteConfig) error {
 		if err := validateLLMRouteWeightConfig(label, route.Weights); err != nil {
 			return err
 		}
+		if err := validateLLMDisabledReasoningProjection(label, route); err != nil {
+			return err
+		}
 	}
 	return nil
+}
+
+// validateLLMDisabledReasoningProjection requires every generic OpenAI-compatible route to declare the exact request field that its adapter will force to the provider's disabled value.
+// validateLLMDisabledReasoningProjection 用于要求每条通用 OpenAI 兼容路由声明精确请求字段，适配器会把该字段强制改写为供应商关闭值。
+//
+// Parameters:
+// 参数：
+//   - label: stable configuration path used in startup diagnostics.
+//   - label：启动诊断使用的稳定配置路径。
+//   - route: normalized standalone LLM route including route-level and exact-model parameters.
+//   - route：已规范化的独立 LLM 路由，包含路由级与精确模型级参数。
+//
+// Returns:
+// 返回值：
+//   - error: nil for adapters that intrinsically force no-thinking or for an OpenAI route with one registered projection key; otherwise a deterministic startup error.
+//   - error：适配器内建强制无思考，或 OpenAI 路由含一个已注册投影键时为空；否则返回确定性的启动错误。
+func validateLLMDisabledReasoningProjection(label string, route LLMRouteConfig) error {
+	if !isOpenAIProvider(route.Provider) {
+		// Managed Responses, native OpenRouter, and Google AI Studio own unconditional no-thinking
+		// projections in their adapters and therefore need no user-supplied projection marker.
+		// 托管 Responses、原生 OpenRouter 与 Google AI Studio 的适配器无条件持有无思考投影，
+		// 因此不需要用户提供投影标记。
+		return nil
+	}
+	modelParams := route.ModelParams[strings.TrimSpace(route.Model)]
+	if hasLLMDisabledReasoningProjection(route.Params) || hasLLMDisabledReasoningProjection(modelParams) {
+		return nil
+	}
+	return fmt.Errorf("%s must declare a disabled-reasoning projection in params or model_params using reasoning_effort, reasoning.effort, reasoning.enabled, thinking.type, or enable_thinking", label)
+}
+
+// hasLLMDisabledReasoningProjection reports whether one parameter map declares a request field that the OpenAI-compatible adapter forcibly projects to its disabled value.
+// hasLLMDisabledReasoningProjection 用于判断参数映射是否声明了一个会被 OpenAI 兼容适配器强制投影为关闭值的请求字段。
+//
+// Parameters:
+// 参数：
+//   - params: route-level or exact-model provider parameter map.
+//   - params：路由级或精确模型级供应商参数映射。
+//
+// Returns:
+// 返回值：
+//   - bool: true only when one normalized key belongs to the closed no-thinking projection vocabulary.
+//   - bool：仅当一个规范化键属于封闭无思考投影词汇时返回 true。
+func hasLLMDisabledReasoningProjection(params map[string]any) bool {
+	for rawKey, rawValue := range params {
+		switch strings.ToLower(strings.TrimSpace(rawKey)) {
+		case "reasoning_effort", "enable_thinking":
+			return true
+		case "reasoning":
+			if hasExactReasoningObjectDialect(rawValue) {
+				return true
+			}
+		case "thinking":
+			if providerHintObjectHasKey(rawValue, "type") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// hasExactReasoningObjectDialect reports whether one reasoning object declares exactly one supported disable control.
+// hasExactReasoningObjectDialect 用于判断 reasoning 对象是否只声明了一个受支持的关闭控制字段。
+//
+// Parameters:
+// 参数：
+//   - value: configured provider hint expected to be a string-keyed object.
+//   - value：预期为字符串键对象的 Provider hint 配置值。
+//
+// Returns:
+// 返回值：
+//   - bool: true only for an object containing effort or enabled, but not both.
+//   - bool：仅当对象包含 effort 或 enabled 之一且不同时包含两者时返回 true。
+func hasExactReasoningObjectDialect(value any) bool {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	hasEffort := false
+	hasEnabled := false
+	for rawKey := range object {
+		switch strings.ToLower(strings.TrimSpace(rawKey)) {
+		case "effort":
+			hasEffort = true
+		case "enabled":
+			hasEnabled = true
+		}
+	}
+	return hasEffort != hasEnabled
+}
+
+// providerHintObjectHasKey reports whether one string-keyed hint object contains a normalized field.
+// providerHintObjectHasKey 用于判断字符串键 hint 对象是否包含一个规范化字段。
+//
+// Parameters:
+// 参数：
+//   - value: configured provider hint object.
+//   - value：配置的 Provider hint 对象。
+//   - expectedKey: normalized field that declares the wire dialect.
+//   - expectedKey：用于声明线路方言的规范化字段。
+//
+// Returns:
+// 返回值：
+//   - bool: true only when the object contains that field after case folding and trimming.
+//   - bool：仅当对象在大小写折叠与去空格后包含该字段时返回 true。
+func providerHintObjectHasKey(value any, expectedKey string) bool {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return false
+	}
+	for rawKey := range object {
+		if strings.EqualFold(strings.TrimSpace(rawKey), expectedKey) {
+			return true
+		}
+	}
+	return false
 }
 
 // validateLLMRouteWeightConfig rejects negative per-scene route weights so runtime ordering never has to reason about malformed slots.

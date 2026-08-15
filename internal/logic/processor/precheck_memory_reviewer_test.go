@@ -15,14 +15,23 @@ import (
 // TestPreCheckMemoryReviewerSendsExactStructuredOutput verifies the second-stage pre-check carries its decoder-derived schema.
 // TestPreCheckMemoryReviewerSendsExactStructuredOutput 用于验证第二阶段预检查携带由解码结构生成的 Schema。
 func TestPreCheckMemoryReviewerSendsExactStructuredOutput(t *testing.T) {
-	llm := &stubProfileMergerLLM{response: logicports.LLMResponse{Content: `{"selected_candidate_numbers":[]}`}}
+	llm := &stubProfileMergerLLM{response: logicports.LLMResponse{
+		Content:   `{"selected_candidate_numbers":[]}`,
+		Model:     "provider-precheck-l2",
+		RequestID: "req-precheck-l2",
+		Usage:     logicdomain.LLMUsage{PromptTokens: 70, CompletionTokens: 5, TotalTokens: 75, CachedInputTokens: 50},
+	}}
 	prompts := &stubProfilePromptSource{prompt: "return json only"}
 	reviewer := NewPreCheckMemoryReviewer(llm, prompts, "test-model")
 
-	if _, err := reviewer.Review(context.Background(), logicdomain.PreCheckMemoryReviewInput{}); err != nil {
+	result, err := reviewer.Review(context.Background(), logicdomain.PreCheckMemoryReviewInput{})
+	if err != nil {
 		t.Fatalf("review pre-check memory: %v", err)
 	}
 	assertStructuredOutputRequest(t, llm.request, "vmm_precheck_memory_review")
+	if result.LLMExecution == nil || result.LLMExecution.ConfiguredModel != "test-model" || result.LLMExecution.ResponseModel != "provider-precheck-l2" || result.LLMExecution.RequestID != "req-precheck-l2" || result.LLMExecution.Usage.CachedInputTokens != 50 {
+		t.Fatalf("unexpected pre-check L2 execution metadata: %+v", result.LLMExecution)
+	}
 }
 
 // TestParsePreCheckMemoryReviewResponseAcceptsKnownNumbers verifies the reviewer parser keeps only valid deduplicated candidate numbers from the current candidate set.

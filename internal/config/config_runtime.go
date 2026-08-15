@@ -261,6 +261,12 @@ func (c *Config) Normalize() {
 	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
 		c.PostAction.SessionAnalysisMaxInputTokens = 6000
 	}
+	if !c.PostAction.sessionAnalysisTimeoutSet && c.PostAction.SessionAnalysisTimeout.Duration <= 0 {
+		c.PostAction.SessionAnalysisTimeout = Duration{3 * time.Minute}
+	}
+	if !c.PostAction.failurePassThresholdSet && c.PostAction.FailurePassThreshold <= 0 {
+		c.PostAction.FailurePassThreshold = 5
+	}
 	c.MemoryReplaceScope = normalizeMemoryReplaceScopeValue(c.MemoryReplaceScope)
 	if c.Retention.RecycleScanInterval.Duration <= 0 {
 		c.Retention.RecycleScanInterval = Duration{30 * time.Minute}

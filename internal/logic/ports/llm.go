@@ -63,7 +63,10 @@ type LLMRequest struct {
 type LLMResponse struct {
 	Content string
 	Model   string
-	Usage   logicdomain.LLMUsage
+	// RequestID is the stable cross-process or provider correlation identifier for this physical call.
+	// RequestID 是本次物理调用的稳定跨进程或供应商关联标识。
+	RequestID string
+	Usage     logicdomain.LLMUsage
 }
 
 // LLMClient is the port that lets processors call a model without binding to a specific provider SDK.

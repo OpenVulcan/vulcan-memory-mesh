@@ -8,6 +8,9 @@ type IntentResult struct {
 	Queries    []string
 	NeedMemory bool
 	Reason     string
+	// LLMExecution retains the physical response identity without exposing it through business JSON.
+	// LLMExecution 用于保留物理响应身份，同时不通过业务 JSON 暴露。
+	LLMExecution *LLMExecutionMetadata `json:"-"`
 }
 
 // LLMUsage stores token accounting returned by model providers in the internal response contract.
@@ -16,4 +19,34 @@ type LLMUsage struct {
 	PromptTokens     int
 	CompletionTokens int
 	TotalTokens      int
+	// CachedInputTokens is the provider-reported cache-read portion of prompt tokens.
+	// CachedInputTokens 是供应商上报的提示词 token 中缓存读取部分。
+	CachedInputTokens int
+	// ReasoningTokens is the provider-reported hidden reasoning portion of completion tokens.
+	// ReasoningTokens 是供应商上报的补全 token 中隐藏推理部分。
+	ReasoningTokens int
+}
+
+// LLMExecutionMetadata preserves the identity and token facts returned by one physical LLM call across later parsing, review, vector, and relational stages.
+// LLMExecutionMetadata 用于在后续解析、评审、向量与关系存储阶段保留一次物理 LLM 调用返回的身份与 token 事实。
+type LLMExecutionMetadata struct {
+	// Purpose is the stable VMM processing scene that owns the call.
+	// Purpose 是持有该调用的稳定 VMM 处理场景。
+	Purpose string
+
+	// ConfiguredModel is the model identity selected before dispatch.
+	// ConfiguredModel 是分派前选定的模型身份。
+	ConfiguredModel string
+
+	// ResponseModel is the physical model identity reported by the provider response.
+	// ResponseModel 是供应商响应上报的物理模型身份。
+	ResponseModel string
+
+	// RequestID is the stable cross-process or provider correlation identifier.
+	// RequestID 是稳定的跨进程或供应商关联标识。
+	RequestID string
+
+	// Usage preserves complete provider token accounting for this call.
+	// Usage 用于保留该调用的完整供应商 token 统计。
+	Usage LLMUsage
 }

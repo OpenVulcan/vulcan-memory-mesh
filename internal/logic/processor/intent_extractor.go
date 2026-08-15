@@ -72,16 +72,18 @@ func (e *IntentExtractor) Extract(ctx context.Context, turns []logicdomain.PreCh
 	if err != nil {
 		return logicdomain.IntentResult{}, err
 	}
+	execution := llmExecutionMetadata("precheck_l1_main", e.model, resp)
 
 	// Parse and clamp the resulting intent payload before returning it to the use case layer.
 	// 解析并裁剪返回的意图载荷，再交还给用例层。
 	intent, err := parseIntentResponse(resp.Content)
 	if err != nil {
-		return logicdomain.IntentResult{}, err
+		return logicdomain.IntentResult{}, attachLLMExecutionToInvalidOutput(err, execution)
 	}
 	if len(intent.Queries) > e.maxKws {
 		intent.Queries = intent.Queries[:e.maxKws]
 	}
+	intent.LLMExecution = &execution
 	return intent, nil
 }
 

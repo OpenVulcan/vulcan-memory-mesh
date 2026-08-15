@@ -161,6 +161,13 @@ func TestPreCheckExecuteLogsIntentInvalidOutput(t *testing.T) {
 			Scene:   "precheck_l1_main",
 			Message: "json decode failed",
 			Raw:     rawOutput,
+			Execution: &logicdomain.LLMExecutionMetadata{
+				Purpose:         "precheck_l1_main",
+				ConfiguredModel: "Qwen/Qwen3-32B",
+				ResponseModel:   "provider-precheck-l1-model",
+				RequestID:       "req-invalid-precheck-l1",
+				Usage:           logicdomain.LLMUsage{PromptTokens: 100, CompletionTokens: 10, TotalTokens: 110, CachedInputTokens: 60},
+			},
 		},
 		model: "Qwen/Qwen3-32B",
 	}
@@ -198,8 +205,10 @@ func TestPreCheckExecuteLogsIntentInvalidOutput(t *testing.T) {
 	if !strings.Contains(logs, "llm_scene：\"precheck_l1_main\"") {
 		t.Fatalf("expected l1 scene in degraded log, got %s", logs)
 	}
-	if !strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
-		t.Fatalf("expected intent model in degraded log, got %s", logs)
+	for _, fragment := range []string{"configured_model", "Qwen/Qwen3-32B", "response_model", "provider-precheck-l1-model", "request_id", "req-invalid-precheck-l1", "cached_input_tokens", "reasoning_tokens"} {
+		if !strings.Contains(logs, fragment) {
+			t.Fatalf("expected physical intent field %q in degraded log, got %s", fragment, logs)
+		}
 	}
 	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
 		t.Fatalf("expected raw intent output in degraded log, got %s", logs)
@@ -230,6 +239,13 @@ func TestPreCheckExecuteLogsReviewerInvalidOutput(t *testing.T) {
 			Scene:   "precheck_l2_main",
 			Message: "json decode failed",
 			Raw:     rawOutput,
+			Execution: &logicdomain.LLMExecutionMetadata{
+				Purpose:         "precheck_l2_main",
+				ConfiguredModel: "Qwen/Qwen3-235B-A22B",
+				ResponseModel:   "provider-precheck-l2-model",
+				RequestID:       "req-invalid-precheck-l2",
+				Usage:           logicdomain.LLMUsage{PromptTokens: 300, CompletionTokens: 12, TotalTokens: 312, CachedInputTokens: 200},
+			},
 		},
 		model: "Qwen/Qwen3-235B-A22B",
 	}
@@ -285,8 +301,10 @@ func TestPreCheckExecuteLogsReviewerInvalidOutput(t *testing.T) {
 	if !strings.Contains(logs, "llm_scene：\"precheck_l2_main\"") {
 		t.Fatalf("expected l2 scene in degraded log, got %s", logs)
 	}
-	if !strings.Contains(logs, "model：\"Qwen/Qwen3-235B-A22B\"") {
-		t.Fatalf("expected reviewer model in degraded log, got %s", logs)
+	for _, fragment := range []string{"configured_model", "Qwen/Qwen3-235B-A22B", "response_model", "provider-precheck-l2-model", "request_id", "req-invalid-precheck-l2", "cached_input_tokens", "reasoning_tokens"} {
+		if !strings.Contains(logs, fragment) {
+			t.Fatalf("expected physical reviewer field %q in degraded log, got %s", fragment, logs)
+		}
 	}
 	if strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
 		t.Fatalf("expected l2 failure log to avoid intent model attribution, got %s", logs)

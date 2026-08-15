@@ -5,13 +5,37 @@ package openrouter
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
+
+// roundTripFunc adapts one test callback to http.RoundTripper without introducing a real network dependency.
+// roundTripFunc 用于把测试回调适配为 http.RoundTripper，避免引入真实网络依赖。
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+// RoundTrip forwards one request to the captured test callback.
+// RoundTrip 用于把单次请求转发给捕获的测试回调。
+//
+// Parameters:
+// 参数：
+//   - request: exact SDK-produced HTTP request.
+//   - request：SDK 生成的精确 HTTP 请求。
+//
+// Returns:
+// 返回值：
+//   - *http.Response: synthetic provider response returned by the callback.
+//   - *http.Response：回调返回的模拟供应商响应。
+//   - error: callback failure when request inspection or response construction fails.
+//   - error：请求检查或响应构造失败时的回调错误。
+func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
+	return f(request)
+}
 
 // assertOpenRouterDefaultHeaders verifies every OpenRouter SDK request carries the fixed app attribution headers required by the provider taxonomy.
 // assertOpenRouterDefaultHeaders 用于验证每个 OpenRouter SDK 请求都携带 provider 分类协议要求的固定应用归因 header。
@@ -31,6 +55,34 @@ func assertOpenRouterDefaultHeaders(t *testing.T, r *http.Request) bool {
 		}
 	}
 	return ok
+}
+
+// TestClientWithoutExplicitTimeoutPreservesCallerDeadlineOwnership verifies LLM and embedding clients do not regain a hidden SDK-wide timeout after the shared HTTP timeout is removed.
+// TestClientWithoutExplicitTimeoutPreservesCallerDeadlineOwnership 用于验证移除共享 HTTP 超时后，LLM 与向量客户端不会重新获得隐藏的 SDK 全局超时。
+func TestClientWithoutExplicitTimeoutPreservesCallerDeadlineOwnership(t *testing.T) {
+	deadlineObserved := make(chan bool, 1)
+	transport := roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		_, hasDeadline := request.Context().Deadline()
+		deadlineObserved <- hasDeadline
+		return &http.Response{
+			StatusCode: http.StatusOK,
+			Header:     http.Header{"Content-Type": []string{"application/json"}},
+			Body: io.NopCloser(strings.NewReader(
+				`{"id":"chatcmpl-no-timeout","object":"chat.completion","created":1,"model":"openrouter/test-chat","choices":[{"index":0,"message":{"role":"assistant","content":"ok"},"finish_reason":"stop"}],"usage":{"prompt_tokens":1,"completion_tokens":1,"total_tokens":2}}`,
+			)),
+			Request: request,
+		}, nil
+	})
+	client := &LLMClient{
+		client: NewClient("https://openrouter.invalid/api/v1", "test-key", 0, &http.Client{Transport: transport}),
+		model:  "openrouter/test-chat",
+	}
+	if _, err := client.Generate(context.Background(), appports.LLMRequest{UserPrompt: "hello"}); err != nil {
+		t.Fatalf("generate without SDK-global timeout: %v", err)
+	}
+	if <-deadlineObserved {
+		t.Fatal("non-positive OpenRouter timeout must not add an SDK-global request deadline")
+	}
 }
 
 // TestLLMClientGenerateUsesOpenRouterChatEndpoint verifies chat requests are sent through the OpenRouter SDK endpoint and mapped back into the internal LLM response.
@@ -67,6 +119,10 @@ func TestLLMClientGenerateUsesOpenRouterChatEndpoint(t *testing.T) {
 		if !ok || provider["allow_fallbacks"] != true {
 			t.Errorf("chat provider preferences = %#v", request["provider"])
 		}
+		reasoning, ok := request["reasoning"].(map[string]any)
+		if !ok || reasoning["effort"] != "none" {
+			t.Errorf("chat reasoning = %#v, want effort none", request["reasoning"])
+		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"id":"chatcmpl-test","object":"chat.completion","created":1,"model":"openrouter/test-chat","choices":[{"index":0,"message":{"role":"assistant","content":" ok "},"finish_reason":"stop"}],"usage":{"prompt_tokens":2,"completion_tokens":3,"total_tokens":5}}`))
 	}))
@@ -76,8 +132,9 @@ func TestLLMClientGenerateUsesOpenRouterChatEndpoint(t *testing.T) {
 		client: NewClient(server.URL+"/chat/completions", "test-key", time.Second, server.Client()),
 		model:  "openrouter/test-chat",
 		params: map[string]any{
-			"temperature": 0.3,
-			"provider":    map[string]any{"allow_fallbacks": true},
+			"temperature":      0.3,
+			"provider":         map[string]any{"allow_fallbacks": true},
+			"reasoning_effort": "high",
 		},
 	}
 	resp, err := client.Generate(context.Background(), appports.LLMRequest{SystemPrompt: "system", UserPrompt: "user"})

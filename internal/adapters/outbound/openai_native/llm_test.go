@@ -10,6 +10,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/openai/openai-go/v3"
+	"github.com/openai/openai-go/v3/shared"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 )
@@ -47,8 +49,12 @@ func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 		"org",
 		"proj",
 		map[string]any{
-			"enable_thinking": false,
-			"temperature":     0.1,
+			"Enable_Thinking":   true,
+			"Include_Reasoning": true,
+			"Reasoning_Effort":  "high",
+			"Reasoning":         map[string]any{"effort": "high"},
+			"Thinking":          map[string]any{"type": "enabled"},
+			"temperature":       0.1,
 		},
 		map[string]map[string]any{
 			"test-model": {
@@ -109,8 +115,24 @@ func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 	if gotBody["enable_thinking"] != false {
 		t.Fatalf("enable_thinking = %#v", gotBody["enable_thinking"])
 	}
-	if gotBody["include_reasoning"] != false {
-		t.Fatalf("include_reasoning = %#v", gotBody["include_reasoning"])
+	if _, exists := gotBody["include_reasoning"]; exists {
+		t.Fatalf("include_reasoning must not be treated as a no-thinking control: %#v", gotBody["include_reasoning"])
+	}
+	if gotBody["reasoning_effort"] != "none" {
+		t.Fatalf("reasoning_effort = %#v", gotBody["reasoning_effort"])
+	}
+	reasoning, ok := gotBody["reasoning"].(map[string]any)
+	if !ok || reasoning["effort"] != "none" {
+		t.Fatalf("reasoning = %#v", gotBody["reasoning"])
+	}
+	thinking, ok := gotBody["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v", gotBody["thinking"])
+	}
+	for _, nonCanonicalKey := range []string{"Enable_Thinking", "Include_Reasoning", "Reasoning_Effort", "Reasoning", "Thinking"} {
+		if _, exists := gotBody[nonCanonicalKey]; exists {
+			t.Fatalf("expected normalized no-thinking projection without %q, got %#v", nonCanonicalKey, gotBody)
+		}
 	}
 	responseFormat, ok := gotBody["response_format"].(map[string]any)
 	if !ok || responseFormat["type"] != "json_object" {
@@ -127,5 +149,94 @@ func TestLLMClientGenerateMapsRequestToSDK(t *testing.T) {
 	second, ok := messages[1].(map[string]any)
 	if !ok || second["role"] != "user" {
 		t.Fatalf("second message = %#v", messages[1])
+	}
+}
+
+// TestApplyProviderHintsPreservesDeclaredReasoningObjectDialect verifies enabled-false providers do not receive an unrelated effort field.
+// TestApplyProviderHintsPreservesDeclaredReasoningObjectDialect 用于验证 enabled-false 供应商不会收到无关的 effort 字段。
+func TestApplyProviderHintsPreservesDeclaredReasoningObjectDialect(t *testing.T) {
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel("test-model"),
+		Messages: buildChatMessages("system", "user"),
+	}
+	applyProviderHints(&params, map[string]any{"reasoning": map[string]any{"enabled": true}})
+
+	body, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal projected chat request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode projected chat request: %v", err)
+	}
+	reasoning, ok := decoded["reasoning"].(map[string]any)
+	if !ok || reasoning["enabled"] != false {
+		t.Fatalf("reasoning = %#v, body=%s", decoded["reasoning"], body)
+	}
+	if _, exists := reasoning["effort"]; exists {
+		t.Fatalf("reasoning effort must remain absent for enabled dialect: %s", body)
+	}
+}
+
+// TestApplyProviderHintsProjectsOnlyDeclaredNoThinkingField verifies one Chat-compatible provider is not sent an unrelated reasoning dialect when it declares only the Anthropic-style thinking switch.
+// TestApplyProviderHintsProjectsOnlyDeclaredNoThinkingField 用于验证仅声明 Anthropic 风格 thinking 开关的 Chat 兼容供应商不会收到无关的 reasoning 方言字段。
+func TestApplyProviderHintsProjectsOnlyDeclaredNoThinkingField(t *testing.T) {
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel("test-model"),
+		Messages: buildChatMessages("system", "user"),
+	}
+	applyProviderHints(&params, map[string]any{" Thinking ": map[string]any{"type": "enabled"}})
+
+	body, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal projected chat request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode projected chat request: %v", err)
+	}
+	thinking, ok := decoded["thinking"].(map[string]any)
+	if !ok || thinking["type"] != "disabled" {
+		t.Fatalf("thinking = %#v, body=%s", decoded["thinking"], body)
+	}
+	for _, absentKey := range []string{"reasoning_effort", "reasoning", "enable_thinking", "include_reasoning", " Thinking "} {
+		if _, exists := decoded[absentKey]; exists {
+			t.Fatalf("expected only declared thinking dialect without %q, body=%s", absentKey, body)
+		}
+	}
+}
+
+// TestApplyProviderHintsDropsUnregisteredReasoningControls verifies unknown extra fields cannot re-enable thinking after the declared switch is forced off.
+// TestApplyProviderHintsDropsUnregisteredReasoningControls 用于验证未知扩展字段无法在已声明开关被强制关闭后重新开启思考。
+func TestApplyProviderHintsDropsUnregisteredReasoningControls(t *testing.T) {
+	params := openai.ChatCompletionNewParams{
+		Model:    shared.ChatModel("test-model"),
+		Messages: buildChatMessages("system", "user"),
+	}
+	applyProviderHints(&params, map[string]any{
+		"reasoning_effort": "high",
+		"reasoning_budget": 8192,
+		"thinking-budget":  4096,
+		"vendor_option":    "retained",
+	})
+
+	body, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal projected chat request: %v", err)
+	}
+	var decoded map[string]any
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("decode projected chat request: %v", err)
+	}
+	if decoded["reasoning_effort"] != "none" {
+		t.Fatalf("reasoning_effort = %#v, body=%s", decoded["reasoning_effort"], body)
+	}
+	for _, absentKey := range []string{"reasoning_budget", "thinking-budget"} {
+		if _, exists := decoded[absentKey]; exists {
+			t.Fatalf("unregistered reasoning control %q must be discarded, body=%s", absentKey, body)
+		}
+	}
+	if decoded["vendor_option"] != "retained" {
+		t.Fatalf("unrelated provider extra must be retained, body=%s", body)
 	}
 }

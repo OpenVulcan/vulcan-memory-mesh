@@ -537,6 +537,13 @@ func TestProfileUseCaseApplyInstructionLogsReviewerInvalidOutput(t *testing.T) {
 			Scene:   "profile_instruction_main",
 			Message: "json decode failed",
 			Raw:     rawOutput,
+			Execution: &logicdomain.LLMExecutionMetadata{
+				Purpose:         "profile_instruction_main",
+				ConfiguredModel: "Qwen/Qwen3-32B",
+				ResponseModel:   "provider-profile-model",
+				RequestID:       "req-invalid-profile",
+				Usage:           logicdomain.LLMUsage{PromptTokens: 400, CompletionTokens: 20, TotalTokens: 420, CachedInputTokens: 250},
+			},
 		},
 		model: "Qwen/Qwen3-32B",
 	}
@@ -568,8 +575,10 @@ func TestProfileUseCaseApplyInstructionLogsReviewerInvalidOutput(t *testing.T) {
 	if !strings.Contains(logs, "llm_scene：\"profile_instruction_main\"") {
 		t.Fatalf("expected profile instruction scene in failure log, got %s", logs)
 	}
-	if !strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
-		t.Fatalf("expected reviewer model in failure log, got %s", logs)
+	for _, fragment := range []string{"configured_model", "Qwen/Qwen3-32B", "response_model", "provider-profile-model", "request_id", "req-invalid-profile", "cached_input_tokens", "reasoning_tokens"} {
+		if !strings.Contains(logs, fragment) {
+			t.Fatalf("expected physical reviewer field %q in failure log, got %s", fragment, logs)
+		}
 	}
 	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
 		t.Fatalf("expected raw reviewer output in failure log, got %s", logs)

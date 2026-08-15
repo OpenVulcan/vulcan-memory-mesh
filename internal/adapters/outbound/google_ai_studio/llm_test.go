@@ -31,7 +31,9 @@ func TestLLMClientGenerateMapsRequestToGeminiAPI(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{
 			"candidates":[{"content":{"role":"model","parts":[{"text":"{\"need_memory\":true}"}]}}],
-			"usageMetadata":{"promptTokenCount":11,"responseTokenCount":7,"totalTokenCount":18}
+			"modelVersion":"gemini-2.5-flash-001",
+			"responseId":"google-response-123",
+			"usageMetadata":{"promptTokenCount":11,"candidatesTokenCount":7,"cachedContentTokenCount":6,"thoughtsTokenCount":0,"totalTokenCount":18}
 		}`))
 	}))
 	defer ts.Close()
@@ -66,11 +68,14 @@ func TestLLMClientGenerateMapsRequestToGeminiAPI(t *testing.T) {
 	if strings.TrimSpace(resp.Content) == "" {
 		t.Fatal("expected non-empty content")
 	}
-	if resp.Usage.TotalTokens != 18 {
+	if resp.Usage.PromptTokens != 11 || resp.Usage.CompletionTokens != 7 || resp.Usage.TotalTokens != 18 || resp.Usage.CachedInputTokens != 6 || resp.Usage.ReasoningTokens != 0 {
 		t.Fatalf("unexpected usage: %#v", resp.Usage)
 	}
-	if resp.Model != "gemini-2.5-flash" {
+	if resp.Model != "gemini-2.5-flash-001" {
 		t.Fatalf("response model = %q", resp.Model)
+	}
+	if resp.RequestID != "google-response-123" {
+		t.Fatalf("response request id = %q", resp.RequestID)
 	}
 	if gotHeaders.Get("x-goog-api-key") != "google-key" {
 		t.Fatalf("api key header = %q", gotHeaders.Get("x-goog-api-key"))
@@ -104,6 +109,11 @@ func TestLLMClientGenerateMapsRequestToGeminiAPI(t *testing.T) {
 		if generationConfig["responseMimeType"] != "application/json" {
 			t.Fatalf("responseMimeType = %#v", generationConfig["responseMimeType"])
 		}
+	}
+	generationConfig, generationConfigOK := gotBody["generationConfig"].(map[string]any)
+	thinkingConfig, thinkingConfigOK := generationConfig["thinkingConfig"].(map[string]any)
+	if !generationConfigOK || !thinkingConfigOK || thinkingConfig["thinkingBudget"] != float64(0) {
+		t.Fatalf("thinkingConfig = %#v, want thinkingBudget 0", thinkingConfig)
 	}
 	contents, ok := gotBody["contents"].([]any)
 	if !ok || len(contents) != 1 {

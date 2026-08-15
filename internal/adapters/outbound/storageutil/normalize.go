@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/textutil"
@@ -129,6 +130,35 @@ func NormalizeStringList(values []string) []string {
 	}
 	sort.Strings(normalized)
 	return normalized
+}
+
+// TruncateUTF8Bytes normalizes invalid UTF-8 and truncates text to a byte ceiling without splitting one encoded rune.
+// TruncateUTF8Bytes 用于归一无效 UTF-8，并在不切断编码字符的前提下把文本限制到指定字节上限。
+//
+// Parameters:
+// 参数：
+// `value` is the storage-bound text and `maxBytes` is its inclusive serialized byte ceiling.
+// `value` 是待持久化文本，`maxBytes` 是其序列化字节上限。
+//
+// Returns:
+// 返回值：
+// A valid UTF-8 string whose encoded length never exceeds `maxBytes`.
+// 返回编码长度不超过 `maxBytes` 的有效 UTF-8 字符串。
+func TruncateUTF8Bytes(value string, maxBytes int) string {
+	if maxBytes <= 0 {
+		return ""
+	}
+	value = strings.ToValidUTF8(value, "\uFFFD")
+	if len(value) <= maxBytes {
+		return value
+	}
+	// boundary retreats only across continuation bytes, preserving the largest complete UTF-8 prefix under the byte ceiling.
+	// boundary 仅跨过续字节向前回退，从而保留字节上限以内最大的完整 UTF-8 前缀。
+	boundary := maxBytes
+	for boundary > 0 && !utf8.RuneStart(value[boundary]) {
+		boundary--
+	}
+	return value[:boundary]
 }
 
 // ParsePositiveUint64 parses one trimmed decimal identifier and rejects zero because persisted identifiers are strictly positive.

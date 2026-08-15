@@ -117,6 +117,12 @@ func buildSQLiteSchemaMigrationPlan() schemaMigrationPlan {
 				Name:        "add human-management recycle and operation tables",
 				Up:          migrateSQLiteSchema20To21,
 			},
+			{
+				FromVersion: 21,
+				ToVersion:   22,
+				Name:        "add durable turn-analysis failure state",
+				Up:          migrateSQLiteSchema21To22,
+			},
 		},
 	}
 }
@@ -586,6 +592,62 @@ COMMIT;
 `
 	if err := s.exec(ctx, script); err != nil {
 		return sqliteSchemaMigrationError("migrate sqlite schema 20 to 21", err)
+	}
+	return nil
+}
+
+// migrateSQLiteSchema21To22 adds the durable per-turn PostAction failure counter and terminal Pass transition.
+// migrateSQLiteSchema21To22 用于增加逐 turn 的持久化 PostAction 失败计数与终止 Pass 状态迁移。
+func migrateSQLiteSchema21To22(ctx context.Context, s *Store) error {
+	const script = `
+BEGIN IMMEDIATE;
+CREATE TABLE IF NOT EXISTS vmm_turn_analysis_failures (
+  turn_id BIGINT NOT NULL,
+  session_id BIGINT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  terminal_status TEXT NOT NULL DEFAULT 'retrying',
+  last_error TEXT NOT NULL DEFAULT '',
+  last_attempt_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (turn_id, stage),
+  FOREIGN KEY(turn_id) REFERENCES vmm_turn_records(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_analysis_failures_session ON vmm_turn_analysis_failures(session_id, terminal_status, turn_id);
+CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_failure_pass
+AFTER INSERT ON vmm_turn_analysis_failures
+WHEN NEW.terminal_status IN ('passed', 'passed_uncertain')
+BEGIN
+  UPDATE vmm_turn_records
+  SET extracted_status = 2,
+      updated_timestamp = CASE
+        WHEN updated_timestamp < NEW.last_attempt_timestamp THEN NEW.last_attempt_timestamp
+        ELSE updated_timestamp
+      END
+  WHERE id = NEW.turn_id AND session_id = NEW.session_id AND extracted_status = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_failure_update_pass
+AFTER UPDATE OF terminal_status, last_attempt_timestamp ON vmm_turn_analysis_failures
+WHEN NEW.terminal_status IN ('passed', 'passed_uncertain')
+BEGIN
+  UPDATE vmm_turn_records
+  SET extracted_status = 2,
+      updated_timestamp = CASE
+        WHEN updated_timestamp < NEW.last_attempt_timestamp THEN NEW.last_attempt_timestamp
+        ELSE updated_timestamp
+      END
+  WHERE id = NEW.turn_id AND session_id = NEW.session_id AND extracted_status = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_success_clear
+AFTER UPDATE OF extracted_status ON vmm_turn_records
+WHEN OLD.extracted_status = 0 AND NEW.extracted_status = 1
+BEGIN
+  DELETE FROM vmm_turn_analysis_failures
+  WHERE turn_id = NEW.id AND session_id = NEW.session_id;
+END;
+COMMIT;
+`
+	if err := s.exec(ctx, script); err != nil {
+		return sqliteSchemaMigrationError("migrate sqlite schema 21 to 22", err)
 	}
 	return nil
 }

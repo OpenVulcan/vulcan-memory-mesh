@@ -94,6 +94,9 @@ type ManualProfileInstructionReview struct {
 	AcceptedNodes []ManualProfileAcceptedNode
 	RetiredNodes  []ProfileRetireDecision
 	Reason        string
+	// LLMExecution retains the physical review response identity outside durable review JSON.
+	// LLMExecution 用于在持久化评审 JSON 之外保留物理评审响应身份。
+	LLMExecution *LLMExecutionMetadata `json:"-"`
 }
 
 // ManualProfileInstructionApplyResult stores the final nodes and retire decisions that were persisted after one manual profile instruction succeeded.

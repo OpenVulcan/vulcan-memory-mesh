@@ -610,6 +610,63 @@ func TestConfigValidateAcceptsExplicitRoutesAndEmbeddingKeys(t *testing.T) {
 	}
 }
 
+// TestConfigValidateRequiresOpenAIDisabledReasoningProjection verifies standalone generic Chat routes fail closed unless their exact no-thinking wire dialect is declared.
+// TestConfigValidateRequiresOpenAIDisabledReasoningProjection 用于验证独立通用 Chat 路由若未声明精确无思考线路方言则采用失败关闭策略。
+func TestConfigValidateRequiresOpenAIDisabledReasoningProjection(t *testing.T) {
+	// missing removes the only authoritative projection marker from an otherwise valid route.
+	// missing 从其他字段均有效的路由中移除唯一权威投影标记。
+	missing := newValidConfigForTest()
+	missing.LLM.Routes[0].Params = nil
+	missing.Normalize()
+	err := missing.Validate()
+	if err == nil || !strings.Contains(err.Error(), "must declare a disabled-reasoning projection") {
+		t.Fatalf("unexpected missing no-thinking projection error: %v", err)
+	}
+
+	// modelScoped proves an exact model_params declaration is accepted by the same route validator.
+	// modelScoped 证明精确 model_params 声明可被同一路由校验器接受。
+	modelScoped := newValidConfigForTest()
+	modelScoped.LLM.Routes[0].Params = nil
+	modelScoped.LLM.Routes[0].ModelParams = map[string]map[string]any{
+		"test-model": {"thinking": map[string]any{"type": "enabled"}},
+	}
+	modelScoped.Normalize()
+	if err := modelScoped.Validate(); err != nil {
+		t.Fatalf("validate model-scoped no-thinking projection: %v", err)
+	}
+
+	// visibilityOnly proves suppressing returned reasoning text is not accepted as disabling model reasoning.
+	// visibilityOnly 证明仅隐藏返回的推理文本不能被视为关闭模型推理。
+	visibilityOnly := newValidConfigForTest()
+	visibilityOnly.LLM.Routes[0].Params = map[string]any{"include_reasoning": false}
+	visibilityOnly.Normalize()
+	if err := visibilityOnly.Validate(); err == nil || !strings.Contains(err.Error(), "must declare a disabled-reasoning projection") {
+		t.Fatalf("unexpected visibility-only projection result: %v", err)
+	}
+
+	// ambiguousReasoning proves a route must select one exact reasoning object dialect.
+	// ambiguousReasoning 证明路由必须选择一个精确的 reasoning 对象方言。
+	ambiguousReasoning := newValidConfigForTest()
+	ambiguousReasoning.LLM.Routes[0].Params = map[string]any{
+		"reasoning": map[string]any{"effort": "none", "enabled": false},
+	}
+	ambiguousReasoning.Normalize()
+	if err := ambiguousReasoning.Validate(); err == nil || !strings.Contains(err.Error(), "must declare a disabled-reasoning projection") {
+		t.Fatalf("unexpected ambiguous reasoning projection result: %v", err)
+	}
+
+	// enabledDialect proves reasoning.enabled is a separately supported exact provider dialect.
+	// enabledDialect 证明 reasoning.enabled 是独立受支持的精确 Provider 方言。
+	enabledDialect := newValidConfigForTest()
+	enabledDialect.LLM.Routes[0].Params = map[string]any{
+		"reasoning": map[string]any{"enabled": true},
+	}
+	enabledDialect.Normalize()
+	if err := enabledDialect.Validate(); err != nil {
+		t.Fatalf("validate reasoning.enabled no-thinking projection: %v", err)
+	}
+}
+
 // TestConfigValidateAcceptsSiliconFlowRerankRoute verifies rerank route validation accepts the SiliconFlow provider alongside the existing DashScope provider.
 // TestConfigValidateAcceptsSiliconFlowRerankRoute 用于验证 rerank 路由校验在现有 DashScope 之外，也接受 SiliconFlow provider。
 func TestConfigValidateAcceptsSiliconFlowRerankRoute(t *testing.T) {
@@ -935,6 +992,8 @@ llm:
       endpoint: "https://api.openai.com/v1"
       api_keys: ["base-key"]
       model: "base-model"
+      params:
+        reasoning_effort: "none"
 embedding:
   provider: "openai"
   endpoint: "https://api.openai.com/v1"
@@ -1129,6 +1188,8 @@ func TestApplyEnvOverridesReportsInvalidTypedValuesWhenReferenced(t *testing.T) 
 		{name: "bool", key: "VMM_NOISE_ENABLED", value: "not-bool"},
 		{name: "duration", key: "VMM_GRPC_PRE_CHECK_TIMEOUT", value: "not-duration"},
 		{name: "dedupe-pool-int", key: "VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K", value: "not-int"},
+		{name: "postaction-timeout", key: "VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT", value: "not-duration"},
+		{name: "postaction-failure-threshold", key: "VMM_POST_ACTION_FAILURE_PASS_THRESHOLD", value: "not-int"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -1141,6 +1202,92 @@ func TestApplyEnvOverridesReportsInvalidTypedValuesWhenReferenced(t *testing.T) 
 			})
 			if !slices.Contains(failures, tc.key) {
 				t.Fatalf("parse failures = %#v, want %q", failures, tc.key)
+			}
+		})
+	}
+}
+
+// TestPostActionReliabilityConfigRejectsUnsafeValues verifies explicit invalid values fail closed instead of being normalized back to defaults.
+// TestPostActionReliabilityConfigRejectsUnsafeValues 用于验证显式无效值会封闭失败，而不是被归一化回默认值。
+func TestPostActionReliabilityConfigRejectsUnsafeValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "analysis timeout below minimum",
+			mutate: func(cfg *Config) {
+				cfg.PostAction.SessionAnalysisTimeout = Duration{Duration: 119 * time.Second}
+			},
+			wantErr: "post_action.session_analysis_timeout must be >= 2m",
+		},
+		{
+			name: "zero failure threshold",
+			mutate: func(cfg *Config) {
+				cfg.PostAction.FailurePassThreshold = 0
+			},
+			wantErr: "post_action.failure_pass_threshold must be > 0",
+		},
+		{
+			name: "negative failure threshold",
+			mutate: func(cfg *Config) {
+				cfg.PostAction.FailurePassThreshold = -1
+			},
+			wantErr: "post_action.failure_pass_threshold must be > 0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newValidConfigForTest()
+			cfg.Normalize()
+			tc.mutate(&cfg)
+			err := cfg.Validate()
+			if err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestPostActionReliabilityEnvOverridesPreserveExplicitUnsafeValues verifies typed environment overrides cannot be normalized back to defaults after parsing.
+// TestPostActionReliabilityEnvOverridesPreserveExplicitUnsafeValues 用于验证类型化环境变量覆盖在解析后不会被归一化回默认值。
+func TestPostActionReliabilityEnvOverridesPreserveExplicitUnsafeValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		key     string
+		value   string
+		wantErr string
+	}{
+		{
+			name:    "zero analysis timeout",
+			key:     "VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT",
+			value:   "0s",
+			wantErr: "post_action.session_analysis_timeout must be >= 2m",
+		},
+		{
+			name:    "zero failure threshold",
+			key:     "VMM_POST_ACTION_FAILURE_PASS_THRESHOLD",
+			value:   "0",
+			wantErr: "post_action.failure_pass_threshold must be > 0",
+		},
+		{
+			name:    "negative failure threshold",
+			key:     "VMM_POST_ACTION_FAILURE_PASS_THRESHOLD",
+			value:   "-1",
+			wantErr: "post_action.failure_pass_threshold must be > 0",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Setenv(tc.key, tc.value)
+			cfg := newValidConfigForTest()
+			if failures := applyEnvOverrides(&cfg, map[string]struct{}{tc.key: {}}); len(failures) != 0 {
+				t.Fatalf("applyEnvOverrides() failures = %#v", failures)
+			}
+			cfg.Normalize()
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), tc.wantErr) {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.wantErr)
 			}
 		})
 	}
@@ -1671,6 +1818,8 @@ llm:
       endpoint: "https://api.openai.com/v1"
       api_keys: ["base-key"]
       model: "base-model"
+      params:
+        reasoning_effort: "none"
 embedding:
   provider: "openai"
   endpoint: "https://api.openai.com/v1"
@@ -1744,6 +1893,8 @@ llm:
       endpoint: "https://api.openai.com/v1"
       api_keys: ["base-key"]
       model: "base-model"
+      params:
+        reasoning_effort: "none"
 embedding:
   provider: "openai"
   endpoint: "https://api.openai.com/v1"
@@ -2010,6 +2161,7 @@ func newValidConfigForTest() Config {
 		Endpoint: "https://api.openai.com/v1",
 		APIKeys:  []string{"test-key"},
 		Model:    "test-model",
+		Params:   map[string]any{"reasoning_effort": "none"},
 	}}
 	cfg.Embedding.Endpoint = "https://api.openai.com/v1"
 	cfg.Embedding.APIKeys = []string{"test-key"}

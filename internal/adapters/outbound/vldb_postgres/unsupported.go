@@ -56,6 +56,12 @@ func (unsupportedOperations) LoadPendingSessionTurns(context.Context, logicdomai
 	return nil, unsupportedOperationError("LoadPendingSessionTurns")
 }
 
+// RecordTurnAnalysisFailure rejects PostgreSQL failure accounting until the relational write workflow is fully ported.
+// RecordTurnAnalysisFailure 用于在 PostgreSQL 关系写入工作流完整迁移前显式拒绝失败计数。
+func (unsupportedOperations) RecordTurnAnalysisFailure(context.Context, logicdomain.SessionRef, uint64, string, string, int, bool) (logicdomain.TurnAnalysisFailureResult, error) {
+	return logicdomain.TurnAnalysisFailureResult{}, unsupportedOperationError("RecordTurnAnalysisFailure")
+}
+
 // LoadRecentSessionTurns rejects PostgreSQL recent-turn loading until the relational read workflow is fully ported.
 // LoadRecentSessionTurns 用于在 PostgreSQL 关系读取工作流完整迁移前，显式拒绝最近 turn 加载。
 func (unsupportedOperations) LoadRecentSessionTurns(context.Context, logicdomain.SessionRef, int) ([]logicdomain.SessionTurnRecord, error) {

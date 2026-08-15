@@ -59,6 +59,9 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 		params.ResponseFormat = responseFormat
 	}
 	applyProviderHints(&params, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
+	// OpenRouter must reject the route if its selected model cannot honor reasoning effort none.
+	// 如果选中的模型无法遵守 reasoning effort none，OpenRouter 必须拒绝该路由。
+	ensureReasoning(&params).Effort = optionalValue(components.Effort("none"))
 
 	// Execute through the SDK so transport, auth, and future OpenRouter schema changes stay isolated in this outbound adapter.
 	// 通过 SDK 执行请求，让传输、鉴权和未来 OpenRouter schema 变化都被隔离在当前出站适配器内。
@@ -80,11 +83,20 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 			CompletionTokens: int(resp.ChatResult.Usage.CompletionTokens),
 			TotalTokens:      int(resp.ChatResult.Usage.TotalTokens),
 		}
+		if details, ok := resp.ChatResult.Usage.PromptTokensDetails.GetOrZero(); ok && details.CachedTokens != nil {
+			usage.CachedInputTokens = int(*details.CachedTokens)
+		}
+		if details, ok := resp.ChatResult.Usage.CompletionTokensDetails.GetOrZero(); ok {
+			if reasoningTokens, present := details.ReasoningTokens.GetOrZero(); present {
+				usage.ReasoningTokens = int(reasoningTokens)
+			}
+		}
 	}
 	return appports.LLMResponse{
-		Content: content,
-		Model:   model,
-		Usage:   usage,
+		Content:   content,
+		Model:     strings.TrimSpace(resp.ChatResult.Model),
+		RequestID: strings.TrimSpace(resp.ChatResult.ID),
+		Usage:     usage,
 	}, nil
 }
 

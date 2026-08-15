@@ -70,17 +70,20 @@ func (a *TurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalys
 	if err != nil {
 		return logicdomain.TurnAnalysis{}, err
 	}
+	execution := llmExecutionMetadata("postaction_l1_main", a.model, resp)
 	analysis, err := parseTurnAnalysisResponse(resp.Content)
 	if err != nil {
-		return logicdomain.TurnAnalysis{}, err
+		return logicdomain.TurnAnalysis{}, attachLLMExecutionToInvalidOutput(err, execution)
 	}
 	if analysis.TurnID != input.TargetTurn.TurnID {
 		return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{
-			Scene:   "postaction_l1_main",
-			Message: fmt.Sprintf("turn_id mismatch: got %d want %d", analysis.TurnID, input.TargetTurn.TurnID),
-			Raw:     resp.Content,
+			Scene:     "postaction_l1_main",
+			Message:   fmt.Sprintf("turn_id mismatch: got %d want %d", analysis.TurnID, input.TargetTurn.TurnID),
+			Raw:       resp.Content,
+			Execution: &execution,
 		}
 	}
+	analysis.LLMExecutions = []logicdomain.LLMExecutionMetadata{execution}
 	return analysis, nil
 }
 

@@ -49,8 +49,8 @@ func TestRuntimeOwnsSQLiteAndLanceDB(t *testing.T) {
 	if err != nil {
 		t.Fatalf("query controller sqlite schema version: %v", err)
 	}
-	if schemaVersion != 21 {
-		t.Fatalf("sqlite schema version = %d, want 21", schemaVersion)
+	if schemaVersion != 22 {
+		t.Fatalf("sqlite schema version = %d, want 22", schemaVersion)
 	}
 	projectResult, err := sqliteStore.EnsureProjectPath(ctx, "ControllerTeam/ControllerSpace/ControllerProject", true)
 	if err != nil {
@@ -58,6 +58,44 @@ func TestRuntimeOwnsSQLiteAndLanceDB(t *testing.T) {
 	}
 	if projectResult.Project.ID == 0 {
 		t.Fatal("expected controller sqlite project id")
+	}
+
+	// failureSession owns one real pending turn used to verify the schema trigger and durable fifth-failure transition through the controller boundary.
+	// failureSession 持有一条真实 pending turn，用于跨 controller 边界验证 schema 触发器与第 5 次失败的持久化迁移。
+	failureSession, err := sqliteStore.ResolveRequestScope(ctx, "controller-failure-pass", 1, projectResult.Project.ID)
+	if err != nil {
+		t.Fatalf("resolve controller failure session: %v", err)
+	}
+	failureTurn, err := sqliteStore.AppendTurnRecord(ctx, failureSession, logicdomain.TurnRecord{
+		UserContent:      "remember this after the model recovers",
+		AssistantContent: "the primary response already completed",
+	})
+	if err != nil {
+		t.Fatalf("append controller failure turn: %v", err)
+	}
+	for attempt := 1; attempt <= 5; attempt++ {
+		failureResult, failureErr := sqliteStore.RecordTurnAnalysisFailure(
+			ctx,
+			failureSession,
+			failureTurn.ID,
+			logicdomain.TurnAnalysisFailureStagePostAction,
+			"simulated slow provider timeout",
+			5,
+			false,
+		)
+		if failureErr != nil {
+			t.Fatalf("record controller analysis failure %d: %v", attempt, failureErr)
+		}
+		if failureResult.AttemptCount != attempt || failureResult.Passed != (attempt == 5) {
+			t.Fatalf("failure attempt %d result = %+v", attempt, failureResult)
+		}
+	}
+	pendingTurns, err := sqliteStore.LoadPendingSessionTurns(ctx, failureSession)
+	if err != nil {
+		t.Fatalf("load pending turns after terminal Pass: %v", err)
+	}
+	if len(pendingTurns) != 0 {
+		t.Fatalf("terminal Pass left pending turns: %+v", pendingTurns)
 	}
 
 	lanceStore, err := vldb_lancedb.NewControllerStore(owner, 10*time.Second, "controller_vectors", "vector", 4)

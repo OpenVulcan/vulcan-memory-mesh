@@ -75,11 +75,17 @@ type PostActionCandidateReviewer interface {
 // PostActionAnalysisConfig 用于承载异步单轮提炼流水线的队列与历史窗口参数，
 // 并保留少量旧阈值字段以兼容既有配置解析。
 type PostActionAnalysisConfig struct {
-	TurnThreshold             int
-	TokenThreshold            int
-	IdleTimeout               time.Duration
-	HistoryTurns              int
-	MaxInputTokens            int
+	TurnThreshold  int
+	TokenThreshold int
+	IdleTimeout    time.Duration
+	HistoryTurns   int
+	MaxInputTokens int
+	// AnalysisTimeout bounds one queued turn's complete L1, L2, vector, dedupe, and persistence chain.
+	// AnalysisTimeout 限制一条排队 turn 的完整 L1、L2、向量、去重与持久化链路总时长。
+	AnalysisTimeout time.Duration
+	// FailurePassThreshold is the durable consecutive failure count that moves one turn out of the pending set.
+	// FailurePassThreshold 是把一条 turn 移出 pending 集合的持久化连续失败次数阈值。
+	FailurePassThreshold      int
 	QueueScanInterval         time.Duration
 	DedupeSearchTopK          int
 	MemoryReplaceScope        string
@@ -148,6 +154,12 @@ func newPostActionUseCase(noiseGate appports.NoiseTurnFilter, store appports.Rel
 	}
 	if analysisCfg.MaxInputTokens < 0 {
 		analysisCfg.MaxInputTokens = 0
+	}
+	if analysisCfg.AnalysisTimeout < 2*time.Minute {
+		analysisCfg.AnalysisTimeout = 3 * time.Minute
+	}
+	if analysisCfg.FailurePassThreshold <= 0 {
+		analysisCfg.FailurePassThreshold = 5
 	}
 	if analysisCfg.QueueScanInterval <= 0 {
 		analysisCfg.QueueScanInterval = 30 * time.Second

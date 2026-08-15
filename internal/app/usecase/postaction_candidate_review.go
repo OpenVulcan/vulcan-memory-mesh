@@ -192,6 +192,9 @@ func (u *PostActionUseCase) reviewTurnCandidatesWithResolvedTime(ctx context.Con
 		if err != nil {
 			return err
 		}
+		if reviewed.LLMExecution != nil {
+			analysis.LLMExecutions = append(analysis.LLMExecutions, *reviewed.LLMExecution)
+		}
 	}
 	remappedMemorySection, err := remapPostActionMemoryReviewSectionToOriginal(reviewed.Memory, memoryReviewPartition.ReviewerToOriginal)
 	if err != nil {

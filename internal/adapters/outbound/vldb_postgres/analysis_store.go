@@ -235,6 +235,17 @@ func (r *analysisRepository) ApplyTurnAnalysis(ctx context.Context, session logi
 		return logicdomain.TurnAnalysisApplyResult{}, err
 	}
 
+	// Clear prior retry state inside the same transaction so a later write failure rolls both the successful turn transition and counter reset back together.
+	// 在同一事务中清除既有重试状态，确保后续写入失败时成功状态迁移与计数器重置会一起回滚。
+	if _, err := tx.Exec(
+		callCtx,
+		fmt.Sprintf(`DELETE FROM %s WHERE turn_id = $1 AND session_id = $2`, r.qualifiedTable("vmm_turn_analysis_failures")),
+		int64(turn.ID),
+		int64(session.SessionID),
+	); err != nil {
+		return logicdomain.TurnAnalysisApplyResult{}, fmt.Errorf("clear postgres turn analysis failure state: %w", err)
+	}
+
 	if analysis.UserProfileMerged {
 		updateUserSQL := fmt.Sprintf(`UPDATE %s SET profile = $1, updated_at = $2 WHERE id = $3`, r.usersTable())
 		updateUserTag, err := tx.Exec(callCtx, updateUserSQL, strings.TrimSpace(analysis.MergedUserProfile), now, int64(session.UserID))

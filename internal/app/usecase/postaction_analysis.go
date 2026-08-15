@@ -31,6 +31,7 @@ func normalizeTurnProfileNodes(analysis *logicdomain.TurnAnalysis) {
 // clonePostActionTurnAnalysis 用于在统一 reviewer 执行前深拷贝一份分析器结果，确保降级路径可以安全回退到评审前的持久化载荷。
 func clonePostActionTurnAnalysis(analysis logicdomain.TurnAnalysis) logicdomain.TurnAnalysis {
 	cloned := analysis
+	cloned.LLMExecutions = append([]logicdomain.LLMExecutionMetadata(nil), analysis.LLMExecutions...)
 	if len(analysis.MemoryNodes) > 0 {
 		cloned.MemoryNodes = append([]logicdomain.MemoryNodeCandidate(nil), analysis.MemoryNodes...)
 		for idx := range cloned.MemoryNodes {
@@ -45,7 +46,24 @@ func clonePostActionTurnAnalysis(analysis logicdomain.TurnAnalysis) logicdomain.
 
 // applyImmediateTurnAnalysis assembles the reference-aware single-turn request, runs the LLM, reviews fresh profile candidates, persists vectors, and writes the final result back onto the new turn.
 // applyImmediateTurnAnalysis 用于组装参考感知的单轮请求、执行 LLM、评审新的画像候选、持久化向量，并把最终结果回写到新 turn 上。
-func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord) error {
+func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, session logicdomain.SessionRef, turn logicdomain.PersistedTurnRecord, rawTurn logicdomain.TurnRecord) (returnErr error) {
+	// completedExecutions retains only physical calls that returned successfully before a later
+	// validation, vector, relational, or checkpoint failure.
+	// completedExecutions 仅保留在后续校验、向量、关系存储或检查点失败前已经成功返回的物理调用。
+	var completedExecutions []logicdomain.LLMExecutionMetadata
+	defer func() {
+		if returnErr == nil || len(completedExecutions) == 0 {
+			return
+		}
+		var existing logicdomain.LLMExecutionContextError
+		if errors.As(returnErr, &existing) {
+			return
+		}
+		returnErr = logicdomain.LLMExecutionContextError{
+			Cause:      returnErr,
+			Executions: append([]logicdomain.LLMExecutionMetadata(nil), completedExecutions...),
+		}
+	}()
 	if u == nil {
 		return nil
 	}
@@ -57,6 +75,7 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 	if err != nil {
 		return err
 	}
+	completedExecutions = append(completedExecutions, analysis.LLMExecutions...)
 	if err := validateTurnAnalysis(input, analysis); err != nil {
 		return err
 	}
@@ -74,12 +93,14 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 
 	// Apply one unified post-action review so memory dedupe and profile acceptance can share the same turn-level reasoning context.
 	// 执行一次统一的 post-action 评审，让记忆去重与画像接纳共享同一轮语义上下文。
-	if err := u.reviewTurnCandidatesWithResolvedTime(ctx, session, turn, rawTurn, resolvedTurnCreatedAt, &analysis, &compaction); err != nil {
+	reviewErr := u.reviewTurnCandidatesWithResolvedTime(ctx, session, turn, rawTurn, resolvedTurnCreatedAt, &analysis, &compaction)
+	completedExecutions = append(completedExecutions[:0], analysis.LLMExecutions...)
+	if reviewErr != nil {
 		var invalidOutput logicdomain.InvalidLLMOutputError
 		// Stop on structured reviewer contract violations because falling back would persist unreviewed candidates after an invalid L2 decision payload.
 		// 结构化 reviewer 契约错误必须停止；否则会在 L2 决策载荷无效后仍把未复审候选落库。
-		if errors.As(err, &invalidOutput) {
-			return err
+		if errors.As(reviewErr, &invalidOutput) {
+			return reviewErr
 		}
 		if u.logger != nil {
 			u.logger.Warn(
@@ -87,7 +108,7 @@ func (u *PostActionUseCase) applyImmediateTurnAnalysis(ctx context.Context, sess
 				"session_key", session.SessionKey,
 				"session_id", session.SessionID,
 				"turn_id", turn.ID,
-				"err", err,
+				"err", reviewErr,
 			)
 		}
 		analysis = reviewFallback
@@ -185,6 +206,10 @@ func (u *PostActionUseCase) logPostActionAnalysisResult(session logicdomain.Sess
 		"external_research_kept_count", compaction.ExternalResearchKeptCount,
 		"user_profile_merged", analysis.UserProfileMerged,
 		"project_profile_merged", analysis.ProjectProfileMerged,
+	}
+	if executionCount := len(analysis.LLMExecutions); executionCount > 0 {
+		fields = append(fields, "llm_execution_count", executionCount)
+		fields = appendLLMExecutionLogFields(fields, analysis.LLMExecutions[executionCount-1])
 	}
 	if redactedVectorNodes > 0 {
 		fields = append(fields,

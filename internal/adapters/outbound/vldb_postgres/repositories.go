@@ -130,6 +130,12 @@ func (r *turnRepository) turnsTable() string {
 	return r.turnQualifiedTable("vmm_turn_records")
 }
 
+// turnAnalysisFailuresTable returns the fully-qualified durable per-turn analysis retry table name.
+// turnAnalysisFailuresTable 用于返回逐 turn 持久化分析重试表的完整限定名称。
+func (r *turnRepository) turnAnalysisFailuresTable() string {
+	return r.turnQualifiedTable("vmm_turn_analysis_failures")
+}
+
 // sessionsTable returns the fully-qualified durable session table name.
 // sessionsTable 用于返回长期 session 表的完整限定名称。
 func (r *turnRepository) sessionsTable() string {

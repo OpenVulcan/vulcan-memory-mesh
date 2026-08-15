@@ -8,16 +8,13 @@ import (
 	"time"
 
 	openroutersdk "github.com/OpenRouterTeam/go-sdk"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/httpclient"
 )
 
 const (
 	// defaultEndpoint keeps OpenRouter SDK calls pinned to the public v1 API root when config omits an endpoint.
 	// defaultEndpoint 用于在配置未显式提供 endpoint 时，将 OpenRouter SDK 调用固定到公开 v1 API 根地址。
 	defaultEndpoint = "https://openrouter.ai/api/v1"
-
-	// defaultTimeout bounds non-rerank OpenRouter calls so startup probes and background processors cannot hang forever on upstream stalls.
-	// defaultTimeout 用于限制非 rerank OpenRouter 调用耗时，避免启动探测和后台处理流程在上游卡顿时无限挂起。
-	defaultTimeout = 20 * time.Second
 
 	// defaultAppReferer identifies VulcanMemoryMesh as the fixed OpenRouter traffic source for provider-side app attribution.
 	// defaultAppReferer 用于将 VulcanMemoryMesh 固定标识为 OpenRouter 流量来源，满足 provider 侧应用归因要求。
@@ -39,22 +36,39 @@ type Client struct {
 	apiKey    string
 }
 
-// NewClient creates one OpenRouter SDK client from the provider root endpoint, API key, timeout, and optional shared HTTP client.
-// NewClient 用于根据 provider 根地址、API Key、超时时间和可选共享 HTTP 客户端创建一个 OpenRouter SDK 客户端。
+// NewClient creates one OpenRouter SDK client from the provider root endpoint, API key, optional operation timeout, and optional shared HTTP client.
+// NewClient 用于根据 provider 根地址、API Key、可选操作超时和可选共享 HTTP 客户端创建一个 OpenRouter SDK 客户端。
+//
+// Parameters:
+// 参数：
+//   - endpoint: provider API root or one legacy operation-specific URL.
+//   - endpoint：供应商 API 根地址或旧式具体操作 URL。
+//   - apiKey: credential projected by the SDK security handler.
+//   - apiKey：由 SDK 安全处理器投影的凭据。
+//   - timeout: positive explicit operation ceiling; non-positive values preserve the caller context deadline without adding an SDK-global timeout.
+//   - timeout：正数表示显式操作上限；非正值保留调用方 Context 截止时间且不增加 SDK 全局超时。
+//   - httpClient: optional bounded shared transport client.
+//   - httpClient：可选的有界共享 Transport 客户端。
+//
+// Returns:
+// 返回值：
+//   - *Client: configured OpenRouter SDK adapter root.
+//   - *Client：配置完成的 OpenRouter SDK 适配器根客户端。
 func NewClient(endpoint, apiKey string, timeout time.Duration, httpClient *http.Client) *Client {
-	if timeout <= 0 {
-		timeout = defaultTimeout
-	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: timeout}
+		httpClient = httpclient.SharedDefault()
 	}
 	trimmedKey := strings.TrimSpace(apiKey)
 	opts := []openroutersdk.SDKOption{
 		openroutersdk.WithClient(httpClient),
-		openroutersdk.WithTimeout(timeout),
 		openroutersdk.WithServerURL(normalizeEndpoint(endpoint)),
 		openroutersdk.WithHTTPReferer(defaultAppReferer),
 		openroutersdk.WithXTitle(defaultAppTitle),
+	}
+	if timeout > 0 {
+		// Only an explicitly owned operation budget may add an SDK deadline; LLM and embedding calls inherit their stage-wide parent context.
+		// 只有显式拥有的操作预算才能增加 SDK 截止时间；LLM 与向量调用继承其阶段级父 Context。
+		opts = append(opts, openroutersdk.WithTimeout(timeout))
 	}
 	if trimmedKey != "" {
 		opts = append(opts, openroutersdk.WithSecurity(trimmedKey))

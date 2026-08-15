@@ -77,12 +77,15 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	// Convert the SDK usage shape into the internal response contract.
 	// 将 SDK 的 usage 结构转换为内部响应契约。
 	return appports.LLMResponse{
-		Content: content,
-		Model:   model,
+		Content:   content,
+		Model:     strings.TrimSpace(resp.Model),
+		RequestID: strings.TrimSpace(resp.ID),
 		Usage: logicdomain.LLMUsage{
-			PromptTokens:     int(resp.Usage.PromptTokens),
-			CompletionTokens: int(resp.Usage.CompletionTokens),
-			TotalTokens:      int(resp.Usage.TotalTokens),
+			PromptTokens:      int(resp.Usage.PromptTokens),
+			CompletionTokens:  int(resp.Usage.CompletionTokens),
+			TotalTokens:       int(resp.Usage.TotalTokens),
+			CachedInputTokens: int(resp.Usage.PromptTokensDetails.CachedTokens),
+			ReasoningTokens:   int(resp.Usage.CompletionTokensDetails.ReasoningTokens),
 		},
 	}, nil
 }
@@ -124,9 +127,7 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 	if params == nil {
 		return
 	}
-	extraFields := map[string]any{
-		"include_reasoning": false,
-	}
+	extraFields := map[string]any{}
 	for rawKey, rawValue := range hints {
 		originalKey := strings.TrimSpace(rawKey)
 		key := strings.ToLower(originalKey)
@@ -192,9 +193,13 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 				params.PromptCacheKey = openai.String(value)
 			}
 		case "reasoning_effort":
-			if value, ok := providerhint.String(rawValue); ok {
-				params.ReasoningEffort = shared.ReasoningEffort(value)
+			params.ReasoningEffort = shared.ReasoningEffort("none")
+		case "reasoning":
+			if disabled, ok := disabledReasoningObject(rawValue); ok {
+				extraFields["reasoning"] = disabled
 			}
+		case "thinking":
+			extraFields["thinking"] = map[string]any{"type": "disabled"}
 		case "service_tier":
 			if value, ok := providerhint.String(rawValue); ok {
 				params.ServiceTier = openai.ChatCompletionNewParamsServiceTier(value)
@@ -208,14 +213,17 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 				params.Stop = union
 			}
 		case "enable_thinking":
-			if value, ok := providerhint.Bool(rawValue); ok {
-				extraFields["enable_thinking"] = value
-			}
+			extraFields["enable_thinking"] = false
 		case "include_reasoning":
-			if value, ok := providerhint.Bool(rawValue); ok {
-				extraFields["include_reasoning"] = value
-			}
+			// include_reasoning controls response visibility and does not prove reasoning execution is disabled.
+			// include_reasoning 仅控制响应可见性，不能证明推理执行已经关闭。
+			continue
 		default:
+			if unregisteredReasoningHint(key) {
+				// Unknown reasoning controls are discarded because forwarding them could contradict the declared disabled dialect.
+				// 未注册的思考控制字段会被丢弃，因为透传可能与已声明的关闭方言冲突。
+				continue
+			}
 			if rawValue != nil {
 				extraFields[originalKey] = rawValue
 			}
@@ -224,6 +232,61 @@ func applyProviderHints(params *openai.ChatCompletionNewParams, hints map[string
 	if len(extraFields) > 0 {
 		params.SetExtraFields(extraFields)
 	}
+}
+
+// disabledReasoningObject projects one declared reasoning-object dialect to its minimal disabled form.
+// disabledReasoningObject 用于把一个已声明的 reasoning 对象方言投影为最小关闭形态。
+//
+// Parameters:
+// 参数：
+//   - value: configured reasoning object whose field names declare the provider dialect.
+//   - value：通过字段名声明 Provider 方言的 reasoning 配置对象。
+//
+// Returns:
+// 返回值：
+//   - map[string]any: minimal effort-none or enabled-false object.
+//   - map[string]any：最小的 effort-none 或 enabled-false 对象。
+//   - bool: false when the object is missing a unique supported dialect marker.
+//   - bool：对象缺少唯一受支持方言标记时为 false。
+func disabledReasoningObject(value any) (map[string]any, bool) {
+	object, ok := value.(map[string]any)
+	if !ok {
+		return nil, false
+	}
+	hasEffort := false
+	hasEnabled := false
+	for rawKey := range object {
+		switch strings.ToLower(strings.TrimSpace(rawKey)) {
+		case "effort":
+			hasEffort = true
+		case "enabled":
+			hasEnabled = true
+		}
+	}
+	if hasEffort == hasEnabled {
+		return nil, false
+	}
+	if hasEffort {
+		return map[string]any{"effort": "none"}, true
+	}
+	return map[string]any{"enabled": false}, true
+}
+
+// unregisteredReasoningHint reports whether an otherwise unknown provider hint could control hidden model reasoning.
+// unregisteredReasoningHint 用于判断一个其他未知 Provider hint 是否可能控制模型隐藏思考。
+//
+// Parameters:
+// 参数：
+//   - normalizedKey: trimmed lowercase top-level provider field name.
+//   - normalizedKey：已去除空白并转为小写的 Provider 顶层字段名。
+//
+// Returns:
+// 返回值：
+//   - bool: true when the field name contains the closed reasoning or thinking control roots.
+//   - bool：字段名包含封闭的 reasoning 或 thinking 控制词根时返回 true。
+func unregisteredReasoningHint(normalizedKey string) bool {
+	compact := strings.NewReplacer("_", "", "-", "", ".", "").Replace(normalizedKey)
+	return strings.Contains(compact, "reasoning") || strings.Contains(compact, "thinking")
 }
 
 // requestOptionsFromContext forwards the current trace ID through both provider correlation headers.

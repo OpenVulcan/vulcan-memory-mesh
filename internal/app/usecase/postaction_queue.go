@@ -11,6 +11,12 @@ import (
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 )
 
+const (
+	// postActionDeferredQueueCapacity bounds the in-memory overflow backlog independently from the worker channel.
+	// postActionDeferredQueueCapacity 用于独立限制工作通道之外的内存溢出积压数量。
+	postActionDeferredQueueCapacity = 256
+)
+
 // postActionQueueState tracks one session's deduplicated queue state so frequent post-action writes collapse into one worker item.
 // postActionQueueState 用于跟踪单个 session 的去重队列状态，让高频 post-action 写入可以折叠成一个工作项。
 type postActionQueueState struct {
@@ -131,15 +137,33 @@ func (u *PostActionUseCase) queueDeferredSessionID(sessionID uint64) {
 		return
 	}
 	u.queueMu.Lock()
-	defer u.queueMu.Unlock()
 	if u.deferredQueueSet == nil {
 		u.deferredQueueSet = map[uint64]struct{}{}
 	}
 	if _, exists := u.deferredQueueSet[sessionID]; exists {
+		u.queueMu.Unlock()
+		return
+	}
+	if len(u.deferredQueueIDs) >= postActionDeferredQueueCapacity {
+		// Release the volatile queued flag when both bounded buffers are full; the durable idle scan remains the authoritative recovery path.
+		// 当两个有界缓冲区都已满时释放易失 queued 标记；持久化 idle 扫描仍是权威恢复路径。
+		if state := u.queueState[sessionID]; state != nil {
+			state.Queued = false
+			if state.InFlight {
+				state.Dirty = true
+			} else {
+				delete(u.queueState, sessionID)
+			}
+		}
+		u.queueMu.Unlock()
+		if u.logger != nil {
+			u.logger.Warn("post-action deferred queue capacity reached", "session_id", sessionID, "capacity", postActionDeferredQueueCapacity)
+		}
 		return
 	}
 	u.deferredQueueSet[sessionID] = struct{}{}
 	u.deferredQueueIDs = append(u.deferredQueueIDs, sessionID)
+	u.queueMu.Unlock()
 }
 
 // flushDeferredQueueIDs opportunistically moves overflowed session ids back into the worker channel in FIFO order without ever blocking the queue loop.
@@ -355,7 +379,12 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 			}
 			continue
 		}
-		if err := u.applyImmediateTurnAnalysis(workerCtx, session, persistedTurn, rawTurn); err != nil {
+		// Bound each complete background analysis chain independently so slow models get the configured PostAction budget without inheriting the intake timeout.
+		// 独立限制每条完整后台分析链，让慢模型获得配置的 PostAction 预算且不继承接入超时。
+		analysisCtx, cancelAnalysis := context.WithTimeout(workerCtx, u.analysisCfg.AnalysisTimeout)
+		analysisErr := u.applyImmediateTurnAnalysis(analysisCtx, session, persistedTurn, rawTurn)
+		cancelAnalysis()
+		if analysisErr != nil {
 			if u.logger != nil {
 				fields := []any{
 					"session_key", session.SessionKey,
@@ -363,8 +392,37 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 					"turn_id", pendingTurn.ID,
 					"source", source,
 				}
-				fields = u.appendQueuedTurnAnalysisFailureLogFields(fields, err)
+				fields = u.appendQueuedTurnAnalysisFailureLogFields(fields, analysisErr)
 				u.logger.Error("post-action queued turn analysis failed", fields...)
+			}
+			failureResult, recordErr := u.store.RecordTurnAnalysisFailure(
+				workerCtx,
+				session,
+				pendingTurn.ID,
+				logicdomain.TurnAnalysisFailureStagePostAction,
+				analysisErr.Error(),
+				u.analysisCfg.FailurePassThreshold,
+				logicdomain.IsOutcomeUncertain(analysisErr),
+			)
+			if recordErr != nil {
+				if u.logger != nil {
+					u.logger.Error("post-action queued turn failure state write failed", "session_key", session.SessionKey, "session_id", session.SessionID, "turn_id", pendingTurn.ID, "source", source, "err", recordErr)
+				}
+				return
+			}
+			if u.logger != nil {
+				u.logger.Warn(
+					"post-action queued turn failure state recorded",
+					"session_key", session.SessionKey,
+					"session_id", session.SessionID,
+					"turn_id", pendingTurn.ID,
+					"attempt_count", failureResult.AttemptCount,
+					"failure_pass_threshold", u.analysisCfg.FailurePassThreshold,
+					"failure_status", failureResult.Status,
+				)
+			}
+			if failureResult.Passed {
+				continue
 			}
 			return
 		}
@@ -374,14 +432,18 @@ func (u *PostActionUseCase) processQueuedTurns(session logicdomain.SessionRef, s
 // appendQueuedTurnAnalysisFailureLogFields enriches queued post-action failures with the model and raw output that belong to the failing LLM scene.
 // appendQueuedTurnAnalysisFailureLogFields 用于为排队 post-action 失败补充归属于失败 LLM 场景的模型标识和原始输出。
 func (u *PostActionUseCase) appendQueuedTurnAnalysisFailureLogFields(fields []any, err error) []any {
+	execution, executionFound := queuedLLMExecutionForError(err)
+	if executionFound {
+		fields = appendLLMExecutionLogFields(fields, execution)
+	}
 	var invalid logicdomain.InvalidLLMOutputError
 	if errors.As(err, &invalid) {
 		scene := strings.TrimSpace(invalid.Scene)
-		if scene != "" {
+		if !executionFound && scene != "" {
 			fields = append(fields, "llm_scene", scene)
 		}
-		if model := u.queuedLLMFailureModel(scene); model != "" {
-			fields = append(fields, "model", model)
+		if model := u.queuedLLMFailureModel(scene); !executionFound && model != "" {
+			fields = append(fields, "configured_model", model)
 		}
 		// Invalid LLM output can fail either at JSON decoding or at stricter structural validation; both cases need the raw provider body for actionable operator debugging.
 		// LLM 畸形输出既可能失败在 JSON 解码，也可能失败在更严格的结构校验；两类问题都需要原始 provider 响应用于运维排障。
@@ -393,10 +455,64 @@ func (u *PostActionUseCase) appendQueuedTurnAnalysisFailureLogFields(fields []an
 
 	// Preserve the historical analyzer model field for non-structured queue failures so storage or embedding failures still retain their original pipeline context.
 	// 对非结构化队列失败保留历史 analyzer 模型字段，让存储或 embedding 失败仍带有原本的流水线上下文。
-	if model := u.queuedTurnAnalyzerModel(); model != "" {
-		fields = append(fields, "model", model)
+	if model := u.queuedTurnAnalyzerModel(); !executionFound && model != "" {
+		fields = append(fields, "configured_model", model)
 	}
 	return append(fields, "err", err)
+}
+
+// queuedLLMExecutionForError resolves the most relevant physical LLM execution retained by a structured-output or later pipeline failure.
+// queuedLLMExecutionForError 用于解析结构化输出失败或后续流水线失败所保留的最相关物理 LLM 执行事实。
+//
+// Parameters:
+// 参数：
+//   - err: queued PostAction analysis error that may retain direct invalid-output metadata or completed pipeline executions.
+//   - err：可能保留无效输出直接元数据或已完成流水线执行事实的排队 PostAction 分析错误。
+//
+// Returns:
+// 返回值：
+//   - logicdomain.LLMExecutionMetadata: direct failing call, or the latest completed call before a downstream failure.
+//   - logicdomain.LLMExecutionMetadata：直接失败调用，或下游失败前最近完成的调用。
+//   - bool: true only when physical execution facts were retained.
+//   - bool：仅在保留了物理执行事实时为 true。
+func queuedLLMExecutionForError(err error) (logicdomain.LLMExecutionMetadata, bool) {
+	var invalid logicdomain.InvalidLLMOutputError
+	if errors.As(err, &invalid) && invalid.Execution != nil {
+		return *invalid.Execution, true
+	}
+	var contextErr logicdomain.LLMExecutionContextError
+	if errors.As(err, &contextErr) && len(contextErr.Executions) > 0 {
+		return contextErr.Executions[len(contextErr.Executions)-1], true
+	}
+	return logicdomain.LLMExecutionMetadata{}, false
+}
+
+// appendLLMExecutionLogFields appends identity and complete token accounting without promoting configured intent into an observed response model.
+// appendLLMExecutionLogFields 用于追加身份与完整 token 统计，同时不把配置意图冒充为已观测响应模型。
+//
+// Parameters:
+// 参数：
+//   - fields: existing structured queue log fields.
+//   - fields：已有的结构化队列日志字段。
+//   - execution: retained physical LLM call metadata.
+//   - execution：保留的物理 LLM 调用元数据。
+//
+// Returns:
+// 返回值：
+//   - []any: extended structured field list.
+//   - []any：扩展后的结构化字段列表。
+func appendLLMExecutionLogFields(fields []any, execution logicdomain.LLMExecutionMetadata) []any {
+	return append(fields,
+		"llm_scene", strings.TrimSpace(execution.Purpose),
+		"configured_model", strings.TrimSpace(execution.ConfiguredModel),
+		"response_model", strings.TrimSpace(execution.ResponseModel),
+		"request_id", strings.TrimSpace(execution.RequestID),
+		"prompt_tokens", execution.Usage.PromptTokens,
+		"completion_tokens", execution.Usage.CompletionTokens,
+		"total_tokens", execution.Usage.TotalTokens,
+		"cached_input_tokens", execution.Usage.CachedInputTokens,
+		"reasoning_tokens", execution.Usage.ReasoningTokens,
+	)
 }
 
 // queuedLLMFailureModel resolves the configured model for the exact LLM scene that produced one InvalidLLMOutputError.

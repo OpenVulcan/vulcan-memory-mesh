@@ -15,14 +15,23 @@ import (
 // TestIntentExtractorSendsExactStructuredOutput verifies the intent scene cannot regress to schema-free JSON mode.
 // TestIntentExtractorSendsExactStructuredOutput 用于验证意图场景不会退回无 Schema 的 JSON 模式。
 func TestIntentExtractorSendsExactStructuredOutput(t *testing.T) {
-	llm := &stubProfileMergerLLM{response: logicports.LLMResponse{Content: `{"reason":"no lookup needed","need_memory":false,"queries":[]}`}}
+	llm := &stubProfileMergerLLM{response: logicports.LLMResponse{
+		Content:   `{"reason":"no lookup needed","need_memory":false,"queries":[]}`,
+		Model:     "provider-precheck-l1",
+		RequestID: "req-precheck-l1",
+		Usage:     logicdomain.LLMUsage{PromptTokens: 31, CompletionTokens: 8, TotalTokens: 39, CachedInputTokens: 20},
+	}}
 	prompts := &stubProfilePromptSource{prompt: "return json only"}
 	extractor := NewIntentExtractor(llm, prompts, "test-model", 5)
 
-	if _, err := extractor.Extract(context.Background(), nil, "hello"); err != nil {
+	result, err := extractor.Extract(context.Background(), nil, "hello")
+	if err != nil {
 		t.Fatalf("extract intent: %v", err)
 	}
 	assertStructuredOutputRequest(t, llm.request, "vmm_precheck_intent")
+	if result.LLMExecution == nil || result.LLMExecution.ConfiguredModel != "test-model" || result.LLMExecution.ResponseModel != "provider-precheck-l1" || result.LLMExecution.RequestID != "req-precheck-l1" || result.LLMExecution.Usage.CachedInputTokens != 20 {
+		t.Fatalf("unexpected pre-check L1 execution metadata: %+v", result.LLMExecution)
+	}
 }
 
 // TestParseIntentResponseParsesMarkdownJSON verifies that fenced JSON model output is accepted and de-duplicated correctly.

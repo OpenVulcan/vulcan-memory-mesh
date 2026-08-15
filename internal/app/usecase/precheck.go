@@ -1064,11 +1064,15 @@ func (u *PreCheckUseCase) appendPreCheckInvalidLLMOutputLogFields(fields []any, 
 		return fields
 	}
 	scene := strings.TrimSpace(invalid.Scene)
-	if scene != "" {
+	executionFound := invalid.Execution != nil
+	if !executionFound && scene != "" {
 		fields = append(fields, "llm_scene", scene)
 	}
-	if model := u.preCheckLLMFailureModel(scene); model != "" {
-		fields = append(fields, "model", model)
+	if executionFound {
+		fields = appendLLMExecutionLogFields(fields, *invalid.Execution)
+	}
+	if model := u.preCheckLLMFailureModel(scene); !executionFound && model != "" {
+		fields = append(fields, "configured_model", model)
 	}
 	// Pre-check intentionally degrades malformed model output into an empty result, so raw provider output must remain available in server logs for prompt and parser repair.
 	// pre-check 会把畸形模型输出降级为空结果，因此原始 provider 响应必须留在服务端日志中，供修复提示词和解析器使用。

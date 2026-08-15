@@ -8,8 +8,8 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/httpclient"
 	"github.com/openvulcan/vmm/internal/platform/trace"
 	"google.golang.org/genai"
 )
@@ -30,7 +30,7 @@ type Client struct {
 // NewClient 用于创建一个懒初始化的 Google AI Studio 客户端包装器，让固定模型 key-failover 可以先构建每个 key 的适配器，而不必在启动时立即初始化 SDK。
 func NewClient(endpoint, apiKey string, httpClient *http.Client) *Client {
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 20 * time.Second}
+		httpClient = httpclient.SharedDefault()
 	}
 	return &Client{
 		endpoint:   strings.TrimRight(strings.TrimSpace(endpoint), "/"),

@@ -102,7 +102,45 @@ const (
 	// TurnExtractedStatusDone marks one turn row whose details and extracted nodes have already been persisted.
 	// TurnExtractedStatusDone 用于标记一条 details 与提炼节点都已经落库的 turn 记录。
 	TurnExtractedStatusDone = 1
+
+	// TurnExtractedStatusPassed marks one turn whose repeated analysis failures reached the configured terminal pass threshold.
+	// TurnExtractedStatusPassed 用于标记一条因连续分析失败达到配置阈值而终止重试并被放行的 turn 记录。
+	TurnExtractedStatusPassed = 2
 )
+
+const (
+	// TurnAnalysisFailureStagePostAction identifies the durable retry state owned by the queued PostAction analyzer.
+	// TurnAnalysisFailureStagePostAction 用于标识由排队 PostAction 分析器拥有的持久化重试状态。
+	TurnAnalysisFailureStagePostAction = "postaction"
+
+	// TurnAnalysisFailureStatusRetrying keeps one failed analysis eligible for a later durable retry.
+	// TurnAnalysisFailureStatusRetrying 用于让一次失败分析继续保留后续持久化重试资格。
+	TurnAnalysisFailureStatusRetrying = "retrying"
+
+	// TurnAnalysisFailureStatusPassed marks one failed analysis as terminal after reaching the configured threshold.
+	// TurnAnalysisFailureStatusPassed 用于在达到配置阈值后将失败分析标记为终止重试的 Pass 状态。
+	TurnAnalysisFailureStatusPassed = "passed"
+
+	// TurnAnalysisFailureStatusPassedUncertain marks one analysis as terminal because its mutation outcome cannot be retried safely.
+	// TurnAnalysisFailureStatusPassedUncertain 用于在写入结果不确定且无法安全重试时将分析标记为终止状态。
+	TurnAnalysisFailureStatusPassedUncertain = "passed_uncertain"
+)
+
+// TurnAnalysisFailureResult reports the durable retry state after one failed turn-analysis attempt has been recorded.
+// TurnAnalysisFailureResult 用于报告一次 turn 分析失败被持久化后的重试状态。
+type TurnAnalysisFailureResult struct {
+	// AttemptCount is the durable number of consecutive failed executions recorded for this turn and stage.
+	// AttemptCount 是该 turn 与阶段已经持久化记录的连续失败执行次数。
+	AttemptCount int
+
+	// Status is retrying, passed, or passed_uncertain according to the durable terminal decision.
+	// Status 是根据持久化终止判定得到的 retrying、passed 或 passed_uncertain。
+	Status string
+
+	// Passed indicates that the turn was moved out of the pending analysis set and must not be retried.
+	// Passed 表示该 turn 已移出待分析集合且不得继续重试。
+	Passed bool
+}
 
 const (
 	// MemoryNodeCategoryGeneral stores background facts that do not fit a more specific class.
@@ -264,10 +302,13 @@ type PersistedTurnRecord struct {
 // TurnAnalysis carries the structured LLM extraction output that should be written back onto one turn row and its derived node tables.
 // TurnAnalysis 用于承载结构化 LLM 提炼结果，并回写到 turn 行及其衍生节点表。
 type TurnAnalysis struct {
-	UserInputKind        string
-	TurnID               uint64
-	Details              string
-	DetailsBudget        int
+	UserInputKind string
+	TurnID        uint64
+	Details       string
+	DetailsBudget int
+	// LLMExecutions retains ordered physical calls for diagnostics without persisting them as semantic analysis.
+	// LLMExecutions 用于按顺序保留物理调用供诊断使用，同时不把它们作为语义分析持久化。
+	LLMExecutions        []LLMExecutionMetadata `json:"-"`
 	MemoryNodes          []MemoryNodeCandidate
 	ProfileNodes         []ProfileNodeCandidate
 	UserProfileMerged    bool

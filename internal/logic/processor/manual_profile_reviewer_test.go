@@ -18,6 +18,9 @@ import (
 func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	llm := &stubProfileMergerLLM{
 		response: logicports.LLMResponse{
+			Model:     "provider-profile-model",
+			RequestID: "req-profile-review",
+			Usage:     logicdomain.LLMUsage{PromptTokens: 90, CompletionTokens: 19, TotalTokens: 109, CachedInputTokens: 66},
 			Content: `{
   "accepted_nodes": [
     {
@@ -83,6 +86,9 @@ func TestManualProfileReviewerBuildsSingleTargetRequest(t *testing.T) {
 	}
 	if len(result.AcceptedNodes) != 1 || len(result.AcceptedNodes[0].SupersedeNodes) != 1 || result.AcceptedNodes[0].SupersedeNodes[0].NodeID != 15 {
 		t.Fatalf("unexpected accepted nodes: %+v", result)
+	}
+	if result.LLMExecution == nil || result.LLMExecution.ConfiguredModel != "qwen-test" || result.LLMExecution.ResponseModel != "provider-profile-model" || result.LLMExecution.RequestID != "req-profile-review" || result.LLMExecution.Usage.CachedInputTokens != 66 {
+		t.Fatalf("unexpected manual profile execution metadata: %+v", result.LLMExecution)
 	}
 }
 

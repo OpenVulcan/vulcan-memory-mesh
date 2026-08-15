@@ -499,8 +499,8 @@ func (u *ManagementUseCase) ListTurns(ctx context.Context, filters ManagementTur
 	if status == "" {
 		status = "all"
 	}
-	if status != "all" && status != "pending" && status != "extracted" {
-		return ManagementTurnResult{}, logicdomain.ValidationError{Field: "status", Message: "must be all, pending, or extracted"}
+	if status != "all" && status != "pending" && status != "extracted" && status != "passed" {
+		return ManagementTurnResult{}, logicdomain.ValidationError{Field: "status", Message: "must be all, pending, extracted, or passed"}
 	}
 	sort := strings.TrimSpace(filters.Sort)
 	if sort == "" {

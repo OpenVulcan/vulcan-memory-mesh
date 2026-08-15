@@ -67,30 +67,52 @@ func (c llmOutputLoggingClient) Generate(ctx context.Context, req appports.LLMRe
 	response, err := c.upstream.Generate(ctx, req)
 	elapsed := time.Since(startedAt)
 	if err != nil {
+		if c.logger != nil {
+			c.logger.Error(
+				"llm request failed",
+				"scene", strings.TrimSpace(string(req.RouteSelectionLevel)),
+				"response_format", strings.TrimSpace(string(req.ResponseFormat)),
+				"configured_model", strings.TrimSpace(req.Model),
+				"response_model", strings.TrimSpace(response.Model),
+				"request_id", strings.TrimSpace(response.RequestID),
+				"elapsed", elapsed.String(),
+				"elapsed_ms", elapsed.Milliseconds(),
+				"prompt_tokens", response.Usage.PromptTokens,
+				"completion_tokens", response.Usage.CompletionTokens,
+				"total_tokens", response.Usage.TotalTokens,
+				"cached_input_tokens", response.Usage.CachedInputTokens,
+				"reasoning_tokens", response.Usage.ReasoningTokens,
+				"llm_output", response.Content,
+				"err", err,
+			)
+		}
 		return response, err
 	}
 	if c.logger != nil {
-		c.logger.Info(
-			"llm output captured",
+		// successFields keeps configured intent separate from provider-reported identity so an absent response model is never presented as observed fact.
+		// successFields 将配置意图与供应商实际返回的身份分开，确保缺失的响应模型不会被伪装成已观测事实。
+		successFields := []any{
 			"scene", strings.TrimSpace(string(req.RouteSelectionLevel)),
 			"response_format", strings.TrimSpace(string(req.ResponseFormat)),
-			"model", resolveLLMOutputLogModel(req, response),
+			"configured_model", strings.TrimSpace(req.Model),
+			"response_model", strings.TrimSpace(response.Model),
+			"request_id", strings.TrimSpace(response.RequestID),
 			"elapsed", elapsed.String(),
 			"elapsed_ms", elapsed.Milliseconds(),
 			"prompt_tokens", response.Usage.PromptTokens,
 			"completion_tokens", response.Usage.CompletionTokens,
 			"total_tokens", response.Usage.TotalTokens,
+			"cached_input_tokens", response.Usage.CachedInputTokens,
+			"reasoning_tokens", response.Usage.ReasoningTokens,
 			"llm_output", response.Content,
-		)
+		}
+		// responseModel is the only value eligible for the legacy `model` field because that field represents an observed provider response.
+		// responseModel 是旧版 `model` 字段唯一允许使用的值，因为该字段表示供应商实际返回的响应模型。
+		responseModel := strings.TrimSpace(response.Model)
+		if responseModel != "" {
+			successFields = append(successFields, "model", responseModel)
+		}
+		c.logger.Info("llm output captured", successFields...)
 	}
 	return response, nil
-}
-
-// resolveLLMOutputLogModel prefers the provider-reported model identity and falls back to the request-level model pin when the upstream omitted it.
-// resolveLLMOutputLogModel 用于优先返回提供方上报的真实模型名；若上游未返回，则回退到请求级模型标识。
-func resolveLLMOutputLogModel(req appports.LLMRequest, response appports.LLMResponse) string {
-	if model := strings.TrimSpace(response.Model); model != "" {
-		return model
-	}
-	return strings.TrimSpace(req.Model)
 }

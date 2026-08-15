@@ -65,7 +65,7 @@ func TestLoadVulcanManagedConfigRejectsUnknownFields(t *testing.T) {
 // TestManagedContractFixtureRoundTripsSemantically verifies the shared version-one fixture loses no fields in Go.
 // TestManagedContractFixtureRoundTripsSemantically 用于验证共享的三版固定夹具经过 Go 往返后不会丢失字段。
 func TestManagedContractFixtureRoundTripsSemantically(t *testing.T) {
-	path := filepath.Join("testdata", "vulcan-managed-contract-v1.json")
+	path := filepath.Join("testdata", "vulcan-managed-contract-v2.json")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatalf("read managed contract fixture: %v", err)
@@ -131,6 +131,27 @@ func TestManagedConfigRejectsIdentityVersionAndNestedRuntimeViolations(t *testin
 				manifest.Runtime.Inference.StartupTimeout = Duration{}
 			},
 			wantErr: "runtime.inference.startup_timeout must be positive",
+		},
+		{
+			name: "inference connection ceiling",
+			mutate: func(manifest *ManagedConfig) {
+				manifest.Runtime.Inference.MaxConnectionsPerHost = 65
+			},
+			wantErr: "runtime.inference.max_connections_per_host must be between 1 and 64",
+		},
+		{
+			name: "postaction analysis timeout",
+			mutate: func(manifest *ManagedConfig) {
+				manifest.Runtime.PostAction.SessionAnalysisTimeout = Duration{Duration: 119 * time.Second}
+			},
+			wantErr: "managed post_action limits are invalid",
+		},
+		{
+			name: "postaction failure threshold",
+			mutate: func(manifest *ManagedConfig) {
+				manifest.Runtime.PostAction.FailurePassThreshold = 0
+			},
+			wantErr: "managed post_action limits are invalid",
 		},
 		{
 			name: "management shutdown timeout",
@@ -251,12 +272,13 @@ func validManagedConfig(t *testing.T) ManagedConfig {
 				ControllerLease:      base.Controller,
 			},
 			Inference: ManagedInferenceConfig{
-				Mode:               ManagedInferenceMode,
-				DiscoveryFile:      filepath.Join(root, "inference-service.json"),
-				ExpectedCallerID:   "vmm-local",
-				ConsumerProfileID:  "vmm",
-				StartupTimeout:     Duration{Duration: 30 * time.Second},
-				EmbeddingDimension: 1024,
+				Mode:                  ManagedInferenceMode,
+				DiscoveryFile:         filepath.Join(root, "inference-service.json"),
+				ExpectedCallerID:      "vmm-local",
+				ConsumerProfileID:     "vmm",
+				StartupTimeout:        Duration{Duration: 30 * time.Second},
+				EmbeddingDimension:    1024,
+				MaxConnectionsPerHost: 8,
 			},
 			Logging:    base.Logging,
 			PII:        base.PII,

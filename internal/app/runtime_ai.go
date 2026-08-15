@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vulcan_inference"
@@ -19,6 +20,9 @@ type runtimeAIDependencies struct {
 	LLM       appports.LLMClient
 	Embedding appports.EmbeddingClient
 	Reranker  appports.RerankerClient
+	// PurposeRoutes retains the managed capability snapshot keyed by the exact VMM LLM purpose; standalone mode leaves it nil.
+	// PurposeRoutes 按精确 VMM LLM 用途保留托管能力快照；独立模式保持为 nil。
+	PurposeRoutes map[appports.LLMRouteSelectionLevel]vulcan_inference.PurposeRoute
 }
 
 // buildRuntimeAIDependenciesForOptions selects either standalone provider adapters or the managed Vulcan inference bridge.
@@ -29,21 +33,57 @@ func buildRuntimeAIDependenciesForOptions(cfg config.Config, options application
 	}
 	managed := options.ManagedConfig
 	client, err := vulcan_inference.New(vulcan_inference.Config{
-		DiscoveryFile:     managed.Runtime.Inference.DiscoveryFile,
-		ExpectedProcessID: managed.Parent.ProcessID,
-		ExpectedStartedAt: managed.Parent.StartedAtUnixMS,
-		ExpectedCallerID:  managed.Runtime.Inference.ExpectedCallerID,
-		ConsumerProfileID: managed.Runtime.Inference.ConsumerProfileID,
-		StartupTimeout:    managed.Runtime.Inference.StartupTimeout.Duration,
+		DiscoveryFile:         managed.Runtime.Inference.DiscoveryFile,
+		ExpectedProcessID:     managed.Parent.ProcessID,
+		ExpectedStartedAt:     managed.Parent.StartedAtUnixMS,
+		ExpectedCallerID:      managed.Runtime.Inference.ExpectedCallerID,
+		ConsumerProfileID:     managed.Runtime.Inference.ConsumerProfileID,
+		StartupTimeout:        managed.Runtime.Inference.StartupTimeout.Duration,
+		MaxConnectionsPerHost: managed.Runtime.Inference.MaxConnectionsPerHost,
 	})
 	if err != nil {
 		return runtimeAIDependencies{}, fmt.Errorf("build Vulcan managed inference client: %w", err)
 	}
+	startupTimeout := managed.Runtime.Inference.StartupTimeout.Duration
+	if startupTimeout <= 0 {
+		startupTimeout = 30 * time.Second
+	}
+	capabilityCtx, cancelCapabilities := context.WithTimeout(context.Background(), startupTimeout)
+	purposeRoutes, err := client.PurposeRoutes(capabilityCtx)
+	cancelCapabilities()
+	if err != nil {
+		return runtimeAIDependencies{}, fmt.Errorf("load Vulcan managed inference capabilities: %w", err)
+	}
+	requiredPurposes := []appports.LLMRouteSelectionLevel{
+		appports.LLMRouteSelectionLevelPreCheckL1,
+		appports.LLMRouteSelectionLevelPreCheckL2,
+		appports.LLMRouteSelectionLevelPostActionL1,
+		appports.LLMRouteSelectionLevelPostActionL2,
+	}
+	resolvedRoutes := make(map[appports.LLMRouteSelectionLevel]vulcan_inference.PurposeRoute, len(purposeRoutes))
+	for purposeID, route := range purposeRoutes {
+		resolvedRoutes[appports.LLMRouteSelectionLevel(purposeID)] = route
+	}
+	for _, purposeID := range requiredPurposes {
+		if strings.TrimSpace(resolvedRoutes[purposeID].ModelID) == "" {
+			return runtimeAIDependencies{}, fmt.Errorf("Vulcan managed inference purpose %s has no available physical route", purposeID)
+		}
+	}
 	return runtimeAIDependencies{
-		LLM:       client,
-		Embedding: client,
-		Reranker:  client,
+		LLM:           client,
+		Embedding:     client,
+		Reranker:      client,
+		PurposeRoutes: resolvedRoutes,
 	}, nil
+}
+
+// processorModelForRuntime returns the synchronized managed physical model or the standalone configured model for one purpose.
+// processorModelForRuntime 用于返回某个用途同步后的托管物理模型或独立模式配置模型。
+func processorModelForRuntime(cfg config.Config, ai runtimeAIDependencies, selectionLevel appports.LLMRouteSelectionLevel) string {
+	if ai.PurposeRoutes != nil {
+		return strings.TrimSpace(ai.PurposeRoutes[selectionLevel].ModelID)
+	}
+	return selectProcessorLLMModel(cfg, selectionLevel)
 }
 
 // routeFailoverAwareLLMClient preserves prompt-side model routing while clearing request-level model pins in multi-route mode so processor calls can still fan out across heterogeneous llm.routes.

@@ -5,6 +5,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"net"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 	"time"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vulcan_inference"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/platform/logx"
@@ -37,6 +39,24 @@ func newRuntimeConfigForTest() config.Config {
 	cfg.Embedding.Dimension = 1024
 	cfg.Rerank.Enabled = false
 	return cfg
+}
+
+// TestProcessorModelForManagedRuntimeNeverFallsBackToStandaloneDefault verifies an absent optional managed purpose cannot inherit the standalone gpt default.
+// TestProcessorModelForManagedRuntimeNeverFallsBackToStandaloneDefault 用于验证缺失的可选托管用途不会继承独立模式的 gpt 默认值。
+func TestProcessorModelForManagedRuntimeNeverFallsBackToStandaloneDefault(t *testing.T) {
+	cfg := config.DefaultLocal()
+	ai := runtimeAIDependencies{
+		PurposeRoutes: map[appports.LLMRouteSelectionLevel]vulcan_inference.PurposeRoute{
+			appports.LLMRouteSelectionLevelPreCheckL1: {ModelID: "deepseek-v4-flash"},
+		},
+	}
+
+	if model := processorModelForRuntime(cfg, ai, appports.LLMRouteSelectionLevelPreCheckL1); model != "deepseek-v4-flash" {
+		t.Fatalf("managed precheck model = %q, want synchronized model", model)
+	}
+	if model := processorModelForRuntime(cfg, ai, appports.LLMRouteSelectionLevelProfileInstruction); model != "" {
+		t.Fatalf("missing managed optional purpose fell back to standalone model %q", model)
+	}
 }
 
 // TestBuildGRPCKeepaliveConfigurationMapsConfigValues verifies the transport helper preserves the configured keepalive timings and client-ping policy before the runtime builds the gRPC server.
@@ -95,6 +115,7 @@ func newLLMRouteForTest(provider string, endpoint string, apiKeys []string, mode
 		Endpoint: endpoint,
 		APIKeys:  append([]string(nil), apiKeys...),
 		Model:    model,
+		Params:   map[string]any{"reasoning_effort": "none"},
 	}
 }
 
@@ -129,7 +150,7 @@ type recordingLLMClient struct {
 func (c *recordingLLMClient) Generate(_ context.Context, req appports.LLMRequest) (appports.LLMResponse, error) {
 	c.lastRequest = req
 	if c.err != nil {
-		return appports.LLMResponse{}, c.err
+		return c.response, c.err
 	}
 	return c.response, nil
 }
@@ -336,6 +357,93 @@ func TestWrapLLMWithOutputLoggerRecordsResponseMetadata(t *testing.T) {
 	}
 	if strings.Contains(output, "system prompt should stay hidden") || strings.Contains(output, "user prompt should stay hidden") {
 		t.Fatalf("expected llm output log to exclude prompt inputs, got %s", output)
+	}
+}
+
+// TestWrapLLMWithOutputLoggerDoesNotInventResponseModel verifies an omitted provider model remains absent instead of being replaced by the configured request model.
+// TestWrapLLMWithOutputLoggerDoesNotInventResponseModel 用于验证供应商未返回模型名时保持缺失状态，而不会被请求中的配置模型冒充。
+func TestWrapLLMWithOutputLoggerDoesNotInventResponseModel(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := logx.New(&logBuf, logx.Config{Level: "info", Format: "json"})
+	upstream := &recordingLLMClient{
+		response: appports.LLMResponse{Content: `{"ok":true}`},
+	}
+
+	client := wrapLLMWithOutputLogger(upstream, logger)
+	if _, err := client.Generate(context.Background(), appports.LLMRequest{
+		Model:               "standalone-default-model",
+		ResponseFormat:      appports.LLMResponseFormatJSON,
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPostActionL1,
+	}); err != nil {
+		t.Fatalf("generate with llm output logger: %v", err)
+	}
+
+	// loggedFields decodes the structured log entry so exact key presence can be asserted without depending on text rendering punctuation.
+	// loggedFields 解码结构化日志条目，从而无需依赖文本渲染标点即可精确断言字段是否存在。
+	loggedFields := map[string]any{}
+	if err := json.Unmarshal(bytes.TrimSpace(logBuf.Bytes()), &loggedFields); err != nil {
+		t.Fatalf("decode llm output log: %v; output=%s", err, logBuf.String())
+	}
+	if got := loggedFields["configured_model"]; got != "standalone-default-model" {
+		t.Fatalf("configured_model = %#v, want standalone-default-model", got)
+	}
+	if got := loggedFields["response_model"]; got != "" {
+		t.Fatalf("response_model = %#v, want empty provider value", got)
+	}
+	if inventedModel, exists := loggedFields["model"]; exists {
+		t.Fatalf("model field invented provider identity %#v", inventedModel)
+	}
+}
+
+// TestWrapLLMWithOutputLoggerPreservesCompletedResponseOnValidationFailure verifies a completed provider response keeps its body, physical identity, and full usage when a later model-drift check returns an error.
+// TestWrapLLMWithOutputLoggerPreservesCompletedResponseOnValidationFailure 用于验证供应商已完成响应但后续模型漂移校验返回错误时，日志仍保留正文、物理身份与完整用量。
+func TestWrapLLMWithOutputLoggerPreservesCompletedResponseOnValidationFailure(t *testing.T) {
+	var logBuf bytes.Buffer
+	logger := logx.New(&logBuf, logx.Config{Level: "info", Format: "json"})
+	upstream := &recordingLLMClient{
+		response: appports.LLMResponse{
+			Content:   `{"ok":true}`,
+			Model:     "provider-drifted-model",
+			RequestID: "req-drift-1",
+		},
+		err: errors.New("physical model drifted"),
+	}
+	upstream.response.Usage.PromptTokens = 120
+	upstream.response.Usage.CompletionTokens = 30
+	upstream.response.Usage.TotalTokens = 150
+	upstream.response.Usage.CachedInputTokens = 80
+	upstream.response.Usage.ReasoningTokens = 0
+
+	client := wrapLLMWithOutputLogger(upstream, logger)
+	_, err := client.Generate(context.Background(), appports.LLMRequest{
+		Model:               "configured-model",
+		ResponseFormat:      appports.LLMResponseFormatJSON,
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPostActionL2,
+	})
+	if err == nil || !strings.Contains(err.Error(), "physical model drifted") {
+		t.Fatalf("expected model drift failure, got %v", err)
+	}
+
+	loggedFields := map[string]any{}
+	if err := json.Unmarshal(bytes.TrimSpace(logBuf.Bytes()), &loggedFields); err != nil {
+		t.Fatalf("decode failed LLM response log: %v; output=%s", err, logBuf.String())
+	}
+	for field, expected := range map[string]any{
+		"configured_model":    "configured-model",
+		"response_model":      "provider-drifted-model",
+		"request_id":          "req-drift-1",
+		"prompt_tokens":       float64(120),
+		"completion_tokens":   float64(30),
+		"total_tokens":        float64(150),
+		"cached_input_tokens": float64(80),
+		"reasoning_tokens":    float64(0),
+	} {
+		if got := loggedFields[field]; got != expected {
+			t.Fatalf("%s = %#v, want %#v; output=%s", field, got, expected, logBuf.String())
+		}
+	}
+	if !strings.Contains(logBuf.String(), `\"ok\":true`) {
+		t.Fatalf("expected failed completed response body in log, got %s", logBuf.String())
 	}
 }
 

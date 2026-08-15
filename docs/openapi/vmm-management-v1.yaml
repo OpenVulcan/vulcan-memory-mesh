@@ -102,7 +102,7 @@ paths:
       summary: 按稳定游标列出指定会话的回合摘要
       parameters:
         - $ref: "#/components/parameters/SessionID"
-        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/TurnStatus"
         - $ref: "#/components/parameters/Cursor"
         - $ref: "#/components/parameters/Limit"
       responses:
@@ -127,7 +127,7 @@ paths:
             type: string
             pattern: "^[1-9][0-9]*$"
         - $ref: "#/components/parameters/Query"
-        - $ref: "#/components/parameters/Status"
+        - $ref: "#/components/parameters/TurnStatus"
         - $ref: "#/components/parameters/CreatedFrom"
         - $ref: "#/components/parameters/CreatedTo"
         - name: has_memory
@@ -414,6 +414,12 @@ components:
       in: query
       schema:
         type: string
+    TurnStatus:
+      name: status
+      in: query
+      schema:
+        type: string
+        enum: [all, pending, extracted, passed]
     Cursor:
       name: cursor
       in: query
@@ -659,7 +665,7 @@ components:
           type: string
         extraction_status:
           type: string
-          enum: [pending, extracted]
+          enum: [pending, extracted, passed]
         created_at:
           type: string
           format: date-time

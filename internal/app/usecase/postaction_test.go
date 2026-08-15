@@ -182,6 +182,36 @@ func TestPostActionPushQueueIDDefersOverflowUntilCapacityReturns(t *testing.T) {
 	}
 }
 
+// TestPostActionDeferredQueueDropsOnlyVolatileStateAtCapacity verifies a full in-memory backlog remains bounded and delegates recovery to durable pending-turn scans.
+// TestPostActionDeferredQueueDropsOnlyVolatileStateAtCapacity 用于验证内存 backlog 满载时仍保持有界，并把恢复职责交给持久化 pending-turn 扫描。
+func TestPostActionDeferredQueueDropsOnlyVolatileStateAtCapacity(t *testing.T) {
+	deferredIDs := make([]uint64, 0, postActionDeferredQueueCapacity)
+	deferredSet := make(map[uint64]struct{}, postActionDeferredQueueCapacity)
+	for sessionID := uint64(1); sessionID <= postActionDeferredQueueCapacity; sessionID++ {
+		deferredIDs = append(deferredIDs, sessionID)
+		deferredSet[sessionID] = struct{}{}
+	}
+	uc := &PostActionUseCase{
+		queueState: map[uint64]*postActionQueueState{
+			999: {Session: logicdomain.SessionRef{SessionID: 999}, Queued: true},
+		},
+		deferredQueueIDs: deferredIDs,
+		deferredQueueSet: deferredSet,
+	}
+
+	uc.queueDeferredSessionID(999)
+
+	if len(uc.deferredQueueIDs) != postActionDeferredQueueCapacity {
+		t.Fatalf("deferred queue length = %d, want %d", len(uc.deferredQueueIDs), postActionDeferredQueueCapacity)
+	}
+	if _, exists := uc.queueState[999]; exists {
+		t.Fatalf("volatile queue state for session 999 was not released")
+	}
+	if _, exists := uc.deferredQueueSet[999]; exists {
+		t.Fatalf("overflowed session 999 was added beyond deferred capacity")
+	}
+}
+
 // TestNewPostActionUseCaseImmediatelyScansIdlePendingSessions verifies startup recovery does not wait for the first maintenance ticker.
 // TestNewPostActionUseCaseImmediatelyScansIdlePendingSessions 用于验证启动恢复不会等待第一个维护 ticker。
 func TestNewPostActionUseCaseImmediatelyScansIdlePendingSessions(t *testing.T) {
@@ -889,6 +919,100 @@ func TestPostActionUseCaseProcessesQueuedTurnsAsynchronously(t *testing.T) {
 	}
 }
 
+// TestPostActionUseCaseStopsQueueAfterRetryableFailure verifies a durable retrying decision preserves FIFO order and prevents later turns from overtaking the failed turn.
+// TestPostActionUseCaseStopsQueueAfterRetryableFailure 用于验证持久化 retrying 判定会保持 FIFO 顺序，并阻止后续回合越过失败回合。
+func TestPostActionUseCaseStopsQueueAfterRetryableFailure(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{ID: 101, SessionID: 88, ProjectID: 12, DehydratedContent: `{"user":"first","timeline":[],"assistant":"first"}`, ExtractedStatus: logicdomain.TurnExtractedStatusPending},
+			{ID: 102, SessionID: 88, ProjectID: 12, DehydratedContent: `{"user":"second","timeline":[],"assistant":"second"}`, ExtractedStatus: logicdomain.TurnExtractedStatusPending},
+		},
+		failureResult: logicdomain.TurnAnalysisFailureResult{
+			AttemptCount: 4,
+			Status:       logicdomain.TurnAnalysisFailureStatusRetrying,
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{err: errors.New("provider timeout")}
+	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
+		AnalysisTimeout:      2 * time.Minute,
+		FailurePassThreshold: 5,
+	}, nil)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{SessionID: 88, SessionKey: "sess-retry", ProjectID: 12}, "test")
+
+	if analyzer.calls != 1 {
+		t.Fatalf("analyzer calls = %d, want 1", analyzer.calls)
+	}
+	if len(store.failureTurnIDs) != 1 || store.failureTurnIDs[0] != 101 {
+		t.Fatalf("failure turn ids = %v, want [101]", store.failureTurnIDs)
+	}
+}
+
+// TestPostActionUseCaseProvidesFullBackgroundAnalysisDeadline verifies the queued model chain receives its two-minute background budget instead of inheriting the old 30-second transport timeout.
+// TestPostActionUseCaseProvidesFullBackgroundAnalysisDeadline 用于验证排队模型链获得完整的两分钟后台预算，而不是继承旧的 30 秒传输超时。
+func TestPostActionUseCaseProvidesFullBackgroundAnalysisDeadline(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{{
+			ID:                103,
+			SessionID:         89,
+			ProjectID:         12,
+			DehydratedContent: `{"user":"slow request","timeline":[],"assistant":"completed output"}`,
+			ExtractedStatus:   logicdomain.TurnExtractedStatusPending,
+		}},
+		failureResult: logicdomain.TurnAnalysisFailureResult{
+			AttemptCount: 1,
+			Status:       logicdomain.TurnAnalysisFailureStatusRetrying,
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{err: errors.New("stop after deadline capture")}
+	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
+		AnalysisTimeout:      2 * time.Minute,
+		FailurePassThreshold: 5,
+	}, nil)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{SessionID: 89, SessionKey: "sess-slow-budget", ProjectID: 12}, "test")
+
+	if !analyzer.deadlineOK {
+		t.Fatal("queued analyzer context has no deadline")
+	}
+	// remainingBudget allows normal scheduling overhead while proving the deadline is materially longer than the former global 30-second ceiling.
+	// remainingBudget 允许正常调度开销，同时证明截止时间显著长于原来的全局 30 秒上限。
+	remainingBudget := time.Until(analyzer.deadline)
+	if remainingBudget < 119*time.Second || remainingBudget > 2*time.Minute {
+		t.Fatalf("queued analyzer remaining budget = %v, want approximately two minutes", remainingBudget)
+	}
+}
+
+// TestPostActionUseCaseContinuesQueueAfterDurablePass verifies the exact-threshold pass terminal lets the next pending turn proceed without retrying the failed turn forever.
+// TestPostActionUseCaseContinuesQueueAfterDurablePass 用于验证达到精确阈值后的 Pass 终态允许继续处理下一 pending turn，避免失败回合无限重试。
+func TestPostActionUseCaseContinuesQueueAfterDurablePass(t *testing.T) {
+	store := &testRelationalStore{
+		pendingTurns: []logicdomain.SessionTurnRecord{
+			{ID: 201, SessionID: 99, ProjectID: 12, DehydratedContent: `{"user":"first","timeline":[],"assistant":"first"}`, ExtractedStatus: logicdomain.TurnExtractedStatusPending},
+			{ID: 202, SessionID: 99, ProjectID: 12, DehydratedContent: `{"user":"second","timeline":[],"assistant":"second"}`, ExtractedStatus: logicdomain.TurnExtractedStatusPending},
+		},
+		failureResult: logicdomain.TurnAnalysisFailureResult{
+			AttemptCount: 5,
+			Status:       logicdomain.TurnAnalysisFailureStatusPassed,
+			Passed:       true,
+		},
+	}
+	analyzer := &stubPostActionTurnAnalyzer{err: errors.New("provider timeout")}
+	uc := newPostActionUseCase(nil, store, nil, nil, analyzer, nil, nil, PostActionAnalysisConfig{
+		AnalysisTimeout:      2 * time.Minute,
+		FailurePassThreshold: 5,
+	}, nil)
+
+	uc.processQueuedTurns(logicdomain.SessionRef{SessionID: 99, SessionKey: "sess-pass", ProjectID: 12}, "test")
+
+	if analyzer.calls != 2 {
+		t.Fatalf("analyzer calls = %d, want 2", analyzer.calls)
+	}
+	if len(store.failureTurnIDs) != 2 || store.failureTurnIDs[0] != 201 || store.failureTurnIDs[1] != 202 {
+		t.Fatalf("failure turn ids = %v, want [201 202]", store.failureTurnIDs)
+	}
+}
+
 // TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzerOutput verifies transient reviewer failures no longer abort queued turn persistence and instead fall back to the analyzer output.
 // TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzerOutput 用于验证统一 reviewer 短暂失败时不会再中断排队 turn 的持久化，而是回退到分析器输出继续落库。
 func TestPostActionUseCaseDegradesUnifiedReviewerFailureAndStillPersistsAnalyzerOutput(t *testing.T) {
@@ -1161,6 +1285,19 @@ func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
 			Scene:   "postaction_l1_main",
 			Message: "json decode failed",
 			Raw:     rawOutput,
+			Execution: &logicdomain.LLMExecutionMetadata{
+				Purpose:         "postaction_l1_main",
+				ConfiguredModel: "Qwen/Qwen3-32B",
+				ResponseModel:   "deepseek-v4-flash-202608",
+				RequestID:       "req-invalid-l1-92",
+				Usage: logicdomain.LLMUsage{
+					PromptTokens:      1874,
+					CompletionTokens:  8417,
+					TotalTokens:       10291,
+					CachedInputTokens: 2304,
+					ReasoningTokens:   8000,
+				},
+			},
 		},
 		model: "Qwen/Qwen3-32B",
 	}
@@ -1187,8 +1324,15 @@ func TestPostActionUseCaseLogsRawAnalyzeTurnJSONDecodeFailure(t *testing.T) {
 	if !strings.Contains(logs, "post-action queued turn analysis failed") {
 		t.Fatalf("expected queued turn analysis failure log, got %s", logs)
 	}
-	if !strings.Contains(logs, "model：\"Qwen/Qwen3-32B\"") {
-		t.Fatalf("expected model field in failure log, got %s", logs)
+	for _, fragment := range []string{
+		"configured_model", "Qwen/Qwen3-32B",
+		"response_model", "deepseek-v4-flash-202608",
+		"request_id", "req-invalid-l1-92",
+		"prompt_tokens", "completion_tokens", "total_tokens", "cached_input_tokens", "reasoning_tokens",
+	} {
+		if !strings.Contains(logs, fragment) {
+			t.Fatalf("expected physical LLM field %q in failure log, got %s", fragment, logs)
+		}
 	}
 	if !strings.Contains(logs, "TEXT(llm_raw_output)：\n"+rawOutput+"\n") {
 		t.Fatalf("expected raw postaction_l1_main output in failure log, got %s", logs)
@@ -1307,6 +1451,19 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 		UserInputKind: logicdomain.TurnAnalysisUserInputStatement,
 		TurnID:        91,
 		Details:       "当前轮需要落一条记忆。",
+		LLMExecutions: []logicdomain.LLMExecutionMetadata{{
+			Purpose:         "postaction_l1_main",
+			ConfiguredModel: "configured-slow-model",
+			ResponseModel:   "provider-actual-model",
+			RequestID:       "req-store-failure-91",
+			Usage: logicdomain.LLMUsage{
+				PromptTokens:      9226,
+				CompletionTokens:  584,
+				TotalTokens:       9810,
+				CachedInputTokens: 4096,
+				ReasoningTokens:   0,
+			},
+		}},
 		MemoryNodes: []logicdomain.MemoryNodeCandidate{
 			{
 				Category:       logicdomain.MemoryNodeCategoryRequirementTODO,
@@ -1328,7 +1485,9 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 			},
 		},
 	}
-	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, nil)
+	logBuf := &bytes.Buffer{}
+	logger := logx.New(logBuf, logx.Config{Level: "info", Format: "text"})
+	uc := newPostActionUseCase(nil, store, embedding, vector, analyzer, searcher, reviewer, PostActionAnalysisConfig{}, logger)
 
 	uc.processQueuedTurns(logicdomain.SessionRef{
 		SessionID:  91,
@@ -1344,6 +1503,17 @@ func TestPostActionUseCaseRollsBackQueuedTurnVectorsWhenPersistenceFails(t *test
 	}
 	if len(vector.deleteIDsCalls) != 1 || len(vector.deleteIDsCalls[0]) != 1 || vector.deleteIDsCalls[0][0] != vector.upserts[0].ID {
 		t.Fatalf("expected rollback ids to match inserted vector row, got delete=%v upsert=%s", vector.deleteIDsCalls, vector.upserts[0].ID)
+	}
+	logs := logBuf.String()
+	for _, fragment := range []string{
+		"configured_model", "configured-slow-model",
+		"response_model", "provider-actual-model",
+		"request_id", "req-store-failure-91",
+		"cached_input_tokens", "reasoning_tokens",
+	} {
+		if !strings.Contains(logs, fragment) {
+			t.Fatalf("expected downstream storage failure log to retain %q, got %s", fragment, logs)
+		}
 	}
 }
 
@@ -1634,6 +1804,9 @@ type testRelationalStore struct {
 	adoptionErr             error
 	markedCorruptedTurnIDs  []uint64
 	markCorruptedErr        error
+	failureTurnIDs          []uint64
+	failureResult           logicdomain.TurnAnalysisFailureResult
+	failureErr              error
 }
 
 // AppendTurnRecord records the latest session scope and canonical turn payload for assertions.
@@ -1772,6 +1945,19 @@ func (s *testRelationalStore) ApplyTurnAnalysis(_ context.Context, _ logicdomain
 	return s.analysisApplyResult, nil
 }
 
+// RecordTurnAnalysisFailure records the failed turn and returns the configured durable retry decision.
+// RecordTurnAnalysisFailure 用于记录失败 turn 并返回预设的持久化重试判定。
+func (s *testRelationalStore) RecordTurnAnalysisFailure(_ context.Context, _ logicdomain.SessionRef, turnID uint64, _ string, _ string, _ int, _ bool) (logicdomain.TurnAnalysisFailureResult, error) {
+	s.failureTurnIDs = append(s.failureTurnIDs, turnID)
+	if s.failureErr != nil {
+		return logicdomain.TurnAnalysisFailureResult{}, s.failureErr
+	}
+	if s.failureResult.AttemptCount == 0 && s.failureResult.Status == "" {
+		return logicdomain.TurnAnalysisFailureResult{AttemptCount: 1, Status: logicdomain.TurnAnalysisFailureStatusRetrying}, nil
+	}
+	return s.failureResult, nil
+}
+
 // MarkTurnAsCorrupted keeps interface completeness for tests that need corrupted-turn handling.
 // MarkTurnAsCorrupted 用于补齐接口，让需要损坏 turn 处理的测试场景仍可编译。
 func (s *testRelationalStore) MarkTurnAsCorrupted(_ context.Context, _ logicdomain.SessionRef, turnID uint64) error {
@@ -1793,17 +1979,20 @@ func (s *testRelationalStore) Shutdown(context.Context) error { return nil }
 // stubPostActionTurnAnalyzer records immediate single-turn analysis calls and returns one canned result or error.
 // stubPostActionTurnAnalyzer 用于记录即时单轮分析调用，并返回预设结果或错误。
 type stubPostActionTurnAnalyzer struct {
-	calls  int
-	input  logicdomain.TurnAnalysisInput
-	result logicdomain.TurnAnalysis
-	err    error
-	model  string
+	calls      int
+	input      logicdomain.TurnAnalysisInput
+	result     logicdomain.TurnAnalysis
+	err        error
+	model      string
+	deadline   time.Time
+	deadlineOK bool
 }
 
 // Analyze captures the structured single-turn input so tests can assert the new synchronous post-action request shape.
 // Analyze 用于捕获结构化单轮输入，方便测试断言新的同步 post-action 请求形态。
-func (s *stubPostActionTurnAnalyzer) Analyze(_ context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error) {
+func (s *stubPostActionTurnAnalyzer) Analyze(ctx context.Context, input logicdomain.TurnAnalysisInput) (logicdomain.TurnAnalysis, error) {
 	s.calls++
+	s.deadline, s.deadlineOK = ctx.Deadline()
 	s.input = logicdomain.TurnAnalysisInput{
 		CurrentTimestamp:       input.CurrentTimestamp,
 		ReferenceTurns:         append([]logicdomain.TurnAnalysisReferenceTurn(nil), input.ReferenceTurns...),

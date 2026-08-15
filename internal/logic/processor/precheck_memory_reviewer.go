@@ -95,7 +95,13 @@ func (r *PreCheckMemoryReviewer) Review(ctx context.Context, input logicdomain.P
 	if err != nil {
 		return logicdomain.PreCheckMemoryReviewResult{}, err
 	}
-	return parsePreCheckMemoryReviewResponse(resp.Content, input)
+	execution := llmExecutionMetadata("precheck_l2_main", r.model, resp)
+	result, err := parsePreCheckMemoryReviewResponse(resp.Content, input)
+	if err != nil {
+		return logicdomain.PreCheckMemoryReviewResult{}, attachLLMExecutionToInvalidOutput(err, execution)
+	}
+	result.LLMExecution = &execution
+	return result, nil
 }
 
 // renderPreCheckMemoryReviewRequest serializes the second-stage review input into one stable JSON payload.

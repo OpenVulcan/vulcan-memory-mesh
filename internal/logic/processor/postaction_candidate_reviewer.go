@@ -72,7 +72,13 @@ func (r *PostActionCandidateReviewer) Review(ctx context.Context, input logicdom
 	if err != nil {
 		return logicdomain.PostActionCandidateReviewResult{}, err
 	}
-	return parsePostActionCandidateReviewResponse(resp.Content, memoryCount, userCount, projectCount)
+	execution := llmExecutionMetadata("postaction_l2_main", r.model, resp)
+	result, err := parsePostActionCandidateReviewResponse(resp.Content, memoryCount, userCount, projectCount)
+	if err != nil {
+		return logicdomain.PostActionCandidateReviewResult{}, attachLLMExecutionToInvalidOutput(err, execution)
+	}
+	result.LLMExecution = &execution
+	return result, nil
 }
 
 // renderPostActionCandidateReviewRequest serializes the current turn context, memory dedupe evidence, and profile review snapshot into one stable JSON body.

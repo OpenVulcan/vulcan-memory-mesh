@@ -75,4 +75,7 @@ type PostActionCandidateReviewResult struct {
 	Memory  *PostActionMemoryReviewSection
 	User    *ProfileReviewSection
 	Project *ProfileReviewSection
+	// LLMExecution retains the physical reviewer call outside the semantic decision payload.
+	// LLMExecution 用于在语义决策载荷之外保留物理 reviewer 调用。
+	LLMExecution *LLMExecutionMetadata `json:"-"`
 }

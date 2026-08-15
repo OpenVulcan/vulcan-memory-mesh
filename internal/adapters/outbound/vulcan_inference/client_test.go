@@ -98,6 +98,9 @@ func TestClientMapsPartialEmbeddingAndRerank(t *testing.T) {
 // TestClientGeneratesThroughStandardResponses 验证不使用私有信封时的请求、输出、模型与用量映射。
 func TestClientGeneratesThroughStandardResponses(t *testing.T) {
 	var requestCount int
+	// correlationRequestID records the exact VMM-owned identifier observed by the loopback inference endpoint.
+	// correlationRequestID 记录回环推理端点实际观察到的 VMM 自有标识。
+	var correlationRequestID string
 	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
 		response.Header().Set("Content-Type", "application/json")
 		if request.Method == http.MethodPost && request.URL.Path == "/v1/responses" {
@@ -109,13 +112,26 @@ func TestClientGeneratesThroughStandardResponses(t *testing.T) {
 			if body["model"] != "precheck_l1" || body["instructions"] != "system" || body["input"] != "user" {
 				t.Fatalf("Responses body = %#v", body)
 			}
+			reasoning, ok := body["reasoning"].(map[string]any)
+			if !ok || reasoning["effort"] != "none" {
+				t.Fatalf("Responses reasoning = %#v, want effort none", body["reasoning"])
+			}
+			clientMetadata, ok := body["client_metadata"].(map[string]any)
+			requestID, requestIDOK := clientMetadata["vmm_request_id"].(string)
+			if !ok || !requestIDOK || !strings.HasPrefix(requestID, "vmm-llm-") {
+				t.Fatalf("Responses client metadata = %#v", body["client_metadata"])
+			}
+			correlationRequestID = requestID
 			_ = json.NewEncoder(response).Encode(map[string]any{
 				"id": "resp_one", "object": "response", "status": "completed", "model": "managed-model",
 				"output": []any{map[string]any{
 					"type": "message", "role": "assistant",
 					"content": []any{map[string]any{"type": "output_text", "text": "managed output"}},
 				}},
-				"usage": map[string]any{"input_tokens": 11, "output_tokens": 7, "total_tokens": 18},
+				"usage": map[string]any{
+					"input_tokens": 11, "input_tokens_details": map[string]any{"cached_tokens": 6},
+					"output_tokens": 7, "output_tokens_details": map[string]any{"reasoning_tokens": 0}, "total_tokens": 18,
+				},
 				"error": nil,
 			})
 			return
@@ -134,11 +150,106 @@ func TestClientGeneratesThroughStandardResponses(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Generate() error = %v", err)
 	}
-	if requestCount != 1 || result.Content != "managed output" || result.Model != "managed-model" {
+	if requestCount != 1 || result.Content != "managed output" || result.Model != "managed-model" || result.RequestID != correlationRequestID {
 		t.Fatalf("Generate() response = %#v, request count = %d", result, requestCount)
 	}
-	if result.Usage.PromptTokens != 11 || result.Usage.CompletionTokens != 7 || result.Usage.TotalTokens != 18 {
+	if result.Usage.PromptTokens != 11 || result.Usage.CompletionTokens != 7 || result.Usage.TotalTokens != 18 || result.Usage.CachedInputTokens != 6 || result.Usage.ReasoningTokens != 0 {
 		t.Fatalf("Generate() usage = %#v", result.Usage)
+	}
+}
+
+// TestClientRejectsManagedPhysicalModelDrift verifies a provider response cannot silently replace the frozen managed model identity.
+// TestClientRejectsManagedPhysicalModelDrift 用于验证供应商响应不能静默替换冻结的托管模型身份。
+func TestClientRejectsManagedPhysicalModelDrift(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(map[string]any{
+			"id": "resp_drift", "object": "response", "status": "completed", "model": "unexpected-model",
+			"output": []any{map[string]any{
+				"type": "message", "role": "assistant",
+				"content": []any{map[string]any{"type": "output_text", "text": "managed output"}},
+			}},
+			"usage": map[string]any{"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "token-one")
+	result, err := client.Generate(context.Background(), appports.LLMRequest{
+		Model:               "configured-model",
+		SystemPrompt:        "system",
+		UserPrompt:          "user",
+		ResponseFormat:      appports.LLMResponseFormatText,
+		RouteSelectionLevel: appports.LLMRouteSelectionLevelPreCheckL1,
+	})
+	if err == nil || !strings.Contains(err.Error(), "drifted from configured-model to unexpected-model") {
+		t.Fatalf("Generate() error = %v, want model drift failure", err)
+	}
+	if result.Model != "unexpected-model" || !strings.HasPrefix(result.RequestID, "vmm-llm-") {
+		t.Fatalf("drift failure lost response identity: %#v", result)
+	}
+}
+
+// TestClientLoadsAuthoritativePurposeRoutes verifies managed processor identities come from the protected capability snapshot instead of standalone defaults.
+// TestClientLoadsAuthoritativePurposeRoutes 用于验证托管处理器身份来自受保护能力快照，而不是独立模式默认值。
+func TestClientLoadsAuthoritativePurposeRoutes(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/inference/v1/capabilities/vmm" {
+			http.NotFound(response, request)
+			return
+		}
+		writeInferenceResult(t, response, map[string]any{
+			"contract_version":    1,
+			"consumer_profile_id": "vmm",
+			"operations": []any{
+				map[string]any{"operation": "conversation_respond", "purpose_id": "precheck_l1", "available": true, "route": map[string]any{
+					"provider_id": "deepseek", "service_entry_id": "official-api", "connection_id": "deepseek-account", "model_id": "deepseek-v4-flash", "protocol_binding_id": "openai.responses",
+				}},
+				map[string]any{"operation": "conversation_respond", "purpose_id": "postaction_l1", "available": false, "route": map[string]any{"model_id": "disabled-model"}},
+				map[string]any{"operation": "embedding", "purpose_id": "", "available": true, "route": map[string]any{"model_id": "embedding-model"}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "token-one")
+	routes, err := client.PurposeRoutes(context.Background())
+	if err != nil {
+		t.Fatalf("PurposeRoutes() error = %v", err)
+	}
+	want := PurposeRoute{
+		ProviderID:        "deepseek",
+		ServiceEntryID:    "official-api",
+		ConnectionID:      "deepseek-account",
+		ModelID:           "deepseek-v4-flash",
+		ProtocolBindingID: "openai.responses",
+	}
+	if len(routes) != 1 || routes["precheck_l1"] != want {
+		t.Fatalf("PurposeRoutes() = %#v", routes)
+	}
+}
+
+// TestClientRejectsIncompletePurposeRouteIdentity verifies managed startup cannot accept a model-only capability snapshot.
+// TestClientRejectsIncompletePurposeRouteIdentity 用于验证托管启动不能接受只有模型名称的能力快照。
+func TestClientRejectsIncompletePurposeRouteIdentity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		if request.Method != http.MethodGet || request.URL.Path != "/inference/v1/capabilities/vmm" {
+			http.NotFound(response, request)
+			return
+		}
+		writeInferenceResult(t, response, map[string]any{
+			"contract_version":    1,
+			"consumer_profile_id": "vmm",
+			"operations": []any{
+				map[string]any{"operation": "conversation_respond", "purpose_id": "precheck_l1", "available": true, "route": map[string]any{"model_id": "deepseek-v4-flash"}},
+			},
+		})
+	}))
+	defer server.Close()
+
+	client := newTestClient(t, server.URL, "token-one")
+	if _, err := client.PurposeRoutes(context.Background()); err == nil || !strings.Contains(err.Error(), "incomplete physical route identity") {
+		t.Fatalf("PurposeRoutes() error = %v, want incomplete route identity", err)
 	}
 }
 

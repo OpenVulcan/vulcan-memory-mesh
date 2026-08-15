@@ -70,7 +70,13 @@ func (r *ManualProfileReviewer) Review(ctx context.Context, target logicdomain.P
 	if err != nil {
 		return logicdomain.ManualProfileInstructionReview{}, err
 	}
-	return parseManualProfileReviewResponse(resp.Content, activeNodes)
+	execution := llmExecutionMetadata("profile_instruction_main", r.model, resp)
+	review, err := parseManualProfileReviewResponse(resp.Content, activeNodes)
+	if err != nil {
+		return logicdomain.ManualProfileInstructionReview{}, attachLLMExecutionToInvalidOutput(err, execution)
+	}
+	review.LLMExecution = &execution
+	return review, nil
 }
 
 // buildManualProfileReviewRequest serializes one target, its active nodes, the incoming instruction, and the enforced authority floor into one stable JSON payload.

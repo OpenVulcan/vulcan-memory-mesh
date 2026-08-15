@@ -19,6 +19,15 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	testutil.UseFixedLocalTime(t, "Asia/Shanghai")
 	llm := &stubProfileMergerLLM{
 		response: logicports.LLMResponse{
+			Model:     "provider-l2-model",
+			RequestID: "req-l2-review",
+			Usage: logicdomain.LLMUsage{
+				PromptTokens:      211,
+				CompletionTokens:  31,
+				TotalTokens:       242,
+				CachedInputTokens: 144,
+				ReasoningTokens:   0,
+			},
 			Content: `{
   "memory": {
     "accepted_candidates": [
@@ -130,6 +139,15 @@ func TestPostActionCandidateReviewerBuildsUnifiedRequest(t *testing.T) {
 	}
 	if result.User == nil || len(result.User.AcceptedCandidates) != 1 {
 		t.Fatalf("unexpected user review result: %+v", result)
+	}
+	if result.LLMExecution == nil {
+		t.Fatal("expected reviewer result to retain one physical LLM execution")
+	}
+	if result.LLMExecution.Purpose != "postaction_l2_main" || result.LLMExecution.ConfiguredModel != "qwen-test" || result.LLMExecution.ResponseModel != "provider-l2-model" || result.LLMExecution.RequestID != "req-l2-review" {
+		t.Fatalf("unexpected reviewer LLM identity: %+v", result.LLMExecution)
+	}
+	if result.LLMExecution.Usage.PromptTokens != 211 || result.LLMExecution.Usage.CompletionTokens != 31 || result.LLMExecution.Usage.TotalTokens != 242 || result.LLMExecution.Usage.CachedInputTokens != 144 || result.LLMExecution.Usage.ReasoningTokens != 0 {
+		t.Fatalf("unexpected reviewer LLM usage: %+v", result.LLMExecution.Usage)
 	}
 }
 

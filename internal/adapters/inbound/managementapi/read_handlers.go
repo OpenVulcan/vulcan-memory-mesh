@@ -377,7 +377,9 @@ func projectManagementSession(management *usecase.ManagementUseCase, record logi
 // projectManagementTurn 用于把内部回合记录转换为一条有界 HTTP 摘要。
 func projectManagementTurn(management *usecase.ManagementUseCase, turn logicdomain.ManagementTurnRecord) managementTurnResponse {
 	status := "pending"
-	if turn.ExtractedStatus == logicdomain.TurnExtractedStatusDone {
+	if turn.ExtractedStatus == logicdomain.TurnExtractedStatusPassed {
+		status = "passed"
+	} else if turn.ExtractedStatus == logicdomain.TurnExtractedStatusDone {
 		status = "extracted"
 	}
 	return managementTurnResponse{

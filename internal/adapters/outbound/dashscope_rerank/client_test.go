@@ -9,9 +9,29 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/httpclient"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
+
+// TestNewClientUsesSharedBoundedTransport verifies default DashScope instances cannot multiply connections or regain an HTTP-wide request timeout.
+// TestNewClientUsesSharedBoundedTransport 用于验证默认 DashScope 实例不会放大连接数量或重新获得 HTTP 全局请求超时。
+func TestNewClientUsesSharedBoundedTransport(t *testing.T) {
+	client := NewClient("", "key", "model", 0, nil)
+	if client.httpClient != httpclient.SharedDefault() {
+		t.Fatal("DashScope rerank must reuse the process-wide bounded HTTP client")
+	}
+	if client.httpClient.Timeout != 0 {
+		t.Fatalf("DashScope shared HTTP timeout = %s, want 0", client.httpClient.Timeout)
+	}
+	if client.timeout != defaultTimeout {
+		t.Fatalf("DashScope operation timeout = %s, want %s", client.timeout, defaultTimeout)
+	}
+	if defaultTimeout != 8*time.Second {
+		t.Fatalf("DashScope default timeout = %s, want 8s", defaultTimeout)
+	}
+}
 
 // TestClientRerankBuildsDashScopeRequest verifies the adapter sends the expected authorization header and JSON body to DashScope.
 // TestClientRerankBuildsDashScopeRequest 用于验证适配器会向 DashScope 发送期望的鉴权头和 JSON 请求体。

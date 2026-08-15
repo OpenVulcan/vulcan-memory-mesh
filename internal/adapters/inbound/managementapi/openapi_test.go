@@ -3,6 +3,7 @@
 package managementapi
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"testing"
@@ -46,6 +47,16 @@ func TestManagementOpenAPIParsesAndCoversLiveRoutes(t *testing.T) {
 	} {
 		if _, exists := paths[path]; !exists {
 			t.Errorf("management OpenAPI is missing live path %s", path)
+		}
+	}
+	// requiredPassEnums keep the documented filter and response status sets aligned with the durable terminal state exposed by live handlers.
+	// requiredPassEnums 让文档中的筛选与响应状态集合和实时处理器暴露的持久化终态保持一致。
+	for _, requiredPassEnum := range [][]byte{
+		[]byte("enum: [all, pending, extracted, passed]"),
+		[]byte("enum: [pending, extracted, passed]"),
+	} {
+		if !bytes.Contains(payload, requiredPassEnum) {
+			t.Errorf("management OpenAPI is missing Pass enum %q", requiredPassEnum)
 		}
 	}
 }

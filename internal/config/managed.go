@@ -25,7 +25,7 @@ import (
 const (
 	// ManagedContractVersion is the only managed-runtime manifest version accepted by this build.
 	// ManagedContractVersion 是当前构建唯一接受的托管运行时清单版本。
-	ManagedContractVersion = 1
+	ManagedContractVersion = 2
 
 	// ManagedRuntimeBuildID identifies the exact packaged runtime family accepted by the host manifest.
 	// ManagedRuntimeBuildID 用于标识宿主清单接受的精确打包运行时族。
@@ -95,12 +95,15 @@ type ManagedStorageConfig struct {
 // ManagedInferenceConfig selects the protected Vulcan Code inference discovery contract.
 // ManagedInferenceConfig 用于选择受保护的 Vulcan Code 推理发现契约。
 type ManagedInferenceConfig struct {
-	Mode               string   `json:"mode" yaml:"mode"`
-	DiscoveryFile      string   `json:"discovery_file" yaml:"discovery_file"`
-	ExpectedCallerID   string   `json:"expected_caller_id" yaml:"expected_caller_id"`
-	ConsumerProfileID  string   `json:"consumer_profile_id" yaml:"consumer_profile_id"`
-	StartupTimeout     Duration `json:"startup_timeout" yaml:"startup_timeout"`
-	EmbeddingDimension int      `json:"embedding_dimension" yaml:"embedding_dimension"`
+	Mode              string   `json:"mode" yaml:"mode"`
+	DiscoveryFile     string   `json:"discovery_file" yaml:"discovery_file"`
+	ExpectedCallerID  string   `json:"expected_caller_id" yaml:"expected_caller_id"`
+	ConsumerProfileID string   `json:"consumer_profile_id" yaml:"consumer_profile_id"`
+	StartupTimeout    Duration `json:"startup_timeout" yaml:"startup_timeout"`
+	// MaxConnectionsPerHost is the host-owned managed inference transport ceiling.
+	// MaxConnectionsPerHost 是宿主持有的托管推理 Transport 连接上限。
+	MaxConnectionsPerHost int `json:"max_connections_per_host" yaml:"max_connections_per_host"`
+	EmbeddingDimension    int `json:"embedding_dimension" yaml:"embedding_dimension"`
 }
 
 // ManagedPreCheckConfig preserves every host-authored pre-check field, including an explicit zero threshold.
@@ -292,6 +295,9 @@ func (c ManagedConfig) Validate() error {
 	if c.Runtime.Inference.StartupTimeout.Duration <= 0 {
 		return errors.New("runtime.inference.startup_timeout must be positive")
 	}
+	if c.Runtime.Inference.MaxConnectionsPerHost <= 0 || c.Runtime.Inference.MaxConnectionsPerHost > 64 {
+		return errors.New("runtime.inference.max_connections_per_host must be between 1 and 64")
+	}
 	runtimeConfig := c.rawRuntimeConfig()
 	if err := validateManagedRuntimeConfig(runtimeConfig); err != nil {
 		return fmt.Errorf("managed runtime config is invalid: %w", err)
@@ -482,6 +488,8 @@ func validateManagedRuntimeConfig(c Config) error {
 		c.PostAction.SessionAnalysisIdleTimeout.Duration <= 0 ||
 		c.PostAction.SessionAnalysisHistoryTurns <= 0 ||
 		c.PostAction.SessionAnalysisMaxInputTokens <= 0 ||
+		c.PostAction.SessionAnalysisTimeout.Duration < 2*time.Minute ||
+		c.PostAction.FailurePassThreshold <= 0 ||
 		c.PostAction.MaxQueueWorkers <= 0 ||
 		c.PostAction.MaxQueueWorkers > 64 {
 		return errors.New("managed post_action limits are invalid")

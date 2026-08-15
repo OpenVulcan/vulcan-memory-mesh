@@ -64,6 +64,10 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 		config.SystemInstruction = genai.NewContentFromText(systemPrompt, genai.RoleUser)
 	}
 	applyGenerateHints(config, providerhint.Merge(c.params, c.modelParams[strings.TrimSpace(model)], req.ProviderHints))
+	// VMM is a semantic extraction workload; models that reject a zero thinking budget are intentionally ineligible.
+	// VMM 是语义提取负载；拒绝零思考预算的模型会被明确视为不符合调用条件。
+	zeroThinkingBudget := int32(0)
+	config.ThinkingConfig = &genai.ThinkingConfig{ThinkingBudget: &zeroThinkingBudget}
 	applyResponseFormat(config, req.ResponseFormat)
 	if httpOptions := requestHTTPOptionsFromContext(ctx); httpOptions != nil {
 		config.HTTPOptions = httpOptions
@@ -88,12 +92,19 @@ func (c *LLMClient) Generate(ctx context.Context, req appports.LLMRequest) (appp
 	usage := logicdomain.LLMUsage{}
 	if resp != nil && resp.UsageMetadata != nil {
 		usage = logicdomain.LLMUsage{
-			PromptTokens:     int(resp.UsageMetadata.PromptTokenCount),
-			CompletionTokens: int(resp.UsageMetadata.CandidatesTokenCount),
-			TotalTokens:      int(resp.UsageMetadata.TotalTokenCount),
+			PromptTokens:      int(resp.UsageMetadata.PromptTokenCount),
+			CompletionTokens:  int(resp.UsageMetadata.CandidatesTokenCount),
+			TotalTokens:       int(resp.UsageMetadata.TotalTokenCount),
+			CachedInputTokens: int(resp.UsageMetadata.CachedContentTokenCount),
+			ReasoningTokens:   int(resp.UsageMetadata.ThoughtsTokenCount),
 		}
 	}
-	return appports.LLMResponse{Content: content, Model: model, Usage: usage}, nil
+	return appports.LLMResponse{
+		Content:   content,
+		Model:     strings.TrimSpace(resp.ModelVersion),
+		RequestID: strings.TrimSpace(resp.ResponseID),
+		Usage:     usage,
+	}, nil
 }
 
 // applyGenerateHints maps portable and Google-specific hint fields onto the GenerateContentConfig used by the Gemini API.

@@ -1,5 +1,5 @@
 {
-  "contract_version": 1,
+  "contract_version": 2,
   "runtime_build_id": "vmm-runtime-v1",
   "owner": "vulcan-code",
   "instance_id": "fixture-instance-v1",
@@ -78,7 +78,8 @@
       "expected_caller_id": "vmm-local",
       "consumer_profile_id": "vmm",
       "startup_timeout": "30s",
-      "embedding_dimension": 1024
+      "embedding_dimension": 1024,
+      "max_connections_per_host": 8
     },
     "logging": {
       "level": "info",
@@ -118,6 +119,8 @@
       "session_analysis_idle_timeout": "15m0s",
       "session_analysis_history_turns": 3,
       "session_analysis_max_input_tokens": 6000,
+      "session_analysis_timeout": "3m0s",
+      "failure_pass_threshold": 5,
       "max_queue_workers": 4
     },
     "memory_pipeline": {

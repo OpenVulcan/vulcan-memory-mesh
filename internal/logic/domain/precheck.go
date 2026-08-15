@@ -52,4 +52,7 @@ type PreCheckMemoryReviewInput struct {
 // PreCheckMemoryReviewResult 用于保存第二层评审器返回的候选编号。
 type PreCheckMemoryReviewResult struct {
 	SelectedCandidateNumbers []int
+	// LLMExecution retains the physical response identity for diagnostics without changing the business payload.
+	// LLMExecution 用于为诊断保留物理响应身份，同时不改变业务载荷。
+	LLMExecution *LLMExecutionMetadata `json:"-"`
 }

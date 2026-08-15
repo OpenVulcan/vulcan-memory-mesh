@@ -434,9 +434,14 @@ llm:
 
       # Route-level extra request parameters.
       # 路由级附加请求参数。
+      # Generic OpenAI-compatible routes must declare one supported no-thinking projection key;
+      # the adapter ignores its configured value and always emits the corresponding disabled value.
+      # 通用 OpenAI-compatible 路由必须声明一个受支持的无思考投影键；适配器会忽略配置值，
+      # 并始终输出对应的关闭值。
       # OpenRouter routes may use this field for reasoning controls and provider routing preferences.
       # OpenRouter 路由可通过该字段传递思考控制与供应商路由偏好。
-      params: {}
+      params:
+        reasoning_effort: "none"
 
       # Model-specific parameter map keyed by model name.
       # 以模型名为 key 的模型级参数映射。
@@ -716,6 +721,14 @@ post_action:
   # Maximum token budget for one session analysis input.
   # 单次 session 分析输入允许使用的最大 token 预算。
   session_analysis_max_input_tokens: 6000
+
+  # Total deadline shared by every LLM, embedding, rerank, deduplication, and persistence stage for one pending turn.
+  # 单个 pending turn 的 LLM、向量、重排、去重与持久化阶段共享的总截止时间。
+  session_analysis_timeout: "3m"
+
+  # Consecutive failed analysis attempts after which the turn enters the durable passed state.
+  # 连续分析失败达到该次数后，将该回合置为持久化 passed 状态。
+  failure_pass_threshold: 5
 
   # Maximum number of parallel queue workers that process different sessions concurrently.
   # 并行队列工作器上限，用于同时处理不同 session 的分析任务。

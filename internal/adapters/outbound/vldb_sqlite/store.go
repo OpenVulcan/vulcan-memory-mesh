@@ -24,7 +24,7 @@ import (
 const (
 	// currentSchemaVersion tracks the newest SQLite schema version understood by this runtime.
 	// currentSchemaVersion 用于标记当前运行时理解的最新 SQLite 表结构版本。
-	currentSchemaVersion = 21
+	currentSchemaVersion = 22
 
 	// debugSeedUserID keeps the testing-stage default user row stable so grpc debugging can immediately target user_id=1.
 	// debugSeedUserID 用于固定测试阶段的默认用户行，便于 gRPC 调试时直接使用 user_id=1。
@@ -165,6 +165,50 @@ CREATE TABLE IF NOT EXISTS vmm_turn_records (
 );
 CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_session ON vmm_turn_records(session_id, id);
 CREATE INDEX IF NOT EXISTS idx_vmm_turn_records_project_status ON vmm_turn_records(project_id, extracted_status, id);
+
+CREATE TABLE IF NOT EXISTS vmm_turn_analysis_failures (
+  turn_id BIGINT NOT NULL,
+  session_id BIGINT NOT NULL,
+  stage TEXT NOT NULL,
+  attempt_count INTEGER NOT NULL DEFAULT 0,
+  terminal_status TEXT NOT NULL DEFAULT 'retrying',
+  last_error TEXT NOT NULL DEFAULT '',
+  last_attempt_timestamp BIGINT NOT NULL,
+  PRIMARY KEY (turn_id, stage),
+  FOREIGN KEY(turn_id) REFERENCES vmm_turn_records(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_vmm_turn_analysis_failures_session ON vmm_turn_analysis_failures(session_id, terminal_status, turn_id);
+CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_failure_pass
+AFTER INSERT ON vmm_turn_analysis_failures
+WHEN NEW.terminal_status IN ('passed', 'passed_uncertain')
+BEGIN
+  UPDATE vmm_turn_records
+  SET extracted_status = 2,
+      updated_timestamp = CASE
+        WHEN updated_timestamp < NEW.last_attempt_timestamp THEN NEW.last_attempt_timestamp
+        ELSE updated_timestamp
+      END
+  WHERE id = NEW.turn_id AND session_id = NEW.session_id AND extracted_status = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_failure_update_pass
+AFTER UPDATE OF terminal_status, last_attempt_timestamp ON vmm_turn_analysis_failures
+WHEN NEW.terminal_status IN ('passed', 'passed_uncertain')
+BEGIN
+  UPDATE vmm_turn_records
+  SET extracted_status = 2,
+      updated_timestamp = CASE
+        WHEN updated_timestamp < NEW.last_attempt_timestamp THEN NEW.last_attempt_timestamp
+        ELSE updated_timestamp
+      END
+  WHERE id = NEW.turn_id AND session_id = NEW.session_id AND extracted_status = 0;
+END;
+CREATE TRIGGER IF NOT EXISTS trg_vmm_turn_analysis_success_clear
+AFTER UPDATE OF extracted_status ON vmm_turn_records
+WHEN OLD.extracted_status = 0 AND NEW.extracted_status = 1
+BEGIN
+  DELETE FROM vmm_turn_analysis_failures
+  WHERE turn_id = NEW.id AND session_id = NEW.session_id;
+END;
 
 CREATE TABLE IF NOT EXISTS vmm_memory_nodes (
   id BIGINT PRIMARY KEY,
@@ -3083,6 +3127,124 @@ ORDER BY id ASC
 		turns = append(turns, row.toDomain())
 	}
 	return turns, nil
+}
+
+// turnAnalysisFailureRow mirrors one durable per-turn analysis retry record returned by SQLite.
+// turnAnalysisFailureRow 用于映射 SQLite 返回的一条逐 turn 持久化分析重试记录。
+type turnAnalysisFailureRow struct {
+	// TurnID identifies the durable turn whose analysis failed.
+	// TurnID 用于标识发生分析失败的持久化 turn。
+	TurnID uint64 `json:"turn_id"`
+
+	// SessionID identifies the owning durable session.
+	// SessionID 用于标识该失败记录所属的持久化 session。
+	SessionID uint64 `json:"session_id"`
+
+	// Stage identifies the analysis stage that owns this retry counter.
+	// Stage 用于标识拥有该重试计数器的分析阶段。
+	Stage string `json:"stage"`
+
+	// AttemptCount stores the consecutive failed execution count.
+	// AttemptCount 用于保存连续失败执行次数。
+	AttemptCount int `json:"attempt_count"`
+
+	// TerminalStatus stores retrying, passed, or passed_uncertain.
+	// TerminalStatus 用于保存 retrying、passed 或 passed_uncertain 状态。
+	TerminalStatus string `json:"terminal_status"`
+}
+
+// RecordTurnAnalysisFailure atomically increments one durable failure counter and lets schema triggers move terminal attempts to Pass.
+// RecordTurnAnalysisFailure 用于原子递增一条持久化失败计数，并由 schema 触发器把终止尝试迁移为 Pass。
+func (s *Store) RecordTurnAnalysisFailure(
+	ctx context.Context,
+	session logicdomain.SessionRef,
+	turnID uint64,
+	stage string,
+	errorMessage string,
+	failurePassThreshold int,
+	forcePass bool,
+) (logicdomain.TurnAnalysisFailureResult, error) {
+	if session.SessionID == 0 {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "session_id", Message: "must resolve to one persisted session"}
+	}
+	if turnID == 0 {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "turn_id", Message: "must refer to one persisted turn"}
+	}
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "stage", Message: "must not be empty"}
+	}
+	if failurePassThreshold <= 0 {
+		return logicdomain.TurnAnalysisFailureResult{}, logicdomain.ValidationError{Field: "failure_pass_threshold", Message: "must be > 0"}
+	}
+	errorMessage = storageutil.TruncateUTF8Bytes(errorMessage, 4000)
+	nowMs := time.Now().UTC().UnixMilli()
+
+	// Serialize the counter UPSERT with all other SQLite turn state transitions so an accepted retry cannot race a successful analysis write-back.
+	// 将计数 UPSERT 与其他 SQLite turn 状态迁移串行化，避免已接受的重试与成功分析回写发生竞态。
+	s.writeMu.Lock()
+	defer s.writeMu.Unlock()
+
+	insertStatus := logicdomain.TurnAnalysisFailureStatusRetrying
+	if forcePass {
+		insertStatus = logicdomain.TurnAnalysisFailureStatusPassedUncertain
+	} else if failurePassThreshold == 1 {
+		insertStatus = logicdomain.TurnAnalysisFailureStatusPassed
+	}
+	statement := `
+INSERT INTO vmm_turn_analysis_failures (
+  turn_id, session_id, stage, attempt_count, terminal_status, last_error, last_attempt_timestamp
+)
+SELECT id, session_id, ?, 1, ?, ?, ?
+FROM vmm_turn_records
+WHERE id = ? AND session_id = ? AND extracted_status = ?
+ON CONFLICT(turn_id, stage) DO UPDATE SET
+  attempt_count = vmm_turn_analysis_failures.attempt_count + 1,
+  terminal_status = CASE
+    WHEN ? THEN ?
+    WHEN vmm_turn_analysis_failures.attempt_count + 1 >= ? THEN ?
+    ELSE ?
+  END,
+  last_error = excluded.last_error,
+  last_attempt_timestamp = excluded.last_attempt_timestamp
+WHERE vmm_turn_analysis_failures.terminal_status = ?;
+`
+	if _, err := s.execResult(
+		ctx,
+		statement,
+		stage,
+		insertStatus,
+		errorMessage,
+		nowMs,
+		turnID,
+		session.SessionID,
+		logicdomain.TurnExtractedStatusPending,
+		forcePass,
+		logicdomain.TurnAnalysisFailureStatusPassedUncertain,
+		failurePassThreshold,
+		logicdomain.TurnAnalysisFailureStatusPassed,
+		logicdomain.TurnAnalysisFailureStatusRetrying,
+		logicdomain.TurnAnalysisFailureStatusRetrying,
+	); err != nil {
+		return logicdomain.TurnAnalysisFailureResult{}, sqliteWriteCommitBoundaryError("record turn analysis failure", err)
+	}
+	rows, err := queryRows[turnAnalysisFailureRow](s, ctx, `
+SELECT turn_id, session_id, stage, attempt_count, terminal_status
+FROM vmm_turn_analysis_failures
+WHERE turn_id = ? AND session_id = ? AND stage = ?
+`, turnID, session.SessionID, stage)
+	if err != nil {
+		return logicdomain.TurnAnalysisFailureResult{}, fmt.Errorf("load recorded turn analysis failure: %w", err)
+	}
+	if len(rows) != 1 {
+		return logicdomain.TurnAnalysisFailureResult{}, fmt.Errorf("record turn analysis failure did not resolve one pending turn")
+	}
+	status := strings.TrimSpace(rows[0].TerminalStatus)
+	return logicdomain.TurnAnalysisFailureResult{
+		AttemptCount: rows[0].AttemptCount,
+		Status:       status,
+		Passed:       status == logicdomain.TurnAnalysisFailureStatusPassed || status == logicdomain.TurnAnalysisFailureStatusPassedUncertain,
+	}, nil
 }
 
 // parameterizedMarkTurnAsCorruptedStatement builds the guarded pending-to-done update used when a queued turn payload is unreadable.

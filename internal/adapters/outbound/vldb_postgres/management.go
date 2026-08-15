@@ -256,6 +256,8 @@ func (s *Store) ListManagementTurns(ctx context.Context, query logicdomain.Manag
 		where = append(where, "tr.extracted_status = "+args.Add(logicdomain.TurnExtractedStatusPending))
 	} else if query.Status == "extracted" {
 		where = append(where, "tr.extracted_status = "+args.Add(logicdomain.TurnExtractedStatusDone))
+	} else if query.Status == "passed" {
+		where = append(where, "tr.extracted_status = "+args.Add(logicdomain.TurnExtractedStatusPassed))
 	}
 	if query.HasMemory != nil {
 		operator := "NOT EXISTS"

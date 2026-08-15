@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vulcan_inference"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 )
@@ -42,13 +43,19 @@ func buildMaintenanceEmbedding(cfg config.Config, managedConfig *config.ManagedC
 	if managedConfig == nil {
 		return buildEmbedding(cfg)
 	}
-	dependencies, err := buildRuntimeAIDependenciesForOptions(cfg, applicationOptions{
-		ManagedConfig: managedConfig,
+	client, err := vulcan_inference.New(vulcan_inference.Config{
+		DiscoveryFile:         managedConfig.Runtime.Inference.DiscoveryFile,
+		ExpectedProcessID:     managedConfig.Parent.ProcessID,
+		ExpectedStartedAt:     managedConfig.Parent.StartedAtUnixMS,
+		ExpectedCallerID:      managedConfig.Runtime.Inference.ExpectedCallerID,
+		ConsumerProfileID:     managedConfig.Runtime.Inference.ConsumerProfileID,
+		StartupTimeout:        managedConfig.Runtime.Inference.StartupTimeout.Duration,
+		MaxConnectionsPerHost: managedConfig.Runtime.Inference.MaxConnectionsPerHost,
 	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("build Vulcan managed maintenance inference client: %w", err)
 	}
-	return dependencies.Embedding, nil
+	return client, nil
 }
 
 // BuildMaintenanceStorageDependencies composes only the storage adapters for cleanup and export commands that do not need an embedding provider.

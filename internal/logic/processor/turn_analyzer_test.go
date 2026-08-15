@@ -97,6 +97,15 @@ func TestPostActionL1PromptDropsAgentCapabilitySelfDescriptions(t *testing.T) {
 func TestTurnAnalyzerAnalyze(t *testing.T) {
 	llm := &stubTurnAnalyzerLLM{
 		response: logicports.LLMResponse{
+			Model:     "provider-l1-model",
+			RequestID: "req-l1-92",
+			Usage: logicdomain.LLMUsage{
+				PromptTokens:      101,
+				CompletionTokens:  17,
+				TotalTokens:       118,
+				CachedInputTokens: 73,
+				ReasoningTokens:   0,
+			},
 			Content: `{
   "user_input_kind": "question",
   "turn_id": 92,
@@ -230,6 +239,16 @@ func TestTurnAnalyzerAnalyze(t *testing.T) {
 	}
 	if analysis.ProfileNodes[0].EvidenceSource != logicdomain.TurnAnalysisEvidenceSourceUserConfirmed || analysis.ProfileNodes[0].Admission != logicdomain.TurnAnalysisAdmissionKeep {
 		t.Fatalf("unexpected profile node admission metadata: %+v", analysis.ProfileNodes[0])
+	}
+	if len(analysis.LLMExecutions) != 1 {
+		t.Fatalf("expected one retained physical LLM execution, got %+v", analysis.LLMExecutions)
+	}
+	execution := analysis.LLMExecutions[0]
+	if execution.Purpose != "postaction_l1_main" || execution.ConfiguredModel != "qwen3.5-flash" || execution.ResponseModel != "provider-l1-model" || execution.RequestID != "req-l1-92" {
+		t.Fatalf("unexpected retained LLM identity: %+v", execution)
+	}
+	if execution.Usage.PromptTokens != 101 || execution.Usage.CompletionTokens != 17 || execution.Usage.TotalTokens != 118 || execution.Usage.CachedInputTokens != 73 || execution.Usage.ReasoningTokens != 0 {
+		t.Fatalf("unexpected retained LLM usage: %+v", execution.Usage)
 	}
 }
 
@@ -368,7 +387,16 @@ func TestParseTurnAnalysisResponseRejectsUnexpectedCandidateLocalSupersedes(t *t
 func TestTurnAnalyzerRejectsMismatchedTurnID(t *testing.T) {
 	analyzer := NewTurnAnalyzer(&stubTurnAnalyzerLLM{
 		response: logicports.LLMResponse{
-			Content: `{"user_input_kind":"mixed","turn_id":999,"details":"","memory_nodes":[],"profile_nodes":[]}`,
+			Content:   `{"user_input_kind":"mixed","turn_id":999,"details":"","memory_nodes":[],"profile_nodes":[]}`,
+			Model:     "provider-mismatch-model",
+			RequestID: "req-mismatch-12",
+			Usage: logicdomain.LLMUsage{
+				PromptTokens:      40,
+				CompletionTokens:  9,
+				TotalTokens:       49,
+				CachedInputTokens: 22,
+				ReasoningTokens:   0,
+			},
 		},
 	}, &stubTurnAnalyzerPromptSource{prompt: "prompt-body"}, "qwen3.5-flash")
 
@@ -381,8 +409,12 @@ func TestTurnAnalyzerRejectsMismatchedTurnID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected turn mismatch error")
 	}
-	if _, ok := err.(logicdomain.InvalidLLMOutputError); !ok {
+	invalid, ok := err.(logicdomain.InvalidLLMOutputError)
+	if !ok {
 		t.Fatalf("expected InvalidLLMOutputError, got %T", err)
+	}
+	if invalid.Execution == nil || invalid.Execution.ResponseModel != "provider-mismatch-model" || invalid.Execution.RequestID != "req-mismatch-12" || invalid.Execution.Usage.CachedInputTokens != 22 {
+		t.Fatalf("expected invalid output to retain physical response metadata, got %+v", invalid.Execution)
 	}
 }
 

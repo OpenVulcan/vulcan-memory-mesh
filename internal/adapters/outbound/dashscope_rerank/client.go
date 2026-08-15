@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/httpclient"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/providerinput"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 )
@@ -32,6 +33,7 @@ type Client struct {
 	endpoint   string
 	apiKey     string
 	model      string
+	timeout    time.Duration
 	httpClient *http.Client
 }
 
@@ -55,14 +57,14 @@ func (e *APIError) Error() string {
 	return fmt.Sprintf("dashscope rerank status %d", e.StatusCode)
 }
 
-// NewClient creates a DashScope rerank client with one shared HTTP client and normalized endpoint settings.
-// NewClient 用于创建 DashScope rerank 客户端，并补齐共享 HTTP 客户端和规范化后的 endpoint 设置。
+// NewClient creates a DashScope rerank client with one bounded shared transport, an explicit operation budget, and normalized endpoint settings.
+// NewClient 用于创建使用有界共享 Transport、显式操作预算和规范化 endpoint 设置的 DashScope rerank 客户端。
 func NewClient(endpoint, apiKey, model string, timeout time.Duration, httpClient *http.Client) *Client {
 	if timeout <= 0 {
 		timeout = defaultTimeout
 	}
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: timeout}
+		httpClient = httpclient.SharedDefault()
 	}
 	trimmedEndpoint := strings.TrimRight(strings.TrimSpace(endpoint), "/")
 	if trimmedEndpoint == "" {
@@ -72,6 +74,7 @@ func NewClient(endpoint, apiKey, model string, timeout time.Duration, httpClient
 		endpoint:   trimmedEndpoint,
 		apiKey:     strings.TrimSpace(apiKey),
 		model:      strings.TrimSpace(model),
+		timeout:    timeout,
 		httpClient: httpClient,
 	}
 }
@@ -106,7 +109,11 @@ func (c *Client) Rerank(ctx context.Context, query string, docs []appports.Reran
 	if err != nil {
 		return nil, fmt.Errorf("marshal dashscope rerank request: %w", err)
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, bytes.NewReader(body))
+	// Apply the route-owned rerank budget through a child context so the process-wide HTTP client remains connection-only and the earlier parent deadline still wins.
+	// 通过子 Context 应用路由持有的 rerank 预算，让进程级 HTTP Client 只负责连接，并确保更早的父截止时间仍优先生效。
+	requestCtx, cancelRequest := context.WithTimeout(ctx, c.timeout)
+	defer cancelRequest()
+	req, err := http.NewRequestWithContext(requestCtx, http.MethodPost, c.endpoint, bytes.NewReader(body))
 	if err != nil {
 		return nil, fmt.Errorf("build dashscope rerank request: %w", err)
 	}

@@ -461,7 +461,62 @@ type PostActionConfig struct {
 	SessionAnalysisIdleTimeout    Duration `json:"session_analysis_idle_timeout"`
 	SessionAnalysisHistoryTurns   int      `json:"session_analysis_history_turns"`
 	SessionAnalysisMaxInputTokens int      `json:"session_analysis_max_input_tokens"`
-	MaxQueueWorkers               int      `json:"max_queue_workers,omitempty"`
+	// SessionAnalysisTimeout is the total deadline for one queued PostAction analysis chain.
+	// SessionAnalysisTimeout 是一条排队 PostAction 分析链的总截止时间。
+	SessionAnalysisTimeout Duration `json:"session_analysis_timeout"`
+	// FailurePassThreshold is the consecutive durable failure count that terminates retries for one turn.
+	// FailurePassThreshold 是终止一条 turn 后续重试的持久化连续失败次数。
+	FailurePassThreshold int `json:"failure_pass_threshold"`
+	MaxQueueWorkers      int `json:"max_queue_workers,omitempty"`
+
+	// sessionAnalysisTimeoutSet records whether a config layer explicitly supplied the deadline.
+	// sessionAnalysisTimeoutSet 用于记录配置层是否显式提供了分析截止时间。
+	sessionAnalysisTimeoutSet bool `json:"-"`
+	// failurePassThresholdSet records whether a config layer explicitly supplied the failure threshold.
+	// failurePassThresholdSet 用于记录配置层是否显式提供了失败阈值。
+	failurePassThresholdSet bool `json:"-"`
+}
+
+// UnmarshalJSON preserves layered PostAction defaults while retaining explicit invalid reliability values for fail-closed validation.
+// UnmarshalJSON 用于保留分层 PostAction 默认值，同时保留显式无效可靠性配置以执行封闭校验。
+func (c *PostActionConfig) UnmarshalJSON(data []byte) error {
+	if c == nil {
+		return nil
+	}
+	type postActionConfigAlias PostActionConfig
+	rawFields := map[string]json.RawMessage{}
+	if err := json.Unmarshal(data, &rawFields); err != nil {
+		return err
+	}
+	// Custom nested decoding must retain the same unknown-field rejection as the outer strict decoder.
+	// 自定义嵌套解码必须保持与外层严格解码器相同的未知字段拒绝行为。
+	for field := range rawFields {
+		switch field {
+		case "input_mode",
+			"session_analysis_turn_threshold",
+			"session_analysis_token_threshold",
+			"session_analysis_idle_timeout",
+			"session_analysis_history_turns",
+			"session_analysis_max_input_tokens",
+			"session_analysis_timeout",
+			"failure_pass_threshold",
+			"max_queue_workers":
+		default:
+			return fmt.Errorf("json: unknown field %q", field)
+		}
+	}
+	next := postActionConfigAlias(*c)
+	if err := json.Unmarshal(data, &next); err != nil {
+		return err
+	}
+	*c = PostActionConfig(next)
+	if _, ok := rawFields["session_analysis_timeout"]; ok {
+		c.sessionAnalysisTimeoutSet = true
+	}
+	if _, ok := rawFields["failure_pass_threshold"]; ok {
+		c.failurePassThresholdSet = true
+	}
+	return nil
 }
 
 // RetentionConfig keeps the cold-data governance knobs for recycle scanning, turn hot-window buffering, and trash retention.
@@ -640,6 +695,7 @@ func DefaultBase() Config {
 			Routes: []LLMRouteConfig{{
 				Provider:    "openai",
 				Model:       "gpt-4.1-mini",
+				Params:      map[string]any{"reasoning_effort": "none"},
 				KeyFailover: defaultKeyFailoverConfig(),
 			}},
 		},
@@ -672,6 +728,8 @@ func DefaultBase() Config {
 			SessionAnalysisIdleTimeout:    Duration{15 * time.Minute},
 			SessionAnalysisHistoryTurns:   3,
 			SessionAnalysisMaxInputTokens: 6000,
+			SessionAnalysisTimeout:        Duration{3 * time.Minute},
+			FailurePassThreshold:          5,
 			MaxQueueWorkers:               4,
 		},
 		PreCheck: PreCheckConfig{IntentTimeout: Duration{5 * time.Second}, TopK: 5, SearchScope: "space"},
