@@ -57,7 +57,12 @@ func TestFirstRoutingAPIKeyAcceptsSupportedKeyShapes(t *testing.T) {
 // TestFindRepoRootAcceptsBaseOnlyPackagedConfig verifies repository-root detection no longer requires a packaged config.yaml when the runtime is expected to pick up user overrides from ~/.vmm.
 // TestFindRepoRootAcceptsBaseOnlyPackagedConfig 用于验证仓库根目录探测不再强制要求打包态 config.yaml，确保运行时可从 ~/.vmm 读取用户覆盖配置。
 func TestFindRepoRootAcceptsBaseOnlyPackagedConfig(t *testing.T) {
-	repoRoot := t.TempDir()
+	// os.Getwd resolves the macOS /var symlink, so use the same canonical root for comparison.
+	// os.Getwd 会解析 macOS 的 /var 符号链接，因此比较时使用相同的规范仓库根目录。
+	repoRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(filepath.Join(repoRoot, "output", "configs"), 0o755); err != nil {
 		t.Fatal(err)
 	}

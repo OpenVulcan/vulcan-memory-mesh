@@ -17,7 +17,13 @@ import (
 // TestNativeLayoutUsesPackagedRoots checks paths, defaults, and absence of eager database creation.
 // TestNativeLayoutUsesPackagedRoots 验证路径、默认库名以及解析阶段不会提前创建数据库。
 func TestNativeLayoutUsesPackagedRoots(t *testing.T) {
-	root := filepath.Join(t.TempDir(), "output")
+	// Match the runtime's canonical path identity before checking the packaged layout.
+	// 在检查打包布局前先采用与运行时一致的规范路径身份。
+	tempRoot, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	root := filepath.Join(tempRoot, "output")
 	cfg := config.DefaultLocal()
 	cfg.Storage.Mode = "native"
 	got, err := resolveNativeStorageLayout(cfg, config.PromptLayout{SystemDir: filepath.Join(root, "configs")})
@@ -103,7 +109,12 @@ func TestNativeOwnerRetainsLocksUntilResourcesClose(t *testing.T) {
 // TestNativeLayoutHonorsAbsolutePaths verifies that the user's explicit resource paths stay authoritative.
 // TestNativeLayoutHonorsAbsolutePaths 验证用户显式指定的绝对资源路径具有唯一权威性。
 func TestNativeLayoutHonorsAbsolutePaths(t *testing.T) {
-	root := t.TempDir()
+	// The configured absolute paths are authoritative after canonical symlink resolution.
+	// 显式绝对路径在完成符号链接规范化后仍是唯一权威路径。
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
 	cfg := config.DefaultLocal()
 	cfg.SQLite.Native.Path = filepath.Join(root, "custom", "sqlite.db")
 	cfg.LanceDB.Native.Path = filepath.Join(root, "vectors")
