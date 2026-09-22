@@ -338,7 +338,7 @@ func createNativeCopyTestDatabase(t *testing.T, path, memoryPayloadType string, 
 // openNativeCopyTestDatabase 使用单连接打开一个临时 SQLite 文件，保证测试确定性。
 func openNativeCopyTestDatabase(t *testing.T, path string) *sql.DB {
 	t.Helper()
-	db, err := sql.Open("sqlite", path)
+	db, err := sql.Open("sqlite", sqliteFileDSN(path))
 	if err != nil {
 		t.Fatalf("open test sqlite %s: %v", path, err)
 	}

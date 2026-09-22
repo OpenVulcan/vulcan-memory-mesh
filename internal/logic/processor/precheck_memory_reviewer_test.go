@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	logicports "github.com/openvulcan/vmm/internal/logic/ports"
@@ -172,7 +173,9 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 		t.Fatalf("expected snake_case candidate keys in rendered payload, got %s", rendered)
 	}
 	assertCompactJSONPrompt(t, rendered)
-	for _, fragment := range []string{`"current_datetime":"2026-04-01 07:33:28"`, `"created_datetime":"2026-04-01 07:33:21"`} {
+	currentDateTime := time.UnixMilli(1775000008000).Local().Format("2006-01-02 15:04:05")
+	createdDateTime := time.UnixMilli(1775000001000).Local().Format("2006-01-02 15:04:05")
+	for _, fragment := range []string{`"current_datetime":"` + currentDateTime + `"`, `"created_datetime":"` + createdDateTime + `"`} {
 		if !strings.Contains(rendered, fragment) {
 			t.Fatalf("expected rendered request to expose %s, got %s", fragment, rendered)
 		}
@@ -188,7 +191,7 @@ func TestRenderPreCheckMemoryReviewRequestPreservesMatchedContextEvidence(t *tes
 	if len(payload.Candidates) != 1 {
 		t.Fatalf("unexpected candidates: %#v", payload.Candidates)
 	}
-	if payload.Candidates[0].CreatedDateTime != "2026-04-01 07:33:21" {
+	if payload.Candidates[0].CreatedDateTime != createdDateTime {
 		t.Fatalf("expected candidate created datetime to be derived from timestamp, got %#v", payload.Candidates[0])
 	}
 	if len(payload.Candidates[0].MatchedContextValues) != 2 {

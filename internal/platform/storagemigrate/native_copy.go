@@ -153,7 +153,7 @@ func CopyNativeSnapshot(ctx context.Context, snapshotSQLitePath, targetNativeSQL
 		return NativeCopyReport{}, fmt.Errorf("enable legacy sqlite query_only mode: %w", err)
 	}
 
-	target, err := sql.Open("sqlite", targetPath)
+	target, err := sql.Open("sqlite", sqliteFileDSN(targetPath))
 	if err != nil {
 		return NativeCopyReport{}, fmt.Errorf("open initialized native sqlite database: %w", err)
 	}
@@ -276,6 +276,21 @@ func validateCopyPaths(snapshotSQLitePath, targetNativeSQLitePath string) (strin
 // immutableSQLiteDSN creates the verified read-only immutable SQLite URI used for snapshot reads.
 // immutableSQLiteDSN 创建已验证的只读 immutable SQLite URI，用于读取快照。
 func immutableSQLiteDSN(path string) string {
+	uri := sqliteFileURL(path)
+	uri.RawQuery = url.Values{"immutable": []string{"1"}, "mode": []string{"ro"}}.Encode()
+	return uri.String()
+}
+
+// sqliteFileDSN escapes a filesystem path before SQLite parses URI-reserved characters as query or fragment delimiters.
+// sqliteFileDSN 在 SQLite 解析 URI 前转义文件路径，避免问号和井号被当作查询或片段分隔符。
+func sqliteFileDSN(path string) string {
+	uri := sqliteFileURL(path)
+	return uri.String()
+}
+
+// sqliteFileURL builds an absolute SQLite file URL while retaining reserved characters as literal filename bytes.
+// sqliteFileURL 构建绝对 SQLite 文件 URL，同时把保留字符保留为文件名的字面内容。
+func sqliteFileURL(path string) url.URL {
 	slashPath := filepath.ToSlash(path)
 	// A Windows drive path needs one URI slash before the drive letter so the result is file:///D:/...; POSIX absolute paths already have it.
 	// Windows 驱动器路径需要在盘符前补一个 URI 斜杠以生成 file:///D:/...，POSIX 绝对路径本身已经带有该斜杠。
@@ -283,8 +298,7 @@ func immutableSQLiteDSN(path string) string {
 		slashPath = "/" + slashPath
 	}
 	uri := url.URL{Scheme: "file", Path: slashPath}
-	uri.RawQuery = url.Values{"immutable": []string{"1"}, "mode": []string{"ro"}}.Encode()
-	return uri.String()
+	return uri
 }
 
 // enableTargetForeignKeys enables and verifies foreign-key enforcement on the dedicated target connection.

@@ -104,6 +104,12 @@ jobs:
       EXPECTED_GOARCH: ${{ matrix.goarch }}
       VMM_NATIVE_LANCEDB_LIBRARY: ${{ github.workspace }}/output/libs/${{ matrix.library }}
       VMM_NATIVE_PACKAGED_ROOT: ${{ github.workspace }}/output
+      # Resolve shipped optional-provider placeholders with unreachable local test endpoints.
+      # 用不可达的本地测试端点填充随包配置中的可选提供方占位变量。
+      BAILIAN_API_KEY: release-test-placeholder
+      BAILIAN_BASE_URL: http://127.0.0.1:1/v1
+      BAILIAN_RERANK_URL: http://127.0.0.1:1/rerank
+      VMM_POSTGRES_DSN: postgres://release:release@127.0.0.1:1/release?sslmode=disable
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

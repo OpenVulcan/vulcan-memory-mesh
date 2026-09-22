@@ -40,6 +40,21 @@ func newRuntimeConfigForTest() config.Config {
 	return cfg
 }
 
+// configurePackagedNativeStorageForTest selects isolated native files when the release job supplies its verified LanceDB library.
+// configurePackagedNativeStorageForTest 在发行任务提供已验证 LanceDB 库时选用隔离的原生文件。
+func configurePackagedNativeStorageForTest(t *testing.T, cfg *config.Config) {
+	t.Helper()
+	library := os.Getenv("VMM_NATIVE_LANCEDB_LIBRARY")
+	if library == "" {
+		return
+	}
+	storageRoot := t.TempDir()
+	cfg.Storage.Mode = "native"
+	cfg.SQLite.Native.Path = filepath.Join(storageRoot, "sqlite.db")
+	cfg.LanceDB.Native.Path = filepath.Join(storageRoot, "lancedb")
+	cfg.LanceDB.Native.LibraryPath = library
+}
+
 // TestBuildGRPCKeepaliveConfigurationMapsConfigValues verifies the transport helper preserves the configured keepalive timings and client-ping policy before the runtime builds the gRPC server.
 // TestBuildGRPCKeepaliveConfigurationMapsConfigValues 用于验证在运行时构建 gRPC 服务之前，传输层辅助函数会保留配置中的 keepalive 时序和客户端 ping 策略。
 func TestBuildGRPCKeepaliveConfigurationMapsConfigValues(t *testing.T) {
@@ -170,6 +185,7 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 	}
 
 	cfg := newRuntimeConfigForTest()
+	configurePackagedNativeStorageForTest(t, &cfg)
 
 	app, err := NewLocal(cfg, prompts, layout)
 	if err != nil {
@@ -229,6 +245,7 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 	}
 
 	cfg := newRuntimeConfigForTest()
+	configurePackagedNativeStorageForTest(t, &cfg)
 
 	application, err := NewLocal(cfg, prompts, layout)
 	if err != nil {
@@ -274,6 +291,7 @@ func TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled(t *testing.T) {
 	}
 
 	cfg := newRuntimeConfigForTest()
+	configurePackagedNativeStorageForTest(t, &cfg)
 	cfg.Logging.LLMOutputEnabled = true
 
 	application, err := NewLocal(cfg, prompts, layout)

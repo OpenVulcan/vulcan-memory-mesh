@@ -26,7 +26,7 @@ func TestHourlyFileWriterCreatesDayAndHourLog(t *testing.T) {
 		t.Fatalf("write log: %v", err)
 	}
 
-	logPath := filepath.Join(rootDir, "20260403", "2026040313.log")
+	logPath := filepath.Join(rootDir, now.Local().Format("20060102"), now.Local().Format("2006010215")+".log")
 	body, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read log file: %v", err)
@@ -55,8 +55,10 @@ func TestHourlyFileWriterRotatesAcrossHourBoundary(t *testing.T) {
 		t.Fatalf("write hour 14: %v", err)
 	}
 
-	firstPath := filepath.Join(rootDir, "20260403", "2026040313.log")
-	secondPath := filepath.Join(rootDir, "20260403", "2026040314.log")
+	firstHour := current.Add(-time.Hour).Local()
+	secondHour := current.Local()
+	firstPath := filepath.Join(rootDir, firstHour.Format("20060102"), firstHour.Format("2006010215")+".log")
+	secondPath := filepath.Join(rootDir, secondHour.Format("20060102"), secondHour.Format("2006010215")+".log")
 
 	firstBody, err := os.ReadFile(firstPath)
 	if err != nil {
@@ -90,7 +92,7 @@ func TestHourlyPrefixedFileWriterUsesPrefixedHourlyFile(t *testing.T) {
 		t.Fatalf("write prefixed log: %v", err)
 	}
 
-	logPath := filepath.Join(rootDir, "20260403", "LLM-2026040313.log")
+	logPath := filepath.Join(rootDir, now.Local().Format("20060102"), "LLM-"+now.Local().Format("2006010215")+".log")
 	body, err := os.ReadFile(logPath)
 	if err != nil {
 		t.Fatalf("read prefixed log file: %v", err)
