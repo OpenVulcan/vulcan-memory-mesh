@@ -61,13 +61,15 @@
 6. 后台 `PostActionUseCase`
 7. PII 脱敏
 8. **NoiseGate**
-9. 关系库存写入（默认 `split` 模式为进程内 SQLite；`controller` 模式为经 controller 透传的 SQLite；`combined` 模式为 PostgreSQL）
+9. 关系库存写入（默认 `split` 模式为进程内 SQLite；`controller` 模式为经 controller 透传的 SQLite；`native` 模式为进程内 native SQLite；`combined` 模式为 PostgreSQL）
 
 也就是说：
 
 - 它发生在文本已经清洗之后
 - 发生在 PII 脱敏之后
 - 发生在真正写入 `vmm_turn_records` 之前
+
+存储模式只改变 NoiseGate 之后的关系与向量后端，不改变规则目录、文本清洗、PII 脱敏或 `timeline` 触发条件。native 模式的 FTS 分词和数据库路径属于存储适配层配置，不能用来绕过噪声门。
 
 ## 当前触发规则
 

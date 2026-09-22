@@ -24,6 +24,9 @@ type Client struct {
 	// mu protects connection, session, desired state, and renewer fields.
 	// mu 保护连接、会话、期望状态和续租任务字段。
 	mu sync.Mutex
+	// shutdownMu serializes shutdown retries so one failed cleanup cannot race another attempt.
+	// shutdownMu 串行化关闭重试，避免失败清理与下一次尝试竞争。
+	shutdownMu sync.Mutex
 	// config stores normalized endpoint and launch settings.
 	// config 保存标准化后的端点与启动设置。
 	config Config
@@ -85,28 +88,49 @@ func (c *Client) Connect(ctx context.Context) error {
 // Shutdown unregisters the current session and closes the connection.
 // Shutdown 注销当前会话并关闭连接。
 func (c *Client) Shutdown(ctx context.Context) error {
+	if c == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	c.shutdownMu.Lock()
+	defer c.shutdownMu.Unlock()
+
 	c.mu.Lock()
 	cancel := c.renewCancel
 	c.renewCancel = nil
 	rpc := c.rpc
 	sessionID := c.clientSessionID
 	conn := c.conn
-	c.clientSessionID = ""
-	c.conn = nil
-	c.rpc = nil
-	c.attachedSpaces = map[string]SpaceRegistration{}
-	c.sqliteBindings = map[sqliteBindingKey]*SqliteEnableRequest{}
-	c.lancedbBindings = map[lancedbBindingKey]*LanceDBEnableRequest{}
 	c.mu.Unlock()
 
 	if cancel != nil {
 		cancel()
 	}
 	if rpc != nil && sessionID != "" {
-		_, _ = rpc.UnregisterClient(ctx, &pb.UnregisterClientRequest{ClientSessionId: sessionID})
+		if _, err := rpc.UnregisterClient(ctx, &pb.UnregisterClientRequest{ClientSessionId: sessionID}); err != nil {
+			return fmt.Errorf("unregister controller client: %w", err)
+		}
+		c.mu.Lock()
+		if c.clientSessionID == sessionID {
+			c.clientSessionID = ""
+		}
+		c.mu.Unlock()
 	}
 	if conn != nil {
-		return conn.Close()
+		if err := conn.Close(); err != nil {
+			return err
+		}
+		c.mu.Lock()
+		if c.conn == conn {
+			c.conn = nil
+			c.rpc = nil
+			c.attachedSpaces = map[string]SpaceRegistration{}
+			c.sqliteBindings = map[sqliteBindingKey]*SqliteEnableRequest{}
+			c.lancedbBindings = map[lancedbBindingKey]*LanceDBEnableRequest{}
+		}
+		c.mu.Unlock()
 	}
 	return nil
 }

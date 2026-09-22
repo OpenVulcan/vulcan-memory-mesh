@@ -2,7 +2,11 @@
 // clean_test.go 用于验证独立迁移工具的维护清理目标解析。
 package main
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/openvulcan/vmm/internal/config"
+)
 
 // TestParseMaintenanceCleanSelectionAcceptsSingleAndCombinedTargets verifies one CLI value can address one backend or the supported backend combinations.
 // TestParseMaintenanceCleanSelectionAcceptsSingleAndCombinedTargets 用于验证单个 CLI 值既可以指向单个后端，也可以指向受支持的后端组合。
@@ -41,5 +45,36 @@ func TestParseMaintenanceCleanSelectionRejectsUnsupportedTargets(t *testing.T) {
 		if _, err := parseMaintenanceCleanSelection(raw); err == nil {
 			t.Fatalf("expected parse failure for %q", raw)
 		}
+	}
+}
+
+// TestUsesOwnedMaintenanceStorageKeepsNativeBackendsUnderThePairOwner verifies native and controller local cleanup never falls through to independent gateway opens.
+// TestUsesOwnedMaintenanceStorageKeepsNativeBackendsUnderThePairOwner 用于验证 native 与 controller 的本地清理不会退回独立网关打开路径。
+func TestUsesOwnedMaintenanceStorageKeepsNativeBackendsUnderThePairOwner(t *testing.T) {
+	selection := maintenanceCleanSelection{SQLite: true, LanceDB: true}
+	cases := []struct {
+		name string
+		mode string
+		want bool
+	}{
+		{name: "native", mode: "native", want: true},
+		{name: "controller", mode: "controller", want: true},
+		{name: "split", mode: "split", want: false},
+		{name: "combined", mode: "combined", want: false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := config.DefaultLocal()
+			cfg.Storage.Mode = tc.mode
+			if got := usesOwnedMaintenanceStorage(cfg, selection); got != tc.want {
+				t.Fatalf("usesOwnedMaintenanceStorage(%q) = %v, want %v", tc.mode, got, tc.want)
+			}
+		})
+	}
+
+	cfg := config.DefaultLocal()
+	cfg.Storage.Mode = "native"
+	if usesOwnedMaintenanceStorage(cfg, maintenanceCleanSelection{Postgres: true}) {
+		t.Fatal("postgres-only cleanup should not open the native pair owner")
 	}
 }

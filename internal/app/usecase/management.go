@@ -335,7 +335,7 @@ func normalizeManagementSelection(selection logicdomain.ManagementRemovalSelecti
 	selection.Action = strings.TrimSpace(selection.Action)
 	selection.Source = strings.TrimSpace(selection.Source)
 	if selection.Source == "" {
-		selection.Source = "vulcan-code"
+		selection.Source = "vmm-local"
 	}
 	if len(selection.Source) > ManagementMaxSourceBytes {
 		return selection, logicdomain.ValidationError{Field: "source", Message: "must not exceed 128 bytes"}

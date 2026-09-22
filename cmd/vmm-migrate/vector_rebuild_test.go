@@ -100,6 +100,16 @@ func TestAcquireVectorRebuildRuntimeGuardAllowsFreeListenAddr(t *testing.T) {
 	defer func() { _ = guard.Close() }()
 }
 
+// TestAcquireVectorRebuildRuntimeGuardRejectsPortZero verifies the stop guard never treats an OS-assigned ephemeral port as the configured runtime endpoint.
+// TestAcquireVectorRebuildRuntimeGuardRejectsPortZero 用于验证停机保护不会把操作系统分配的临时端口当成配置中的运行时端点。
+func TestAcquireVectorRebuildRuntimeGuardRejectsPortZero(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.GRPC.ListenAddr = "127.0.0.1:0"
+	if _, err := acquireVectorRebuildRuntimeGuard(cfg); err == nil || !strings.Contains(err.Error(), "port between 1 and 65535") {
+		t.Fatalf("unexpected port-zero guard result: %v", err)
+	}
+}
+
 // TestAcquireVectorRebuildRuntimeGuardRejectsOccupiedListenAddr verifies vector rebuild refuses to start while another process is still bound to the configured runtime address.
 // TestAcquireVectorRebuildRuntimeGuardRejectsOccupiedListenAddr 用于验证当其他进程仍占用配置中的运行时地址时，向量重建会直接拒绝启动。
 func TestAcquireVectorRebuildRuntimeGuardRejectsOccupiedListenAddr(t *testing.T) {
@@ -129,7 +139,7 @@ func TestRunMaintenanceVectorRebuildRejectsRunningRuntimeBeforeConfirmation(t *t
 	cfg := config.DefaultLocal()
 	cfg.GRPC.ListenAddr = listener.Addr().String()
 	output := &bytes.Buffer{}
-	err = runMaintenanceVectorRebuild(context.Background(), cfg, nil, strings.NewReader("Y\n"), output, false)
+	err = runMaintenanceVectorRebuild(context.Background(), cfg, strings.NewReader("Y\n"), output, false)
 	if err == nil || !strings.Contains(err.Error(), "requires the runtime service to be stopped first") {
 		t.Fatalf("unexpected runMaintenanceVectorRebuild error: %v", err)
 	}

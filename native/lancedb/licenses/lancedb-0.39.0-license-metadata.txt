@@ -1,0 +1,4 @@
+Registry package: lancedb 0.39.0
+Metadata source: Cargo.toml
+Declared license line: license = "Apache-2.0"
+The registry package contains no LICENSE or NOTICE file; no license text is reproduced here.

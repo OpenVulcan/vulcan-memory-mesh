@@ -1,9 +1,20 @@
-# install_host_deps.ps1 installs host-side dynamic libraries into third_party/deps so the packaged runtime can later copy them into output/libs.
+﻿# install_host_deps.ps1 installs host-side dynamic libraries into third_party/deps so the packaged runtime can later copy them into output/libs.
 # install_host_deps.ps1 用于把宿主侧动态库安装到 third_party/deps，供后续打包流程复制到 output/libs。
 
 $ErrorActionPreference = "Stop"
 $ProjectDir = Split-Path $PSScriptRoot -Parent
 Set-Location $ProjectDir
+
+# Get-Sha256 returns a PowerShell 5.1-compatible lowercase SHA-256 digest for one regular file.
+# Get-Sha256 为单个普通文件返回兼容 PowerShell 5.1 的小写 SHA-256 摘要。
+function Get-Sha256 {
+    param([Parameter(Mandatory=$true)] [string]$Path)
+    $Sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($Sha256.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $Sha256.Dispose() }
+}
 
 # Use RuntimeInformation for platform detection so Windows PowerShell and PowerShell 7 behave consistently.
 # 使用 RuntimeInformation 做平台探测，确保 Windows PowerShell 与 PowerShell 7 行为一致。
@@ -186,7 +197,7 @@ function Install-VldbLibrary {
     if ((Test-Path -LiteralPath $MarkerFile) -and (Test-Path -LiteralPath $LibraryDest)) {
         $MarkerContent = Get-Content -LiteralPath $MarkerFile -Raw -ErrorAction SilentlyContinue
         $ExpectedInstalledHash = if ($null -eq $MarkerContent) { "" } else { ([string]$MarkerContent).Trim().ToLowerInvariant() }
-        $ActualInstalledHash = (Get-FileHash -LiteralPath $LibraryDest -Algorithm SHA256).Hash.ToLowerInvariant()
+        $ActualInstalledHash = Get-Sha256 -Path $LibraryDest
         if ($ExpectedInstalledHash -and $ExpectedInstalledHash -eq $ActualInstalledHash) {
             Write-Host "==> $RepoPrefix library already installed and verified ($AssetName)."
             return
@@ -237,7 +248,7 @@ function Install-VldbLibrary {
         # Verify the release archive before extraction so corrupted or substituted assets never reach the packaged dependency directory.
         # 在解压前校验 release 压缩包，确保损坏或被替换的资产不会进入打包依赖目录。
         $ExpectedArchiveHash = ((Get-Content -LiteralPath "$ArchivePath.sha256" -Raw).Trim() -split "\s+")[0].ToLowerInvariant()
-        $ActualArchiveHash = (Get-FileHash -LiteralPath $ArchivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+        $ActualArchiveHash = Get-Sha256 -Path $ArchivePath
         if (-not $ExpectedArchiveHash -or $ExpectedArchiveHash -ne $ActualArchiveHash) {
             throw "$RepoPrefix archive checksum mismatch for $AssetName / 依赖压缩包 SHA256 校验失败。"
         }
@@ -257,7 +268,7 @@ function Install-VldbLibrary {
 
         Get-ChildItem -Path $TargetDir -Filter ".installed-*" -File -ErrorAction SilentlyContinue |
             Remove-Item -Force -ErrorAction SilentlyContinue
-        $InstalledHash = (Get-FileHash -LiteralPath $LibraryDest -Algorithm SHA256).Hash.ToLowerInvariant()
+        $InstalledHash = Get-Sha256 -Path $LibraryDest
         Set-Content -LiteralPath $MarkerFile -Value $InstalledHash -Encoding ascii -NoNewline
         Write-Host "==> $RepoPrefix library installed successfully."
     } finally {

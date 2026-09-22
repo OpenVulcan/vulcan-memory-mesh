@@ -3,17 +3,21 @@
 package vldb_lancedb
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"math"
 	"os"
+	"reflect"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/ffi/lancedbffi"
+	"github.com/openvulcan/vmm/internal/platform/storagecontract/lance"
 )
 
 const (
@@ -25,9 +29,10 @@ const (
 // Store is the LanceDB local-FFI adapter used by the vector store port.
 // Store 用于作为向量存储端口的 LanceDB 本地 FFI 适配器。
 type Store struct {
-	lib          *lancedbffi.Library
-	runtime      *lancedbffi.Runtime
-	engine       lancedbEngineHandle
+	mu           sync.RWMutex
+	lib          interface{ Close() error }
+	runtime      interface{ Close() error }
+	engine       any
 	timeout      time.Duration
 	tableName    string
 	vectorColumn string
@@ -37,12 +42,116 @@ type Store struct {
 // lancedbEngineHandle narrows the LanceDB FFI engine surface that the adapter depends on so unit tests can replace the engine with one focused in-memory fake.
 // lancedbEngineHandle 用于收窄适配器依赖的 LanceDB FFI engine 能力面，这样单测可以把 engine 替换成聚焦的内存 fake。
 type lancedbEngineHandle interface {
+	lance.Engine
+}
+
+// legacyLanceDBEngine preserves the pre-context FFI surface while callers migrate to the neutral contract.
+// legacyLanceDBEngine 在调用方迁移到中立契约期间保留旧版无 context 的 FFI 接口。
+type legacyLanceDBEngine interface {
 	CreateTable(request lancedbffi.CreateTableRequest) (lancedbffi.CreateTableResult, error)
 	VectorUpsertRaw(tableName string, format lancedbffi.InputFormat, data []byte, keyColumns []string) (lancedbffi.UpsertResult, error)
 	VectorSearchF32(tableName string, vector []float32, limit uint32, filter string, vectorColumn string, outputFormat lancedbffi.OutputFormat) (lancedbffi.SearchResult, error)
 	Delete(request lancedbffi.DeleteRequest) (lancedbffi.DeleteResult, error)
 	DropTable(request lancedbffi.DropTableRequest) (lancedbffi.DropTableResult, error)
 	Close() error
+}
+
+// legacyEngineAdapter adds the business context parameter around the old dynamic FFI implementation.
+// legacyEngineAdapter 为旧动态 FFI 实现补充业务 context 参数。
+type legacyEngineAdapter struct {
+	legacy legacyLanceDBEngine
+}
+
+// CreateTable forwards a legacy create-table call after checking the caller context.
+// CreateTable 在检查调用方 context 后转发旧版建表调用。
+func (a legacyEngineAdapter) CreateTable(ctx context.Context, request lance.CreateTableRequest) (lance.CreateTableResult, error) {
+	if err := checkContext(ctx); err != nil {
+		return lance.CreateTableResult{}, err
+	}
+	legacyRequest := lancedbffi.CreateTableRequest{
+		TableName:         request.TableName,
+		Columns:           make([]lancedbffi.CreateTableColumn, 0, len(request.Columns)),
+		OverwriteIfExists: request.OverwriteIfExists,
+	}
+	for _, column := range request.Columns {
+		legacyRequest.Columns = append(legacyRequest.Columns, lancedbffi.CreateTableColumn{
+			Name: column.Name, ColumnType: column.ColumnType, VectorDim: column.VectorDim, Nullable: column.Nullable,
+		})
+	}
+	result, err := a.legacy.CreateTable(legacyRequest)
+	return lance.CreateTableResult{Success: result.Success, Message: result.Message}, err
+}
+
+// VectorUpsertRaw forwards a legacy upsert call after checking the caller context.
+// VectorUpsertRaw 在检查调用方 context 后转发旧版 upsert 调用。
+func (a legacyEngineAdapter) VectorUpsertRaw(ctx context.Context, tableName string, format lance.InputFormat, data []byte, keyColumns []string) (lance.UpsertResult, error) {
+	if err := checkContext(ctx); err != nil {
+		return lance.UpsertResult{}, err
+	}
+	result, err := a.legacy.VectorUpsertRaw(tableName, lancedbffi.InputFormat(format), data, keyColumns)
+	return lance.UpsertResult{Version: result.Version, InputRows: result.InputRows, InsertedRows: result.InsertedRows, UpdatedRows: result.UpdatedRows, DeletedRows: result.DeletedRows}, err
+}
+
+// VectorSearchF32 forwards a legacy search call after checking the caller context.
+// VectorSearchF32 在检查调用方 context 后转发旧版向量检索调用。
+func (a legacyEngineAdapter) VectorSearchF32(ctx context.Context, tableName string, vector []float32, limit uint32, filter string, vectorColumn string, outputFormat lance.OutputFormat) (lance.SearchResult, error) {
+	if err := checkContext(ctx); err != nil {
+		return lance.SearchResult{}, err
+	}
+	result, err := a.legacy.VectorSearchF32(tableName, vector, limit, filter, vectorColumn, lancedbffi.OutputFormat(outputFormat))
+	return lance.SearchResult{Format: lance.OutputFormat(result.Format), Rows: result.Rows, Data: append([]byte(nil), result.Data...)}, err
+}
+
+// Delete forwards a legacy predicate deletion after checking the caller context.
+// Delete 在检查调用方 context 后转发旧版谓词删除调用。
+func (a legacyEngineAdapter) Delete(ctx context.Context, request lance.DeleteRequest) (lance.DeleteResult, error) {
+	if err := checkContext(ctx); err != nil {
+		return lance.DeleteResult{}, err
+	}
+	result, err := a.legacy.Delete(lancedbffi.DeleteRequest{TableName: request.TableName, Condition: request.Condition})
+	return lance.DeleteResult{Success: result.Success, Message: result.Message, Version: result.Version, DeletedRows: result.DeletedRows}, err
+}
+
+// DropTable forwards an explicit legacy table drop after checking the caller context.
+// DropTable 在检查调用方 context 后转发显式旧版删表调用。
+func (a legacyEngineAdapter) DropTable(ctx context.Context, request lance.DropTableRequest) (lance.DropTableResult, error) {
+	if err := checkContext(ctx); err != nil {
+		return lance.DropTableResult{}, err
+	}
+	result, err := a.legacy.DropTable(lancedbffi.DropTableRequest{TableName: request.TableName})
+	return lance.DropTableResult{Success: result.Success, Message: result.Message}, err
+}
+
+// Close releases the legacy engine handle.
+// Close 释放旧版引擎句柄。
+func (a legacyEngineAdapter) Close() error {
+	return a.legacy.Close()
+}
+
+// engineForContext returns the neutral engine contract for one store operation.
+// engineForContext 为一次存储操作返回中立引擎契约。
+func (s *Store) engineForContext(ctx context.Context) (lance.Engine, func(), error) {
+	if s == nil {
+		return nil, func() {}, fmt.Errorf("lancedb store is not initialized")
+	}
+	s.mu.RLock()
+	release := s.mu.RUnlock
+	if s.engine == nil {
+		release()
+		return nil, func() {}, fmt.Errorf("lancedb store is not initialized")
+	}
+	if engine, ok := s.engine.(lance.Engine); ok {
+		if err := checkContext(ctx); err != nil {
+			release()
+			return nil, func() {}, err
+		}
+		return engine, release, nil
+	}
+	if legacy, ok := s.engine.(legacyLanceDBEngine); ok {
+		return legacyEngineAdapter{legacy: legacy}, release, nil
+	}
+	release()
+	return nil, func() {}, fmt.Errorf("unsupported lancedb engine implementation %T", s.engine)
 }
 
 // NewStore opens the packaged LanceDB dynamic library and eagerly ensures the configured vector table exists.
@@ -59,7 +168,7 @@ func NewStoreWithoutInit(libraryPath string, databaseDir string, timeout time.Du
 
 // newStore centralizes local LanceDB FFI bootstrapping and lets callers decide whether table initialization should happen eagerly.
 // newStore 用于集中处理本地 LanceDB FFI 启动逻辑，并允许调用方决定是否立即初始化目标表。
-func newStore(libraryPath string, databaseDir string, _ time.Duration, tableName, vectorColumn string, dimension int, ensureTable bool) (*Store, error) {
+func newStore(libraryPath string, databaseDir string, timeout time.Duration, tableName, vectorColumn string, dimension int, ensureTable bool) (*Store, error) {
 	if strings.TrimSpace(libraryPath) == "" {
 		return nil, fmt.Errorf("lancedb library path is required")
 	}
@@ -101,6 +210,7 @@ func newStore(libraryPath string, databaseDir string, _ time.Duration, tableName
 		lib:          lib,
 		runtime:      runtimeHandle,
 		engine:       engine,
+		timeout:      timeout,
 		tableName:    resolveVectorTableName(tableName, dimension),
 		vectorColumn: strings.TrimSpace(vectorColumn),
 		dimension:    dimension,
@@ -120,9 +230,11 @@ func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) err
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
-	if s == nil || s.engine == nil {
-		return fmt.Errorf("lancedb store is not initialized")
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return err
 	}
+	defer release()
 	metadataJSON, err := json.Marshal(record.Metadata)
 	if err != nil {
 		return fmt.Errorf("encode memory metadata: %w", err)
@@ -148,10 +260,10 @@ func (s *Store) Upsert(ctx context.Context, record logicdomain.MemoryRecord) err
 	if err != nil {
 		return fmt.Errorf("marshal lancedb upsert payload: %w", err)
 	}
-	if _, err := s.engine.VectorUpsertRaw(s.tableName, lancedbffi.InputFormatJSONRows, payload, []string{"id"}); err != nil {
+	if _, err := engine.VectorUpsertRaw(ctx, s.tableName, lance.InputFormatJSONRows, payload, []string{"id"}); err != nil {
 		return fmt.Errorf("lancedb vector upsert: %w", err)
 	}
-	return checkContext(ctx)
+	return nil
 }
 
 // DeleteByFilter removes all vector rows that match one flattened hierarchy filter.
@@ -160,14 +272,16 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter logicdomain.SearchFil
 	if err := checkContext(ctx); err != nil {
 		return 0, err
 	}
-	if s == nil || s.engine == nil {
-		return 0, fmt.Errorf("lancedb store is not initialized")
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return 0, err
 	}
+	defer release()
 	condition := buildDeleteCondition(filter)
 	if strings.TrimSpace(condition) == "" {
 		return 0, fmt.Errorf("lancedb delete filter is empty")
 	}
-	result, err := s.engine.Delete(lancedbffi.DeleteRequest{
+	result, err := engine.Delete(ctx, lance.DeleteRequest{
 		TableName: s.tableName,
 		Condition: condition,
 	})
@@ -177,7 +291,7 @@ func (s *Store) DeleteByFilter(ctx context.Context, filter logicdomain.SearchFil
 	if !result.Success {
 		return 0, fmt.Errorf("lancedb delete: %s", strings.TrimSpace(result.Message))
 	}
-	return result.DeletedRows, checkContext(ctx)
+	return result.DeletedRows, nil
 }
 
 // DeleteByIDs removes the specified vector rows precisely by their ids.
@@ -186,14 +300,16 @@ func (s *Store) DeleteByIDs(ctx context.Context, ids []string) (uint64, error) {
 	if err := checkContext(ctx); err != nil {
 		return 0, err
 	}
-	if s == nil || s.engine == nil {
-		return 0, fmt.Errorf("lancedb store is not initialized")
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return 0, err
 	}
+	defer release()
 	condition := buildDeleteIDsCondition(ids)
 	if strings.TrimSpace(condition) == "" {
 		return 0, nil
 	}
-	result, err := s.engine.Delete(lancedbffi.DeleteRequest{
+	result, err := engine.Delete(ctx, lance.DeleteRequest{
 		TableName: s.tableName,
 		Condition: condition,
 	})
@@ -203,7 +319,7 @@ func (s *Store) DeleteByIDs(ctx context.Context, ids []string) (uint64, error) {
 	if !result.Success {
 		return 0, fmt.Errorf("lancedb delete by ids: %s", strings.TrimSpace(result.Message))
 	}
-	return result.DeletedRows, checkContext(ctx)
+	return result.DeletedRows, nil
 }
 
 // Search runs one vector search against the configured table and maps the returned JSON rows back into MemoryHit values.
@@ -212,21 +328,24 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 	if err := checkContext(ctx); err != nil {
 		return nil, err
 	}
-	if s == nil || s.engine == nil {
-		return nil, fmt.Errorf("lancedb store is not initialized")
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return nil, err
 	}
+	defer release()
 	if topK <= 0 {
 		topK = 10
 	}
 	filterExpr := buildFilterExpr(filter)
 	rows := make([]searchRow, 0)
-	result, err := s.engine.VectorSearchF32(
+	result, err := engine.VectorSearchF32(
+		ctx,
 		s.tableName,
 		vector,
 		uint32(topK),
 		filterExpr,
 		s.vectorColumn,
-		lancedbffi.OutputFormatJSONRows,
+		lance.OutputFormatJSONRows,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("lancedb vector search: %w", err)
@@ -245,6 +364,11 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 				// Keep the hit usable even when metadata decoding fails.
 				// 即使元数据解码失败，也保留命中结果可用性。
 			}
+		}
+		// Records with absent metadata are stored as JSON null; decoding null clears the map and must precede origin annotation.
+		// 缺省元数据会保存为 JSON null；解码 null 会清空映射，写入来源标记前需还原为空映射。
+		if metadata == nil {
+			metadata = map[string]string{}
 		}
 		// Stamp the search-origin at the adapter boundary because every LanceDB hit is produced by the split vector-search path.
 		// 在适配器边界写入检索来源，因为每条 LanceDB 命中都来自分离式向量检索路径。
@@ -270,39 +394,94 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 			Metadata: metadata,
 		})
 	}
-	if err := checkContext(ctx); err != nil {
-		return nil, err
-	}
 	return hits, nil
+}
+
+// Count returns the physical row count from a health-capable LanceDB engine.
+// Count 返回支持健康检查的 LanceDB 引擎中的物理行数。
+func (s *Store) Count(ctx context.Context) (int64, error) {
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	health, ok := engine.(lance.HealthEngine)
+	if !ok {
+		return 0, fmt.Errorf("lancedb engine does not expose row counting")
+	}
+	count, err := health.CountRows(ctx, s.tableName, "")
+	if err != nil {
+		return 0, fmt.Errorf("count lancedb rows: %w", err)
+	}
+	if count > uint64(1<<63-1) {
+		return 0, fmt.Errorf("lancedb row count %d exceeds int64", count)
+	}
+	return int64(count), nil
+}
+
+// CheckHealth verifies the connection, required table, and exact configured schema without creating or replacing anything.
+// CheckHealth 校验连接、目标表与精确配置 Schema，不创建也不替换任何对象。
+func (s *Store) CheckHealth(ctx context.Context) error {
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	health, ok := engine.(lance.HealthEngine)
+	if !ok {
+		return fmt.Errorf("lancedb engine does not expose health checks")
+	}
+	if err := health.CheckHealth(ctx); err != nil {
+		return err
+	}
+	payload, err := health.Schema(ctx, s.tableName)
+	if err != nil {
+		return fmt.Errorf("read lancedb schema: %w", err)
+	}
+	var actual struct {
+		Columns []lance.CreateTableColumn `json:"columns"`
+	}
+	if err := json.Unmarshal(payload, &actual); err != nil {
+		return fmt.Errorf("decode lancedb schema: %w", err)
+	}
+	expected := requiredVectorColumns(s.vectorColumn, s.dimension)
+	if !reflect.DeepEqual(actual.Columns, expected) {
+		return fmt.Errorf("lancedb table %s schema mismatch", s.tableName)
+	}
+	return nil
 }
 
 // Shutdown releases the underlying engine, runtime, and dynamic library handles.
 // Shutdown 用于释放底层引擎、运行时与动态库句柄。
 func (s *Store) Shutdown(ctx context.Context) error {
-	if err := checkContext(ctx); err != nil {
-		return err
-	}
 	if s == nil {
 		return nil
 	}
-	var closeErr error
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.engine != nil {
-		closeErr = s.engine.Close()
+		engine, ok := s.engine.(interface{ Close() error })
+		if !ok {
+			return fmt.Errorf("lancedb engine does not support shutdown")
+		}
+		if err := engine.Close(); err != nil {
+			return err
+		}
 		s.engine = nil
 	}
 	if s.runtime != nil {
-		if err := s.runtime.Close(); err != nil && closeErr == nil {
-			closeErr = err
+		if err := s.runtime.Close(); err != nil {
+			return err
 		}
 		s.runtime = nil
 	}
 	if s.lib != nil {
-		if err := s.lib.Close(); err != nil && closeErr == nil {
-			closeErr = err
+		if err := s.lib.Close(); err != nil {
+			return err
 		}
 		s.lib = nil
 	}
-	return closeErr
+	return nil
 }
 
 // RecreateTable drops and recreates the current-dimension table used by vector rebuild maintenance flows.
@@ -311,10 +490,12 @@ func (s *Store) RecreateTable(ctx context.Context) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
-	if s == nil || s.engine == nil {
-		return fmt.Errorf("lancedb store is not initialized")
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return err
 	}
-	result, err := s.engine.DropTable(lancedbffi.DropTableRequest{TableName: s.tableName})
+	result, err := engine.DropTable(ctx, lance.DropTableRequest{TableName: s.tableName})
+	release()
 	if err != nil && !isLanceTableNotFoundMessage(err.Error()) {
 		return fmt.Errorf("drop lancedb table %s: %w", s.tableName, err)
 	}
@@ -325,7 +506,7 @@ func (s *Store) RecreateTable(ctx context.Context) error {
 	// Only a confirmed successful drop means this call has already removed the live sidecar table; missing-table responses leave later create failures as ordinary bootstrap errors.
 	// 只有明确成功的删表结果才表示本次调用已经移除了线上 sidecar 表；表原本不存在时，后续建表失败仍属于普通启动建表错误。
 	droppedExistingTable := err == nil && result.Success
-	if err := s.init(ctx); err != nil {
+	if err := s.initWithOverwrite(ctx, true); err != nil {
 		if droppedExistingTable {
 			return lanceTableRecreateOutcomeUncertainError(s.tableName, err)
 		}
@@ -349,27 +530,24 @@ func lanceTableRecreateOutcomeUncertainError(tableName string, err error) error 
 // init ensures the configured vector table exists with the expected schema.
 // init 用于确保目标向量表按照预期 schema 存在。
 func (s *Store) init(ctx context.Context) error {
+	return s.initWithOverwrite(ctx, false)
+}
+
+// initWithOverwrite ensures the configured schema and marks destructive replacement as explicit maintenance.
+// initWithOverwrite 确保配置 Schema，并把破坏性替换限定在显式维护调用。
+func (s *Store) initWithOverwrite(ctx context.Context, overwrite bool) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
-	result, err := s.engine.CreateTable(lancedbffi.CreateTableRequest{
-		TableName: s.tableName,
-		Columns: []lancedbffi.CreateTableColumn{
-			{Name: "id", ColumnType: "string", Nullable: false},
-			{Name: "content", ColumnType: "string", Nullable: false},
-			{Name: "team_id", ColumnType: "int64", Nullable: false},
-			{Name: "space_id", ColumnType: "int64", Nullable: false},
-			{Name: "project_id", ColumnType: "int64", Nullable: false},
-			{Name: "session_id", ColumnType: "int64", Nullable: false},
-			{Name: "user_id", ColumnType: "int64", Nullable: false},
-			{Name: "source_turn_id", ColumnType: "int64", Nullable: false},
-			{Name: "memory_status", ColumnType: "int64", Nullable: false},
-			{Name: "expires_timestamp", ColumnType: "int64", Nullable: false},
-			{Name: "metadata_json", ColumnType: "string", Nullable: false},
-			{Name: "created_at", ColumnType: "string", Nullable: false},
-			{Name: s.vectorColumn, ColumnType: "vector_float32", VectorDim: uint32(s.dimension), Nullable: false},
-		},
-		OverwriteIfExists: false,
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return err
+	}
+	defer release()
+	result, err := engine.CreateTable(ctx, lance.CreateTableRequest{
+		TableName:         s.tableName,
+		Columns:           requiredVectorColumns(s.vectorColumn, s.dimension),
+		OverwriteIfExists: overwrite,
 	})
 	if err != nil {
 		if isTableAlreadyExistsError(err) {
@@ -380,7 +558,27 @@ func (s *Store) init(ctx context.Context) error {
 	if !result.Success && !isTableAlreadyExistsMessage(result.Message) {
 		return fmt.Errorf("ensure lancedb table %s: %s", s.tableName, strings.TrimSpace(result.Message))
 	}
-	return checkContext(ctx)
+	return nil
+}
+
+// requiredVectorColumns returns the stable physical schema used by both bootstrap and health checks.
+// requiredVectorColumns 返回启动与健康检查共同使用的稳定物理 Schema。
+func requiredVectorColumns(vectorColumn string, dimension int) []lance.CreateTableColumn {
+	return []lance.CreateTableColumn{
+		{Name: "id", ColumnType: "string", Nullable: false},
+		{Name: "content", ColumnType: "string", Nullable: false},
+		{Name: "team_id", ColumnType: "int64", Nullable: false},
+		{Name: "space_id", ColumnType: "int64", Nullable: false},
+		{Name: "project_id", ColumnType: "int64", Nullable: false},
+		{Name: "session_id", ColumnType: "int64", Nullable: false},
+		{Name: "user_id", ColumnType: "int64", Nullable: false},
+		{Name: "source_turn_id", ColumnType: "int64", Nullable: false},
+		{Name: "memory_status", ColumnType: "int64", Nullable: false},
+		{Name: "expires_timestamp", ColumnType: "int64", Nullable: false},
+		{Name: "metadata_json", ColumnType: "string", Nullable: false},
+		{Name: "created_at", ColumnType: "string", Nullable: false},
+		{Name: vectorColumn, ColumnType: "vector_float32", VectorDim: uint32(dimension), Nullable: false},
+	}
 }
 
 // isTableAlreadyExistsError detects create-table errors that simply mean the target table already exists.
@@ -561,7 +759,11 @@ type searchRow struct {
 // UnmarshalJSON 用于把 LanceDB 数值/字符串混合字段归一化为稳定的 searchRow 结构。
 func (r *searchRow) UnmarshalJSON(data []byte) error {
 	var raw rawSearchRow
-	if err := json.Unmarshal(data, &raw); err != nil {
+	// Preserve integer tokens because scope identifiers can exceed the exact range of IEEE-754 float64.
+	// 保留整数字面量，因为范围标识可能超出 IEEE-754 float64 的精确表示范围。
+	decoder := json.NewDecoder(bytes.NewReader(data))
+	decoder.UseNumber()
+	if err := decoder.Decode(&raw); err != nil {
 		return err
 	}
 	teamID, err := asUint64(raw.TeamID)
@@ -645,19 +847,12 @@ func asUint64(value any) (uint64, error) {
 	case nil:
 		return 0, nil
 	case float64:
-		if typed < 0 || math.IsNaN(typed) || math.IsInf(typed, 0) {
+		if typed < 0 || typed >= 1<<53 || math.Trunc(typed) != typed || math.IsNaN(typed) || math.IsInf(typed, 0) {
 			return 0, fmt.Errorf("invalid numeric uint64 value: %v", typed)
 		}
 		return uint64(typed), nil
 	case json.Number:
-		parsed, err := typed.Int64()
-		if err != nil {
-			return 0, err
-		}
-		if parsed < 0 {
-			return 0, fmt.Errorf("invalid negative uint64 value: %d", parsed)
-		}
-		return uint64(parsed), nil
+		return strconv.ParseUint(typed.String(), 10, 64)
 	case string:
 		if strings.TrimSpace(typed) == "" {
 			return 0, nil

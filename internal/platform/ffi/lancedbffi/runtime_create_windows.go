@@ -5,6 +5,7 @@
 package lancedbffi
 
 import (
+	"runtime"
 	"syscall"
 	"unsafe"
 )
@@ -26,6 +27,7 @@ func (lib *Library) callRuntimeCreate(options runtimeOptionsPod) unsafe.Pointer 
 		return nil
 	}
 	result, _, _ := syscall.SyscallN(lib.runtimeCreateProc, uintptr(unsafe.Pointer(&options)))
+	runtime.KeepAlive(options)
 	return pointerFromSyscallResult(result)
 }
 
@@ -43,10 +45,8 @@ func (lib *Library) freeBytes(buffer byteBufferPod) {
 	if lib == nil || lib.bytesFreeProc == 0 {
 		return
 	}
-	syscall.SyscallN(
-		lib.bytesFreeProc,
-		uintptr(unsafe.Pointer(buffer.Data)),
-		buffer.Len,
-		buffer.Cap,
-	)
+	// The v0.1.5 export accepts a 24-byte struct by value; Windows x64 passes that aggregate through a pointer to caller-owned storage.
+	// v0.1.5 导出按值接收 24 字节结构体；Windows x64 必须传入调用方保存的结构体地址。
+	syscall.SyscallN(lib.bytesFreeProc, uintptr(unsafe.Pointer(&buffer)))
+	runtime.KeepAlive(buffer)
 }

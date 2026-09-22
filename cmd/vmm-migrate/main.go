@@ -15,17 +15,20 @@ import (
 	"github.com/openvulcan/vmm/internal/config"
 )
 
-// maintenanceRuntimeConfiguration preserves both the derived runtime values and the managed inference authority needed by one-shot maintenance.
-// maintenanceRuntimeConfiguration 用于同时保留派生运行时值与一次性维护所需的托管推理权威。
+// maintenanceRuntimeConfiguration preserves the layered configuration and resolved prompt layout used by one-shot maintenance.
+// maintenanceRuntimeConfiguration 用于保存一次性维护使用的分层配置与解析后的提示词布局。
 type maintenanceRuntimeConfiguration struct {
-	Config        config.Config
-	Layout        config.PromptLayout
-	ManagedConfig *config.ManagedConfig
+	Config config.Config
+	Layout config.PromptLayout
 }
 
 // main executes the standalone maintenance bootstrap and dispatches to the selected one-shot action.
 // main 用于执行独立维护工具的启动流程，并分发到选中的一次性动作。
 func main() {
+	if hasRemovedManagedConfigFlag(os.Args[1:]) {
+		fmt.Fprintln(os.Stderr, "-vulcan-managed-config is no longer supported; use standalone layered configuration via -config")
+		os.Exit(2)
+	}
 	if hasVersionJSONFlag(os.Args[1:]) {
 		if err := buildinfo.WriteVersionJSON(os.Stdout, "vmm-migrate"); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to write version document: %v\n", err)
@@ -34,9 +37,13 @@ func main() {
 		return
 	}
 	cfgPath := flag.String("config", "", "user override root (~/.vmm by default); explicit config files must use .yaml or .yml")
-	managedConfigPath := flag.String("vulcan-managed-config", "", "strict Vulcan Code managed-runtime manifest used instead of layered config")
 	cleanTarget := flag.String("clean", "", "maintenance cleanup target: sqlite, lancedb, postgres, or all")
-	migrateTarget := flag.String("migrate", "", "maintenance migration target: split-to-combined")
+	migrateTarget := flag.String("migrate", "", "maintenance migration target: split-to-combined, split-to-native, or controller-to-native")
+	// Native migration always writes a new destination and requires explicit unattended acknowledgement.
+	// 原生迁移始终写入新目标，并要求无人值守调用明确确认。
+	nativeOutput := flag.String("native-output", "", "new empty output directory for native migration")
+	confirmMigrate := flag.Bool("confirm-migrate", false, "confirm migration into a new native output directory")
+	ftsRebuild := flag.Bool("fts-rebuild", false, "rebuild the native SQLite full-text index from durable original text")
 	vectorRebuild := flag.Bool("vector-rebuild", false, "rebuild vectors with the currently configured embedding model")
 	confirmVectorRebuild := flag.Bool("confirm-vector-rebuild", false, "explicitly confirms vector rebuild for non-interactive host orchestration")
 	// vectorRebuildProgressFile carries the host-owned progress destination into the vector rebuild action.
@@ -47,10 +54,21 @@ func main() {
 	ctx, stop := buildSignalAwareMainContext()
 	defer stop()
 
-	if err := runWithProgressFile(ctx, os.Args[0], *cfgPath, *managedConfigPath, *cleanTarget, *migrateTarget, *vectorRebuild, *confirmVectorRebuild, *vectorRebuildProgressFile); err != nil {
+	if err := runWithMaintenanceOptions(ctx, os.Args[0], *cfgPath, *cleanTarget, *migrateTarget, *vectorRebuild, *confirmVectorRebuild, *vectorRebuildProgressFile, nativeMaintenanceOptions{OutputDirectory: *nativeOutput, Confirmed: *confirmMigrate, RebuildFTS: *ftsRebuild}); err != nil {
 		fmt.Fprintf(os.Stderr, "%v\n", err)
 		os.Exit(1)
 	}
+}
+
+// hasRemovedManagedConfigFlag detects the retired hosted-runtime flag before the standard parser can treat it as an unknown option.
+// hasRemovedManagedConfigFlag 用于在标准解析器将旧托管参数识别为未知选项前检测它。
+func hasRemovedManagedConfigFlag(args []string) bool {
+	for _, arg := range args {
+		if arg == "-vulcan-managed-config" || arg == "--vulcan-managed-config" || strings.HasPrefix(arg, "-vulcan-managed-config=") || strings.HasPrefix(arg, "--vulcan-managed-config=") {
+			return true
+		}
+	}
+	return false
 }
 
 // hasVersionJSONFlag detects the standalone version-document switch before maintenance flag parsing.
@@ -72,13 +90,27 @@ func buildSignalAwareMainContext() (context.Context, context.CancelFunc) {
 
 // run resolves config layering once and dispatches exactly one maintenance action without booting the gRPC runtime.
 // run 用于一次性解析配置层，并在不启动 gRPC 运行时的前提下分发唯一的维护动作。
-func run(ctx context.Context, argv0, cfgPath, managedConfigPath, cleanTarget, migrateTarget string, vectorRebuild, vectorRebuildConfirmed bool) error {
-	return runWithProgressFile(ctx, argv0, cfgPath, managedConfigPath, cleanTarget, migrateTarget, vectorRebuild, vectorRebuildConfirmed, "")
+func run(ctx context.Context, argv0, cfgPath, cleanTarget, migrateTarget string, vectorRebuild, vectorRebuildConfirmed bool) error {
+	return runWithProgressFile(ctx, argv0, cfgPath, cleanTarget, migrateTarget, vectorRebuild, vectorRebuildConfirmed, "")
 }
 
 // runWithProgressFile resolves configuration and optionally supplies a progress side channel to vector rebuild.
 // runWithProgressFile 解析配置，并在向量重建时可选地提供进度旁路文件。
-func runWithProgressFile(ctx context.Context, argv0, cfgPath, managedConfigPath, cleanTarget, migrateTarget string, vectorRebuild, vectorRebuildConfirmed bool, progressFile string) error {
+func runWithProgressFile(ctx context.Context, argv0, cfgPath, cleanTarget, migrateTarget string, vectorRebuild, vectorRebuildConfirmed bool, progressFile string) error {
+	return runWithMaintenanceOptions(ctx, argv0, cfgPath, cleanTarget, migrateTarget, vectorRebuild, vectorRebuildConfirmed, progressFile, nativeMaintenanceOptions{})
+}
+
+// nativeMaintenanceOptions carries explicit native-only actions without changing existing maintenance callers.
+// nativeMaintenanceOptions 承载明确的原生维护选项，同时保持已有维护调用兼容。
+type nativeMaintenanceOptions struct {
+	OutputDirectory string
+	Confirmed       bool
+	RebuildFTS      bool
+}
+
+// runWithMaintenanceOptions validates mutually exclusive actions before loading configuration or opening storage.
+// runWithMaintenanceOptions 在加载配置或打开存储前校验维护动作互斥关系。
+func runWithMaintenanceOptions(ctx context.Context, argv0, cfgPath, cleanTarget, migrateTarget string, vectorRebuild, vectorRebuildConfirmed bool, progressFile string, native nativeMaintenanceOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -92,14 +124,24 @@ func runWithProgressFile(ctx context.Context, argv0, cfgPath, managedConfigPath,
 	if vectorRebuild {
 		actionCount++
 	}
+	if native.RebuildFTS {
+		actionCount++
+	}
+	isNativeMigration := strings.EqualFold(strings.TrimSpace(migrateTarget), "split-to-native") || strings.EqualFold(strings.TrimSpace(migrateTarget), "controller-to-native")
+	if (native.OutputDirectory != "" || native.Confirmed) && !isNativeMigration {
+		return fmt.Errorf("-native-output and -confirm-migrate require split-to-native or controller-to-native migration")
+	}
+	if isNativeMigration && (strings.TrimSpace(native.OutputDirectory) == "" || !native.Confirmed) {
+		return fmt.Errorf("native migration requires -native-output <new-empty-directory> and -confirm-migrate")
+	}
 	if strings.TrimSpace(progressFile) != "" && !vectorRebuild {
 		return fmt.Errorf("-vector-rebuild-progress-file requires -vector-rebuild")
 	}
 	if actionCount != 1 {
-		return fmt.Errorf("exactly one maintenance action is required: use one of -clean, -migrate, or -vector-rebuild")
+		return fmt.Errorf("exactly one maintenance action is required: use one of -clean, -migrate, -vector-rebuild, or -fts-rebuild")
 	}
 
-	runtimeConfig, err := loadMaintenanceRuntimeConfiguration(argv0, cfgPath, managedConfigPath)
+	runtimeConfig, err := loadMaintenanceRuntimeConfiguration(argv0, cfgPath)
 	if err != nil {
 		return err
 	}
@@ -108,12 +150,16 @@ func runWithProgressFile(ctx context.Context, argv0, cfgPath, managedConfigPath,
 	case strings.TrimSpace(cleanTarget) != "":
 		return runMaintenanceClean(ctx, runtimeConfig.Config, runtimeConfig.Layout, cleanTarget)
 	case strings.TrimSpace(migrateTarget) != "":
+		if isNativeMigration {
+			return runNativeStorageMigration(ctx, runtimeConfig.Config, runtimeConfig.Layout, strings.ToLower(strings.TrimSpace(migrateTarget)), native.OutputDirectory)
+		}
 		return runMaintenanceMigrate(ctx, runtimeConfig.Config, migrateTarget)
+	case native.RebuildFTS:
+		return runNativeFTSRebuild(ctx, runtimeConfig.Config)
 	case vectorRebuild:
 		return runMaintenanceVectorRebuildWithProgressFile(
 			ctx,
 			runtimeConfig.Config,
-			runtimeConfig.ManagedConfig,
 			os.Stdin,
 			os.Stdout,
 			vectorRebuildConfirmed,
@@ -124,24 +170,9 @@ func runWithProgressFile(ctx context.Context, argv0, cfgPath, managedConfigPath,
 	}
 }
 
-// loadMaintenanceRuntimeConfiguration selects exactly one configuration authority and retains the managed manifest so vector rebuild uses Vulcan Code inference.
-// loadMaintenanceRuntimeConfiguration 用于选择唯一配置权威，并保留托管清单，使向量重建继续使用 Vulcan Code 推理。
-func loadMaintenanceRuntimeConfiguration(argv0, cfgPath, managedConfigPath string) (maintenanceRuntimeConfiguration, error) {
-	if strings.TrimSpace(cfgPath) != "" && strings.TrimSpace(managedConfigPath) != "" {
-		return maintenanceRuntimeConfiguration{}, fmt.Errorf("-config and -vulcan-managed-config are mutually exclusive")
-	}
-	if strings.TrimSpace(managedConfigPath) != "" {
-		bundle, err := config.LoadVulcanManagedConfig(managedConfigPath)
-		if err != nil {
-			return maintenanceRuntimeConfiguration{}, fmt.Errorf("load Vulcan managed config: %w", err)
-		}
-		manifest := bundle.Manifest
-		return maintenanceRuntimeConfiguration{
-			Config:        bundle.Config,
-			Layout:        bundle.Layout,
-			ManagedConfig: &manifest,
-		}, nil
-	}
+// loadMaintenanceRuntimeConfiguration resolves the standalone layered configuration used by maintenance actions.
+// loadMaintenanceRuntimeConfiguration 用于解析维护动作使用的独立分层配置。
+func loadMaintenanceRuntimeConfiguration(argv0, cfgPath string) (maintenanceRuntimeConfiguration, error) {
 	exePath, err := os.Executable()
 	if err != nil {
 		return maintenanceRuntimeConfiguration{}, fmt.Errorf("resolve executable path: %w", err)

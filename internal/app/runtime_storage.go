@@ -50,13 +50,7 @@ type runtimeStorageCapabilities struct {
 // initRuntimeStorageCapabilities builds the configured storage adapters, resolves the runtime-facing capabilities, and runs vector schema synchronization when the selected mode requires it.
 // initRuntimeStorageCapabilities 用于构建当前配置下的存储适配器、解析运行时需要的能力集合，并在所选模式需要时执行向量 schema 同步。
 func initRuntimeStorageCapabilities(cfg config.Config, logger *logx.Logger, layout config.PromptLayout) (runtimeStorageCapabilities, error) {
-	return initRuntimeStorageCapabilitiesWithDataRoot(cfg, logger, layout, "")
-}
-
-// initRuntimeStorageCapabilitiesWithDataRoot builds managed storage against one explicit isolated root when supplied.
-// initRuntimeStorageCapabilitiesWithDataRoot 用于在提供显式隔离根时基于该目录构建托管存储。
-func initRuntimeStorageCapabilitiesWithDataRoot(cfg config.Config, logger *logx.Logger, layout config.PromptLayout, dataRoot string) (runtimeStorageCapabilities, error) {
-	storageDeps, err := buildStorageDependenciesWithDataRoot(cfg, layout, dataRoot)
+	storageDeps, err := buildStorageDependencies(cfg, layout)
 	if err != nil {
 		return runtimeStorageCapabilities{}, err
 	}
@@ -150,12 +144,9 @@ func normalizeProviderAlias(provider string) string {
 // buildStorageDependencies selects either the historical split stores or the unified PostgreSQL combined store and returns the matching runtime ports.
 // buildStorageDependencies 用于选择历史分离存储或统一 PostgreSQL 组合库，并返回对应的运行时端口集合。
 func buildStorageDependencies(cfg config.Config, layout config.PromptLayout) (storageDependencies, error) {
-	return buildStorageDependenciesWithDataRoot(cfg, layout, "")
-}
-
-// buildStorageDependenciesWithDataRoot selects managed controller storage without falling back to executable-derived database paths.
-// buildStorageDependenciesWithDataRoot 用于选择托管 Controller 存储，同时禁止回退到由可执行文件推导的数据库路径。
-func buildStorageDependenciesWithDataRoot(cfg config.Config, layout config.PromptLayout, dataRoot string) (storageDependencies, error) {
+	if cfg.StorageMode() == "native" {
+		return buildNativeStorageDependencies(cfg, layout, true)
+	}
 	if cfg.UsesCombinedPostgres() {
 		combined, err := buildCombinedStore(cfg)
 		if err != nil {
@@ -168,34 +159,9 @@ func buildStorageDependenciesWithDataRoot(cfg config.Config, layout config.Promp
 		}, nil
 	}
 	if cfg.UsesController() {
-		if strings.TrimSpace(dataRoot) != "" {
-			return buildManagedControllerStorageDependencies(cfg, layout, dataRoot)
-		}
 		return buildControllerStorageDependencies(cfg, layout)
 	}
-	relational, err := buildRelationalForLayout(cfg, layout)
-	if err != nil {
-		return storageDependencies{}, err
-	}
-	vector, err := buildVectorForLayout(cfg, layout)
-	if err != nil {
-		return storageDependencies{}, err
-	}
-	return storageDependencies{
-		Relational:         relational,
-		Vector:             vector,
-		ManageVectorSchema: true,
-	}, nil
-}
-
-// buildManagedControllerStorageDependencies attaches one exclusive VMM space rooted at the Vulcan Code-owned data directory.
-// buildManagedControllerStorageDependencies 用于挂载一个以 Vulcan Code 所有数据目录为根的独占 VMM Space。
-func buildManagedControllerStorageDependencies(cfg config.Config, promptLayout config.PromptLayout, dataRoot string) (storageDependencies, error) {
-	layout, err := resolveManagedStorageLayout(promptLayout, dataRoot)
-	if err != nil {
-		return storageDependencies{}, err
-	}
-	return buildControllerStorageDependenciesForLayout(cfg, layout, true, true)
+	return buildSplitStorageDependencies(cfg, layout, true)
 }
 
 // buildControllerStorageDependencies creates one shared controller session and reuses the existing SQLite/LanceDB stores above RPC-backed handles.
@@ -217,17 +183,63 @@ func buildControllerStorageDependenciesWithVectorInit(cfg config.Config, promptL
 // buildControllerStorageDependenciesForLayout creates controller-backed stores from one already-authoritative storage layout.
 // buildControllerStorageDependenciesForLayout 用于基于一份已具权威性的存储布局创建 Controller 后端存储。
 func buildControllerStorageDependenciesForLayout(cfg config.Config, layout localStorageLayout, ensureVectorTable bool, requireExclusiveSpace bool) (storageDependencies, error) {
-	executable := strings.TrimSpace(cfg.Controller.Executable)
-	if executable == "" {
-		executable = layout.ControllerBinary
+	owner, err := acquireLegacyStorageOwner(layout)
+	if err != nil {
+		return storageDependencies{}, err
 	}
+	success := false
+	defer func() {
+		if !success {
+			_ = owner.Shutdown(context.Background())
+		}
+	}()
+	controllerConfig := controllerRuntimeConfigForLayout(cfg, layout, requireExclusiveSpace)
 	startupBudget := cfg.Controller.StartupTimeout.Duration + cfg.Controller.ConnectTimeout.Duration + 10*time.Second
 	if startupBudget <= 0 {
 		startupBudget = 30 * time.Second
 	}
 	startupCtx, startupCancel := context.WithTimeout(context.Background(), startupBudget)
 	defer startupCancel()
-	controllerRuntime, err := vldb_controller.New(startupCtx, vldb_controller.Config{
+	controllerRuntime, err := vldb_controller.New(startupCtx, controllerConfig)
+	if err != nil {
+		return storageDependencies{}, err
+	}
+	owner.resources = append(owner.resources, controllerRuntime)
+	relational, err := vldb_sqlite.NewControllerStore(controllerRuntime, cfg.SQLite.Timeout.Duration, vldb_sqlite.StoreOptions{
+		TokenizerMode: cfg.SQLite.TokenizerMode,
+	})
+	if err != nil {
+		return storageDependencies{}, fmt.Errorf("build controller sqlite store: %w", err)
+	}
+	owner.resources = append(owner.resources, relational)
+	var vector *vldb_lancedb.Store
+	if ensureVectorTable {
+		vector, err = vldb_lancedb.NewControllerStore(controllerRuntime, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
+	} else {
+		vector, err = vldb_lancedb.NewControllerStoreWithoutInit(controllerRuntime, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
+	}
+	if err != nil {
+		return storageDependencies{}, fmt.Errorf("build controller lancedb store: %w", err)
+	}
+	owner.resources = append(owner.resources, vector)
+	success = true
+	return storageDependencies{
+		Relational:         relational,
+		Vector:             vector,
+		Lifecycle:          owner,
+		Health:             controllerRuntime,
+		ManageVectorSchema: true,
+	}, nil
+}
+
+// controllerRuntimeConfigForLayout maps the application controller settings to one fully resolved controller SDK configuration.
+// controllerRuntimeConfigForLayout 将应用层 controller 配置映射为一份完整解析的 controller SDK 配置。
+func controllerRuntimeConfigForLayout(cfg config.Config, layout localStorageLayout, requireExclusiveSpace bool) vldb_controller.Config {
+	executable := strings.TrimSpace(cfg.Controller.Executable)
+	if executable == "" {
+		executable = layout.ControllerBinary
+	}
+	return vldb_controller.Config{
 		Endpoint:              cfg.Controller.Endpoint,
 		AutoSpawn:             cfg.Controller.AutoSpawn,
 		Executable:            executable,
@@ -246,35 +258,7 @@ func buildControllerStorageDependenciesForLayout(cfg config.Config, layout local
 		SpaceRoot:             layout.DatabaseDir,
 		SQLiteDatabase:        layout.SQLiteDatabase,
 		LanceDBDirectory:      layout.LanceDBDirectory,
-	})
-	if err != nil {
-		return storageDependencies{}, err
 	}
-	relational, err := vldb_sqlite.NewControllerStore(controllerRuntime, cfg.SQLite.Timeout.Duration, vldb_sqlite.StoreOptions{
-		TokenizerMode: cfg.SQLite.TokenizerMode,
-	})
-	if err != nil {
-		_ = controllerRuntime.Shutdown(context.Background())
-		return storageDependencies{}, fmt.Errorf("build controller sqlite store: %w", err)
-	}
-	var vector *vldb_lancedb.Store
-	if ensureVectorTable {
-		vector, err = vldb_lancedb.NewControllerStore(controllerRuntime, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
-	} else {
-		vector, err = vldb_lancedb.NewControllerStoreWithoutInit(controllerRuntime, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
-	}
-	if err != nil {
-		_ = relational.Shutdown(context.Background())
-		_ = controllerRuntime.Shutdown(context.Background())
-		return storageDependencies{}, fmt.Errorf("build controller lancedb store: %w", err)
-	}
-	return storageDependencies{
-		Relational:         relational,
-		Vector:             vector,
-		Lifecycle:          controllerRuntime,
-		Health:             controllerRuntime,
-		ManageVectorSchema: true,
-	}, nil
 }
 
 // shutdownStorageDependencies releases partially built storage resources in reverse ownership order.
@@ -327,6 +311,9 @@ func buildVector(cfg config.Config) (appports.VectorStore, error) {
 // buildVectorForLayout selects the configured vector backend while allowing tests to pin a synthetic packaged layout instead of relying on the current process executable path.
 // buildVectorForLayout 用于选择当前配置的向量后端，同时允许测试显式固定一个打包布局，而不是依赖当前进程的可执行文件路径。
 func buildVectorForLayout(cfg config.Config, promptLayout config.PromptLayout) (appports.VectorStore, error) {
+	if cfg.StorageMode() == "native" {
+		return nil, fmt.Errorf("native vector storage requires shared runtime ownership")
+	}
 	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
 	if err != nil {
 		return nil, err
@@ -348,6 +335,9 @@ func buildRelational(cfg config.Config) (appports.RelationalStore, error) {
 // buildRelationalForLayout selects the configured relational backend while allowing tests to reuse their explicit packaged config root for database placement.
 // buildRelationalForLayout 用于选择当前配置的关系存储后端，同时允许测试复用显式的打包配置根目录来放置数据库文件。
 func buildRelationalForLayout(cfg config.Config, promptLayout config.PromptLayout) (appports.RelationalStore, error) {
+	if cfg.StorageMode() == "native" {
+		return nil, fmt.Errorf("native relational storage requires shared runtime ownership")
+	}
 	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
 	if err != nil {
 		return nil, err

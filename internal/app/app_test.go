@@ -16,7 +16,6 @@ import (
 	"time"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vulcan_inference"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 	"github.com/openvulcan/vmm/internal/platform/logx"
@@ -39,24 +38,6 @@ func newRuntimeConfigForTest() config.Config {
 	cfg.Embedding.Dimension = 1024
 	cfg.Rerank.Enabled = false
 	return cfg
-}
-
-// TestProcessorModelForManagedRuntimeNeverFallsBackToStandaloneDefault verifies an absent optional managed purpose cannot inherit the standalone gpt default.
-// TestProcessorModelForManagedRuntimeNeverFallsBackToStandaloneDefault 用于验证缺失的可选托管用途不会继承独立模式的 gpt 默认值。
-func TestProcessorModelForManagedRuntimeNeverFallsBackToStandaloneDefault(t *testing.T) {
-	cfg := config.DefaultLocal()
-	ai := runtimeAIDependencies{
-		PurposeRoutes: map[appports.LLMRouteSelectionLevel]vulcan_inference.PurposeRoute{
-			appports.LLMRouteSelectionLevelPreCheckL1: {ModelID: "deepseek-v4-flash"},
-		},
-	}
-
-	if model := processorModelForRuntime(cfg, ai, appports.LLMRouteSelectionLevelPreCheckL1); model != "deepseek-v4-flash" {
-		t.Fatalf("managed precheck model = %q, want synchronized model", model)
-	}
-	if model := processorModelForRuntime(cfg, ai, appports.LLMRouteSelectionLevelProfileInstruction); model != "" {
-		t.Fatalf("missing managed optional purpose fell back to standalone model %q", model)
-	}
 }
 
 // TestBuildGRPCKeepaliveConfigurationMapsConfigValues verifies the transport helper preserves the configured keepalive timings and client-ping policy before the runtime builds the gRPC server.

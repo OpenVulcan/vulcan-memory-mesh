@@ -7,6 +7,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"os"
@@ -19,6 +20,7 @@ import (
 	"github.com/openvulcan/vmm/internal/adapters/outbound/storageutil"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
 	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
+	sqlitecontract "github.com/openvulcan/vmm/internal/platform/storagecontract/sqlite"
 )
 
 const (
@@ -543,21 +545,25 @@ type Store struct {
 	database      sqliteDatabaseHandle
 	timeout       time.Duration
 	writeMu       sync.Mutex
-	tokenizerMode sqliteffi.TokenizerMode
+	shutdownMu    sync.Mutex
+	tokenizerMode sqlitecontract.TokenizerMode
 	ftsIndexName  string
+	// skipDebugSeed prevents migration targets from receiving local debug hierarchy rows.
+	// skipDebugSeed 防止迁移目标被写入本地调试层级种子行。
+	skipDebugSeed bool
 }
 
 // sqliteDatabaseHandle narrows the SQLite FFI surface that the adapter depends on so unit tests can replace the local database handle with one focused in-memory fake.
 // sqliteDatabaseHandle 用于收窄适配器依赖的 SQLite FFI 能力面，这样单测就可以把本地数据库句柄替换成一个聚焦的内存 fake。
 type sqliteDatabaseHandle interface {
-	ExecuteScript(sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.ExecuteResult, error)
-	ExecuteBatch(sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error)
-	QueryJSON(sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.QueryJSONResult, error)
-	EnsureFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.EnsureFtsIndexResult, error)
-	RebuildFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.RebuildFtsIndexResult, error)
-	UpsertFtsDocument(indexName string, mode sqliteffi.TokenizerMode, id string, filePath string, title string, content string) (sqliteffi.FtsMutationResult, error)
-	DeleteFtsDocument(indexName string, id string) (sqliteffi.FtsMutationResult, error)
-	SearchFts(indexName string, mode sqliteffi.TokenizerMode, query string, limit uint32, offset uint32) (sqliteffi.SearchResult, error)
+	ExecuteScript(ctx context.Context, sql string, params []sqlitecontract.SQLValue, paramsJSON string) (sqlitecontract.ExecuteResult, error)
+	ExecuteBatch(ctx context.Context, sql string, items [][]sqlitecontract.SQLValue) (sqlitecontract.ExecuteResult, error)
+	QueryJSON(ctx context.Context, sql string, params []sqlitecontract.SQLValue, paramsJSON string) (sqlitecontract.QueryJSONResult, error)
+	EnsureFtsIndex(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode) (sqlitecontract.EnsureFtsIndexResult, error)
+	RebuildFtsIndex(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode) (sqlitecontract.RebuildFtsIndexResult, error)
+	UpsertFtsDocument(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode, id string, filePath string, title string, content string) (sqlitecontract.FtsMutationResult, error)
+	DeleteFtsDocument(ctx context.Context, indexName string, id string) (sqlitecontract.FtsMutationResult, error)
+	SearchFts(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode, query string, limit uint32, offset uint32) (sqlitecontract.SearchResult, error)
 	Close() error
 }
 
@@ -571,6 +577,9 @@ func (s *Store) hasSQLiteStore() bool {
 // StoreOptions 用于收集会改变本地 FTS 行为、但不会影响其他调用方的 SQLite 适配器可选特性。
 type StoreOptions struct {
 	TokenizerMode string
+	// SkipDebugSeed leaves a newly bootstrapped native target empty for offline migration import.
+	// SkipDebugSeed 让新启动的原生迁移目标保持空库，以便离线迁移导入完整业务数据。
+	SkipDebugSeed bool
 }
 
 // NewStore opens the packaged SQLite dynamic library and ensures the local schema and built-in FTS index are initialized before serving traffic.
@@ -635,18 +644,24 @@ func NewStore(libraryPath string, databasePath string, timeout time.Duration, op
 // Shutdown closes the opened database, runtime, and dynamic-library handles used by the SQLite local-FFI adapter.
 // Shutdown 用于关闭 SQLite 本地 FFI 适配器所使用的数据库、运行时和动态库句柄。
 func (s *Store) Shutdown(ctx context.Context) error {
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	default:
-	}
 	if s == nil {
 		return nil
 	}
+	s.shutdownMu.Lock()
+	defer s.shutdownMu.Unlock()
 	var closeErr error
+	var ctxErr error
+	if ctx == nil {
+		ctx = context.Background()
+	} else {
+		select {
+		case <-ctx.Done():
+			ctxErr = ctx.Err()
+		default:
+		}
+	}
 	if s.database != nil {
 		closeErr = s.database.Close()
-		s.database = nil
 	}
 	if s.runtime != nil {
 		if err := s.runtime.Close(); err != nil && closeErr == nil {
@@ -660,7 +675,13 @@ func (s *Store) Shutdown(ctx context.Context) error {
 		}
 		s.lib = nil
 	}
-	return closeErr
+	if ctxErr != nil && closeErr != nil {
+		return errors.Join(ctxErr, closeErr)
+	}
+	if closeErr != nil {
+		return closeErr
+	}
+	return ctxErr
 }
 
 // init ensures the SQLite schema is bootstrapped or incrementally migrated before the store starts serving traffic.
@@ -718,20 +739,20 @@ func (s *Store) exec(ctx context.Context, sql string, params ...any) error {
 
 // execResult sends one SQL statement or script to SQLite and returns the execution metadata for callers that need affected-row checks.
 // execResult 用于把单条 SQL 或脚本发送给 SQLite，并把执行元数据返回给需要校验影响行数的调用方。
-func (s *Store) execResult(ctx context.Context, sql string, params ...any) (sqliteffi.ExecuteResult, error) {
+func (s *Store) execResult(ctx context.Context, sql string, params ...any) (sqlitecontract.ExecuteResult, error) {
 	if !s.hasSQLiteStore() {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite store is not initialized")
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
-		return sqliteffi.ExecuteResult{}, err
+		return sqlitecontract.ExecuteResult{}, err
 	}
 	resp, err := s.executeScript(ctx, strings.TrimSpace(sql), prepared.Values)
 	if err != nil {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute: %w", err)
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("sqlite execute: %w", err)
 	}
 	if !resp.Success {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute: %s", strings.TrimSpace(resp.Message))
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("sqlite execute: %s", strings.TrimSpace(resp.Message))
 	}
 	return resp, nil
 }
@@ -881,27 +902,27 @@ func (s *Store) execBatch(ctx context.Context, sql string, items [][]any) error 
 
 // execBatchResult sends one repeated-shape write workload and returns SQLite execution metadata for callers that must verify batch row counts.
 // execBatchResult 用于发送同构批量写入，并返回 SQLite 执行元数据，供必须校验批量命中行数的调用方使用。
-func (s *Store) execBatchResult(ctx context.Context, sql string, items [][]any) (sqliteffi.ExecuteResult, error) {
+func (s *Store) execBatchResult(ctx context.Context, sql string, items [][]any) (sqlitecontract.ExecuteResult, error) {
 	if !s.hasSQLiteStore() {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite store is not initialized")
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("sqlite store is not initialized")
 	}
 	if len(items) == 0 {
-		return sqliteffi.ExecuteResult{Success: true}, nil
+		return sqlitecontract.ExecuteResult{Success: true}, nil
 	}
-	batchItems := make([][]sqliteffi.SQLValue, 0, len(items))
+	batchItems := make([][]sqlitecontract.SQLValue, 0, len(items))
 	for idx, item := range items {
 		values, err := prepareSQLiteBatchParams(item)
 		if err != nil {
-			return sqliteffi.ExecuteResult{}, fmt.Errorf("prepare sqlite batch item %d: %w", idx, err)
+			return sqlitecontract.ExecuteResult{}, fmt.Errorf("prepare sqlite batch item %d: %w", idx, err)
 		}
 		batchItems = append(batchItems, values)
 	}
 	resp, err := s.executeBatch(ctx, strings.TrimSpace(sql), batchItems)
 	if err != nil {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute batch: %w", err)
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("sqlite execute batch: %w", err)
 	}
 	if !resp.Success {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("sqlite execute batch: %s", strings.TrimSpace(resp.Message))
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("sqlite execute batch: %s", strings.TrimSpace(resp.Message))
 	}
 	return resp, nil
 }
@@ -934,7 +955,7 @@ func queryRows[T any](s *Store, ctx context.Context, sql string, params ...any) 
 // sqlitePreparedParams stores the normalized parameter payload that can be attached to ExecuteScript / QueryJson requests.
 // sqlitePreparedParams 用于保存标准化后的参数载荷，便于附加到 ExecuteScript / QueryJson 请求。
 type sqlitePreparedParams struct {
-	Values []sqliteffi.SQLValue
+	Values []sqlitecontract.SQLValue
 }
 
 // prepareSQLiteParams converts Go scalar values into the typed SQLite FFI payload expected by the local sqlite-first runtime path.
@@ -943,7 +964,7 @@ func prepareSQLiteParams(params []any) (sqlitePreparedParams, error) {
 	if len(params) == 0 {
 		return sqlitePreparedParams{}, nil
 	}
-	values := make([]sqliteffi.SQLValue, 0, len(params))
+	values := make([]sqlitecontract.SQLValue, 0, len(params))
 	for idx, param := range params {
 		value, err := toSQLiteValue(param)
 		if err != nil {
@@ -956,7 +977,7 @@ func prepareSQLiteParams(params []any) (sqlitePreparedParams, error) {
 
 // prepareSQLiteBatchParams converts one ExecuteBatch item into native SQLite FFI values.
 // prepareSQLiteBatchParams 用于把单个 ExecuteBatch item 转换成原生 SQLite FFI 值。
-func prepareSQLiteBatchParams(params []any) ([]sqliteffi.SQLValue, error) {
+func prepareSQLiteBatchParams(params []any) ([]sqlitecontract.SQLValue, error) {
 	prepared, err := prepareSQLiteParams(params)
 	if err != nil {
 		return nil, err
@@ -966,60 +987,60 @@ func prepareSQLiteBatchParams(params []any) ([]sqliteffi.SQLValue, error) {
 
 // toSQLiteValue maps one Go scalar to the SQLite FFI typed value so the adapter can stay sqlite-native by default.
 // toSQLiteValue 用于把单个 Go 标量映射为 SQLite FFI 的强类型值，让适配器默认保持 sqlite 原生风格。
-func toSQLiteValue(param any) (sqliteffi.SQLValue, error) {
+func toSQLiteValue(param any) (sqlitecontract.SQLValue, error) {
 	switch value := param.(type) {
 	case nil:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueNull}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueNull}, nil
 	case bool:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueBool, Bool: value}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueBool, Bool: value}, nil
 	case string:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueString, String: value}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueString, String: value}, nil
 	case []byte:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueBytes, Bytes: append([]byte(nil), value...)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueBytes, Bytes: append([]byte(nil), value...)}, nil
 	case json.RawMessage:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueString, String: string(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueString, String: string(value)}, nil
 	case int:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case int8:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case int16:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case int32:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case int64:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: value}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: value}, nil
 	case uint:
 		if uint64(value) > math.MaxInt64 {
-			return sqliteffi.SQLValue{}, fmt.Errorf("uint %d overflows sqlite int64 binding", value)
+			return sqlitecontract.SQLValue{}, fmt.Errorf("uint %d overflows sqlite int64 binding", value)
 		}
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case uint8:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case uint16:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case uint32:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case uint64:
 		if value > math.MaxInt64 {
-			return sqliteffi.SQLValue{}, fmt.Errorf("uint64 %d overflows sqlite int64 binding", value)
+			return sqlitecontract.SQLValue{}, fmt.Errorf("uint64 %d overflows sqlite int64 binding", value)
 		}
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueInt64, Int64: int64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueInt64, Int64: int64(value)}, nil
 	case float32:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueFloat64, Float64: float64(value)}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueFloat64, Float64: float64(value)}, nil
 	case float64:
-		return sqliteffi.SQLValue{Kind: sqliteffi.SQLValueFloat64, Float64: value}, nil
+		return sqlitecontract.SQLValue{Kind: sqlitecontract.SQLValueFloat64, Float64: value}, nil
 	default:
-		return sqliteffi.SQLValue{}, fmt.Errorf("unsupported sqlite param type %T", param)
+		return sqlitecontract.SQLValue{}, fmt.Errorf("unsupported sqlite param type %T", param)
 	}
 }
 
 // executeScript performs one local ExecuteScript FFI call with bounded retry logic for retryable busy/locked/schema errors.
 // executeScript 用于执行一次本地 ExecuteScript FFI 调用，并对可重试的 busy/locked/schema 错误做有界重试。
-func (s *Store) executeScript(ctx context.Context, sql string, params []sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
-	var response sqliteffi.ExecuteResult
+func (s *Store) executeScript(ctx context.Context, sql string, params []sqlitecontract.SQLValue) (sqlitecontract.ExecuteResult, error) {
+	var response sqlitecontract.ExecuteResult
 	err := s.withSQLiteRetry(ctx, func() error {
 		var err error
-		response, err = s.database.ExecuteScript(sql, params, "")
+		response, err = s.database.ExecuteScript(ctx, sql, params, "")
 		return err
 	})
 	return response, err
@@ -1027,11 +1048,11 @@ func (s *Store) executeScript(ctx context.Context, sql string, params []sqliteff
 
 // executeBatch performs one local ExecuteBatch FFI call with bounded retry logic so SQLITE_BUSY / SQLITE_LOCKED do not immediately bubble up to the caller.
 // executeBatch 用于执行一次本地 ExecuteBatch FFI 调用，并对 SQLITE_BUSY / SQLITE_LOCKED 之类错误做有界重试，避免立刻上抛给调用方。
-func (s *Store) executeBatch(ctx context.Context, sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
-	var response sqliteffi.ExecuteResult
+func (s *Store) executeBatch(ctx context.Context, sql string, items [][]sqlitecontract.SQLValue) (sqlitecontract.ExecuteResult, error) {
+	var response sqlitecontract.ExecuteResult
 	err := s.withSQLiteRetry(ctx, func() error {
 		var err error
-		response, err = s.database.ExecuteBatch(sql, items)
+		response, err = s.database.ExecuteBatch(ctx, sql, items)
 		return err
 	})
 	return response, err
@@ -1039,11 +1060,11 @@ func (s *Store) executeBatch(ctx context.Context, sql string, items [][]sqliteff
 
 // queryJSON performs one local QueryJSON FFI call with the same retry contract used by writes so retryable SQLITE_SCHEMA / SQLITE_BUSY failures can self-heal.
 // queryJSON 用于执行一次本地 QueryJSON FFI 调用，并复用与写请求一致的重试契约，让 SQLITE_SCHEMA / SQLITE_BUSY 这类可重试错误有机会自行恢复。
-func (s *Store) queryJSON(ctx context.Context, sql string, params []sqliteffi.SQLValue) (sqliteffi.QueryJSONResult, error) {
-	var response sqliteffi.QueryJSONResult
+func (s *Store) queryJSON(ctx context.Context, sql string, params []sqlitecontract.SQLValue) (sqlitecontract.QueryJSONResult, error) {
+	var response sqlitecontract.QueryJSONResult
 	err := s.withSQLiteRetry(ctx, func() error {
 		var err error
-		response, err = s.database.QueryJSON(sql, params, "")
+		response, err = s.database.QueryJSON(ctx, sql, params, "")
 		return err
 	})
 	return response, err
@@ -1059,7 +1080,9 @@ func (s *Store) withSQLiteRetry(ctx context.Context, call func() error) error {
 		}
 		err := call()
 		if err == nil {
-			return checkSQLiteContext(ctx)
+			// A confirmed commit must remain successful even if cancellation arrives immediately afterwards.
+			// 已确认提交成功后，即使紧接着发生取消，也必须保留成功结果，避免调用方重复写入。
+			return nil
 		}
 		lastErr = err
 		if !isSQLiteRetryableError(err) || attempt == sqliteRetryMaxAttempts-1 {
@@ -3564,7 +3587,7 @@ func (s *Store) SearchLexicalMemory(ctx context.Context, query string, topK int,
 	if s == nil || s.database == nil {
 		return nil, fmt.Errorf("sqlite lexical search requires one local ffi database")
 	}
-	result, err := s.database.SearchFts(s.ftsIndexName, s.tokenizerMode, strings.TrimSpace(query), uint32(memoryLexicalSearchCandidateLimit(topK)), 0)
+	result, err := s.database.SearchFts(ctx, s.ftsIndexName, s.tokenizerMode, strings.TrimSpace(query), uint32(memoryLexicalSearchCandidateLimit(topK)), 0)
 	if err != nil {
 		return nil, fmt.Errorf("search lexical memory: %w", err)
 	}
@@ -5838,7 +5861,7 @@ func (s *Store) ensureBuiltinMemoryFTS(ctx context.Context) error {
 	if s == nil || s.database == nil {
 		return fmt.Errorf("sqlite store is not initialized")
 	}
-	result, err := s.database.EnsureFtsIndex(s.ftsIndexName, s.tokenizerMode)
+	result, err := s.database.EnsureFtsIndex(ctx, s.ftsIndexName, s.tokenizerMode)
 	if err != nil {
 		return fmt.Errorf("ensure sqlite builtin fts index: %w", err)
 	}
@@ -5846,7 +5869,7 @@ func (s *Store) ensureBuiltinMemoryFTS(ctx context.Context) error {
 		return err
 	}
 	if result.TokenizerMode != s.tokenizerMode {
-		rebuildResult, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode)
+		rebuildResult, err := s.database.RebuildFtsIndex(ctx, s.ftsIndexName, s.tokenizerMode)
 		if err != nil {
 			return fmt.Errorf("rebuild sqlite builtin fts index: %w", err)
 		}
@@ -5859,7 +5882,7 @@ func (s *Store) ensureBuiltinMemoryFTS(ctx context.Context) error {
 
 // sqliteFTSEnsureResultError converts an unsuccessful ensure result into a boundary error before callers trust tokenizer metadata.
 // sqliteFTSEnsureResultError 用于在调用方信任分词器元数据前，把 ensure 返回的失败结果位转换为边界错误。
-func sqliteFTSEnsureResultError(stage string, result sqliteffi.EnsureFtsIndexResult) error {
+func sqliteFTSEnsureResultError(stage string, result sqlitecontract.EnsureFtsIndexResult) error {
 	if result.Success {
 		return nil
 	}
@@ -5868,7 +5891,7 @@ func sqliteFTSEnsureResultError(stage string, result sqliteffi.EnsureFtsIndexRes
 
 // sqliteFTSRebuildResultError converts an unsuccessful rebuild result into a boundary error so full-index recovery cannot report success on a failed FFI result.
 // sqliteFTSRebuildResultError 用于把 rebuild 返回的失败结果位转换为边界错误，避免全量索引恢复在 FFI 失败时被误判为成功。
-func sqliteFTSRebuildResultError(stage string, result sqliteffi.RebuildFtsIndexResult) error {
+func sqliteFTSRebuildResultError(stage string, result sqlitecontract.RebuildFtsIndexResult) error {
 	if result.Success {
 		return nil
 	}
@@ -5877,7 +5900,7 @@ func sqliteFTSRebuildResultError(stage string, result sqliteffi.RebuildFtsIndexR
 
 // sqliteFTSMutationResultError converts an unsuccessful incremental mutation result into a boundary error before the relational/FTS write is considered synchronized.
 // sqliteFTSMutationResultError 用于在关系表与 FTS 写入被视为同步前，把增量变更返回的失败结果位转换为边界错误。
-func sqliteFTSMutationResultError(stage string, result sqliteffi.FtsMutationResult) error {
+func sqliteFTSMutationResultError(stage string, result sqlitecontract.FtsMutationResult) error {
 	if result.Success {
 		return nil
 	}
@@ -5898,6 +5921,7 @@ func (s *Store) syncMemoryFTSAfterWrite(ctx context.Context, inserted []logicdom
 	}
 	for _, record := range inserted {
 		result, err := s.database.UpsertFtsDocument(
+			ctx,
 			s.ftsIndexName,
 			s.tokenizerMode,
 			strconv.FormatUint(record.ID, 10),
@@ -5913,7 +5937,7 @@ func (s *Store) syncMemoryFTSAfterWrite(ctx context.Context, inserted []logicdom
 		}
 	}
 	for _, memoryID := range storageutil.NormalizeUint64List(deletedMemoryIDs) {
-		result, err := s.database.DeleteFtsDocument(s.ftsIndexName, strconv.FormatUint(memoryID, 10))
+		result, err := s.database.DeleteFtsDocument(ctx, s.ftsIndexName, strconv.FormatUint(memoryID, 10))
 		if err != nil {
 			return s.rebuildMemoryFTSWithFallback(ctx, fmt.Errorf("delete sqlite memory fts document %d: %w", memoryID, err))
 		}
@@ -5927,7 +5951,7 @@ func (s *Store) syncMemoryFTSAfterWrite(ctx context.Context, inserted []logicdom
 // rebuildMemoryFTSWithFallback rebuilds the full built-in FTS index so relational/FTS consistency can self-heal after one incremental mutation fails.
 // rebuildMemoryFTSWithFallback 用于重建整个内建 FTS 索引，让关系表与 FTS 在单次增量同步失败后能够自愈。
 func (s *Store) rebuildMemoryFTSWithFallback(ctx context.Context, cause error) error {
-	result, err := s.database.RebuildFtsIndex(s.ftsIndexName, s.tokenizerMode)
+	result, err := s.database.RebuildFtsIndex(ctx, s.ftsIndexName, s.tokenizerMode)
 	if err != nil {
 		return fmt.Errorf("%w; rebuild sqlite builtin fts index also failed: %v", cause, err)
 	}
@@ -6430,14 +6454,14 @@ func buildActiveUnexpiredMemoryCondition(alias string, nowMs int64) string {
 
 // parseSQLiteTokenizerMode maps the config string into the SQLite FFI tokenizer enum.
 // parseSQLiteTokenizerMode 用于把配置字符串映射为 SQLite FFI 分词枚举。
-func parseSQLiteTokenizerMode(mode string) (sqliteffi.TokenizerMode, error) {
+func parseSQLiteTokenizerMode(mode string) (sqlitecontract.TokenizerMode, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "jieba":
-		return sqliteffi.TokenizerJieba, nil
+		return sqlitecontract.TokenizerJieba, nil
 	case "none":
-		return sqliteffi.TokenizerNone, nil
+		return sqlitecontract.TokenizerNone, nil
 	default:
-		return sqliteffi.TokenizerNone, fmt.Errorf("unsupported sqlite tokenizer mode: %s", mode)
+		return sqlitecontract.TokenizerNone, fmt.Errorf("unsupported sqlite tokenizer mode: %s", mode)
 	}
 }
 

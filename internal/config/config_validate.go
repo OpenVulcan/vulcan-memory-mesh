@@ -59,10 +59,14 @@ var supportedEnvOverrideValuePaths = map[string][]string{
 	"VMM_SQLITE_ADDRESS":                                {"sqlite.address"},
 	"VMM_SQLITE_TIMEOUT":                                {"sqlite.timeout"},
 	"VMM_SQLITE_TOKENIZER_MODE":                         {"sqlite.tokenizer_mode"},
+	"VMM_SQLITE_NATIVE_PATH":                            {"sqlite.native.path"},
+	"VMM_SQLITE_NATIVE_TOKENIZER":                       {"sqlite.native.tokenizer"},
 	"VMM_LANCEDB_ADDRESS":                               {"lancedb.address"},
 	"VMM_LANCEDB_TIMEOUT":                               {"lancedb.timeout"},
 	"VMM_LANCEDB_TABLE_NAME":                            {"lancedb.table_name"},
 	"VMM_LANCEDB_VECTOR_COLUMN":                         {"lancedb.vector_column"},
+	"VMM_LANCEDB_NATIVE_PATH":                           {"lancedb.native.path"},
+	"VMM_LANCEDB_NATIVE_LIBRARY_PATH":                   {"lancedb.native.library_path"},
 	"VMM_CONTROLLER_ENDPOINT":                           {"controller.endpoint"},
 	"VMM_CONTROLLER_AUTO_SPAWN":                         {"controller.auto_spawn"},
 	"VMM_CONTROLLER_EXECUTABLE":                         {"controller.executable"},
@@ -187,10 +191,11 @@ func (c Config) Validate() error {
 	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
 		return errors.New("noise.default_language is required")
 	}
-	switch normalizeStorageModeValue(c.Storage.Mode) {
-	case "split", "controller", "combined":
+	storageMode := normalizeStorageModeValue(c.Storage.Mode)
+	switch storageMode {
+	case "split", "controller", "combined", "native":
 	default:
-		return errors.New("storage.mode must be one of split, controller, or combined")
+		return errors.New("storage.mode must be one of split, controller, combined, or native")
 	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
@@ -296,7 +301,7 @@ func (c Config) Validate() error {
 	if !isSupportedAIProvider(c.Embedding.Provider) {
 		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, google_ai_studio, or openrouter")
 	}
-	if normalizeStorageModeValue(c.Storage.Mode) != "combined" {
+	if storageMode != "combined" {
 		if strings.TrimSpace(c.LanceDB.TableName) == "" {
 			return errors.New("lancedb.table_name is required")
 		}
@@ -310,10 +315,27 @@ func (c Config) Validate() error {
 		}
 		switch strings.ToLower(strings.TrimSpace(c.Relational.Provider)) {
 		case "sqlite":
-			switch normalizeSQLiteTokenizerModeValue(c.SQLite.TokenizerMode) {
-			case "jieba", "none":
-			default:
-				return errors.New("sqlite.tokenizer_mode must be one of jieba or none")
+			if storageMode == "native" {
+				if err := validateNativePath("sqlite.native.path", c.SQLite.Native.Path, true); err != nil {
+					return err
+				}
+				if err := validateNativePath("lancedb.native.path", c.LanceDB.Native.Path, true); err != nil {
+					return err
+				}
+				if err := validateNativePath("lancedb.native.library_path", c.LanceDB.Native.LibraryPath, false); err != nil {
+					return err
+				}
+				switch normalizeSQLiteNativeTokenizerValue(c.SQLite.Native.Tokenizer) {
+				case "gse", "unicode61":
+				default:
+					return errors.New("sqlite.native.tokenizer must be one of gse or unicode61 when storage.mode=native")
+				}
+			} else {
+				switch normalizeSQLiteTokenizerModeValue(c.SQLite.TokenizerMode) {
+				case "jieba", "none":
+				default:
+					return errors.New("sqlite.tokenizer_mode must be one of jieba or none")
+				}
 			}
 		default:
 			return errors.New("relational.provider must be sqlite")
@@ -510,6 +532,24 @@ func (c Config) Validate() error {
 	return nil
 }
 
+// validateNativePath rejects path values that cannot be represented by the runtime while leaving existence and root resolution to the application layer.
+// validateNativePath 用于拒绝运行时无法表示的路径值，同时把路径存在性和根目录解析交给应用层处理。
+func validateNativePath(name, raw string, required bool) error {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		if required {
+			return fmt.Errorf("%s is required when storage.mode=native", name)
+		}
+		return nil
+	}
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return fmt.Errorf("%s contains an invalid control character", name)
+		}
+	}
+	return nil
+}
+
 // validateRemovedAIEnvOverrides rejects deprecated AI environment variables only when the current config explicitly references those placeholders.
 // validateRemovedAIEnvOverrides 用于仅在当前配置显式引用对应占位符时，拒绝已废弃的 AI 环境变量，避免运行时把已移除的单路由语义静默混入新的配置契约。
 func validateRemovedAIEnvOverrides(referencedEnvKeys map[string]struct{}) error {
@@ -697,10 +737,14 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setString("VMM_SQLITE_ADDRESS", &cfg.SQLite.Address)
 	setDuration("VMM_SQLITE_TIMEOUT", &cfg.SQLite.Timeout)
 	setString("VMM_SQLITE_TOKENIZER_MODE", &cfg.SQLite.TokenizerMode)
+	setString("VMM_SQLITE_NATIVE_PATH", &cfg.SQLite.Native.Path)
+	setString("VMM_SQLITE_NATIVE_TOKENIZER", &cfg.SQLite.Native.Tokenizer)
 	setString("VMM_LANCEDB_ADDRESS", &cfg.LanceDB.Address)
 	setDuration("VMM_LANCEDB_TIMEOUT", &cfg.LanceDB.Timeout)
 	setString("VMM_LANCEDB_TABLE_NAME", &cfg.LanceDB.TableName)
 	setString("VMM_LANCEDB_VECTOR_COLUMN", &cfg.LanceDB.VectorColumn)
+	setString("VMM_LANCEDB_NATIVE_PATH", &cfg.LanceDB.Native.Path)
+	setString("VMM_LANCEDB_NATIVE_LIBRARY_PATH", &cfg.LanceDB.Native.LibraryPath)
 	setString("VMM_CONTROLLER_ENDPOINT", &cfg.Controller.Endpoint)
 	setBool("VMM_CONTROLLER_AUTO_SPAWN", &cfg.Controller.AutoSpawn)
 	setString("VMM_CONTROLLER_EXECUTABLE", &cfg.Controller.Executable)
@@ -834,6 +878,12 @@ func (c Config) StorageMode() string {
 // UsesController 用于判断运行时是否应把两套 split 存储 API 统一路由到共享 vldb-controller 进程。
 func (c Config) UsesController() bool {
 	return c.StorageMode() == "controller"
+}
+
+// UsesNative reports whether the runtime should select standalone SQLite and LanceDB implementations.
+// UsesNative 用于判断运行时是否应选择独立 SQLite 与 LanceDB 实现。
+func (c Config) UsesNative() bool {
+	return c.StorageMode() == "native"
 }
 
 // UsesCombinedPostgres reports whether the runtime should build the unified PostgreSQL-backed combined store.

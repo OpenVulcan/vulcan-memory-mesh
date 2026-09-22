@@ -11,6 +11,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 用 `project_id + user_id + session_id` 做确定性层级寻址
 - 默认 `split` 模式使用 SQLite 保存关系数据、用 LanceDB 保存向量数据
 - `storage.mode=controller` 保持 SQLite/LanceDB 接口与数据布局不变，但由单个 `vldb-controller` 进程统一持有两套数据库句柄
+- `storage.mode=native` 使用进程内的 modernc SQLite 与原生 LanceDB 薄 ABI，数据与旧 split 根目录隔离
 - 显式切换 `storage.mode=combined` 后，会改为由 PostgreSQL 统一承载关系与向量能力
 - 由 Caddy 等外部反向代理负责 TLS
 
@@ -40,6 +41,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 ## 文档导航
 
 - [当前架构与存储模型（中文）](./docs/hierarchy-grpc-design_CN.md)
+- [独立原生存储说明（中文）](./docs/native-storage-guide_CN.md)
+- [Vulcan Code 托管运行退役与迁移说明](./docs/VULCAN_CODE_MANAGED_RUNTIME.md)
 - [gRPC 对接说明（中文）](./docs/grpc-integration-guide_CN.md)
 - [gRPC 接口测试说明（中文）](./docs/api-test-guide_CN.md)
 - [post-action 接口说明（中文）](./docs/post-action-guide_CN.md)
@@ -115,7 +118,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 ### 数据后端
 
-当前主线保留三种正式运行模式：
+当前主线保留三种本地 SQLite/LanceDB 模式；`combined` 是单独的 PostgreSQL 组合模式：
 
   - `split`（默认）
   - SQLite：关系库存储，负责层级、用户、session、turn、长期记忆、画像与回收治理元数据
@@ -141,6 +144,20 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - SQLite 强制启用数据库文件锁校验，底层固定对齐 `vldb-sqlite v0.1.6`
   - controller 固定为 `v0.2.3`，LanceDB 固定为 `v0.1.5`
   - 开发环境可使用 `controller.auto_spawn=true` 与 `managed` 模式；正式系统服务优先独立运行 controller，并把 VMM 设置为 `auto_spawn=false`
+- `native`（显式启用）
+  - 关系库由进程内 `modernc.org/sqlite` 适配器持有，向量库由 `output/libs/` 中的平台原生 LanceDB 薄 ABI 持有，不启动 `vldb-controller`
+  - 默认 SQLite 文件为 `output/database/native/sqlite.db`，默认 LanceDB 目录为 `output/database/native/lancedb/`
+  - `sqlite.native.path` 与 `lancedb.native.path` 的相对路径都相对于标准 `output/` 根目录解析；`lancedb.native.library_path` 留空时由应用选择 `output/libs/` 下当前平台的唯一库名
+  - Windows、Linux、macOS 的原生库名分别为 `vmm_lancedb_native.dll`、`libvmm_lancedb_native.so`、`libvmm_lancedb_native.dylib`
+  - 原生 SQLite 分词器单独使用 `sqlite.native.tokenizer`，只接受 `gse`（默认）或 `unicode61`；旧 split/controller 的 `sqlite.tokenizer_mode` 只接受 `jieba` 或 `none`
+  - `sqlite.timeout`、`lancedb.timeout`、`lancedb.table_name`、`lancedb.vector_column` 与 `embedding.dimension` 在各本地存储模式间共用
+  - 原生模式不会因为库缺失、路径非法、模式或分词器不支持而静默切回 split/controller；启动会直接报告配置或 ABI 校验错误
+  - 原生库随包契约为 manifest schema `1`、ABI `1`、LanceDB 引擎 `0.39.0`；`VMM_BUILD_STORAGE_PROFILE` 接受 `legacy`、`native`、`all`，未设置时仍为 `legacy`，因此默认 split 行为不变
+  - `make.ps1 deps native`（或 Unix 的 native 依赖脚本）负责显式制备并校验 Cargo 缓存；日常 `make.ps1 build` / `build release` 只编译 Go、同步配置、复制已校验库和 manifest，不会自动运行 Cargo
+  - SQLite 文件旁的 `<sqlite>.pair.json` 与 LanceDB 目录中的 `.vmm-pair.json` 必须同时存在且拥有相同 `format_version` 与 `pair_id`；缺失、孤立或不一致都会拒绝启动。`<sqlite>.embedding.json` 记录 provider、model、dimension 以及 params、model params、endpoint 和有序 routing 节点摘要，不保存凭据或 endpoint 明文；identity 缺失、孤立或与合并配置不一致也会拒绝启动
+  - `<sqlite>.migration-incomplete` 或 `<sqlite>.vector-rebuild-incomplete` 存在时，普通服务和普通维护入口都会拒绝打开该 native 存储；迁移失败会保留目标目录供诊断，修复后必须重新使用新的空目标目录，不能自动切换
+  - 迁移命令会生成 `migration-report.json` 与 `native-storage-override.fragment.yaml`。迁移会复制活动事实及可恢复 trash 行的关系数据和向量，并在报告中记录数量；fragment 只能合并回原配置覆盖根，不能直接作为 `-config`，且必须保留原 embedding provider/model/endpoint/routing/params 以及 prompts、pii_rules、noise_rules 覆盖
+  - `vmm-migrate -fts-rebuild` 仅适用于 native，必须停写后从持久化原文重建 SQLite FTS。`-clean sqlite,lancedb` 等破坏性清理通过 native 单一 owner 执行；删除向量表后必须先运行 `-vector-rebuild -confirm-vector-rebuild`，再启动服务，普通启动不会自动接管缺失的已登记向量表
 - `combined`（显式启用）
   - PostgreSQL：统一承载关系数据、检索索引与向量能力
   - 该模式只在 `storage.mode=combined` 且 `storage.combined_provider=postgres` 时启用
@@ -153,6 +170,8 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 应用内 TLS
 - 旧历史兼容 provider 回退路径
 - 内存关系库存根 / 内存向量库存根回退
+
+原生动态库验收边界：当前只有 Windows amd64 的实际打包动态库加载、中文写入/检索和向量链路得到真实运行验证。Linux amd64/arm64 与 macOS amd64/arm64 的证据仅限 `CGO_ENABLED=0` 的 Go 交叉构建；交叉构建不等于这些平台的动态库运行通过。
 
 ## 核心约束
 
@@ -533,6 +552,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - `output/libs/`
 - `output/database/sqlite.db`
 - `output/database/lancedb/`
+- native 模式默认使用 `output/database/native/sqlite.db` 与 `output/database/native/lancedb/`
 
 标准配置目录：
 
@@ -543,6 +563,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 - 运行时日志会同时输出到 stdout 和文件。
 - `split` 模式依赖的 SQLite / LanceDB 动态库会从 `output/libs/` 加载。
+- `native` 模式的 LanceDB 薄 ABI 也从 `output/libs/` 加载；打包校验缓存 manifest 和文件哈希，启动校验 ABI、引擎版本及必要操作语义。
 - `controller` 模式使用 `output/bin/vldb-controller(.exe)`，不会由 VMM 进程直接加载数据库动态库。
 - `split` 与 `controller` 模式使用相同的 `output/database/` 数据布局。
 - 标准打包产物默认写入 `output/logs/`。
@@ -552,6 +573,19 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 
 ```powershell
 .\make.ps1 deps host
+```
+
+原生 LanceDB 依赖属于低频、显式的制备步骤。需要 native 依赖时先执行：
+
+```powershell
+.\make.ps1 deps native
+```
+
+该步骤在 `third_party/deps/native_lancedb/<platform>/` 下生成带源码摘要、ABI、LanceDB 引擎版本和文件哈希的缓存 manifest，并发布精确的 `current.json` 选择。日常 `build` / `build release` 只执行 Go 编译、配置同步和已有缓存校验，不会自动执行 Cargo 或重新编译 LanceDB。构建时用 `VMM_BUILD_STORAGE_PROFILE=native` 选择 native 依赖，`all` 可同时打包两套依赖；未设置时保持 legacy 默认：
+
+```powershell
+$env:VMM_BUILD_STORAGE_PROFILE = "native"
+.\make.ps1 build
 ```
 
 ### 启动示例
@@ -639,6 +673,7 @@ vmm-local service status [service-name]
 - 必填运行字段中的 `${ENV_NAME}` 占位符如果缺失或为空，会在展开前直接报出变量名与配置路径，避免被归一化为空节点后产生误导性的路由错误。
 - 类型化的 `${VMM_...}` 覆盖值如果无法解析为目标字段所需的整数、浮点数、布尔值或时长，会在配置加载阶段直接失败，不会静默回退到文件值或默认值。
 - 未知配置字段会在配置加载阶段直接失败；顶层 `x-*` 仅作为 YAML 锚点辅助块被剥离，不进入运行时配置，也不会参与环境变量覆盖白名单。
+- 旧的 `-vulcan-managed-config` 托管参数已退役；`vmm-local` 与 `vmm-migrate` 都会明确拒绝它，请使用独立分层配置和 `-config` 覆盖根目录。
 
 ### 维护工具
 
@@ -659,9 +694,30 @@ vmm-local service status [service-name]
 - `split` 模式下可以分别清理 SQLite 和 LanceDB
 - `controller` 模式使用独立维护 client/session/binding，经 controller 执行 SQLite、LanceDB 清理与迁移导出，不会绕过控制器直接开库
 - `controller` 模式的维护会话要求目标 space 独占；如果仍有其他活跃 VMM client 附着同一数据根，维护命令会直接拒绝执行
+- `native` 模式的 SQLite/LanceDB 清理通过单一 native owner 执行，不能让服务进程同时写入；SQLite schema 与 FTS 在下次打开时重建，删除 LanceDB 表后则必须先执行 `-vector-rebuild -confirm-vector-rebuild` 再启动服务
+- native 清理不会自动恢复旧事实或旧向量；pair marker 与 embedding identity 仍需通过启动校验，配置或身份不一致时继续拒绝启动
 - `combined` 模式下可以单独清理 PostgreSQL 受管 schema
 
 #### 存储迁移
+
+native 迁移必须离线执行，并写入新的空目标目录。先停止 `vmm-local` 与相关 controller 写入，再根据当前源模式选择一种迁移：
+
+```powershell
+.\output\bin\vmm-migrate.exe -migrate split-to-native -native-output <new-empty-dir> -confirm-migrate
+.\output\bin\vmm-migrate.exe -migrate controller-to-native -native-output <new-empty-dir> -confirm-migrate
+```
+
+迁移目标必须是新建且为空的目录，不能原地覆盖旧的 split/controller 数据根。迁移过程应保留原始 SQLite/LanceDB 快照，关系事实、来源标识和向量标识按原值写入 native 目标；FTS 属于派生索引，应从持久化原文重新构建。LanceDB 中已有向量只有在模型与 `embedding.dimension` 都匹配时才可复用，迁移本身不自动调用 embedding 服务。可恢复 trash 行的关系数据和旁路向量也会保留，`migration-report.json` 会记录恢复 trash、总向量、重复向量等计数。迁移会生成 `migration-report.json` 与 `native-storage-override.fragment.yaml`；后者是配置片段，不能直接作为 `-config` 参数，必须合并到原配置覆盖根，并保留原有 embedding provider、model、endpoint、routing nodes、params、model params 以及 prompts、pii_rules、noise_rules 覆盖。当前 CLI 参数和迁移代码入口已接入，跨平台历史数据验收需单独完成。
+
+迁移期间的 `sqlite.db.migration-incomplete` 标记会把目标库隔离；失败时目标目录会保留供诊断，修复后必须重新迁移到新的空目录，不会自动切换或自动接管未完成目标。native 启动还会校验 SQLite/LanceDB 成对 pair marker，以及 embedding provider、model、dimension、params、model params、endpoint 和 routing topology 摘要；身份不匹配会拒绝启动。
+
+向量重建会在 native 破坏性重置前捕获一份固定 UTC 观察时刻，并以这份快照同时筛选 active 事实和 eligible restorable trash；随后写入 `sqlite.db.vector-rebuild-incomplete`，普通启动和普通维护入口在该 marker 存在时拒绝服务。重建会对唯一向量事实只生成一次 embedding，将 active 行写回关系库，并按精确的 `(batch_id,memory_id)` 更新 trash 向量，再写入 LanceDB；冲突 payload、身份、关系事实、trash 行、物理向量行数和 schema 版本任一不一致都会失败。全部核验及 embedding identity 更新成功后才清除 marker；reset 后的中途失败会尝试在有界恢复窗口内修复，无法修复则保留 marker 供显式维护处理。
+
+`-fts-rebuild` 的参数和调度入口已接入，只适用于 `storage.mode=native`，运行前必须停写；它从持久化原文重建 SQLite FTS，不改变 embedding identity。跨平台正式打包库实测仍需单独完成，本 README 不把 Go 入口或静态校验记为动态库运行验收：
+
+```powershell
+.\output\bin\vmm-migrate.exe -fts-rebuild
+```
 
 当需要把历史 `split` 模式的 SQLite 事实库迁移到 PostgreSQL 组合库时，可以执行：
 
@@ -680,15 +736,15 @@ vmm-local service status [service-name]
 当切换新的 embedding 模型，尤其是向量维度发生变化时，可以执行：
 
 ```powershell
-.\output\bin\vmm-migrate.exe -vector-rebuild
+.\output\bin\vmm-migrate.exe -vector-rebuild -confirm-vector-rebuild
 ```
 
 说明：
 
 - 执行前必须先停止 `vmm-local` / gRPC 运行时服务；如果 `grpc.listen_addr` 仍被占用，命令会直接拒绝执行，并在整个重建期间继续占住该监听地址
 - 执行前必须手工输入 `Y` 明确确认；未确认会立即退出
-- 只会处理 `active` 且未过期的长期记忆，不会重建失活数据，也不会对垃圾箱数据做语义重建
-- `split` 与 `controller` 模式都会先清空 SQLite 中的 durable 向量并重建 LanceDB 表，再按当前模型重新生成 active 向量并同步回填两边；controller 模式全程经独立维护会话执行
+- `split` 与 `controller` 模式只处理 `active` 且未过期的长期记忆，不重建失活数据或垃圾箱向量；两种模式都会先清空 SQLite 中的 durable 向量并重建 LanceDB 表，再按当前模型重新生成 active 向量并同步回填两边，controller 模式全程经独立维护会话执行
+- `native` 模式会在 reset 前固定一次 UTC 观察时刻，同时纳入 active 事实和 eligible restorable trash；相同事实只生成一次 embedding，active 行与精确 `(batch_id,memory_id)` 的 trash 行分别回写，LanceDB 只写入唯一向量，并在关系 payload、trash 身份、物理行数和 schema 校验通过后发布结果
 - `combined` 模式会先重建 PostgreSQL `embedding` 列的向量维度，再为当前有效记忆重新生成向量
 - 重建时直接复用当前配置里的 embedding 路由与预算；如果所有 Key 都因为预算耗尽暂时不可用，会自动等待 30 秒后继续
 - 该命令的目标是“维度迁移型重建”，默认围绕模型切换后的向量维度变化执行
@@ -713,10 +769,15 @@ vmm-local service status [service-name]
 - `relational.provider`
 - `sqlite.timeout`
 - `sqlite.tokenizer_mode`
+- `sqlite.native.path`
+- `sqlite.native.tokenizer`
 - `postgres.*`
 - `lancedb.timeout`
 - `lancedb.table_name`
 - `lancedb.vector_column`
+- `lancedb.native.path`
+- `lancedb.native.library_path`
+- native 环境变量：`VMM_SQLITE_NATIVE_PATH`、`VMM_SQLITE_NATIVE_TOKENIZER`、`VMM_LANCEDB_NATIVE_PATH`、`VMM_LANCEDB_NATIVE_LIBRARY_PATH`
 - `llm.*`
 - `embedding.*`
 - `memory_pipeline.*`

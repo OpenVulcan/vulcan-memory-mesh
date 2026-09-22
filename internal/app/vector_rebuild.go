@@ -4,11 +4,15 @@ package app
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
 
 	"github.com/openvulcan/vmm/internal/adapters/outbound/ai_key_failover"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -23,6 +27,10 @@ const (
 	// vectorRebuildWriteBatchSize keeps split-mode durable/vector refill writes bounded without coupling storage write chunking to the embedding model's API batch contract.
 	// vectorRebuildWriteBatchSize 用于让 split 模式的 durable/向量回填写入保持有界，同时避免把存储写入分批错误绑死到 embedding 模型的 API 批契约上。
 	vectorRebuildWriteBatchSize = 10
+
+	// nativeVectorRebuildRecoveryTimeout bounds detached publication after a cancelled repair attempt.
+	// nativeVectorRebuildRecoveryTimeout 限制取消后的脱离修复发布时长。
+	nativeVectorRebuildRecoveryTimeout = 10 * time.Minute
 )
 
 // vectorRebuildResetter is the narrow vector-store capability needed by split-mode rebuilds that must recreate the sidecar LanceDB table from the durable SQL source.
@@ -35,6 +43,159 @@ type vectorRebuildResetter interface {
 // vectorRebuildDurableResetter 用于描述 split 模式 durable 存储的能力：先清空陈旧 SQLite 向量载荷，再让独立向量库从同一个空基线重建。
 type vectorRebuildDurableResetter interface {
 	ClearMemoryVectors(ctx context.Context, vectorIDs []string) error
+}
+
+// nativeVectorRebuildRestorableTrashWalker is the narrow durable read contract required to avoid dropping recoverable trash vectors during native table recreation.
+// nativeVectorRebuildRestorableTrashWalker 是原生表重建前必须具备的 durable 读取契约，用于避免丢失可恢复 trash 向量。
+type nativeVectorRebuildRestorableTrashRowsWalker interface {
+	WalkNativeMigrationRestorableTrashRows(ctx context.Context, now time.Time, visit func(vldb_sqlite.NativeRestorableTrashMemory) error) error
+}
+
+// nativeVectorRebuildMemoryWalker reads all native durable memory facts for a fixed observation time.
+// nativeVectorRebuildMemoryWalker 按固定观察时刻读取 native durable 全部记忆事实。
+type nativeVectorRebuildMemoryWalker interface {
+	WalkNativeMigrationMemories(ctx context.Context, visit func(logicdomain.MemoryRecord) error) error
+}
+
+// nativeVectorRebuildRestorableTrashWriter rewrites one exact trash row after the new embedding is materialized.
+// nativeVectorRebuildRestorableTrashWriter 在新 embedding 生成后精确重写一条 trash 行。
+type nativeVectorRebuildRestorableTrashWriter interface {
+	UpdateNativeRestorableTrashVector(ctx context.Context, batchID, memoryID uint64, vector []float32) error
+}
+
+// nativeVectorRebuildSnapshot keeps live rows, eligible trash rows, and unique Lance rows from one pre-reset observation.
+// nativeVectorRebuildSnapshot 保存一次 reset 前观察到的 live 行、eligible trash 行和唯一 Lance 行。
+type nativeVectorRebuildSnapshot struct {
+	ProjectCount  int
+	EligibilityAt time.Time
+	Active        []logicdomain.MemoryRecord
+	Trash         []vldb_sqlite.NativeRestorableTrashMemory
+	Unique        []logicdomain.MemoryRecord
+}
+
+// loadNativeVectorRebuildActiveFacts loads project metadata and filters native durable facts at one captured time.
+// loadNativeVectorRebuildActiveFacts 加载项目元数据，并在同一捕获时刻过滤 native durable 事实。
+func loadNativeVectorRebuildActiveFacts(ctx context.Context, workspace appports.WorkspaceStore, relational any, capturedAt time.Time) ([]logicdomain.ProjectRecord, []logicdomain.MemoryRecord, error) {
+	projectLister, hasProjectLister := workspace.(appports.MaintenanceProjectLister)
+	var (
+		projects []logicdomain.ProjectRecord
+		err      error
+	)
+	if hasProjectLister {
+		projects, err = projectLister.ListProjectsForMaintenance(ctx)
+	} else {
+		projects, err = workspace.ListProjects(ctx)
+	}
+	if err != nil {
+		return nil, nil, fmt.Errorf("list projects for native vector rebuild: %w", err)
+	}
+	walker, ok := relational.(nativeVectorRebuildMemoryWalker)
+	if !ok {
+		return nil, nil, fmt.Errorf("native vector rebuild requires durable all-facts walker")
+	}
+	active := make([]logicdomain.MemoryRecord, 0)
+	err = walker.WalkNativeMigrationMemories(ctx, func(record logicdomain.MemoryRecord) error {
+		if record.Status != logicdomain.MemoryStatusActive || (!record.ExpiresAt.IsZero() && !record.ExpiresAt.After(capturedAt)) {
+			return nil
+		}
+		active = append(active, cloneVectorRebuildRecord(record))
+		return nil
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("walk native active memory facts: %w", err)
+	}
+	return projects, active, nil
+}
+
+// loadNativeVectorRebuildSnapshot reads live and eligible trash facts before any destructive reset.
+// loadNativeVectorRebuildSnapshot 在任何破坏性 reset 前读取 live 与 eligible trash 事实。
+func loadNativeVectorRebuildSnapshot(ctx context.Context, workspace appports.WorkspaceStore, relational any) (nativeVectorRebuildSnapshot, error) {
+	capturedAt := time.Now().UTC()
+	projects, active, err := loadNativeVectorRebuildActiveFacts(ctx, workspace, relational, capturedAt)
+	if err != nil {
+		return nativeVectorRebuildSnapshot{}, err
+	}
+	walker, ok := relational.(nativeVectorRebuildRestorableTrashRowsWalker)
+	if !ok {
+		return nativeVectorRebuildSnapshot{}, fmt.Errorf("native vector rebuild cannot inspect restorable trash vectors: relational store does not expose composite trash rows")
+	}
+
+	snapshot := nativeVectorRebuildSnapshot{
+		ProjectCount:  len(projects),
+		EligibilityAt: capturedAt,
+		Active:        cloneVectorRebuildRecords(active),
+		Trash:         make([]vldb_sqlite.NativeRestorableTrashMemory, 0),
+		Unique:        make([]logicdomain.MemoryRecord, 0, len(active)),
+	}
+	payloads := make(map[string][sha256.Size]byte, len(active))
+	activeIDs := make(map[string]struct{}, len(active))
+	for _, record := range active {
+		id := strings.TrimSpace(record.ID)
+		if id == "" {
+			return nativeVectorRebuildSnapshot{}, fmt.Errorf("native vector rebuild snapshot contains an empty active vector id")
+		}
+		if _, exists := activeIDs[id]; exists {
+			return nativeVectorRebuildSnapshot{}, fmt.Errorf("native vector rebuild snapshot contains duplicate active vector id %q", id)
+		}
+		fingerprint, fingerprintErr := nativeVectorRebuildPayloadFingerprint(record)
+		if fingerprintErr != nil {
+			return nativeVectorRebuildSnapshot{}, fingerprintErr
+		}
+		activeIDs[id] = struct{}{}
+		payloads[id] = fingerprint
+		snapshot.Unique = append(snapshot.Unique, cloneVectorRebuildRecord(record))
+	}
+
+	// The walker applies the same eligibility filters used by native migration at the captured observation time.
+	// walker 使用与 native migration 相同的资格过滤，并固定本次快照的观察时刻。
+	err = walker.WalkNativeMigrationRestorableTrashRows(ctx, snapshot.EligibilityAt, func(row vldb_sqlite.NativeRestorableTrashMemory) error {
+		if row.BatchID == 0 || row.MemoryID == 0 {
+			return fmt.Errorf("native vector rebuild snapshot contains invalid trash identity batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		id := strings.TrimSpace(row.Record.ID)
+		if id == "" {
+			return fmt.Errorf("native vector rebuild snapshot contains an empty trash vector id for batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		fingerprint, fingerprintErr := nativeVectorRebuildPayloadFingerprint(row.Record)
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		if existing, exists := payloads[id]; exists {
+			if existing != fingerprint {
+				return fmt.Errorf("native vector rebuild found conflicting live or restorable trash payloads for vector id %q", id)
+			}
+		} else {
+			payloads[id] = fingerprint
+			snapshot.Unique = append(snapshot.Unique, cloneVectorRebuildRecord(row.Record))
+		}
+		snapshot.Trash = append(snapshot.Trash, vldb_sqlite.NativeRestorableTrashMemory{
+			BatchID:  row.BatchID,
+			MemoryID: row.MemoryID,
+			Record:   cloneVectorRebuildRecord(row.Record),
+		})
+		return nil
+	})
+	if err != nil {
+		return nativeVectorRebuildSnapshot{}, fmt.Errorf("inspect native restorable trash vectors: %w", err)
+	}
+	if len(snapshot.Trash) > 0 {
+		if _, ok := relational.(nativeVectorRebuildRestorableTrashWriter); !ok {
+			return nativeVectorRebuildSnapshot{}, fmt.Errorf("native vector rebuild refuses eligible restorable trash vectors: relational store does not expose exact trash-vector updates")
+		}
+	}
+	return snapshot, nil
+}
+
+// nativeVectorRebuildPayloadFingerprint compares source facts while ignoring the old model's vector payload.
+// nativeVectorRebuildPayloadFingerprint 比较源事实并忽略旧模型向量载荷。
+func nativeVectorRebuildPayloadFingerprint(record logicdomain.MemoryRecord) ([sha256.Size]byte, error) {
+	withoutVector := cloneVectorRebuildRecord(record)
+	withoutVector.Vector = nil
+	encoded, err := json.Marshal(withoutVector)
+	if err != nil {
+		return [sha256.Size]byte{}, fmt.Errorf("encode native vector rebuild payload %q: %w", record.ID, err)
+	}
+	return sha256.Sum256(encoded), nil
 }
 
 // VectorRebuildReport stores one concise rebuild summary for CLI operators and tests.
@@ -97,7 +258,232 @@ func RunVectorRebuildWithProgress(ctx context.Context, cfg config.Config, deps M
 	if !ok {
 		return VectorRebuildReport{}, fmt.Errorf("relational store does not support durable vector replacement")
 	}
-	return runVectorRebuildWithPortsAndProgress(ctx, cfg, deps.Embedding, workspace, durable, deps.Vector, logger, reporter)
+	var (
+		nativeSQLitePath string
+		nativeSnapshot   nativeVectorRebuildSnapshot
+	)
+	if cfg.UsesNative() {
+		// Capture the relationship-backed active vector set before publishing the marker so completion can prove the same facts were rebuilt.
+		// 在发布标记前记录关系层 active 向量集合，让完成阶段可以证明重建的仍是同一批事实。
+		layout, layoutErr := resolveNativeStorageLayout(cfg, config.PromptLayout{})
+		if layoutErr != nil {
+			return VectorRebuildReport{}, fmt.Errorf("resolve native vector rebuild marker path: %w", layoutErr)
+		}
+		var snapshotErr error
+		nativeSnapshot, snapshotErr = loadNativeVectorRebuildSnapshot(ctx, workspace, deps.Relational)
+		if snapshotErr != nil {
+			return VectorRebuildReport{}, snapshotErr
+		}
+		nativeSQLitePath = layout.SQLiteDatabase
+		// The marker is deliberately durable before RecreateTable/ClearMemoryVectors; every later error leaves startup fail-closed.
+		// 标记会在 RecreateTable/ClearMemoryVectors 前持久化；后续任何错误都会让启动保持失败关闭。
+		if err := writeNativeVectorRebuildMarker(nativeSQLitePath); err != nil {
+			return VectorRebuildReport{}, fmt.Errorf("mark native vector rebuild incomplete: %w", err)
+		}
+	}
+	var report VectorRebuildReport
+	var err error
+	if cfg.UsesNative() {
+		report, err = runNativeVectorRebuildWithSnapshot(ctx, cfg, deps.Embedding, workspace, durable, deps.Vector, nativeSnapshot, logger, reporter)
+	} else {
+		report, err = runVectorRebuildWithPortsAndProgress(ctx, cfg, deps.Embedding, workspace, durable, deps.Vector, logger, reporter)
+	}
+	if err != nil {
+		return report, err
+	}
+	if cfg.UsesNative() {
+		publishCtx, cancelPublish := nativeVectorRebuildPublishContext(ctx)
+		defer cancelPublish()
+		if err := verifyNativeVectorRebuildCompletion(publishCtx, workspace, deps.Relational, deps.Vector, nativeSnapshot, cfg.Embedding.Dimension); err != nil {
+			return report, nativeVectorRebuildOutcomeUncertainError("native vector rebuild completed without a matching relationship/vector count", err)
+		}
+		if err := updateNativeEmbeddingIdentity(cfg); err != nil {
+			return report, nativeVectorRebuildOutcomeUncertainError("native vector rebuild completed before embedding identity persistence failed", err)
+		}
+		if err := removeNativeVectorRebuildMarker(nativeSQLitePath); err != nil {
+			return report, nativeVectorRebuildOutcomeUncertainError("native vector rebuild completed before incomplete marker removal failed", err)
+		}
+	}
+	return report, nil
+}
+
+// nativeVectorRebuildCounter is the optional health surface used to verify the physical native vector row count after a rebuild.
+// nativeVectorRebuildCounter 是重建后核对原生物理向量行数所需的可选健康能力。
+type nativeVectorRebuildCounter interface {
+	Count(context.Context) (int64, error)
+}
+
+// verifyNativeVectorRebuildCompletion proves that relationship facts, vector dimensions, and physical vector rows converged to one snapshot.
+// verifyNativeVectorRebuildCompletion 证明关系事实、向量维度和物理向量行数已经收敛到同一份快照。
+func verifyNativeVectorRebuildCompletion(ctx context.Context, workspace appports.WorkspaceStore, relational any, vector appports.VectorStore, expected nativeVectorRebuildSnapshot, expectedDimension int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if workspace == nil {
+		return fmt.Errorf("native vector rebuild verification requires workspace store")
+	}
+	if relational == nil {
+		return fmt.Errorf("native vector rebuild verification requires relational store")
+	}
+	if vector == nil {
+		return fmt.Errorf("native vector rebuild verification requires vector store")
+	}
+	if expected.EligibilityAt.IsZero() {
+		return fmt.Errorf("native vector rebuild verification requires the snapshot eligibility time")
+	}
+	eligibilityAt := expected.EligibilityAt
+	_, actual, err := loadNativeVectorRebuildActiveFacts(ctx, workspace, relational, eligibilityAt)
+	if err != nil {
+		return fmt.Errorf("reload relationship facts after native vector rebuild: %w", err)
+	}
+	expectedActiveIDs := make(map[string]struct{}, len(expected.Active))
+	expectedPayloads := make(map[string][sha256.Size]byte, len(expected.Unique))
+	for _, record := range expected.Active {
+		id := strings.TrimSpace(record.ID)
+		if id == "" {
+			return fmt.Errorf("native vector rebuild snapshot contains an empty active vector id")
+		}
+		if _, exists := expectedActiveIDs[id]; exists {
+			return fmt.Errorf("native vector rebuild snapshot contains duplicate active vector id %q", id)
+		}
+		fingerprint, fingerprintErr := nativeVectorRebuildPayloadFingerprint(record)
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		expectedActiveIDs[id] = struct{}{}
+		expectedPayloads[id] = fingerprint
+	}
+	for _, record := range expected.Unique {
+		id := strings.TrimSpace(record.ID)
+		if id == "" {
+			return fmt.Errorf("native vector rebuild snapshot contains an empty unique vector id")
+		}
+		fingerprint, fingerprintErr := nativeVectorRebuildPayloadFingerprint(record)
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		if existing, exists := expectedPayloads[id]; exists && existing != fingerprint {
+			return fmt.Errorf("native vector rebuild snapshot contains conflicting unique payloads for vector id %q", id)
+		}
+		expectedPayloads[id] = fingerprint
+	}
+	if len(actual) != len(expected.Active) {
+		return fmt.Errorf("relationship fact count changed during native vector rebuild: got %d, want %d", len(actual), len(expected.Active))
+	}
+	actualIDs := make(map[string]struct{}, len(actual))
+	for _, record := range actual {
+		id := strings.TrimSpace(record.ID)
+		if id == "" {
+			return fmt.Errorf("relationship facts contain an empty vector id after native vector rebuild")
+		}
+		if _, exists := actualIDs[id]; exists {
+			return fmt.Errorf("relationship facts contain duplicate vector id %q after native vector rebuild", id)
+		}
+		actualIDs[id] = struct{}{}
+		expectedPayload, exists := expectedPayloads[id]
+		if !exists {
+			return fmt.Errorf("native vector rebuild produced unexpected relationship vector id %q", id)
+		}
+		actualPayload, fingerprintErr := nativeVectorRebuildPayloadFingerprint(record)
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		if actualPayload != expectedPayload {
+			return fmt.Errorf("relationship payload hash changed for vector id %q after native vector rebuild", id)
+		}
+		if expectedDimension <= 0 || len(record.Vector) != expectedDimension {
+			return fmt.Errorf("relationship vector %q has dimension %d after native vector rebuild, want %d", id, len(record.Vector), expectedDimension)
+		}
+	}
+	trashWalker, ok := relational.(nativeVectorRebuildRestorableTrashRowsWalker)
+	if !ok {
+		return fmt.Errorf("native vector rebuild verification requires composite restorable-trash rows")
+	}
+	type trashKey struct {
+		batchID  uint64
+		memoryID uint64
+	}
+	expectedTrash := make(map[trashKey]vldb_sqlite.NativeRestorableTrashMemory, len(expected.Trash))
+	for _, row := range expected.Trash {
+		key := trashKey{batchID: row.BatchID, memoryID: row.MemoryID}
+		if row.BatchID == 0 || row.MemoryID == 0 {
+			return fmt.Errorf("native vector rebuild snapshot contains invalid trash identity batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		if _, exists := expectedTrash[key]; exists {
+			return fmt.Errorf("native vector rebuild snapshot contains duplicate trash identity batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		expectedTrash[key] = row
+	}
+	actualTrash := make(map[trashKey]vldb_sqlite.NativeRestorableTrashMemory, len(expected.Trash))
+	err = trashWalker.WalkNativeMigrationRestorableTrashRows(ctx, eligibilityAt, func(row vldb_sqlite.NativeRestorableTrashMemory) error {
+		key := trashKey{batchID: row.BatchID, memoryID: row.MemoryID}
+		if _, exists := actualTrash[key]; exists {
+			return fmt.Errorf("native vector rebuild produced duplicate trash identity batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		expectedRow, exists := expectedTrash[key]
+		if !exists {
+			return fmt.Errorf("native vector rebuild produced unexpected trash identity batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		id := strings.TrimSpace(row.Record.ID)
+		if id == "" {
+			return fmt.Errorf("native vector rebuild produced empty trash vector id batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		expectedPayload, fingerprintErr := nativeVectorRebuildPayloadFingerprint(expectedRow.Record)
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		actualPayload, fingerprintErr := nativeVectorRebuildPayloadFingerprint(row.Record)
+		if fingerprintErr != nil {
+			return fingerprintErr
+		}
+		if actualPayload != expectedPayload {
+			return fmt.Errorf("trash payload hash changed for batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		uniquePayload, exists := expectedPayloads[id]
+		if !exists || uniquePayload != actualPayload {
+			return fmt.Errorf("trash payload hash does not match unique vector id %q", id)
+		}
+		if expectedDimension <= 0 || len(row.Record.Vector) != expectedDimension {
+			return fmt.Errorf("trash vector %q has dimension %d after native vector rebuild, want %d", id, len(row.Record.Vector), expectedDimension)
+		}
+		actualTrash[key] = row
+		return nil
+	})
+	if err != nil {
+		return fmt.Errorf("reload restorable trash facts after native vector rebuild: %w", err)
+	}
+	if len(actualTrash) != len(expectedTrash) {
+		return fmt.Errorf("restorable trash fact count changed during native vector rebuild: got %d, want %d", len(actualTrash), len(expectedTrash))
+	}
+	uniqueIDs := make(map[string]struct{}, len(expected.Unique))
+	for _, record := range expected.Unique {
+		id := strings.TrimSpace(record.ID)
+		if id == "" {
+			return fmt.Errorf("native vector rebuild snapshot contains an empty unique vector id")
+		}
+		if _, exists := uniqueIDs[id]; exists {
+			return fmt.Errorf("native vector rebuild snapshot contains duplicate unique vector id %q", id)
+		}
+		uniqueIDs[id] = struct{}{}
+	}
+	for _, row := range actualTrash {
+		id := strings.TrimSpace(row.Record.ID)
+		if _, exists := uniqueIDs[id]; !exists {
+			return fmt.Errorf("native vector rebuild produced unexpected unique trash vector id %q", id)
+		}
+	}
+	counter, ok := vector.(nativeVectorRebuildCounter)
+	if !ok {
+		return fmt.Errorf("native vector store does not expose physical row counting")
+	}
+	count, err := counter.Count(ctx)
+	if err != nil {
+		return fmt.Errorf("count native vector rows after rebuild: %w", err)
+	}
+	if count != int64(len(uniqueIDs)) {
+		return fmt.Errorf("native vector row count after rebuild: got %d, want %d", count, len(uniqueIDs))
+	}
+	return nil
 }
 
 // runVectorRebuildWithPorts executes the rebuild workflow against the already-resolved narrow ports so tests can verify the orchestration without constructing the full maintenance dependency bundle.
@@ -106,9 +492,73 @@ func runVectorRebuildWithPorts(ctx context.Context, cfg config.Config, embedding
 	return runVectorRebuildWithPortsAndProgress(ctx, cfg, embedding, workspace, durable, vector, logger, nil)
 }
 
+// runNativeVectorRebuildWithSnapshot rebuilds live and eligible trash vectors from one captured source image.
+// runNativeVectorRebuildWithSnapshot 使用一次捕获的源快照重建 live 与 eligible trash 向量。
+func runNativeVectorRebuildWithSnapshot(ctx context.Context, cfg config.Config, embedding appports.EmbeddingClient, workspace appports.WorkspaceStore, durable appports.MemoryVectorRebuildStore, vector appports.VectorStore, snapshot nativeVectorRebuildSnapshot, logger *logx.Logger, reporter VectorRebuildProgressReporter) (VectorRebuildReport, error) {
+	if logger == nil {
+		logger = logx.Default()
+	}
+	report := VectorRebuildReport{
+		Mode:         "native",
+		ProjectCount: snapshot.ProjectCount,
+		MemoryCount:  len(snapshot.Active) + len(snapshot.Trash),
+	}
+	if vector == nil {
+		return report, fmt.Errorf("maintenance vector store is not configured for native rebuild")
+	}
+	resetter, ok := vector.(vectorRebuildResetter)
+	if !ok {
+		return report, fmt.Errorf("vector store does not support table recreation for native rebuild")
+	}
+	durableResetter, ok := durable.(vectorRebuildDurableResetter)
+	if !ok {
+		return report, fmt.Errorf("relational store does not support durable vector reset for native rebuild")
+	}
+	if len(snapshot.Trash) > 0 {
+		if _, ok := durable.(nativeVectorRebuildRestorableTrashWriter); !ok {
+			return report, fmt.Errorf("native vector rebuild refuses eligible restorable trash vectors: relational store does not expose exact trash-vector updates")
+		}
+	}
+	rebuiltRecords, err := materializeVectorRebuildRecordsWithProgress(ctx, embedding, snapshot.Unique, cfg.Embedding.Dimension, cfg.MaintenanceTool.VectorRebuildBatchSize, logger, reporter)
+	if err != nil {
+		return report, err
+	}
+	applyResult, applyErr := applyNativeVectorRebuildSnapshotWithProgress(ctx, durable, durableResetter, resetter, vector, snapshot, rebuiltRecords, logger, reporter)
+	report.DurableRowsUpdated = applyResult.DurableRowsUpdated
+	report.VectorRowsRebuilt = applyResult.VectorRowsRebuilt
+	publishCtx := ctx
+	cancelPublish := func() {}
+	if applyErr != nil {
+		if !applyResult.ResetCompleted {
+			return report, applyErr
+		}
+		if recoverErr := recoverNativeVectorRebuildAfterResetWithProgress(ctx, applyErr, durable, durableResetter, resetter, vector, snapshot, rebuiltRecords, logger, reporter); recoverErr != nil {
+			return report, vectorRebuildOutcomeUncertainError("native vector rebuild failed after reset", applyErr, recoverErr)
+		}
+		report.DurableRowsUpdated = len(snapshot.Active) + len(snapshot.Trash)
+		report.VectorRowsRebuilt = len(snapshot.Unique)
+		publishCtx, cancelPublish = nativeVectorRebuildPublishContext(ctx)
+		defer cancelPublish()
+		logger.Warn("native vector rebuild recovered after intermediate failure", "mode", report.Mode, "memory_count", report.MemoryCount, "err", applyErr)
+	}
+	if err := recordNativeVectorSchemaVersion(publishCtx, cfg, durable); err != nil {
+		return report, err
+	}
+	logger.Info("vector rebuild completed", "mode", report.Mode, "durable_rows_updated", report.DurableRowsUpdated, "vector_rows_rebuilt", report.VectorRowsRebuilt)
+	return report, nil
+}
+
 // runVectorRebuildWithPortsAndProgress keeps the testable narrow-port workflow and adds an optional progress channel.
 // runVectorRebuildWithPortsAndProgress 保留可测试的窄端口流程，并增加可选进度通道。
 func runVectorRebuildWithPortsAndProgress(ctx context.Context, cfg config.Config, embedding appports.EmbeddingClient, workspace appports.WorkspaceStore, durable appports.MemoryVectorRebuildStore, vector appports.VectorStore, logger *logx.Logger, reporter VectorRebuildProgressReporter) (VectorRebuildReport, error) {
+	if cfg.UsesNative() {
+		snapshot, snapshotErr := loadNativeVectorRebuildSnapshot(ctx, workspace, durable)
+		if snapshotErr != nil {
+			return VectorRebuildReport{Mode: "native"}, snapshotErr
+		}
+		return runNativeVectorRebuildWithSnapshot(ctx, cfg, embedding, workspace, durable, vector, snapshot, logger, reporter)
+	}
+
 	// Load only active/unexpired durable memories because inactive rows and trash data are intentionally outside the current recall surface and do not need rebuilding.
 	// 只加载 active 且未过期的长期记忆，因为 inactive 行和垃圾箱数据本就不在当前召回面上，没有重建意义。
 	projects, records, err := loadVectorRebuildRecords(ctx, workspace)
@@ -177,6 +627,9 @@ func runVectorRebuildWithPortsAndProgress(ctx context.Context, cfg config.Config
 		if err := resetter.RecreateTable(ctx); err != nil {
 			return report, fmt.Errorf("recreate split vector table: %w", err)
 		}
+		if err := recordNativeVectorSchemaVersion(ctx, cfg, durable); err != nil {
+			return report, err
+		}
 		logger.Info("vector rebuild completed", "mode", report.Mode, "durable_rows_updated", report.DurableRowsUpdated, "vector_rows_rebuilt", report.VectorRowsRebuilt)
 		return report, nil
 	}
@@ -202,8 +655,48 @@ func runVectorRebuildWithPortsAndProgress(ctx context.Context, cfg config.Config
 		report.VectorRowsRebuilt = len(rebuiltRecords)
 		logger.Warn("split vector rebuild recovered after intermediate failure", "mode", report.Mode, "memory_count", report.MemoryCount, "err", err)
 	}
+	if err := recordNativeVectorSchemaVersion(ctx, cfg, durable); err != nil {
+		return report, err
+	}
 	logger.Info("vector rebuild completed", "mode", report.Mode, "durable_rows_updated", report.DurableRowsUpdated, "vector_rows_rebuilt", report.VectorRowsRebuilt)
 	return report, nil
+}
+
+// recordNativeVectorSchemaVersion persists the current native LanceDB schema only after the rebuild has converged to its target state.
+// recordNativeVectorSchemaVersion 仅在原生向量重建已经收敛到目标状态后持久化当前 LanceDB schema 版本。
+func recordNativeVectorSchemaVersion(ctx context.Context, cfg config.Config, durable appports.MemoryVectorRebuildStore) error {
+	if !cfg.UsesNative() {
+		return nil
+	}
+	versions, ok := durable.(appports.SchemaVersionStore)
+	if !ok {
+		return nativeVectorRebuildOutcomeUncertainError("native relational store does not expose schema version persistence")
+	}
+	if err := versions.SetSchemaComponentVersion(ctx, "lancedb", vldb_lancedb.CurrentSchemaVersion); err != nil {
+		return nativeVectorRebuildOutcomeUncertainError("native vector table was rebuilt before schema version persistence failed", err)
+	}
+	return nil
+}
+
+// nativeVectorRebuildOutcomeUncertainError marks native rebuild failures that occur after the vector table or durable vectors changed.
+// nativeVectorRebuildOutcomeUncertainError 用于标记原生重建在向量表或 durable 向量已发生变化后出现的失败。
+func nativeVectorRebuildOutcomeUncertainError(message string, causes ...error) error {
+	parts := make([]string, 0, 1+len(causes))
+	if trimmed := strings.TrimSpace(message); trimmed != "" {
+		parts = append(parts, trimmed)
+	}
+	for _, cause := range causes {
+		if cause == nil {
+			continue
+		}
+		if trimmed := strings.TrimSpace(cause.Error()); trimmed != "" {
+			parts = append(parts, trimmed)
+		}
+	}
+	return logicdomain.OutcomeUncertainError{
+		Operation: "rebuild native vector table",
+		Message:   strings.Join(parts, "; "),
+	}
 }
 
 // splitVectorRebuildApplyResult records how far one destructive split-mode rebuild attempt progressed before returning.
@@ -274,6 +767,115 @@ func applySplitVectorRebuildRecordsWithProgress(ctx context.Context, mode string
 		publishVectorRebuildProgress(reporter, "writing", result.DurableRowsUpdated, len(rebuiltRecords))
 	}
 	return result, nil
+}
+
+// applyNativeVectorRebuildSnapshotWithProgress resets native Lance, rewrites live and trash durable rows, and then publishes unique vector ids.
+// applyNativeVectorRebuildSnapshotWithProgress 重置 native Lance，重写 live 与 trash durable 行，最后发布唯一向量 ID。
+func applyNativeVectorRebuildSnapshotWithProgress(ctx context.Context, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, snapshot nativeVectorRebuildSnapshot, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger, reporter VectorRebuildProgressReporter) (splitVectorRebuildApplyResult, error) {
+	if logger == nil {
+		logger = logx.Default()
+	}
+	result := splitVectorRebuildApplyResult{}
+	logger.Info("native vector rebuild reset phase starting", "mode", "native", "memory_count", len(snapshot.Active)+len(snapshot.Trash))
+	if err := resetter.RecreateTable(ctx); err != nil {
+		result.ResetCompleted = logicdomain.IsOutcomeUncertain(err)
+		return result, fmt.Errorf("recreate native vector table: %w", err)
+	}
+	result.ResetCompleted = true
+	activeIDs := collectVectorRebuildVectorIDs(snapshot.Active)
+	if len(activeIDs) > 0 {
+		if err := durableResetter.ClearMemoryVectors(ctx, activeIDs); err != nil {
+			return result, fmt.Errorf("clear native durable vectors before rebuild: %w", err)
+		}
+	}
+	rebuiltByID := make(map[string]logicdomain.MemoryRecord, len(rebuiltRecords))
+	for _, record := range rebuiltRecords {
+		id := strings.TrimSpace(record.ID)
+		if id == "" {
+			return result, fmt.Errorf("native rebuilt vector has an empty id")
+		}
+		if _, exists := rebuiltByID[id]; exists {
+			return result, fmt.Errorf("native rebuilt vectors contain duplicate id %q", id)
+		}
+		rebuiltByID[id] = cloneVectorRebuildRecord(record)
+	}
+	activeRecords := make([]logicdomain.MemoryRecord, 0, len(snapshot.Active))
+	for _, source := range snapshot.Active {
+		id := strings.TrimSpace(source.ID)
+		rebuilt, exists := rebuiltByID[id]
+		if !exists {
+			return result, fmt.Errorf("native rebuilt vector missing active id %q", id)
+		}
+		activeRecords = append(activeRecords, rebuilt)
+	}
+	trashWriter, _ := durable.(nativeVectorRebuildRestorableTrashWriter)
+	logger.Info("native vector rebuild durable refill phase starting", "mode", "native", "active_rows", len(activeRecords), "trash_rows", len(snapshot.Trash))
+	publishVectorRebuildProgress(reporter, "writing", 0, len(activeRecords)+len(snapshot.Trash)+len(rebuiltRecords))
+	for start := 0; start < len(activeRecords); start += vectorRebuildWriteBatchSize {
+		end := start + vectorRebuildWriteBatchSize
+		if end > len(activeRecords) {
+			end = len(activeRecords)
+		}
+		batch := cloneVectorRebuildRecords(activeRecords[start:end])
+		if err := durable.ReplaceMemoryVectors(ctx, batch); err != nil {
+			return result, fmt.Errorf("replace native live vectors for batch %d-%d: %w", start, end, err)
+		}
+		result.DurableRowsUpdated += len(batch)
+	}
+	for _, row := range snapshot.Trash {
+		rebuilt, exists := rebuiltByID[strings.TrimSpace(row.Record.ID)]
+		if !exists {
+			return result, fmt.Errorf("native rebuilt vector missing trash id %q", row.Record.ID)
+		}
+		if trashWriter == nil {
+			return result, fmt.Errorf("native vector rebuild cannot update trash row batch=%d memory=%d", row.BatchID, row.MemoryID)
+		}
+		if err := trashWriter.UpdateNativeRestorableTrashVector(ctx, row.BatchID, row.MemoryID, append([]float32(nil), rebuilt.Vector...)); err != nil {
+			return result, fmt.Errorf("update native trash vector batch=%d memory=%d: %w", row.BatchID, row.MemoryID, err)
+		}
+		result.DurableRowsUpdated++
+		publishVectorRebuildProgress(reporter, "writing", result.DurableRowsUpdated, len(activeRecords)+len(snapshot.Trash)+len(rebuiltRecords))
+	}
+	for idx, record := range rebuiltRecords {
+		if err := vector.Upsert(ctx, record); err != nil {
+			return result, fmt.Errorf("upsert rebuilt native vector row %d/%d (%s): %w", idx+1, len(rebuiltRecords), record.ID, err)
+		}
+		result.VectorRowsRebuilt++
+		publishVectorRebuildProgress(reporter, "writing", len(activeRecords)+len(snapshot.Trash)+result.VectorRowsRebuilt, len(activeRecords)+len(snapshot.Trash)+len(rebuiltRecords))
+	}
+	return result, nil
+}
+
+// recoverNativeVectorRebuildAfterResetWithProgress retries the complete native target using a bounded detached context.
+// recoverNativeVectorRebuildAfterResetWithProgress 使用有界脱离上下文重试完整 native 目标。
+func recoverNativeVectorRebuildAfterResetWithProgress(ctx context.Context, cause error, durable appports.MemoryVectorRebuildStore, durableResetter vectorRebuildDurableResetter, resetter vectorRebuildResetter, vector appports.VectorStore, snapshot nativeVectorRebuildSnapshot, rebuiltRecords []logicdomain.MemoryRecord, logger *logx.Logger, reporter VectorRebuildProgressReporter) error {
+	if logger == nil {
+		logger = logx.Default()
+	}
+	logger.Warn("native vector rebuild failed after reset, attempting automatic repair", "mode", "native", "memory_count", len(snapshot.Active)+len(snapshot.Trash), "err", cause)
+	repairBase := ctx
+	if repairBase == nil {
+		repairBase = context.Background()
+	} else {
+		repairBase = context.WithoutCancel(repairBase)
+	}
+	repairCtx, cancel := context.WithTimeout(repairBase, nativeVectorRebuildRecoveryTimeout)
+	defer cancel()
+	if _, err := applyNativeVectorRebuildSnapshotWithProgress(repairCtx, durable, durableResetter, resetter, vector, snapshot, rebuiltRecords, logger, reporter); err != nil {
+		logger.Error("native vector rebuild automatic repair failed", "mode", "native", "memory_count", len(snapshot.Active)+len(snapshot.Trash), "err", err)
+		return err
+	}
+	logger.Warn("native vector rebuild automatic repair completed", "mode", "native", "memory_count", len(snapshot.Active)+len(snapshot.Trash))
+	return nil
+}
+
+// nativeVectorRebuildPublishContext keeps post-recovery schema and fact publication bounded after caller cancellation.
+// nativeVectorRebuildPublishContext 在调用方取消后为恢复完成的 schema 与事实发布提供有界上下文。
+func nativeVectorRebuildPublishContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil || ctx.Err() == nil {
+		return ctx, func() {}
+	}
+	return context.WithTimeout(context.WithoutCancel(ctx), nativeVectorRebuildRecoveryTimeout)
 }
 
 // vectorRebuildOutcomeUncertainError marks split-mode rebuild failures that may have already changed durable vectors, the detached vector table, or both.

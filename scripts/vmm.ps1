@@ -1,4 +1,5 @@
-﻿# scripts/vmm.ps1
+﻿# scripts/vmm.ps1 builds the standalone VMM package and owns only its declared output artifacts.
+# scripts/vmm.ps1 用于构建独立 VMM 交付包，并且只管理明确声明的构建产物。
 Param(
     [Parameter(Position=0)]
     [ValidateSet("build", "run", "clean", "tester")]
@@ -13,247 +14,529 @@ $RootDir = Split-Path -Parent $ScriptDir
 $OutputDir = Join-Path $RootDir "output"
 $BinDir = Join-Path $OutputDir "bin"
 $LibDir = Join-Path $OutputDir "libs"
+$ConfigDir = Join-Path $OutputDir "configs"
 $DatabaseDir = Join-Path $OutputDir "database"
+$ConfigOwnershipFile = Join-Path $OutputDir ".vmm-config-owned"
 $ExePath = Join-Path $BinDir "vmm-local.exe"
 $MigrateExePath = Join-Path $BinDir "vmm-migrate.exe"
 $TesterExePath = Join-Path $BinDir "vmm-pii-tester.exe"
 $ThirdPartyDepsDir = Join-Path (Join-Path $RootDir "third_party") "deps"
+$NativeDepsRoot = Join-Path $ThirdPartyDepsDir "native_lancedb"
+$NativeValidatorScript = Join-Path $ScriptDir "validate_native_artifacts.ps1"
+$NativeEngineVersion = "0.39.0"
 $SourceRevision = "unknown"
 $SourceStateDigest = "unknown"
+
+# NativeSupportArtifactPaths is the fixed support-file allowlist copied beside the native library.
+# NativeSupportArtifactPaths 是复制到原生动态库旁的固定支持文件白名单。
+$NativeSupportArtifactPaths = @(
+    "native_lancedb-support/include/vmm_lancedb.h",
+    "native_lancedb-support/licenses/THIRD_PARTY_NOTICES.txt",
+    "native_lancedb-support/licenses/lancedb-0.39.0-license-metadata.txt",
+    "native_lancedb-support/licenses/lancedb-0.39.0-LICENSE",
+    "native_lancedb-support/licenses/jieba-rs-0.10.4-dictionary-notice.txt",
+    "native_lancedb-support/licenses/jieba-rs-0.10.4-LICENSE",
+    "native_lancedb-support/licenses/gse-1.0.2-LICENSE",
+    "native_lancedb-support/licenses/gse-1.0.2-embedded-dictionary-notice.txt",
+    "native_lancedb-support/licenses/cedar-0.30.0-LICENSE",
+    "native_lancedb-support/licenses/modernc-sqlite-1.59.0-LICENSE",
+    "native_lancedb-support/licenses/modernc-libc-1.75.7-LICENSE",
+    "native_lancedb-support/licenses/modernc-mathutil-1.7.1-LICENSE",
+    "native_lancedb-support/licenses/modernc-memory-1.12.1-LICENSE",
+    "native_lancedb-support/licenses/go-humanize-1.0.1-LICENSE",
+    "native_lancedb-support/licenses/go-isatty-0.0.24-LICENSE",
+    "native_lancedb-support/licenses/go-strftime-1.0.0-LICENSE",
+    "native_lancedb-support/licenses/bigfft-20230129092748-LICENSE",
+    "native_lancedb-support/licenses/x-sys-0.47.0-LICENSE"
+)
+
+# Get-Sha256 returns a PowerShell 5.1-compatible lowercase SHA-256 digest for one regular file.
+# Get-Sha256 为单个普通文件返回兼容 PowerShell 5.1 的小写 SHA-256 摘要。
+function Get-Sha256 {
+    param([Parameter(Mandatory=$true)] [string]$Path)
+    $Sha256 = [Security.Cryptography.SHA256]::Create()
+    try {
+        return ([BitConverter]::ToString($Sha256.ComputeHash([IO.File]::ReadAllBytes($Path)))).Replace("-", "").ToLowerInvariant()
+    }
+    finally { $Sha256.Dispose() }
+}
+
+# Resolve-BuildProfile accepts only the documented standard and release forms so build arguments cannot be silently ignored.
+# Resolve-BuildProfile 仅接受文档规定的标准与 release 形式，避免构建参数被静默忽略。
+function Resolve-BuildProfile {
+    param([string[]]$Arguments = @())
+    if ($Arguments.Count -eq 0) { return "standard" }
+    if ($Arguments.Count -eq 1 -and $Arguments[0].Trim().ToLowerInvariant() -eq "release") { return "release" }
+    throw "unsupported build arguments: $($Arguments -join ' '). Use 'build' or 'build release'."
+}
+
+# Resolve-StorageProfile reads the build-only dependency profile and rejects unknown values before output changes.
+# Resolve-StorageProfile 读取仅用于构建的依赖配置，并在修改输出前拒绝未知值。
+function Resolve-StorageProfile {
+    $RawProfile = [string]$env:VMM_BUILD_STORAGE_PROFILE
+    if ([string]::IsNullOrWhiteSpace($RawProfile)) { return "legacy" }
+    $Profile = $RawProfile.Trim().ToLowerInvariant()
+    if ($Profile -notin @("legacy", "native", "all")) { throw "unsupported VMM_BUILD_STORAGE_PROFILE '$RawProfile'. Use legacy, native, or all." }
+    return $Profile
+}
+
+# Assert-SafeOutputDirectory rejects reparse points so cleanup cannot escape the formal output tree.
+# Assert-SafeOutputDirectory 拒绝重解析点，确保清理不会逃逸正式 output 目录。
+function Assert-SafeOutputDirectory {
+    if (Test-Path -LiteralPath $OutputDir) {
+        $OutputItem = Get-Item -LiteralPath $OutputDir -Force
+        if (-not $OutputItem.PSIsContainer -or ($OutputItem.Attributes -band [IO.FileAttributes]::ReparsePoint)) { throw "output path must be a real directory: $OutputDir" }
+    }
+    else { New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null }
+}
+
+# Assert-SafeOutputPath validates one output-relative path and every existing parent before access or deletion.
+# Assert-SafeOutputPath 校验一个相对于 output 的路径及其所有已存在父级，然后才允许访问或删除。
+function Assert-SafeOutputPath {
+    param([Parameter(Mandatory=$true)] [string]$Path, [switch]$AllowMissing)
+    Assert-SafeOutputDirectory
+    $RootFull = [IO.Path]::GetFullPath($OutputDir).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $PathFull = [IO.Path]::GetFullPath($Path)
+    if ($PathFull -eq $RootFull -or -not $PathFull.StartsWith($RootFull + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) { throw "refusing to access a path outside output: $Path" }
+    $Relative = $PathFull.Substring($RootFull.Length + 1)
+    $Current = $OutputDir
+    foreach ($Part in ($Relative -split '[\\/]')) {
+        if ([string]::IsNullOrWhiteSpace($Part) -or $Part -eq "." -or $Part -eq "..") { throw "invalid output-relative path: $Path" }
+        $Current = Join-Path $Current $Part
+        if (Test-Path -LiteralPath $Current) {
+            $Item = Get-Item -LiteralPath $Current -Force
+            if ($Item.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "refusing to follow a reparse point in output: $Current" }
+        }
+        elseif (-not $AllowMissing) { throw "expected output path does not exist: $Current" }
+    }
+}
 
 # Resolve-SourceIdentity captures the exact source revision and source-state digest used for a local build.
 # Resolve-SourceIdentity 记录本次本地构建使用的精确源码版本与源码状态摘要。
 function Resolve-SourceIdentity {
-    $revision = (& git -C $RootDir rev-parse HEAD 2>$null)
-    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($revision)) {
-        throw "cannot resolve VMM source revision from git"
+    $Revision = (& git -C $RootDir rev-parse HEAD 2>$null)
+    if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($Revision)) { throw "cannot resolve VMM source revision from git" }
+    $script:SourceRevision = $Revision.Trim()
+    $RelativeFiles = @(& git -C $RootDir ls-files -co --exclude-standard)
+    if ($LASTEXITCODE -ne 0) { throw "cannot enumerate VMM source files from git" }
+    $Lines = New-Object System.Collections.Generic.List[string]
+    foreach ($RelativeFile in $RelativeFiles) {
+        if ([string]::IsNullOrWhiteSpace($RelativeFile)) { continue }
+        $AbsoluteFile = Join-Path $RootDir $RelativeFile
+        if (-not (Test-Path -LiteralPath $AbsoluteFile -PathType Leaf)) { continue }
+        $FileDigest = Get-Sha256 -Path $AbsoluteFile
+        $Lines.Add(($RelativeFile.Replace("\", "/") + "`0" + $FileDigest))
     }
-    $script:SourceRevision = $revision.Trim()
-    $relativeFiles = @(& git -C $RootDir ls-files -co --exclude-standard)
-    if ($LASTEXITCODE -ne 0) {
-        throw "cannot enumerate VMM source files from git"
-    }
-    $lines = New-Object System.Collections.Generic.List[string]
-    foreach ($relativeFile in $relativeFiles) {
-        if ([string]::IsNullOrWhiteSpace($relativeFile)) {
-            continue
-        }
-        $absoluteFile = Join-Path $RootDir $relativeFile
-        if (-not (Test-Path -LiteralPath $absoluteFile -PathType Leaf)) {
-            continue
-        }
-        $fileDigest = (Get-FileHash -Algorithm SHA256 -LiteralPath $absoluteFile).Hash.ToLowerInvariant()
-        $lines.Add(($relativeFile.Replace("\", "/") + "`0" + $fileDigest))
-    }
-    $lines.Sort()
-    $digest = [Security.Cryptography.SHA256]::Create()
+    $Lines.Sort()
+    $Digest = [Security.Cryptography.SHA256]::Create()
     try {
-        $bytes = [Text.Encoding]::UTF8.GetBytes(($lines -join "`n"))
-        $script:SourceStateDigest = [Convert]::ToHexString($digest.ComputeHash($bytes)).ToLowerInvariant()
+        $Bytes = [Text.Encoding]::UTF8.GetBytes(($Lines -join "`n"))
+        $script:SourceStateDigest = ([BitConverter]::ToString($Digest.ComputeHash($Bytes))).Replace("-", "").ToLowerInvariant()
     }
-    finally {
-        $digest.Dispose()
-    }
+    finally { $Digest.Dispose() }
 }
 
-# Resolve-GoExe locates go.exe lazily so run/clean actions can keep working on machines that only carry packaged binaries.
-# Resolve-GoExe 用于按需解析 go.exe，确保只携带打包产物的机器仍然可以正常执行 run/clean 动作。
+# Resolve-GoExe locates go.exe lazily so clean and run can work with packaged binaries only.
+# Resolve-GoExe 按需定位 go.exe，使 clean 和 run 在仅携带打包二进制的环境中仍可工作。
 function Resolve-GoExe {
-    if ($script:ResolvedGoExe) {
-        return $script:ResolvedGoExe
-    }
-    $GoExe = (Get-Command go -CommandType Application | Select-Object -First 1 -ExpandProperty Source)
-    if ([string]::IsNullOrWhiteSpace($GoExe)) {
-        throw "cannot resolve go executable from PATH"
-    }
-    $script:ResolvedGoExe = $GoExe
+    if ($script:ResolvedGoExe) { return $script:ResolvedGoExe }
+    $GoCommand = Get-Command go -CommandType Application -ErrorAction Stop | Select-Object -First 1
+    $script:ResolvedGoExe = $GoCommand.Source
     return $script:ResolvedGoExe
 }
 
-function Sync-Configs {
-    # Keep the packaged configs tree in sync for both the standard build and the standalone tester build.
-    # 同步打包后的 configs 目录，确保标准构建和独立测试器构建都使用当前规则与配置。
-    Write-Host "=> 📂 Syncing configs (including prompts)..." -ForegroundColor Gray
-    $TargetConfig = Join-Path $OutputDir "configs"
-    if (Test-Path $TargetConfig) { Remove-Item -Path $TargetConfig -Recurse -Force }
-    Copy-Item -Path "$RootDir\configs" -Destination $OutputDir -Recurse -Force
-}
-
-# Get-HostLibraryNames returns the dynamic-library filenames that must be packaged for the current host platform.
-# Get-HostLibraryNames 用于返回当前宿主平台必须打包的动态库文件名。
-function Get-HostLibraryNames {
-    $HostIsWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-    $HostIsLinux = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Linux)
-    $HostIsMacOS = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::OSX)
-
-    if ($HostIsWindows) {
-        return @("vldb_sqlite.dll", "vldb_lancedb.dll")
-    }
-    if ($HostIsLinux) {
-        return @("libvldb_sqlite.so", "libvldb_lancedb.so")
-    }
-    if ($HostIsMacOS) {
-        return @("libvldb_sqlite.dylib", "libvldb_lancedb.dylib")
-    }
-
+# Get-VldbLibraryNames returns the legacy dynamic-library names for the current host.
+# Get-VldbLibraryNames 返回当前宿主对应的 legacy 动态库文件名。
+function Get-VldbLibraryNames {
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) { return @("vldb_sqlite.dll", "vldb_lancedb.dll") }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Linux)) { return @("libvldb_sqlite.so", "libvldb_lancedb.so") }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::OSX)) { return @("libvldb_sqlite.dylib", "libvldb_lancedb.dylib") }
     throw "unsupported platform for host library packaging"
 }
 
-# Sync-HostLibraries copies downloaded host libraries into output/libs so the packaged runtime can resolve FFI dependencies without extra setup.
-# Sync-HostLibraries 用于把已下载的宿主动态库复制到 output/libs，确保打包后的运行时无需额外配置即可解析 FFI 依赖。
-function Sync-HostLibraries {
-    Write-Host "=> 📦 Syncing host libraries..." -ForegroundColor Gray
-    if (!(Test-Path -LiteralPath $ThirdPartyDepsDir)) {
-        throw "missing host dependency directory: $ThirdPartyDepsDir. Run '.\\make.ps1 deps host' first."
-    }
-    if (Test-Path -LiteralPath $LibDir) {
-        Remove-Item -Path $LibDir -Recurse -Force
-    }
-    New-Item -ItemType Directory -Path $LibDir -Force | Out-Null
-
-    foreach ($LibraryName in Get-HostLibraryNames) {
-        $SourcePath = Join-Path $ThirdPartyDepsDir $LibraryName
-        if (!(Test-Path -LiteralPath $SourcePath)) {
-            throw "missing host dynamic library: $SourcePath. Run '.\\make.ps1 deps host' first."
-        }
-        Copy-Item -Path $SourcePath -Destination (Join-Path $LibDir $LibraryName) -Force
-    }
+# Get-NativeTarget maps the host to the exact Rust target used by native dependency preparation.
+# Get-NativeTarget 将宿主映射到原生依赖制备使用的精确 Rust target。
+function Get-NativeTarget {
+    $Arch = [Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString().ToLowerInvariant()
+    $ArchPart = switch ($Arch) { "x64" { "x86_64" } "arm64" { "aarch64" } default { throw "unsupported architecture for native LanceDB packaging: $Arch" } }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) { return "$ArchPart-pc-windows-msvc" }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Linux)) { return "$ArchPart-unknown-linux-gnu" }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::OSX)) { return "$ArchPart-apple-darwin" }
+    throw "unsupported platform for native LanceDB packaging"
 }
 
-# Get-ControllerBinaryName returns the vldb-controller executable filename for the current host platform.
-# Get-ControllerBinaryName 用于返回当前宿主平台对应的 vldb-controller 可执行文件名。
+# Get-NativeLibraryName returns the one dynamic-library filename declared by the native ABI contract.
+# Get-NativeLibraryName 返回原生 ABI 契约声明的动态库文件名。
+function Get-NativeLibraryName {
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) { return "vmm_lancedb_native.dll" }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Linux)) { return "libvmm_lancedb_native.so" }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::OSX)) { return "libvmm_lancedb_native.dylib" }
+    throw "unsupported platform for native LanceDB packaging"
+}
+
+# Get-ControllerBinaryName returns the legacy controller artifact name for exact cleanup and packaging.
+# Get-ControllerBinaryName 返回 legacy controller 产物名，用于精确清理和打包。
 function Get-ControllerBinaryName {
-    $HostIsWindows = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
-    if ($HostIsWindows) {
-        return "vldb-controller.exe"
-    }
+    if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) { return "vldb-controller.exe" }
     return "vldb-controller"
 }
 
-# Sync-ControllerBinary copies the pinned controller executable into output/bin beside the VMM binaries.
-# Sync-ControllerBinary 用于把固定版本 controller 可执行文件复制到 VMM 二进制旁的 output/bin。
-function Sync-ControllerBinary {
-    Write-Host "=> 📦 Syncing vldb-controller..." -ForegroundColor Gray
-    $BinaryName = Get-ControllerBinaryName
-    $SourcePath = Join-Path $ThirdPartyDepsDir $BinaryName
-    if (!(Test-Path -LiteralPath $SourcePath)) {
-        throw "missing controller executable: $SourcePath. Run '.\\make.ps1 deps host' first."
+# Get-VerifiedHostDependencyPath checks the installer marker before a legacy artifact can enter output/libs.
+# Get-VerifiedHostDependencyPath 在 legacy 产物进入 output/libs 前校验安装标记。
+function Get-VerifiedHostDependencyPath {
+    param([Parameter(Mandatory=$true)] [ValidateSet("sqlite", "lancedb", "controller")] [string]$Kind, [Parameter(Mandatory=$true)] [string]$FileName)
+    $SourcePath = Join-Path $ThirdPartyDepsDir $FileName
+    if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) { throw "missing host dependency: $SourcePath. Run '.\make.ps1 deps host' first." }
+    $MarkerDirectoryName = switch ($Kind) { "sqlite" { "vldb_sqlite" } "lancedb" { "vldb_lancedb" } "controller" { "vldb_controller" } }
+    $MarkerDirectory = Join-Path (Split-Path $ThirdPartyDepsDir -Parent) $MarkerDirectoryName
+    $Markers = @(Get-ChildItem -LiteralPath $MarkerDirectory -Filter ".installed-*" -File -ErrorAction SilentlyContinue)
+    if ($Markers.Count -ne 1) { throw "expected exactly one installed marker for $Kind under $MarkerDirectory" }
+    $ExpectedHash = (Get-Content -LiteralPath $Markers[0].FullName -Raw).Trim().ToLowerInvariant()
+    $ActualHash = Get-Sha256 -Path $SourcePath
+    if ([string]::IsNullOrWhiteSpace($ExpectedHash) -or $ExpectedHash -ne $ActualHash) { throw "host dependency checksum mismatch: $SourcePath" }
+    return $SourcePath
+}
+
+# Assert-NativeArtifact calls the standalone validator so packaging never trusts a filename-only native library.
+# Assert-NativeArtifact 调用独立校验器，确保打包不会只凭文件名信任原生库。
+function Assert-NativeArtifact {
+    param([Parameter(Mandatory=$true)] [hashtable]$Artifact)
+    if (-not (Test-Path -LiteralPath $NativeValidatorScript -PathType Leaf)) { throw "missing native artifact validator: $NativeValidatorScript" }
+    & $NativeValidatorScript -ManifestPath $Artifact.ManifestPath -LibraryPath $Artifact.LibraryPath -Target $Artifact.Target -ExpectedSourceDigest $Artifact.SourceDigest -ExpectedEngineVersion $NativeEngineVersion | Out-Null
+    if (-not $?) { throw "native artifact validation failed: $($Artifact.ManifestPath)" }
+}
+
+# Resolve-NativeArtifact follows current.json exactly, then validates source digest, target, ABI, engine, and hash.
+# Resolve-NativeArtifact 严格读取 current.json，再校验 source digest、target、ABI、engine 与文件哈希。
+function Resolve-NativeArtifact {
+    $Target = Get-NativeTarget
+    $TargetRoot = Join-Path $NativeDepsRoot $Target
+    if (-not (Test-Path -LiteralPath $TargetRoot -PathType Container)) { throw "missing native dependency target directory: $TargetRoot" }
+    $TargetRootItem = Get-Item -LiteralPath $TargetRoot -Force
+    if ($TargetRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "native dependency target directory must not be a reparse point: $TargetRoot" }
+    $CurrentPath = Join-Path $TargetRoot "current.json"
+    if (-not (Test-Path -LiteralPath $CurrentPath -PathType Leaf)) { throw "missing native dependency selection: $CurrentPath. Run '.\make.ps1 deps native' first." }
+    if ((Get-Item -LiteralPath $CurrentPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "native current.json must not be a reparse point: $CurrentPath" }
+    $Current = Get-Content -LiteralPath $CurrentPath -Raw | ConvertFrom-Json
+    if ([int]$Current.schema_version -ne 1 -or [string]$Current.target -ne $Target) { throw "native current.json schema or target mismatch: $CurrentPath" }
+    $SourceDigest = [string]$Current.source_digest
+    if ($SourceDigest -notmatch '^[0-9a-fA-F]{64}$') { throw "native current.json source_digest is invalid: $CurrentPath" }
+    $ManifestRelative = [string]$Current.manifest_path
+    if ($ManifestRelative -ne "$SourceDigest/manifest.json" -or [IO.Path]::IsPathRooted($ManifestRelative) -or $ManifestRelative.Contains("..")) { throw "native current.json manifest_path is invalid: $CurrentPath" }
+    $ManifestPath = Join-Path $TargetRoot ($ManifestRelative.Replace("/", [IO.Path]::DirectorySeparatorChar))
+    $ExpectedManifestPath = Join-Path (Join-Path $TargetRoot $SourceDigest) "manifest.json"
+    if ([IO.Path]::GetFullPath($ManifestPath) -ne [IO.Path]::GetFullPath($ExpectedManifestPath)) { throw "native current.json does not point to the source digest directory" }
+    $ManifestDirectory = Split-Path $ManifestPath -Parent
+    if (-not (Test-Path -LiteralPath $ManifestDirectory -PathType Container)) { throw "missing native dependency cache directory: $ManifestDirectory" }
+    $ManifestDirectoryItem = Get-Item -LiteralPath $ManifestDirectory -Force
+    if ($ManifestDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "native dependency cache directory must not be a reparse point: $ManifestDirectory" }
+    if (-not (Test-Path -LiteralPath $ManifestPath -PathType Leaf)) { throw "missing native dependency manifest: $ManifestPath" }
+    if ((Get-Item -LiteralPath $ManifestPath -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "native manifest must not be a reparse point: $ManifestPath" }
+    $Manifest = Get-Content -LiteralPath $ManifestPath -Raw | ConvertFrom-Json
+    $LibraryName = [string]$Manifest.library_file
+    if ([string]$Current.library_file -ne $LibraryName) { throw "native current.json library_file does not match manifest" }
+    $LibraryPath = Join-Path (Split-Path $ManifestPath -Parent) $LibraryName
+    $Artifact = @{ Target = $Target; SourceDigest = $SourceDigest.ToLowerInvariant(); ManifestPath = $ManifestPath; LibraryPath = $LibraryPath }
+    Assert-NativeArtifact -Artifact $Artifact
+    return $Artifact
+}
+
+# Get-ConfigOwnership reads only the build-owned output list and rejects unsafe relative entries.
+# Get-ConfigOwnership 只读取构建拥有的 output 清单，并拒绝不安全的相对路径。
+function Get-ConfigOwnership {
+    if (-not (Test-Path -LiteralPath $ConfigOwnershipFile -PathType Leaf)) { return @() }
+    Assert-SafeOutputPath -Path $ConfigOwnershipFile
+    $Entries = @()
+    foreach ($Line in (Get-Content -LiteralPath $ConfigOwnershipFile)) {
+        $Entry = ([string]$Line).Trim()
+        if ([string]::IsNullOrWhiteSpace($Entry)) { continue }
+        if ($Entry -notmatch '^configs/[^/].*$' -or $Entry.Contains("..") -or [IO.Path]::IsPathRooted($Entry)) { throw "invalid config ownership entry: $Entry" }
+        $Candidate = Join-Path $OutputDir ($Entry.Replace("/", [IO.Path]::DirectorySeparatorChar))
+        Assert-SafeOutputPath -Path $Candidate -AllowMissing
+        $Entries += $Entry
     }
-    Copy-Item -Path $SourcePath -Destination (Join-Path $BinDir $BinaryName) -Force
+    return @($Entries | Sort-Object -Unique)
 }
 
-# Ensure-DatabaseLayout creates the packaged database root next to the binary so local SQLite and LanceDB backends share one deterministic storage layout.
-# Ensure-DatabaseLayout 用于在二进制旁边创建统一的 database 根目录，让本地 SQLite 与 LanceDB 后端共享稳定存储布局。
+# Save-ConfigOwnership atomically records the exact config files that this build may replace or clean.
+# Save-ConfigOwnership 原子记录本次构建可以替换或清理的精确配置文件清单。
+function Save-ConfigOwnership {
+    param([string[]]$Entries)
+    Assert-SafeOutputPath -Path $ConfigOwnershipFile -AllowMissing
+    $TempPath = "$ConfigOwnershipFile.tmp.$PID"
+    Assert-SafeOutputPath -Path $TempPath -AllowMissing
+    Set-Content -LiteralPath $TempPath -Value (@($Entries | Sort-Object -Unique)) -Encoding UTF8
+    Move-Item -LiteralPath $TempPath -Destination $ConfigOwnershipFile -Force
+}
+
+# Sync-Configs copies source files one by one and refuses to overwrite an unowned output file.
+# Sync-Configs 逐个复制源文件，并拒绝覆盖未声明拥有的 output 文件。
+function Sync-Configs {
+    Write-Host "=> Syncing configs (owned files only)..." -ForegroundColor Gray
+    Assert-SafeOutputDirectory
+    $SourceConfig = Join-Path $RootDir "configs"
+    if (-not (Test-Path -LiteralPath $SourceConfig -PathType Container)) { throw "missing config source directory: $SourceConfig" }
+    if (Test-Path -LiteralPath $ConfigDir) { Assert-SafeOutputPath -Path $ConfigDir } else { New-Item -ItemType Directory -Path $ConfigDir -Force | Out-Null }
+    $PreviousEntries = @(Get-ConfigOwnership)
+    $PreviousSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($Entry in $PreviousEntries) { [void]$PreviousSet.Add($Entry) }
+    $NewEntries = New-Object System.Collections.Generic.List[string]
+    $SourceRootFull = ([IO.Path]::GetFullPath($SourceConfig)).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar) + [IO.Path]::DirectorySeparatorChar
+    foreach ($SourceFile in (Get-ChildItem -LiteralPath $SourceConfig -Recurse -File)) {
+        $Relative = $SourceFile.FullName.Substring($SourceRootFull.Length).Replace("\", "/")
+        $Entry = "configs/$Relative"
+        $Destination = Join-Path $ConfigDir ($Relative.Replace("/", [IO.Path]::DirectorySeparatorChar))
+        $DestinationParent = Split-Path $Destination -Parent
+        Assert-SafeOutputPath -Path $DestinationParent -AllowMissing
+        if (-not (Test-Path -LiteralPath $DestinationParent)) { New-Item -ItemType Directory -Path $DestinationParent -Force | Out-Null }
+        Assert-SafeOutputPath -Path $Destination -AllowMissing
+        if (Test-Path -LiteralPath $Destination -PathType Container) { throw "refusing to overwrite a directory with a config file: $Destination" }
+        if (Test-Path -LiteralPath $Destination -PathType Leaf) {
+            if (-not $PreviousSet.Contains($Entry)) {
+                $SourceHash = Get-Sha256 -Path $SourceFile.FullName
+                $DestinationHash = Get-Sha256 -Path $Destination
+                if ($SourceHash -ne $DestinationHash) { throw "refusing to overwrite unowned config: $Destination" }
+            }
+            Copy-Item -LiteralPath $SourceFile.FullName -Destination $Destination -Force
+        }
+        else { Copy-Item -LiteralPath $SourceFile.FullName -Destination $Destination -Force }
+        [void]$NewEntries.Add($Entry)
+    }
+    $NewSet = New-Object 'System.Collections.Generic.HashSet[string]' ([StringComparer]::OrdinalIgnoreCase)
+    foreach ($Entry in $NewEntries) { [void]$NewSet.Add($Entry) }
+    foreach ($Entry in $PreviousEntries) {
+        if ($NewSet.Contains($Entry)) { continue }
+        $OldPath = Join-Path $OutputDir ($Entry.Replace("/", [IO.Path]::DirectorySeparatorChar))
+        Assert-SafeOutputPath -Path $OldPath -AllowMissing
+        if (Test-Path -LiteralPath $OldPath -PathType Leaf) { Remove-Item -LiteralPath $OldPath -Force }
+    }
+    Save-ConfigOwnership -Entries @($NewEntries)
+}
+
+# Remove-OwnedConfigs deletes only files listed by the build ownership marker and leaves user files and directories intact.
+# Remove-OwnedConfigs 只删除构建拥有清单中的文件，保留用户文件和目录。
+function Remove-OwnedConfigs {
+    foreach ($Entry in @(Get-ConfigOwnership)) {
+        $Path = Join-Path $OutputDir ($Entry.Replace("/", [IO.Path]::DirectorySeparatorChar))
+        Assert-SafeOutputPath -Path $Path -AllowMissing
+        if (Test-Path -LiteralPath $Path -PathType Leaf) { Remove-Item -LiteralPath $Path -Force }
+    }
+    if (Test-Path -LiteralPath $ConfigOwnershipFile -PathType Leaf) {
+        Assert-SafeOutputPath -Path $ConfigOwnershipFile
+        Remove-Item -LiteralPath $ConfigOwnershipFile -Force
+    }
+}
+
+# Remove-OwnedArtifact removes one known build artifact after validating its exact output path.
+# Remove-OwnedArtifact 在校验精确 output 路径后删除一个已知构建产物。
+function Remove-OwnedArtifact {
+    param([string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    Assert-SafeOutputPath -Path $Path
+    $Item = Get-Item -LiteralPath $Path -Force
+    if (-not $Item.PSIsContainer) { Remove-Item -LiteralPath $Path -Force }
+}
+
+# Sync-HostLibraries validates and copies exactly the selected dependency profile without recursive deletion.
+# Sync-HostLibraries 校验并复制所选依赖配置，避免递归删除目录。
+function Sync-HostLibraries {
+    param([Parameter(Mandatory=$true)] [ValidateSet("legacy", "native", "all")] [string]$StorageProfile)
+    Write-Host "=> Syncing libraries ($StorageProfile)..." -ForegroundColor Gray
+    Assert-SafeOutputDirectory
+    if (Test-Path -LiteralPath $LibDir) { Assert-SafeOutputPath -Path $LibDir } else { New-Item -ItemType Directory -Path $LibDir -Force | Out-Null }
+    $LegacyNames = @(Get-VldbLibraryNames)
+    $NativeName = Get-NativeLibraryName
+    $KnownNames = @($LegacyNames + $NativeName + "manifest.json" + $NativeSupportArtifactPaths)
+    $ExpectedNames = New-Object System.Collections.Generic.List[string]
+    $NativeArtifact = $null
+    if ($StorageProfile -in @("legacy", "all")) {
+        [void]$ExpectedNames.Add($LegacyNames[0]); [void]$ExpectedNames.Add($LegacyNames[1])
+        foreach ($Index in 0..($LegacyNames.Count - 1)) {
+            $Kind = if ($Index -eq 0) { "sqlite" } else { "lancedb" }
+            $Source = Get-VerifiedHostDependencyPath -Kind $Kind -FileName $LegacyNames[$Index]
+            $Destination = Join-Path $LibDir $LegacyNames[$Index]
+            Assert-SafeOutputPath -Path $Destination -AllowMissing
+            if (Test-Path -LiteralPath $Destination -PathType Container) { throw "refusing to overwrite a library directory: $Destination" }
+            Copy-Item -LiteralPath $Source -Destination $Destination -Force
+        }
+    }
+    if ($StorageProfile -in @("native", "all")) {
+        $NativeArtifact = Resolve-NativeArtifact
+        [void]$ExpectedNames.Add($NativeName); [void]$ExpectedNames.Add("manifest.json")
+        $NativeDestination = Join-Path $LibDir $NativeName
+        $ManifestDestination = Join-Path $LibDir "manifest.json"
+        Assert-SafeOutputPath -Path $NativeDestination -AllowMissing
+        Assert-SafeOutputPath -Path $ManifestDestination -AllowMissing
+        if (Test-Path -LiteralPath $NativeDestination -PathType Container) { throw "refusing to overwrite a native library directory: $NativeDestination" }
+        if (Test-Path -LiteralPath $ManifestDestination -PathType Container) { throw "refusing to overwrite a native manifest directory: $ManifestDestination" }
+        Copy-Item -LiteralPath $NativeArtifact.LibraryPath -Destination $NativeDestination -Force
+        Copy-Item -LiteralPath $NativeArtifact.ManifestPath -Destination $ManifestDestination -Force
+        foreach ($ArtifactPath in $NativeSupportArtifactPaths) {
+            $SourceSupportPath = Join-Path (Split-Path $NativeArtifact.ManifestPath -Parent) ($ArtifactPath.Replace("/", [IO.Path]::DirectorySeparatorChar))
+            if (-not (Test-Path -LiteralPath $SourceSupportPath -PathType Leaf)) { throw "native support artifact is missing: $SourceSupportPath" }
+            $DestinationSupportPath = Join-Path $LibDir ($ArtifactPath.Replace("/", [IO.Path]::DirectorySeparatorChar))
+            $DestinationSupportParent = Split-Path $DestinationSupportPath -Parent
+            Assert-SafeOutputPath -Path $DestinationSupportParent -AllowMissing
+            if (-not (Test-Path -LiteralPath $DestinationSupportParent)) { New-Item -ItemType Directory -Path $DestinationSupportParent -Force | Out-Null }
+            Assert-SafeOutputPath -Path $DestinationSupportPath -AllowMissing
+            if (Test-Path -LiteralPath $DestinationSupportPath -PathType Container) { throw "refusing to overwrite a native support directory: $DestinationSupportPath" }
+            Copy-Item -LiteralPath $SourceSupportPath -Destination $DestinationSupportPath -Force
+            [void]$ExpectedNames.Add($ArtifactPath)
+        }
+        Assert-NativeArtifact -Artifact @{ Target = $NativeArtifact.Target; SourceDigest = $NativeArtifact.SourceDigest; ManifestPath = $ManifestDestination; LibraryPath = $NativeDestination }
+    }
+    foreach ($KnownName in $KnownNames) {
+        if ($ExpectedNames -notcontains $KnownName) {
+            Remove-OwnedArtifact -Path (Join-Path $LibDir ($KnownName.Replace("/", [IO.Path]::DirectorySeparatorChar)))
+        }
+    }
+    return $NativeArtifact
+}
+
+# Sync-ControllerBinary copies the verified legacy controller only for profiles that declare it.
+# Sync-ControllerBinary 仅在声明 legacy 依赖的配置中复制已校验的 controller。
+function Sync-ControllerBinary {
+    $BinaryName = Get-ControllerBinaryName
+    if (Test-Path -LiteralPath $BinDir) { Assert-SafeOutputPath -Path $BinDir } else { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
+    $Source = Get-VerifiedHostDependencyPath -Kind controller -FileName $BinaryName
+    $Destination = Join-Path $BinDir $BinaryName
+    Assert-SafeOutputPath -Path $Destination -AllowMissing
+    if (Test-Path -LiteralPath $Destination -PathType Container) { throw "refusing to overwrite a controller directory: $Destination" }
+    Copy-Item -LiteralPath $Source -Destination $Destination -Force
+}
+
+# Ensure-DatabaseLayout creates missing database directories but never removes or rewrites user data.
+# Ensure-DatabaseLayout 只创建缺失的数据库目录，绝不删除或改写用户数据。
 function Ensure-DatabaseLayout {
-    Write-Host "=> 🗄️ Ensuring packaged database layout..." -ForegroundColor Gray
-    New-Item -ItemType Directory -Path $DatabaseDir -Force | Out-Null
-    New-Item -ItemType Directory -Path (Join-Path $DatabaseDir "lancedb") -Force | Out-Null
+    Assert-SafeOutputDirectory
+    if (Test-Path -LiteralPath $DatabaseDir) { Assert-SafeOutputPath -Path $DatabaseDir } else { New-Item -ItemType Directory -Path $DatabaseDir -Force | Out-Null }
+    $LanceDBDir = Join-Path $DatabaseDir "lancedb"
+    if (Test-Path -LiteralPath $LanceDBDir) { Assert-SafeOutputPath -Path $LanceDBDir } else { New-Item -ItemType Directory -Path $LanceDBDir -Force | Out-Null }
 }
 
+# Invoke-GoBuild builds one Go package with an explicit argument vector so release is observable in compiler flags.
+# Invoke-GoBuild 使用显式参数向量构建一个 Go 包，确保 release 配置真正传递给编译器。
 function Invoke-GoBuild {
     param(
-        [Parameter(Mandatory=$true)]
-        [string]$OutputPath,
-        [Parameter(Mandatory=$true)]
-        [string]$PackagePath,
-        [string]$Ldflags = ""
+        [Parameter(Mandatory=$true)] [string]$OutputPath,
+        [Parameter(Mandatory=$true)] [string]$PackagePath,
+        [string]$Ldflags = "",
+        [switch]$TrimPath
     )
-
-    # Build a single Go entrypoint through the resolved go.exe path so packaging never silently skips a binary because of shell alias or function shadowing.
-    # 通过已解析的 go.exe 路径构建单个 Go 入口，避免因为 shell 别名或函数遮蔽导致打包静默跳过某个二进制。
+    # Validate the executable destination before the compiler can write through a redirected output path.
+    # 在编译器写入之前校验可执行文件目标，避免通过重定向的 output 路径写到其他目录。
+    Assert-SafeOutputPath -Path $OutputPath -AllowMissing
+    if (Test-Path -LiteralPath $OutputPath -PathType Container) { throw "refusing to build an executable over a directory: $OutputPath" }
     $GoExe = Resolve-GoExe
-    if ([string]::IsNullOrWhiteSpace($Ldflags)) {
-        & $GoExe build -o $OutputPath $PackagePath
-    }
-    else {
-        & $GoExe build -ldflags $Ldflags -o $OutputPath $PackagePath
-    }
-    if ($null -ne $LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-    if (!(Test-Path -LiteralPath $OutputPath)) {
-        throw "expected build artifact was not produced: $OutputPath"
-    }
+    $BuildArguments = New-Object System.Collections.Generic.List[string]
+    [void]$BuildArguments.Add("build")
+    if ($TrimPath) { [void]$BuildArguments.Add("-trimpath") }
+    if (-not [string]::IsNullOrWhiteSpace($Ldflags)) { [void]$BuildArguments.Add("-ldflags"); [void]$BuildArguments.Add($Ldflags) }
+    [void]$BuildArguments.Add("-o"); [void]$BuildArguments.Add($OutputPath); [void]$BuildArguments.Add($PackagePath)
+    & $GoExe @($BuildArguments.ToArray())
+    if ($LASTEXITCODE -ne 0) { throw "go build failed for $PackagePath ($LASTEXITCODE)" }
+    if (-not (Test-Path -LiteralPath $OutputPath -PathType Leaf)) { throw "expected build artifact was not produced: $OutputPath" }
 }
 
-function Do-Clean {
-    if (Test-Path $OutputDir) {
-        Write-Host "=> 🧹 Cleaning output..." -ForegroundColor Gray
-        Remove-Item -Path $OutputDir -Recurse -Force
+# Assert-StorageDependencies performs a read-only preflight before Go compilation can leave a partial package.
+# Assert-StorageDependencies 在 Go 编译前只读预检依赖，避免产生半成品交付包。
+function Assert-StorageDependencies {
+    param([Parameter(Mandatory=$true)] [ValidateSet("legacy", "native", "all")] [string]$StorageProfile)
+    if ($StorageProfile -in @("legacy", "all")) {
+        $LegacyNames = @(Get-VldbLibraryNames)
+        [void](Get-VerifiedHostDependencyPath -Kind "sqlite" -FileName $LegacyNames[0])
+        [void](Get-VerifiedHostDependencyPath -Kind "lancedb" -FileName $LegacyNames[1])
+        [void](Get-VerifiedHostDependencyPath -Kind "controller" -FileName (Get-ControllerBinaryName))
     }
+    if ($StorageProfile -in @("native", "all")) { [void](Resolve-NativeArtifact) }
 }
 
+# Do-Build creates the formal package while keeping storage selection separate from runtime configuration.
+# Do-Build 构建正式交付目录，并保持存储选择与运行时配置彼此独立。
 function Do-Build {
+    param([Parameter(Mandatory=$true)] [ValidateSet("standard", "release")] [string]$BuildProfile)
+    $StorageProfile = Resolve-StorageProfile
+    Assert-StorageDependencies -StorageProfile $StorageProfile
     Resolve-SourceIdentity
     $BuildLdflags = "-X github.com/openvulcan/vmm/internal/buildinfo.SourceRevision=$SourceRevision -X github.com/openvulcan/vmm/internal/buildinfo.SourceStateDigest=$SourceStateDigest"
-    Write-Host "=> 🚀 Building VMM Gateway..." -ForegroundColor Cyan
-    if (!(Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
-    
-    # Compile the full main package so debug helpers and future entrypoint files are linked into the final binary.
-    # 编译完整的 main 包，确保调试辅助文件和后续入口文件都会被链接进最终二进制。
-    Invoke-GoBuild -OutputPath $ExePath -PackagePath "$RootDir\cmd\vmm-local" -Ldflags $BuildLdflags
-
-    # Build the standalone maintenance tool together with the main binary so packaged output keeps destructive cleanup, migration, and vector rebuild workflows outside the runtime process.
-    # 同时编译独立维护工具，确保标准打包产物把清库、迁移和向量重建工作流放在运行时进程之外。
-    Invoke-GoBuild -OutputPath $MigrateExePath -PackagePath "$RootDir\cmd\vmm-migrate" -Ldflags $BuildLdflags
-
-    # Build the standalone PII tester together with the main binary so packaged output keeps the validator tooling available.
-    # 同时编译独立 PII 测试器，确保标准构建产物里保留验证规则所需的工具链。
-    Invoke-GoBuild -OutputPath $TesterExePath -PackagePath "$RootDir\cmd\vmm-pii-tester"
-    
+    $UseTrimPath = $false
+    if ($BuildProfile -eq "release") { $BuildLdflags = "$BuildLdflags -s -w"; $UseTrimPath = $true }
+    Write-Host "=> Building VMM Gateway ($BuildProfile, storage=$StorageProfile)..." -ForegroundColor Cyan
+    Assert-SafeOutputPath -Path $BinDir -AllowMissing
+    if (-not (Test-Path -LiteralPath $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
+    Invoke-GoBuild -OutputPath $ExePath -PackagePath (Join-Path $RootDir "cmd\vmm-local") -Ldflags $BuildLdflags -TrimPath:$UseTrimPath
+    Invoke-GoBuild -OutputPath $MigrateExePath -PackagePath (Join-Path $RootDir "cmd\vmm-migrate") -Ldflags $BuildLdflags -TrimPath:$UseTrimPath
+    $TesterFlags = if ($BuildProfile -eq "release") { "-s -w" } else { "" }
+    Invoke-GoBuild -OutputPath $TesterExePath -PackagePath (Join-Path $RootDir "cmd\vmm-pii-tester") -Ldflags $TesterFlags -TrimPath:$UseTrimPath
     Sync-Configs
-    Sync-HostLibraries
-    Sync-ControllerBinary
+    [void](Sync-HostLibraries -StorageProfile $StorageProfile)
+    if ($StorageProfile -in @("legacy", "all")) { Sync-ControllerBinary } else { Remove-OwnedArtifact -Path (Join-Path $BinDir (Get-ControllerBinaryName)) }
     Ensure-DatabaseLayout
-    
-    Write-Host "=> ✅ Build Success!" -ForegroundColor Green
+    Write-Host "=> Build Success!" -ForegroundColor Green
 }
 
+# Do-BuildTester builds only the PII tester but applies the same dependency and output ownership rules.
+# Do-BuildTester 仅构建 PII 测试器，但复用相同的依赖和 output 所有权规则。
 function Do-BuildTester {
-    Write-Host "=> 🧪 Building VMM PII Tester..." -ForegroundColor Cyan
-    if (!(Test-Path $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
-
-    # Build only the standalone tester when contributors want to iterate on rules without rebuilding the full runtime.
-    # 仅编译独立测试器，方便贡献者在不重建完整运行时的情况下迭代 PII 规则。
-    Invoke-GoBuild -OutputPath $TesterExePath -PackagePath "$RootDir\cmd\vmm-pii-tester"
-
-    # Keep the tester output self-contained so file mode always reads the rules that were just built and copied.
-    # 保持测试器产物自包含，确保文件模式始终读取刚刚构建并复制过去的规则与配置。
+    $StorageProfile = Resolve-StorageProfile
+    Assert-StorageDependencies -StorageProfile $StorageProfile
+    Write-Host "=> Building VMM PII Tester (storage=$StorageProfile)..." -ForegroundColor Cyan
+    Assert-SafeOutputPath -Path $BinDir -AllowMissing
+    if (-not (Test-Path -LiteralPath $BinDir)) { New-Item -ItemType Directory -Path $BinDir -Force | Out-Null }
+    Invoke-GoBuild -OutputPath $TesterExePath -PackagePath (Join-Path $RootDir "cmd\vmm-pii-tester")
     Sync-Configs
-    Sync-HostLibraries
+    [void](Sync-HostLibraries -StorageProfile $StorageProfile)
+    if ($StorageProfile -in @("legacy", "all")) { Sync-ControllerBinary } else { Remove-OwnedArtifact -Path (Join-Path $BinDir (Get-ControllerBinaryName)) }
     Ensure-DatabaseLayout
-
-    Write-Host "=> ✅ Tester Build Success!" -ForegroundColor Green
+    Write-Host "=> Tester Build Success!" -ForegroundColor Green
 }
 
-function Do-Run {
-    param(
-        [string[]]$ForwardArgs = @()
+# Do-Clean removes only known VMM build artifacts and preserves output/database plus unknown user files.
+# Do-Clean 只删除已知 VMM 构建产物，保留 output/database 和未知用户文件。
+function Do-Clean {
+    if (-not (Test-Path -LiteralPath $OutputDir)) { return }
+    Assert-SafeOutputDirectory
+    Write-Host "=> Cleaning owned build artifacts..." -ForegroundColor Gray
+    Remove-OwnedConfigs
+    $KnownPaths = @(
+        $ExePath,
+        $MigrateExePath,
+        $TesterExePath,
+        (Join-Path $BinDir (Get-ControllerBinaryName)),
+        (Join-Path $LibDir "vldb_sqlite.dll"),
+        (Join-Path $LibDir "vldb_lancedb.dll"),
+        (Join-Path $LibDir "libvldb_sqlite.so"),
+        (Join-Path $LibDir "libvldb_lancedb.so"),
+        (Join-Path $LibDir "libvldb_sqlite.dylib"),
+        (Join-Path $LibDir "libvldb_lancedb.dylib"),
+        (Join-Path $LibDir "vmm_lancedb_native.dll"),
+        (Join-Path $LibDir "libvmm_lancedb_native.so"),
+        (Join-Path $LibDir "libvmm_lancedb_native.dylib"),
+        (Join-Path $LibDir "manifest.json")
     )
+    foreach ($ArtifactPath in $NativeSupportArtifactPaths) {
+        $KnownPaths += Join-Path $LibDir ($ArtifactPath.Replace("/", [IO.Path]::DirectorySeparatorChar))
+    }
+    foreach ($Path in $KnownPaths) { Remove-OwnedArtifact -Path $Path }
+}
 
-    if (!(Test-Path $ExePath)) { Do-Build }
-    
-    Write-Host "=> 🏃 Running VMM..." -ForegroundColor Magenta
-    
-    # 1. 记录当前目录并压入栈中
+# Do-Run starts the packaged binary from output/bin so relative configuration and library lookup stay deterministic.
+# Do-Run 从 output/bin 启动打包二进制，确保相对配置和动态库查找保持确定性。
+function Do-Run {
+    param([string[]]$ForwardArgs = @())
+    if (-not (Test-Path -LiteralPath $ExePath -PathType Leaf)) { Do-Build -BuildProfile "standard" }
+    Write-Host "=> Running VMM..." -ForegroundColor Magenta
     Push-Location $BinDir
     $ExitCode = 0
-    
-    try {
-        # 2. 执行程序
-        & ".\vmm-local.exe" @ForwardArgs
-        $ExitCode = $LASTEXITCODE
-    }
-    finally {
-        # 3. 无论程序是正常结束还是报错，都强制弹回原始目录
-        Pop-Location
-        Write-Host "=> 🔙 Back to original directory." -ForegroundColor Gray
-    }
-
+    try { & ".\vmm-local.exe" @ForwardArgs; $ExitCode = $LASTEXITCODE }
+    finally { Pop-Location }
     if ($ExitCode -ne 0) { exit $ExitCode }
 }
 
+$BuildProfile = if ($Action -eq "build") { Resolve-BuildProfile -Arguments $ProgramArgs } else { "standard" }
 switch ($Action) {
     "clean" { Do-Clean }
-    "build" { Do-Build }
-    "run"   { Do-Run -ForwardArgs $ProgramArgs }
+    "build" { Do-Build -BuildProfile $BuildProfile }
+    "run" { Do-Run -ForwardArgs $ProgramArgs }
     "tester" { Do-BuildTester }
 }

@@ -11,6 +11,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -20,25 +21,23 @@ import (
 	"github.com/openvulcan/vmm/internal/platform/logx"
 )
 
-// runMaintenanceVectorRebuild rebuilds durable vectors with either standalone provider inference or the exact managed Vulcan Code inference authority.
-// runMaintenanceVectorRebuild 用于通过独立供应商推理或准确的 Vulcan Code 托管推理权威重建持久向量。
+// runMaintenanceVectorRebuild rebuilds durable vectors with the configured standalone provider.
+// runMaintenanceVectorRebuild 用于通过配置的独立供应商重建持久向量。
 func runMaintenanceVectorRebuild(
 	ctx context.Context,
 	cfg config.Config,
-	managedConfig *config.ManagedConfig,
 	input io.Reader,
 	output io.Writer,
 	confirmed bool,
 ) error {
-	return runMaintenanceVectorRebuildWithProgressFile(ctx, cfg, managedConfig, input, output, confirmed, "")
+	return runMaintenanceVectorRebuildWithProgressFile(ctx, cfg, input, output, confirmed, "")
 }
 
-// runMaintenanceVectorRebuildWithProgressFile runs vector rebuild with an optional host-owned progress file.
-// runMaintenanceVectorRebuildWithProgressFile 使用可选的宿主进度文件执行向量重建。
+// runMaintenanceVectorRebuildWithProgressFile runs standalone vector rebuild with an optional progress file.
+// runMaintenanceVectorRebuildWithProgressFile 使用可选的进度文件执行独立向量重建。
 func runMaintenanceVectorRebuildWithProgressFile(
 	ctx context.Context,
 	cfg config.Config,
-	managedConfig *config.ManagedConfig,
 	input io.Reader,
 	output io.Writer,
 	confirmed bool,
@@ -63,7 +62,7 @@ func runMaintenanceVectorRebuildWithProgressFile(
 		fmt.Fprintln(output, "[vmm-migrate] vector rebuild confirmation accepted from the explicit host flag")
 	}
 
-	deps, err := app.BuildMaintenanceDependencies(cfg, managedConfig)
+	deps, err := app.BuildMaintenanceDependencies(cfg)
 	if err != nil {
 		return fmt.Errorf("build maintenance dependencies: %w", err)
 	}
@@ -157,6 +156,14 @@ func acquireMaintenanceRuntimeGuard(cfg config.Config, action string) (net.Liste
 	listenAddr := strings.TrimSpace(cfg.GRPC.ListenAddr)
 	if listenAddr == "" {
 		return nil, fmt.Errorf("grpc.listen_addr is required before %s can verify the runtime is stopped", action)
+	}
+	_, portText, err := net.SplitHostPort(listenAddr)
+	if err != nil {
+		return nil, fmt.Errorf("%s requires grpc.listen_addr in host:port form: %w", action, err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return nil, fmt.Errorf("%s requires grpc.listen_addr port between 1 and 65535, got %q", action, portText)
 	}
 	probe, err := net.Listen("tcp", listenAddr)
 	if err != nil {

@@ -3,6 +3,7 @@
 package vldb_lancedb
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,7 +11,7 @@ import (
 	controllerclient "github.com/OpenVulcan/vldb-controller/client-go/controller"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_controller"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
-	"github.com/openvulcan/vmm/internal/platform/ffi/lancedbffi"
+	"github.com/openvulcan/vmm/internal/platform/storagecontract/lance"
 )
 
 // controllerEngineHandle forwards the existing LanceDB engine contract through one shared controller runtime.
@@ -69,14 +70,22 @@ func newControllerStore(runtime *vldb_controller.Runtime, timeout time.Duration,
 	return store, nil
 }
 
+// requestContext keeps caller cancellation while applying the controller runtime timeout to every RPC.
+// requestContext 为每个 RPC 保留调用方取消，并叠加 controller runtime 配置的超时。
+func (h *controllerEngineHandle) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return h.runtime.RequestContextWithParent(ctx)
+}
+
 // CreateTable forwards one LanceDB schema request through the controller binding.
 // CreateTable 通过 controller 绑定透传一次 LanceDB 建表请求。
-func (h *controllerEngineHandle) CreateTable(request lancedbffi.CreateTableRequest) (lancedbffi.CreateTableResult, error) {
+func (h *controllerEngineHandle) CreateTable(ctx context.Context, request lance.CreateTableRequest) (lance.CreateTableResult, error) {
+	callCtx, cancel := h.requestContext(ctx)
+	defer cancel()
 	columns := make([]controllerclient.LanceDBColumnDef, 0, len(request.Columns))
 	for _, column := range request.Columns {
 		columnType, err := mapControllerLanceColumnType(column.ColumnType)
 		if err != nil {
-			return lancedbffi.CreateTableResult{}, err
+			return lance.CreateTableResult{}, err
 		}
 		columns = append(columns, controllerclient.LanceDBColumnDef{
 			Name:       column.Name,
@@ -85,9 +94,7 @@ func (h *controllerEngineHandle) CreateTable(request lancedbffi.CreateTableReque
 			Nullable:   column.Nullable,
 		})
 	}
-	ctx, cancel := h.runtime.RequestContext()
-	defer cancel()
-	response, err := h.runtime.Client().CreateLanceDBTable(ctx, &controllerclient.LanceDBCreateTableRequest{
+	response, err := h.runtime.Client().CreateLanceDBTable(callCtx, &controllerclient.LanceDBCreateTableRequest{
 		SpaceID:           h.runtime.SpaceID(),
 		BindingID:         h.runtime.LanceDBBindingID(),
 		TableName:         request.TableName,
@@ -95,24 +102,24 @@ func (h *controllerEngineHandle) CreateTable(request lancedbffi.CreateTableReque
 		OverwriteIfExists: request.OverwriteIfExists,
 	})
 	if err != nil {
-		return lancedbffi.CreateTableResult{}, mapControllerLanceError("create lancedb table", err)
+		return lance.CreateTableResult{}, mapControllerLanceError("create lancedb table", err)
 	}
 	if response == nil {
-		return lancedbffi.CreateTableResult{}, fmt.Errorf("controller create lancedb table response is nil")
+		return lance.CreateTableResult{}, fmt.Errorf("controller create lancedb table response is nil")
 	}
-	return lancedbffi.CreateTableResult{Success: true, Message: response.Message}, nil
+	return lance.CreateTableResult{Success: true, Message: response.Message}, nil
 }
 
 // VectorUpsertRaw forwards one raw LanceDB upsert without replaying uncertain mutations.
 // VectorUpsertRaw 透传一次原始 LanceDB 写入，且不会重放结果不确定的写操作。
-func (h *controllerEngineHandle) VectorUpsertRaw(tableName string, format lancedbffi.InputFormat, data []byte, keyColumns []string) (lancedbffi.UpsertResult, error) {
+func (h *controllerEngineHandle) VectorUpsertRaw(ctx context.Context, tableName string, format lance.InputFormat, data []byte, keyColumns []string) (lance.UpsertResult, error) {
+	callCtx, cancel := h.requestContext(ctx)
+	defer cancel()
 	inputFormat, err := mapControllerLanceInputFormat(format)
 	if err != nil {
-		return lancedbffi.UpsertResult{}, err
+		return lance.UpsertResult{}, err
 	}
-	ctx, cancel := h.runtime.RequestContext()
-	defer cancel()
-	response, err := h.runtime.Client().UpsertLanceDB(ctx, &controllerclient.LanceDBUpsertRequest{
+	response, err := h.runtime.Client().UpsertLanceDB(callCtx, &controllerclient.LanceDBUpsertRequest{
 		SpaceID:     h.runtime.SpaceID(),
 		BindingID:   h.runtime.LanceDBBindingID(),
 		TableName:   tableName,
@@ -121,12 +128,12 @@ func (h *controllerEngineHandle) VectorUpsertRaw(tableName string, format lanced
 		KeyColumns:  append([]string(nil), keyColumns...),
 	})
 	if err != nil {
-		return lancedbffi.UpsertResult{}, mapControllerLanceError("upsert lancedb rows", err)
+		return lance.UpsertResult{}, mapControllerLanceError("upsert lancedb rows", err)
 	}
 	if response == nil {
-		return lancedbffi.UpsertResult{}, fmt.Errorf("controller upsert lancedb response is nil")
+		return lance.UpsertResult{}, fmt.Errorf("controller upsert lancedb response is nil")
 	}
-	return lancedbffi.UpsertResult{
+	return lance.UpsertResult{
 		Version:      response.Version,
 		InputRows:    response.InputRows,
 		InsertedRows: response.InsertedRows,
@@ -137,14 +144,14 @@ func (h *controllerEngineHandle) VectorUpsertRaw(tableName string, format lanced
 
 // VectorSearchF32 forwards one vector search and maps the raw payload back to the existing engine result.
 // VectorSearchF32 透传一次向量检索，并把原始载荷映射回现有引擎结果。
-func (h *controllerEngineHandle) VectorSearchF32(tableName string, vector []float32, limit uint32, filter string, vectorColumn string, outputFormat lancedbffi.OutputFormat) (lancedbffi.SearchResult, error) {
+func (h *controllerEngineHandle) VectorSearchF32(ctx context.Context, tableName string, vector []float32, limit uint32, filter string, vectorColumn string, outputFormat lance.OutputFormat) (lance.SearchResult, error) {
+	callCtx, cancel := h.requestContext(ctx)
+	defer cancel()
 	format, err := mapControllerLanceOutputFormat(outputFormat)
 	if err != nil {
-		return lancedbffi.SearchResult{}, err
+		return lance.SearchResult{}, err
 	}
-	ctx, cancel := h.runtime.RequestContext()
-	defer cancel()
-	response, err := h.runtime.Client().SearchLanceDB(ctx, &controllerclient.LanceDBSearchRequest{
+	response, err := h.runtime.Client().SearchLanceDB(callCtx, &controllerclient.LanceDBSearchRequest{
 		SpaceID:      h.runtime.SpaceID(),
 		BindingID:    h.runtime.LanceDBBindingID(),
 		TableName:    tableName,
@@ -155,16 +162,16 @@ func (h *controllerEngineHandle) VectorSearchF32(tableName string, vector []floa
 		OutputFormat: format,
 	})
 	if err != nil {
-		return lancedbffi.SearchResult{}, err
+		return lance.SearchResult{}, err
 	}
 	if response == nil {
-		return lancedbffi.SearchResult{}, fmt.Errorf("controller search lancedb response is nil")
+		return lance.SearchResult{}, fmt.Errorf("controller search lancedb response is nil")
 	}
 	mappedFormat, err := parseControllerLanceOutputFormat(response.Format)
 	if err != nil {
-		return lancedbffi.SearchResult{}, err
+		return lance.SearchResult{}, err
 	}
-	return lancedbffi.SearchResult{
+	return lance.SearchResult{
 		Format: mappedFormat,
 		Rows:   response.Rows,
 		Data:   append([]byte(nil), response.Data...),
@@ -173,22 +180,22 @@ func (h *controllerEngineHandle) VectorSearchF32(tableName string, vector []floa
 
 // Delete forwards one LanceDB predicate deletion through the controller binding.
 // Delete 通过 controller 绑定透传一次 LanceDB 条件删除。
-func (h *controllerEngineHandle) Delete(request lancedbffi.DeleteRequest) (lancedbffi.DeleteResult, error) {
-	ctx, cancel := h.runtime.RequestContext()
+func (h *controllerEngineHandle) Delete(ctx context.Context, request lance.DeleteRequest) (lance.DeleteResult, error) {
+	callCtx, cancel := h.requestContext(ctx)
 	defer cancel()
-	response, err := h.runtime.Client().DeleteLanceDB(ctx, &controllerclient.LanceDBDeleteRequest{
+	response, err := h.runtime.Client().DeleteLanceDB(callCtx, &controllerclient.LanceDBDeleteRequest{
 		SpaceID:   h.runtime.SpaceID(),
 		BindingID: h.runtime.LanceDBBindingID(),
 		TableName: request.TableName,
 		Condition: request.Condition,
 	})
 	if err != nil {
-		return lancedbffi.DeleteResult{}, mapControllerLanceError("delete lancedb rows", err)
+		return lance.DeleteResult{}, mapControllerLanceError("delete lancedb rows", err)
 	}
 	if response == nil {
-		return lancedbffi.DeleteResult{}, fmt.Errorf("controller delete lancedb response is nil")
+		return lance.DeleteResult{}, fmt.Errorf("controller delete lancedb response is nil")
 	}
-	return lancedbffi.DeleteResult{
+	return lance.DeleteResult{
 		Success:     true,
 		Message:     response.Message,
 		Version:     response.Version,
@@ -198,21 +205,21 @@ func (h *controllerEngineHandle) Delete(request lancedbffi.DeleteRequest) (lance
 
 // DropTable forwards one destructive LanceDB table deletion through the controller binding.
 // DropTable 通过 controller 绑定透传一次破坏性 LanceDB 删表。
-func (h *controllerEngineHandle) DropTable(request lancedbffi.DropTableRequest) (lancedbffi.DropTableResult, error) {
-	ctx, cancel := h.runtime.RequestContext()
+func (h *controllerEngineHandle) DropTable(ctx context.Context, request lance.DropTableRequest) (lance.DropTableResult, error) {
+	callCtx, cancel := h.requestContext(ctx)
 	defer cancel()
-	response, err := h.runtime.Client().DropLanceDBTable(ctx, &controllerclient.LanceDBDropTableRequest{
+	response, err := h.runtime.Client().DropLanceDBTable(callCtx, &controllerclient.LanceDBDropTableRequest{
 		SpaceID:   h.runtime.SpaceID(),
 		BindingID: h.runtime.LanceDBBindingID(),
 		TableName: request.TableName,
 	})
 	if err != nil {
-		return lancedbffi.DropTableResult{}, mapControllerLanceError("drop lancedb table", err)
+		return lance.DropTableResult{}, mapControllerLanceError("drop lancedb table", err)
 	}
 	if response == nil {
-		return lancedbffi.DropTableResult{}, fmt.Errorf("controller drop lancedb table response is nil")
+		return lance.DropTableResult{}, fmt.Errorf("controller drop lancedb table response is nil")
 	}
-	return lancedbffi.DropTableResult{Success: true, Message: response.Message}, nil
+	return lance.DropTableResult{Success: true, Message: response.Message}, nil
 }
 
 // Close leaves backend ownership to the shared runtime lifecycle.
@@ -250,8 +257,8 @@ func mapControllerLanceColumnType(columnType string) (controllerclient.LanceDBCo
 
 // mapControllerLanceInputFormat maps the existing FFI input format to the controller SDK enum.
 // mapControllerLanceInputFormat 把现有 FFI 输入格式映射成 controller SDK 枚举。
-func mapControllerLanceInputFormat(format lancedbffi.InputFormat) (controllerclient.LanceDBInputFormat, error) {
-	if format == lancedbffi.InputFormatJSONRows {
+func mapControllerLanceInputFormat(format lance.InputFormat) (controllerclient.LanceDBInputFormat, error) {
+	if format == lance.InputFormatJSONRows {
 		return controllerclient.LanceDBInputFormatJSONRows, nil
 	}
 	return controllerclient.LanceDBInputFormatUnspecified, fmt.Errorf("unsupported lancedb input format: %d", format)
@@ -259,8 +266,8 @@ func mapControllerLanceInputFormat(format lancedbffi.InputFormat) (controllercli
 
 // mapControllerLanceOutputFormat maps the existing FFI output format to the controller SDK enum.
 // mapControllerLanceOutputFormat 把现有 FFI 输出格式映射成 controller SDK 枚举。
-func mapControllerLanceOutputFormat(format lancedbffi.OutputFormat) (controllerclient.LanceDBOutputFormat, error) {
-	if format == lancedbffi.OutputFormatJSONRows {
+func mapControllerLanceOutputFormat(format lance.OutputFormat) (controllerclient.LanceDBOutputFormat, error) {
+	if format == lance.OutputFormatJSONRows {
 		return controllerclient.LanceDBOutputFormatJSONRows, nil
 	}
 	return controllerclient.LanceDBOutputFormatUnspecified, fmt.Errorf("unsupported lancedb output format: %d", format)
@@ -268,12 +275,12 @@ func mapControllerLanceOutputFormat(format lancedbffi.OutputFormat) (controllerc
 
 // parseControllerLanceOutputFormat maps the controller response token back to the existing FFI enum.
 // parseControllerLanceOutputFormat 把 controller 响应 token 映射回现有 FFI 枚举。
-func parseControllerLanceOutputFormat(format string) (lancedbffi.OutputFormat, error) {
+func parseControllerLanceOutputFormat(format string) (lance.OutputFormat, error) {
 	normalized := strings.ToLower(strings.TrimSpace(format))
 	// The request enum is json_rows while the v0.2.3 server response reports the native wire format token as json.
 	// 请求枚举使用 json_rows，而 v0.2.3 服务端响应会把原生线格式 token 返回为 json。
 	if normalized == string(controllerclient.LanceDBOutputFormatJSONRows) || normalized == "json" {
-		return lancedbffi.OutputFormatJSONRows, nil
+		return lance.OutputFormatJSONRows, nil
 	}
 	return 0, fmt.Errorf("unsupported controller lancedb output format: %s", format)
 }

@@ -171,6 +171,8 @@ storage:
   # - combined: relational and vector capabilities both use the unified PostgreSQL combined store.
   # - combined：关系与向量能力统一走 PostgreSQL 组合库存储。
   mode: "split"
+  # - native: relational and vector capabilities use standalone native libraries and isolated local data paths.
+  # - native：关系与向量能力使用独立原生库及隔离的本地数据路径。
 
   # Backend provider used when storage.mode is combined.
   # 当 storage.mode=combined 时启用的底座提供方。
@@ -201,6 +203,16 @@ sqlite:
   # - none：关闭分词扩展，保持纯文本模式。
   tokenizer_mode: "jieba"
 
+  # Standalone SQLite settings used only when storage.mode=native.
+  # 仅在 storage.mode=native 时使用的独立 SQLite 配置。
+  native:
+    # Relative paths are resolved against the application's storage output root.
+    # 相对路径由应用相对于存储输出根目录解析。
+    path: "database/native/sqlite.db"
+    # Supported values are gse and unicode61.
+    # 支持的取值为 gse 和 unicode61。
+    tokenizer: "gse"
+
 lancedb:
   # Legacy compatibility field kept for older configs.
   # 为兼容旧配置而保留的旧字段。
@@ -219,6 +231,16 @@ lancedb:
   # Column name used to store vectors.
   # 存储向量的列名。
   vector_column: "vector"
+
+  # Standalone LanceDB settings used only when storage.mode=native.
+  # 仅在 storage.mode=native 时使用的独立 LanceDB 配置。
+  native:
+    # Relative paths are resolved against the application's storage output root.
+    # 相对路径由应用相对于存储输出根目录解析。
+    path: "database/native/lancedb"
+    # Empty selects the unique platform-specific packaged library path in the application layer.
+    # 留空时由应用层选择平台唯一的随包动态库路径。
+    library_path: ""
 
 controller:
   # Loopback-only controller endpoint used when storage.mode=controller.

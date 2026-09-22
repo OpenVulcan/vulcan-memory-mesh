@@ -171,6 +171,19 @@ func normalizeSQLiteTokenizerModeValue(mode string) string {
 	}
 }
 
+// normalizeSQLiteNativeTokenizerValue canonicalizes the standalone SQLite tokenizer without accepting split-mode tokenizer names.
+// normalizeSQLiteNativeTokenizerValue 用于规范化独立 SQLite 分词器，且不接受 split 模式的分词器名称。
+func normalizeSQLiteNativeTokenizerValue(tokenizer string) string {
+	switch strings.ToLower(strings.TrimSpace(tokenizer)) {
+	case "", defaultSQLiteNativeTokenizer:
+		return defaultSQLiteNativeTokenizer
+	case "unicode61":
+		return "unicode61"
+	default:
+		return strings.ToLower(strings.TrimSpace(tokenizer))
+	}
+}
+
 // Normalize backfills safe defaults and canonicalizes all runtime-facing config values
 // so validation, startup, and adapter selection all observe one stable normalized view.
 // Normalize 用于补齐安全默认值并规范化所有面向运行时的配置值，
@@ -370,6 +383,10 @@ func (c *Config) Normalize() {
 		c.SQLite.Timeout = Duration{5 * time.Second}
 	}
 	c.SQLite.TokenizerMode = normalizeSQLiteTokenizerModeValue(c.SQLite.TokenizerMode)
+	if strings.TrimSpace(c.SQLite.Native.Path) == "" {
+		c.SQLite.Native.Path = defaultSQLiteNativePath
+	}
+	c.SQLite.Native.Tokenizer = normalizeSQLiteNativeTokenizerValue(c.SQLite.Native.Tokenizer)
 	if c.LanceDB.Timeout.Duration <= 0 {
 		c.LanceDB.Timeout = Duration{5 * time.Second}
 	}
@@ -378,6 +395,9 @@ func (c *Config) Normalize() {
 	}
 	if strings.TrimSpace(c.LanceDB.VectorColumn) == "" {
 		c.LanceDB.VectorColumn = "vector"
+	}
+	if strings.TrimSpace(c.LanceDB.Native.Path) == "" {
+		c.LanceDB.Native.Path = defaultLanceDBNativePath
 	}
 	if strings.TrimSpace(c.Controller.Endpoint) == "" {
 		c.Controller.Endpoint = "http://127.0.0.1:19801"
@@ -483,9 +503,13 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Storage.CombinedProvider = strings.TrimSpace(c.Storage.CombinedProvider)
 	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
 	c.SQLite.TokenizerMode = strings.TrimSpace(c.SQLite.TokenizerMode)
+	c.SQLite.Native.Path = strings.TrimSpace(c.SQLite.Native.Path)
+	c.SQLite.Native.Tokenizer = strings.TrimSpace(c.SQLite.Native.Tokenizer)
 	c.LanceDB.Address = strings.TrimSpace(c.LanceDB.Address)
 	c.LanceDB.TableName = strings.TrimSpace(c.LanceDB.TableName)
 	c.LanceDB.VectorColumn = strings.TrimSpace(c.LanceDB.VectorColumn)
+	c.LanceDB.Native.Path = strings.TrimSpace(c.LanceDB.Native.Path)
+	c.LanceDB.Native.LibraryPath = strings.TrimSpace(c.LanceDB.Native.LibraryPath)
 	c.Controller.Endpoint = strings.TrimSpace(c.Controller.Endpoint)
 	c.Controller.Executable = strings.TrimSpace(c.Controller.Executable)
 	c.Controller.ProcessMode = strings.ToLower(strings.TrimSpace(c.Controller.ProcessMode))

@@ -42,6 +42,22 @@ type testManagementVectorStore struct {
 	deleteErr  error
 }
 
+// TestNormalizeManagementSelectionDefaultsToVMMSource verifies standalone management records carry an explicit VMM origin.
+// TestNormalizeManagementSelectionDefaultsToVMMSource 用于验证独立管理记录会带有明确的 VMM 来源。
+func TestNormalizeManagementSelectionDefaultsToVMMSource(t *testing.T) {
+	selection, err := normalizeManagementSelection(logicdomain.ManagementRemovalSelection{
+		TargetType: logicdomain.ManagementTargetSession,
+		Action:     logicdomain.ManagementActionArchive,
+		TargetIDs:  []uint64{42},
+	})
+	if err != nil {
+		t.Fatalf("normalizeManagementSelection returned error: %v", err)
+	}
+	if selection.Source != "vmm-local" {
+		t.Fatalf("default management source = %q, want %q", selection.Source, "vmm-local")
+	}
+}
+
 // Upsert is unused by management purge tests.
 // Upsert 在管理永久清理测试中不使用。
 func (*testManagementVectorStore) Upsert(context.Context, logicdomain.MemoryRecord) error { return nil }

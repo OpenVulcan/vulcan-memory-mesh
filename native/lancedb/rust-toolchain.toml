@@ -1,0 +1,5 @@
+# Pin the native cdylib compiler to the validated Rust release.
+# 将原生 cdylib 编译器锁定到已验证的 Rust 版本。
+[toolchain]
+channel = "1.97.1"
+profile = "minimal"

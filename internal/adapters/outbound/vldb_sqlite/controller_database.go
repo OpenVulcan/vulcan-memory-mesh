@@ -3,6 +3,7 @@
 package vldb_sqlite
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
@@ -10,7 +11,7 @@ import (
 	controllerclient "github.com/OpenVulcan/vldb-controller/client-go/controller"
 	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_controller"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
-	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
+	sqlitecontract "github.com/openvulcan/vmm/internal/platform/storagecontract/sqlite"
 )
 
 // controllerDatabaseHandle forwards the existing SQLite adapter handle contract through one shared controller runtime.
@@ -55,12 +56,12 @@ func NewControllerStore(runtime *vldb_controller.Runtime, timeout time.Duration,
 
 // ExecuteScript forwards one typed SQLite script without retrying uncertain controller mutations.
 // ExecuteScript 透传一次类型化 SQLite 脚本，且不会重试结果不确定的 controller 写操作。
-func (h *controllerDatabaseHandle) ExecuteScript(sql string, params []sqliteffi.SQLValue, _ string) (sqliteffi.ExecuteResult, error) {
+func (h *controllerDatabaseHandle) ExecuteScript(ctx context.Context, sql string, params []sqlitecontract.SQLValue, _ string) (sqlitecontract.ExecuteResult, error) {
 	mappedParams, err := mapControllerSQLiteValues(params)
 	if err != nil {
-		return sqliteffi.ExecuteResult{}, err
+		return sqlitecontract.ExecuteResult{}, err
 	}
-	ctx, cancel := h.runtime.RequestContext()
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().ExecuteSqliteScript(ctx, &controllerclient.SqliteExecuteScriptRequest{
 		SpaceID:   h.runtime.SpaceID(),
@@ -69,12 +70,12 @@ func (h *controllerDatabaseHandle) ExecuteScript(sql string, params []sqliteffi.
 		Params:    mappedParams,
 	})
 	if err != nil {
-		return sqliteffi.ExecuteResult{}, mapControllerSQLiteError("execute sqlite script", err)
+		return sqlitecontract.ExecuteResult{}, mapControllerSQLiteError("execute sqlite script", err)
 	}
 	if response == nil {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("controller execute sqlite script response is nil")
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("controller execute sqlite script response is nil")
 	}
-	return sqliteffi.ExecuteResult{
+	return sqlitecontract.ExecuteResult{
 		Success:         response.Success,
 		Message:         response.Message,
 		RowsChanged:     response.RowsChanged,
@@ -84,16 +85,16 @@ func (h *controllerDatabaseHandle) ExecuteScript(sql string, params []sqliteffi.
 
 // ExecuteBatch forwards one typed SQLite batch without retrying uncertain controller mutations.
 // ExecuteBatch 透传一次类型化 SQLite 批量写入，且不会重试结果不确定的 controller 写操作。
-func (h *controllerDatabaseHandle) ExecuteBatch(sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
+func (h *controllerDatabaseHandle) ExecuteBatch(ctx context.Context, sql string, items [][]sqlitecontract.SQLValue) (sqlitecontract.ExecuteResult, error) {
 	mappedItems := make([]controllerclient.SqliteExecuteBatchItem, 0, len(items))
 	for _, item := range items {
 		mappedParams, err := mapControllerSQLiteValues(item)
 		if err != nil {
-			return sqliteffi.ExecuteResult{}, err
+			return sqlitecontract.ExecuteResult{}, err
 		}
 		mappedItems = append(mappedItems, controllerclient.SqliteExecuteBatchItem{Params: mappedParams})
 	}
-	ctx, cancel := h.runtime.RequestContext()
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().ExecuteSqliteBatch(ctx, &controllerclient.SqliteExecuteBatchRequest{
 		SpaceID:   h.runtime.SpaceID(),
@@ -102,12 +103,12 @@ func (h *controllerDatabaseHandle) ExecuteBatch(sql string, items [][]sqliteffi.
 		Items:     mappedItems,
 	})
 	if err != nil {
-		return sqliteffi.ExecuteResult{}, mapControllerSQLiteError("execute sqlite batch", err)
+		return sqlitecontract.ExecuteResult{}, mapControllerSQLiteError("execute sqlite batch", err)
 	}
 	if response == nil {
-		return sqliteffi.ExecuteResult{}, fmt.Errorf("controller execute sqlite batch response is nil")
+		return sqlitecontract.ExecuteResult{}, fmt.Errorf("controller execute sqlite batch response is nil")
 	}
-	return sqliteffi.ExecuteResult{
+	return sqlitecontract.ExecuteResult{
 		Success:            response.Success,
 		Message:            response.Message,
 		RowsChanged:        response.RowsChanged,
@@ -118,12 +119,12 @@ func (h *controllerDatabaseHandle) ExecuteBatch(sql string, items [][]sqliteffi.
 
 // QueryJSON forwards one typed SQLite query and returns the same JSON row envelope used by the local FFI handle.
 // QueryJSON 透传一次类型化 SQLite 查询，并返回与本地 FFI 句柄相同的 JSON 行封装。
-func (h *controllerDatabaseHandle) QueryJSON(sql string, params []sqliteffi.SQLValue, _ string) (sqliteffi.QueryJSONResult, error) {
+func (h *controllerDatabaseHandle) QueryJSON(ctx context.Context, sql string, params []sqlitecontract.SQLValue, _ string) (sqlitecontract.QueryJSONResult, error) {
 	mappedParams, err := mapControllerSQLiteValues(params)
 	if err != nil {
-		return sqliteffi.QueryJSONResult{}, err
+		return sqlitecontract.QueryJSONResult{}, err
 	}
-	ctx, cancel := h.runtime.RequestContext()
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().QuerySqliteJSON(ctx, &controllerclient.SqliteQueryJSONRequest{
 		SpaceID:   h.runtime.SpaceID(),
@@ -132,52 +133,60 @@ func (h *controllerDatabaseHandle) QueryJSON(sql string, params []sqliteffi.SQLV
 		Params:    mappedParams,
 	})
 	if err != nil {
-		return sqliteffi.QueryJSONResult{}, err
+		return sqlitecontract.QueryJSONResult{}, err
 	}
 	if response == nil {
-		return sqliteffi.QueryJSONResult{}, fmt.Errorf("controller query sqlite response is nil")
+		return sqlitecontract.QueryJSONResult{}, fmt.Errorf("controller query sqlite response is nil")
 	}
-	return sqliteffi.QueryJSONResult{JSONData: response.JSONData, RowCount: response.RowCount}, nil
+	return sqlitecontract.QueryJSONResult{JSONData: response.JSONData, RowCount: response.RowCount}, nil
 }
 
 // EnsureFtsIndex forwards built-in FTS index creation through the controller binding.
 // EnsureFtsIndex 通过 controller 绑定透传内建 FTS 索引创建。
-func (h *controllerDatabaseHandle) EnsureFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.EnsureFtsIndexResult, error) {
-	ctx, cancel := h.runtime.RequestContext()
+func (h *controllerDatabaseHandle) EnsureFtsIndex(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode) (sqlitecontract.EnsureFtsIndexResult, error) {
+	mappedMode, err := mapControllerTokenizerMode(mode)
+	if err != nil {
+		return sqlitecontract.EnsureFtsIndexResult{}, err
+	}
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().EnsureSqliteFtsIndex(ctx, &controllerclient.SqliteFTSIndexRequest{
 		SpaceID:       h.runtime.SpaceID(),
 		BindingID:     h.runtime.SQLiteBindingID(),
 		IndexName:     indexName,
-		TokenizerMode: mapControllerTokenizerMode(mode),
+		TokenizerMode: mappedMode,
 	})
 	if err != nil {
-		return sqliteffi.EnsureFtsIndexResult{}, err
+		return sqlitecontract.EnsureFtsIndexResult{}, err
 	}
 	if response == nil {
-		return sqliteffi.EnsureFtsIndexResult{}, fmt.Errorf("controller ensure sqlite fts response is nil")
+		return sqlitecontract.EnsureFtsIndexResult{}, fmt.Errorf("controller ensure sqlite fts response is nil")
 	}
-	return sqliteffi.EnsureFtsIndexResult{Success: response.Success, TokenizerMode: parseControllerTokenizerMode(response.TokenizerMode)}, nil
+	return sqlitecontract.EnsureFtsIndexResult{Success: response.Success, TokenizerMode: parseControllerTokenizerMode(response.TokenizerMode)}, nil
 }
 
 // RebuildFtsIndex forwards destructive FTS rebuilding and preserves uncertain-outcome semantics.
 // RebuildFtsIndex 透传破坏性 FTS 重建，并保留结果不确定语义。
-func (h *controllerDatabaseHandle) RebuildFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.RebuildFtsIndexResult, error) {
-	ctx, cancel := h.runtime.RequestContext()
+func (h *controllerDatabaseHandle) RebuildFtsIndex(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode) (sqlitecontract.RebuildFtsIndexResult, error) {
+	mappedMode, err := mapControllerTokenizerMode(mode)
+	if err != nil {
+		return sqlitecontract.RebuildFtsIndexResult{}, err
+	}
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().RebuildSqliteFtsIndex(ctx, &controllerclient.SqliteFTSIndexRequest{
 		SpaceID:       h.runtime.SpaceID(),
 		BindingID:     h.runtime.SQLiteBindingID(),
 		IndexName:     indexName,
-		TokenizerMode: mapControllerTokenizerMode(mode),
+		TokenizerMode: mappedMode,
 	})
 	if err != nil {
-		return sqliteffi.RebuildFtsIndexResult{}, mapControllerSQLiteError("rebuild sqlite fts index", err)
+		return sqlitecontract.RebuildFtsIndexResult{}, mapControllerSQLiteError("rebuild sqlite fts index", err)
 	}
 	if response == nil {
-		return sqliteffi.RebuildFtsIndexResult{}, fmt.Errorf("controller rebuild sqlite fts response is nil")
+		return sqlitecontract.RebuildFtsIndexResult{}, fmt.Errorf("controller rebuild sqlite fts response is nil")
 	}
-	return sqliteffi.RebuildFtsIndexResult{
+	return sqlitecontract.RebuildFtsIndexResult{
 		Success:       response.Success,
 		TokenizerMode: parseControllerTokenizerMode(response.TokenizerMode),
 		ReindexedRows: response.ReindexedRows,
@@ -186,32 +195,36 @@ func (h *controllerDatabaseHandle) RebuildFtsIndex(indexName string, mode sqlite
 
 // UpsertFtsDocument forwards one FTS document mutation through the controller binding.
 // UpsertFtsDocument 通过 controller 绑定透传一条 FTS 文档写入。
-func (h *controllerDatabaseHandle) UpsertFtsDocument(indexName string, mode sqliteffi.TokenizerMode, id string, filePath string, title string, content string) (sqliteffi.FtsMutationResult, error) {
-	ctx, cancel := h.runtime.RequestContext()
+func (h *controllerDatabaseHandle) UpsertFtsDocument(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode, id string, filePath string, title string, content string) (sqlitecontract.FtsMutationResult, error) {
+	mappedMode, err := mapControllerTokenizerMode(mode)
+	if err != nil {
+		return sqlitecontract.FtsMutationResult{}, err
+	}
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().UpsertSqliteFtsDocument(ctx, &controllerclient.SqliteFTSDocumentRequest{
 		SpaceID:       h.runtime.SpaceID(),
 		BindingID:     h.runtime.SQLiteBindingID(),
 		IndexName:     indexName,
-		TokenizerMode: mapControllerTokenizerMode(mode),
+		TokenizerMode: mappedMode,
 		ID:            id,
 		FilePath:      filePath,
 		Title:         title,
 		Content:       content,
 	})
 	if err != nil {
-		return sqliteffi.FtsMutationResult{}, mapControllerSQLiteError("upsert sqlite fts document", err)
+		return sqlitecontract.FtsMutationResult{}, mapControllerSQLiteError("upsert sqlite fts document", err)
 	}
 	if response == nil {
-		return sqliteffi.FtsMutationResult{}, fmt.Errorf("controller upsert sqlite fts response is nil")
+		return sqlitecontract.FtsMutationResult{}, fmt.Errorf("controller upsert sqlite fts response is nil")
 	}
-	return sqliteffi.FtsMutationResult{Success: response.Success, AffectedRows: response.AffectedRows}, nil
+	return sqlitecontract.FtsMutationResult{Success: response.Success, AffectedRows: response.AffectedRows}, nil
 }
 
 // DeleteFtsDocument forwards one FTS document deletion through the controller binding.
 // DeleteFtsDocument 通过 controller 绑定透传一条 FTS 文档删除。
-func (h *controllerDatabaseHandle) DeleteFtsDocument(indexName string, id string) (sqliteffi.FtsMutationResult, error) {
-	ctx, cancel := h.runtime.RequestContext()
+func (h *controllerDatabaseHandle) DeleteFtsDocument(ctx context.Context, indexName string, id string) (sqlitecontract.FtsMutationResult, error) {
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().DeleteSqliteFtsDocument(ctx, &controllerclient.SqliteFTSDeleteDocumentRequest{
 		SpaceID:   h.runtime.SpaceID(),
@@ -220,37 +233,41 @@ func (h *controllerDatabaseHandle) DeleteFtsDocument(indexName string, id string
 		ID:        id,
 	})
 	if err != nil {
-		return sqliteffi.FtsMutationResult{}, mapControllerSQLiteError("delete sqlite fts document", err)
+		return sqlitecontract.FtsMutationResult{}, mapControllerSQLiteError("delete sqlite fts document", err)
 	}
 	if response == nil {
-		return sqliteffi.FtsMutationResult{}, fmt.Errorf("controller delete sqlite fts response is nil")
+		return sqlitecontract.FtsMutationResult{}, fmt.Errorf("controller delete sqlite fts response is nil")
 	}
-	return sqliteffi.FtsMutationResult{Success: response.Success, AffectedRows: response.AffectedRows}, nil
+	return sqlitecontract.FtsMutationResult{Success: response.Success, AffectedRows: response.AffectedRows}, nil
 }
 
 // SearchFts forwards one FTS query and maps controller hits back to the existing FFI-compatible result.
 // SearchFts 透传一次 FTS 查询，并把 controller 命中映射回现有 FFI 兼容结果。
-func (h *controllerDatabaseHandle) SearchFts(indexName string, mode sqliteffi.TokenizerMode, query string, limit uint32, offset uint32) (sqliteffi.SearchResult, error) {
-	ctx, cancel := h.runtime.RequestContext()
+func (h *controllerDatabaseHandle) SearchFts(ctx context.Context, indexName string, mode sqlitecontract.TokenizerMode, query string, limit uint32, offset uint32) (sqlitecontract.SearchResult, error) {
+	mappedMode, err := mapControllerTokenizerMode(mode)
+	if err != nil {
+		return sqlitecontract.SearchResult{}, err
+	}
+	ctx, cancel := h.requestContext(ctx)
 	defer cancel()
 	response, err := h.runtime.Client().SearchSqliteFts(ctx, &controllerclient.SqliteFTSSearchRequest{
 		SpaceID:       h.runtime.SpaceID(),
 		BindingID:     h.runtime.SQLiteBindingID(),
 		IndexName:     indexName,
-		TokenizerMode: mapControllerTokenizerMode(mode),
+		TokenizerMode: mappedMode,
 		Query:         query,
 		Limit:         limit,
 		Offset:        offset,
 	})
 	if err != nil {
-		return sqliteffi.SearchResult{}, err
+		return sqlitecontract.SearchResult{}, err
 	}
 	if response == nil {
-		return sqliteffi.SearchResult{}, fmt.Errorf("controller search sqlite fts response is nil")
+		return sqlitecontract.SearchResult{}, fmt.Errorf("controller search sqlite fts response is nil")
 	}
-	hits := make([]sqliteffi.SearchHit, 0, len(response.Hits))
+	hits := make([]sqlitecontract.SearchHit, 0, len(response.Hits))
 	for _, hit := range response.Hits {
-		hits = append(hits, sqliteffi.SearchHit{
+		hits = append(hits, sqlitecontract.SearchHit{
 			ID:             hit.ID,
 			FilePath:       hit.FilePath,
 			Title:          hit.Title,
@@ -261,7 +278,7 @@ func (h *controllerDatabaseHandle) SearchFts(indexName string, mode sqliteffi.To
 			RawScore:       hit.RawScore,
 		})
 	}
-	return sqliteffi.SearchResult{
+	return sqlitecontract.SearchResult{
 		Total:     response.Total,
 		Source:    response.Source,
 		QueryMode: response.QueryMode,
@@ -275,28 +292,34 @@ func (h *controllerDatabaseHandle) Close() error {
 	return nil
 }
 
+// requestContext preserves caller cancellation while applying the configured controller RPC timeout.
+// requestContext 保留调用方取消，同时应用配置的 controller RPC 超时。
+func (h *controllerDatabaseHandle) requestContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return h.runtime.RequestContextWithParent(ctx)
+}
+
 // mapControllerSQLiteValues converts FFI-compatible typed values into controller SDK values and rejects unknown enum values.
 // mapControllerSQLiteValues 把 FFI 兼容类型值转换成 controller SDK 值，并拒绝未知枚举值。
-func mapControllerSQLiteValues(values []sqliteffi.SQLValue) ([]controllerclient.SqliteValue, error) {
+func mapControllerSQLiteValues(values []sqlitecontract.SQLValue) ([]controllerclient.SqliteValue, error) {
 	mapped := make([]controllerclient.SqliteValue, 0, len(values))
 	for _, value := range values {
 		item := controllerclient.SqliteValue{}
 		switch value.Kind {
-		case sqliteffi.SQLValueNull:
+		case sqlitecontract.SQLValueNull:
 			item.Kind = controllerclient.SqliteValueNull
-		case sqliteffi.SQLValueInt64:
+		case sqlitecontract.SQLValueInt64:
 			item.Kind = controllerclient.SqliteValueInt64
 			item.Int64Value = value.Int64
-		case sqliteffi.SQLValueFloat64:
+		case sqlitecontract.SQLValueFloat64:
 			item.Kind = controllerclient.SqliteValueFloat64
 			item.Float64Value = value.Float64
-		case sqliteffi.SQLValueString:
+		case sqlitecontract.SQLValueString:
 			item.Kind = controllerclient.SqliteValueString
 			item.StringValue = value.String
-		case sqliteffi.SQLValueBytes:
+		case sqlitecontract.SQLValueBytes:
 			item.Kind = controllerclient.SqliteValueBytes
 			item.BytesValue = append([]byte(nil), value.Bytes...)
-		case sqliteffi.SQLValueBool:
+		case sqlitecontract.SQLValueBool:
 			item.Kind = controllerclient.SqliteValueBool
 			item.BoolValue = value.Bool
 		default:
@@ -309,20 +332,26 @@ func mapControllerSQLiteValues(values []sqliteffi.SQLValue) ([]controllerclient.
 
 // mapControllerTokenizerMode converts the existing FFI tokenizer enum into the controller SDK enum.
 // mapControllerTokenizerMode 把现有 FFI 分词枚举转换成 controller SDK 枚举。
-func mapControllerTokenizerMode(mode sqliteffi.TokenizerMode) controllerclient.SqliteTokenizerMode {
-	if mode == sqliteffi.TokenizerJieba {
-		return controllerclient.SqliteTokenizerJieba
+func mapControllerTokenizerMode(mode sqlitecontract.TokenizerMode) (controllerclient.SqliteTokenizerMode, error) {
+	switch mode {
+	case sqlitecontract.TokenizerJieba:
+		return controllerclient.SqliteTokenizerJieba, nil
+	case sqlitecontract.TokenizerNone:
+		return controllerclient.SqliteTokenizerNone, nil
+	case sqlitecontract.TokenizerGSE:
+		return "", fmt.Errorf("GSE tokenizer mode is only supported by native SQLite storage / GSE 分词模式仅由原生 SQLite 存储支持")
+	default:
+		return "", fmt.Errorf("unsupported controller SQLite tokenizer mode %d / 不支持的 controller SQLite 分词模式 %d", mode, mode)
 	}
-	return controllerclient.SqliteTokenizerNone
 }
 
 // parseControllerTokenizerMode maps the controller response token back to the existing FFI enum.
 // parseControllerTokenizerMode 把 controller 响应 token 映射回现有 FFI 枚举。
-func parseControllerTokenizerMode(mode string) sqliteffi.TokenizerMode {
+func parseControllerTokenizerMode(mode string) sqlitecontract.TokenizerMode {
 	if strings.EqualFold(strings.TrimSpace(mode), string(controllerclient.SqliteTokenizerJieba)) {
-		return sqliteffi.TokenizerJieba
+		return sqlitecontract.TokenizerJieba
 	}
-	return sqliteffi.TokenizerNone
+	return sqlitecontract.TokenizerNone
 }
 
 // mapControllerSQLiteError preserves the application's explicit uncertain-outcome boundary for non-idempotent mutations.

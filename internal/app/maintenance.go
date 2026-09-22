@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
-	"github.com/openvulcan/vmm/internal/adapters/outbound/vulcan_inference"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 )
@@ -22,40 +20,28 @@ type MaintenanceDependencies struct {
 	Shutdowns  []appports.Shutdowner
 }
 
-// BuildMaintenanceDependencies composes maintenance storage and selects the same embedding authority as the owning standalone or managed runtime.
-// BuildMaintenanceDependencies 用于装配维护存储，并选择与所属独立或托管运行时一致的向量推理权威。
-func BuildMaintenanceDependencies(cfg config.Config, managedConfig *config.ManagedConfig) (MaintenanceDependencies, error) {
-	embedding, err := buildMaintenanceEmbedding(cfg, managedConfig)
+// BuildMaintenanceDependencies composes maintenance storage and the configured standalone embedding provider.
+// BuildMaintenanceDependencies 用于装配维护存储与配置中的独立 embedding 供应商。
+func BuildMaintenanceDependencies(cfg config.Config) (MaintenanceDependencies, error) {
+	embedding, err := buildMaintenanceEmbedding(cfg)
 	if err != nil {
 		return MaintenanceDependencies{}, fmt.Errorf("build maintenance embedding: %w", err)
 	}
-	dependencies, err := BuildMaintenanceStorageDependencies(cfg)
+	// This entry point is used only by explicit vector rebuilds and may recover their quarantined native pair.
+	// 此入口仅供显式向量重建使用，允许恢复被中断标记隔离的原生数据库组合。
+	storageDeps, err := buildMaintenanceStorageDependenciesForRebuild(cfg)
 	if err != nil {
 		return MaintenanceDependencies{}, fmt.Errorf("build maintenance storage: %w", err)
 	}
+	dependencies := maintenanceDependenciesFromStorage(storageDeps)
 	dependencies.Embedding = embedding
 	return dependencies, nil
 }
 
-// buildMaintenanceEmbedding prevents managed vector rebuilds from falling back to empty standalone provider key pools.
-// buildMaintenanceEmbedding 用于防止托管向量重建错误回退到没有密钥的独立供应商节点池。
-func buildMaintenanceEmbedding(cfg config.Config, managedConfig *config.ManagedConfig) (appports.EmbeddingClient, error) {
-	if managedConfig == nil {
-		return buildEmbedding(cfg)
-	}
-	client, err := vulcan_inference.New(vulcan_inference.Config{
-		DiscoveryFile:         managedConfig.Runtime.Inference.DiscoveryFile,
-		ExpectedProcessID:     managedConfig.Parent.ProcessID,
-		ExpectedStartedAt:     managedConfig.Parent.StartedAtUnixMS,
-		ExpectedCallerID:      managedConfig.Runtime.Inference.ExpectedCallerID,
-		ConsumerProfileID:     managedConfig.Runtime.Inference.ConsumerProfileID,
-		StartupTimeout:        managedConfig.Runtime.Inference.StartupTimeout.Duration,
-		MaxConnectionsPerHost: managedConfig.Runtime.Inference.MaxConnectionsPerHost,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("build Vulcan managed maintenance inference client: %w", err)
-	}
-	return client, nil
+// buildMaintenanceEmbedding builds the configured embedding adapter used by standalone vector rebuilds.
+// buildMaintenanceEmbedding 用于构建独立向量重建所使用的配置 embedding 适配器。
+func buildMaintenanceEmbedding(cfg config.Config) (appports.EmbeddingClient, error) {
+	return buildEmbedding(cfg)
 }
 
 // BuildMaintenanceStorageDependencies composes only the storage adapters for cleanup and export commands that do not need an embedding provider.
@@ -65,16 +51,36 @@ func BuildMaintenanceStorageDependencies(cfg config.Config) (MaintenanceDependen
 	if err != nil {
 		return MaintenanceDependencies{}, err
 	}
+	return maintenanceDependenciesFromStorage(storageDeps), nil
+}
+
+// maintenanceDependenciesFromStorage preserves the common owner lifecycle for one-shot callers.
+// maintenanceDependenciesFromStorage 为一次性调用方保留共享所有者的生命周期。
+func maintenanceDependenciesFromStorage(storageDeps storageDependencies) MaintenanceDependencies {
 	return MaintenanceDependencies{
 		Relational: storageDeps.Relational,
 		Vector:     storageDeps.Vector,
 		Shutdowns:  buildUniqueShutdownSequence(storageDeps.Lifecycle, storageDeps.Relational, storageDeps.Vector),
-	}, nil
+	}
+}
+
+// buildMaintenanceStorageDependenciesForRebuild permits native recovery only for the explicitly destructive rebuild workflow.
+// buildMaintenanceStorageDependenciesForRebuild 仅为显式破坏性重建流程允许原生中断恢复。
+func buildMaintenanceStorageDependenciesForRebuild(cfg config.Config) (storageDependencies, error) {
+	if cfg.UsesNative() {
+		return buildNativeStorageDependenciesWithRecovery(cfg, config.PromptLayout{}, false, true)
+	}
+	return buildMaintenanceStorageDependencies(cfg)
 }
 
 // buildMaintenanceStorageDependencies composes the storage adapters needed by one-shot maintenance tools while avoiding eager split-mode sidecar table creation before the destructive workflow actually starts.
 // buildMaintenanceStorageDependencies 用于装配一次性维护工具需要的存储适配器，并避免在 split 模式下于真正进入破坏性流程前就提前创建 sidecar 表。
 func buildMaintenanceStorageDependencies(cfg config.Config) (storageDependencies, error) {
+	// Native maintenance opens both databases under one pair lock and defers vector-table creation until the destructive workflow is ready.
+	// 原生维护必须在同一对路径锁下打开两个数据库，并把向量建表延迟到破坏性流程真正开始之后。
+	if cfg.UsesNative() {
+		return buildNativeStorageDependencies(cfg, config.PromptLayout{}, false)
+	}
 	if cfg.UsesCombinedPostgres() {
 		return buildStorageDependencies(cfg, config.PromptLayout{})
 	}
@@ -82,35 +88,7 @@ func buildMaintenanceStorageDependencies(cfg config.Config) (storageDependencies
 		return buildControllerStorageDependenciesWithVectorInit(cfg, config.PromptLayout{}, false, true)
 	}
 
-	relational, err := buildRelational(cfg)
-	if err != nil {
-		return storageDependencies{}, err
-	}
-	vector, err := buildMaintenanceVector(cfg)
-	if err != nil {
-		_ = relational.Shutdown(context.Background())
-		return storageDependencies{}, err
-	}
-	return storageDependencies{
-		Relational:         relational,
-		Vector:             vector,
-		ManageVectorSchema: false,
-	}, nil
-}
-
-// buildMaintenanceVector builds the split-mode sidecar adapter without eagerly creating the current-dimension LanceDB table so vector-rebuild can first finish its preparation and confirmation steps.
-// buildMaintenanceVector 用于在 split 模式下构建 sidecar 适配器，但不会提前创建当前维度的 LanceDB 表，让 vector-rebuild 可以先完成准备与确认流程。
-func buildMaintenanceVector(cfg config.Config) (appports.VectorStore, error) {
-	layout, err := ResolveLocalStorageLayout()
-	if err != nil {
-		return nil, err
-	}
-	switch normalizeProviderAlias(cfg.Vector.Provider) {
-	case "lancedb":
-		return vldb_lancedb.NewStoreWithoutInit(layout.LanceDBLibrary, layout.LanceDBDirectory, cfg.LanceDB.Timeout.Duration, cfg.LanceDB.TableName, cfg.LanceDB.VectorColumn, cfg.Embedding.Dimension)
-	default:
-		return nil, fmt.Errorf("unsupported vector provider: %s", cfg.Vector.Provider)
-	}
+	return buildSplitStorageDependencies(cfg, config.PromptLayout{}, false)
 }
 
 // Shutdown releases the maintenance adapters in reverse construction order so standalone tools do not leave sockets or pools open after one-shot work completes.

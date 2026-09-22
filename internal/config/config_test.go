@@ -32,7 +32,10 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	cfg.Relational.Provider = ""
 	cfg.SQLite.Address = ""
 	cfg.SQLite.TokenizerMode = ""
+	cfg.SQLite.Native.Path = ""
+	cfg.SQLite.Native.Tokenizer = ""
 	cfg.LanceDB.Address = ""
+	cfg.LanceDB.Native.Path = ""
 	cfg.Controller.Endpoint = ""
 	cfg.Controller.ProcessMode = ""
 	cfg.Controller.MinimumUptime = Duration{}
@@ -90,8 +93,17 @@ func TestConfigNormalizeAppliesCurrentDefaults(t *testing.T) {
 	if cfg.SQLite.TokenizerMode != "jieba" {
 		t.Fatalf("sqlite tokenizer mode = %q", cfg.SQLite.TokenizerMode)
 	}
+	if got, want := cfg.SQLite.Native.Path, defaultSQLiteNativePath; got != want {
+		t.Fatalf("sqlite native path = %q, want %q", got, want)
+	}
+	if got, want := cfg.SQLite.Native.Tokenizer, defaultSQLiteNativeTokenizer; got != want {
+		t.Fatalf("sqlite native tokenizer = %q, want %q", got, want)
+	}
 	if cfg.LanceDB.Address != "" {
 		t.Fatalf("lancedb address = %q", cfg.LanceDB.Address)
+	}
+	if got, want := cfg.LanceDB.Native.Path, defaultLanceDBNativePath; got != want {
+		t.Fatalf("lancedb native path = %q, want %q", got, want)
 	}
 	if got, want := cfg.Controller.Endpoint, "http://127.0.0.1:19801"; got != want {
 		t.Fatalf("controller endpoint = %q, want %q", got, want)
@@ -168,6 +180,124 @@ func TestConfigValidateAcceptsControllerMode(t *testing.T) {
 	}
 	if !cfg.UsesController() {
 		t.Fatal("expected controller mode helper to be enabled")
+	}
+}
+
+// TestConfigValidateAcceptsNativeMode verifies native storage uses its own paths and tokenizer while keeping shared vector fields active.
+// TestConfigValidateAcceptsNativeMode 用于验证原生存储使用独立路径和分词器，同时继续使用共用向量字段。
+func TestConfigValidateAcceptsNativeMode(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.Mode = "native"
+	cfg.SQLite.TokenizerMode = "none"
+	cfg.SQLite.Native.Path = filepath.Join(t.TempDir(), "native.db")
+	cfg.SQLite.Native.Tokenizer = "unicode61"
+	cfg.LanceDB.Native.Path = filepath.Join(t.TempDir(), "lancedb")
+	cfg.LanceDB.Native.LibraryPath = filepath.Join(t.TempDir(), "vmm_lancedb_native.dll")
+	cfg.Postgres.DSN = ""
+	cfg.Normalize()
+
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("validate native mode: %v", err)
+	}
+	if !cfg.UsesNative() {
+		t.Fatal("expected native mode helper to be enabled")
+	}
+	if got, want := cfg.SQLite.Native.Tokenizer, "unicode61"; got != want {
+		t.Fatalf("native tokenizer = %q, want %q", got, want)
+	}
+}
+
+// TestConfigValidateRejectsNativeStorageValues verifies unsupported native tokens and invalid path syntax fail explicitly without falling back to split mode.
+// TestConfigValidateRejectsNativeStorageValues 用于验证不支持的原生 token 与非法路径语法会显式失败，不会静默回退到 split 模式。
+func TestConfigValidateRejectsNativeStorageValues(t *testing.T) {
+	cases := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "unsupported storage mode",
+			mutate: func(cfg *Config) {
+				cfg.Storage.Mode = "legacy"
+			},
+			wantErr: "storage.mode must be one of split, controller, combined, or native",
+		},
+		{
+			name: "native tokenizer",
+			mutate: func(cfg *Config) {
+				cfg.Storage.Mode = "native"
+				cfg.SQLite.Native.Tokenizer = "jieba"
+			},
+			wantErr: "sqlite.native.tokenizer must be one of gse or unicode61 when storage.mode=native",
+		},
+		{
+			name: "native sqlite path",
+			mutate: func(cfg *Config) {
+				cfg.Storage.Mode = "native"
+				cfg.SQLite.Native.Path = "database/native/\x00sqlite.db"
+			},
+			wantErr: "sqlite.native.path contains an invalid control character",
+		},
+		{
+			name: "native lancedb path",
+			mutate: func(cfg *Config) {
+				cfg.Storage.Mode = "native"
+				cfg.LanceDB.Native.Path = "database/native/\x00lancedb"
+			},
+			wantErr: "lancedb.native.path contains an invalid control character",
+		},
+		{
+			name: "native library path",
+			mutate: func(cfg *Config) {
+				cfg.Storage.Mode = "native"
+				cfg.LanceDB.Native.LibraryPath = "libs/\x00vmm_lancedb_native.dll"
+			},
+			wantErr: "lancedb.native.library_path contains an invalid control character",
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := newValidConfigForTest()
+			tc.mutate(&cfg)
+			cfg.Normalize()
+			if err := cfg.Validate(); err == nil || err.Error() != tc.wantErr {
+				t.Fatalf("Validate() error = %v, want %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+// TestApplyEnvOverridesSetsNativeStorageFields verifies the four native environment variables follow the existing explicit-reference override mechanism.
+// TestApplyEnvOverridesSetsNativeStorageFields 用于验证四个原生环境变量遵循现有的显式引用覆盖机制。
+func TestApplyEnvOverridesSetsNativeStorageFields(t *testing.T) {
+	keys := map[string]struct{}{
+		"VMM_SQLITE_NATIVE_PATH":          {},
+		"VMM_SQLITE_NATIVE_TOKENIZER":     {},
+		"VMM_LANCEDB_NATIVE_PATH":         {},
+		"VMM_LANCEDB_NATIVE_LIBRARY_PATH": {},
+	}
+	t.Setenv("VMM_SQLITE_NATIVE_PATH", "custom/sqlite.db")
+	t.Setenv("VMM_SQLITE_NATIVE_TOKENIZER", "unicode61")
+	t.Setenv("VMM_LANCEDB_NATIVE_PATH", "custom/lancedb")
+	t.Setenv("VMM_LANCEDB_NATIVE_LIBRARY_PATH", "custom/native.dll")
+
+	cfg := newValidConfigForTest()
+	if failures := applyEnvOverrides(&cfg, keys); len(failures) != 0 {
+		t.Fatalf("applyEnvOverrides() failures = %#v", failures)
+	}
+	cfg.Normalize()
+
+	if got, want := cfg.SQLite.Native.Path, "custom/sqlite.db"; got != want {
+		t.Fatalf("sqlite native path = %q, want %q", got, want)
+	}
+	if got, want := cfg.SQLite.Native.Tokenizer, "unicode61"; got != want {
+		t.Fatalf("sqlite native tokenizer = %q, want %q", got, want)
+	}
+	if got, want := cfg.LanceDB.Native.Path, "custom/lancedb"; got != want {
+		t.Fatalf("lancedb native path = %q, want %q", got, want)
+	}
+	if got, want := cfg.LanceDB.Native.LibraryPath, "custom/native.dll"; got != want {
+		t.Fatalf("lancedb native library path = %q, want %q", got, want)
 	}
 }
 

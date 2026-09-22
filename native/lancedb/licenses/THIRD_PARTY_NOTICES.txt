@@ -1,0 +1,97 @@
+VMM native LanceDB support notices
+
+This file records license evidence from the exact Cargo and Go dependency inputs used for the native storage build.
+Each upstream license copy is tied to the resolved release tag or commit and is hashed in the native manifest.
+
+[lancedb 0.39.0]
+Evidence: upstream repository LICENSE at the v0.39.0 tag.
+Repository: https://github.com/lancedb/lancedb
+Resolved commit: c209b5b4ab74e9734efafbe769211450fd3ef571
+Git blob SHA-1: 7a4a3ea2424c09fbe48d455aed1eaa94d9124835
+License file SHA-256: 58d1e17ffe5109a7ae296caafcadfdbe6a7d176f0bc4ab01e12a689b0499d8bd
+Cargo registry Cargo.toml SHA-256: ac66ac74bbebafc24a11c9bfa76fe66264c4aff0a1c9460699b431588fe1b057
+Declared SPDX: Apache-2.0
+The exact upstream text is shipped as lancedb-0.39.0-LICENSE.
+
+[jieba-rs 0.10.4]
+Evidence: upstream repository LICENSE at the v0.10.4 tag.
+Repository: https://github.com/messense/jieba-rs
+Resolved commit: 2d79974da7f00857dd9692b98f60e5782bc09f36
+Git blob SHA-1: a9c2c612173c333b8185dcbe20898c48c8837764
+License file SHA-256: 92257c8d1c7a059fa02720b34fce017574a990bed14cee8f565597f4fbfb1f13
+Cargo registry Cargo.toml SHA-256: 3bec51bab4adad6c326478c3de9bd5324e2c1cdab2cd62a44d5dbcfbd4f64e14
+Declared SPDX: MIT
+The exact upstream text is shipped as jieba-rs-0.10.4-LICENSE.
+The embedded dictionary is separately covered by jieba-rs-0.10.4-dictionary-notice.txt; its source SHA-256 is 139519822fe8ab9e10d9d07e68ea0451045380aedaf54ecc51e2a28c6b42a13f.
+
+[go-ego/gse v1.0.2]
+Evidence: Go module LICENSE
+Source: github.com/go-ego/gse@v1.0.2/LICENSE
+Source SHA-256: b40930bbcf80744c86c46a12bc9da056641d722716c378f5659b9e555ef833e1
+Declared/evidence: Apache License 2.0
+
+[gse embedded dictionary attribution]
+Evidence: Go module data/dict/README.md
+Source: github.com/go-ego/gse@v1.0.2/data/dict/README.md
+Source SHA-256: eda51efed25aa3fc5acff2649c0c3a6dc4f75ed047cb252eef74a9b23e0e097d
+Declared/evidence: Exact attribution retained in gse-1.0.2-embedded-dictionary-notice.txt
+
+[modernc.org/sqlite v1.59.0]
+Evidence: Go module LICENSE
+Source: modernc.org/sqlite@v1.59.0/LICENSE
+Source SHA-256: c6fe05491a60ae13bcd223088d2705e36dede24e5587226231d2459ada5c4822
+Declared/evidence: BSD-3-Clause text from module
+
+[modernc.org/libc v1.75.7]
+Evidence: Go module LICENSE
+Source: modernc.org/libc@v1.75.7/LICENSE
+Source SHA-256: 95ff867eb55a56935fa7492406cfa953fb7c13ca73f4c0a86ae05756b4605600
+Declared/evidence: BSD-3-Clause text from module
+
+[modernc.org/mathutil v1.7.1]
+Evidence: Go module LICENSE
+Source: modernc.org/mathutil@v1.7.1/LICENSE
+Source SHA-256: bfa9bf72a72ca009fd62a8e84fca3dca67e51d93af96352723646599898b6cf5
+Declared/evidence: BSD-3-Clause text from module
+
+[modernc.org/memory v1.12.1]
+Evidence: Go module LICENSE
+Source: modernc.org/memory@v1.12.1/LICENSE
+Source SHA-256: 59895e669f48f168b6b858358f6005779cdf40a265f7828813061b56af67b496
+Declared/evidence: BSD-3-Clause text from module
+
+[github.com/vcaesar/cedar v0.30.0]
+Evidence: Go module LICENSE
+Source: github.com/vcaesar/cedar@v0.30.0/LICENSE
+Source SHA-256: 074d719e459af6c67b68ae8746a48c824798733a127301d156ce3401e3d399ad
+Declared/evidence: Module license text
+
+[github.com/dustin/go-humanize v1.0.1]
+Evidence: Go module LICENSE
+Source: github.com/dustin/go-humanize@v1.0.1/LICENSE
+Source SHA-256: a973b4498c13eb74baa2a8e5c351426a6826f2fcdd909916dbe53ee2e755fd71
+Declared/evidence: Module license text
+
+[github.com/mattn/go-isatty v0.0.24]
+Evidence: Go module LICENSE
+Source: github.com/mattn/go-isatty@v0.0.24/LICENSE
+Source SHA-256: 08eab1118c80885fa1fa6a6dd7303f65a379fcb3733e063d20d1bbc2c76e6fa1
+Declared/evidence: Module license text
+
+[github.com/ncruces/go-strftime v1.0.0]
+Evidence: Go module LICENSE
+Source: github.com/ncruces/go-strftime@v1.0.0/LICENSE
+Source SHA-256: 38ae43959daf953a393a585b2988672cb65a5a541aca0d0be5e72595a0a16883
+Declared/evidence: Module license text
+
+[github.com/remyoudompheng/bigfft v0.0.0-20230129092748-24d4a6f8daec]
+Evidence: Go module LICENSE
+Source: github.com/remyoudompheng/bigfft@v0.0.0-20230129092748-24d4a6f8daec/LICENSE
+Source SHA-256: dd26a7abddd02e2d0aba97805b31f248ef7835d9e10da289b22e3b8ab78b324d
+Declared/evidence: Module license text
+
+[golang.org/x/sys v0.47.0]
+Evidence: Go module LICENSE
+Source: golang.org/x/sys@v0.47.0/LICENSE
+Source SHA-256: 911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad
+Declared/evidence: Module license text

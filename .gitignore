@@ -11,6 +11,7 @@ configs/.env
 .opencode
 .gomodcache
 .gocache
+/native/lancedb/target/
 .qwen
 .claude
 .vulcan

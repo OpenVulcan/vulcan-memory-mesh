@@ -3,13 +3,16 @@
 package sqliteffi
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
 	"runtime"
+	"strings"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	storagecontract "github.com/openvulcan/vmm/internal/platform/storagecontract/sqlite"
 )
 
 // StatusCode represents the FFI invocation status code.
@@ -25,115 +28,30 @@ const (
 	StatusFailure StatusCode = 1
 )
 
-// TokenizerMode represents the SQLite FFI tokenizer mode.
-// TokenizerMode 表示 SQLite FFI 分词模式。
-type TokenizerMode int32
+// The aliases keep the historical FFI surface source-compatible while moving shared contracts to a neutral platform layer.
+// 这些别名保持历史 FFI 接口源码兼容，同时把共享契约移动到中立平台层。
+type TokenizerMode = storagecontract.TokenizerMode
+type SQLValueKind = storagecontract.SQLValueKind
+type SQLValue = storagecontract.SQLValue
+type ExecuteResult = storagecontract.ExecuteResult
+type QueryJSONResult = storagecontract.QueryJSONResult
+type EnsureFtsIndexResult = storagecontract.EnsureFtsIndexResult
+type RebuildFtsIndexResult = storagecontract.RebuildFtsIndexResult
+type FtsMutationResult = storagecontract.FtsMutationResult
+type SearchHit = storagecontract.SearchHit
+type SearchResult = storagecontract.SearchResult
 
 const (
-	// TokenizerNone disables the Chinese tokenizer.
-	// TokenizerNone 表示关闭中文分词器。
-	TokenizerNone TokenizerMode = 0
-	// TokenizerJieba enables the bundled Jieba tokenizer.
-	// TokenizerJieba 表示启用内建 Jieba 分词器。
-	TokenizerJieba TokenizerMode = 1
+	TokenizerNone   = storagecontract.TokenizerNone
+	TokenizerJieba  = storagecontract.TokenizerJieba
+	TokenizerGSE    = storagecontract.TokenizerGSE
+	SQLValueNull    = storagecontract.SQLValueNull
+	SQLValueInt64   = storagecontract.SQLValueInt64
+	SQLValueFloat64 = storagecontract.SQLValueFloat64
+	SQLValueString  = storagecontract.SQLValueString
+	SQLValueBytes   = storagecontract.SQLValueBytes
+	SQLValueBool    = storagecontract.SQLValueBool
 )
-
-// SQLValueKind represents the SQL parameter value kind accepted by the FFI ABI.
-// SQLValueKind 表示 FFI ABI 接受的 SQL 参数类型。
-type SQLValueKind int32
-
-const (
-	// SQLValueNull represents a NULL SQL parameter.
-	// SQLValueNull 表示 NULL SQL 参数。
-	SQLValueNull SQLValueKind = 0
-	// SQLValueInt64 represents an int64 SQL parameter.
-	// SQLValueInt64 表示 int64 SQL 参数。
-	SQLValueInt64 SQLValueKind = 1
-	// SQLValueFloat64 represents a float64 SQL parameter.
-	// SQLValueFloat64 表示 float64 SQL 参数。
-	SQLValueFloat64 SQLValueKind = 2
-	// SQLValueString represents a string SQL parameter.
-	// SQLValueString 表示字符串 SQL 参数。
-	SQLValueString SQLValueKind = 3
-	// SQLValueBytes represents a byte-array SQL parameter.
-	// SQLValueBytes 表示字节数组 SQL 参数。
-	SQLValueBytes SQLValueKind = 4
-	// SQLValueBool represents a boolean SQL parameter.
-	// SQLValueBool 表示布尔 SQL 参数。
-	SQLValueBool SQLValueKind = 5
-)
-
-// SQLValue describes one SQL parameter passed into the FFI layer.
-// SQLValue 描述一条传入 FFI 层的 SQL 参数。
-type SQLValue struct {
-	Kind    SQLValueKind
-	Int64   int64
-	Float64 float64
-	String  string
-	Bytes   []byte
-	Bool    bool
-}
-
-// ExecuteResult describes the unified execute and execute-batch result.
-// ExecuteResult 描述 execute 与 execute-batch 的统一结果。
-type ExecuteResult struct {
-	Success            bool
-	Message            string
-	RowsChanged        int64
-	LastInsertRowID    int64
-	StatementsExecuted int64
-}
-
-// QueryJSONResult describes one query-json result.
-// QueryJSONResult 描述一次 query-json 结果。
-type QueryJSONResult struct {
-	JSONData string
-	RowCount uint64
-}
-
-// EnsureFtsIndexResult describes the ensure-index result.
-// EnsureFtsIndexResult 描述 ensure-index 结果。
-type EnsureFtsIndexResult struct {
-	Success       bool
-	TokenizerMode TokenizerMode
-}
-
-// RebuildFtsIndexResult describes the rebuild-index result.
-// RebuildFtsIndexResult 描述 rebuild-index 结果。
-type RebuildFtsIndexResult struct {
-	Success       bool
-	TokenizerMode TokenizerMode
-	ReindexedRows uint64
-}
-
-// FtsMutationResult describes one FTS document mutation result.
-// FtsMutationResult 描述一次 FTS 文档变更结果。
-type FtsMutationResult struct {
-	Success      bool
-	AffectedRows uint64
-}
-
-// SearchHit describes one FTS search hit.
-// SearchHit 描述一条 FTS 检索命中。
-type SearchHit struct {
-	ID             string
-	FilePath       string
-	Title          string
-	TitleHighlight string
-	ContentSnippet string
-	Score          float64
-	Rank           uint64
-	RawScore       float64
-}
-
-// SearchResult describes the FTS search response.
-// SearchResult 描述 FTS 检索响应。
-type SearchResult struct {
-	Total     uint64
-	Source    string
-	QueryMode string
-	Hits      []SearchHit
-}
 
 // Library represents one loaded SQLite dynamic library.
 // Library 表示一个已加载的 SQLite 动态库。
@@ -250,13 +168,60 @@ const (
 	maxCStringReadBytes = 64 * 1024
 )
 
+// checkSQLiteContext checks cancellation at the ABI boundary; the Rust ABI remains synchronous and cannot be interrupted in flight.
+// checkSQLiteContext 在 ABI 边界检查取消状态；Rust ABI 仍是同步调用，无法中断已经开始的底层操作。
+func checkSQLiteContext(ctx context.Context) error {
+	if ctx == nil {
+		return nil
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	default:
+		return nil
+	}
+}
+
+// validateLegacyTokenizerMode keeps the legacy FFI tokenizer contract distinct from native GSE pre-tokenization.
+// validateLegacyTokenizerMode 保持旧 FFI 分词契约与原生 GSE 预分词语义相互独立。
+func validateLegacyTokenizerMode(mode TokenizerMode) error {
+	switch mode {
+	case TokenizerNone, TokenizerJieba:
+		return nil
+	case TokenizerGSE:
+		return errors.New("GSE tokenizer mode is only supported by native SQLite storage / GSE 分词模式仅由原生 SQLite 存储支持")
+	default:
+		return fmt.Errorf("unsupported legacy SQLite tokenizer mode %d / 不支持的旧 SQLite 分词模式 %d", mode, mode)
+	}
+}
+
 // Open loads the target SQLite dynamic library and binds the required FFI symbols.
 // Open 用于加载目标 SQLite 动态库并绑定所需 FFI 符号。
 func Open(path string) (*Library, error) {
-	handle, err := openLibrary(path)
-	if err != nil {
-		return nil, fmt.Errorf("加载 SQLite 动态库失败 / failed to load SQLite dynamic library: %w", err)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("SQLite 动态库路径不能为空 / SQLite dynamic library path is required")
 	}
+	cacheKey := canonicalLibraryPath(path)
+	legacyLibraryCache.Lock()
+	defer legacyLibraryCache.Unlock()
+	handle, cached := legacyLibraryCache.handles[cacheKey]
+	if !cached {
+		var err error
+		handle, err = openLibrary(path)
+		if err != nil {
+			if handle != 0 {
+				_ = closeLibrary(handle)
+			}
+			return nil, fmt.Errorf("加载 SQLite 动态库失败 / failed to load SQLite dynamic library: %w", err)
+		}
+	}
+	keepLoaded := cached
+	defer func() {
+		if !keepLoaded {
+			_ = closeLibrary(handle)
+		}
+	}()
 
 	lib := &Library{handle: handle}
 	bind := func(target any, name string) {
@@ -303,18 +268,19 @@ func Open(path string) (*Library, error) {
 	bind(&lib.lastErrorMessage, "vldb_sqlite_last_error_message")
 	bind(&lib.clearLastError, "vldb_sqlite_clear_last_error")
 
+	if !cached {
+		legacyLibraryCache.handles[cacheKey] = handle
+	}
+	keepLoaded = true
 	return lib, nil
 }
 
-// Close releases the loaded SQLite dynamic library handle.
-// Close 用于释放已加载的 SQLite 动态库句柄。
+// Close releases this Go owner's logical reference while keeping the legacy DLL resident until process exit.
+// Close 释放当前 Go 所有者的逻辑引用，但让旧 DLL 驻留到进程退出。
 func (lib *Library) Close() error {
-	if lib == nil || lib.handle == 0 {
-		return nil
-	}
-	err := closeLibrary(lib.handle)
-	lib.handle = 0
-	return err
+	// vldb-sqlite 0.1.6 stores the Jieba tokenizer in a static OnceLock<Arc<Jieba>>; unloading the DLL would leave that static state and its code references invalid.
+	// vldb-sqlite 0.1.6 将 Jieba 分词器存放在 static OnceLock<Arc<Jieba>> 中；卸载 DLL 会让该静态状态及其代码引用失效。
+	return nil
 }
 
 // CreateRuntime creates the default SQLite runtime.
@@ -392,7 +358,10 @@ func (db *Database) DBPath() (string, error) {
 
 // ExecuteScript executes one SQL script with typed parameters.
 // ExecuteScript 用于执行一段带强类型参数的 SQL 脚本。
-func (db *Database) ExecuteScript(sql string, params []SQLValue, paramsJSON string) (ExecuteResult, error) {
+func (db *Database) ExecuteScript(ctx context.Context, sql string, params []SQLValue, paramsJSON string) (ExecuteResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return ExecuteResult{}, err
+	}
 	sqlPtr, keepSQL := makeCString(sql)
 	defer keepSQL()
 	values, keepValues, err := buildFFIValues(params)
@@ -408,12 +377,22 @@ func (db *Database) ExecuteScript(sql string, params []SQLValue, paramsJSON stri
 		return ExecuteResult{}, db.lib.lastError()
 	}
 	defer db.lib.executeResultDestroy(handle)
-	return db.lib.readExecuteResult(handle)
+	result, err := db.lib.readExecuteResult(handle)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return ExecuteResult{}, err
+	}
+	return result, nil
 }
 
 // ExecuteBatch executes one repeated-shape SQL batch with typed parameters.
 // ExecuteBatch 用于执行一组同构的带强类型参数 SQL 批处理。
-func (db *Database) ExecuteBatch(sql string, items [][]SQLValue) (ExecuteResult, error) {
+func (db *Database) ExecuteBatch(ctx context.Context, sql string, items [][]SQLValue) (ExecuteResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return ExecuteResult{}, err
+	}
 	sqlPtr, keepSQL := makeCString(sql)
 	defer keepSQL()
 	matrix, keepMatrix, err := buildFFIValueMatrix(items)
@@ -427,12 +406,22 @@ func (db *Database) ExecuteBatch(sql string, items [][]SQLValue) (ExecuteResult,
 		return ExecuteResult{}, db.lib.lastError()
 	}
 	defer db.lib.executeResultDestroy(handle)
-	return db.lib.readExecuteResult(handle)
+	result, err := db.lib.readExecuteResult(handle)
+	if err != nil {
+		return ExecuteResult{}, err
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return ExecuteResult{}, err
+	}
+	return result, nil
 }
 
 // QueryJSON executes one SQL query and returns the JSON rows result.
 // QueryJSON 用于执行一条 SQL 查询并返回 JSON rows 结果。
-func (db *Database) QueryJSON(sql string, params []SQLValue, paramsJSON string) (QueryJSONResult, error) {
+func (db *Database) QueryJSON(ctx context.Context, sql string, params []SQLValue, paramsJSON string) (QueryJSONResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return QueryJSONResult{}, err
+	}
 	sqlPtr, keepSQL := makeCString(sql)
 	defer keepSQL()
 	values, keepValues, err := buildFFIValues(params)
@@ -455,15 +444,25 @@ func (db *Database) QueryJSON(sql string, params []SQLValue, paramsJSON string) 
 	if err != nil {
 		return QueryJSONResult{}, err
 	}
-	return QueryJSONResult{
+	result := QueryJSONResult{
 		JSONData: jsonData,
 		RowCount: db.lib.queryJSONResultRowCount(handle),
-	}, nil
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return QueryJSONResult{}, err
+	}
+	return result, nil
 }
 
 // EnsureFtsIndex ensures one named FTS index exists with the provided tokenizer mode.
 // EnsureFtsIndex 用于确保一个命名 FTS 索引存在，并应用给定分词模式。
-func (db *Database) EnsureFtsIndex(indexName string, mode TokenizerMode) (EnsureFtsIndexResult, error) {
+func (db *Database) EnsureFtsIndex(ctx context.Context, indexName string, mode TokenizerMode) (EnsureFtsIndexResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return EnsureFtsIndexResult{}, err
+	}
+	if err := validateLegacyTokenizerMode(mode); err != nil {
+		return EnsureFtsIndexResult{}, err
+	}
 	ptr, keep := makeCString(indexName)
 	defer keep()
 	var pod ensureFtsIndexResultPod
@@ -471,15 +470,25 @@ func (db *Database) EnsureFtsIndex(indexName string, mode TokenizerMode) (Ensure
 	if status != StatusSuccess {
 		return EnsureFtsIndexResult{}, db.lib.lastError()
 	}
-	return EnsureFtsIndexResult{
+	result := EnsureFtsIndexResult{
 		Success:       pod.Success != 0,
 		TokenizerMode: TokenizerMode(pod.TokenizerMode),
-	}, nil
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return EnsureFtsIndexResult{}, err
+	}
+	return result, nil
 }
 
 // RebuildFtsIndex rebuilds one named FTS index with the provided tokenizer mode.
 // RebuildFtsIndex 用于按给定分词模式重建一个命名 FTS 索引。
-func (db *Database) RebuildFtsIndex(indexName string, mode TokenizerMode) (RebuildFtsIndexResult, error) {
+func (db *Database) RebuildFtsIndex(ctx context.Context, indexName string, mode TokenizerMode) (RebuildFtsIndexResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return RebuildFtsIndexResult{}, err
+	}
+	if err := validateLegacyTokenizerMode(mode); err != nil {
+		return RebuildFtsIndexResult{}, err
+	}
 	ptr, keep := makeCString(indexName)
 	defer keep()
 	var pod rebuildFtsIndexResultPod
@@ -487,16 +496,26 @@ func (db *Database) RebuildFtsIndex(indexName string, mode TokenizerMode) (Rebui
 	if status != StatusSuccess {
 		return RebuildFtsIndexResult{}, db.lib.lastError()
 	}
-	return RebuildFtsIndexResult{
+	result := RebuildFtsIndexResult{
 		Success:       pod.Success != 0,
 		TokenizerMode: TokenizerMode(pod.TokenizerMode),
 		ReindexedRows: pod.ReindexedRows,
-	}, nil
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return RebuildFtsIndexResult{}, err
+	}
+	return result, nil
 }
 
 // UpsertFtsDocument writes one document into the named FTS index.
 // UpsertFtsDocument 用于把一条文档写入指定 FTS 索引。
-func (db *Database) UpsertFtsDocument(indexName string, mode TokenizerMode, id string, filePath string, title string, content string) (FtsMutationResult, error) {
+func (db *Database) UpsertFtsDocument(ctx context.Context, indexName string, mode TokenizerMode, id string, filePath string, title string, content string) (FtsMutationResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return FtsMutationResult{}, err
+	}
+	if err := validateLegacyTokenizerMode(mode); err != nil {
+		return FtsMutationResult{}, err
+	}
 	indexPtr, keepIndex := makeCString(indexName)
 	defer keepIndex()
 	idPtr, keepID := makeCString(id)
@@ -513,15 +532,22 @@ func (db *Database) UpsertFtsDocument(indexName string, mode TokenizerMode, id s
 	if status != StatusSuccess {
 		return FtsMutationResult{}, db.lib.lastError()
 	}
-	return FtsMutationResult{
+	result := FtsMutationResult{
 		Success:      pod.Success != 0,
 		AffectedRows: pod.AffectedRows,
-	}, nil
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return FtsMutationResult{}, err
+	}
+	return result, nil
 }
 
 // DeleteFtsDocument deletes one document from the named FTS index by id.
 // DeleteFtsDocument 用于按 id 从指定 FTS 索引删除一条文档。
-func (db *Database) DeleteFtsDocument(indexName string, id string) (FtsMutationResult, error) {
+func (db *Database) DeleteFtsDocument(ctx context.Context, indexName string, id string) (FtsMutationResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return FtsMutationResult{}, err
+	}
 	indexPtr, keepIndex := makeCString(indexName)
 	defer keepIndex()
 	idPtr, keepID := makeCString(id)
@@ -532,15 +558,25 @@ func (db *Database) DeleteFtsDocument(indexName string, id string) (FtsMutationR
 	if status != StatusSuccess {
 		return FtsMutationResult{}, db.lib.lastError()
 	}
-	return FtsMutationResult{
+	result := FtsMutationResult{
 		Success:      pod.Success != 0,
 		AffectedRows: pod.AffectedRows,
-	}, nil
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return FtsMutationResult{}, err
+	}
+	return result, nil
 }
 
 // SearchFts executes one normalized BM25 search against the named index.
 // SearchFts 用于针对指定索引执行一次标准化 BM25 检索。
-func (db *Database) SearchFts(indexName string, mode TokenizerMode, query string, limit uint32, offset uint32) (SearchResult, error) {
+func (db *Database) SearchFts(ctx context.Context, indexName string, mode TokenizerMode, query string, limit uint32, offset uint32) (SearchResult, error) {
+	if err := checkSQLiteContext(ctx); err != nil {
+		return SearchResult{}, err
+	}
+	if err := validateLegacyTokenizerMode(mode); err != nil {
+		return SearchResult{}, err
+	}
 	indexPtr, keepIndex := makeCString(indexName)
 	defer keepIndex()
 	queryPtr, keepQuery := makeCString(query)
@@ -600,12 +636,16 @@ func (db *Database) SearchFts(indexName string, mode TokenizerMode, query string
 		})
 	}
 
-	return SearchResult{
+	result := SearchResult{
 		Total:     total,
 		Source:    source,
 		QueryMode: queryMode,
 		Hits:      hits,
-	}, nil
+	}
+	if err := checkSQLiteContext(ctx); err != nil {
+		return SearchResult{}, err
+	}
+	return result, nil
 }
 
 func (array *ffiValueArray) ptr() *ffiValue {
@@ -759,10 +799,11 @@ func readCString(ptr *byte) (string, error) {
 	if ptr == nil {
 		return "", nil
 	}
-	bytes := unsafe.Slice(ptr, maxCStringReadBytes)
-	for idx, value := range bytes {
-		if value == 0 {
-			return string(bytes[:idx]), nil
+	// Scan the terminated allocation before constructing a slice; a maximum-sized slice would claim ownership beyond short native strings.
+	// 先扫描字符串终止符再创建切片，避免最大长度切片越过较短原生字符串的实际分配范围。
+	for idx := 0; idx < maxCStringReadBytes; idx++ {
+		if *(*byte)(unsafe.Add(unsafe.Pointer(ptr), idx)) == 0 {
+			return string(unsafe.Slice(ptr, idx)), nil
 		}
 	}
 	return "", fmt.Errorf("ffi string exceeds %d bytes or is not NUL-terminated", maxCStringReadBytes)

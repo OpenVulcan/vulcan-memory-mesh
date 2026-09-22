@@ -42,6 +42,9 @@ const (
 	// lanceMaxConcurrentRequests matches the vldb-lancedb v0.1.5 engine default.
 	// lanceMaxConcurrentRequests 与 vldb-lancedb v0.1.5 的引擎默认值保持一致。
 	lanceMaxConcurrentRequests uint64 = 500
+	// runtimeShutdownTimeout bounds every controller cleanup attempt independently of caller cancellation.
+	// runtimeShutdownTimeout 独立于调用方取消信号限制每次 controller 清理尝试。
+	runtimeShutdownTimeout = 10 * time.Second
 )
 
 // Config contains the fully resolved controller lifecycle and physical database paths for one VMM runtime.
@@ -109,6 +112,9 @@ type Runtime struct {
 	// mu protects lifecycle flags and one-time shutdown.
 	// mu 保护生命周期状态与单次关闭流程。
 	mu sync.Mutex
+	// shutdownMu serializes cleanup attempts so dependency state cannot be released concurrently.
+	// shutdownMu 串行化清理尝试，避免依赖资源状态被并发释放。
+	shutdownMu sync.Mutex
 	// client is the shared Go-native controller SDK client.
 	// client 是共享的 Go 原生 controller SDK 客户端。
 	client *controllerclient.Client
@@ -296,11 +302,20 @@ func (r *Runtime) LanceDBBindingID() string {
 // RequestContext creates one bounded background context for an adapter operation whose legacy handle interface has no context parameter.
 // RequestContext 为旧句柄接口中没有 context 参数的适配器操作创建一个有界后台上下文。
 func (r *Runtime) RequestContext() (context.Context, context.CancelFunc) {
+	return r.RequestContextWithParent(context.Background())
+}
+
+// RequestContextWithParent bounds an adapter operation by both its caller and the configured RPC timeout; it returns the derived context and its release function.
+// RequestContextWithParent 同时保留调用方取消和配置的 RPC 超时，返回派生上下文及其释放函数。
+func (r *Runtime) RequestContextWithParent(parent context.Context) (context.Context, context.CancelFunc) {
+	if parent == nil {
+		parent = context.Background()
+	}
 	timeout := 5 * time.Second
 	if r != nil && r.requestTimeout > 0 {
 		timeout = r.requestTimeout
 	}
-	return context.WithTimeout(context.Background(), timeout)
+	return context.WithTimeout(parent, timeout)
 }
 
 // CheckHealth verifies that the controller session is reachable and that both database backends remain enabled on the attached space.
@@ -347,16 +362,18 @@ func (r *Runtime) CheckHealth(ctx context.Context) error {
 
 // Shutdown releases LanceDB, SQLite, the space attachment, and the client session in dependency order.
 // Shutdown 按依赖顺序释放 LanceDB、SQLite、空间附着与客户端会话。
-func (r *Runtime) Shutdown(ctx context.Context) error {
+func (r *Runtime) Shutdown(_ context.Context) error {
 	if r == nil {
 		return nil
 	}
+	r.shutdownMu.Lock()
+	defer r.shutdownMu.Unlock()
+
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
 		return nil
 	}
-	r.closed = true
 	client := r.client
 	spaceID := r.spaceID
 	sqliteBindingID := r.sqliteBindingID
@@ -367,28 +384,54 @@ func (r *Runtime) Shutdown(ctx context.Context) error {
 	r.mu.Unlock()
 
 	if client == nil {
+		if sqliteEnabled || lanceDBEnabled || spaceAttached {
+			return errors.New("controller client is nil while backend resources remain attached")
+		}
+		r.mu.Lock()
+		r.closed = true
+		r.mu.Unlock()
 		return nil
 	}
-	var shutdownErrors []error
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), runtimeShutdownTimeout)
+	defer cancel()
+
+	// Release dependencies in reverse ownership order and clear each flag only after its RPC succeeds.
+	// 按所有权逆序释放依赖，并且只有 RPC 成功后才清除对应状态标志。
 	if lanceDBEnabled {
-		if _, err := client.DisableLanceDB(ctx, spaceID, lanceDBBindingID); err != nil {
-			shutdownErrors = append(shutdownErrors, fmt.Errorf("disable lancedb binding: %w", err))
+		if _, err := client.DisableLanceDB(cleanupCtx, spaceID, lanceDBBindingID); err != nil {
+			return fmt.Errorf("disable lancedb binding: %w", err)
 		}
+		r.mu.Lock()
+		r.lanceDBEnabled = false
+		r.mu.Unlock()
 	}
 	if sqliteEnabled {
-		if _, err := client.DisableSqlite(ctx, spaceID, sqliteBindingID); err != nil {
-			shutdownErrors = append(shutdownErrors, fmt.Errorf("disable sqlite binding: %w", err))
+		if _, err := client.DisableSqlite(cleanupCtx, spaceID, sqliteBindingID); err != nil {
+			return fmt.Errorf("disable sqlite binding: %w", err)
 		}
+		r.mu.Lock()
+		r.sqliteEnabled = false
+		r.mu.Unlock()
 	}
 	if spaceAttached {
-		if _, err := client.DetachSpace(ctx, spaceID); err != nil {
-			shutdownErrors = append(shutdownErrors, fmt.Errorf("detach controller space: %w", err))
+		if _, err := client.DetachSpace(cleanupCtx, spaceID); err != nil {
+			return fmt.Errorf("detach controller space: %w", err)
 		}
+		r.mu.Lock()
+		r.spaceAttached = false
+		r.mu.Unlock()
 	}
-	if err := client.Shutdown(ctx); err != nil {
-		shutdownErrors = append(shutdownErrors, fmt.Errorf("shutdown controller client: %w", err))
+	if err := client.Shutdown(cleanupCtx); err != nil {
+		return fmt.Errorf("shutdown controller client: %w", err)
 	}
-	return errors.Join(shutdownErrors...)
+
+	r.mu.Lock()
+	r.client = nil
+	r.sqliteBindingID = ""
+	r.lanceDBBindingID = ""
+	r.closed = true
+	r.mu.Unlock()
+	return nil
 }
 
 // normalizeConfig creates database directories and canonicalizes every path before it is registered with the controller.

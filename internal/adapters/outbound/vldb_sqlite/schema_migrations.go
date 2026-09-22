@@ -256,8 +256,10 @@ func bootstrapCurrentSQLiteSchema(ctx context.Context, s *Store) error {
 	if err := s.exec(ctx, currentSchemaSQL); err != nil {
 		return sqliteSchemaMigrationError("bootstrap sqlite schema", fmt.Errorf("apply current sqlite schema: %w", err))
 	}
-	if err := s.seedDebugWorkspaceIfEmpty(ctx); err != nil {
-		return err
+	if !s.skipDebugSeed {
+		if err := s.seedDebugWorkspaceIfEmpty(ctx); err != nil {
+			return err
+		}
 	}
 	return nil
 }

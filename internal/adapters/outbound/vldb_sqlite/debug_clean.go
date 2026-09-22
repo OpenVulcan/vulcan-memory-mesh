@@ -14,6 +14,13 @@ import (
 
 const debugCleanManagedSchemaSQL = `
 BEGIN IMMEDIATE;
+DROP TABLE IF EXISTS vmm_management_recycle_batches;
+DROP TABLE IF EXISTS vmm_management_operations;
+DROP TABLE IF EXISTS vmm_management_previews;
+DROP TABLE IF EXISTS vmm_management_session_states;
+DROP TABLE IF EXISTS vmm_profile_nodes_trash;
+DROP TABLE IF EXISTS vmm_sessions_trash;
+DROP TABLE IF EXISTS vmm_turn_analysis_failures;
 DROP TABLE IF EXISTS vmm_profile_nodes;
 DROP TABLE IF EXISTS vmm_profile_instructions;
 DROP TABLE IF EXISTS vmm_turn_records_trash;
@@ -101,17 +108,28 @@ func debugCleanWithDatabase(ctx context.Context, database sqliteDatabaseHandle, 
 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resp, err := database.ExecuteScript(debugCleanManagedSchemaSQL, nil, "")
+	if nativeCleaner, ok := database.(nativeFTSCleaner); ok {
+		if err := nativeCleaner.ResetFTSAndExecute(callCtx, debugCleanManagedSchemaSQL); err != nil {
+			return sqliteDebugCleanError(err)
+		}
+		return nil
+	}
+	resp, err := database.ExecuteScript(callCtx, debugCleanManagedSchemaSQL, nil, "")
 	if err != nil {
 		return sqliteDebugCleanError(err)
 	}
 	if !resp.Success {
 		return sqliteDebugCleanError(errors.New(resp.Message))
 	}
-	if err := checkSQLiteContext(callCtx); err != nil {
-		return err
-	}
+	// A confirmed commit stays successful even if cancellation arrives while its reply is being observed.
+	// 提交已确认成功时，即使读取结果期间收到取消，也不把已完成的清理误报为失败。
 	return nil
+}
+
+// nativeFTSCleaner narrows the optional native-only cleanup operation without changing the legacy FFI contract.
+// nativeFTSCleaner 收窄可选的原生清理操作，不改变旧 FFI 契约。
+type nativeFTSCleaner interface {
+	ResetFTSAndExecute(ctx context.Context, businessScript string) error
 }
 
 // sqliteDebugCleanError classifies destructive SQLite cleanup failures after the transactional drop script may have reached its commit boundary.

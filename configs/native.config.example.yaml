@@ -1,0 +1,44 @@
+# Standalone native SQLite and LanceDB example override configuration.
+# 独立原生 SQLite 与 LanceDB 示例覆盖配置。
+#
+# Copy this file into an environment-specific override and adjust paths only when the packaged layout requires it.
+# 可将本文件复制到环境专用覆盖配置中，并仅在随包布局需要时调整路径。
+# Relative paths are resolved by the application against its storage output root.
+# 相对路径由应用相对于存储输出根目录解析。
+# This file explicitly selects native; base.yaml remains split by default when this override is not merged.
+# 本文件显式选择 native；未合并本覆盖层时，base.yaml 仍保持默认 split。
+# Keep the existing embedding provider, model, endpoint, routing nodes, params, model params, and dimension in the merged root.
+# 合并到配置根时必须保留原有 embedding provider、model、endpoint、routing nodes、params、model params 与 dimension。
+# Native startup records credential-free identity digests for those fields and rejects a mismatched existing store.
+# native 启动会为这些字段记录不含凭据的 identity 摘要，已有存储与合并配置不一致时会拒绝启动。
+
+storage:
+  mode: "native"
+
+relational:
+  provider: "sqlite"
+
+vector:
+  provider: "lancedb"
+
+sqlite:
+  # Shared operation timeout used by the native SQLite adapter.
+  # 原生 SQLite 适配器使用的共用操作超时。
+  timeout: "5s"
+  native:
+    path: "database/native/sqlite.db"
+    # gse provides Chinese tokenization; unicode61 keeps SQLite FTS5's Unicode tokenizer.
+    # gse 提供中文分词；unicode61 保留 SQLite FTS5 的 Unicode 分词器。
+    tokenizer: "gse"
+
+lancedb:
+  # Shared operation timeout and vector schema fields remain common across storage modes.
+  # 操作超时与向量 schema 字段在各存储模式之间保持共用。
+  timeout: "5s"
+  table_name: "vmm_memory_vectors"
+  vector_column: "vector"
+  native:
+    path: "database/native/lancedb"
+    # Leave empty for the application's unique platform-specific packaged library path (ABI 1, LanceDB 0.39.0).
+    # 留空时由应用选择平台唯一的随包动态库路径（ABI 1、LanceDB 0.39.0）。
+    library_path: ""

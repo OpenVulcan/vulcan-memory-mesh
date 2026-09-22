@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"runtime"
+	"strings"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	"github.com/openvulcan/vmm/internal/platform/storagecontract/lance"
 )
 
 // StatusCode represents the FFI invocation status code.
@@ -27,22 +29,22 @@ const (
 
 // InputFormat represents the upsert payload format.
 // InputFormat 表示写入载荷格式。
-type InputFormat int32
+type InputFormat = lance.InputFormat
 
 const (
 	// InputFormatJSONRows means the payload is a JSON rows array.
 	// InputFormatJSONRows 表示载荷为 JSON Rows 数组。
-	InputFormatJSONRows InputFormat = 1
+	InputFormatJSONRows = lance.InputFormatJSONRows
 )
 
 // OutputFormat represents the search output payload format.
 // OutputFormat 表示检索输出载荷格式。
-type OutputFormat int32
+type OutputFormat = lance.OutputFormat
 
 const (
 	// OutputFormatJSONRows means the search result should be returned as JSON rows.
 	// OutputFormatJSONRows 表示检索结果以 JSON Rows 形式返回。
-	OutputFormatJSONRows OutputFormat = 2
+	OutputFormatJSONRows = lance.OutputFormatJSONRows
 )
 
 // RuntimeOptions represents the runtime creation options.
@@ -73,74 +75,39 @@ type RuntimeOptions struct {
 
 // CreateTableColumn describes one create-table column.
 // CreateTableColumn 描述一条建表列定义。
-type CreateTableColumn struct {
-	Name       string `json:"name"`
-	ColumnType string `json:"column_type"`
-	VectorDim  uint32 `json:"vector_dim,omitempty"`
-	Nullable   bool   `json:"nullable"`
-}
+type CreateTableColumn = lance.CreateTableColumn
 
 // CreateTableRequest describes one create-table request.
 // CreateTableRequest 描述一条建表请求。
-type CreateTableRequest struct {
-	TableName         string              `json:"table_name"`
-	Columns           []CreateTableColumn `json:"columns"`
-	OverwriteIfExists bool                `json:"overwrite_if_exists"`
-}
+type CreateTableRequest = lance.CreateTableRequest
 
 // CreateTableResult describes the JSON compatibility create-table response.
 // CreateTableResult 描述 JSON 兼容建表响应。
-type CreateTableResult struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-}
+type CreateTableResult = lance.CreateTableResult
 
 // UpsertResult describes one raw vector upsert result.
 // UpsertResult 描述一次原始向量写入结果。
-type UpsertResult struct {
-	Version      uint64
-	InputRows    uint64
-	InsertedRows uint64
-	UpdatedRows  uint64
-	DeletedRows  uint64
-}
+type UpsertResult = lance.UpsertResult
 
 // SearchResult describes one vector search result payload.
 // SearchResult 描述一次向量检索返回载荷。
-type SearchResult struct {
-	Format OutputFormat
-	Rows   uint64
-	Data   []byte
-}
+type SearchResult = lance.SearchResult
 
 // DeleteResult describes the JSON compatibility delete response.
 // DeleteResult 描述 JSON 兼容删除响应。
-type DeleteResult struct {
-	Success     bool   `json:"success"`
-	Message     string `json:"message"`
-	Version     uint64 `json:"version"`
-	DeletedRows uint64 `json:"deleted_rows"`
-}
+type DeleteResult = lance.DeleteResult
 
 // DropTableResult describes the JSON compatibility drop-table response.
 // DropTableResult 描述 JSON 兼容删表响应。
-type DropTableResult struct {
-	Success bool   `json:"success"`
-	Message string `json:"message"`
-}
+type DropTableResult = lance.DropTableResult
 
 // DeleteRequest describes one delete request executed through the JSON compatibility endpoint.
 // DeleteRequest 描述一条经由 JSON 兼容接口执行的删除请求。
-type DeleteRequest struct {
-	TableName string `json:"table_name"`
-	Condition string `json:"condition"`
-}
+type DeleteRequest = lance.DeleteRequest
 
 // DropTableRequest describes one drop-table request executed through the JSON compatibility endpoint.
 // DropTableRequest 描述一条经由 JSON 兼容接口执行的删表请求。
-type DropTableRequest struct {
-	TableName string `json:"table_name"`
-}
+type DropTableRequest = lance.DropTableRequest
 
 // Library represents one loaded LanceDB dynamic library.
 // Library 表示一个已加载的 LanceDB 动态库。
@@ -220,10 +187,30 @@ const (
 // Open loads the target dynamic library and binds the required FFI symbols.
 // Open 用于加载目标动态库并绑定所需的 FFI 符号。
 func Open(path string) (*Library, error) {
-	handle, err := openLibrary(path)
-	if err != nil {
-		return nil, fmt.Errorf("加载 LanceDB 动态库失败 / failed to load LanceDB dynamic library: %w", err)
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, errors.New("LanceDB 动态库路径不能为空 / LanceDB dynamic library path is required")
 	}
+	cacheKey := canonicalLibraryPath(path)
+	legacyLibraryCache.Lock()
+	defer legacyLibraryCache.Unlock()
+	handle, cached := legacyLibraryCache.handles[cacheKey]
+	if !cached {
+		var err error
+		handle, err = openLibrary(path)
+		if err != nil {
+			if handle != 0 {
+				_ = closeLibrary(handle)
+			}
+			return nil, fmt.Errorf("加载 LanceDB 动态库失败 / failed to load LanceDB dynamic library: %w", err)
+		}
+	}
+	keepLoaded := cached
+	defer func() {
+		if !keepLoaded {
+			_ = closeLibrary(handle)
+		}
+	}()
 
 	lib := &Library{handle: handle}
 	bind := func(target any, name string) {
@@ -233,7 +220,6 @@ func Open(path string) (*Library, error) {
 	if runtime.GOOS == "windows" {
 		proc, err := lookupSymbol(handle, "vldb_lancedb_runtime_create")
 		if err != nil {
-			_ = closeLibrary(handle)
 			return nil, fmt.Errorf("解析 LanceDB runtime_create 符号失败 / failed to resolve LanceDB runtime_create symbol: %w", err)
 		}
 		lib.runtimeCreateProc = proc
@@ -252,7 +238,6 @@ func Open(path string) (*Library, error) {
 	if runtime.GOOS == "windows" {
 		proc, err := lookupSymbol(handle, "vldb_lancedb_bytes_free")
 		if err != nil {
-			_ = closeLibrary(handle)
 			return nil, fmt.Errorf("解析 LanceDB bytes_free 符号失败 / failed to resolve LanceDB bytes_free symbol: %w", err)
 		}
 		lib.bytesFreeProc = proc
@@ -263,18 +248,19 @@ func Open(path string) (*Library, error) {
 	bind(&lib.lastErrorMessage, "vldb_lancedb_last_error_message")
 	bind(&lib.clearLastError, "vldb_lancedb_clear_last_error")
 
+	if !cached {
+		legacyLibraryCache.handles[cacheKey] = handle
+	}
+	keepLoaded = true
 	return lib, nil
 }
 
-// Close releases the loaded dynamic library handle.
-// Close 用于释放已加载的动态库句柄。
+// Close releases this Go owner's logical reference while keeping the legacy DLL resident until process exit.
+// Close 释放当前 Go 所有者的逻辑引用，但让旧 DLL 驻留到进程退出。
 func (lib *Library) Close() error {
-	if lib == nil || lib.handle == 0 {
-		return nil
-	}
-	err := closeLibrary(lib.handle)
-	lib.handle = 0
-	return err
+	// vldb-lancedb 0.1.5 stores a static OnceLock FFI runtime worker whose receiver loop has no shutdown path; unloading the DLL would leave that worker executing unmapped code.
+	// vldb-lancedb 0.1.5 将 FFI runtime worker 存放在 static OnceLock 中，接收循环没有关闭路径；卸载 DLL 会让该 worker 继续执行已解除映射的代码。
+	return nil
 }
 
 // DefaultRuntimeOptions returns the library-provided runtime option defaults.
@@ -589,10 +575,11 @@ func readCString(ptr *byte) (string, error) {
 	if ptr == nil {
 		return "", nil
 	}
-	bytes := unsafe.Slice(ptr, maxCStringReadBytes)
-	for idx, value := range bytes {
-		if value == 0 {
-			return string(bytes[:idx]), nil
+	// Scan the terminated allocation before constructing a slice; a maximum-sized slice would claim ownership beyond short native strings.
+	// 先扫描字符串终止符再创建切片，避免最大长度切片越过较短原生字符串的实际分配范围。
+	for idx := 0; idx < maxCStringReadBytes; idx++ {
+		if *(*byte)(unsafe.Add(unsafe.Pointer(ptr), idx)) == 0 {
+			return string(unsafe.Slice(ptr, idx)), nil
 		}
 	}
 	return "", fmt.Errorf("ffi string exceeds %d bytes or is not NUL-terminated", maxCStringReadBytes)

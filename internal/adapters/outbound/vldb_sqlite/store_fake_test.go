@@ -150,11 +150,11 @@ type fakeSQLiteDatabase struct {
 
 // ExecuteScript records or delegates one ExecuteScript request.
 // ExecuteScript 用于记录或转发一次 ExecuteScript 请求。
-func (f *fakeSQLiteDatabase) ExecuteScript(sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.ExecuteResult, error) {
+func (f *fakeSQLiteDatabase) ExecuteScript(ctx context.Context, sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.ExecuteResult, error) {
 	if f == nil || f.executeScriptFunc == nil {
 		return sqliteffi.ExecuteResult{Success: true}, nil
 	}
-	response, err := f.executeScriptFunc(context.Background(), &fakeExecuteRequest{
+	response, err := f.executeScriptFunc(ctx, &fakeExecuteRequest{
 		SQL:        sql,
 		Params:     append([]sqliteffi.SQLValue(nil), params...),
 		ParamsJSON: paramsJSON,
@@ -176,7 +176,7 @@ func (f *fakeSQLiteDatabase) ExecuteScript(sql string, params []sqliteffi.SQLVal
 
 // ExecuteBatch records or delegates one ExecuteBatch request.
 // ExecuteBatch 用于记录或转发一次 ExecuteBatch 请求。
-func (f *fakeSQLiteDatabase) ExecuteBatch(sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
+func (f *fakeSQLiteDatabase) ExecuteBatch(ctx context.Context, sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
 	if f == nil || f.executeBatchFunc == nil {
 		return sqliteffi.ExecuteResult{Success: true}, nil
 	}
@@ -184,7 +184,7 @@ func (f *fakeSQLiteDatabase) ExecuteBatch(sql string, items [][]sqliteffi.SQLVal
 	for _, item := range items {
 		recordedItems = append(recordedItems, fakeExecuteBatchItem{Params: append([]sqliteffi.SQLValue(nil), item...)})
 	}
-	response, err := f.executeBatchFunc(context.Background(), &fakeExecuteBatchRequest{
+	response, err := f.executeBatchFunc(ctx, &fakeExecuteBatchRequest{
 		SQL:   sql,
 		Items: recordedItems,
 	})
@@ -205,11 +205,11 @@ func (f *fakeSQLiteDatabase) ExecuteBatch(sql string, items [][]sqliteffi.SQLVal
 
 // QueryJSON records or delegates one QueryJSON request.
 // QueryJSON 用于记录或转发一次 QueryJSON 请求。
-func (f *fakeSQLiteDatabase) QueryJSON(sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.QueryJSONResult, error) {
+func (f *fakeSQLiteDatabase) QueryJSON(ctx context.Context, sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.QueryJSONResult, error) {
 	if f == nil || f.queryJSONFunc == nil {
 		return sqliteffi.QueryJSONResult{JSONData: "[]"}, nil
 	}
-	response, err := f.queryJSONFunc(context.Background(), &fakeQueryRequest{
+	response, err := f.queryJSONFunc(ctx, &fakeQueryRequest{
 		SQL:        sql,
 		Params:     append([]sqliteffi.SQLValue(nil), params...),
 		ParamsJSON: paramsJSON,
@@ -228,7 +228,7 @@ func (f *fakeSQLiteDatabase) QueryJSON(sql string, params []sqliteffi.SQLValue, 
 
 // EnsureFtsIndex records or delegates one FTS ensure request.
 // EnsureFtsIndex 用于记录或转发一次 FTS ensure 请求。
-func (f *fakeSQLiteDatabase) EnsureFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.EnsureFtsIndexResult, error) {
+func (f *fakeSQLiteDatabase) EnsureFtsIndex(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.EnsureFtsIndexResult, error) {
 	if f == nil || f.ensureFtsIndexFunc == nil {
 		return sqliteffi.EnsureFtsIndexResult{Success: true, TokenizerMode: mode}, nil
 	}
@@ -237,7 +237,7 @@ func (f *fakeSQLiteDatabase) EnsureFtsIndex(indexName string, mode sqliteffi.Tok
 
 // RebuildFtsIndex records or delegates one FTS rebuild request.
 // RebuildFtsIndex 用于记录或转发一次 FTS rebuild 请求。
-func (f *fakeSQLiteDatabase) RebuildFtsIndex(indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.RebuildFtsIndexResult, error) {
+func (f *fakeSQLiteDatabase) RebuildFtsIndex(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.RebuildFtsIndexResult, error) {
 	if f == nil || f.rebuildFtsIndexFunc == nil {
 		return sqliteffi.RebuildFtsIndexResult{Success: true, TokenizerMode: mode}, nil
 	}
@@ -246,7 +246,7 @@ func (f *fakeSQLiteDatabase) RebuildFtsIndex(indexName string, mode sqliteffi.To
 
 // UpsertFtsDocument records or delegates one FTS upsert request.
 // UpsertFtsDocument 用于记录或转发一次 FTS upsert 请求。
-func (f *fakeSQLiteDatabase) UpsertFtsDocument(indexName string, mode sqliteffi.TokenizerMode, id string, filePath string, title string, content string) (sqliteffi.FtsMutationResult, error) {
+func (f *fakeSQLiteDatabase) UpsertFtsDocument(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode, id string, filePath string, title string, content string) (sqliteffi.FtsMutationResult, error) {
 	if f == nil || f.upsertFtsDocumentFunc == nil {
 		return sqliteffi.FtsMutationResult{Success: true, AffectedRows: 1}, nil
 	}
@@ -255,7 +255,7 @@ func (f *fakeSQLiteDatabase) UpsertFtsDocument(indexName string, mode sqliteffi.
 
 // DeleteFtsDocument records or delegates one FTS delete request.
 // DeleteFtsDocument 用于记录或转发一次 FTS delete 请求。
-func (f *fakeSQLiteDatabase) DeleteFtsDocument(indexName string, id string) (sqliteffi.FtsMutationResult, error) {
+func (f *fakeSQLiteDatabase) DeleteFtsDocument(ctx context.Context, indexName string, id string) (sqliteffi.FtsMutationResult, error) {
 	if f == nil || f.deleteFtsDocumentFunc == nil {
 		return sqliteffi.FtsMutationResult{Success: true, AffectedRows: 1}, nil
 	}
@@ -264,7 +264,7 @@ func (f *fakeSQLiteDatabase) DeleteFtsDocument(indexName string, id string) (sql
 
 // SearchFts records or delegates one FTS search request.
 // SearchFts 用于记录或转发一次 FTS search 请求。
-func (f *fakeSQLiteDatabase) SearchFts(indexName string, mode sqliteffi.TokenizerMode, query string, limit uint32, offset uint32) (sqliteffi.SearchResult, error) {
+func (f *fakeSQLiteDatabase) SearchFts(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode, query string, limit uint32, offset uint32) (sqliteffi.SearchResult, error) {
 	if f == nil || f.searchFtsFunc == nil {
 		return sqliteffi.SearchResult{}, nil
 	}

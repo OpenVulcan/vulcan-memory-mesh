@@ -1,0 +1,6 @@
+Registry package: jieba-rs 0.10.4
+Dictionary source: src/data/dict.txt
+Dictionary SHA-256: 139519822fe8ab9e10d9d07e68ea0451045380aedaf54ecc51e2a28c6b42a13f
+License metadata source: Cargo.toml
+Declared license line: license = "MIT"
+The registry package contains no LICENSE or NOTICE file; no license text is reproduced here.

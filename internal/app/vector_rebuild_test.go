@@ -5,13 +5,228 @@ package app
 import (
 	"context"
 	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"sort"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_lancedb"
+	"github.com/openvulcan/vmm/internal/adapters/outbound/vldb_sqlite"
 	appports "github.com/openvulcan/vmm/internal/app/ports"
 	"github.com/openvulcan/vmm/internal/config"
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
+	"github.com/openvulcan/vmm/internal/platform/logx"
 )
+
+// TestRunVectorRebuildNativeMarkerRetainedOnPreparationFailure verifies a native rebuild keeps its fail-closed marker when embedding preparation fails before reset.
+// TestRunVectorRebuildNativeMarkerRetainedOnPreparationFailure 验证原生重建在 reset 前的 embedding 准备失败时保留失败关闭标记。
+func TestRunVectorRebuildNativeMarkerRetainedOnPreparationFailure(t *testing.T) {
+	cfg := nativeEmbeddingIdentityTestConfig(t.TempDir())
+	cfg.Embedding.Dimension = 2
+	workspace := &stubMaintenanceWorkspace{
+		projects:          []logicdomain.ProjectRecord{{ID: 401}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{401: {{ID: "native-marker-fail", Text: "marker failure", Vector: []float32{4, 1}}}},
+	}
+	durable := newStubVectorDurableStore(workspace.memoriesByProject[401])
+	vector := newStubMaintenanceVectorStore(workspace.memoriesByProject[401])
+	deps := MaintenanceDependencies{
+		Embedding:  &stubVectorEmbeddingClient{err: errors.New("embedding preparation failed")},
+		Relational: nativeRebuildRelationalStub{WorkspaceStore: workspace, MemoryVectorRebuildStore: durable, MemoryVectorResetStore: durable, SchemaVersionStore: durable},
+		Vector:     vector,
+	}
+	_, err := RunVectorRebuildWithProgress(context.Background(), cfg, deps, logx.New(io.Discard, logx.Config{Level: "error", Format: "text"}), nil)
+	if err == nil {
+		t.Fatal("expected native preparation failure")
+	}
+	markerPath := nativeVectorRebuildIncompleteMarkerPath(cfg.SQLite.Native.Path)
+	if _, statErr := os.Stat(markerPath); statErr != nil {
+		t.Fatalf("expected incomplete marker to remain after failure: %v", statErr)
+	}
+}
+
+// TestRunVectorRebuildNativeMarkerRemovedAfterVerifiedSuccess verifies a complete native rebuild publishes identity and removes the marker only afterward.
+// TestRunVectorRebuildNativeMarkerRemovedAfterVerifiedSuccess 验证原生重建完成并核验、发布 identity 后才删除标记。
+func TestRunVectorRebuildNativeMarkerRemovedAfterVerifiedSuccess(t *testing.T) {
+	cfg := nativeEmbeddingIdentityTestConfig(t.TempDir())
+	cfg.Embedding.Dimension = 2
+	if err := os.MkdirAll(filepath.Dir(cfg.SQLite.Native.Path), 0o700); err != nil {
+		t.Fatalf("create native database directory: %v", err)
+	}
+	if err := os.WriteFile(cfg.SQLite.Native.Path, []byte("native database placeholder"), 0o600); err != nil {
+		t.Fatalf("create native database placeholder: %v", err)
+	}
+	records := []logicdomain.MemoryRecord{{ID: "native-marker-success", Text: "marker success", Vector: []float32{4, 1}}}
+	workspace := &stubMaintenanceWorkspace{
+		projects:          []logicdomain.ProjectRecord{{ID: 402}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{402: records},
+	}
+	durable := newStubVectorDurableStore(records)
+	vector := newStubMaintenanceVectorStore(records)
+	deps := MaintenanceDependencies{
+		Embedding:  &stubVectorEmbeddingClient{responses: []appports.EmbeddingResponse{{Vectors: [][]float32{{8, 9}}}}},
+		Relational: nativeRebuildRelationalStub{WorkspaceStore: workspace, MemoryVectorRebuildStore: durable, MemoryVectorResetStore: durable, SchemaVersionStore: durable},
+		Vector:     vector,
+	}
+	if _, err := RunVectorRebuildWithProgress(context.Background(), cfg, deps, logx.New(io.Discard, logx.Config{Level: "error", Format: "text"}), nil); err != nil {
+		t.Fatalf("run native rebuild: %v", err)
+	}
+	if _, err := os.Stat(nativeVectorRebuildIncompleteMarkerPath(cfg.SQLite.Native.Path)); !os.IsNotExist(err) {
+		t.Fatalf("expected incomplete marker to be removed, stat error=%v", err)
+	}
+	identity, err := readNativeEmbeddingIdentity(nativeEmbeddingIdentityPath(cfg.SQLite.Native.Path))
+	if err != nil {
+		t.Fatalf("read published native embedding identity: %v", err)
+	}
+	want, err := nativeEmbeddingIdentityForConfig(cfg)
+	if err != nil {
+		t.Fatalf("derive expected native embedding identity: %v", err)
+	}
+	if identity != want {
+		t.Fatalf("published native embedding identity = %+v, want %+v", identity, want)
+	}
+}
+
+// TestRunVectorRebuildNativeMarkerRetainedAfterSchemaFailure verifies a post-reset schema publication failure keeps startup quarantined.
+// TestRunVectorRebuildNativeMarkerRetainedAfterSchemaFailure 验证 reset 之后的 schema 发布失败仍会保留启动隔离标记。
+func TestRunVectorRebuildNativeMarkerRetainedAfterSchemaFailure(t *testing.T) {
+	cfg := nativeEmbeddingIdentityTestConfig(t.TempDir())
+	cfg.Embedding.Dimension = 2
+	if err := os.MkdirAll(filepath.Dir(cfg.SQLite.Native.Path), 0o700); err != nil {
+		t.Fatalf("create native database directory: %v", err)
+	}
+	if err := os.WriteFile(cfg.SQLite.Native.Path, []byte("native database placeholder"), 0o600); err != nil {
+		t.Fatalf("create native database placeholder: %v", err)
+	}
+	records := []logicdomain.MemoryRecord{{ID: "native-marker-schema-failure", Text: "schema failure", Vector: []float32{4, 1}}}
+	workspace := &stubMaintenanceWorkspace{
+		projects:          []logicdomain.ProjectRecord{{ID: 403}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{403: records},
+	}
+	durable := newStubVectorDurableStore(records)
+	durable.schemaSetErr = errors.New("schema publication failed")
+	deps := MaintenanceDependencies{
+		Embedding:  &stubVectorEmbeddingClient{responses: []appports.EmbeddingResponse{{Vectors: [][]float32{{8, 9}}}}},
+		Relational: nativeRebuildRelationalStub{WorkspaceStore: workspace, MemoryVectorRebuildStore: durable, MemoryVectorResetStore: durable, SchemaVersionStore: durable},
+		Vector:     newStubMaintenanceVectorStore(records),
+	}
+	if _, err := RunVectorRebuildWithProgress(context.Background(), cfg, deps, logx.New(io.Discard, logx.Config{Level: "error", Format: "text"}), nil); err == nil {
+		t.Fatal("expected schema publication failure")
+	}
+	if _, err := os.Stat(nativeVectorRebuildIncompleteMarkerPath(cfg.SQLite.Native.Path)); err != nil {
+		t.Fatalf("expected incomplete marker to remain after schema failure: %v", err)
+	}
+}
+
+// TestRunVectorRebuildNativeMarkerRetainedAfterCancellation verifies cancellation during embedding leaves the native marker in place.
+// TestRunVectorRebuildNativeMarkerRetainedAfterCancellation 验证 embedding 阶段取消时会保留原生隔离标记。
+func TestRunVectorRebuildNativeMarkerRetainedAfterCancellation(t *testing.T) {
+	cfg := nativeEmbeddingIdentityTestConfig(t.TempDir())
+	cfg.Embedding.Dimension = 2
+	if err := os.MkdirAll(filepath.Dir(cfg.SQLite.Native.Path), 0o700); err != nil {
+		t.Fatalf("create native database directory: %v", err)
+	}
+	if err := os.WriteFile(cfg.SQLite.Native.Path, []byte("native database placeholder"), 0o600); err != nil {
+		t.Fatalf("create native database placeholder: %v", err)
+	}
+	records := []logicdomain.MemoryRecord{{ID: "native-marker-cancelled", Text: "cancelled", Vector: []float32{4, 1}}}
+	workspace := &stubMaintenanceWorkspace{
+		projects:          []logicdomain.ProjectRecord{{ID: 404}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{404: records},
+	}
+	cancelCtx, cancel := context.WithCancel(context.Background())
+	durable := newStubVectorDurableStore(records)
+	deps := MaintenanceDependencies{
+		Embedding:  cancelingVectorEmbeddingClient{cancel: cancel},
+		Relational: nativeRebuildRelationalStub{WorkspaceStore: workspace, MemoryVectorRebuildStore: durable, MemoryVectorResetStore: durable, SchemaVersionStore: durable},
+		Vector:     newStubMaintenanceVectorStore(records),
+	}
+	if _, err := RunVectorRebuildWithProgress(cancelCtx, cfg, deps, logx.New(io.Discard, logx.Config{Level: "error", Format: "text"}), nil); err == nil {
+		t.Fatal("expected cancellation failure")
+	}
+	if _, err := os.Stat(nativeVectorRebuildIncompleteMarkerPath(cfg.SQLite.Native.Path)); err != nil {
+		t.Fatalf("expected incomplete marker to remain after cancellation: %v", err)
+	}
+}
+
+// TestRunVectorRebuildNativeRebuildsRestorableTrash verifies precise trash vector replacement during the same rebuild as active facts.
+// TestRunVectorRebuildNativeRebuildsRestorableTrash 验证活动事实与可恢复回收行在同一次重建中精确更新向量。
+func TestRunVectorRebuildNativeRebuildsRestorableTrash(t *testing.T) {
+	cfg := nativeEmbeddingIdentityTestConfig(t.TempDir())
+	cfg.Embedding.Dimension = 3
+	if err := os.MkdirAll(filepath.Dir(cfg.SQLite.Native.Path), 0o700); err != nil {
+		t.Fatalf("create native database directory: %v", err)
+	}
+	if err := os.WriteFile(cfg.SQLite.Native.Path, []byte("native database placeholder"), 0o600); err != nil {
+		t.Fatalf("create native database placeholder: %v", err)
+	}
+	active := logicdomain.MemoryRecord{ID: "native-trash-active", Text: "active", Vector: []float32{4, 1, 0}}
+	trash := vldb_sqlite.NativeRestorableTrashMemory{
+		BatchID:  405,
+		MemoryID: 7001,
+		Record:   logicdomain.MemoryRecord{ID: "native-trash-vector", Text: "trash", Vector: []float32{1, 2, 3}},
+	}
+	workspace := &stubMaintenanceWorkspace{
+		projects:          []logicdomain.ProjectRecord{{ID: 405}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{405: {active}},
+	}
+	durable := newStubVectorDurableStore([]logicdomain.MemoryRecord{active})
+	trashWriter := &stubNativeTrashVectorWriter{}
+	deps := MaintenanceDependencies{
+		Embedding: &stubVectorEmbeddingClient{responses: []appports.EmbeddingResponse{{Vectors: [][]float32{{8, 9, 10}, {11, 12, 13}}}}},
+		Relational: nativeRebuildRelationalStub{
+			WorkspaceStore:           workspace,
+			MemoryVectorRebuildStore: durable,
+			MemoryVectorResetStore:   durable,
+			SchemaVersionStore:       durable,
+			restorableTrash:          []vldb_sqlite.NativeRestorableTrashMemory{trash},
+			trashWriter:              trashWriter,
+		},
+		Vector: newStubMaintenanceVectorStore([]logicdomain.MemoryRecord{active}),
+	}
+	report, err := RunVectorRebuildWithProgress(context.Background(), cfg, deps, logx.New(io.Discard, logx.Config{Level: "error", Format: "text"}), nil)
+	if err != nil {
+		t.Fatalf("run native trash rebuild: %v", err)
+	}
+	if report.MemoryCount != 2 || report.DurableRowsUpdated != 2 || report.VectorRowsRebuilt != 2 {
+		t.Fatalf("unexpected native trash rebuild report: %+v", report)
+	}
+	if len(trashWriter.updates) != 1 || trashWriter.updates[0].batchID != 405 || trashWriter.updates[0].memoryID != 7001 {
+		t.Fatalf("unexpected trash updates: %+v", trashWriter.updates)
+	}
+	if got := trashWriter.updates[0].vector; len(got) != 3 || got[0] != 11 {
+		t.Fatalf("unexpected rebuilt trash vector: %+v", got)
+	}
+}
+
+// TestLoadNativeVectorRebuildSnapshotRejectsConflictingLiveTrashPayload verifies duplicate vector ids cannot hide different source facts.
+// TestLoadNativeVectorRebuildSnapshotRejectsConflictingLiveTrashPayload 验证重复 vector id 不能掩盖不同源事实。
+func TestLoadNativeVectorRebuildSnapshotRejectsConflictingLiveTrashPayload(t *testing.T) {
+	workspace := &stubMaintenanceWorkspace{
+		projects:          []logicdomain.ProjectRecord{{ID: 406}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{406: {{ID: "same-vector", Text: "live payload"}}},
+	}
+	durable := newStubVectorDurableStore(workspace.memoriesByProject[406])
+	row := vldb_sqlite.NativeRestorableTrashMemory{
+		BatchID:  406,
+		MemoryID: 9001,
+		Record:   logicdomain.MemoryRecord{ID: "same-vector", Text: "different trash payload"},
+	}
+	relational := nativeRebuildRelationalStub{
+		WorkspaceStore:           workspace,
+		MemoryVectorRebuildStore: durable,
+		MemoryVectorResetStore:   durable,
+		SchemaVersionStore:       durable,
+		restorableTrash:          []vldb_sqlite.NativeRestorableTrashMemory{row},
+		trashWriter:              &stubNativeTrashVectorWriter{},
+	}
+	_, err := loadNativeVectorRebuildSnapshot(context.Background(), workspace, relational)
+	if err == nil || !strings.Contains(err.Error(), "conflicting live or restorable trash payloads") {
+		t.Fatalf("expected conflicting payload refusal, got %v", err)
+	}
+}
 
 // TestRunVectorRebuildWithPortsSplitRebuildsDurableAndSidecar verifies split mode first clears durable SQLite vectors, recreates the detached vector table, and then refills both stores from rebuilt embeddings.
 // TestRunVectorRebuildWithPortsSplitRebuildsDurableAndSidecar 用于验证分离模式会先清空 durable SQLite 向量、重建旁路向量表，再把新 embedding 同步回填到两个存储。
@@ -63,6 +278,73 @@ func TestRunVectorRebuildWithPortsSplitRebuildsDurableAndSidecar(t *testing.T) {
 	}
 	if got := vector.current["vec-2"].Vector; len(got) != 2 || got[0] != 3 || got[1] != 4 {
 		t.Fatalf("expected sidecar vec-2 to be rebuilt, got %+v", got)
+	}
+}
+
+// TestRunVectorRebuildWithPortsNativeReportsModeAndRecordsSchema verifies native rebuilds publish the native mode and stamp the current LanceDB schema after convergence.
+// TestRunVectorRebuildWithPortsNativeReportsModeAndRecordsSchema 用于验证原生重建会报告 native 模式，并在收敛后登记当前 LanceDB schema。
+func TestRunVectorRebuildWithPortsNativeReportsModeAndRecordsSchema(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.Storage.Mode = "native"
+	cfg.Embedding.Dimension = 2
+	initialRecords := []logicdomain.MemoryRecord{
+		{ID: "native-vec-1", Text: "native memory", Vector: []float32{10, 10}},
+	}
+	workspace := &stubMaintenanceWorkspace{
+		projects: []logicdomain.ProjectRecord{{ID: 7}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{
+			7: initialRecords,
+		},
+	}
+	durable := newStubVectorDurableStore(initialRecords)
+	embedding := &stubVectorEmbeddingClient{
+		responses: []appports.EmbeddingResponse{{Vectors: [][]float32{{1, 2}}}},
+	}
+	vector := newStubMaintenanceVectorStore(initialRecords)
+
+	report, err := runVectorRebuildWithPorts(context.Background(), cfg, embedding, workspace, durable, vector, nil)
+	if err != nil {
+		t.Fatalf("runVectorRebuildWithPorts returned error: %v", err)
+	}
+	if report.Mode != "native" {
+		t.Fatalf("mode = %q, want native", report.Mode)
+	}
+	if report.DurableRowsUpdated != 1 || report.VectorRowsRebuilt != 1 {
+		t.Fatalf("unexpected native report: %+v", report)
+	}
+	if durable.schemaSetCalls != 1 || durable.schemaComponent != "lancedb" || durable.schemaVersion != vldb_lancedb.CurrentSchemaVersion {
+		t.Fatalf("unexpected native schema registration: %+v", durable)
+	}
+}
+
+// TestRunVectorRebuildWithPortsNativeSchemaPersistenceFailureIsUncertain verifies schema-version persistence failures retain the post-rebuild outcome-uncertain contract.
+// TestRunVectorRebuildWithPortsNativeSchemaPersistenceFailureIsUncertain 用于验证 schema 版本持久化失败时仍保留重建后的结果不确定语义。
+func TestRunVectorRebuildWithPortsNativeSchemaPersistenceFailureIsUncertain(t *testing.T) {
+	cfg := config.DefaultLocal()
+	cfg.Storage.Mode = "native"
+	cfg.Embedding.Dimension = 2
+	workspace := &stubMaintenanceWorkspace{
+		projects: []logicdomain.ProjectRecord{{ID: 8}},
+		memoriesByProject: map[uint64][]logicdomain.MemoryRecord{
+			8: {{ID: "native-vec-2", Text: "native memory"}},
+		},
+	}
+	durable := newStubVectorDurableStore(workspace.memoriesByProject[8])
+	durable.schemaSetErr = errors.New("schema version write failed")
+	embedding := &stubVectorEmbeddingClient{
+		responses: []appports.EmbeddingResponse{{Vectors: [][]float32{{2, 3}}}},
+	}
+	vector := newStubMaintenanceVectorStore(nil)
+
+	report, err := runVectorRebuildWithPorts(context.Background(), cfg, embedding, workspace, durable, vector, nil)
+	if err == nil {
+		t.Fatal("expected schema persistence failure")
+	}
+	if !logicdomain.IsOutcomeUncertain(err) {
+		t.Fatalf("expected outcome-uncertain schema persistence failure, got %T %v", err, err)
+	}
+	if report.DurableRowsUpdated != 1 || report.VectorRowsRebuilt != 1 {
+		t.Fatalf("expected completed data report despite schema persistence failure, got %+v", report)
 	}
 }
 
@@ -559,6 +841,78 @@ func TestLoadVectorRebuildRecordsPrefersMaintenanceProjectAndMemoryListers(t *te
 	}
 }
 
+// nativeRebuildRelationalStub combines only the embedded contracts exercised by the public native rebuild wrapper.
+// nativeRebuildRelationalStub 组合公开原生重建包装器实际使用的最小嵌入契约。
+type nativeRebuildRelationalStub struct {
+	appports.RelationalStore
+	appports.WorkspaceStore
+	appports.MemoryVectorRebuildStore
+	appports.MemoryVectorResetStore
+	appports.SchemaVersionStore
+	restorableTrash []vldb_sqlite.NativeRestorableTrashMemory
+	trashWriter     *stubNativeTrashVectorWriter
+}
+
+// WalkNativeMigrationMemories replays the active fixture through the native all-facts contract.
+// WalkNativeMigrationMemories 通过 native 全事实契约回放 active 测试夹具。
+func (s nativeRebuildRelationalStub) WalkNativeMigrationMemories(ctx context.Context, visit func(logicdomain.MemoryRecord) error) error {
+	if visit == nil {
+		return errors.New("memory visitor is required")
+	}
+	walker, ok := s.MemoryVectorRebuildStore.(nativeVectorRebuildMemoryWalker)
+	if !ok {
+		return errors.New("durable all-facts fixture is required")
+	}
+	return walker.WalkNativeMigrationMemories(ctx, visit)
+}
+
+// WalkNativeMigrationRestorableTrash replays the explicitly seeded eligible trash rows for native rebuild safety tests.
+// WalkNativeMigrationRestorableTrash 为原生重建安全测试回放显式准备的 eligible trash 行。
+func (s nativeRebuildRelationalStub) WalkNativeMigrationRestorableTrashRows(ctx context.Context, _ time.Time, visit func(vldb_sqlite.NativeRestorableTrashMemory) error) error {
+	if visit == nil {
+		return errors.New("trash visitor is required")
+	}
+	for _, record := range s.restorableTrash {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := visit(record); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// UpdateNativeRestorableTrashVector records exact composite-key trash updates for native rebuild tests.
+// UpdateNativeRestorableTrashVector 记录 native 重建测试中的复合键 trash 精确更新。
+func (s nativeRebuildRelationalStub) UpdateNativeRestorableTrashVector(ctx context.Context, batchID, memoryID uint64, vector []float32) error {
+	if s.trashWriter == nil {
+		return errors.New("trash writer is not configured")
+	}
+	return s.trashWriter.Update(ctx, batchID, memoryID, vector)
+}
+
+// stubNativeTrashVectorWriter records exact trash vector writebacks without weakening the production composite-key contract.
+// stubNativeTrashVectorWriter 记录 native 重建测试中的复合键 trash 精确回写。
+type stubNativeTrashVectorWriter struct {
+	updates []stubNativeTrashVectorUpdate
+}
+
+// stubNativeTrashVectorUpdate stores one composite identity and its rebuilt vector payload.
+// stubNativeTrashVectorUpdate 保存一条复合身份及其重建向量载荷。
+type stubNativeTrashVectorUpdate struct {
+	batchID  uint64
+	memoryID uint64
+	vector   []float32
+}
+
+// Update appends one exact trash vector replacement to the test writer log.
+// Update 向测试 writer 日志追加一次精确 trash 向量替换。
+func (s *stubNativeTrashVectorWriter) Update(_ context.Context, batchID, memoryID uint64, vector []float32) error {
+	s.updates = append(s.updates, stubNativeTrashVectorUpdate{batchID: batchID, memoryID: memoryID, vector: append([]float32(nil), vector...)})
+	return nil
+}
+
 // stubMaintenanceWorkspace provides deterministic project/memory listings while keeping the full WorkspaceStore interface satisfied for orchestration tests.
 // stubMaintenanceWorkspace 用于为编排测试提供确定性的项目和记忆列表，同时保持完整的 WorkspaceStore 接口实现。
 type stubMaintenanceWorkspace struct {
@@ -660,6 +1014,10 @@ type stubVectorDurableStore struct {
 	clearCalls              int
 	replaceCalls            int
 	dimensionRebuildCalls   int
+	schemaSetCalls          int
+	schemaComponent         string
+	schemaVersion           int
+	schemaSetErr            error
 	clearedVectorIDs        []string
 	dimensionRebuildRecords []logicdomain.MemoryRecord
 	replaced                []logicdomain.MemoryRecord
@@ -676,6 +1034,37 @@ func newStubVectorDurableStore(initial []logicdomain.MemoryRecord) *stubVectorDu
 		store.current[record.ID] = record
 	}
 	return store
+}
+
+// WalkNativeMigrationMemories returns the current durable facts, including vector changes made by the rebuild under test.
+// WalkNativeMigrationMemories 返回当前持久事实，包括被测重建刚刚写入的向量变更，不使用旧工作区列表替代事实来源。
+func (s *stubVectorDurableStore) WalkNativeMigrationMemories(ctx context.Context, visit func(logicdomain.MemoryRecord) error) error {
+	if visit == nil {
+		return errors.New("memory visitor is required")
+	}
+	ids := make([]string, 0, len(s.current))
+	for id := range s.current {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	for _, id := range ids {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if err := visit(cloneVectorRebuildRecord(s.current[id])); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// WalkNativeMigrationRestorableTrashRows reports no eligible trash rows for the generic durable rebuild fixture.
+// WalkNativeMigrationRestorableTrashRows 为通用 durable 重建夹具报告没有 eligible trash 行。
+func (*stubVectorDurableStore) WalkNativeMigrationRestorableTrashRows(_ context.Context, _ time.Time, visit func(vldb_sqlite.NativeRestorableTrashMemory) error) error {
+	if visit == nil {
+		return errors.New("trash visitor is required")
+	}
+	return nil
 }
 
 // ClearMemoryVectors records the durable vector ids that were cleared before split-mode refill starts.
@@ -718,6 +1107,21 @@ func (s *stubVectorDurableStore) RebuildMemoryVectorDimensions(_ context.Context
 	return nil
 }
 
+// GetSchemaComponentVersion returns the stub's current infrastructure schema version.
+// GetSchemaComponentVersion 返回存根当前的基础设施 schema 版本。
+func (s *stubVectorDurableStore) GetSchemaComponentVersion(context.Context, string) (int, error) {
+	return s.schemaVersion, nil
+}
+
+// SetSchemaComponentVersion records the infrastructure schema version written after a native rebuild.
+// SetSchemaComponentVersion 记录原生重建完成后写入的基础设施 schema 版本。
+func (s *stubVectorDurableStore) SetSchemaComponentVersion(_ context.Context, component string, version int) error {
+	s.schemaSetCalls++
+	s.schemaComponent = component
+	s.schemaVersion = version
+	return s.schemaSetErr
+}
+
 // stubVectorEmbeddingClient replays deterministic embedding responses batch by batch.
 // stubVectorEmbeddingClient 用于按批次回放确定性的 embedding 响应。
 type stubVectorEmbeddingClient struct {
@@ -725,6 +1129,19 @@ type stubVectorEmbeddingClient struct {
 	requests  []appports.EmbeddingRequest
 	calls     int
 	err       error
+}
+
+// cancelingVectorEmbeddingClient cancels the caller at the first embedding request to model an operator-aborted rebuild.
+// cancelingVectorEmbeddingClient 在第一次 embedding 请求时取消调用方，用于模拟操作员中断重建。
+type cancelingVectorEmbeddingClient struct {
+	cancel context.CancelFunc
+}
+
+// Embed cancels the maintenance context and returns its cancellation error before any vector can be published.
+// Embed 在任何向量发布前取消维护上下文并返回取消错误。
+func (c cancelingVectorEmbeddingClient) Embed(ctx context.Context, _ appports.EmbeddingRequest) (appports.EmbeddingResponse, error) {
+	c.cancel()
+	return appports.EmbeddingResponse{}, ctx.Err()
 }
 
 // Embed returns the next queued response.
@@ -813,6 +1230,12 @@ func (*stubMaintenanceVectorStore) DeleteByIDs(context.Context, []string) (uint6
 // Shutdown 在这些重建编排测试中保持未使用状态。
 func (*stubMaintenanceVectorStore) Shutdown(context.Context) error {
 	return nil
+}
+
+// Count returns the current stub row count for native completion verification tests.
+// Count 返回原生完成核验测试所需的当前 stub 行数。
+func (s *stubMaintenanceVectorStore) Count(context.Context) (int64, error) {
+	return int64(len(s.current)), nil
 }
 
 // RecreateTable records one split-mode sidecar table recreation.

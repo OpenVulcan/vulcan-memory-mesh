@@ -99,46 +99,6 @@ func resolveLocalStorageLayoutForPromptLayout(promptLayout config.PromptLayout) 
 	}, nil
 }
 
-// resolveManagedStorageLayout derives database paths only from the explicit Vulcan Code data root.
-// resolveManagedStorageLayout 用于仅根据 Vulcan Code 提供的显式数据根派生数据库路径。
-func resolveManagedStorageLayout(promptLayout config.PromptLayout, dataRoot string) (localStorageLayout, error) {
-	if strings.TrimSpace(dataRoot) == "" || !filepath.IsAbs(dataRoot) {
-		return localStorageLayout{}, fmt.Errorf("managed storage data root must be absolute")
-	}
-	actualLayout, err := resolveCurrentPromptLayout()
-	if err != nil {
-		return localStorageLayout{}, err
-	}
-	effectiveSystemDir := strings.TrimSpace(promptLayout.SystemDir)
-	if effectiveSystemDir == "" {
-		return localStorageLayout{}, fmt.Errorf("managed storage system config dir is empty")
-	}
-	artifactRoot := filepath.Clean(filepath.Join(effectiveSystemDir, ".."))
-	databaseDir := filepath.Clean(dataRoot)
-	sqliteDatabase := filepath.Join(databaseDir, "sqlite.db")
-	lanceDBDirectory := filepath.Join(databaseDir, "lancedb")
-	if err := os.MkdirAll(lanceDBDirectory, 0o700); err != nil {
-		return localStorageLayout{}, fmt.Errorf("create managed lancedb directory: %w", err)
-	}
-	if err := os.MkdirAll(filepath.Dir(sqliteDatabase), 0o700); err != nil {
-		return localStorageLayout{}, fmt.Errorf("create managed sqlite directory: %w", err)
-	}
-	sqliteLibraryName, lanceDBLibraryName := resolveHostLibraryNames()
-	controllerBinaryName := resolveControllerBinaryName()
-	actualArtifactRoot := filepath.Clean(filepath.Join(actualLayout.SystemDir, ".."))
-	return localStorageLayout{
-		OutputRoot:       filepath.Dir(databaseDir),
-		ArtifactRoot:     artifactRoot,
-		LibsDir:          filepath.Join(artifactRoot, "libs"),
-		DatabaseDir:      databaseDir,
-		SQLiteLibrary:    resolveHostLibraryPath([]string{artifactRoot, actualArtifactRoot}, sqliteLibraryName),
-		LanceDBLibrary:   resolveHostLibraryPath([]string{artifactRoot, actualArtifactRoot}, lanceDBLibraryName),
-		ControllerBinary: resolveControllerBinaryPath([]string{artifactRoot, actualArtifactRoot}, controllerBinaryName),
-		SQLiteDatabase:   sqliteDatabase,
-		LanceDBDirectory: lanceDBDirectory,
-	}, nil
-}
-
 // resolveCurrentPromptLayout resolves the active process prompt layout so storage fallback decisions can stay aligned with the same executable/cwd heuristics used by the config loader.
 // resolveCurrentPromptLayout 用于解析当前进程的提示词布局，让存储路径的兜底策略与配置加载器对可执行文件和工作目录的判断保持一致。
 func resolveCurrentPromptLayout() (config.PromptLayout, error) {

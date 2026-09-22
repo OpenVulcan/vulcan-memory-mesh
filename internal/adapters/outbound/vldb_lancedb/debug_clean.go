@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/openvulcan/vmm/internal/platform/ffi/lancedbffi"
+	"github.com/openvulcan/vmm/internal/platform/storagecontract/lance"
 )
 
 // DebugDropConfiguredTable opens the local LanceDB FFI library, drops the resolved runtime table, and treats missing tables as already clean.
@@ -66,10 +67,12 @@ func DebugDropConfiguredTable(ctx context.Context, libraryPath string, databaseD
 // DebugDropConfiguredTable drops the configured table through the engine handle already owned by this store.
 // DebugDropConfiguredTable 通过当前存储已经持有的引擎句柄删除配置指定的表。
 func (s *Store) DebugDropConfiguredTable(ctx context.Context) (string, error) {
-	if s == nil || s.engine == nil {
-		return "", fmt.Errorf("lancedb store is not initialized")
+	engine, release, err := s.engineForContext(ctx)
+	if err != nil {
+		return "", err
 	}
-	if err := debugDropTableWithEngine(ctx, s.engine, s.tableName, s.timeout); err != nil {
+	defer release()
+	if err := debugDropTableWithEngine(ctx, engine, s.tableName, s.timeout); err != nil {
 		return "", err
 	}
 	return s.tableName, nil
@@ -77,12 +80,21 @@ func (s *Store) DebugDropConfiguredTable(ctx context.Context) (string, error) {
 
 // debugDropTableWithEngine sends one drop-table request through an already prepared LanceDB engine handle.
 // debugDropTableWithEngine 用于通过已准备好的 LanceDB engine 句柄发送删表请求。
-func debugDropTableWithEngine(ctx context.Context, engine lancedbEngineHandle, tableName string, timeout time.Duration) error {
+func debugDropTableWithEngine(ctx context.Context, rawEngine any, tableName string, timeout time.Duration) error {
 	if err := checkContext(ctx); err != nil {
 		return err
 	}
-	if engine == nil {
+	if rawEngine == nil {
 		return fmt.Errorf("lancedb engine is not initialized")
+	}
+	var engine lance.Engine
+	switch value := rawEngine.(type) {
+	case lance.Engine:
+		engine = value
+	case legacyLanceDBEngine:
+		engine = legacyEngineAdapter{legacy: value}
+	default:
+		return fmt.Errorf("unsupported lancedb engine implementation %T", rawEngine)
 	}
 	if strings.TrimSpace(tableName) == "" {
 		return fmt.Errorf("lancedb table_name is required")
@@ -93,7 +105,7 @@ func debugDropTableWithEngine(ctx context.Context, engine lancedbEngineHandle, t
 
 	callCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	resp, err := engine.DropTable(lancedbffi.DropTableRequest{TableName: strings.TrimSpace(tableName)})
+	resp, err := engine.DropTable(callCtx, lance.DropTableRequest{TableName: strings.TrimSpace(tableName)})
 	if err != nil {
 		if isTableNotFoundMessage(err.Error()) {
 			return nil
@@ -105,9 +117,6 @@ func debugDropTableWithEngine(ctx context.Context, engine lancedbEngineHandle, t
 			return nil
 		}
 		return fmt.Errorf("drop lancedb table %s: %s", strings.TrimSpace(tableName), strings.TrimSpace(resp.Message))
-	}
-	if err := checkContext(callCtx); err != nil {
-		return err
 	}
 	return nil
 }

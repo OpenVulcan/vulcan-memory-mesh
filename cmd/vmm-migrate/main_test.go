@@ -5,8 +5,6 @@ package main
 import (
 	"context"
 	"errors"
-	"os"
-	"strings"
 	"testing"
 )
 
@@ -20,25 +18,15 @@ func TestBuildSignalAwareMainContextCanBeCanceled(t *testing.T) {
 	}
 }
 
-// TestLoadMaintenanceRuntimeConfigurationRejectsTwoAuthorities verifies maintenance never guesses between layered and managed configuration.
-// TestLoadMaintenanceRuntimeConfigurationRejectsTwoAuthorities 用于验证维护流程绝不会在分层配置与托管配置之间猜测。
-func TestLoadMaintenanceRuntimeConfigurationRejectsTwoAuthorities(t *testing.T) {
-	_, err := loadMaintenanceRuntimeConfiguration("vmm-migrate", "config.yaml", "managed.json")
-	if err == nil || !strings.Contains(err.Error(), "mutually exclusive") {
-		t.Fatalf("unexpected dual-authority error: %v", err)
+// TestHasRemovedManagedConfigFlagRecognizesLegacySpellings verifies both supported flag prefixes are rejected before maintenance parsing.
+// TestHasRemovedManagedConfigFlagRecognizesLegacySpellings 用于验证两种旧参数前缀都会在维护参数解析前被拒绝。
+func TestHasRemovedManagedConfigFlagRecognizesLegacySpellings(t *testing.T) {
+	for _, arg := range []string{"-vulcan-managed-config", "--vulcan-managed-config=managed.json"} {
+		if !hasRemovedManagedConfigFlag([]string{arg}) {
+			t.Fatalf("hasRemovedManagedConfigFlag(%q) = false", arg)
+		}
 	}
-}
-
-// TestLoadMaintenanceRuntimeConfigurationRoutesManagedErrors verifies a managed path is handled by the strict manifest loader instead of layered config.
-// TestLoadMaintenanceRuntimeConfigurationRoutesManagedErrors 用于验证托管路径由严格清单加载器处理，而不会落入分层配置。
-func TestLoadMaintenanceRuntimeConfigurationRoutesManagedErrors(t *testing.T) {
-	manifestPath := t.TempDir() + string(os.PathSeparator) + "managed.json"
-	if err := os.WriteFile(manifestPath, []byte("{}"), 0o600); err != nil {
-		t.Fatalf("write invalid managed fixture: %v", err)
-	}
-
-	_, err := loadMaintenanceRuntimeConfiguration("vmm-migrate", "", manifestPath)
-	if err == nil || !strings.Contains(err.Error(), "load Vulcan managed config") {
-		t.Fatalf("unexpected managed-loader error: %v", err)
+	if hasRemovedManagedConfigFlag([]string{"-config", "standalone.yaml"}) {
+		t.Fatal("standalone config flag was classified as removed managed flag")
 	}
 }

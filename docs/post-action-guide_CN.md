@@ -12,6 +12,8 @@
 
 切换为 `storage.mode=controller` 后，上述业务 SQL、FTS、批量写入与补偿语义不变；区别仅在最底层 SQLite/LanceDB 句柄由 controller 进程持有。controller 写请求发生可恢复传输失败时不会自动重放，而是进入现有“结果不确定→按业务主键回查或补偿”链路。
 
+切换为 `storage.mode=native` 后，PostAction 的请求校验、文本清洗、PII 脱敏、NoiseGate 触发条件和事务语义保持不变；变化只在关系与向量后端改由进程内 native SQLite/LanceDB 持有。native 的数据库路径、分词器与动态库校验属于启动配置边界，不会改变本节清洗规则。
+
 当前相关方法只有：
 
 - `vmm.v1.VMMService/PostAction`

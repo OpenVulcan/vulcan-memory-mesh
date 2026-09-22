@@ -68,6 +68,18 @@ const (
 	// defaultMemoryHardDedupePoolTopK controls how many pre-MMR durable memories the hard-dedupe shortcut may inspect before the reviewer runs.
 	// defaultMemoryHardDedupePoolTopK 用于控制 reviewer 运行前，硬排重捷径最多可以扫描多少条 MMR 之前的长期记忆候选。
 	defaultMemoryHardDedupePoolTopK = 16
+
+	// defaultSQLiteNativePath keeps standalone SQLite data isolated from the historical split-store data root.
+	// defaultSQLiteNativePath 用于让独立 SQLite 数据与历史 split 存储数据根保持隔离。
+	defaultSQLiteNativePath = "database/native/sqlite.db"
+
+	// defaultSQLiteNativeTokenizer selects the standalone tokenizer when native mode does not specify one.
+	// defaultSQLiteNativeTokenizer 用于在原生模式未指定分词器时选择独立默认分词器。
+	defaultSQLiteNativeTokenizer = "gse"
+
+	// defaultLanceDBNativePath keeps standalone LanceDB data isolated from the historical split-store data root.
+	// defaultLanceDBNativePath 用于让独立 LanceDB 数据与历史 split 存储数据根保持隔离。
+	defaultLanceDBNativePath = "database/native/lancedb"
 )
 
 // Duration wraps time.Duration so config files can accept either duration strings or millisecond numbers.
@@ -216,21 +228,45 @@ type StorageConfig struct {
 	CombinedProvider string `json:"combined_provider"`
 }
 
-// SQLiteConfig holds local SQLite runtime options for the split-storage relational backend.
-// SQLiteConfig 用于保存 split 存储关系后端的本地 SQLite 运行时配置。
+// SQLiteConfig holds shared and mode-specific SQLite runtime options for the relational backend.
+// SQLiteConfig 用于保存关系后端共用及按模式区分的 SQLite 运行时配置。
 type SQLiteConfig struct {
-	Address       string   `json:"address"`
-	Timeout       Duration `json:"timeout"`
-	TokenizerMode string   `json:"tokenizer_mode"`
+	Address       string             `json:"address"`
+	Timeout       Duration           `json:"timeout"`
+	TokenizerMode string             `json:"tokenizer_mode"`
+	Native        SQLiteNativeConfig `json:"native"`
 }
 
-// LanceDBConfig holds local LanceDB runtime options for the split-storage vector backend.
-// LanceDBConfig 用于保存 split 存储向量后端的本地 LanceDB 运行时配置。
+// SQLiteNativeConfig holds the standalone SQLite database path and tokenizer selection.
+// SQLiteNativeConfig 用于保存独立 SQLite 数据库路径及其分词器选择。
+type SQLiteNativeConfig struct {
+	// Path is the standalone SQLite database path, resolved by the application against its storage root.
+	// Path 是独立 SQLite 数据库路径，由应用按存储根解析。
+	Path string `json:"path"`
+	// Tokenizer selects the standalone SQLite tokenizer implementation.
+	// Tokenizer 用于选择独立 SQLite 分词器实现。
+	Tokenizer string `json:"tokenizer"`
+}
+
+// LanceDBConfig holds shared and mode-specific LanceDB runtime options for the vector backend.
+// LanceDBConfig 用于保存向量后端共用及按模式区分的 LanceDB 运行时配置。
 type LanceDBConfig struct {
-	Address      string   `json:"address"`
-	Timeout      Duration `json:"timeout"`
-	TableName    string   `json:"table_name"`
-	VectorColumn string   `json:"vector_column"`
+	Address      string              `json:"address"`
+	Timeout      Duration            `json:"timeout"`
+	TableName    string              `json:"table_name"`
+	VectorColumn string              `json:"vector_column"`
+	Native       LanceDBNativeConfig `json:"native"`
+}
+
+// LanceDBNativeConfig holds the standalone LanceDB data path and optional native library path.
+// LanceDBNativeConfig 用于保存独立 LanceDB 数据路径及可选的原生库路径。
+type LanceDBNativeConfig struct {
+	// Path is the standalone LanceDB data directory, resolved by the application against its storage root.
+	// Path 是独立 LanceDB 数据目录，由应用按存储根解析。
+	Path string `json:"path"`
+	// LibraryPath optionally selects the platform-specific standalone LanceDB library.
+	// LibraryPath 可选指定平台对应的独立 LanceDB 动态库。
+	LibraryPath string `json:"library_path"`
 }
 
 // ControllerConfig holds the shared controller endpoint, process lifecycle, lease, and installation-space settings.
@@ -652,8 +688,15 @@ func DefaultBase() Config {
 			Address:       "127.0.0.1:19501",
 			Timeout:       Duration{5 * time.Second},
 			TokenizerMode: "jieba",
+			Native:        SQLiteNativeConfig{Path: defaultSQLiteNativePath, Tokenizer: defaultSQLiteNativeTokenizer},
 		},
-		LanceDB: LanceDBConfig{Address: "127.0.0.1:19301", Timeout: Duration{5 * time.Second}, TableName: "vmm_memory_vectors", VectorColumn: "vector"},
+		LanceDB: LanceDBConfig{
+			Address:      "127.0.0.1:19301",
+			Timeout:      Duration{5 * time.Second},
+			TableName:    "vmm_memory_vectors",
+			VectorColumn: "vector",
+			Native:       LanceDBNativeConfig{Path: defaultLanceDBNativePath},
+		},
 		Controller: ControllerConfig{
 			Endpoint:             "http://127.0.0.1:19801",
 			AutoSpawn:            true,
