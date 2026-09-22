@@ -1,5 +1,7 @@
 # VMM OSS Local (Go)
 
+当前发行版本：**v0.1.0**。支持手动选择 Git 标签构建 Windows x64、Linux x64/ARM64、macOS Intel/ARM64 发行包，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。发行包默认使用原生存储。
+
 VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务链：
 
 - `PreCheck`

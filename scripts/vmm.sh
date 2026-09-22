@@ -373,11 +373,15 @@ assert_storage_dependencies() {
 # do_build compiles Go and synchronizes only the selected dependency profile; it never invokes Cargo.
 # do_build 只编译 Go 并同步选定依赖配置，绝不隐式调用 Cargo。
 do_build() {
-    local build_profile="$1" storage_profile="$2" source_revision source_state_digest ldflags release_args=()
+    local build_profile="$1" storage_profile="$2" source_revision source_state_digest release_version ldflags release_args=()
     assert_storage_dependencies "$storage_profile"
     source_revision="$(git -C "$ROOT_DIR" rev-parse HEAD)"
     source_state_digest="$(source_identity)"
-    ldflags="-X github.com/openvulcan/vmm/internal/buildinfo.SourceRevision=$source_revision -X github.com/openvulcan/vmm/internal/buildinfo.SourceStateDigest=$source_state_digest"
+    # Keep package names, Git tags, and executable metadata on the same version authority.
+    # 保证发行包名称、Git 标签和可执行文件元数据使用同一个版本来源。
+    release_version="$(tr -d '\r\n' < "$ROOT_DIR/VERSION")"
+    [[ "$release_version" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || { echo "invalid VERSION: $release_version" >&2; return 1; }
+    ldflags="-X github.com/openvulcan/vmm/internal/buildinfo.Version=$release_version -X github.com/openvulcan/vmm/internal/buildinfo.SourceRevision=$source_revision -X github.com/openvulcan/vmm/internal/buildinfo.SourceStateDigest=$source_state_digest"
     if [[ "$build_profile" == release ]]; then release_args=(-trimpath -ldflags "$ldflags -s -w"); else release_args=(-ldflags "$ldflags"); fi
     echo "=> Building VMM Gateway ($build_profile, storage=$storage_profile)..."
     # Validate all executable destinations before creating directories or invoking the compiler.

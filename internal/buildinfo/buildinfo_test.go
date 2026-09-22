@@ -11,6 +11,11 @@ import (
 // TestWriteVersionJSONIncludesCompiledNativeCapabilities verifies the machine-readable version document carries the checked-in native contracts.
 // TestWriteVersionJSONIncludesCompiledNativeCapabilities 验证机器可读版本文档包含仓库约定的原生能力契约。
 func TestWriteVersionJSONIncludesCompiledNativeCapabilities(t *testing.T) {
+	// Exercise the same variable assigned by release linker flags.
+	// 验证发行链接参数实际赋值的变量会进入版本输出。
+	previousVersion := Version
+	Version = "v0.1.0"
+	t.Cleanup(func() { Version = previousVersion })
 	var output bytes.Buffer
 	if err := WriteVersionJSON(&output, "vmm-test"); err != nil {
 		t.Fatalf("write version JSON: %v", err)
@@ -21,6 +26,9 @@ func TestWriteVersionJSONIncludesCompiledNativeCapabilities(t *testing.T) {
 	}
 	if document.Capabilities.Scope != "compiled" {
 		t.Fatalf("capability scope = %q", document.Capabilities.Scope)
+	}
+	if document.Version != "v0.1.0" {
+		t.Fatalf("release version = %q", document.Version)
 	}
 	if document.Capabilities.NativeSQLite.Driver != "modernc.org/sqlite" || document.Capabilities.NativeSQLite.DriverVersion != "v1.59.0" {
 		t.Fatalf("SQLite compiled capability = %+v", document.Capabilities.NativeSQLite)

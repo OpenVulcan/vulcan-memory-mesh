@@ -458,7 +458,11 @@ function Do-Build {
     $StorageProfile = Resolve-StorageProfile
     Assert-StorageDependencies -StorageProfile $StorageProfile
     Resolve-SourceIdentity
-    $BuildLdflags = "-X github.com/openvulcan/vmm/internal/buildinfo.SourceRevision=$SourceRevision -X github.com/openvulcan/vmm/internal/buildinfo.SourceStateDigest=$SourceStateDigest"
+    # Read the one release version authority before injecting executable metadata.
+    # 在注入可执行文件元数据之前读取唯一发行版本来源。
+    $ReleaseVersion = [IO.File]::ReadAllText((Join-Path $RootDir "VERSION")).Trim()
+    if ($ReleaseVersion -notmatch '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$') { throw "invalid VERSION: $ReleaseVersion" }
+    $BuildLdflags = "-X github.com/openvulcan/vmm/internal/buildinfo.Version=$ReleaseVersion -X github.com/openvulcan/vmm/internal/buildinfo.SourceRevision=$SourceRevision -X github.com/openvulcan/vmm/internal/buildinfo.SourceStateDigest=$SourceStateDigest"
     $UseTrimPath = $false
     if ($BuildProfile -eq "release") { $BuildLdflags = "$BuildLdflags -s -w"; $UseTrimPath = $true }
     Write-Host "=> Building VMM Gateway ($BuildProfile, storage=$StorageProfile)..." -ForegroundColor Cyan

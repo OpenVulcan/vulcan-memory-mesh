@@ -4,6 +4,7 @@ TASK_LOG*.md
 *.test
 bin/
 dist/
+__pycache__/
 output/
 /nul
 configs/.env

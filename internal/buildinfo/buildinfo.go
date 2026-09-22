@@ -8,6 +8,10 @@ import (
 	"runtime"
 )
 
+// Version is injected from the repository VERSION file by formal builds.
+// Version 由正式构建从仓库 VERSION 文件注入，临时构建保持 dev。
+var Version = "dev"
+
 // SourceRevision is injected by the official build script and remains unknown for ad hoc builds.
 // SourceRevision 由正式构建脚本注入，临时构建默认保持 unknown。
 var SourceRevision = "unknown"
@@ -66,6 +70,7 @@ var CompiledNativeCapabilities = CompiledCapabilities{
 // VersionDocument 描述一个不暴露凭据的打包 VMM 可执行文件。
 type VersionDocument struct {
 	Name              string               `json:"name"`
+	Version           string               `json:"version"`
 	GoVersion         string               `json:"go_version"`
 	GOOS              string               `json:"goos"`
 	GOARCH            string               `json:"goarch"`
@@ -89,6 +94,7 @@ type VersionDocument struct {
 func WriteVersionJSON(writer io.Writer, name string) error {
 	document := VersionDocument{
 		Name:              name,
+		Version:           Version,
 		GoVersion:         runtime.Version(),
 		GOOS:              runtime.GOOS,
 		GOARCH:            runtime.GOARCH,

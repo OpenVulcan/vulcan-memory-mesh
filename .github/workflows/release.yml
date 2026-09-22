@@ -1,0 +1,232 @@
+# Build an existing version tag on its native architectures and publish only a complete release.
+# 在对应原生架构构建已有版本标签，仅发布五个平台齐全的发行版本。
+name: Tagged release
+run-name: Release ${{ inputs.tag }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: '已有版本标签，必须与该提交的 VERSION 一致，例如 v0.1.0'
+        required: true
+        type: string
+        default: v0.1.0
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tagged-release-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Validate tag
+    runs-on: ubuntu-24.04
+    outputs:
+      commit: ${{ steps.tag.outputs.commit }}
+      tag: ${{ steps.tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Resolve the tag to one immutable commit
+        id: tag
+        env:
+          RELEASE_TAG: ${{ inputs.tag }}
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || { echo 'Invalid version tag'; exit 1; }
+          commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
+          version="$(git show "$commit:VERSION" | tr -d '\r\n')"
+          [[ "$version" == "$RELEASE_TAG" ]] || { echo 'Tag does not match VERSION'; exit 1; }
+          git merge-base --is-ancestor "$commit" origin/main || { echo 'Tag must belong to main history'; exit 1; }
+          if release="$(gh release view "$RELEASE_TAG" --json isDraft --jq .isDraft 2>/dev/null)"; then
+            [[ "$release" == true ]] || { echo 'This version is already published'; exit 1; }
+          fi
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+
+  build:
+    name: Build ${{ matrix.platform }}
+    needs: resolve
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 240
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: windows-x64
+            runner: windows-2025
+            target: x86_64-pc-windows-msvc
+            goos: windows
+            goarch: amd64
+            library: vmm_lancedb_native.dll
+          - platform: linux-x64
+            runner: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            goos: linux
+            goarch: amd64
+            library: libvmm_lancedb_native.so
+          - platform: linux-arm64
+            runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            goos: linux
+            goarch: arm64
+            library: libvmm_lancedb_native.so
+          - platform: macos-intel
+            runner: macos-15-intel
+            target: x86_64-apple-darwin
+            goos: darwin
+            goarch: amd64
+            library: libvmm_lancedb_native.dylib
+          - platform: macos-arm64
+            runner: macos-15
+            target: aarch64-apple-darwin
+            goos: darwin
+            goarch: arm64
+            library: libvmm_lancedb_native.dylib
+    env:
+      VMM_BUILD_STORAGE_PROFILE: native
+      CGO_ENABLED: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_STRIP: debuginfo
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      RELEASE_PLATFORM: ${{ matrix.platform }}
+      NATIVE_TARGET: ${{ matrix.target }}
+      EXPECTED_GOOS: ${{ matrix.goos }}
+      EXPECTED_GOARCH: ${{ matrix.goarch }}
+      VMM_NATIVE_LANCEDB_LIBRARY: ${{ github.workspace }}/output/libs/${{ matrix.library }}
+      VMM_NATIVE_PACKAGED_ROOT: ${{ github.workspace }}/output
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.0'
+          cache: true
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - name: Prepare Linux toolchain
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler clang lld cmake pkg-config libssl-dev
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+          echo 'RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+          # Reclaim preinstalled SDKs that this ephemeral Rust/Go job does not use.
+          # 回收本次临时 Rust/Go 构建不使用的预装 SDK，为原生编译提供磁盘空间。
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc
+          df -h .
+      - name: Prepare macOS toolchain
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          brew install protobuf bash
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+      - name: Prepare Windows toolchain
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install protoc --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'protoc installation failed' }
+          "PROTOC=$((Get-Command protoc).Source)" >> $env:GITHUB_ENV
+      - name: Install the locked Rust toolchain and verify host architecture
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(python -c 'import tomllib; print(tomllib.load(open("native/lancedb/rust-toolchain.toml", "rb"))["toolchain"]["channel"])')"
+          rustup toolchain install "$toolchain" --profile minimal
+          rustup override set "$toolchain"
+          [[ "$(rustc -vV | sed -n 's/^host: //p')" == "$NATIVE_TARGET" ]]
+          [[ "$(go env GOOS)" == "$EXPECTED_GOOS" && "$(go env GOARCH)" == "$EXPECTED_GOARCH" ]]
+      # Cache only validated release libraries; never package an unverified cache restore.
+      # 仅缓存已完成的发行库，缓存命中后仍须通过正式构建中的校验。
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: native-cache
+        with:
+          path: third_party/deps/native_lancedb
+          key: native-release-v1-${{ matrix.target }}-${{ hashFiles('native/lancedb/**', 'scripts/build_native_deps.*', 'scripts/validate_native_artifacts.*') }}
+      - name: Build native dependency on Unix
+        if: runner.os != 'Windows' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash scripts/build_native_deps.sh --target "$NATIVE_TARGET"
+      - name: Build native dependency on Windows
+        if: runner.os == 'Windows' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/build_native_deps.ps1 -Target $env:NATIVE_TARGET
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: third_party/deps/native_lancedb
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - name: Build formal Unix package
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/vmm.sh build release
+      - name: Build formal Windows package
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./make.ps1 build release
+      - name: Run tests and real native artifact acceptance
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m unittest discover -s scripts -p test_release.py -v
+          test -f "$VMM_NATIVE_LANCEDB_LIBRARY"
+          go test ./... -count=1 -timeout=20m
+          go vet ./...
+          # Execute the required integration tests separately so missing dependencies cannot pass via skips.
+          # 单独执行强制集成验收，缺少依赖导致的跳过不能被误记为通过。
+          go test ./internal/platform/ffi/nativelance ./internal/app -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' -count=1 -json > "$RUNNER_TEMP/native-acceptance.jsonl"
+          python scripts/release.py check-tests "$RUNNER_TEMP/native-acceptance.jsonl"
+      - name: Create and verify release archive
+        shell: bash
+        run: python scripts/release.py package --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --platform "$RELEASE_PLATFORM"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.platform }}
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+
+  publish:
+    name: Publish complete release
+    needs: [resolve, build]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      GH_REPO: ${{ github.repository }}
+      RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
+      RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ needs.resolve.outputs.commit }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
+      - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Verify five-platform set and publish
+        shell: bash
+        run: python scripts/release.py publish --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
