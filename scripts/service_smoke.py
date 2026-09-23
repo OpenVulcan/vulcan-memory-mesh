@@ -121,6 +121,30 @@ def wait_for_health(binary, config_root):
     raise RuntimeError(f"service did not become healthy: {last_result[-1000:]}")
 
 
+def print_native_diagnostics(name):
+    """Print bounded native-manager diagnostics only when this isolated fixture fails.
+    仅在隔离夹具失败时打印有界的原生服务管理器诊断。
+    """
+    commands = []
+    if sys.platform.startswith("linux"):
+        commands = [
+            ["sudo", "-n", "systemctl", "status", f"{name}.service", "--no-pager"],
+            ["sudo", "-n", "journalctl", "-u", f"{name}.service", "-n", "60", "--no-pager"],
+        ]
+    elif sys.platform == "darwin":
+        commands = [
+            ["plutil", "-lint", f"/Library/LaunchDaemons/{name}.plist"],
+            ["sudo", "-n", "launchctl", "print", f"system/{name}"],
+        ]
+    for command in commands:
+        try:
+            result = subprocess.run(command, capture_output=True, text=True, timeout=12, check=False)
+            print(f"diagnostic {' '.join(command[:3])} exit={result.returncode}")
+            print((result.stdout + result.stderr)[-5000:])
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f"diagnostic failed: {type(error).__name__}")
+
+
 def main():
     """Build an isolated registration, exercise its lifecycle, and always remove it.
     创建隔离注册、验收生命周期，并始终清理该服务。
@@ -173,6 +197,9 @@ def main():
             run_command(binary, ["service", "stop", name], privileged=True)
             if service_status(binary, name)["state"] != "stopped":
                 raise RuntimeError("service is not stopped after stop")
+        except Exception:
+            print_native_diagnostics(name)
+            raise
         finally:
             if installed:
                 run_command(binary, ["service", "uninstall", name], privileged=True)
