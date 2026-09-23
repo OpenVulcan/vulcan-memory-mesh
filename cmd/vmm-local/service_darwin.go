@@ -411,6 +411,16 @@ func runServiceRuntime(_ string, run func(context.Context, func()) error) error 
 func applyServiceCommand(command serviceCommand, exePath string, binDir string) error {
 	plistPath := filepath.Join("/Library/LaunchDaemons", command.name+".plist")
 	label := command.name
+	if command.action == "status" || command.action == "uninstall" {
+		absent, err := launchdServiceAbsent(label, plistPath)
+		if err != nil {
+			return err
+		}
+		if absent {
+			fmt.Print("state=not-installed\nauto_start=false\n")
+			return nil
+		}
+	}
 	switch command.action {
 	case "install":
 		serviceUser := ""
@@ -568,6 +578,21 @@ func applyServiceCommand(command serviceCommand, exePath string, binDir string) 
 	default:
 		return fmt.Errorf("unsupported service action %q", command.action)
 	}
+}
+
+// launchdServiceAbsent confirms there is neither a managed plist nor a loaded system service before permitting a reinstall.
+// launchdServiceAbsent 在允许重装前核对受管属性列表与已加载系统服务均不存在；权限及查询错误不会当成不存在。
+func launchdServiceAbsent(label, plistPath string) (bool, error) {
+	if _, err := os.Lstat(plistPath); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("inspect launchd plist %q: %w", plistPath, err)
+	}
+	_, loaded, err := launchdPrint(label)
+	if err != nil {
+		return false, err
+	}
+	return !loaded, nil
 }
 
 // renderLaunchdPlist builds a daemon plist that persists the service config path and boot-time policy.

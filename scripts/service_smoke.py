@@ -248,6 +248,8 @@ def main():
             install += ["-user", service_user]
         installed = False
         try:
+            if service_status(binary, name) != {"state": "not-installed", "auto_start": "false"}:
+                raise RuntimeError("missing service was not reported as not-installed")
             run_command(binary, install, privileged=True)
             installed = True
             initial_status = service_status(binary, name)
@@ -276,7 +278,9 @@ def main():
         finally:
             if installed:
                 run_command(binary, ["service", "uninstall", name], privileged=True)
-        run_command(binary, ["service", "status", name], successful=False)
+        if service_status(binary, name) != {"state": "not-installed", "auto_start": "false"}:
+            raise RuntimeError("removed service was not reported as not-installed")
+        run_command(binary, ["service", "uninstall", name], privileged=True)
         if not config_root.is_dir():
             raise RuntimeError("service uninstall removed its configuration")
     print(f"native service lifecycle passed for {sys.platform}")

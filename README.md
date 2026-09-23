@@ -663,6 +663,8 @@ vmm-local service status [service-name]
 
 平台行为：
 
+`service status` 在系统确认服务未注册时输出 `state=not-installed`、`auto_start=false` 并成功退出；此结果不同于已注册但停止的 `state=stopped`。对已确认不存在的服务重复执行 `service uninstall` 也成功退出，便于安装中断后重新安装。权限错误、无法查询或同名外部服务仍返回错误，不能当成未注册。
+
 - Windows：通过 Windows Service Control Manager 注册，服务启动时会进入原生 SCM 托管模式。
 - Linux：写入 `/etc/systemd/system/<service-name>.service`，执行 `systemctl daemon-reload`；仅当 `-auto-start=true` 时启用开机自启。
 - macOS：写入 `/Library/LaunchDaemons/<service-name>.plist`，通过 plist 的 `RunAtLoad` 控制自动启动；关闭自动启动后仍可手动加载服务。指定 `-user` 时，stdout/stderr 写入 `/private/var/log/vmmm/<service-name>/` 下由该账户持有的日志文件。

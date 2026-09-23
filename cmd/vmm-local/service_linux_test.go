@@ -12,6 +12,28 @@ import (
 	"testing"
 )
 
+// TestSystemdAbsenceRequiresUnambiguousNativeStatus rejects loaded, active, overridden, stale, and incomplete observations.
+// TestSystemdAbsenceRequiresUnambiguousNativeStatus 拒绝已加载、活动、存在覆盖、过期与不完整的查询结果。
+func TestSystemdAbsenceRequiresUnambiguousNativeStatus(t *testing.T) {
+	base := "LoadState=not-found\nActiveState=inactive\nSubState=dead\nFragmentPath=\nDropInPaths=\nNeedDaemonReload=no\n"
+	if !systemdStatusConfirmsAbsence(base) {
+		t.Fatal("confirmed missing unit was rejected")
+	}
+	for _, output := range []string{
+		"", "LoadState=not-found\n",
+		strings.Replace(base, "LoadState=not-found", "LoadState=loaded", 1),
+		strings.Replace(base, "ActiveState=inactive", "ActiveState=active", 1),
+		strings.Replace(base, "SubState=dead", "SubState=running", 1),
+		strings.Replace(base, "FragmentPath=", "FragmentPath=/usr/lib/systemd/system/foreign.service", 1),
+		strings.Replace(base, "DropInPaths=", "DropInPaths=/etc/systemd/system/foreign.service.d/override.conf", 1),
+		strings.Replace(base, "NeedDaemonReload=no", "NeedDaemonReload=yes", 1),
+	} {
+		if systemdStatusConfirmsAbsence(output) {
+			t.Fatalf("ambiguous native status accepted: %q", output)
+		}
+	}
+}
+
 // TestClassifySystemdUnitFileStateRejectsAmbiguousResults covers failed and empty enablement probes.
 // TestClassifySystemdUnitFileStateRejectsAmbiguousResults 覆盖失败及空输出的自启状态查询。
 func TestClassifySystemdUnitFileStateRejectsAmbiguousResults(t *testing.T) {

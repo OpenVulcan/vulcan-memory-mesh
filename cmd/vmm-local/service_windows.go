@@ -199,6 +199,10 @@ func applyServiceCommand(command serviceCommand, exePath string, _ string) error
 		return nil
 	case "uninstall":
 		service, err := openWindowsService(manager, command.name, exePath)
+		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			fmt.Print("state=not-installed\nauto_start=false\n")
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -283,6 +287,10 @@ func applyServiceCommand(command serviceCommand, exePath string, _ string) error
 		return nil
 	case "status":
 		service, err := openWindowsService(manager, command.name, exePath)
+		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			fmt.Print("state=not-installed\nauto_start=false\n")
+			return nil
+		}
 		if err != nil {
 			return err
 		}

@@ -25,6 +25,16 @@ func runServiceRuntime(_ string, run func(context.Context, func()) error) error 
 func applyServiceCommand(command serviceCommand, exePath string, binDir string) error {
 	unitName := command.name + ".service"
 	unitPath := filepath.Join("/etc/systemd/system", unitName)
+	if command.action == "status" || command.action == "uninstall" {
+		absent, err := systemdServiceAbsent(unitName, unitPath)
+		if err != nil {
+			return err
+		}
+		if absent {
+			fmt.Print("state=not-installed\nauto_start=false\n")
+			return nil
+		}
+	}
 	switch command.action {
 	case "install":
 		if err := validateSystemdWorkingDirectory(binDir); err != nil {
@@ -132,6 +142,29 @@ func applyServiceCommand(command serviceCommand, exePath string, binDir string) 
 	default:
 		return fmt.Errorf("unsupported service action %q", command.action)
 	}
+}
+
+// systemdServiceAbsent confirms both the managed file and the loaded native unit are absent before permitting a reinstall.
+// systemdServiceAbsent 在允许重新安装前核对受管文件与已加载的系统单元均不存在；查询失败返回错误。
+func systemdServiceAbsent(unitName, unitPath string) (bool, error) {
+	if _, err := os.Lstat(unitPath); err == nil {
+		return false, nil
+	} else if !os.IsNotExist(err) {
+		return false, fmt.Errorf("inspect systemd unit %q: %w", unitPath, err)
+	}
+	output, err := exec.Command("systemctl", "show", "--property=LoadState", "--property=ActiveState", "--property=SubState", "--property=FragmentPath", "--property=DropInPaths", "--property=NeedDaemonReload", unitName).CombinedOutput()
+	if err != nil {
+		return false, fmt.Errorf("inspect missing systemd unit %q: %w", unitName, err)
+	}
+	return systemdStatusConfirmsAbsence(string(output)), nil
+}
+
+// systemdStatusConfirmsAbsence accepts only an unloaded inactive unit without fragments, overrides, or a stale definition.
+// systemdStatusConfirmsAbsence 仅接受未加载且不活动、没有定义文件、覆盖片段或过期定义的单元。
+func systemdStatusConfirmsAbsence(output string) bool {
+	status := parseSystemdStatusOutput(output)
+	return status.LoadState == "not-found" && status.ActiveState == "inactive" && status.SubState == "dead" &&
+		status.FragmentPath == "" && status.DropInPaths == "" && status.NeedDaemonReload == "no"
 }
 
 // verifySystemdInstallTarget checks systemd's resolved fragment before an /etc unit can shadow another unit directory.
