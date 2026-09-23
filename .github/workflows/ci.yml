@@ -20,7 +20,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-2025, ubuntu-24.04, macos-15]
+        os: [windows-2025, ubuntu-24.04, ubuntu-24.04-arm, macos-15-intel, macos-15]
     env:
       # Resolve optional packaged provider placeholders without using real credentials or external services.
       # 使用不可达的本地测试值解析可选供应商占位符，不使用真实凭据或外部服务。

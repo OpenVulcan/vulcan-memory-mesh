@@ -633,18 +633,18 @@ $env:VMM_BUILD_STORAGE_PROFILE = "native"
 
 ### 注册为系统服务
 
-`vmm-local` 支持自注册为 Windows / Linux / macOS 系统服务。服务注册命令只接受一个可选服务名，不传时默认使用 `VulcanMemoryMesh`；服务启动参数不会额外携带 `-config` 或其他运行时配置。
+`vmm-local` 支持自注册为 Windows / Linux / macOS 系统服务。服务名可省略，默认使用 `VulcanMemoryMesh`。安装时建议显式指定绝对配置根；该路径会保存在原生服务定义中，并在服务运行时作为 `-config` 参数传入。以下 Windows 示例假设已经准备好 `C:\VMM\config` 配置目录。
 
 ```powershell
 .\make.ps1 build
-.\output\bin\vmm-local.exe service install
+.\output\bin\vmm-local.exe service install -config "C:\VMM\config" -auto-start=false
 .\output\bin\vmm-local.exe service start
 ```
 
-如果需要自定义服务名，只把服务名作为最后一个参数传入：
+如果需要自定义服务名，将名称作为安装及后续操作的第一个位置参数传入：
 
 ```powershell
-.\output\bin\vmm-local.exe service install VMMLocal
+.\output\bin\vmm-local.exe service install VMMLocal -config "C:\VMM\config" -auto-start=false
 .\output\bin\vmm-local.exe service start VMMLocal
 ```
 
@@ -664,7 +664,7 @@ vmm-local service status [service-name]
 
 - Windows：通过 Windows Service Control Manager 注册，服务启动时会进入原生 SCM 托管模式。
 - Linux：写入 `/etc/systemd/system/<service-name>.service`，执行 `systemctl daemon-reload`；仅当 `-auto-start=true` 时启用开机自启。
-- macOS：写入 `/Library/LaunchDaemons/<service-name>.plist`，并通过 `launchctl` 注册为系统守护进程。指定 `-user` 时，stdout/stderr 写入 `/private/var/log/vmmm/<service-name>/` 下由该账户持有的日志文件。
+- macOS：写入 `/Library/LaunchDaemons/<service-name>.plist`，通过 plist 的 `RunAtLoad` 控制自动启动；关闭自动启动后仍可手动加载服务。指定 `-user` 时，stdout/stderr 写入 `/private/var/log/vmmm/<service-name>/` 下由该账户持有的日志文件。
 
 注意：
 
