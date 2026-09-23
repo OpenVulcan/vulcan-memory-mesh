@@ -1,5 +1,5 @@
-# Build an existing version tag on its native architectures and publish only a complete release.
-# 在对应原生架构构建已有版本标签，仅发布五个平台齐全的发行版本。
+# Build an existing version tag on native architectures and leave the verified five-platform release as a draft.
+# 在对应原生架构构建已有版本标签，并将验证完整的五平台发行版本保留为草稿。
 name: Tagged release
 run-name: Release ${{ inputs.tag }}
 
