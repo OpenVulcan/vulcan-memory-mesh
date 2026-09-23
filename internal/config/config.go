@@ -198,8 +198,11 @@ type GRPCRequestTimeout struct {
 // LoggingConfig holds the structured logging knobs shared by the local runtime.
 // LoggingConfig 用于保存本地运行时共享的结构化日志配置项。
 type LoggingConfig struct {
-	Level                string `json:"level"`
-	Format               string `json:"format"`
+	Level  string `json:"level"`
+	Format string `json:"format"`
+	// Directory selects an explicit writable log root for a service account; empty keeps the legacy package-sibling path.
+	// Directory 为服务账户选择可写的显式日志根目录；留空时保持旧版包目录同级路径。
+	Directory            string `json:"directory,omitempty"`
 	DebugRPCPayloads     bool   `json:"debug_rpc_payloads"`
 	LLMOutputEnabled     bool   `json:"llm_output_enabled"`
 	ProtectPayloads      bool   `json:"protect_payloads"`

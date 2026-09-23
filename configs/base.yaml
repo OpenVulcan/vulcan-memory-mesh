@@ -84,6 +84,12 @@ grpc:
     permit_without_stream: true
 
 logging:
+  # Optional absolute log directory; empty preserves the historical package-sibling logs directory.
+  # 可选的绝对日志目录；留空时继续使用旧版程序包同级的 logs 目录。
+  # System services should set this to a private writable path owned by the selected account.
+  # 系统服务应将其设为所选账户持有、可写的私有路径。
+  directory: ""
+
   # Runtime log level.
   # 运行时日志级别。
   # Allowed values:

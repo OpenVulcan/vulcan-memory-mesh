@@ -672,6 +672,7 @@ vmm-local service status [service-name]
 - 服务运行时会自动把工作目录切到 `output/bin/`，保持与正式手工启动规则一致。
 - 安装命令传入 `-config` 后，原生服务定义会持久化该绝对配置根；运行时仍先加载包内 `configs/base.yaml`，再加载该用户覆盖层。省略 `-config` 仅用于兼容已有手工安装。
 - Linux/macOS 指定 `-user` 后，会在注册前检查程序、配置、`.env`、用户规则覆盖与数据库路径对该账户的访问权限。配置和数据根应由该账户持有，程序包则由管理员持有。
+- Linux/macOS 系统服务还须在用户覆盖配置中设置 `logging.directory` 为所选账户可写的绝对路径，例如私有数据根下的 `logs`；留空会继续使用程序包同级的旧日志位置，而管理员持有的正式程序包不可由服务账户写入。服务注册前会检查该日志路径的所有权与创建权限。VMMM 安装器会自动配置此字段。
 - 如果配置文件中引用了 `OPENROUTER_KEY`、`BAILIAN_API_KEY` 等环境变量，建议放在所选配置根的私有 `.env` 中，并确保服务账户可读取；不要依赖交互式 shell 环境。
 - `storage.mode=controller` 用于正式服务时，优先把 controller 注册为独立系统服务，并设置 `controller.auto_spawn=false`；当前 VMM 安装命令不会代替运维自动注册 controller 服务。
 

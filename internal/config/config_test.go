@@ -229,6 +229,24 @@ func TestConfigValidateRejectsRelativeLocalDataRoot(t *testing.T) {
 	}
 }
 
+// TestConfigValidateLoggingDirectoryKeepsLegacyDefaultAndRequiresAbsoluteOverride verifies service logs can move without changing old configurations.
+// TestConfigValidateLoggingDirectoryKeepsLegacyDefaultAndRequiresAbsoluteOverride 验证服务日志可以迁出程序包，同时旧配置保持兼容。
+func TestConfigValidateLoggingDirectoryKeepsLegacyDefaultAndRequiresAbsoluteOverride(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("legacy logging default: %v", err)
+	}
+	cfg.Logging.Directory = filepath.Join(t.TempDir(), "logs")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("absolute logging.directory: %v", err)
+	}
+	cfg.Logging.Directory = "relative/logs"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("relative logging.directory unexpectedly accepted")
+	}
+}
+
 // TestConfigValidateAcceptsNativeMode verifies native storage uses its own paths and tokenizer while keeping shared vector fields active.
 // TestConfigValidateAcceptsNativeMode 用于验证原生存储使用独立路径和分词器，同时继续使用共用向量字段。
 func TestConfigValidateAcceptsNativeMode(t *testing.T) {

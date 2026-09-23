@@ -46,6 +46,15 @@ func validateServiceAccountStorage(exePath string, configPath string, account se
 	if err := app.PreflightNativeStorageLayout(cfg, layout); err != nil {
 		return fmt.Errorf("preflight native storage for service account: %w", err)
 	}
+	// File logging starts before the database adapters, so the selected account must be able to create its log root.
+	// 文件日志先于数据库适配器启动，因此所选账户必须能够创建日志根目录。
+	logDir, err := app.ResolveRuntimeLogDir(cfg, layout)
+	if err != nil {
+		return fmt.Errorf("resolve service log directory: %w", err)
+	}
+	if err := validateServiceStoragePath(logDir, account, true); err != nil {
+		return fmt.Errorf("validate service log directory ownership: %w", err)
+	}
 
 	switch cfg.StorageMode() {
 	case "split", "controller":

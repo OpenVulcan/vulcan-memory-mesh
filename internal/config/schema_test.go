@@ -47,6 +47,7 @@ func TestConfigSchemaReflectsShapesDefaultsAndSensitivity(t *testing.T) {
 		{path: "memory_pipeline.min_similarity_score", typeName: "number", nullable: true},
 		{path: "management.access_token", typeName: "string", sensitive: true},
 		{path: "storage.local_data_root", typeName: "string"},
+		{path: "logging.directory", typeName: "string"},
 		{path: "postgres.dsn", typeName: "string", sensitive: true},
 	}
 	for _, test := range tests {

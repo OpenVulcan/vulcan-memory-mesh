@@ -45,6 +45,7 @@ var supportedEnvOverrideValuePaths = map[string][]string{
 	"VMM_MANAGEMENT_SHUTDOWN_TIMEOUT":                   {"management.shutdown_timeout"},
 	"VMM_LOG_LEVEL":                                     {"logging.level"},
 	"VMM_LOG_FORMAT":                                    {"logging.format"},
+	"VMM_LOG_DIRECTORY":                                 {"logging.directory"},
 	"VMM_LOG_DEBUG_RPC_PAYLOADS":                        {"logging.debug_rpc_payloads"},
 	"VMM_LOG_LLM_OUTPUT_ENABLED":                        {"logging.llm_output_enabled"},
 	"VMM_LOG_PROTECT_PAYLOADS":                          {"logging.protect_payloads"},
@@ -230,6 +231,13 @@ func (c Config) Validate() error {
 	case "text", "json":
 	default:
 		return errors.New("logging.format must be either text or json")
+	}
+	if directory := c.Logging.Directory; directory != "" {
+		// An explicit log root cannot resolve against the service process working directory.
+		// 显式日志根不能依赖服务进程的工作目录解析。
+		if directory != strings.TrimSpace(directory) || strings.ContainsAny(directory, "\x00\r\n\t") || !filepath.IsAbs(directory) {
+			return errors.New("logging.directory must be an absolute path without surrounding whitespace or control characters")
+		}
 	}
 	if c.Logging.ProtectPayloads {
 		if _, err := validatePayloadEncryptionKey(c.Logging.PayloadEncryptionKey); err != nil {
@@ -747,6 +755,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setDuration("VMM_MANAGEMENT_SHUTDOWN_TIMEOUT", &cfg.Management.ShutdownTimeout)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
+	setString("VMM_LOG_DIRECTORY", &cfg.Logging.Directory)
 	setBool("VMM_LOG_DEBUG_RPC_PAYLOADS", &cfg.Logging.DebugRPCPayloads)
 	setBool("VMM_LOG_LLM_OUTPUT_ENABLED", &cfg.Logging.LLMOutputEnabled)
 	setBool("VMM_LOG_PROTECT_PAYLOADS", &cfg.Logging.ProtectPayloads)

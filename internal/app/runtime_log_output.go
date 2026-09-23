@@ -10,9 +10,17 @@ import (
 	"github.com/openvulcan/vmm/internal/config"
 )
 
-// resolveRuntimeLogDir maps the resolved system config root to the sibling `logs` directory so packaged binaries use `output/logs` and go-run development uses the repository-root `logs`.
-// resolveRuntimeLogDir 用于把解析出的系统配置根映射到同级 `logs` 目录；这样打包二进制会使用 `output/logs`，而 go run 调试会使用仓库根的 `logs`。
-func resolveRuntimeLogDir(layout config.PromptLayout) (string, error) {
+// ResolveRuntimeLogDir uses an explicit configured directory for service accounts and preserves the package-sibling default for existing configurations.
+// ResolveRuntimeLogDir 为服务账户使用显式配置目录，并为旧配置保留包目录同级的默认位置。
+func ResolveRuntimeLogDir(cfg config.Config, layout config.PromptLayout) (string, error) {
+	if directory := cfg.Logging.Directory; directory != "" {
+		// Reject relative and ambiguous roots before any file writer creates directories.
+		// 在文件写入器创建目录之前拒绝相对路径和含糊的根路径。
+		if directory != strings.TrimSpace(directory) || strings.ContainsAny(directory, "\x00\r\n\t") || !filepath.IsAbs(directory) {
+			return "", fmt.Errorf("logging.directory must be an absolute path without surrounding whitespace or control characters")
+		}
+		return filepath.Clean(directory), nil
+	}
 	systemDir := strings.TrimSpace(layout.SystemDir)
 	if systemDir == "" {
 		return "", fmt.Errorf("runtime system dir is empty")

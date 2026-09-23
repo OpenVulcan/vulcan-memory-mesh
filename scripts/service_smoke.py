@@ -57,6 +57,9 @@ def write_config(config_root, data_root, port):
     # Unix 服务账户检查要求数据根明确指定且由所选用户拥有。
     if os.name != "nt":
         lines.append(f"  local_data_root: {json.dumps(data_root.as_posix())}")
+        # Keep service logs under the selected account's data root instead of the package.
+        # 将服务日志放在所选账户的数据根中，避免写入程序包。
+        lines.extend(["logging:", f"  directory: {json.dumps((data_root / 'logs').as_posix())}"])
     lines += [
         "embedding:",
         "  provider: openai",
@@ -225,8 +228,11 @@ def main():
         data_root = root / "data"
         write_config(config_root, data_root, unused_loopback_port())
         run_command(binary, ["config", "validate", "--config", str(config_root), "--json"])
-        if sys.platform.startswith("linux"):
+        if os.name != "nt":
+            # The service account must own a private root before log and database writers start.
+            # 服务账户在日志和数据库写入器启动前必须拥有私有根目录。
             data_root.mkdir(mode=0o700)
+        if sys.platform.startswith("linux"):
             subprocess.run(
                 ["sudo", "-n", "chown", "-R", service_user, str(config_root), str(data_root)],
                 check=True,
