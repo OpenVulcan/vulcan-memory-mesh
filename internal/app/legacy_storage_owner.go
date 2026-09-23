@@ -32,7 +32,7 @@ func buildSplitStorageDependencies(cfg config.Config, promptLayout config.Prompt
 	if normalizeProviderAlias(cfg.Relational.Provider) != "sqlite" || normalizeProviderAlias(cfg.Vector.Provider) != "lancedb" {
 		return storageDependencies{}, fmt.Errorf("split storage requires sqlite relational and lancedb vector providers")
 	}
-	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	layout, err := resolveLocalStorageLayoutForConfig(cfg, promptLayout)
 	if err != nil {
 		return storageDependencies{}, err
 	}

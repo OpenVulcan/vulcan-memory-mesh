@@ -106,7 +106,7 @@ func AcquireLegacySQLiteSnapshot(ctx context.Context, cfg config.Config, promptL
 	if mode != "split" && mode != "controller" {
 		return nil, fmt.Errorf("legacy SQLite snapshot requires storage.mode=split or controller, got %q", mode)
 	}
-	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	layout, err := resolveLocalStorageLayoutForConfig(cfg, promptLayout)
 	if err != nil {
 		return nil, fmt.Errorf("resolve legacy SQLite snapshot layout: %w", err)
 	}

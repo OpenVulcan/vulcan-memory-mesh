@@ -22,11 +22,9 @@ type PromptManager struct {
 func NewPromptManager(systemDir, userDir, promptLanguage string) (*PromptManager, error) {
 	// Resolve the runtime-selected prompt bundle and verify the active directory is complete before the manager becomes usable.
 	// 解析运行时选中的提示词包，并在管理器可用前校验当前生效目录完整无缺。
-	validation := &ValidationErrors{}
 	selectedFolder := normalizePromptBundleName(promptLanguage)
-	validateSelectedPromptBundle(systemDir, userDir, selectedFolder, validation)
-	if validation.HasAny() {
-		return nil, validation
+	if err := ValidatePromptBundle(systemDir, userDir, promptLanguage); err != nil {
+		return nil, err
 	}
 
 	return &PromptManager{
@@ -34,6 +32,20 @@ func NewPromptManager(systemDir, userDir, promptLanguage string) (*PromptManager
 		userDir:        userDir,
 		selectedFolder: selectedFolder,
 	}, nil
+}
+
+// ValidatePromptBundle checks the selected prompt bundle without opening a runtime prompt manager or writing files.
+// ValidatePromptBundle 在不创建运行时提示词管理器且不写入文件的前提下校验选中的提示词包。
+func ValidatePromptBundle(systemDir, userDir, promptLanguage string) error {
+	// Reuse the startup completeness rules so user overrides remain all-or-nothing and system bundles remain the fallback layer.
+	// 复用启动时的完整性规则，使用户覆盖包保持整体生效，并继续把系统包作为回退层。
+	validation := &ValidationErrors{}
+	selectedFolder := normalizePromptBundleName(promptLanguage)
+	validateSelectedPromptBundle(systemDir, userDir, selectedFolder, validation)
+	if validation.HasAny() {
+		return validation
+	}
+	return nil
 }
 
 // GetPrompt reads one scene from the selected user-or-system prompt bundle without applying legacy language switching.

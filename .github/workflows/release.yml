@@ -90,7 +90,9 @@ jobs:
             goarch: arm64
             library: libvmm_lancedb_native.dylib
     env:
-      VMM_BUILD_STORAGE_PROFILE: native
+      # Build one complete archive so the installer can choose native, split, controller, or combined PostgreSQL later.
+      # 构建包含全部依赖的完整压缩包，使安装器可以在下载后选择 native、split、controller 或 combined PostgreSQL。
+      VMM_BUILD_STORAGE_PROFILE: all
       CGO_ENABLED: '0'
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
@@ -164,7 +166,7 @@ jobs:
         id: native-cache
         with:
           path: third_party/deps/native_lancedb
-          key: native-release-v1-${{ matrix.target }}-${{ hashFiles('native/lancedb/**', 'scripts/build_native_deps.*', 'scripts/validate_native_artifacts.*') }}
+          key: all-release-v1-${{ matrix.target }}-${{ hashFiles('native/lancedb/**', 'scripts/build_native_deps.*', 'scripts/validate_native_artifacts.*') }}
       - name: Build native dependency on Unix
         if: runner.os != 'Windows' && steps.native-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -178,6 +180,36 @@ jobs:
         with:
           path: third_party/deps/native_lancedb
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: host-cache
+        with:
+          path: |
+            third_party/deps/*vldb_sqlite.*
+            third_party/deps/*vldb_lancedb.*
+            third_party/deps/vldb-controller*
+            third_party/vldb_sqlite
+            third_party/vldb_lancedb
+            third_party/vldb_controller
+          key: host-release-v2-${{ matrix.target }}-${{ hashFiles('scripts/install_host_deps.sh', 'scripts/install_host_deps.ps1', 'scripts/host_deps_sha256.tsv') }}
+      - name: Install host storage dependencies on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/install_host_deps.sh
+      - name: Install host storage dependencies on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./make.ps1 deps host
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.host-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            third_party/deps/*vldb_sqlite.*
+            third_party/deps/*vldb_lancedb.*
+            third_party/deps/vldb-controller*
+            third_party/vldb_sqlite
+            third_party/vldb_lancedb
+            third_party/vldb_controller
+          key: ${{ steps.host-cache.outputs.cache-primary-key }}
       - name: Build formal Unix package
         if: runner.os != 'Windows'
         shell: bash
@@ -192,15 +224,150 @@ jobs:
           set -euo pipefail
           python -m unittest discover -s scripts -p test_release.py -v
           test -f "$VMM_NATIVE_LANCEDB_LIBRARY"
-          go test ./... -count=1 -timeout=20m
+          VMM_NATIVE_PACKAGED_ROOT="$GITHUB_WORKSPACE/output" VMM_PACKAGED_STORAGE_PROFILE=all go test ./... -count=1 -timeout=20m
           go vet ./...
           # Execute the required integration tests separately so missing dependencies cannot pass via skips.
           # 单独执行强制集成验收，缺少依赖导致的跳过不能被误记为通过。
-          go test ./internal/platform/ffi/nativelance ./internal/app -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' -count=1 -json > "$RUNNER_TEMP/native-acceptance.jsonl"
+          VMM_NATIVE_PACKAGED_ROOT="$GITHUB_WORKSPACE/output" VMM_PACKAGED_STORAGE_PROFILE=all \
+            go test ./internal/platform/ffi/nativelance ./internal/app -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' -count=1 -json > "$RUNNER_TEMP/native-acceptance.jsonl"
           python scripts/release.py check-tests "$RUNNER_TEMP/native-acceptance.jsonl"
+      - name: Sign and verify Windows binaries with Certum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VMM_CERTUM_PFX_BASE64: ${{ secrets.VMM_CERTUM_PFX_BASE64 }}
+          VMM_CERTUM_PFX_PASSWORD: ${{ secrets.VMM_CERTUM_PFX_PASSWORD }}
+          VMM_CERTUM_SUBJECT: ${{ secrets.VMM_CERTUM_SUBJECT }}
+          VMM_CERTUM_ISSUER: ${{ secrets.VMM_CERTUM_ISSUER }}
+          VMM_CERTUM_THUMBPRINT: ${{ secrets.VMM_CERTUM_THUMBPRINT }}
+          VMM_CERTUM_TIMESTAMP_URL: ${{ secrets.VMM_CERTUM_TIMESTAMP_URL }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $required = @(
+            'VMM_CERTUM_PFX_BASE64',
+            'VMM_CERTUM_PFX_PASSWORD',
+            'VMM_CERTUM_SUBJECT',
+            'VMM_CERTUM_ISSUER',
+            'VMM_CERTUM_THUMBPRINT',
+            'VMM_CERTUM_TIMESTAMP_URL'
+          )
+          foreach ($name in $required) {
+            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
+              throw "$name is required; Certum signing is not configured"
+            }
+          }
+          $expectedThumbprint = ($env:VMM_CERTUM_THUMBPRINT -replace '\s', '').ToUpperInvariant()
+          if ($expectedThumbprint -notmatch '^[0-9A-F]{40}$') { throw 'VMM_CERTUM_THUMBPRINT must be 40 hexadecimal characters' }
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'vmm-certum-signing.pfx'
+          $targets = @(
+            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-local.exe'),
+            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-migrate.exe'),
+            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-pii-tester.exe'),
+            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vldb-controller.exe'),
+            (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vmm_lancedb_native.dll'),
+            (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_sqlite.dll'),
+            (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_lancedb.dll')
+          )
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:VMM_CERTUM_PFX_BASE64))
+            $signTool = (Get-Command signtool.exe -ErrorAction Stop).Source
+            foreach ($target in $targets) {
+              if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Missing Windows binary: $target" }
+              & $signTool sign /fd SHA256 /f $pfxPath /p $env:VMM_CERTUM_PFX_PASSWORD /tr $env:VMM_CERTUM_TIMESTAMP_URL /td SHA256 $target
+              if ($LASTEXITCODE -ne 0) { throw "Certum signing failed: $target" }
+              & $signTool verify /pa /all /tw $target
+              if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $target" }
+              $signature = Get-AuthenticodeSignature -LiteralPath $target
+              if ($signature.Status -ne 'Valid') { throw "Authenticode status is not Valid: $target ($($signature.Status))" }
+              if ($signature.SignerCertificate.Subject -ne $env:VMM_CERTUM_SUBJECT) { throw "Unexpected Authenticode subject: $target" }
+              if ($signature.SignerCertificate.Issuer -ne $env:VMM_CERTUM_ISSUER) { throw "Unexpected Authenticode issuer: $target" }
+              if (($signature.SignerCertificate.Thumbprint -replace '\s', '').ToUpperInvariant() -ne $expectedThumbprint) { throw "Unexpected Authenticode thumbprint: $target" }
+              if ($null -eq $signature.TimeStamperCertificate) { throw "Authenticode timestamp is missing: $target" }
+            }
+          } finally {
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+          }
+      - name: Refresh signed native manifest digest
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release.py refresh-native-manifest --platform "$RELEASE_PLATFORM"
       - name: Create and verify release archive
         shell: bash
         run: python scripts/release.py package --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --platform "$RELEASE_PLATFORM"
+      - name: Write Windows Authenticode attestation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          VMM_CERTUM_SUBJECT: ${{ secrets.VMM_CERTUM_SUBJECT }}
+          VMM_CERTUM_ISSUER: ${{ secrets.VMM_CERTUM_ISSUER }}
+          VMM_CERTUM_THUMBPRINT: ${{ secrets.VMM_CERTUM_THUMBPRINT }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = @(
+            @{ Relative = 'bin/vmm-local.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-local.exe') },
+            @{ Relative = 'bin/vmm-migrate.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-migrate.exe') },
+            @{ Relative = 'bin/vmm-pii-tester.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-pii-tester.exe') },
+            @{ Relative = 'bin/vldb-controller.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vldb-controller.exe') },
+            @{ Relative = 'libs/vmm_lancedb_native.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vmm_lancedb_native.dll') },
+            @{ Relative = 'libs/vldb_sqlite.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_sqlite.dll') },
+            @{ Relative = 'libs/vldb_lancedb.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_lancedb.dll') }
+          )
+          $signTool = (Get-Command signtool.exe -ErrorAction Stop).Source
+          $expectedSubject = $env:VMM_CERTUM_SUBJECT
+          $expectedIssuer = $env:VMM_CERTUM_ISSUER
+          $expectedThumbprint = ($env:VMM_CERTUM_THUMBPRINT -replace '\s', '').ToUpperInvariant()
+          $attestedSubject = $null
+          $attestedIssuer = $null
+          $attestedThumbprint = $null
+          $files = foreach ($target in $targets) {
+            if (-not (Test-Path -LiteralPath $target.Absolute -PathType Leaf)) { throw "Missing packaged Windows binary: $($target.Relative)" }
+            $verifyOutput = & $signTool verify /pa /all /tw $target.Absolute 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Packaged Authenticode verification failed: $($target.Relative)" }
+            $signature = Get-AuthenticodeSignature -LiteralPath $target.Absolute
+            if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $null -eq $signature.TimeStamperCertificate) { throw "Unsigned Windows binary in attestation: $($target.Relative)" }
+            $fileSubject = [string]$signature.SignerCertificate.Subject
+            $fileIssuer = [string]$signature.SignerCertificate.Issuer
+            $fileThumbprint = ($signature.SignerCertificate.Thumbprint -replace '\s', '').ToUpperInvariant()
+            if ($fileSubject -ne $expectedSubject) { throw "Packaged Authenticode subject mismatch: $($target.Relative)" }
+            if ($fileIssuer -ne $expectedIssuer) { throw "Packaged Authenticode issuer mismatch: $($target.Relative)" }
+            if ($fileThumbprint -ne $expectedThumbprint) { throw "Packaged Authenticode thumbprint mismatch: $($target.Relative)" }
+            if ($null -eq $attestedSubject) {
+              $attestedSubject = $fileSubject
+              $attestedIssuer = $fileIssuer
+              $attestedThumbprint = $fileThumbprint
+            } elseif ($fileSubject -ne $attestedSubject -or $fileIssuer -ne $attestedIssuer -or $fileThumbprint -ne $attestedThumbprint) {
+              throw "Packaged Authenticode signer identity changed between files: $($target.Relative)"
+            }
+            $hash = (Get-FileHash -LiteralPath $target.Absolute -Algorithm SHA256).Hash.ToLowerInvariant()
+            [ordered]@{
+              path = $target.Relative
+              bytes = (Get-Item -LiteralPath $target.Absolute).Length
+              sha256 = $hash
+              status = 'Valid'
+            }
+          }
+          $archiveName = 'vulcan-memory-mesh-{0}-windows-x64.zip' -f $env:RELEASE_TAG
+          $archivePath = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'dist' $archiveName)
+          if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) { throw "Missing packaged Windows archive: $archivePath" }
+          $attestation = [ordered]@{
+            schema_version = 1
+            platform = 'windows-x64'
+            archive = $archiveName
+            archive_sha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            certificate = [ordered]@{
+              subject = $attestedSubject
+              issuer = $attestedIssuer
+              thumbprint = $attestedThumbprint
+              chain_status = 'Valid'
+              timestamp_status = 'Valid'
+            }
+            files = @($files)
+          }
+          $attestationPath = Join-Path $env:GITHUB_WORKSPACE 'dist/windows-authenticode.json'
+          $json = $attestation | ConvertTo-Json -Depth 6
+          [IO.File]::WriteAllText($attestationPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.platform }}
@@ -220,6 +387,9 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
+      VMM_CERTUM_SUBJECT: ${{ secrets.VMM_CERTUM_SUBJECT }}
+      VMM_CERTUM_ISSUER: ${{ secrets.VMM_CERTUM_ISSUER }}
+      VMM_CERTUM_THUMBPRINT: ${{ secrets.VMM_CERTUM_THUMBPRINT }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -228,11 +398,29 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.0'
+          cache: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Create and verify signed VMM manifest
+        shell: bash
+        env:
+          VMM_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.VMM_RELEASE_ED25519_PRIVATE_KEY }}
+          VMM_RELEASE_ED25519_KEY_ID: ${{ secrets.VMM_RELEASE_ED25519_KEY_ID }}
+          VMM_RELEASE_ED25519_PUBLIC_KEY: h2906GgOkZSmkYGWy3tV6/sH0+zyCcnhTZKjKx06cpM=
+        run: |
+          set -euo pipefail
+          [[ "$VMM_RELEASE_ED25519_KEY_ID" == "vmm-2026-09-23-01" ]] || {
+            echo 'VMM_RELEASE_ED25519_KEY_ID does not match the committed VMM trust metadata.' >&2
+            exit 1
+          }
+          go run ./scripts/sign_manifest.go manifest --dist "$GITHUB_WORKSPACE/dist" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+          go run ./scripts/sign_manifest.go verify --manifest "$GITHUB_WORKSPACE/dist/manifest.json" --signature "$GITHUB_WORKSPACE/dist/manifest.sig" --public-key-env VMM_RELEASE_ED25519_PUBLIC_KEY
       - name: Verify five-platform set and publish
         shell: bash
         run: python scripts/release.py publish --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"

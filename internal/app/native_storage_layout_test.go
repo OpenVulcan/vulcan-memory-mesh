@@ -132,6 +132,35 @@ func TestNativeLayoutHonorsAbsolutePaths(t *testing.T) {
 	}
 }
 
+// TestNativeLayoutRejectsPackagedResourcePaths verifies neither native database can be placed under managed package resources.
+// TestNativeLayoutRejectsPackagedResourcePaths 验证两个原生数据库都不能放在受管发行资源目录中。
+func TestNativeLayoutRejectsPackagedResourcePaths(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "output")
+	layout := config.PromptLayout{SystemDir: filepath.Join(root, "configs")}
+	for _, testCase := range []struct {
+		name string
+		path string
+		sqlite bool
+	}{
+		{name: "sqlite-in-libs", path: filepath.Join(root, "libs", "custom.db"), sqlite: true},
+		{name: "lancedb-in-bin", path: filepath.Join(root, "bin", "custom-vectors")},
+		{name: "sqlite-parent-of-configs", path: root, sqlite: true},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			cfg := config.DefaultLocal()
+			cfg.Storage.Mode = "native"
+			if testCase.sqlite {
+				cfg.SQLite.Native.Path = testCase.path
+			} else {
+				cfg.LanceDB.Native.Path = testCase.path
+			}
+			if _, err := resolveNativeStorageLayout(cfg, layout); err == nil {
+				t.Fatal("accepted native database inside packaged resources")
+			}
+		})
+	}
+}
+
 // TestNativeStorageOwnerReleasesPartialLocks proves failed construction cannot strand a database lock.
 // TestNativeStorageOwnerReleasesPartialLocks 验证构造失败后不会遗留数据库路径锁。
 func TestNativeStorageOwnerReleasesPartialLocks(t *testing.T) {

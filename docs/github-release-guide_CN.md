@@ -39,8 +39,10 @@ vulcan-memory-mesh-v0.1.0-<平台>/
   bin/vmm-local[.exe]
   bin/vmm-migrate[.exe]
   bin/vmm-pii-tester[.exe]
+  bin/vldb-controller[.exe]
   configs/...
-  libs/<平台的 LanceDB 动态库>
+  libs/<平台的 legacy SQLite/LanceDB 动态库>
+  libs/<平台的 native LanceDB 动态库>
   libs/manifest.json
   libs/native_lancedb-support/...
   VERSION
@@ -51,17 +53,62 @@ vulcan-memory-mesh-v0.1.0-<平台>/
   release-manifest.json
 ```
 
-发行包使用 `native` 存储，包含中文 GSE 分词与 FTS5，以及官方 LanceDB `0.39.0` 动态库。SQLite 不需要额外 DLL。不会带入测试数据库、用户覆盖配置或旧 VLDB/Controller 文件。
+每个平台发行包使用 `all` 依赖配置：同时包含 split 所需的 SQLite/LanceDB 动态库、controller 模式所需的 `vldb-controller`、native LanceDB ABI 及支持文件。解压后的 `configs/base.yaml` 默认仍为 `native`，安装器可以在下载并校验完整包后切换到 `split`、`controller` 或 `combined`。
+
+包内 `release-manifest.json` 的 `capabilities.schema_version` 为 `1`，明确记录 `split`、`controller`、`native`、`combined` 四种模式；`combined` 的 provider 为 `postgres`，检索 flavor 支持 `standard` 与 `paradedb`。PostgreSQL 服务端和扩展由用户按部署环境提供，不会伪装成平台本地依赖。
+
+不会带入测试数据库、用户覆盖配置或源码开发覆盖层 `configs/config.yaml`。
+
+### 配置资产边界
+
+发行脚本使用受控配置清单：`base.yaml`、`.env.example`、供应商示例、native 示例、配置模板，以及完整的 `noise_rules`、`pii_rules`、`prompts` 目录会进入发行包。源码中的 `configs/config.yaml` 是开发与测试覆盖层，可能引用 `DEEPSEEK_API_KEY`、`BAILIAN_API_KEY` 等环境变量，明确不会进入公开发行包。未来新增 `configs/` 文件时，必须先登记到 `scripts/release.py` 的发行清单；未登记文件会使打包失败，避免未知覆盖层或凭据配置被发布。
 
 解压时保持整个目录结构。配置自己的模型端点与凭据后，从 `bin/` 目录启动 `vmm-local`；用户覆盖仍来自 `~/.vmm` 或 `-config` 指定的覆盖根。模型配置、PII、Noise 和 Prompt 覆盖规则与源码运行一致。详情见包内 `NATIVE_STORAGE.md`。
 
 ## 构建与失败处理
 
 - Go 固定为 `1.27.0`，Rust 使用 `native/lancedb/rust-toolchain.toml`，Rust 依赖使用 `Cargo.lock`。
+- `all` 发行构建还会安装并校验固定版本的 `vldb_sqlite`、`vldb_lancedb` 与 `vldb-controller` 宿主依赖；这些文件必须和 native manifest 一起通过平台级 staging 校验。
 - 原生库缓存按平台、原生源码和制备脚本摘要隔离。缓存恢复后仍执行正式清单校验；日常 Go 构建不会自动编译 Rust。
 - 五个平台全部完成后才进入发布任务。先上传草稿，下载并核对所有文件的 SHA-256，然后转为正式 Release。
-- Release 附带五个压缩包、五份外部平台清单及 `SHA256SUMS`。包内清单还记录各文件摘要。
+- Release 附带五个压缩包、五份外部平台清单、`manifest.json`、`manifest.sig`、`windows-authenticode.json` 及 `SHA256SUMS`。清单记录各文件摘要与 Windows Authenticode 证明。
 - 已公开发布的同名版本拒绝覆盖。上传中断时保留草稿，可重新运行同一版本。若首次构建因源码或测试问题失败且尚未公开发布，先等待旧任务结束并提交修复，再以限定旧标签对象的 `--force-with-lease` 更新该标签，随后重新手动触发工作流；已发布标签不应移动。
 - 普通测试中需要真实云凭据或旧 VLDB 产物的测试可能跳过；四项强制原生验收明确拒绝跳过，缺库不得视为成功。
 
 runner 标签依据 [GitHub 官方支持列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。工作流使用仓库提供的 `GITHUB_TOKEN`，无需额外发布令牌；私有仓库需要可用的 GitHub Actions 配额。
+## 签名清单与正式发布门禁
+
+仓库中的 `v0.1.0` 已发布包仍是 native-only 版本。`all` 依赖包需要使用新的发行构建流程重新构建，不能把旧包当作支持 split、controller 或 combined 的完整包。
+
+每个平台的 all-profile 压缩包会在 Release 外层配套以下公开元数据：
+
+- `manifest.json`：protocol v1 清单，记录产品 `vmm`、发行标签、完整提交 SHA，以及 Windows x64、Linux x64、Linux ARM64、macOS Intel、macOS ARM64 五个压缩包的精确字节数和 SHA-256。
+- `manifest.sig`：对 `manifest.json` 原始字节的 Ed25519 分离式签名，封装字段为 `version`、`key_id`、`signature`。
+- `windows-authenticode.json`：Windows 四个可执行文件和三个 DLL 的 Authenticode 校验结果、Certum 证书主体、签发者、指纹、时间戳状态，以及与 Windows 压缩包绑定的文件摘要。
+- `SHA256SUMS`：包含五个平台压缩包、平台元数据、`manifest.json`、`manifest.sig` 和 Windows 签名证明的摘要。
+
+VMM 的公开信任根位于 [docs/release-public-keys.md](release-public-keys.md)：`key_id` 为 `vmm-2026-09-23-01`，公钥为该文档中的 Base64 值。VMM GitHub Actions 只从以下 Secrets 读取发行密钥，私钥不得写入仓库：
+
+- `VMM_RELEASE_ED25519_PRIVATE_KEY`
+- `VMM_RELEASE_ED25519_KEY_ID`
+
+Windows Certum 签名使用以下独立 Secrets：
+
+- `VMM_CERTUM_PFX_BASE64`
+- `VMM_CERTUM_PFX_PASSWORD`
+- `VMM_CERTUM_SUBJECT`
+- `VMM_CERTUM_ISSUER`
+- `VMM_CERTUM_THUMBPRINT`
+- `VMM_CERTUM_TIMESTAMP_URL`
+
+发布工作流会先用 Certum PFX 和时间戳服务签名 Windows 的 `vmm-local.exe`、`vmm-migrate.exe`、`vmm-pii-tester.exe`、`vldb-controller.exe`、`vmm_lancedb_native.dll`、`vldb_sqlite.dll` 和 `vldb_lancedb.dll`，再用 `signtool verify` 和 PowerShell Authenticode 校验主体、证书链、指纹与时间戳。签名会改变原生 DLL 字节，工作流随后只刷新 `libs/manifest.json` 的 `library_sha256`，保留其余原生身份字段，再重新验收并打包。缺少 Certum PFX、密码、证书身份或时间戳服务时，Windows 构建直接失败；缺少或篡改 `windows-authenticode.json`、压缩包摘要或签名清单时，发布任务也会失败。工作流不会通过布尔环境变量绕过真实签名。
+
+通过校验后，发布任务先创建 GitHub Draft Release，上传全部资产，重新下载并逐文件核对摘要，最后才将草稿转为公开 Release。管理器在安装前还会使用内置 VMM 公钥验证 `manifest.sig`。
+
+### 宿主 VLDB 依赖的固定摘要
+
+`all` profile 使用的 legacy SQLite、LanceDB 和 `vldb-controller` 压缩包由 `scripts/host_deps_sha256.tsv` 固定记录。清单覆盖 Windows x64、Linux x64、Linux ARM64、macOS Intel 和 macOS ARM64 共五个平台，每个平台包含三类依赖。
+
+`scripts/install_host_deps.sh` 与 `scripts/install_host_deps.ps1` 只接受清单中精确的仓库、标签和资产名。下载完成后直接对压缩包计算 SHA-256；不会把同一 Release 中可替换的 `.sha256` 资产当作信任根。本地缓存压缩包也必须匹配仓库清单，缺少、重复、格式错误或摘要不匹配时立即失败。
+
+已安装缓存的 marker 同时记录压缩包摘要和解压后文件摘要。旧格式或不完整 marker 会被视为未验证缓存并重新校验。变更 VLDB 版本或资产时，必须先从对应官方 GitHub Release 获取实际资产摘要，再成对更新两个宿主脚本和 `host_deps_sha256.tsv`，不能填写占位摘要。

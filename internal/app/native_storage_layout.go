@@ -20,6 +20,16 @@ type nativeStorageLayout struct {
 	LanceDBLibrary   string
 }
 
+// PreflightNativeStorageLayout checks packaged native paths and overlap without opening a database or creating files.
+// PreflightNativeStorageLayout 不打开数据库或创建文件，仅检查打包环境中的原生路径及相互包含关系。
+func PreflightNativeStorageLayout(cfg config.Config, promptLayout config.PromptLayout) error {
+	if cfg.StorageMode() != "native" || !isPackagedSystemDir(promptLayout.SystemDir) {
+		return nil
+	}
+	_, err := resolveNativeStorageLayout(cfg, promptLayout)
+	return err
+}
+
 // resolveNativeStorageLayout resolves configured paths against packaged roots without creating files.
 // resolveNativeStorageLayout 将配置路径相对于打包根解析，不创建文件，失败时返回具体路径错误。
 func resolveNativeStorageLayout(cfg config.Config, promptLayout config.PromptLayout) (nativeStorageLayout, error) {
@@ -48,6 +58,14 @@ func resolveNativeStorageLayout(cfg config.Config, promptLayout config.PromptLay
 	}
 	lancePath, err := resolveNativePath(outputRoot, cfg.LanceDB.Native.Path)
 	if err != nil {
+		return nativeStorageLayout{}, fmt.Errorf("lancedb.native.path: %w", err)
+	}
+	// Keep native database files outside packaged binaries, libraries, and system configuration across upgrades.
+	// 将原生数据库文件与打包二进制、动态库和系统配置隔离，避免升级时污染或删除数据。
+	if err := rejectProtectedDataRoot(sqlitePath, artifactRoot); err != nil {
+		return nativeStorageLayout{}, fmt.Errorf("sqlite.native.path: %w", err)
+	}
+	if err := rejectProtectedDataRoot(lancePath, artifactRoot); err != nil {
 		return nativeStorageLayout{}, fmt.Errorf("lancedb.native.path: %w", err)
 	}
 	if nativePathContains(lancePath, sqlitePath) || nativePathContains(sqlitePath, lancePath) {

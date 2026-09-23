@@ -23,6 +23,7 @@ $TesterExePath = Join-Path $BinDir "vmm-pii-tester.exe"
 $ThirdPartyDepsDir = Join-Path (Join-Path $RootDir "third_party") "deps"
 $NativeDepsRoot = Join-Path $ThirdPartyDepsDir "native_lancedb"
 $NativeValidatorScript = Join-Path $ScriptDir "validate_native_artifacts.ps1"
+$HostDependencyChecksumManifest = Join-Path $ScriptDir "host_deps_sha256.tsv"
 $NativeEngineVersion = "0.39.0"
 $SourceRevision = "unknown"
 $SourceStateDigest = "unknown"
@@ -181,20 +182,182 @@ function Get-ControllerBinaryName {
     return "vldb-controller"
 }
 
-# Get-VerifiedHostDependencyPath checks the installer marker before a legacy artifact can enter output/libs.
-# Get-VerifiedHostDependencyPath 在 legacy 产物进入 output/libs 前校验安装标记。
+# Remove-SafeTemporaryDirectory removes only a directory created by this process under the system temp root.
+# Remove-SafeTemporaryDirectory 只删除本进程在系统临时根下创建的目录。
+function Remove-SafeTemporaryDirectory {
+    param([Parameter(Mandatory=$true)] [pscustomobject]$State)
+    if ([string]::IsNullOrWhiteSpace([string]$State.Path) -or [string]::IsNullOrWhiteSpace([string]$State.Root) -or [string]::IsNullOrWhiteSpace([string]$State.Token) -or [string]::IsNullOrWhiteSpace([string]$State.OwnerPath)) {
+        throw "temporary directory ownership state is incomplete / 临时目录所有权状态不完整。"
+    }
+    $RootFullPath = [IO.Path]::GetFullPath($State.Root).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    $DirectoryFullPath = [IO.Path]::GetFullPath($State.Path)
+    if ($DirectoryFullPath -eq $RootFullPath -or -not $DirectoryFullPath.StartsWith($RootFullPath + [IO.Path]::DirectorySeparatorChar, [StringComparison]::OrdinalIgnoreCase)) {
+        throw "refusing to remove temporary path outside system temp root: $DirectoryFullPath"
+    }
+    $ExpectedOwnerPath = Join-Path $DirectoryFullPath (".vmm-temp-owner-{0}" -f $State.Token)
+    if ([IO.Path]::GetFullPath([string]$State.OwnerPath) -ne [IO.Path]::GetFullPath($ExpectedOwnerPath)) {
+        throw "temporary directory ownership marker path mismatch: $DirectoryFullPath"
+    }
+    if (-not (Test-Path -LiteralPath $DirectoryFullPath)) { return }
+    $DirectoryItem = Get-Item -LiteralPath $DirectoryFullPath -Force
+    if ($DirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "refusing to remove a reparse-point temporary directory: $DirectoryFullPath"
+    }
+    if (-not (Test-Path -LiteralPath $ExpectedOwnerPath -PathType Leaf)) {
+        throw "temporary directory ownership marker is missing: $DirectoryFullPath"
+    }
+    $OwnerItem = Get-Item -LiteralPath $ExpectedOwnerPath -Force
+    if ($OwnerItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw "temporary directory ownership marker must not be a reparse point: $ExpectedOwnerPath"
+    }
+    if ([IO.File]::ReadAllText($ExpectedOwnerPath) -cne [string]$State.Token) {
+        throw "temporary directory ownership marker mismatch: $DirectoryFullPath"
+    }
+    Remove-Item -LiteralPath $DirectoryFullPath -Recurse -Force -ErrorAction Stop
+}
+
+# New-SafeTemporaryDirectory creates a random exclusive workspace and records an in-memory ownership token.
+# New-SafeTemporaryDirectory 创建随机独占工作区，并记录内存中的所有权令牌。
+function New-SafeTemporaryDirectory {
+    param([Parameter(Mandatory=$true)] [string]$Prefix)
+    $TempRoot = [IO.Path]::GetFullPath([IO.Path]::GetTempPath()).TrimEnd([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar)
+    if (-not (Test-Path -LiteralPath $TempRoot -PathType Container)) { throw "system temp root is unavailable: $TempRoot" }
+    $TempRootItem = Get-Item -LiteralPath $TempRoot -Force
+    if ($TempRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "system temp root must not be a reparse point: $TempRoot" }
+    $SafePrefix = ($Prefix -replace '[^A-Za-z0-9._-]', '_')
+    if ([string]::IsNullOrWhiteSpace($SafePrefix)) { $SafePrefix = "vmm" }
+    for ($Attempt = 0; $Attempt -lt 20; $Attempt++) {
+        $OwnerToken = [Guid]::NewGuid().ToString("N")
+        $Candidate = Join-Path $TempRoot ("{0}_{1}_{2}" -f $SafePrefix, $OwnerToken, $PID)
+        if (Test-Path -LiteralPath $Candidate) { continue }
+        try {
+            $Created = New-Item -ItemType Directory -Path $Candidate -ErrorAction Stop
+        }
+        catch {
+            if (Test-Path -LiteralPath $Candidate) { continue }
+            throw
+        }
+        $CreatedItem = Get-Item -LiteralPath $Created.FullName -Force
+        if ($CreatedItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw "new temporary directory unexpectedly became a reparse point: $($CreatedItem.FullName)"
+        }
+        $OwnerPath = Join-Path $CreatedItem.FullName (".vmm-temp-owner-{0}" -f $OwnerToken)
+        try {
+            [IO.File]::WriteAllText($OwnerPath, $OwnerToken, [Text.Encoding]::ASCII)
+        }
+        catch {
+            throw
+        }
+        return [pscustomobject]@{ Path = $CreatedItem.FullName; Root = $TempRoot; Token = $OwnerToken; OwnerPath = $OwnerPath }
+    }
+    throw "unable to create an exclusive temporary directory under $TempRoot"
+}
+
+# Get-PinnedHostArchiveHash resolves one exact archive digest from the checked-in manifest.
+# Get-PinnedHostArchiveHash 从仓库内固定清单解析唯一压缩包摘要。
+function Get-PinnedHostArchiveHash {
+    param(
+        [Parameter(Mandatory=$true)] [string]$Repo,
+        [Parameter(Mandatory=$true)] [string]$Tag,
+        [Parameter(Mandatory=$true)] [string]$Asset
+    )
+    if (-not (Test-Path -LiteralPath $HostDependencyChecksumManifest -PathType Leaf)) {
+        throw "missing host dependency checksum manifest: $HostDependencyChecksumManifest"
+    }
+    $ManifestItem = Get-Item -LiteralPath $HostDependencyChecksumManifest -Force
+    if ($ManifestItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "host dependency checksum manifest must not be a reparse point: $HostDependencyChecksumManifest" }
+    $Rows = New-Object System.Collections.Generic.List[object]
+    $Seen = @{}
+    $LineNumber = 0
+    foreach ($Line in (Get-Content -LiteralPath $HostDependencyChecksumManifest -Encoding UTF8)) {
+        $LineNumber++
+        if ([string]::IsNullOrWhiteSpace($Line) -or $Line.TrimStart().StartsWith("#")) { continue }
+        $Parts = $Line -split "`t"
+        if ($Parts.Count -ne 4 -or ($Parts | Where-Object { [string]::IsNullOrWhiteSpace($_) }).Count -gt 0) {
+            throw "invalid host dependency checksum manifest row $LineNumber"
+        }
+        $Hash = [string]$Parts[3]
+        if ($Hash -notmatch '^[0-9a-fA-F]{64}$') { throw "invalid host dependency SHA256 at manifest row $LineNumber" }
+        $Key = "$($Parts[0])`t$($Parts[1])`t$($Parts[2])"
+        if ($Seen.ContainsKey($Key)) { throw "duplicate host dependency checksum manifest row $LineNumber" }
+        $Seen[$Key] = $true
+        [void]$Rows.Add([pscustomobject]@{ Repo = [string]$Parts[0]; Tag = [string]$Parts[1]; Asset = [string]$Parts[2]; Hash = $Hash.ToLowerInvariant() })
+    }
+    if ($Rows.Count -ne 15) { throw "host dependency checksum manifest must contain exactly 15 records" }
+    $Matches = @($Rows | Where-Object { $_.Repo -ceq $Repo -and $_.Tag -ceq $Tag -and $_.Asset -ceq $Asset })
+    if ($Matches.Count -ne 1) { throw "missing or duplicate pinned SHA256 for $Repo $Tag $Asset" }
+    return ([string]$Matches[0].Hash).ToLowerInvariant()
+}
+
+# Get-HostDependencyReleaseInfo maps one installed artifact to its immutable official archive.
+# Get-HostDependencyReleaseInfo 将一个已安装产物映射到不可变的官方压缩包。
+function Get-HostDependencyReleaseInfo {
+    param([Parameter(Mandatory=$true)] [ValidateSet("sqlite", "lancedb", "controller")] [string]$Kind)
+    $Target = Get-NativeTarget
+    $ArchiveExtension = if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) { ".zip" } else { ".tar.gz" }
+    switch ($Kind) {
+        "sqlite" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-sqlite"; Tag = "v0.1.6"; Asset = "vldb-sqlite-lib-v0.1.6-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_sqlite" } }
+        "lancedb" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-lancedb"; Tag = "v0.1.5"; Asset = "vldb-lancedb-lib-v0.1.5-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_lancedb" } }
+        "controller" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-controller"; Tag = "v0.2.3"; Asset = "vldb-controller-v0.2.3-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_controller" } }
+    }
+}
+
+# Get-VerifiedHostDependencyPath revalidates the official archive and extracted artifact before packaging.
+# Get-VerifiedHostDependencyPath 在打包前重新校验官方压缩包及其解压产物。
 function Get-VerifiedHostDependencyPath {
     param([Parameter(Mandatory=$true)] [ValidateSet("sqlite", "lancedb", "controller")] [string]$Kind, [Parameter(Mandatory=$true)] [string]$FileName)
     $SourcePath = Join-Path $ThirdPartyDepsDir $FileName
     if (-not (Test-Path -LiteralPath $SourcePath -PathType Leaf)) { throw "missing host dependency: $SourcePath. Run '.\make.ps1 deps host' first." }
-    $MarkerDirectoryName = switch ($Kind) { "sqlite" { "vldb_sqlite" } "lancedb" { "vldb_lancedb" } "controller" { "vldb_controller" } }
-    $MarkerDirectory = Join-Path (Split-Path $ThirdPartyDepsDir -Parent) $MarkerDirectoryName
+    $SourceItem = Get-Item -LiteralPath $SourcePath -Force
+    if ($SourceItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "host dependency must not be a reparse point: $SourcePath" }
+    $ReleaseInfo = Get-HostDependencyReleaseInfo -Kind $Kind
+    $MarkerDirectory = Join-Path (Split-Path $ThirdPartyDepsDir -Parent) $ReleaseInfo.MarkerDirectoryName
+    if (-not (Test-Path -LiteralPath $MarkerDirectory -PathType Container)) { throw "missing host dependency cache directory: $MarkerDirectory" }
+    $MarkerDirectoryItem = Get-Item -LiteralPath $MarkerDirectory -Force
+    if ($MarkerDirectoryItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "host dependency cache directory must not be a reparse point: $MarkerDirectory" }
+    $ArchivePath = Join-Path $MarkerDirectory $ReleaseInfo.Asset
+    if (-not (Test-Path -LiteralPath $ArchivePath -PathType Leaf)) { throw "missing trusted host dependency archive: $ArchivePath. Run '.\make.ps1 deps host' first." }
+    $ArchiveItem = Get-Item -LiteralPath $ArchivePath -Force
+    if ($ArchiveItem.Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "host dependency archive must not be a reparse point: $ArchivePath" }
+    $ExpectedArchiveHash = Get-PinnedHostArchiveHash -Repo $ReleaseInfo.Repo -Tag $ReleaseInfo.Tag -Asset $ReleaseInfo.Asset
+    $ActualArchiveHash = Get-Sha256 -Path $ArchivePath
+    if ($ActualArchiveHash -cne $ExpectedArchiveHash) { throw "host dependency archive checksum mismatch: $ArchivePath" }
     $Markers = @(Get-ChildItem -LiteralPath $MarkerDirectory -Filter ".installed-*" -File -ErrorAction SilentlyContinue)
     if ($Markers.Count -ne 1) { throw "expected exactly one installed marker for $Kind under $MarkerDirectory" }
-    $ExpectedHash = (Get-Content -LiteralPath $Markers[0].FullName -Raw).Trim().ToLowerInvariant()
-    $ActualHash = Get-Sha256 -Path $SourcePath
-    if ([string]::IsNullOrWhiteSpace($ExpectedHash) -or $ExpectedHash -ne $ActualHash) { throw "host dependency checksum mismatch: $SourcePath" }
-    return $SourcePath
+    if ($Markers[0].Attributes -band [IO.FileAttributes]::ReparsePoint) { throw "host dependency marker must not be a reparse point: $($Markers[0].FullName)" }
+    $ExpectedMarkerName = ".installed-$($ReleaseInfo.Tag)-$((Get-NativeTarget))"
+    if ($Markers[0].Name -cne $ExpectedMarkerName) { throw "host dependency marker identity mismatch: $($Markers[0].FullName)" }
+    $MarkerLines = @(Get-Content -LiteralPath $Markers[0].FullName -Encoding ASCII)
+    if ($MarkerLines.Count -ne 2) { throw "host dependency marker must contain exactly two lines: $($Markers[0].FullName)" }
+    $MarkerArchiveHash = [string]$MarkerLines[0]
+    $MarkerInstalledHash = [string]$MarkerLines[1]
+    if ($MarkerArchiveHash -notmatch '^[0-9a-f]{64}$' -or $MarkerInstalledHash -notmatch '^[0-9a-f]{64}$') { throw "host dependency marker must contain two lowercase SHA256 values: $($Markers[0].FullName)" }
+    if ($MarkerArchiveHash -cne $ExpectedArchiveHash) { throw "host dependency marker archive checksum mismatch: $($Markers[0].FullName)" }
+
+    # Re-extract the fixed archive so a jointly forged marker and installed file cannot pass the package gate.
+    # 重新解压固定压缩包，防止伪造 marker 与已安装文件共同绕过打包校验。
+    $VerifyState = New-SafeTemporaryDirectory -Prefix ("vmm-host-verify_{0}" -f $Kind)
+    $VerifyDir = $VerifyState.Path
+    try {
+        if ($ArchivePath.EndsWith(".zip", [StringComparison]::OrdinalIgnoreCase)) {
+            Expand-Archive -LiteralPath $ArchivePath -DestinationPath $VerifyDir -Force
+        }
+        else {
+            $TarCommand = Get-Command tar -CommandType Application -ErrorAction Stop | Select-Object -First 1
+            & $TarCommand.Source -xzf $ArchivePath -C $VerifyDir
+            if ($LASTEXITCODE -ne 0) { throw "failed to extract trusted host dependency archive: $ArchivePath" }
+        }
+        $TrustedCandidates = @(Get-ChildItem -LiteralPath $VerifyDir -Recurse -File -Filter $FileName -ErrorAction SilentlyContinue | Where-Object { ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -eq 0 })
+        if ($TrustedCandidates.Count -ne 1) { throw "trusted host dependency artifact identity mismatch in ${ArchivePath}: $FileName" }
+        $TrustedInstalledHash = Get-Sha256 -Path $TrustedCandidates[0].FullName
+        $ActualInstalledHash = Get-Sha256 -Path $SourcePath
+        if ($ActualInstalledHash -cne $TrustedInstalledHash) { throw "host dependency artifact differs from trusted archive: $SourcePath" }
+        if ($MarkerInstalledHash -cne $ActualInstalledHash -or $MarkerInstalledHash -cne $TrustedInstalledHash) { throw "host dependency marker installed checksum mismatch: $($Markers[0].FullName)" }
+        return $SourcePath
+    }
+    finally {
+        Remove-SafeTemporaryDirectory -State $VerifyState
+    }
 }
 
 # Assert-NativeArtifact calls the standalone validator so packaging never trusts a filename-only native library.

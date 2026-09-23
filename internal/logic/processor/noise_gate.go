@@ -113,7 +113,7 @@ func NewNoiseGate(ctx context.Context, embedding logicports.EmbeddingClient, log
 		gate.defaultLanguage = "zh-CN"
 	}
 	if gate.semanticThreshold <= 0 {
-		gate.semanticThreshold = 0.88
+		gate.semanticThreshold = defaultNoiseSemanticThreshold
 	}
 	// Warn when common.json is missing so operators know that universal noise categories (greetings, acknowledgments) are not active.
 	// 当 common.json 缺失时发出警告，让运维知道通用噪声类别（问候语、确认语）未生效。

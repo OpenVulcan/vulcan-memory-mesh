@@ -54,6 +54,26 @@ func runMain(args []string) int {
 		}
 		return 0
 	}
+
+	configCommand, ok, err := parseConfigCommand(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	if ok {
+		return runConfigCommand(configCommand, exePath, wd, os.Stdout, os.Stderr)
+	}
+
+	// Probe the running instance through its own Healthz RPC before runtime flag parsing.
+	// 在解析前台运行参数前，通过运行实例自身的 Healthz RPC 探测健康状态。
+	healthCommand, ok, err := parseHealthCommand(args)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "%v\n", err)
+		return 1
+	}
+	if ok {
+		return runHealthCommand(healthCommand, exePath, wd, os.Stdout, os.Stderr)
+	}
 	if hasVersionJSONFlag(args) {
 		if err := buildinfo.WriteVersionJSON(os.Stdout, "vmm-local"); err != nil {
 			fmt.Fprintf(os.Stderr, "failed to write version document: %v\n", err)

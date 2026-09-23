@@ -33,20 +33,20 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	layerBodies := make(map[string][]byte, len(normalizedPaths))
 	referencedEnvKeys, envReferences, err := collectReferencedEnvKeysFromConfigPaths(normalizedPaths)
 	if err != nil {
-		return Config{}, fmt.Errorf("parse config: %w", err)
+		return Config{}, WrapConfigLoadError(ConfigLoadStageRead, fmt.Errorf("parse config: %w", err))
 	}
 	for _, path := range normalizedPaths {
 		body, readErr := os.ReadFile(path)
 		if readErr != nil {
-			return Config{}, fmt.Errorf("read config: %w", readErr)
+			return Config{}, WrapConfigLoadError(ConfigLoadStageRead, fmt.Errorf("read config: %w", readErr))
 		}
 		layerBodies[path] = body
 	}
 	if err := loadDotEnv(normalizedPaths, referencedEnvKeys); err != nil {
-		return Config{}, err
+		return Config{}, WrapConfigLoadError(ConfigLoadStageEnvironment, err)
 	}
 	if err := validateRequiredEnvReferences(envReferences); err != nil {
-		return Config{}, err
+		return Config{}, WrapConfigLoadError(ConfigLoadStageEnvironment, err)
 	}
 
 	// Read configuration layers in order so later files override earlier ones.
@@ -56,28 +56,28 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 		expandedBody := os.ExpandEnv(string(body))
 		expandedBytes, err := decodeConfigLayer(path, []byte(expandedBody))
 		if err != nil {
-			return Config{}, fmt.Errorf("parse config layer %q: %w", path, err)
+			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("parse config layer %q: %w", path, err))
 		}
 		if err := applyLayeredAIKeyOverrideReset(&cfg, expandedBytes); err != nil {
-			return Config{}, fmt.Errorf("apply AI key override reset in config layer %q: %w", path, err)
+			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("apply AI key override reset in config layer %q: %w", path, err))
 		}
 		if err := unmarshalStrictConfigLayer(expandedBytes, &cfg); err != nil {
-			return Config{}, fmt.Errorf("unmarshal config layer %q: %w", path, err)
+			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("unmarshal config layer %q: %w", path, err))
 		}
 	}
 
 	// Apply environment overrides and then finalize normalization plus validation.
 	// 应用环境变量覆盖，然后完成归一化与校验。
 	if err := validateRemovedAIEnvOverrides(referencedEnvKeys); err != nil {
-		return Config{}, err
+		return Config{}, WrapConfigLoadError(ConfigLoadStageEnvironment, err)
 	}
 	envOverrideParseFailures := applyEnvOverrides(&cfg, collectReferencedEnvOverrideKeys(envReferences))
 	if len(envOverrideParseFailures) > 0 {
-		return Config{}, fmt.Errorf("parse env overrides: %v", envOverrideParseFailures)
+		return Config{}, WrapConfigLoadError(ConfigLoadStageEnvironment, fmt.Errorf("parse env overrides: %v", envOverrideParseFailures))
 	}
 	cfg.Normalize()
 	if err := cfg.Validate(); err != nil {
-		return Config{}, err
+		return Config{}, WrapConfigLoadError(ConfigLoadStageValidation, err)
 	}
 	return cfg, nil
 }
@@ -480,11 +480,11 @@ func collectReferencedEnvKeysFromConfigPaths(paths []string) (map[string]struct{
 	for _, path := range paths {
 		body, err := os.ReadFile(path)
 		if err != nil {
-			return nil, nil, fmt.Errorf("read config: %w", err)
+			return nil, nil, WrapConfigLoadError(ConfigLoadStageRead, fmt.Errorf("read config: %w", err))
 		}
 		layerValue, err := decodeRawConfigLayer(path, body)
 		if err != nil {
-			return nil, nil, err
+			return nil, nil, WrapConfigLoadError(ConfigLoadStageParse, err)
 		}
 		collectEnvReferencesInValue(layerValue, referenced, &references, path, "")
 	}

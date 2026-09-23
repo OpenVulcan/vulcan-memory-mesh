@@ -96,7 +96,7 @@ func runMaintenanceClean(ctx context.Context, cfg config.Config, layout config.P
 	if usesOwnedMaintenanceStorage(cfg, selection) {
 		var sqliteDatabase, lanceDBDirectory string
 		if cfg.UsesController() {
-			localLayout, layoutErr := app.ResolveLocalStorageLayoutForPromptLayout(layout)
+			localLayout, layoutErr := app.ResolveLocalStorageLayoutForConfig(cfg, layout)
 			if layoutErr != nil {
 				return layoutErr
 			}
@@ -113,7 +113,7 @@ func runMaintenanceClean(ctx context.Context, cfg config.Config, layout config.P
 	// Execute each destructive cleanup sequentially so operators can see exactly which backend blocked the wipe.
 	// 按顺序执行每个破坏性清理动作，确保运维能明确看到究竟是哪个后端阻塞了清空。
 	if selection.SQLite || selection.LanceDB {
-		localLayout, layoutErr := app.ResolveLocalStorageLayoutForPromptLayout(layout)
+		localLayout, layoutErr := app.ResolveLocalStorageLayoutForConfig(cfg, layout)
 		if layoutErr != nil {
 			return layoutErr
 		}

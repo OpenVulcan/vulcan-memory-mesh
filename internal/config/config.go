@@ -226,6 +226,9 @@ type NoiseConfig struct {
 type StorageConfig struct {
 	Mode             string `json:"mode"`
 	CombinedProvider string `json:"combined_provider"`
+	// LocalDataRoot selects the physical root for split/controller SQLite and LanceDB data.
+	// LocalDataRoot 用于选择 split/controller SQLite 与 LanceDB 数据的物理根目录。
+	LocalDataRoot string `json:"local_data_root,omitempty"`
 }
 
 // SQLiteConfig holds shared and mode-specific SQLite runtime options for the relational backend.

@@ -85,8 +85,8 @@ func (b *threadSafePackagedBuffer) String() string {
 	return b.buf.String()
 }
 
-// TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts starts the exact packaged executable against temporary native paths and verifies relational admin writes and reads.
-// TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts 使用精确的打包可执行文件连接临时原生路径，并验证关系管理接口的写入与读取。
+// TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts starts the exact packaged executable and verifies native plus all-profile legacy storage paths.
+// TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts 使用精确的打包可执行文件验证原生路径及 all 配置中的 legacy 存储链路。
 func TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts(t *testing.T) {
 	packagedRoot := packagedNativeRootOrSkip(t)
 	binaryPath := filepath.Join(packagedRoot, "bin", packagedNativeExecutableName())
@@ -268,6 +268,229 @@ func TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts(t *testing.T) {
 	if got := unexpectedAIRequests.Load(); got != 0 {
 		t.Fatalf("unexpected background or LLM provider requests during shutdown: %d", got)
 	}
+
+	// The all-profile package must prove the two legacy modes through the same packaged executable, not only by listing their files.
+	// all 配置发行包必须通过同一个打包可执行文件真实验证两种 legacy 模式，不能只检查文件清单。
+	if os.Getenv("VMM_PACKAGED_STORAGE_PROFILE") == "all" {
+		for _, profile := range []string{"split", "controller"} {
+			t.Run("legacy-"+profile, func(t *testing.T) {
+				runPackagedLegacyStorageAcceptance(t, packagedRoot, binaryPath, profile, provider.URL)
+			})
+		}
+	}
+}
+
+// runPackagedLegacyStorageAcceptance starts one staged release in split or controller mode and proves relational plus vector write/read behavior.
+// runPackagedLegacyStorageAcceptance 启动一个暂存发行包的 split 或 controller 模式，并验证关系与向量存储的写入读取。
+func runPackagedLegacyStorageAcceptance(t *testing.T, packagedRoot, binaryPath, profile, providerEndpoint string) {
+	t.Helper()
+	if profile != "split" && profile != "controller" {
+		t.Fatalf("unsupported legacy acceptance profile %q", profile)
+	}
+	dataRoot := t.TempDir()
+	configRoot := filepath.Join(t.TempDir(), "config-root")
+	if err := os.MkdirAll(configRoot, 0o700); err != nil {
+		t.Fatalf("create temporary %s config root: %v", profile, err)
+	}
+	grpcAddress := reservePackagedGRPCAddress(t)
+	controllerEndpoint := ""
+	controllerExecutable := ""
+	if profile == "controller" {
+		controllerEndpoint = "http://" + reservePackagedGRPCAddress(t)
+		controllerExecutable = filepath.Join(packagedRoot, "bin", packagedControllerExecutableName())
+	}
+	if err := writePackagedLegacyAcceptanceConfig(configRoot, grpcAddress, dataRoot, profile, controllerEndpoint, controllerExecutable, providerEndpoint); err != nil {
+		t.Fatalf("write packaged %s acceptance config: %v", profile, err)
+	}
+
+	cmd, waitCh, stdout, stderr, err := startPackagedRuntime(binaryPath, packagedRoot, configRoot, providerEndpoint)
+	if err != nil {
+		t.Fatalf("start packaged %s runtime: %v", profile, err)
+	}
+	stopped := false
+	t.Cleanup(func() {
+		if stopped {
+			return
+		}
+		if stopErr := stopPackagedRuntime(cmd, waitCh); stopErr != nil {
+			t.Logf("stop packaged %s runtime: %v", profile, stopErr)
+		}
+	})
+
+	conn, err := waitForPackagedHealth(grpcAddress)
+	if err != nil {
+		t.Fatalf("wait for packaged %s health: %v\nstdout:\n%s\nstderr:\n%s", profile, err, stdout.String(), stderr.String())
+	}
+	t.Cleanup(func() { _ = conn.Close() })
+	client := vmmv1.NewVMMServiceClient(conn)
+
+	// EnsureProject and ResolveUser prove durable relation writes and reads before the vector pipeline is exercised.
+	// EnsureProject 与 ResolveUser 先验证关系存储的持久写入读取，再进入向量流水线。
+	projectPath := "PackagedIT/Legacy/" + profile
+	projectCtx, projectCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	projectResult, err := client.EnsureProject(projectCtx, &vmmv1.EnsureProjectRequest{ProjectPath: projectPath, ConfirmCreate: true})
+	projectCancel()
+	if err != nil {
+		t.Fatalf("ensure %s project: %v", profile, err)
+	}
+	if projectResult.GetProject() == nil || projectResult.GetProject().GetProjectId() == 0 || !projectResult.GetCreatedProject() {
+		t.Fatalf("%s project was not durably created: %s", profile, projectResult.String())
+	}
+	projectCtx, projectCancel = context.WithTimeout(context.Background(), 10*time.Second)
+	existingProject, err := client.EnsureProject(projectCtx, &vmmv1.EnsureProjectRequest{ProjectPath: projectPath})
+	projectCancel()
+	if err != nil {
+		t.Fatalf("resolve existing %s project: %v", profile, err)
+	}
+	if existingProject.GetProject() == nil || existingProject.GetProject().GetProjectId() != projectResult.GetProject().GetProjectId() || !existingProject.GetExists() {
+		t.Fatalf("existing %s project was not resolved from storage: %s", profile, existingProject.String())
+	}
+
+	userName := "packaged-" + profile + "-user-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	userCtx, userCancel := context.WithTimeout(context.Background(), 10*time.Second)
+	userResult, err := client.ResolveUser(userCtx, &vmmv1.ResolveUserRequest{UserRef: userName, ConfirmCreate: true})
+	userCancel()
+	if err != nil {
+		t.Fatalf("resolve %s user: %v", profile, err)
+	}
+	if userResult.GetUser() == nil || userResult.GetUser().GetUserId() == 0 || !userResult.GetCreated() {
+		t.Fatalf("%s user was not durably created: %s", profile, userResult.String())
+	}
+
+	// A deterministic local provider keeps the packaged legacy write/search path offline while still exercising embedding and reviewer calls.
+	// 确定性的本地 provider 让打包 legacy 写入/检索链路保持离线，同时仍然执行 embedding 与 reviewer 调用。
+	sessionID := "packaged-" + profile + "-session-" + strconv.FormatInt(time.Now().UnixNano(), 10)
+	writeCtx, writeCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	writeResult, err := client.WriteMemories(writeCtx, &vmmv1.WriteMemoriesRequest{
+		SessionId: sessionID,
+		UserId:    userResult.GetUser().GetUserId(),
+		ProjectId: projectResult.GetProject().GetProjectId(),
+		Items: []*vmmv1.WriteMemoryItem{{
+			ScopeLevel:  2,
+			Abstract:    "packaged " + profile + " legacy storage",
+			Details:     "offline packaged acceptance memory",
+			Category:    0,
+			Priority:    3,
+			MemoryLevel: 3,
+		}},
+	})
+	writeCancel()
+	if err != nil {
+		t.Fatalf("write %s memory: %v", profile, err)
+	}
+	if len(writeResult.GetItems()) != 1 || writeResult.GetItems()[0] == nil || writeResult.GetItems()[0].GetMemoryId() == 0 {
+		t.Fatalf("write %s memory returned no durable id: %s", profile, writeResult.String())
+	}
+
+	searchCtx, searchCancel := context.WithTimeout(context.Background(), 15*time.Second)
+	searchResult, err := client.SearchMemoryEvents(searchCtx, &vmmv1.SearchMemoryEventsRequest{
+		UserId:    userResult.GetUser().GetUserId(),
+		ProjectId: projectResult.GetProject().GetProjectId(),
+		Queries:   []string{"legacy storage"},
+		TopK:      5,
+	})
+	searchCancel()
+	if err != nil {
+		t.Fatalf("search %s memory: %v", profile, err)
+	}
+	if !packagedSearchContainsAbstract(searchResult.GetResults(), "packaged "+profile) {
+		t.Fatalf("%s memory is absent from SearchMemoryEvents: %s", profile, searchResult.String())
+	}
+	_ = conn.Close()
+
+	assertPackagedLegacyDataPaths(t, dataRoot)
+	if err := stopPackagedRuntime(cmd, waitCh); err != nil {
+		t.Fatalf("stop packaged %s runtime: %v", profile, err)
+	}
+	stopped = true
+	combinedOutput := strings.ToLower(stdout.String() + "\n" + stderr.String())
+	if strings.Contains(combinedOutput, "panic:") {
+		t.Fatalf("packaged %s runtime panicked:\n%s", profile, combinedOutput)
+	}
+}
+
+// writePackagedLegacyAcceptanceConfig writes the strict override layer for a split or controller packaged run.
+// writePackagedLegacyAcceptanceConfig 写入 split 或 controller 打包运行所需的严格覆盖配置层。
+func writePackagedLegacyAcceptanceConfig(configRoot, grpcAddress, dataRoot, profile, controllerEndpoint, controllerExecutable, providerEndpoint string) error {
+	quote := func(value string) string { return strconv.Quote(filepath.ToSlash(value)) }
+	config := []string{
+		"grpc:",
+		"  listen_addr: " + quote(grpcAddress),
+		"storage:",
+		"  mode: " + profile,
+		"  local_data_root: " + quote(dataRoot),
+		"sqlite:",
+		"  tokenizer_mode: jieba",
+		"lancedb:",
+		"  table_name: vmm_memory_vectors",
+		"  vector_column: vector",
+		"vector:",
+		"  provider: lancedb",
+		"relational:",
+		"  provider: sqlite",
+		"embedding:",
+		"  provider: openai",
+		"  endpoint: " + quote(providerEndpoint+"/v1"),
+		"  api_keys:",
+		"    - packaged-acceptance-key",
+		"  model: packaged-acceptance-embedding",
+		"  dimension: 3",
+		"  max_batch_size: 4",
+		"rerank:",
+		"  enabled: false",
+		"llm:",
+		"  routes:",
+		"    - name: packaged-acceptance-route",
+		"      provider: openai",
+		"      endpoint: " + quote(providerEndpoint+"/v1"),
+		"      api_keys:",
+		"        - packaged-acceptance-key",
+		"      model: packaged-acceptance-llm",
+		"      params:",
+		"        reasoning_effort: none",
+		"noise:",
+		"  enabled: false",
+		"  semantic_enabled: false",
+		"management:",
+		"  enabled: false",
+		"post_action:",
+		"  session_analysis_turn_threshold: 1000000",
+		"  session_analysis_token_threshold: 1000000",
+		"  session_analysis_idle_timeout: 24h",
+		"  max_queue_workers: 1",
+		"retention:",
+		"  enabled: false",
+	}
+	if profile == "controller" {
+		config = append(config,
+			"controller:",
+			"  endpoint: "+quote(controllerEndpoint),
+			"  auto_spawn: true",
+			"  executable: "+quote(controllerExecutable),
+			"  process_mode: managed",
+			"  minimum_uptime: 1s",
+			"  idle_timeout: 1s",
+			"  lease_ttl: 2s",
+			"  connect_timeout: 2s",
+			"  startup_timeout: 20s",
+			"  startup_retry_interval: 100ms",
+			"  lease_renew_interval: 500ms",
+			"  request_timeout: 10s",
+			"  space_id: packaged-acceptance-"+profile,
+			"  space_label: Packaged Acceptance "+profile,
+		)
+	}
+	config = append(config, "")
+	return os.WriteFile(filepath.Join(configRoot, "config.yaml"), []byte(strings.Join(config, "\n")), 0o600)
+}
+
+// packagedControllerExecutableName returns the staged controller filename for the current host.
+// packagedControllerExecutableName 返回当前主机暂存 controller 的文件名。
+func packagedControllerExecutableName() string {
+	if runtime.GOOS == "windows" {
+		return "vldb-controller.exe"
+	}
+	return "vldb-controller"
 }
 
 // writePackagedDeterministicEmbedding implements the minimal OpenAI-compatible embedding response used by the offline vector acceptance path.
@@ -401,8 +624,8 @@ func packagedNativeTarget(t *testing.T) string {
 	}
 }
 
-// validatePackagedNativeArtifacts verifies the executable, native library, manifest, hash, and absence of legacy VLDB/controller artifacts.
-// validatePackagedNativeArtifacts 校验可执行文件、原生库、清单、哈希以及旧 VLDB/controller 产物缺失。
+// validatePackagedNativeArtifacts verifies native artifacts and the explicitly selected package dependency profile.
+// validatePackagedNativeArtifacts 校验原生工件及明确选择的发行包依赖配置。
 func validatePackagedNativeArtifacts(t *testing.T, root, binaryPath string) {
 	t.Helper()
 	binaryInfo, err := os.Stat(binaryPath)
@@ -418,9 +641,24 @@ func validatePackagedNativeArtifacts(t *testing.T, root, binaryPath string) {
 	if err != nil {
 		t.Fatalf("read packaged libs directory %q: %v", libsDir, err)
 	}
-	for _, entry := range entries {
-		if strings.Contains(strings.ToLower(entry.Name()), "vldb") {
-			t.Fatalf("packaged native libs contain a legacy VLDB artifact: %s", entry.Name())
+	// An all-profile release intentionally carries both local storage implementations, while the older native-only acceptance still rejects legacy dependencies.
+	// all 配置发行包有意同时携带两套本地存储实现；旧的仅原生验收仍拒绝 legacy 依赖。
+	profile := os.Getenv("VMM_PACKAGED_STORAGE_PROFILE")
+	if profile != "" && profile != "all" {
+		t.Fatalf("unsupported packaged storage profile %q", profile)
+	}
+	if profile == "" {
+		for _, entry := range entries {
+			if strings.Contains(strings.ToLower(entry.Name()), "vldb") {
+				t.Fatalf("packaged native libs contain a legacy VLDB artifact: %s", entry.Name())
+			}
+		}
+	} else {
+		for _, name := range packagedLegacyLibraryNames(t) {
+			info, err := os.Stat(filepath.Join(libsDir, name))
+			if err != nil || !info.Mode().IsRegular() {
+				t.Fatalf("all-profile package is missing regular legacy library %s: %v", name, err)
+			}
 		}
 	}
 
@@ -471,10 +709,38 @@ func validatePackagedNativeArtifacts(t *testing.T, root, binaryPath string) {
 	if err != nil {
 		t.Fatalf("read packaged bin directory: %v", err)
 	}
-	for _, entry := range binEntries {
-		if strings.Contains(strings.ToLower(entry.Name()), "vldb-controller") {
-			t.Fatalf("packaged native output contains a controller executable: %s", entry.Name())
+	if profile == "" {
+		for _, entry := range binEntries {
+			if strings.Contains(strings.ToLower(entry.Name()), "vldb-controller") {
+				t.Fatalf("packaged native output contains a controller executable: %s", entry.Name())
+			}
 		}
+	} else {
+		name := "vldb-controller"
+		if runtime.GOOS == "windows" {
+			name += ".exe"
+		}
+		info, err := os.Stat(filepath.Join(root, "bin", name))
+		if err != nil || !info.Mode().IsRegular() {
+			t.Fatalf("all-profile package is missing regular controller %s: %v", name, err)
+		}
+	}
+}
+
+// packagedLegacyLibraryNames returns the platform-specific dependencies required by the all-profile release.
+// packagedLegacyLibraryNames 返回全配置发行包在当前平台必须包含的依赖库名称。
+func packagedLegacyLibraryNames(t *testing.T) []string {
+	t.Helper()
+	switch runtime.GOOS {
+	case "windows":
+		return []string{"vldb_sqlite.dll", "vldb_lancedb.dll"}
+	case "linux":
+		return []string{"libvldb_sqlite.so", "libvldb_lancedb.so"}
+	case "darwin":
+		return []string{"libvldb_sqlite.dylib", "libvldb_lancedb.dylib"}
+	default:
+		t.Fatalf("unsupported packaged legacy library platform %s", runtime.GOOS)
+		return nil
 	}
 }
 
@@ -744,5 +1010,34 @@ func assertPackagedNativeDataPaths(t *testing.T, sqlitePath, lancePath string) {
 		if !info.Mode().IsRegular() {
 			t.Fatalf("expected packaged native path is not a regular file: %s", path)
 		}
+	}
+}
+
+// assertPackagedLegacyDataPaths proves that split/controller writes reached the selected external data root.
+// assertPackagedLegacyDataPaths 证明 split/controller 写入已经落到所选的外部数据根目录。
+func assertPackagedLegacyDataPaths(t *testing.T, dataRoot string) {
+	t.Helper()
+	sqlitePath := filepath.Join(dataRoot, "sqlite.db")
+	info, err := os.Stat(sqlitePath)
+	if err != nil {
+		t.Fatalf("expected packaged legacy SQLite path was not created: %s: %v", sqlitePath, err)
+	}
+	if !info.Mode().IsRegular() {
+		t.Fatalf("expected packaged legacy SQLite path is not a regular file: %s", sqlitePath)
+	}
+	lancePath := filepath.Join(dataRoot, "lancedb")
+	info, err = os.Stat(lancePath)
+	if err != nil {
+		t.Fatalf("expected packaged legacy LanceDB path was not created: %s: %v", lancePath, err)
+	}
+	if !info.IsDir() {
+		t.Fatalf("expected packaged legacy LanceDB path is not a directory: %s", lancePath)
+	}
+	entries, err := os.ReadDir(lancePath)
+	if err != nil {
+		t.Fatalf("read packaged legacy LanceDB path: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatalf("packaged legacy LanceDB path is empty: %s", lancePath)
 	}
 }

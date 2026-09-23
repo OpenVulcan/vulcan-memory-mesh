@@ -501,6 +501,7 @@ func (c *Config) normalizeRuntimeStrings() {
 	c.Prompts.PromptLanguage = normalizePromptBundleName(c.Prompts.PromptLanguage)
 	c.Storage.Mode = strings.TrimSpace(c.Storage.Mode)
 	c.Storage.CombinedProvider = strings.TrimSpace(c.Storage.CombinedProvider)
+	c.Storage.LocalDataRoot = strings.TrimSpace(c.Storage.LocalDataRoot)
 	c.SQLite.Address = strings.TrimSpace(c.SQLite.Address)
 	c.SQLite.TokenizerMode = strings.TrimSpace(c.SQLite.TokenizerMode)
 	c.SQLite.Native.Path = strings.TrimSpace(c.SQLite.Native.Path)

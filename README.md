@@ -1,6 +1,6 @@
 # VMM OSS Local (Go)
 
-当前发行版本：**v0.1.0**。支持手动选择 Git 标签构建 Windows x64、Linux x64/ARM64、macOS Intel/ARM64 发行包，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。发行包默认使用原生存储。
+当前已发布版本：**v0.1.0**，其发行包仅包含 native 存储依赖。后续全模式发行流程支持手动选择 Git 标签构建 Windows x64、Linux x64/ARM64、macOS Intel/ARM64 完整包；每个平台新包都包含 native、split、controller 依赖及 combined PostgreSQL 模式所需的 VMM 代码。新包必须重新构建、验签并发布后才能由独立安装器提供全部存储选项，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。
 
 VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务链：
 
@@ -39,6 +39,33 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 - 正式运行产物位于 `output/bin/`。
 - 如需手工启动，请先进入 `output/bin/`，再运行其中的 `vmm-local(.exe)`。
 - 不要从仓库根目录直接运行临时可执行文件。
+
+## 独立安装器所用运行时命令
+
+标准包的 `bin/vmm-local(.exe)` 提供以下只读命令，供 VMMM 在配置提交前后调用：
+
+```text
+vmm-local config schema --json
+vmm-local config validate --config <绝对配置目录或 YAML 文件> --json
+vmm-local health --config <绝对配置目录或 YAML 文件> --json
+```
+
+`config validate` 复用运行时配置加载和规则资源编译，并以脱敏诊断返回结果；它不启动数据库或供应商网络请求。`health` 只探测本机回环地址上的 VMM gRPC `Healthz`，用于启动后的状态判断。
+
+服务安装时应明确传入安装器保存的配置根。Linux/macOS 还必须用 `-user` 指定已确认的本机账户；配置、数据及程序路径须可由该账户访问。Windows 不传 `-user`：
+
+```text
+# Linux/macOS
+vmm-local service install VulcanMemoryMesh -config <绝对配置目录> -user <本机账户> -auto-start=true
+# Windows
+vmm-local service install VulcanMemoryMesh -config <绝对配置目录> -auto-start=true
+vmm-local service status VulcanMemoryMesh
+vmm-local service restart VulcanMemoryMesh
+vmm-local service disable VulcanMemoryMesh
+vmm-local service enable VulcanMemoryMesh
+```
+
+`storage.mode=split` 或 `controller` 可设置 `storage.local_data_root` 指定 SQLite 与 LanceDB 的本地数据根。字段留空时继续使用旧版程序根下的 `database/`。`native` 仍分别使用 `sqlite.native.path` 与 `lancedb.native.path`；`combined` 使用 `postgres.dsn`。新根可在首次安装或旧根无数据时直接配置；旧根已有数据时，配置检查和启动都会拒绝直接切换，程序不会因修改 YAML 自动搬迁数据。迁移须先停止所有 VMM 进程并保留完整备份，将旧根的 `sqlite.db`、SQLite 日志文件、`lancedb/` 及迁移标记作为同一组数据迁到新根，确认旧根不再包含活动数据，再设置新路径并运行 `vmm-local config validate --config <配置根> --json`。迁移期间不可同时启动旧库和新库；若检查失败，恢复备份与原配置后再启动。
 
 ## 文档导航
 
@@ -125,7 +152,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
   - `split`（默认）
   - SQLite：关系库存储，负责层级、用户、session、turn、长期记忆、画像与回收治理元数据
     - 运行时通过本地 `vldb-sqlite` 动态库接入，不再依赖外部 gRPC 网关
-    - 数据文件固定为 `output/database/sqlite.db`
+    - 留空 `storage.local_data_root` 时沿用 `output/database/sqlite.db`；设置后位于 `<local_data_root>/sqlite.db`
     - FTS 与中文分词由库内能力负责，分词模式通过 `sqlite.tokenizer_mode` 控制
     - 当前 schema 基线固定为 `20`，空库会直接 bootstrap 到该版本
     - 当前版本信息只写入 `vmm_schema_versions`
@@ -134,14 +161,14 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
     - 未来 schema 升级仍沿用组件版本框架，后续可直接追加 `20 -> 21` 这类增量迁移
   - LanceDB：向量写入、检索和删除
     - 运行时通过本地 `vldb-lancedb` 动态库接入，不再依赖外部 gRPC 网关
-    - 数据目录固定为 `output/database/lancedb/`
+    - 留空 `storage.local_data_root` 时沿用 `output/database/lancedb/`；设置后位于 `<local_data_root>/lancedb/`
     - 向量 schema 版本与 SQLite 独立跟踪
     - 只有 LanceDB 列结构变化时，启动期才会触发表重建与 SQLite 回灌
 - `controller`（显式启用）
   - 业务层仍使用与 `split` 完全相同的 SQLite 关系接口和 LanceDB 向量接口
   - VMM 进程不再加载或打开数据库动态库；SQLite 与 LanceDB 调用统一透传给 `vldb-controller`
   - 多个 VMM 客户端会话可以复用 controller 内按规范化物理路径注册的数据库资源，从而避免多个宿主进程分别持有同一个数据库文件
-  - SQLite 继续使用 `output/database/sqlite.db`，LanceDB 继续使用 `output/database/lancedb/`，切换模式不迁移业务 schema
+  - SQLite 与 LanceDB 与 split 共用同一数据根；未配置 `storage.local_data_root` 时沿用 `output/database/`，切换模式不迁移业务 schema
   - 启动时必须同时启用 SQLite 与 LanceDB binding；任一失败都会令 VMM 启动失败，绝不会静默回退到直接 FFI
   - SQLite 强制启用数据库文件锁校验，底层固定对齐 `vldb-sqlite v0.1.6`
   - controller 固定为 `v0.2.3`，LanceDB 固定为 `v0.1.5`
@@ -583,7 +610,7 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 .\make.ps1 deps native
 ```
 
-该步骤在 `third_party/deps/native_lancedb/<platform>/` 下生成带源码摘要、ABI、LanceDB 引擎版本和文件哈希的缓存 manifest，并发布精确的 `current.json` 选择。日常 `build` / `build release` 只执行 Go 编译、配置同步和已有缓存校验，不会自动执行 Cargo 或重新编译 LanceDB。构建时用 `VMM_BUILD_STORAGE_PROFILE=native` 选择 native 依赖，`all` 可同时打包两套依赖；未设置时保持 legacy 默认：
+该步骤在 `third_party/deps/native_lancedb/<platform>/` 下生成带源码摘要、ABI、LanceDB 引擎版本和文件哈希的缓存 manifest，并发布精确的 `current.json` 选择。日常 `build` / `build release` 只执行 Go 编译、配置同步和已有缓存校验，不会自动执行 Cargo 或重新编译 LanceDB。发行构建使用 `VMM_BUILD_STORAGE_PROFILE=all`，把 legacy SQLite/LanceDB、`vldb-controller` 与 native LanceDB 全部放入同一平台包；未设置时保持 legacy 默认：
 
 ```powershell
 $env:VMM_BUILD_STORAGE_PROFILE = "native"
@@ -624,25 +651,28 @@ $env:VMM_BUILD_STORAGE_PROFILE = "native"
 服务生命周期命令：
 
 ```text
-vmm-local service install [service-name]
+vmm-local service install [service-name] -config <绝对配置根> [-user <本机账户>] [-auto-start=true|false]
 vmm-local service uninstall [service-name]
 vmm-local service start [service-name]
 vmm-local service stop [service-name]
+vmm-local service restart [service-name]
+vmm-local service enable|disable [service-name]
 vmm-local service status [service-name]
 ```
 
 平台行为：
 
 - Windows：通过 Windows Service Control Manager 注册，服务启动时会进入原生 SCM 托管模式。
-- Linux：写入 `/etc/systemd/system/<service-name>.service`，并执行 `systemctl daemon-reload` 与 `systemctl enable`。
-- macOS：写入 `/Library/LaunchDaemons/<service-name>.plist`，并通过 `launchctl` 注册为系统守护进程。
+- Linux：写入 `/etc/systemd/system/<service-name>.service`，执行 `systemctl daemon-reload`；仅当 `-auto-start=true` 时启用开机自启。
+- macOS：写入 `/Library/LaunchDaemons/<service-name>.plist`，并通过 `launchctl` 注册为系统守护进程。指定 `-user` 时，stdout/stderr 写入 `/private/var/log/vmmm/<service-name>/` 下由该账户持有的日志文件。
 
 注意：
 
 - 注册、卸载、启动和停止系统服务通常需要管理员 / root 权限。
 - 服务运行时会自动把工作目录切到 `output/bin/`，保持与正式手工启动规则一致。
-- 服务不传递 `-config`，因此配置加载顺序仍是：打包配置 `output/configs/` 加上服务运行账户的默认用户覆盖目录 `~/.vmm`。Windows 默认服务账户、Linux systemd system unit 和 macOS LaunchDaemon 往往不是当前交互式登录用户。
-- 如果配置文件中引用了 `OPENROUTER_KEY`、`BAILIAN_API_KEY` 等环境变量，需要确保服务运行账户能读取这些系统环境变量。
+- 安装命令传入 `-config` 后，原生服务定义会持久化该绝对配置根；运行时仍先加载包内 `configs/base.yaml`，再加载该用户覆盖层。省略 `-config` 仅用于兼容已有手工安装。
+- Linux/macOS 指定 `-user` 后，会在注册前检查程序、配置、`.env`、用户规则覆盖与数据库路径对该账户的访问权限。配置和数据根应由该账户持有，程序包则由管理员持有。
+- 如果配置文件中引用了 `OPENROUTER_KEY`、`BAILIAN_API_KEY` 等环境变量，建议放在所选配置根的私有 `.env` 中，并确保服务账户可读取；不要依赖交互式 shell 环境。
 - `storage.mode=controller` 用于正式服务时，优先把 controller 注册为独立系统服务，并设置 `controller.auto_spawn=false`；当前 VMM 安装命令不会代替运维自动注册 controller 服务。
 
 ### 用户覆盖目录
@@ -656,7 +686,7 @@ vmm-local service status [service-name]
 当前主配置加载顺序是：
 
 - `output/configs/base.yaml`（项目基础配置，总是加载）
-- `output/configs/config.yaml`（项目覆盖层，仅当文件存在时加载）
+- `output/configs/config.yaml`（项目覆盖层，仅当文件存在时加载；正式发行包刻意不携带源码中的开发覆盖层）
 - 以下三项互斥，根据 `-config` 参数的取值选择其一：
   - 未传 `-config`：尝试加载 `~/.vmm/config.yaml`（仅当文件存在时）
   - `-config` 指向目录：尝试加载该目录下的 `config.yaml`（仅当文件存在时）
@@ -669,7 +699,7 @@ vmm-local service status [service-name]
 - `base.yaml` 只随项目或打包产物分发，不放到用户目录。
 - 用户目录只负责提供覆盖层 `config.yaml`。
 - 当前随包 `base.yaml` 保留完整字段说明、节点样例和通用默认参数，但不携带真实或占位 API Key。
-- 当前项目级 `configs/config.yaml` 用作 OpenRouter LLM 测试覆盖，并通过 `OPENROUTER_KEY` 读取 API Key。
+- 当前项目级 `configs/config.yaml` 仅用于开发与测试覆盖，可能通过环境变量读取测试凭据；正式发行脚本明确排除该文件，避免把开发路由或凭据占位符带入发行包。
 - 当前测试覆盖中的 embedding 与 rerank 仍使用百炼变量 `BAILIAN_API_KEY`、`BAILIAN_BASE_URL`、`BAILIAN_RERANK_URL`。
 - `configs/bailian.config.example.yaml` 保留了此前的百炼 LLM、embedding、rerank 覆盖示例。
 - 必填运行字段中的 `${ENV_NAME}` 占位符如果缺失或为空，会在展开前直接报出变量名与配置路径，避免被归一化为空节点后产生误导性的路由错误。
