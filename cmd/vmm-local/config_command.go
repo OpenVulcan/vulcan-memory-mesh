@@ -18,7 +18,7 @@ import (
 const (
 	// configCommandUsage documents the stable configuration subcommand surface consumed by installers.
 	// configCommandUsage 用于记录安装器消费的稳定配置子命令入口。
-	configCommandUsage = "usage: vmm-local config {schema|validate} [--json] [--config <directory-or-yaml>]"
+	configCommandUsage = "usage: vmm-local config {schema|validate|show-effective} [--json] [--config <directory-or-yaml>]"
 
 	// configDiagnosticLayout identifies failures before the layered config loader can attach a trusted stage.
 	// configDiagnosticLayout 用于标识分层配置加载器附加可信阶段之前的布局失败。
@@ -58,7 +58,7 @@ func parseConfigCommand(args []string) (configCommand, bool, error) {
 	}
 
 	action := strings.ToLower(strings.TrimSpace(args[1]))
-	if action != "schema" && action != "validate" {
+	if action != "schema" && action != "validate" && action != "show-effective" {
 		return configCommand{}, true, fmt.Errorf("unsupported config action %q; %s", args[1], configCommandUsage)
 	}
 	flags := flag.NewFlagSet("vmm-local config "+action, flag.ContinueOnError)
@@ -85,6 +85,8 @@ func parseConfigCommand(args []string) (configCommand, bool, error) {
 // runConfigCommand 使用与正常运行时启动相同的布局解析和分层加载器执行 schema 或校验。
 func runConfigCommand(command configCommand, exePath, cwd string, output, errorOutput io.Writer) int {
 	switch command.action {
+	case "show-effective":
+		return runEffectiveConfig(exePath, cwd, command.configPath, output, errorOutput)
 	case "schema":
 		if command.jsonOutput {
 			if err := config.WriteConfigSchema(output); err != nil {

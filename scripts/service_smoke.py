@@ -233,6 +233,19 @@ def main():
         data_root = root / "data"
         write_config(config_root, data_root, unused_loopback_port())
         run_command(binary, ["config", "validate", "--config", str(config_root), "--json"])
+        # Check effective values through the actual packaged executable before changing account ownership.
+        # 修改账户归属前，通过真实打包程序检查有效配置值。
+        effective_output = run_command(binary, ["config", "show-effective", "--config", str(config_root), "--json"])
+        effective = json.loads(effective_output)
+        if (
+            effective["version"] != "v1"
+            or effective["redacted"] is not True
+            or effective["config"]["embedding"]["model"] != "service-smoke-embedding"
+            or effective["config"]["storage"]["mode"] != "split"
+            or not effective["config"]["logging"]["format"]
+            or "service-smoke-placeholder" in effective_output
+        ):
+            raise RuntimeError("packaged effective configuration did not preserve layers and redaction")
         if os.name != "nt":
             # The service account must own a private root before log and database writers start.
             # 服务账户在日志和数据库写入器启动前必须拥有私有根目录。

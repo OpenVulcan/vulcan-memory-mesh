@@ -47,10 +47,13 @@ VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务�
 ```text
 vmm-local config schema --json
 vmm-local config validate --config <绝对配置目录或 YAML 文件> --json
+vmm-local config show-effective --config <绝对配置目录或 YAML 文件> --json
 vmm-local health --config <绝对配置目录或 YAML 文件> --json
 ```
 
 `config validate` 复用运行时配置加载和规则资源编译，并以脱敏诊断返回结果；它不启动数据库或供应商网络请求。`health` 只探测本机回环地址上的 VMM gRPC `Healthz`，用于启动后的状态判断。
+
+`config show-effective` 使用同一配置加载器，展示系统底座、包内覆盖、用户覆盖及当前进程环境合并并归一化后的值。输出为版本化 JSON，省略 schema 标注的 API 密钥、管理令牌、载荷加密密钥和数据库 DSN（包含路由及节点内的密钥池）；不会写回配置或启动数据库。它反映执行命令时的环境，服务账户环境不同则应在相同环境中检查；其他普通字段仍显示原值。
 
 服务安装时应明确传入安装器保存的配置根。Linux/macOS 还必须用 `-user` 指定已确认的本机账户；配置、数据及程序路径须可由该账户访问。Windows 不传 `-user`：
 
