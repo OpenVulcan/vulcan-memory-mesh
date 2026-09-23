@@ -451,7 +451,7 @@ func applyServiceCommand(command serviceCommand, exePath string, binDir string) 
 		if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("write launchd plist %q: %w", plistPath, err)
 		}
-		if err := setLaunchdAutoStartOverride(label, command.autoStart); err != nil {
+		if err := ensureLaunchdLoadable(label); err != nil {
 			return err
 		}
 		fmt.Printf("installed launchd service %q auto_start=%s\n", command.name, launchdAutoStartName(command.autoStart))
@@ -537,7 +537,7 @@ func applyServiceCommand(command serviceCommand, exePath string, binDir string) 
 		if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
 			return fmt.Errorf("write launchd plist %q: %w", plistPath, err)
 		}
-		if err := setLaunchdAutoStartOverride(spec.Label, spec.AutoStart); err != nil {
+		if err := ensureLaunchdLoadable(spec.Label); err != nil {
 			return err
 		}
 		if loaded {
@@ -972,14 +972,10 @@ func queryLaunchdDisabledOverride(label string) (launchdDisabledOverride, error)
 	return override, nil
 }
 
-// setLaunchdAutoStartOverride synchronizes plist policy with launchctl's persistent per-label override.
-// setLaunchdAutoStartOverride 用于同步 plist 策略与 launchctl 持久化的逐标签覆盖。
-func setLaunchdAutoStartOverride(label string, enabled bool) error {
-	action := "disable"
-	if enabled {
-		action = "enable"
-	}
-	return runCommand("launchctl", action, "system/"+label)
+// ensureLaunchdLoadable clears a persistent disabled override so manually started jobs can bootstrap; plist RunAtLoad controls boot policy.
+// ensureLaunchdLoadable 清除持久化禁用覆盖，使手动服务可以加载；开机策略由 plist 的 RunAtLoad 控制。
+func ensureLaunchdLoadable(label string) error {
+	return runCommand("launchctl", "enable", "system/"+label)
 }
 
 // launchdAutoStartName renders RunAtLoad as a stable key-value value.

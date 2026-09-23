@@ -129,18 +129,24 @@ def print_native_diagnostics(name):
     if sys.platform.startswith("linux"):
         commands = [
             ["sudo", "-n", "systemctl", "status", f"{name}.service", "--no-pager"],
-            ["sudo", "-n", "journalctl", "-u", f"{name}.service", "-n", "60", "--no-pager"],
+            ["sudo", "-n", "journalctl", "-u", f"{name}.service", "-n", "120", "--no-pager", "-o", "cat"],
         ]
     elif sys.platform == "darwin":
         commands = [
             ["plutil", "-lint", f"/Library/LaunchDaemons/{name}.plist"],
             ["sudo", "-n", "launchctl", "print", f"system/{name}"],
+            ["sudo", "-n", "launchctl", "print-disabled", "system"],
         ]
     for command in commands:
         try:
             result = subprocess.run(command, capture_output=True, text=True, timeout=12, check=False)
             print(f"diagnostic {' '.join(command[:3])} exit={result.returncode}")
-            print((result.stdout + result.stderr)[-5000:])
+            output = result.stdout + result.stderr
+            if "print-disabled" in command:
+                output = "\n".join(line for line in output.splitlines() if name in line)
+            elif "journalctl" in command:
+                output = output[:3500] + "\n...\n" + output[-2500:]
+            print(output[-6000:])
         except (OSError, subprocess.TimeoutExpired) as error:
             print(f"diagnostic failed: {type(error).__name__}")
 
