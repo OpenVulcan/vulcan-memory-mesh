@@ -134,8 +134,11 @@ def print_native_diagnostics(name):
     elif sys.platform == "darwin":
         commands = [
             ["plutil", "-lint", f"/Library/LaunchDaemons/{name}.plist"],
+            ["plutil", "-p", f"/Library/LaunchDaemons/{name}.plist"],
+            ["stat", "-f", "%Su %Sp %N", f"/Library/LaunchDaemons/{name}.plist"],
             ["sudo", "-n", "launchctl", "print", f"system/{name}"],
             ["sudo", "-n", "launchctl", "print-disabled", "system"],
+            ["sudo", "-n", "log", "show", "--last", "3m", "--style", "compact", "--predicate", f'process == "launchd" AND eventMessage CONTAINS "{name}"'],
         ]
     for command in commands:
         try:
@@ -145,7 +148,13 @@ def print_native_diagnostics(name):
             if "print-disabled" in command:
                 output = "\n".join(line for line in output.splitlines() if name in line)
             elif "journalctl" in command:
-                output = output[:3500] + "\n...\n" + output[-2500:]
+                lines = output.splitlines()
+                markers = ("panic:", "fatal error:", "purego:", "symbol not found")
+                starts = [index for index, line in enumerate(lines) if any(marker in line for marker in markers)]
+                head = "\n".join(lines[max(0, starts[-1] - 3): starts[-1] + 7]) if starts else "\n".join(lines[:10])
+                output = head + "\n...\n" + "\n".join(lines[-12:])
+            elif "log" in command:
+                output = output[-4000:]
             print(output[-6000:])
         except (OSError, subprocess.TimeoutExpired) as error:
             print(f"diagnostic failed: {type(error).__name__}")
