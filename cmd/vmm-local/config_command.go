@@ -18,7 +18,7 @@ import (
 const (
 	// configCommandUsage documents the stable configuration subcommand surface consumed by installers.
 	// configCommandUsage 用于记录安装器消费的稳定配置子命令入口。
-	configCommandUsage = "usage: vmm-local config {schema|validate|show-effective} [--json] [--config <directory-or-yaml>]"
+	configCommandUsage = "usage: vmm-local config {schema|validate|show-effective|test-provider} [--json] [--config <directory-or-yaml>] [--purpose llm|embedding|rerank --route 0 --allow-network]"
 
 	// configDiagnosticLayout identifies failures before the layered config loader can attach a trusted stage.
 	// configDiagnosticLayout 用于标识分层配置加载器附加可信阶段之前的布局失败。
@@ -31,6 +31,11 @@ type configCommand struct {
 	action     string
 	configPath string
 	jsonOutput bool
+	// purpose, route and allowNetwork restrict paid diagnostics to an explicit selection and consent.
+	// purpose、route 与 allowNetwork 将可能收费的诊断限制在明确选择及确认之内。
+	purpose      string
+	route        int
+	allowNetwork bool
 }
 
 // configValidationResult is the stable JSON result returned by the validate command.
@@ -58,18 +63,38 @@ func parseConfigCommand(args []string) (configCommand, bool, error) {
 	}
 
 	action := strings.ToLower(strings.TrimSpace(args[1]))
-	if action != "schema" && action != "validate" && action != "show-effective" {
+	if action != "schema" && action != "validate" && action != "show-effective" && action != "test-provider" {
 		return configCommand{}, true, fmt.Errorf("unsupported config action %q; %s", args[1], configCommandUsage)
 	}
 	flags := flag.NewFlagSet("vmm-local config "+action, flag.ContinueOnError)
 	flags.SetOutput(io.Discard)
 	jsonOutput := flags.Bool("json", false, "write machine-readable JSON")
 	configPath := flags.String("config", "", "user override root or explicit YAML file")
+	// Network diagnostics require a separate explicit selection and must not change the meaning of static inspection commands.
+	// 网络诊断要求单独明确选择，不能改变静态检查命令的含义。
+	purpose := flags.String("purpose", "", "provider purpose to test")
+	route := flags.Int("route", 0, "zero-based route index; embedding accepts only zero")
+	allowNetwork := flags.Bool("allow-network", false, "explicitly allow provider requests that may incur charges")
 	if err := flags.Parse(args[2:]); err != nil {
 		return configCommand{}, true, fmt.Errorf("%w; %s", err, configCommandUsage)
 	}
 	if flags.NArg() > 0 {
 		return configCommand{}, true, fmt.Errorf("unexpected positional arguments: %v; %s", flags.Args(), configCommandUsage)
+	}
+	if action == "test-provider" {
+		if !*allowNetwork || (*purpose != "llm" && *purpose != "embedding" && *purpose != "rerank") || *route < 0 || (*purpose == "embedding" && *route != 0) {
+			return configCommand{}, true, fmt.Errorf("provider test requires a valid purpose, route and --allow-network; %s", configCommandUsage)
+		}
+	} else {
+		invalid := false
+		flags.Visit(func(f *flag.Flag) {
+			if f.Name == "purpose" || f.Name == "route" || f.Name == "allow-network" {
+				invalid = true
+			}
+		})
+		if invalid {
+			return configCommand{}, true, fmt.Errorf("provider options require test-provider; %s", configCommandUsage)
+		}
 	}
 	if action == "schema" && strings.TrimSpace(*configPath) != "" {
 		return configCommand{}, true, fmt.Errorf("config schema does not accept --config; %s", configCommandUsage)
@@ -78,6 +103,7 @@ func parseConfigCommand(args []string) (configCommand, bool, error) {
 		action:     action,
 		configPath: strings.TrimSpace(*configPath),
 		jsonOutput: *jsonOutput,
+		purpose:    *purpose, route: *route, allowNetwork: *allowNetwork,
 	}, true, nil
 }
 
@@ -85,6 +111,8 @@ func parseConfigCommand(args []string) (configCommand, bool, error) {
 // runConfigCommand 使用与正常运行时启动相同的布局解析和分层加载器执行 schema 或校验。
 func runConfigCommand(command configCommand, exePath, cwd string, output, errorOutput io.Writer) int {
 	switch command.action {
+	case "test-provider":
+		return runProviderConfig(command, exePath, cwd, output, errorOutput)
 	case "show-effective":
 		return runEffectiveConfig(exePath, cwd, command.configPath, output, errorOutput)
 	case "schema":
