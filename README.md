@@ -596,6 +596,7 @@ vmm-local service enable VulcanMemoryMesh
 - `controller` 模式使用 `output/bin/vldb-controller(.exe)`，不会由 VMM 进程直接加载数据库动态库。
 - `split` 与 `controller` 模式使用相同的 `output/database/` 数据布局。
 - 标准打包产物默认写入 `output/logs/`。
+- 显式设置 `logging.directory` 后，文件日志改写到该绝对目录；VMMM 管理的前台和服务安装都会使用所选数据根下的 `logs/`。
 - 如果是 `go run` 或直接在仓库内调试，日志会写入仓库根目录下的 `logs/`。
 
 首次构建本地 split 依赖前，请先执行：

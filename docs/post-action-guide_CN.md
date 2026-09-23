@@ -777,6 +777,7 @@ grpcurl -plaintext `
 
 - 日志会同时输出到 stdout 和文件
 - 标准打包产物默认写入：`output/logs/<YYYYMMDD>/<YYYYMMDDHH>.log`
+- 显式设置 `logging.directory` 后写入该绝对目录；VMMM 安装会使用所选数据根下的 `logs/`
 - 如果是在仓库里直接调试运行，则会写入仓库根下的：`logs/<YYYYMMDD>/<YYYYMMDDHH>.log`
 
 当前已经接入的行为是：
