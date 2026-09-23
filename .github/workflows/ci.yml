@@ -42,3 +42,22 @@ jobs:
       - name: Release contract tests
         if: runner.os == 'Linux'
         run: python3 -m unittest scripts/test_release.py scripts/test_install_host_deps.py -v
+      - name: Install verified host storage dependencies on Unix
+        if: github.event_name == 'pull_request' && runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/install_host_deps.sh
+      - name: Install verified host storage dependencies on Windows
+        if: github.event_name == 'pull_request' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./make.ps1 deps host
+      - name: Build standard VMM layout on Unix
+        if: github.event_name == 'pull_request' && runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/vmm.sh build
+      - name: Build standard VMM layout on Windows
+        if: github.event_name == 'pull_request' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./make.ps1 build
+      - name: Exercise the native service manager and gRPC health path
+        if: github.event_name == 'pull_request'
+        run: python scripts/service_smoke.py
