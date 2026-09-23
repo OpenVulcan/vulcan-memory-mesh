@@ -243,12 +243,18 @@ func describeSchemaType(typ reflect.Type) (fieldType, itemType, keyType, valueTy
 // safeSchemaDefault converts one default value to JSON-compatible data while removing sensitive descendants.
 // safeSchemaDefault 将一个默认值转换为 JSON 兼容数据，同时移除其中的敏感后代字段。
 func safeSchemaDefault(value reflect.Value, path string) (any, bool) {
+	return safeConfigProjection(value, path, false)
+}
+
+// safeConfigProjection shares recursive redaction while optionally retaining null values for runtime diagnostics.
+// safeConfigProjection 共用递归脱敏策略，并可为运行时诊断保留空值；返回安全投影及是否应输出。
+func safeConfigProjection(value reflect.Value, path string, preserveNull bool) (any, bool) {
 	if !value.IsValid() || isSensitiveConfigPath(path) {
 		return nil, false
 	}
 	for value.Kind() == reflect.Pointer || value.Kind() == reflect.Interface {
 		if value.IsNil() {
-			return nil, false
+			return nil, preserveNull
 		}
 		value = value.Elem()
 	}
@@ -264,7 +270,7 @@ func safeSchemaDefault(value reflect.Value, path string) (any, bool) {
 			if name == "" || name == "-" || field.PkgPath != "" {
 				continue
 			}
-			child, ok := safeSchemaDefault(value.Field(index), joinSchemaPath(path, name))
+			child, ok := safeConfigProjection(value.Field(index), joinSchemaPath(path, name), preserveNull)
 			if ok {
 				result[name] = child
 			}
@@ -272,8 +278,11 @@ func safeSchemaDefault(value reflect.Value, path string) (any, bool) {
 		return result, true
 	case reflect.Slice, reflect.Array:
 		result := make([]any, 0, value.Len())
+		if preserveNull && value.Kind() == reflect.Slice && value.IsNil() {
+			return nil, true
+		}
 		for index := 0; index < value.Len(); index++ {
-			child, ok := safeSchemaDefault(value.Index(index), path+"[]")
+			child, ok := safeConfigProjection(value.Index(index), path+"[]", preserveNull)
 			if ok {
 				result = append(result, child)
 			}
@@ -281,7 +290,7 @@ func safeSchemaDefault(value reflect.Value, path string) (any, bool) {
 		return result, true
 	case reflect.Map:
 		if value.IsNil() {
-			return nil, false
+			return nil, preserveNull
 		}
 		result := make(map[string]any)
 		iter := value.MapRange()
@@ -290,7 +299,7 @@ func safeSchemaDefault(value reflect.Value, path string) (any, bool) {
 			if key.Kind() != reflect.String {
 				continue
 			}
-			child, ok := safeSchemaDefault(iter.Value(), path+"{}")
+			child, ok := safeConfigProjection(iter.Value(), path+"{}", preserveNull)
 			if ok {
 				result[key.String()] = child
 			}

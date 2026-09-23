@@ -55,6 +55,8 @@ vmm-local health --config <绝对配置目录或 YAML 文件> --json
 
 `config show-effective` 使用同一配置加载器，展示系统底座、包内覆盖、用户覆盖及当前进程环境合并并归一化后的值。输出为版本化 JSON，省略 schema 标注的 API 密钥、管理令牌、载荷加密密钥和数据库 DSN（包含路由及节点内的密钥池）；不会写回配置或启动数据库。它反映执行命令时的环境，服务账户环境不同则应在相同环境中检查；其他普通字段仍显示原值。
 
+第二版结果增加 `sources`：每个非敏感叶子通过 JSON Pointer（如 `/logging/level`、`/llm/routes/0/model`）对应来源。`file` 指出实际配置文件，`environment` 指出环境覆盖，`initial` 表示初始输入，`normalization` 表示运行时默认或派生值。环境信息只包含变量名；文件输入随后被归一化调整时保留文件来源并设置 `normalized: true`。动态参数键按 JSON Pointer 转义，避免点号或斜线歧义。未被归一化替换的空值仍输出 `null`；显式置空后被运行时补入默认值的字段显示真实生效值。
+
 供应商在线测试需显式允许网络，可能产生费用：`vmm-local config test-provider --config <配置根> --purpose llm --route 0 --allow-network --json`。用途可选 `llm`、`embedding`、`rerank`；路由下标从零开始，embedding 只接受零。命令使用当前配置的真实客户端和密钥故障转移策略，总时限二十秒，只发送固定测试内容，不创建数据库，不输出供应商回复或凭据。网络、认证或供应商请求失败与静态配置校验分开；成功只说明所选路由此次请求成功，不证明所有路由或密钥可用。
 
 服务安装时应明确传入安装器保存的配置根。Linux/macOS 还必须用 `-user` 指定已确认的本机账户；配置、数据及程序路径须可由该账户访问。Windows 不传 `-user`：

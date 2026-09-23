@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/openvulcan/vmm/internal/config"
 )
 
 // TestShowEffectiveUsesRuntimeLayers verifies base values, user overrides, environment overrides and normalized defaults together.
@@ -26,8 +28,9 @@ func TestShowEffectiveUsesRuntimeLayers(t *testing.T) {
 		t.Fatalf("effective export failed: %s", diagnostics.String())
 	}
 	var document struct {
-		Version  string `json:"version"`
-		Redacted bool   `json:"redacted"`
+		Sources  map[string]config.ConfigValueSource `json:"sources"`
+		Version  string                              `json:"version"`
+		Redacted bool                                `json:"redacted"`
 		Config   struct {
 			GRPC struct {
 				ListenAddr string `json:"listen_addr"`
@@ -44,11 +47,17 @@ func TestShowEffectiveUsesRuntimeLayers(t *testing.T) {
 	if err := json.Unmarshal(output.Bytes(), &document); err != nil {
 		t.Fatal(err)
 	}
-	if document.Version != "v1" || !document.Redacted || document.Config.GRPC.ListenAddr != "127.0.0.1:18002" || document.Config.Logging.Level != "debug" || document.Config.Logging.Format == "" || document.Config.Embedding.Model != "test-embedding" {
+	if document.Version != "v2" || !document.Redacted || document.Config.GRPC.ListenAddr != "127.0.0.1:18002" || document.Config.Logging.Level != "debug" || document.Config.Logging.Format == "" || document.Config.Embedding.Model != "test-embedding" {
 		t.Fatalf("export did not reflect runtime layering: %+v", document)
 	}
 	if strings.Contains(output.String(), "llm-key") || strings.Contains(output.String(), "embedding-key") {
 		t.Fatal("runtime secrets leaked into effective configuration")
+	}
+	if source := document.Sources["/logging/level"]; source.Kind != "file" || source.File != userFile {
+		t.Fatalf("user layer origin missing: %+v", source)
+	}
+	if source := document.Sources["/grpc/listen_addr"]; source.Kind != "environment" || len(source.Environment) != 1 || source.Environment[0] != "VMM_GRPC_LISTEN_ADDR" {
+		t.Fatalf("environment origin missing: %+v", source)
 	}
 }
 

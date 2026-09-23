@@ -26,9 +26,18 @@ func Load(path string, fallback Config) (Config, error) {
 // LoadPaths loads related data.
 // LoadPaths 用于加载相关数据。
 func LoadPaths(paths []string, fallback Config) (Config, error) {
+	return loadConfigPaths(paths, fallback, nil)
+}
+
+// loadConfigPaths runs the authoritative loader with optional read-only source observation; tracing never changes merge behavior.
+// loadConfigPaths 执行权威加载链，可选观察只读字段来源；跟踪不改变合并行为，返回相同配置与错误。
+func loadConfigPaths(paths []string, fallback Config, trace *configSourceTrace) (Config, error) {
 	// Normalize the configured paths and preload layered .env files.
 	// 规范化配置路径并预加载分层的 .env 文件。
 	cfg := fallback
+	if trace != nil {
+		trace.observe(cfg, ConfigValueSource{Kind: "initial"}, nil)
+	}
 	normalizedPaths := normalizeConfigPaths(paths)
 	layerBodies := make(map[string][]byte, len(normalizedPaths))
 	referencedEnvKeys, envReferences, err := collectReferencedEnvKeysFromConfigPaths(normalizedPaths)
@@ -64,6 +73,11 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 		if err := unmarshalStrictConfigLayer(expandedBytes, &cfg); err != nil {
 			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("unmarshal config layer %q: %w", path, err))
 		}
+		if trace != nil {
+			if err := trace.file(path, expandedBytes, body, cfg); err != nil {
+				return Config{}, WrapConfigLoadError(ConfigLoadStageParse, err)
+			}
+		}
 	}
 
 	// Apply environment overrides and then finalize normalization plus validation.
@@ -75,7 +89,13 @@ func LoadPaths(paths []string, fallback Config) (Config, error) {
 	if len(envOverrideParseFailures) > 0 {
 		return Config{}, WrapConfigLoadError(ConfigLoadStageEnvironment, fmt.Errorf("parse env overrides: %v", envOverrideParseFailures))
 	}
+	if trace != nil {
+		trace.environment(cfg, collectReferencedEnvOverrideKeys(envReferences))
+	}
 	cfg.Normalize()
+	if trace != nil {
+		trace.observe(cfg, ConfigValueSource{Kind: "normalization"}, nil)
+	}
 	if err := cfg.Validate(); err != nil {
 		return Config{}, WrapConfigLoadError(ConfigLoadStageValidation, err)
 	}
