@@ -3,6 +3,7 @@
 """
 
 import getpass
+from contextlib import contextmanager
 import json
 import os
 from pathlib import Path
@@ -160,6 +161,35 @@ def print_native_diagnostics(name):
             print(f"diagnostic failed: {type(error).__name__}")
 
 
+@contextmanager
+def selected_service_account(root):
+    """Use a distinct Linux account for the fixture and restore temporary ownership before cleanup.
+    在 Linux 上使用独立账户验收，并在清理临时目录前恢复其文件归属。
+    """
+    if not sys.platform.startswith("linux"):
+        yield getpass.getuser()
+        return
+    current_user = getpass.getuser()
+    service_user = "vmmci" + uuid.uuid4().hex[:12]
+    subprocess.run(
+        ["sudo", "-n", "useradd", "--system", "--user-group", "--no-create-home", service_user],
+        check=True,
+        timeout=30,
+    )
+    try:
+        yield service_user
+    finally:
+        # TemporaryDirectory.cleanup runs as the CI account, so transfer only this fixture back.
+        # TemporaryDirectory.cleanup 以 CI 账户运行，因此仅将本次夹具目录归还给它。
+        try:
+            for name in ("config", "data"):
+                path = root / name
+                if path.exists():
+                    subprocess.run(["sudo", "-n", "chown", "-R", current_user, str(path)], check=True, timeout=30)
+        finally:
+            subprocess.run(["sudo", "-n", "userdel", service_user], check=True, timeout=30)
+
+
 def main():
     """Build an isolated registration, exercise its lifecycle, and always remove it.
     创建隔离注册、验收生命周期，并始终清理该服务。
@@ -170,8 +200,15 @@ def main():
     if not source_binary.is_file():
         raise RuntimeError(f"standard packaged executable is missing: {source_binary}")
     name = "VMMCI" + uuid.uuid4().hex[:12]
-    with tempfile.TemporaryDirectory(prefix="vmm-service-smoke-") as temporary:
+    with (
+        tempfile.TemporaryDirectory(prefix="vmm-service-smoke-") as temporary,
+        selected_service_account(Path(temporary).resolve()) as service_user,
+    ):
         root = Path(temporary).resolve()
+        if sys.platform.startswith("linux"):
+            # The separate account needs to traverse the fixture without listing its private contents.
+            # 独立账户需要穿越夹具父目录，但无需列出其中的私有内容。
+            root.chmod(0o711)
         # Recreate the formal package layers without the development-only override config.
         # 复制正式包的目录层，并排除仅用于仓库开发的覆盖配置。
         package_root = root / "package"
@@ -188,14 +225,24 @@ def main():
         data_root = root / "data"
         write_config(config_root, data_root, unused_loopback_port())
         run_command(binary, ["config", "validate", "--config", str(config_root), "--json"])
+        if sys.platform.startswith("linux"):
+            data_root.mkdir(mode=0o700)
+            subprocess.run(
+                ["sudo", "-n", "chown", "-R", service_user, str(config_root), str(data_root)],
+                check=True,
+                timeout=30,
+            )
         install = ["service", "install", name, "-config", str(config_root), "-auto-start=false"]
         if os.name != "nt":
-            install += ["-user", getpass.getuser()]
+            install += ["-user", service_user]
         installed = False
         try:
             run_command(binary, install, privileged=True)
             installed = True
-            if service_status(binary, name)["auto_start"] != "disabled":
+            initial_status = service_status(binary, name)
+            if os.name != "nt" and initial_status.get("user") != service_user:
+                raise RuntimeError("registered service account differs from the selected local account")
+            if initial_status["auto_start"] != "disabled":
                 raise RuntimeError("new service did not preserve manual start")
             run_command(binary, ["service", "enable", name], privileged=True)
             if service_status(binary, name)["auto_start"] != "enabled":
