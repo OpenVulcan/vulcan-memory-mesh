@@ -287,7 +287,15 @@ func runPackagedLegacyStorageAcceptance(t *testing.T, packagedRoot, binaryPath, 
 	if profile != "split" && profile != "controller" {
 		t.Fatalf("unsupported legacy acceptance profile %q", profile)
 	}
-	dataRoot := t.TempDir()
+	// The explicit legacy root must meet the runtime's private-directory contract on Unix and Windows.
+	// 显式 legacy 数据根必须在 Unix 和 Windows 上满足运行时的私有目录约束。
+	dataRoot := filepath.Join(t.TempDir(), "private-data")
+	if err := ensurePrivateDirectoryTree(dataRoot, 0o700); err != nil {
+		t.Fatalf("create private %s data root: %v", profile, err)
+	}
+	if err := validatePrivateDirectory(dataRoot); err != nil {
+		t.Fatalf("validate private %s data root: %v", profile, err)
+	}
 	configRoot := filepath.Join(t.TempDir(), "config-root")
 	if err := os.MkdirAll(configRoot, 0o700); err != nil {
 		t.Fatalf("create temporary %s config root: %v", profile, err)
