@@ -28,12 +28,12 @@ func TestRenderLaunchdPlistPersistsConfigAndManualStart(t *testing.T) {
 	if err != nil {
 		t.Fatalf("renderLaunchdPlist returned error: %v", err)
 	}
-	for _, expected := range []string{"<key>RunAtLoad</key>", "<key>KeepAlive</key>", "<false></false>", "<key>ProgramArguments</key>", "<string>-config</string>"} {
+	for _, expected := range []string{"<key>RunAtLoad</key>", "<key>KeepAlive</key>", "<false/>", "<key>ProgramArguments</key>", "<string>-config</string>"} {
 		if !strings.Contains(content, expected) {
 			t.Fatalf("rendered plist missing %q:\n%s", expected, content)
 		}
 	}
-	if strings.Count(content, "<false></false>") != 2 {
+	if strings.Count(content, "<false/>") != 2 || strings.Contains(content, "<false></false>") {
 		t.Fatalf("manual launchd policy must disable both RunAtLoad and KeepAlive:\n%s", content)
 	}
 

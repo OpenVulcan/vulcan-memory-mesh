@@ -596,7 +596,10 @@ func renderLaunchdPlist(label string, exePath string, binDir string, options ...
 	if err != nil {
 		return "", fmt.Errorf("render launchd plist: %w", err)
 	}
-	return xml.Header + "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" + string(output) + "\n", nil
+	// Apple's property-list XML contract represents booleans as empty elements; encoding/xml expands them and launchd rejects that form even when plutil accepts it.
+	// Apple 的属性列表 XML 契约要求布尔值使用空元素；encoding/xml 会展开标签，launchd 即使在 plutil 接受时仍会拒绝。
+	canonicalXML := strings.NewReplacer("<true></true>", "<true/>", "<false></false>", "<false/>").Replace(string(output))
+	return xml.Header + "<!DOCTYPE plist PUBLIC \"-//Apple//DTD PLIST 1.0//EN\" \"http://www.apple.com/DTDs/PropertyList-1.0.dtd\">\n" + canonicalXML + "\n", nil
 }
 
 // launchdProgramArguments returns the exact argv vector persisted in generated plists and checked against loaded jobs.
