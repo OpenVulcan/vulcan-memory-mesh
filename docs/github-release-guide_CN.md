@@ -70,9 +70,9 @@ vulcan-memory-mesh-v0.1.0-<平台>/
 - Go 固定为 `1.27.0`，Rust 使用 `native/lancedb/rust-toolchain.toml`，Rust 依赖使用 `Cargo.lock`。
 - `all` 发行构建还会安装并校验固定版本的 `vldb_sqlite`、`vldb_lancedb` 与 `vldb-controller` 宿主依赖；这些文件必须和 native manifest 一起通过平台级 staging 校验。
 - 原生库缓存按平台、原生源码和制备脚本摘要隔离。缓存恢复后仍执行正式清单校验；日常 Go 构建不会自动编译 Rust。
-- 五个平台全部完成后才进入发布任务。先上传草稿，下载并核对所有文件的 SHA-256，然后转为正式 Release。
+- 五个平台全部完成后才进入草稿创建任务。上传草稿后重新下载并核对所有文件的 SHA-256；当前工作流不会转为公开 Release。
 - Release 附带五个压缩包、五份外部平台清单、`manifest.json`、`manifest.sig`、`windows-authenticode.json` 及 `SHA256SUMS`。清单记录各文件摘要与 Windows Authenticode 证明。
-- 已公开发布的同名版本拒绝覆盖。上传中断时保留草稿，可重新运行同一版本。若首次构建因源码或测试问题失败且尚未公开发布，先等待旧任务结束并提交修复，再以限定旧标签对象的 `--force-with-lease` 更新该标签，随后重新手动触发工作流；已发布标签不应移动。
+- 已公开发布的同名版本拒绝覆盖。上传中断时保留草稿，可重新运行同一版本。若首次构建因源码或测试问题失败且尚未公开发布，先等待旧任务结束并提交修复，再以限定旧标签对象的 `--force-with-lease` 更新该标签，随后重新手动触发工作流；已发布标签不应移动。草稿创建命令为 `python scripts/release.py draft`。
 - 普通测试中需要真实云凭据或旧 VLDB 产物的测试可能跳过；四项强制原生验收明确拒绝跳过，缺库不得视为成功。
 
 runner 标签依据 [GitHub 官方支持列表](https://docs.github.com/en/actions/reference/runners/github-hosted-runners)。工作流使用仓库提供的 `GITHUB_TOKEN`，无需额外发布令牌；私有仓库需要可用的 GitHub Actions 配额。
@@ -103,7 +103,7 @@ Windows Certum 签名使用以下独立 Secrets：
 
 发布工作流会先用 Certum PFX 和时间戳服务签名 Windows 的 `vmm-local.exe`、`vmm-migrate.exe`、`vmm-pii-tester.exe`、`vldb-controller.exe`、`vmm_lancedb_native.dll`、`vldb_sqlite.dll` 和 `vldb_lancedb.dll`，再用 `signtool verify` 和 PowerShell Authenticode 校验主体、证书链、指纹与时间戳。签名会改变原生 DLL 字节，工作流随后只刷新 `libs/manifest.json` 的 `library_sha256`，保留其余原生身份字段，再重新验收并打包。缺少 Certum PFX、密码、证书身份或时间戳服务时，Windows 构建直接失败；缺少或篡改 `windows-authenticode.json`、压缩包摘要或签名清单时，发布任务也会失败。工作流不会通过布尔环境变量绕过真实签名。
 
-通过校验后，发布任务先创建 GitHub Draft Release，上传全部资产，重新下载并逐文件核对摘要，最后才将草稿转为公开 Release。管理器在安装前还会使用内置 VMM 公钥验证 `manifest.sig`。
+通过校验后，发行任务只创建 GitHub Draft Release，上传全部资产，重新下载并逐文件核对摘要，最后再次确认仍是草稿。Certum 证书仍在办理；公开发行需要在证书到位后另行完成签名验收及工作流调整。管理器在安装前还会使用内置 VMM 公钥验证 `manifest.sig`。
 
 ### 宿主 VLDB 依赖的固定摘要
 

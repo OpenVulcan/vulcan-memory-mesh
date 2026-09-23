@@ -376,8 +376,8 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  publish:
-    name: Publish complete release
+  draft:
+    name: Create verified draft release
     needs: [resolve, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -421,6 +421,6 @@ jobs:
           }
           go run ./scripts/sign_manifest.go manifest --dist "$GITHUB_WORKSPACE/dist" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
           go run ./scripts/sign_manifest.go verify --manifest "$GITHUB_WORKSPACE/dist/manifest.json" --signature "$GITHUB_WORKSPACE/dist/manifest.sig" --public-key-env VMM_RELEASE_ED25519_PUBLIC_KEY
-      - name: Verify five-platform set and publish
+      - name: Verify five-platform set and create draft
         shell: bash
-        run: python scripts/release.py publish --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+        run: python scripts/release.py draft --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"

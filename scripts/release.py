@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-"""Package verified native builds and publish complete GitHub release sets.
-将已验收的原生构建打包，并发布完整的 GitHub 发行集合。
+"""Package verified native builds and stage complete GitHub draft release sets.
+将已验收的原生构建打包，并暂存完整的 GitHub 草稿发行集合。
 """
 
 import argparse
@@ -670,9 +670,9 @@ def verify_assets(dist, tag, commit):
     return assets + [sums]
 
 
-def publish(tag, commit):
-    """Upload a validated five-platform set as a draft, verify downloads, then publish.
-    将已校验的五平台产物上传为草稿，验证下载摘要后正式发布。
+def create_draft(tag, commit):
+    """Upload a validated five-platform set as a draft and verify its remote bytes without publishing.
+    将已校验的五平台产物上传为草稿并验证远端字节，保持未公开状态。
     """
     dist = Path(__file__).resolve().parent.parent / "dist"
     assets = verify_assets(dist, tag, commit)
@@ -705,8 +705,8 @@ def publish(tag, commit):
     else:
         raise RuntimeError(existing.stderr)
     run("gh", "release", "upload", tag, *map(str, assets), "--clobber")
-    # Publication happens only after GitHub serves every uploaded byte with its expected digest.
-    # 仅当 GitHub 返回全部上传内容且摘要匹配后，才将草稿转为正式发行版。
+    # Keep the Certum-era release gate closed while checking every uploaded byte against the authenticated snapshot.
+    # 在逐文件核对已认证摘要时继续关闭 Certum 发行门禁，不自动公开草稿。
     with tempfile.TemporaryDirectory(prefix="vmm-release-download-") as temporary:
         run("gh", "release", "download", tag, "--dir", temporary)
         downloaded = Path(temporary)
@@ -715,17 +715,18 @@ def publish(tag, commit):
         for asset in assets:
             if digest(downloaded / asset.name) != verified_digests[asset.name]:
                 raise ValueError(f"Uploaded release digest mismatch: {asset.name}")
-    run("gh", "release", "edit", tag, "--draft=false", "--latest=" + ("false" if "-" in tag else "true"))
+    if run("gh", "release", "view", tag, "--json", "isDraft", "--jq", ".isDraft").strip() != "true":
+        raise ValueError("Release is no longer a draft after upload verification")
     print(run("gh", "release", "view", tag, "--json", "url", "--jq", ".url"))
 
 
 def main():
-    """Dispatch explicit package, publish, or acceptance-check operations from CLI arguments.
-    根据命令行参数分发明确的打包、发布或验收检查操作。
+    """Dispatch explicit package, draft, or acceptance-check operations from CLI arguments.
+    根据命令行参数分发明确的打包、草稿或验收检查操作。
     """
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
-    for command in ("package", "publish"):
+    for command in ("package", "draft"):
         sub = subcommands.add_parser(command)
         sub.add_argument("--tag", required=True)
         sub.add_argument("--commit", required=True)
@@ -743,7 +744,7 @@ def main():
         root = Path(__file__).resolve().parent.parent
         print(refresh_signed_native_manifest(root / "output", args.platform))
     else:
-        publish(args.tag, args.commit)
+        create_draft(args.tag, args.commit)
 
 
 if __name__ == "__main__":

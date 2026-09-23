@@ -7,6 +7,7 @@ import base64
 import hashlib
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -57,6 +58,52 @@ class ReleaseGateTests(unittest.TestCase):
                 encoding="utf-8",
             )
             release.check_tests(log)
+
+    def test_verified_release_remains_draft(self):
+        """Require an uploaded release to remain a draft after its remote bytes are verified.
+        要求远端资产逐字节验证完成后，发行版仍保持草稿状态。
+        """
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            dist = root / "dist"
+            dist.mkdir()
+            asset = dist / "verified.zip"
+            asset.write_bytes(b"signed release fixture")
+            tag, commit = "v0.2.0", "a" * 40
+            calls = []
+            is_draft = True
+
+            def fake_run(*args):
+                """Return fixed GitHub responses and copy the staged asset into the download directory.
+                返回固定 GitHub 响应，并将暂存资产复制到模拟下载目录。
+                """
+                calls.append(args)
+                if args[:2] == ("gh", "api"):
+                    return json.dumps({"object": {"type": "commit", "sha": commit}})
+                if args[:3] == ("gh", "release", "download"):
+                    shutil.copyfile(asset, Path(args[-1]) / asset.name)
+                    return ""
+                if args[:3] == ("gh", "release", "view"):
+                    if "isDraft" in args:
+                        return "true\n" if is_draft else "false\n"
+                    return "https://github.com/OpenVulcan/vulcan-memory-mesh/releases/tag/" + tag
+                return ""
+
+            missing_release = subprocess.CompletedProcess([], 1, "", "HTTP 404")
+            with (
+                patch.object(release, "__file__", str(root / "scripts" / "release.py")),
+                patch.object(release, "verify_assets", return_value=[asset]),
+                patch.object(release, "run", side_effect=fake_run),
+                patch.object(release.subprocess, "run", return_value=missing_release),
+                patch.dict(os.environ, {"GH_REPO": "OpenVulcan/vulcan-memory-mesh"}),
+                patch("builtins.print"),
+            ):
+                release.create_draft(tag, commit)
+                self.assertTrue(any(call[:3] == ("gh", "release", "create") and "--draft" in call for call in calls))
+                self.assertFalse(any(call[:3] == ("gh", "release", "edit") for call in calls))
+                is_draft = False
+                with self.assertRaisesRegex(ValueError, "no longer a draft"):
+                    release.create_draft(tag, commit)
 
     def test_incomplete_and_tampered_release_cannot_publish(self):
         """Verify five identities and content digests, then reject missing, foreign and altered files.
