@@ -53,11 +53,17 @@ jobs:
       - name: Build standard VMM layout on Unix
         if: github.event_name == 'pull_request' && runner.os != 'Windows'
         shell: bash
-        run: bash scripts/vmm.sh build
+        run: bash scripts/vmm.sh build release
       - name: Build standard VMM layout on Windows
         if: github.event_name == 'pull_request' && runner.os == 'Windows'
         shell: pwsh
-        run: ./make.ps1 build
+        run: ./make.ps1 build release
+      - name: Exercise packaged native and legacy storage paths
+        if: github.event_name == 'pull_request'
+        env:
+          VMM_NATIVE_PACKAGED_ROOT: ${{ github.workspace }}/output
+          VMM_PACKAGED_STORAGE_PROFILE: all
+        run: go test ./internal/app -run '^TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts$' -count=1 -v -timeout=10m
       - name: Exercise the native service manager and gRPC health path
         if: github.event_name == 'pull_request'
         run: python scripts/service_smoke.py
