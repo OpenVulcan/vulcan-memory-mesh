@@ -5,7 +5,8 @@ set -euo pipefail
 
 ACTION="${1:-build}"
 if [[ $# -gt 0 ]]; then shift; fi
-FORWARD_ARGS=("$@")
+# Remaining positional parameters are forwarded directly; Bash 3.2 treats an empty array expansion as unset under nounset.
+# 余下位置参数直接透传；Bash 3.2 在 nounset 模式下会把空数组展开视为未定义。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -175,7 +176,8 @@ host_dependency_release_info() {
 # verified_host_dependency revalidates the official archive and extracted artifact before packaging.
 # verified_host_dependency 在打包前重新校验官方压缩包及其解压产物。
 verified_host_dependency() {
-    local kind="$1" file_name="$2" source_path="$THIRD_PARTY_DEPS_DIR/$file_name" marker_dir marker_count marker
+    local kind="$1" file_name="$2" source_path marker_dir marker_count marker
+    source_path="$THIRD_PARTY_DEPS_DIR/$file_name"
     [[ -f "$source_path" && ! -L "$source_path" ]] || { echo "missing or unsafe host dependency: $source_path; run scripts/install_host_deps.sh first" >&2; return 1; }
     case "$kind" in sqlite) marker_dir="$ROOT_DIR/third_party/vldb_sqlite" ;; lancedb) marker_dir="$ROOT_DIR/third_party/vldb_lancedb" ;; controller) marker_dir="$ROOT_DIR/third_party/vldb_controller" ;; *) echo "unknown dependency kind: $kind" >&2; return 1 ;; esac
     [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || { echo "host dependency cache must be a real directory: $marker_dir" >&2; return 1; }
@@ -238,7 +240,9 @@ verified_host_dependency() {
 # resolve_native_artifact follows current.json exactly and validates its manifest and library.
 # resolve_native_artifact 严格读取 current.json，并校验其清单和动态库。
 resolve_native_artifact() {
-    local target="$1" target_root="$NATIVE_DEPS_ROOT/$target" current_path="$NATIVE_DEPS_ROOT/$target/current.json"
+    local target="$1" target_root current_path
+    target_root="$NATIVE_DEPS_ROOT/$target"
+    current_path="$target_root/current.json"
     [[ -d "$target_root" && ! -L "$target_root" ]] || { echo "native dependency target directory must be a real directory: $target_root" >&2; return 1; }
     [[ -f "$current_path" ]] || { echo "missing native dependency selection: $current_path; run scripts/build_native_deps.sh first" >&2; return 1; }
     [[ ! -L "$current_path" ]] || { echo "native current.json must not be a symlink: $current_path" >&2; return 1; }
@@ -484,9 +488,11 @@ do_build() {
     mkdir -p "$BIN_DIR"
     go build "${release_args[@]}" -o "$EXE_PATH" "$ROOT_DIR/cmd/vmm-local"
     go build "${release_args[@]}" -o "$MIGRATE_EXE_PATH" "$ROOT_DIR/cmd/vmm-migrate"
-    local tester_args=()
-    if [[ "$build_profile" == release ]]; then tester_args=(-trimpath -ldflags "-s -w"); fi
-    go build "${tester_args[@]}" -o "$TESTER_EXE_PATH" "$ROOT_DIR/cmd/vmm-pii-tester"
+    if [[ "$build_profile" == release ]]; then
+        go build -trimpath -ldflags "-s -w" -o "$TESTER_EXE_PATH" "$ROOT_DIR/cmd/vmm-pii-tester"
+    else
+        go build -o "$TESTER_EXE_PATH" "$ROOT_DIR/cmd/vmm-pii-tester"
+    fi
     sync_configs
     sync_host_dependencies "$storage_profile"
     IFS='|' read -r _ _ controller_binary <<< "$(resolve_host_artifacts)"
@@ -514,16 +520,16 @@ do_clean() {
 # do_run 从 output/bin 启动打包程序，确保相对路径稳定。
 do_run() {
     [[ -x "$EXE_PATH" ]] || do_build standard "$(resolve_storage_profile)"
-    ( cd "$BIN_DIR" && "$EXE_PATH" "${FORWARD_ARGS[@]}" )
+    ( cd "$BIN_DIR" && "$EXE_PATH" "$@" )
 }
 
 case "$ACTION" in
     build)
-        BUILD_PROFILE="$(resolve_build_profile "${FORWARD_ARGS[@]}")"
+        BUILD_PROFILE="$(resolve_build_profile "$@")"
         STORAGE_PROFILE="$(resolve_storage_profile)"
         do_build "$BUILD_PROFILE" "$STORAGE_PROFILE"
         ;;
-    run) do_run ;;
+    run) do_run "$@" ;;
     clean) do_clean ;;
     *) echo "Usage: $0 {build [release]|run|clean}" >&2; exit 1 ;;
 esac

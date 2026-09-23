@@ -6,6 +6,7 @@ import getpass
 import json
 import os
 from pathlib import Path
+import shutil
 import socket
 import subprocess
 import sys
@@ -125,12 +126,24 @@ def main():
     创建隔离注册、验收生命周期，并始终清理该服务。
     """
     repository = Path(__file__).resolve().parent.parent
-    binary = repository / "output" / "bin" / ("vmm-local.exe" if os.name == "nt" else "vmm-local")
-    if not binary.is_file():
-        raise RuntimeError(f"standard packaged executable is missing: {binary}")
+    output_root = repository / "output"
+    source_binary = output_root / "bin" / ("vmm-local.exe" if os.name == "nt" else "vmm-local")
+    if not source_binary.is_file():
+        raise RuntimeError(f"standard packaged executable is missing: {source_binary}")
     name = "VMMCI" + uuid.uuid4().hex[:12]
     with tempfile.TemporaryDirectory(prefix="vmm-service-smoke-") as temporary:
         root = Path(temporary).resolve()
+        # Recreate the formal package layers without the development-only override config.
+        # 复制正式包的目录层，并排除仅用于仓库开发的覆盖配置。
+        package_root = root / "package"
+        shutil.copytree(output_root / "bin", package_root / "bin")
+        shutil.copytree(output_root / "libs", package_root / "libs")
+        shutil.copytree(
+            output_root / "configs",
+            package_root / "configs",
+            ignore=shutil.ignore_patterns("config.yaml"),
+        )
+        binary = package_root / "bin" / source_binary.name
         config_root = root / "config"
         config_root.mkdir(mode=0o700)
         data_root = root / "data"
