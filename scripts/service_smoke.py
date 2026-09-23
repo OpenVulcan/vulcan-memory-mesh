@@ -104,15 +104,20 @@ def service_status(binary, name):
     return fields
 
 
-def wait_for_health(binary, config_root):
+def wait_for_health(binary, config_root, *, privileged=False):
     """Wait for the real gRPC Healthz path after start or restart.
     启动或重启后等待真实 gRPC Healthz 链路就绪。
     """
     deadline = time.monotonic() + 45
     last_result = ""
     while time.monotonic() < deadline:
+        command = [str(binary), "health", "--config", str(config_root), "--json"]
+        if privileged:
+            # An unrelated CI account cannot read a private directory owned by the selected service account.
+            # 无关的 CI 账户不能读取所选服务账户持有的私有配置目录。
+            command = ["sudo", "-n", *command]
         result = subprocess.run(
-            [str(binary), "health", "--config", str(config_root), "--json"],
+            command,
             capture_output=True,
             text=True,
             timeout=10,
@@ -257,11 +262,11 @@ def main():
             if service_status(binary, name)["auto_start"] != "disabled":
                 raise RuntimeError("service disable was not persisted")
             run_command(binary, ["service", "start", name], privileged=True)
-            wait_for_health(binary, config_root)
+            wait_for_health(binary, config_root, privileged=sys.platform.startswith("linux"))
             if service_status(binary, name)["state"] != "running":
                 raise RuntimeError("service is not running after start")
             run_command(binary, ["service", "restart", name], privileged=True)
-            wait_for_health(binary, config_root)
+            wait_for_health(binary, config_root, privileged=sys.platform.startswith("linux"))
             run_command(binary, ["service", "stop", name], privileged=True)
             if service_status(binary, name)["state"] != "stopped":
                 raise RuntimeError("service is not stopped after stop")
