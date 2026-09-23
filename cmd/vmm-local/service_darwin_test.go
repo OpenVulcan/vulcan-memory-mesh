@@ -10,13 +10,15 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestRenderLaunchdPlistPersistsConfigAndManualStart verifies launchd receives argument-array values without shell interpolation.
 // TestRenderLaunchdPlistPersistsConfigAndManualStart 用于验证 launchd 通过参数数组接收配置路径，不经过 shell 插值。
 func TestRenderLaunchdPlistPersistsConfigAndManualStart(t *testing.T) {
-	binDir := filepath.Join(t.TempDir(), "VMM App", "bin")
-	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	binDir := filepath.Join(testutil.CanonicalTempDir(t), "VMM App", "bin")
+	configPath := filepath.Join(testutil.CanonicalTempDir(t), "config.yaml")
 	content, err := renderLaunchdPlist(
 		"VMM",
 		filepath.Join(binDir, "vmm-local"),
@@ -35,7 +37,7 @@ func TestRenderLaunchdPlistPersistsConfigAndManualStart(t *testing.T) {
 		t.Fatalf("manual launchd policy must disable both RunAtLoad and KeepAlive:\n%s", content)
 	}
 
-	plistPath := filepath.Join(t.TempDir(), "VMM.plist")
+	plistPath := filepath.Join(testutil.CanonicalTempDir(t), "VMM.plist")
 	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write plist: %v", err)
 	}
@@ -85,9 +87,9 @@ func TestRenderLaunchdPlistPersistsExplicitUser(t *testing.T) {
 	if err != nil {
 		t.Skipf("root account is unavailable in this test environment: %v", err)
 	}
-	binDir := filepath.Join(t.TempDir(), "bin")
+	binDir := filepath.Join(testutil.CanonicalTempDir(t), "bin")
 	content, err := renderLaunchdPlist("VMM", filepath.Join(binDir, "vmm-local"), binDir, launchdRenderOptions{
-		configPath: filepath.Join(t.TempDir(), "config.yaml"),
+		configPath: filepath.Join(testutil.CanonicalTempDir(t), "config.yaml"),
 		autoStart:  true,
 		user:       identity.Username,
 	})
@@ -97,7 +99,7 @@ func TestRenderLaunchdPlistPersistsExplicitUser(t *testing.T) {
 	if !strings.Contains(content, "<key>UserName</key>") || !strings.Contains(content, "<string>"+identity.Username+"</string>") {
 		t.Fatalf("rendered plist missing UserName:\n%s", content)
 	}
-	plistPath := filepath.Join(t.TempDir(), "VMM.plist")
+	plistPath := filepath.Join(testutil.CanonicalTempDir(t), "VMM.plist")
 	if err := os.WriteFile(plistPath, []byte(content), 0o644); err != nil {
 		t.Fatalf("write user plist: %v", err)
 	}

@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -207,7 +208,13 @@ func writeConfigCommandFixture(t *testing.T) (root, exePath string) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("create config dir: %v", err)
 	}
-	exePath = filepath.Join(binDir, "vmm-local.exe")
+	// Match the host executable name so the fixture is recognized as a packaged runtime on every OS.
+	// 按宿主平台命名可执行文件，使测试夹具在每个系统上都被识别为打包运行时。
+	executableName := "vmm-local"
+	if runtime.GOOS == "windows" {
+		executableName += ".exe"
+	}
+	exePath = filepath.Join(binDir, executableName)
 	basePath := filepath.Join(configDir, "base.yaml")
 	writeTestFile(t, exePath, "")
 	writeTestFile(t, filepath.Join(root, "VERSION"), "fixture")

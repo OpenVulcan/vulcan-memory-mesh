@@ -21,6 +21,13 @@ jobs:
       fail-fast: false
       matrix:
         os: [windows-2025, ubuntu-24.04, macos-15]
+    env:
+      # Resolve optional packaged provider placeholders without using real credentials or external services.
+      # 使用不可达的本地测试值解析可选供应商占位符，不使用真实凭据或外部服务。
+      BAILIAN_API_KEY: ci-test-placeholder
+      BAILIAN_BASE_URL: http://127.0.0.1:1/v1
+      BAILIAN_RERANK_URL: http://127.0.0.1:1/rerank
+      VMM_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:1/ci?sslmode=disable
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:

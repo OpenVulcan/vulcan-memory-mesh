@@ -51,7 +51,13 @@ func TestWindowsPrivateDirectorySetsProtectedDACLForNewDirectory(t *testing.T) {
 		t.Fatalf("read current user SID: %v", err)
 	}
 	for _, trustee := range []string{"SY", "BA", currentSID.String()} {
-		if !strings.Contains(sddl, trustee) {
+		// Windows renders the built-in local Administrator SID as the LA alias in canonical SDDL.
+		// Windows 会在规范 SDDL 中把内置本机管理员 SID 显示为 LA 别名。
+		present := strings.Contains(sddl, trustee)
+		if trustee == currentSID.String() && strings.HasSuffix(trustee, "-500") {
+			present = present || strings.Contains(sddl, ";;;LA)")
+		}
+		if !present {
 			t.Fatalf("new data root DACL is missing trustee %q: %q", trustee, sddl)
 		}
 	}

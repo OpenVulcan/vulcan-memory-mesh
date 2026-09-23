@@ -46,7 +46,9 @@ func configurePackagedNativeStorageForTest(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	library := os.Getenv("VMM_NATIVE_LANCEDB_LIBRARY")
 	if library == "" {
-		return
+		// The release matrix supplies the verified native library; source-only CI cannot compose a storage runtime.
+		// 发行矩阵提供已验证的原生库；只有源码的 CI 无法装配存储运行时。
+		t.Skip("VMM_NATIVE_LANCEDB_LIBRARY is required for runtime composition")
 	}
 	storageRoot := t.TempDir()
 	cfg.Storage.Mode = "native"

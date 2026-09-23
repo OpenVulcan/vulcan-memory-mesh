@@ -9,6 +9,8 @@ import (
 	osuser "os/user"
 	"path/filepath"
 	"testing"
+
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestValidateServiceStoragePathUsesOwnerIdentity verifies an existing data root must belong to the selected account.
@@ -22,7 +24,7 @@ func TestValidateServiceStoragePathUsesOwnerIdentity(t *testing.T) {
 	if err != nil {
 		t.Skipf("current account cannot be resolved as a service user: %v", err)
 	}
-	root := filepath.Join(t.TempDir(), "data")
+	root := filepath.Join(testutil.CanonicalTempDir(t), "data")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatalf("create private data root: %v", err)
 	}
@@ -50,7 +52,7 @@ func TestValidateServiceStoragePathChecksCreationParent(t *testing.T) {
 	if err != nil {
 		t.Skipf("current account cannot be resolved as a service user: %v", err)
 	}
-	root := filepath.Join(t.TempDir(), "data")
+	root := filepath.Join(testutil.CanonicalTempDir(t), "data")
 	if err := os.MkdirAll(root, 0o700); err != nil {
 		t.Fatalf("create private data root: %v", err)
 	}
@@ -74,7 +76,7 @@ func TestValidateServiceStoragePathRejectsInaccessibleAncestor(t *testing.T) {
 	if err != nil {
 		t.Skipf("current account cannot be resolved as a service user: %v", err)
 	}
-	blocked := filepath.Join(t.TempDir(), "blocked")
+	blocked := filepath.Join(testutil.CanonicalTempDir(t), "blocked")
 	if err := os.Mkdir(blocked, 0o700); err != nil {
 		t.Fatalf("create blocked ancestor: %v", err)
 	}
@@ -89,7 +91,7 @@ func TestValidateServiceStoragePathRejectsInaccessibleAncestor(t *testing.T) {
 // TestServiceDotEnvCandidatesMatchesRuntimeOrder verifies the service preflight mirrors config.dotEnvCandidates exactly.
 // TestServiceDotEnvCandidatesMatchesRuntimeOrder 验证服务预检严格复现 config.dotEnvCandidates 的顺序。
 func TestServiceDotEnvCandidatesMatchesRuntimeOrder(t *testing.T) {
-	root := t.TempDir()
+	root := testutil.CanonicalTempDir(t)
 	configPath := filepath.Join(root, "configs", "base.yaml")
 	want := []string{filepath.Join(root, ".env"), filepath.Join(root, "configs", ".env")}
 	got := serviceDotEnvCandidates(configPath)
@@ -118,7 +120,7 @@ func TestValidateServiceAccountEnvCandidatesChecksExistingFiles(t *testing.T) {
 	if err != nil {
 		t.Skipf("current account cannot be resolved as a service user: %v", err)
 	}
-	root := t.TempDir()
+	root := testutil.CanonicalTempDir(t)
 	configPath := filepath.Join(root, "configs", "base.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o700); err != nil {
 		t.Fatalf("create config directory: %v", err)

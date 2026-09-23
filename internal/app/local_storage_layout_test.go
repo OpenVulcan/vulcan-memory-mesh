@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/openvulcan/vmm/internal/config"
+	"github.com/openvulcan/vmm/internal/testutil"
 )
 
 // TestResolveLocalStorageLayoutForConfigKeepsLegacyLayout verifies an empty override retains the packaged database layout.
@@ -36,7 +37,7 @@ func TestResolveLocalStorageLayoutForConfigKeepsLegacyLayout(t *testing.T) {
 // TestResolveLocalStorageLayoutForConfigUsesExplicitRoot 用于验证 split/controller 模式共同使用显式物理数据根目录。
 func TestResolveLocalStorageLayoutForConfigUsesExplicitRoot(t *testing.T) {
 	promptLayout, _ := packagedPromptLayout(t)
-	dataRoot := filepath.Join(t.TempDir(), "vmm-data")
+	dataRoot := filepath.Join(testutil.CanonicalTempDir(t), "vmm-data")
 	for _, mode := range []string{"split", "controller"} {
 		t.Run(mode, func(t *testing.T) {
 			cfg := config.DefaultLocal()
