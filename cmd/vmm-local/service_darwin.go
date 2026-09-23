@@ -244,9 +244,11 @@ func (d *launchdDict) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement)
 					return err
 				}
 			case "ProgramArguments":
-				if err := decoder.DecodeElement(&d.ProgramArguments, &valueStart); err != nil {
+				arguments, err := decodeLaunchdStringArray(decoder, valueStart)
+				if err != nil {
 					return err
 				}
+				d.ProgramArguments = arguments
 			case "WorkingDirectory":
 				if err := decoder.DecodeElement(&d.WorkingDirectory, &valueStart); err != nil {
 					return err
@@ -279,6 +281,43 @@ func (d *launchdDict) UnmarshalXML(decoder *xml.Decoder, start xml.StartElement)
 				}
 				return fmt.Errorf("unsupported launchd plist key %q", property)
 			}
+		}
+	}
+}
+
+// decodeLaunchdStringArray reads exactly the string children of a plist array and rejects foreign value types.
+// decodeLaunchdStringArray 只读取 plist 数组中的 string 子元素，并拒绝其他值类型。
+func decodeLaunchdStringArray(decoder *xml.Decoder, start xml.StartElement) ([]string, error) {
+	if start.Name.Local != "array" || len(start.Attr) != 0 {
+		return nil, fmt.Errorf("launchd ProgramArguments is not a plain array")
+	}
+	var arguments []string
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			return nil, err
+		}
+		switch value := token.(type) {
+		case xml.CharData:
+			if strings.TrimSpace(string(value)) != "" {
+				return nil, fmt.Errorf("launchd ProgramArguments contains unexpected text")
+			}
+		case xml.StartElement:
+			if value.Name.Local != "string" || len(value.Attr) != 0 {
+				return nil, fmt.Errorf("launchd ProgramArguments contains an unsupported element")
+			}
+			var argument string
+			if err := decoder.DecodeElement(&argument, &value); err != nil {
+				return nil, err
+			}
+			arguments = append(arguments, argument)
+		case xml.EndElement:
+			if value.Name != start.Name {
+				return nil, fmt.Errorf("launchd ProgramArguments has an unexpected closing element")
+			}
+			return arguments, nil
+		default:
+			return nil, fmt.Errorf("launchd ProgramArguments contains an unsupported token")
 		}
 	}
 }
