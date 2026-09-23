@@ -237,12 +237,21 @@ def main():
         # 修改账户归属前，通过真实打包程序检查有效配置值。
         effective_output = run_command(binary, ["config", "show-effective", "--config", str(config_root), "--json"])
         effective = json.loads(effective_output)
+        # The packaged command must attribute user overrides to the exact file that supplied them.
+        # 打包命令必须把用户覆盖字段归属到实际提供这些值的文件。
+        sources = effective.get("sources", {})
+        user_file = str(config_root / "config.yaml")
         if (
-            effective["version"] != "v1"
+            effective["version"] != "v2"
             or effective["redacted"] is not True
             or effective["config"]["embedding"]["model"] != "service-smoke-embedding"
             or effective["config"]["storage"]["mode"] != "split"
             or not effective["config"]["logging"]["format"]
+            or sources.get("/embedding/model", {}).get("kind") != "file"
+            or sources.get("/embedding/model", {}).get("file") != user_file
+            or sources.get("/storage/mode", {}).get("kind") != "file"
+            or sources.get("/storage/mode", {}).get("file") != user_file
+            or not sources.get("/logging/format", {}).get("kind")
             or "service-smoke-placeholder" in effective_output
         ):
             raise RuntimeError("packaged effective configuration did not preserve layers and redaction")
