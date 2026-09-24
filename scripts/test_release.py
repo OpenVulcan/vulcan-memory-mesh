@@ -25,6 +25,28 @@ class ReleaseGateTests(unittest.TestCase):
     验证任何网络修改之前的发行拒绝条件。
     """
 
+    @unittest.skipUnless(os.name == "posix" and shutil.which("bash"), "requires native Bash")
+    def test_verification_mode_rejects_noncanonical_versions(self):
+        """Run the actual no-publication identity gate against valid and malformed VERSION files.
+        对合法和非法 VERSION 文件实际运行不发布模式的身份门禁。
+        """
+        workflow = (Path(__file__).resolve().parents[1] / ".github/workflows/release.yml").read_text(encoding="utf-8")
+        start = workflow.index("      - name: Resolve the tag to one immutable commit")
+        start = workflow.index("        run: |\n", start) + len("        run: |\n")
+        end = workflow.index("\n  build:", start)
+        script = "\n".join(line[10:] for line in workflow[start:end].splitlines())
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            for tag, expected in (("v0.1.0", 0), ("v0.1.0-rc.1", 0), ("v00.1.0", 1), ("v0.1.0-..", 1)):
+                (root / "VERSION").write_text(tag, encoding="utf-8")
+                output = root / "outputs"
+                output.write_text("", encoding="utf-8")
+                env = dict(os.environ, VERIFY_ONLY="true", WORKFLOW_COMMIT="a" * 40, GITHUB_OUTPUT=str(output))
+                checked = subprocess.run(["bash", "-c", script], cwd=root, env=env, capture_output=True, text=True)
+                with self.subTest(tag=tag):
+                    self.assertEqual(checked.returncode, expected, checked.stderr)
+                    self.assertEqual("commit=" in output.read_text(), expected == 0)
+
     def test_missing_and_skipped_native_tests_are_rejected(self):
         """Require actual pass events for every native acceptance test.
         每个强制原生验收测试都必须具有实际通过事件。

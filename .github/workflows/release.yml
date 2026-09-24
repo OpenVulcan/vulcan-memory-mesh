@@ -53,7 +53,7 @@ jobs:
           # 验证模式使用 VERSION 与工作流提交，不读取或修改公开版本标签。
           if [[ "$VERIFY_ONLY" == true ]]; then
             RELEASE_TAG="$(tr -d '\r\n' < VERSION)"
-            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+            [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
             echo "commit=$WORKFLOW_COMMIT" >> "$GITHUB_OUTPUT"
             echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
             exit 0
