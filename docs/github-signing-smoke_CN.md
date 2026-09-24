@@ -59,4 +59,31 @@
 - Windows 两个 Secret 可读取，官方 MSI 验签与安装通过，Runner 具有会话 2 且支持交互；登录阶段未发现证书，未进入签名。
 - 审查定位测试脚本错误使用 SHA-1，已依据源码修正为 SHA-256，并增加登录前关闭客户端和退出码诊断。该失败属于测试实现错误，不能作为托管 Runner 不支持 SimplySign 的证据。
 
-修正后的远程结果将在实测后补充。
+修正后的 VMMM 测试全部通过：<https://github.com/OpenVulcan/vulcan-memory-mesh-manager/actions/runs/35983876589>。
+
+- 被测提交：`e78e74f0761faf8628574b5c3fc22e7ff3fb6592`。
+- Windows：官方客户端安装、SHA-256 TOTP 自动登录、云端私钥签名、RFC 3161 时间戳、SignTool 验签、PowerShell 验签和篡改拒绝全部通过。下载后的签名程序在本机再次验签，状态为 `Valid`。
+- Windows 证书指纹：`19E4E2A3EFAECB6BE966D4C89B28C2C6F5C8DEA9`；有效期截至 `2027-09-24T06:04:54Z`。
+- Windows 已签名测试程序 SHA-256：`BBFF538227A5ED9D1A15F4AD310E5CF5ACF51DC356BEB18DD8AE5A03F8F6599D`。
+- Linux：私钥导入、独立签名、公钥隔离验签和篡改拒绝全部通过，下载产物后的本机复验也通过。
+- Linux 公钥主指纹：`6C0B6CA76104CB7B04C2829886D1113F5325ECAC`。
+- Linux 测试程序 SHA-256：`bd935d5e92462577234cd6ca88d8d6493c19699f8d02021735749115270988a4`。
+- 同提交 VMMM 原有五平台 CI 通过：<https://github.com/OpenVulcan/vulcan-memory-mesh-manager/actions/runs/35983876501>。
+
+VMM 独立仓库测试也全部通过：<https://github.com/OpenVulcan/vulcan-memory-mesh/actions/runs/35984267211>。
+
+- 被测提交：`7990cfcf2f72046f00a3506600105fa2a6c3973d`。
+- Windows 和 Linux 都完成与 VMMM 相同的签名、验签及篡改拒绝检查；两个下载产物均在本机再次独立验签通过。
+- Windows 证书和 Linux 公钥指纹与 VMMM 相同，证明组织凭据已对两个仓库生效。
+- Windows 已签名测试程序 SHA-256：`A0FE0ED83516FAE9DA9E2AC37A1D8AA8C2DF7CCA3E16C99F9C85BE4F18C86528`。
+- Linux 测试程序 SHA-256：`19647ff6bfc32d90a51449923375e11224d66827e557a3f0521102ad6b7de7d3`。
+
+复现时在对应仓库的 Actions 页面查看 `Signing credential smoke test`；工作流合并到默认分支后可直接手动触发。在合并前，测试分支中修改工作流或测试脚本会触发实测。组织凭据不复制到本机，两仓库分别保留同样的测试入口和说明。
+
+## 实测结论与边界
+
+当前 Certum 证书、组织凭据及固定版本 SimplySign Desktop 已在 GitHub 托管 Windows 临时运行器完成无人值守签名，过程中没有额外人工输入 PIN。本次链路不需要个人电脑、固定 IP 或常驻 Windows 服务器。
+
+该结果验证了当前组合的可行性，不是 Certum 对第三方自动登录参数的长期接口保证。测试没有发布正式产品、改动已有发行工作流或为 macOS 签名；正式发行接入仍需覆盖实际产品文件、打包顺序和全部发布产物的校验。
+
+同一个 Certum 账户的跨仓库签名测试按顺序运行，避免同时登录。工作流中的并发组只在单仓库内生效；多个项目未来同时发行时，还需要单独验证会话并发或统一排队。
