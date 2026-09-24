@@ -306,7 +306,9 @@ class ReleaseGateTests(unittest.TestCase):
         for platform in platforms:
             for mutate in (False, True):
                 with self.subTest(platform=platform, mutate=mutate), tempfile.TemporaryDirectory() as directory:
-                    root = Path(directory)
+                    # Match the packager's canonical root on macOS aliases and Windows short directory names.
+                    # 与打包器的规范根路径保持一致，处理 macOS 别名和 Windows 短目录名。
+                    root = Path(directory).resolve()
                     tag, commit = "v0.1.0", "a" * 40
                     goos, goarch, target, library = release.PLATFORMS[platform]
                     suffix = ".exe" if goos == "windows" else ""
