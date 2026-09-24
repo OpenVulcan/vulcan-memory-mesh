@@ -311,10 +311,13 @@ def package(tag, commit, platform):
             shutil.copy2(root / name, stage / name)
         shutil.copy2(root / "docs/native-storage-guide_CN.md", stage / "NATIVE_STORAGE.md")
         shutil.copy2(root / "docs/github-release-guide_CN.md", stage / "RELEASE_GUIDE.md")
-        # Verify the staged default configuration and library layout with a real gRPC process.
-        # 使用真实 gRPC 进程验收暂存包的默认配置与动态库布局。
+        # Verify the staged package with real gRPC processes and preserve failing test diagnostics in CI logs.
+        # 使用真实 gRPC 进程验收暂存包，并在持续集成日志中保留失败测试的完整诊断。
         acceptance_env = dict(os.environ, VMM_NATIVE_PACKAGED_ROOT=str(stage), VMM_PACKAGED_STORAGE_PROFILE="all")
-        print(run("go", "test", "./internal/app", "-run", "^TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts$", "-count=1", env=acceptance_env))
+        subprocess.run(
+            ["go", "test", "./internal/app", "-run", "^TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts$", "-count=1"],
+            check=True, env=acceptance_env,
+        )
         files = sorted(path for path in stage.rglob("*") if path.is_file())
         file_hashes = {path.relative_to(stage).as_posix(): digest(path) for path in files}
         receipt = {
@@ -718,8 +721,8 @@ def create_draft(tag, commit):
     else:
         raise RuntimeError(existing.stderr)
     run("gh", "release", "upload", tag, *map(str, assets), "--clobber")
-    # Keep the Certum-era release gate closed while checking every uploaded byte against the authenticated snapshot.
-    # 在逐文件核对已认证摘要时继续关闭 Certum 发行门禁，不自动公开草稿。
+    # Keep publication separate from byte verification; successful signing still leaves a draft for release approval.
+    # 公开发行与字节校验分开；签名成功后仍保留草稿，等待发行批准。
     with tempfile.TemporaryDirectory(prefix="vmm-release-download-") as temporary:
         run("gh", "release", "download", tag, "--dir", temporary)
         downloaded = Path(temporary)
