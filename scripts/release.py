@@ -311,6 +311,10 @@ def package(tag, commit, platform):
             shutil.copy2(root / name, stage / name)
         shutil.copy2(root / "docs/native-storage-guide_CN.md", stage / "NATIVE_STORAGE.md")
         shutil.copy2(root / "docs/github-release-guide_CN.md", stage / "RELEASE_GUIDE.md")
+        # Freeze reviewed inputs before runtime acceptance can create logs or other mutable state.
+        # 在运行验收可能创建日志等可变状态之前，固定经过审核的发行输入。
+        files = sorted(path for path in stage.rglob("*") if path.is_file())
+        file_hashes = {path.relative_to(stage).as_posix(): digest(path) for path in files}
         # Verify the staged package with real gRPC processes and preserve failing test diagnostics in CI logs.
         # 使用真实 gRPC 进程验收暂存包，并在持续集成日志中保留失败测试的完整诊断。
         acceptance_env = dict(os.environ, VMM_NATIVE_PACKAGED_ROOT=str(stage), VMM_PACKAGED_STORAGE_PROFILE="all")
@@ -318,8 +322,11 @@ def package(tag, commit, platform):
             ["go", "test", "./internal/app", "-run", "^TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts$", "-count=1"],
             check=True, env=acceptance_env,
         )
-        files = sorted(path for path in stage.rglob("*") if path.is_file())
-        file_hashes = {path.relative_to(stage).as_posix(): digest(path) for path in files}
+        # Refuse changed inputs; archive only the frozen list, never test-created logs or databases.
+        # 拒绝验收中被修改的输入；只打包固定清单，绝不收录测试生成的日志或数据库。
+        for path in files:
+            if path.is_symlink() or not path.is_file() or digest(path) != file_hashes[path.relative_to(stage).as_posix()]:
+                raise ValueError(f"Staged release input changed during acceptance: {path.relative_to(stage)}")
         receipt = {
             "manifest_schema": RELEASE_MANIFEST_SCHEMA,
             "version": tag,
@@ -331,22 +338,25 @@ def package(tag, commit, platform):
             "capabilities": RELEASE_CAPABILITIES,
             "files": file_hashes,
         }
-        (stage / "release-manifest.json").write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        receipt_path = stage / "release-manifest.json"
+        receipt_path.write_text(json.dumps(receipt, indent=2) + "\n", encoding="utf-8")
+        archive_files = sorted(files + [receipt_path])
         extension = ".zip" if goos == "windows" else ".tar.gz"
         archive = dist / (basename + extension)
         if archive.exists():
             raise ValueError(f"Refusing to overwrite an existing local archive: {archive}")
         if goos == "windows":
             with zipfile.ZipFile(archive, "w", compression=zipfile.ZIP_DEFLATED) as handle:
-                for path in sorted(stage.rglob("*")):
-                    if path.is_file():
-                        handle.write(path, path.relative_to(stage.parent))
+                for path in archive_files:
+                    handle.write(path, path.relative_to(stage.parent))
             with zipfile.ZipFile(archive) as handle:
                 if handle.testzip() is not None:
                     raise ValueError("Archive CRC validation failed")
         else:
             with tarfile.open(archive, "w:gz") as handle:
-                handle.add(stage, arcname=basename)
+                handle.add(stage, arcname=basename, recursive=False)
+                for path in archive_files:
+                    handle.add(path, arcname=path.relative_to(stage.parent).as_posix(), recursive=False)
             with tarfile.open(archive) as handle:
                 for member in handle.getmembers():
                     if member.isfile() and member.name.startswith(basename + "/bin/") and not member.mode & 0o111:

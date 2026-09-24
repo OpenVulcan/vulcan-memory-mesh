@@ -59,7 +59,7 @@ vulcan-memory-mesh-v0.1.0-<平台>/
 
 包内 `release-manifest.json` 的 `capabilities.schema_version` 为 `1`，明确记录 `split`、`controller`、`native`、`combined` 四种模式；`combined` 的 provider 为 `postgres`，检索 flavor 支持 `standard` 与 `paradedb`。PostgreSQL 服务端和扩展由用户按部署环境提供，不会伪装成平台本地依赖。
 
-不会带入测试数据库、用户覆盖配置或源码开发覆盖层 `configs/config.yaml`。
+不会带入测试数据库、验收日志、用户覆盖配置或源码开发覆盖层 `configs/config.yaml`。暂存验收前固定包内文件与摘要，验收后拒绝被修改的输入；ZIP 与 TAR 均只收录该固定文件集合，不递归收录运行期新增文件。
 
 ### 配置资产边界
 

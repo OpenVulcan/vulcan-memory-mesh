@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
+import tarfile
 import tempfile
 import unittest
 import zipfile
@@ -292,6 +293,91 @@ class ReleaseGateTests(unittest.TestCase):
             release.select_release_configs(
                 ["configs/base.yaml", "configs/noise_rules/common.json", "configs/unknown.yaml"]
             )
+
+    def test_package_excludes_runtime_files_and_rejects_changed_inputs(self):
+        """Exercise ZIP and TAR packaging after acceptance creates logs or changes a shipped binary.
+        验收生成日志或修改待发行二进制后，实际执行 ZIP 与 TAR 打包验证边界。
+        Uses isolated fake build outputs and a simulated runtime; returns None after checking both archive contents and refusal.
+        使用隔离的模拟构建产物与运行过程；检查压缩包内容及拒绝条件后返回空值。
+        """
+        # TAR execute-bit acceptance requires a native Unix filesystem; Unix CI exercises both formats.
+        # TAR 执行位验收需要原生 Unix 文件系统；Unix 持续集成覆盖两种格式。
+        platforms = ("windows-x64", "linux-x64") if os.name == "posix" else ("windows-x64",)
+        for platform in platforms:
+            for mutate in (False, True):
+                with self.subTest(platform=platform, mutate=mutate), tempfile.TemporaryDirectory() as directory:
+                    root = Path(directory)
+                    tag, commit = "v0.1.0", "a" * 40
+                    goos, goarch, target, library = release.PLATFORMS[platform]
+                    suffix = ".exe" if goos == "windows" else ""
+                    for relative in ("VERSION", "LICENSE", "README.md", "docs/native-storage-guide_CN.md", "docs/github-release-guide_CN.md"):
+                        path = root / relative
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(tag, encoding="utf-8")
+                    output = root / "output"
+                    sqlite, lance, controller = release.legacy_artifact_names(platform)
+                    for relative in (["bin/" + name + suffix for name in ("vmm-local", "vmm-migrate", "vmm-pii-tester")] +
+                                     ["bin/" + controller, "libs/" + sqlite, "libs/" + lance, "libs/" + library]):
+                        path = output / relative
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(b"reviewed build input")
+                        path.chmod(0o755)
+                    (output / "libs/manifest.json").write_text(json.dumps({
+                        "target": target, "library_file": library,
+                        "library_sha256": release.digest(output / "libs" / library), "artifacts": [],
+                    }), encoding="utf-8")
+
+                    def identity_command(*args):
+                        """Return fixture identities for the exact Git and binary calls; reject unexpected commands.
+                        为明确的 Git 与程序调用返回夹具身份，拒绝意外命令。
+                        """
+                        if args == ("git", "-C", str(root), "rev-parse", "HEAD"):
+                            return commit
+                        if len(args) == 2 and args[1] == "-version-json":
+                            return json.dumps({"version": tag, "source_revision": commit, "goos": goos, "goarch": goarch})
+                        raise AssertionError(args)
+
+                    def stage_configs(source, stage):
+                        """Write the single reviewed base configuration into the supplied stage; return its relative name.
+                        向指定暂存根写入唯一的受控基础配置，返回其相对名称。
+                        """
+                        (stage / "configs").mkdir()
+                        (stage / "configs/base.yaml").write_text('storage:\n  mode: "split"\n', encoding="utf-8")
+                        return ["configs/base.yaml"]
+
+                    def run_acceptance(command, *, check, env):
+                        """Create runtime-only files and optionally corrupt an input; simulate a passing child process.
+                        创建仅属于运行期的文件并按场景篡改输入，模拟通过的子进程。
+                        """
+                        stage = Path(env["VMM_NATIVE_PACKAGED_ROOT"])
+                        for relative in ("logs/test.log", "database/test.db", "bin/unreviewed.bin"):
+                            path = stage / relative
+                            path.parent.mkdir(parents=True, exist_ok=True)
+                            path.write_bytes(b"runtime-only content")
+                        if mutate:
+                            (stage / "bin" / ("vmm-local" + suffix)).write_bytes(b"changed after validation")
+                        return subprocess.CompletedProcess(command, 0)
+
+                    with patch.object(release, "__file__", str(root / "scripts/release.py")), \
+                         patch.object(release, "run", side_effect=identity_command), \
+                         patch.object(release, "stage_release_configs", side_effect=stage_configs), \
+                         patch.object(release.subprocess, "run", side_effect=run_acceptance):
+                        if mutate:
+                            with self.assertRaisesRegex(ValueError, "Staged release input changed"):
+                                release.package(tag, commit, platform)
+                            self.assertEqual(list((root / "dist").iterdir()), [])
+                            continue
+                        release.package(tag, commit, platform)
+                    basename = f"vulcan-memory-mesh-{tag}-{platform}"
+                    receipt = json.loads((root / "dist" / (basename + ".json")).read_text(encoding="utf-8"))
+                    expected = {basename + "/" + name for name in receipt["files"]} | {basename + "/release-manifest.json"}
+                    self.assertFalse(any(name.startswith(("logs/", "database/")) or name == "bin/unreviewed.bin" for name in receipt["files"]))
+                    if goos == "windows":
+                        with zipfile.ZipFile(root / "dist" / (basename + ".zip")) as archive:
+                            self.assertEqual(set(archive.namelist()), expected)
+                    else:
+                        with tarfile.open(root / "dist" / (basename + ".tar.gz")) as archive:
+                            self.assertEqual({member.name for member in archive if member.isfile()}, expected)
 
     def test_runtime_staging_requires_complete_platform_dependencies(self):
         """Stage a complete fake platform and reject a missing controller dependency.
