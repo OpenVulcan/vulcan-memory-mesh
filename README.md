@@ -177,8 +177,8 @@ vmm-local service enable VulcanMemoryMesh
   - 多个 VMM 客户端会话可以复用 controller 内按规范化物理路径注册的数据库资源，从而避免多个宿主进程分别持有同一个数据库文件
   - SQLite 与 LanceDB 与 split 共用同一数据根；未配置 `storage.local_data_root` 时沿用 `output/database/`，切换模式不迁移业务 schema
   - 启动时必须同时启用 SQLite 与 LanceDB binding；任一失败都会令 VMM 启动失败，绝不会静默回退到直接 FFI
-  - SQLite 强制启用数据库文件锁校验，底层固定对齐 `vldb-sqlite v0.1.6`
-  - controller 固定为 `v0.2.3`，LanceDB 固定为 `v0.1.5`
+  - SQLite 强制启用数据库文件锁校验，底层固定对齐 `vldb-sqlite v0.1.7`
+  - controller 固定为 `v0.2.4`，LanceDB 固定为 `v0.1.5`
   - 开发环境可使用 `controller.auto_spawn=true` 与 `managed` 模式；正式系统服务优先独立运行 controller，并把 VMM 设置为 `auto_spawn=false`
 - `native`（显式启用）
   - 关系库由进程内 `modernc.org/sqlite` 适配器持有，向量库由 `output/libs/` 中的平台原生 LanceDB 薄 ABI 持有，不启动 `vldb-controller`

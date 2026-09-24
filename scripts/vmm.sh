@@ -166,9 +166,9 @@ pinned_host_archive_hash() {
 host_dependency_release_info() {
     local kind="$1" target="$2"
     case "$kind" in
-        sqlite) printf '%s|%s|%s\n' OpenVulcan/vldb-sqlite v0.1.6 "vldb-sqlite-lib-v0.1.6-${target}.tar.gz" ;;
+        sqlite) printf '%s|%s|%s\n' OpenVulcan/vldb-sqlite v0.1.7 "vldb-sqlite-lib-v0.1.7-${target}.tar.gz" ;;
         lancedb) printf '%s|%s|%s\n' OpenVulcan/vldb-lancedb v0.1.5 "vldb-lancedb-lib-v0.1.5-${target}.tar.gz" ;;
-        controller) printf '%s|%s|%s\n' OpenVulcan/vldb-controller v0.2.3 "vldb-controller-v0.2.3-${target}.tar.gz" ;;
+        controller) printf '%s|%s|%s\n' OpenVulcan/vldb-controller v0.2.4 "vldb-controller-v0.2.4-${target}.tar.gz" ;;
         *) echo "unknown dependency kind: $kind" >&2; return 1 ;;
     esac
 }

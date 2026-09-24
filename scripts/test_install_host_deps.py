@@ -17,29 +17,29 @@ from pathlib import Path
 EXPECTED_ARCHIVES = {
     (
         "OpenVulcan/vldb-sqlite",
-        "v0.1.6",
-        "vldb-sqlite-lib-v0.1.6-aarch64-apple-darwin.tar.gz",
-    ): "67a22c4240c4336adbf1e066419774b6c445a4bbcdddc866db386b63152d4fc9",
+        "v0.1.7",
+        "vldb-sqlite-lib-v0.1.7-aarch64-apple-darwin.tar.gz",
+    ): "f3484c2a5a56017f60ff4b6fbcf04b0ea89b99c21e19329e2d91f233e605ca55",
     (
         "OpenVulcan/vldb-sqlite",
-        "v0.1.6",
-        "vldb-sqlite-lib-v0.1.6-aarch64-unknown-linux-gnu.tar.gz",
-    ): "48827632f95142fa80a9fdfa36de6573617ee38d64f211b18de975d53430deab",
+        "v0.1.7",
+        "vldb-sqlite-lib-v0.1.7-aarch64-unknown-linux-gnu.tar.gz",
+    ): "ca5123f0151e7378bca5fdc9965de82db349b92626cba9ba86efe2000be7fa6a",
     (
         "OpenVulcan/vldb-sqlite",
-        "v0.1.6",
-        "vldb-sqlite-lib-v0.1.6-x86_64-apple-darwin.tar.gz",
-    ): "7b8a9275fb3618a485681193fcb3347a1477ab7e97970bf00654b50143b762b6",
+        "v0.1.7",
+        "vldb-sqlite-lib-v0.1.7-x86_64-apple-darwin.tar.gz",
+    ): "55b87e4e5921de65533f379e51eafa93abdf39ca1a3c3a361b48c589bcfd5a6a",
     (
         "OpenVulcan/vldb-sqlite",
-        "v0.1.6",
-        "vldb-sqlite-lib-v0.1.6-x86_64-pc-windows-msvc.zip",
-    ): "51e4c372dab00058504e718c6bdf21577ee2471c1c193c38d83b01c7d717ab7d",
+        "v0.1.7",
+        "vldb-sqlite-lib-v0.1.7-x86_64-pc-windows-msvc.zip",
+    ): "0a9814e1d8b7d57ab859551242723c8384f8067138b52f796573c56b92897313",
     (
         "OpenVulcan/vldb-sqlite",
-        "v0.1.6",
-        "vldb-sqlite-lib-v0.1.6-x86_64-unknown-linux-gnu.tar.gz",
-    ): "5b96fc18acc3fe99bf26798d8a05e43029012627e2396105013e701cc499ad75",
+        "v0.1.7",
+        "vldb-sqlite-lib-v0.1.7-x86_64-unknown-linux-gnu.tar.gz",
+    ): "c4a0ae19c9c1efdf7f009b597593988547f126af798b8d7e18d695c2d98cf035",
     (
         "OpenVulcan/vldb-lancedb",
         "v0.1.5",
@@ -67,29 +67,29 @@ EXPECTED_ARCHIVES = {
     ): "b4aa0d18de265523ebd56d56538193e4946d9740355dce497e1bf4821fa30cc2",
     (
         "OpenVulcan/vldb-controller",
-        "v0.2.3",
-        "vldb-controller-v0.2.3-aarch64-apple-darwin.tar.gz",
-    ): "1e398c4b70dd37fc421c158db6e6b5a19157ea017901fdc8cd7ac431f9a7b17c",
+        "v0.2.4",
+        "vldb-controller-v0.2.4-aarch64-apple-darwin.tar.gz",
+    ): "b8d480f23d58a08c15ff49e6246cb60b2115c77262d2eb0faee87268abecc490",
     (
         "OpenVulcan/vldb-controller",
-        "v0.2.3",
-        "vldb-controller-v0.2.3-aarch64-unknown-linux-gnu.tar.gz",
-    ): "15db27b9b64c7d15928dd51968af0e4fab00d17b2cd921391716124075ce540f",
+        "v0.2.4",
+        "vldb-controller-v0.2.4-aarch64-unknown-linux-gnu.tar.gz",
+    ): "c2e0309ff41147853485d6b7547259719b1579c73531802fc00d8b58509bf461",
     (
         "OpenVulcan/vldb-controller",
-        "v0.2.3",
-        "vldb-controller-v0.2.3-x86_64-apple-darwin.tar.gz",
-    ): "c05d1cf51fe0d51a2fb43dcbe095600b03f6883f23fdefe4a4415091fba2381d",
+        "v0.2.4",
+        "vldb-controller-v0.2.4-x86_64-apple-darwin.tar.gz",
+    ): "a534461cd5d59341515855cb3522466c3da838a5c2169573f527c5dc34921aad",
     (
         "OpenVulcan/vldb-controller",
-        "v0.2.3",
-        "vldb-controller-v0.2.3-x86_64-pc-windows-msvc.zip",
-    ): "4131af0f6145b714dcae2ea91d94edad731ca05d3077001dc979f6e446d53a5f",
+        "v0.2.4",
+        "vldb-controller-v0.2.4-x86_64-pc-windows-msvc.zip",
+    ): "463661a7717f12c43d39902df5a03239965d712a5904164dc3be6fd92bc2bea7",
     (
         "OpenVulcan/vldb-controller",
-        "v0.2.3",
-        "vldb-controller-v0.2.3-x86_64-unknown-linux-gnu.tar.gz",
-    ): "de313b94ad4bdce92efe5ac6fa0e6787ed17948e6922fafd2c4a407819f10fac",
+        "v0.2.4",
+        "vldb-controller-v0.2.4-x86_64-unknown-linux-gnu.tar.gz",
+    ): "73adbdc32abf576af28eecca7602bfec7ae5d6459ecb4e28660df6413d8e0cdb",
 }
 
 
@@ -156,7 +156,7 @@ class HostDependencyBootstrapTests(unittest.TestCase):
             f"$line = (Get-Content -LiteralPath '{manifest_path}' -Encoding UTF8)[6]; "
             "$parts = $line -split \"`t\"; "
             "if ($parts.Count -ne 4) { exit 1 }; "
-            "if ($parts[0] -cne 'OpenVulcan/vldb-sqlite' -or $parts[1] -cne 'v0.1.6') { exit 2 }; "
+            "if ($parts[0] -cne 'OpenVulcan/vldb-sqlite' -or $parts[1] -cne 'v0.1.7') { exit 2 }; "
             "Write-Output 'manifest split passed'"
         )
         completed = subprocess.run(

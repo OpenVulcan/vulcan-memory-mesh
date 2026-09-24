@@ -9,11 +9,11 @@ THIRD_PARTY_DIR="$PROJECT_DIR/third_party"
 DEPS_DIR="$THIRD_PARTY_DIR/deps"
 CHECKSUM_MANIFEST="$SCRIPT_DIR/host_deps_sha256.tsv"
 
-# Pinned versions match the database crates embedded by vldb-controller v0.2.3.
-# 固定版本与 vldb-controller v0.2.3 内嵌的数据库 crate 保持一致。
-SQLITE_TAG="v0.1.6"
+# Pinned versions match the database crates embedded by vldb-controller v0.2.4.
+# 固定版本与 vldb-controller v0.2.4 内嵌的数据库 crate 保持一致。
+SQLITE_TAG="v0.1.7"
 LANCEDB_TAG="v0.1.5"
-CONTROLLER_TAG="v0.2.3"
+CONTROLLER_TAG="v0.2.4"
 
 # validate_checksum_manifest rejects missing, malformed, duplicate, and incomplete pinned archive records before any download or cache use.
 # validate_checksum_manifest 在下载或使用缓存前拒绝缺失、格式错误、重复或不完整的固定压缩包摘要记录。

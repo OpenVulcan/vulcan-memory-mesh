@@ -296,9 +296,9 @@ function Get-HostDependencyReleaseInfo {
     $Target = Get-NativeTarget
     $ArchiveExtension = if ([Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([Runtime.InteropServices.OSPlatform]::Windows)) { ".zip" } else { ".tar.gz" }
     switch ($Kind) {
-        "sqlite" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-sqlite"; Tag = "v0.1.6"; Asset = "vldb-sqlite-lib-v0.1.6-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_sqlite" } }
+        "sqlite" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-sqlite"; Tag = "v0.1.7"; Asset = "vldb-sqlite-lib-v0.1.7-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_sqlite" } }
         "lancedb" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-lancedb"; Tag = "v0.1.5"; Asset = "vldb-lancedb-lib-v0.1.5-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_lancedb" } }
-        "controller" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-controller"; Tag = "v0.2.3"; Asset = "vldb-controller-v0.2.3-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_controller" } }
+        "controller" { return [pscustomobject]@{ Repo = "OpenVulcan/vldb-controller"; Tag = "v0.2.4"; Asset = "vldb-controller-v0.2.4-$Target$ArchiveExtension"; MarkerDirectoryName = "vldb_controller" } }
     }
 }
 

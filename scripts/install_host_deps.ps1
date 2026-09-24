@@ -36,8 +36,8 @@ $ControllerRepo = "OpenVulcan/vldb-controller"
 # Pinned dependency tags keep direct split mode aligned with the versions embedded by vldb-controller.
 # 固定依赖标签用于确保直接 split 模式与 vldb-controller 内嵌的版本保持一致。
 $LanceDBTag = "v0.1.5"
-$SQLiteTag = "v0.1.6"
-$ControllerTag = "v0.2.3"
+$SQLiteTag = "v0.1.7"
+$ControllerTag = "v0.2.4"
 
 # Read-ChecksumManifest loads and validates every checked-in archive digest before download or cache reuse.
 # Read-ChecksumManifest 在下载或使用缓存前加载并校验仓库内全部压缩包摘要。
