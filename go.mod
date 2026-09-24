@@ -7,7 +7,7 @@ replace github.com/OpenVulcan/vldb-controller/client-go => ./third_party/vldb-co
 require (
 	github.com/OpenRouterTeam/go-sdk v0.4.1
 	github.com/OpenVulcan/vldb-controller/client-go v0.0.0
-	github.com/ebitengine/purego v0.8.2
+	github.com/ebitengine/purego v0.11.1
 	github.com/go-ego/gse v1.0.2
 	github.com/jackc/pgx/v5 v5.7.6
 	github.com/joho/godotenv v1.5.1

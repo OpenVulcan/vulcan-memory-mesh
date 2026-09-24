@@ -46,7 +46,9 @@ func configurePackagedNativeStorageForTest(t *testing.T, cfg *config.Config) {
 	t.Helper()
 	library := os.Getenv("VMM_NATIVE_LANCEDB_LIBRARY")
 	if library == "" {
-		return
+		// The release matrix supplies the verified native library; source-only CI cannot compose a storage runtime.
+		// 发行矩阵提供已验证的原生库；只有源码的 CI 无法装配存储运行时。
+		t.Skip("VMM_NATIVE_LANCEDB_LIBRARY is required for runtime composition")
 	}
 	storageRoot := t.TempDir()
 	cfg.Storage.Mode = "native"
@@ -206,7 +208,7 @@ func TestNewLocalRegistersReflection(t *testing.T) {
 // TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs verifies runtime file logs stay next to the resolved system config root so packaged binaries use `output/logs` while go-run development uses the repository `logs` directory.
 // TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs 用于验证运行时文件日志会落在系统配置根的同级目录；这样打包二进制走 `output/logs`，而 go run 调试走仓库根 `logs`。
 func TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs(t *testing.T) {
-	logDir, err := resolveRuntimeLogDir(config.PromptLayout{SystemDir: filepath.Join("D:", "repo", "output", "configs")})
+	logDir, err := ResolveRuntimeLogDir(config.Config{}, config.PromptLayout{SystemDir: filepath.Join("D:", "repo", "output", "configs")})
 	if err != nil {
 		t.Fatalf("resolve runtime log dir for packaged layout: %v", err)
 	}
@@ -214,12 +216,30 @@ func TestResolveRuntimeLogDirUsesSiblingOfSystemConfigs(t *testing.T) {
 		t.Fatalf("packaged log dir = %q, want %q", logDir, want)
 	}
 
-	logDir, err = resolveRuntimeLogDir(config.PromptLayout{SystemDir: filepath.Join("D:", "repo", "configs")})
+	logDir, err = ResolveRuntimeLogDir(config.Config{}, config.PromptLayout{SystemDir: filepath.Join("D:", "repo", "configs")})
 	if err != nil {
 		t.Fatalf("resolve runtime log dir for go-run layout: %v", err)
 	}
 	if want := filepath.Join("D:", "repo", "logs"); logDir != want {
 		t.Fatalf("go-run log dir = %q, want %q", logDir, want)
+	}
+}
+
+// TestResolveRuntimeLogDirUsesExplicitPrivateRoot verifies a service account can keep logs outside an administrator-owned package.
+// TestResolveRuntimeLogDirUsesExplicitPrivateRoot 验证服务账户可将日志写入管理员持有的程序包以外。
+func TestResolveRuntimeLogDirUsesExplicitPrivateRoot(t *testing.T) {
+	want := filepath.Join(t.TempDir(), "logs")
+	cfg := config.Config{Logging: config.LoggingConfig{Directory: want}}
+	got, err := ResolveRuntimeLogDir(cfg, config.PromptLayout{SystemDir: filepath.Join(t.TempDir(), "configs")})
+	if err != nil {
+		t.Fatalf("resolve explicit log directory: %v", err)
+	}
+	if got != want {
+		t.Fatalf("explicit log dir = %q, want %q", got, want)
+	}
+	cfg.Logging.Directory = "relative/logs"
+	if _, err := ResolveRuntimeLogDir(cfg, config.PromptLayout{}); err == nil {
+		t.Fatal("relative logging.directory unexpectedly accepted")
 	}
 }
 
@@ -255,7 +275,7 @@ func TestNewLocalCreatesRuntimeLogFile(t *testing.T) {
 		_ = application.Shutdown(context.Background())
 	})
 
-	logDir, err := resolveRuntimeLogDir(layout)
+	logDir, err := ResolveRuntimeLogDir(cfg, layout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -302,7 +322,7 @@ func TestNewLocalCreatesDedicatedLLMLogFileWhenEnabled(t *testing.T) {
 		_ = application.Shutdown(context.Background())
 	})
 
-	logDir, err := resolveRuntimeLogDir(layout)
+	logDir, err := ResolveRuntimeLogDir(cfg, layout)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -548,7 +568,7 @@ func TestNewLocalClosesRuntimeLogFileOnInitFailure(t *testing.T) {
 		t.Fatal("expected startup error")
 	}
 
-	logDir, err := resolveRuntimeLogDir(layout)
+	logDir, err := ResolveRuntimeLogDir(cfg, layout)
 	if err != nil {
 		t.Fatalf("resolve runtime log dir: %v", err)
 	}

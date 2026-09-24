@@ -56,7 +56,7 @@ func MigrateLegacyStorageToNative(ctx context.Context, cfg config.Config, prompt
 	if err != nil {
 		return err
 	}
-	sourceLayout, err := ResolveLocalStorageLayoutForPromptLayout(promptLayout)
+	sourceLayout, err := ResolveLocalStorageLayoutForConfig(cfg, promptLayout)
 	if err != nil {
 		return err
 	}

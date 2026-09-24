@@ -84,6 +84,12 @@ grpc:
     permit_without_stream: true
 
 logging:
+  # Optional absolute log directory; empty preserves the historical package-sibling logs directory.
+  # 可选的绝对日志目录；留空时继续使用旧版程序包同级的 logs 目录。
+  # System services should set this to a private writable path owned by the selected account.
+  # 系统服务应将其设为所选账户持有、可写的私有路径。
+  directory: ""
+
   # Runtime log level.
   # 运行时日志级别。
   # Allowed values:
@@ -181,6 +187,12 @@ storage:
   # - postgres: use the built-in PostgreSQL combined-store implementation.
   # - postgres：使用内置的 PostgreSQL 组合库存储实现。
   combined_provider: "postgres"
+
+  # Optional absolute root for split/controller SQLite and LanceDB data; leave empty to keep the historical output/database layout.
+  # split/controller 模式可选的绝对数据根目录；留空则继续使用历史 output/database 布局。
+  # Changing this value while the historical root contains data is rejected until an explicit migration is completed.
+  # 当历史根仍包含数据时修改此值会被拒绝，必须先完成显式迁移。
+  # local_data_root: ""
 
 sqlite:
   # Legacy compatibility field kept for older configs.

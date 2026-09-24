@@ -1,5 +1,7 @@
 // native_sqlite_test.go verifies native SQL semantics, ownership gating, and recoverable FTS projections on temporary databases.
 // native_sqlite_test.go 在临时数据库上验证原生 SQL 语义、所有权门禁及可恢复 FTS 派生索引。
+// Functional fixtures use the production default timeout so shared-runner scheduling is not treated as a one-second latency requirement.
+// 功能夹具使用生产默认超时，避免把共享运行器调度误当成一秒内完成的延迟要求。
 package native_sqlite
 
 import (
@@ -14,7 +16,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	storagecontract "github.com/openvulcan/vmm/internal/platform/storagecontract/sqlite"
 )
@@ -44,7 +45,7 @@ func TestNativeDatabaseRejectsExistingNonNativeDatabase(t *testing.T) {
 		t.Fatalf("close legacy sqlite database: %v", err)
 	}
 
-	if _, err := Open(databasePath, time.Second); err == nil || !strings.Contains(err.Error(), "existing non-native database") {
+	if _, err := Open(databasePath, defaultNativeTimeout); err == nil || !strings.Contains(err.Error(), "existing non-native database") {
 		t.Fatalf("expected existing non-native database rejection, got %v", err)
 	}
 }
@@ -68,7 +69,7 @@ func TestNativeDatabaseRejectsSQLiteLikeUserTable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read legacy sqlite database before probe: %v", err)
 	}
-	if _, err := Open(databasePath, time.Second); err == nil || !strings.Contains(err.Error(), "existing non-native database") {
+	if _, err := Open(databasePath, defaultNativeTimeout); err == nil || !strings.Contains(err.Error(), "existing non-native database") {
 		t.Fatalf("expected sqlite-like existing database rejection, got %v", err)
 	}
 	after, err := os.ReadFile(databasePath)
@@ -122,7 +123,7 @@ func TestSQLiteReadOnlyDSNEncodesSpecialPath(t *testing.T) {
 func TestNativeSQLSemanticsPreserveIntegerAndBatchRollback(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "native.db")
-	database, err := Open(databasePath, time.Second)
+	database, err := Open(databasePath, defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -174,7 +175,7 @@ func TestNativeSQLSemanticsPreserveIntegerAndBatchRollback(t *testing.T) {
 func TestNativeExecuteScriptDoesNotLeakExplicitTransaction(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "native-transaction.db")
-	database, err := Open(databasePath, time.Second)
+	database, err := Open(databasePath, defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -242,7 +243,7 @@ INSERT INTO transaction_probe (id, label) VALUES (6, 'dangling after commit');`,
 func TestNativeFTSQueueRecoveryPreservesChineseSource(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "native-fts.db")
-	database, err := Open(databasePath, time.Second)
+	database, err := Open(databasePath, defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -270,7 +271,7 @@ func TestNativeFTSQueueRecoveryPreservesChineseSource(t *testing.T) {
 		t.Fatalf("close source database before recovery: %v", err)
 	}
 
-	database, err = Open(databasePath, time.Second)
+	database, err = Open(databasePath, defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("reopen native sqlite database: %v", err)
 	}
@@ -310,7 +311,7 @@ func TestNativeFTSQueueRecoveryPreservesChineseSource(t *testing.T) {
 func TestNativeFTSTokenizerMetadataSwitchRebuildsDerivedGeneration(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "native-tokenizer-switch.db")
-	database, err := Open(databasePath, time.Second)
+	database, err := Open(databasePath, defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -354,7 +355,7 @@ func TestNativeFTSTokenizerMetadataSwitchRebuildsDerivedGeneration(t *testing.T)
 // TestNativeFTSRebuildClearsPendingQueue 验证成功的全量重建不会留下过期恢复任务。
 func TestNativeFTSRebuildClearsPendingQueue(t *testing.T) {
 	ctx := context.Background()
-	database, err := Open(filepath.Join(t.TempDir(), "native-fts-rebuild.db"), time.Second)
+	database, err := Open(filepath.Join(t.TempDir(), "native-fts-rebuild.db"), defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -392,7 +393,7 @@ func TestNativeFTSRebuildClearsPendingQueue(t *testing.T) {
 func TestNativeFTSQueueRecoveryProcessesBatches(t *testing.T) {
 	ctx := context.Background()
 	databasePath := filepath.Join(t.TempDir(), "native-fts-queue-batches.db")
-	database, err := Open(databasePath, time.Second)
+	database, err := Open(databasePath, defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -421,7 +422,7 @@ func TestNativeFTSQueueRecoveryProcessesBatches(t *testing.T) {
 	if err := database.Close(); err != nil {
 		t.Fatalf("close before batched recovery: %v", err)
 	}
-	database, err = Open(databasePath, time.Second)
+	database, err = Open(databasePath, defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("reopen native sqlite database: %v", err)
 	}
@@ -453,7 +454,7 @@ func TestNativeFTSQueueRecoveryProcessesBatches(t *testing.T) {
 // TestNativeFTSRebuildCancellationPreservesPublishedGeneration 验证取消不会发布部分重建代次。
 func TestNativeFTSRebuildCancellationPreservesPublishedGeneration(t *testing.T) {
 	ctx := context.Background()
-	database, err := Open(filepath.Join(t.TempDir(), "native-fts-rebuild-cancel.db"), time.Second)
+	database, err := Open(filepath.Join(t.TempDir(), "native-fts-rebuild-cancel.db"), defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -489,7 +490,7 @@ func TestNativeFTSRebuildCancellationPreservesPublishedGeneration(t *testing.T) 
 // TestNativeFTSStaleMutationsUseCurrentFact 验证旧删除和写入调用不会误删或重建当前事实。
 func TestNativeFTSStaleMutationsUseCurrentFact(t *testing.T) {
 	ctx := context.Background()
-	database, err := Open(filepath.Join(t.TempDir(), "native-fts-stale.db"), time.Second)
+	database, err := Open(filepath.Join(t.TempDir(), "native-fts-stale.db"), defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -551,7 +552,7 @@ func TestNativeFTSStaleMutationsUseCurrentFact(t *testing.T) {
 // TestNativeResetFTSAndExecuteDropsDerivedState 验证调试清理后复用 ID 不会继承旧代次词条。
 func TestNativeResetFTSAndExecuteDropsDerivedState(t *testing.T) {
 	ctx := context.Background()
-	database, err := Open(filepath.Join(t.TempDir(), "native-reset-fts.db"), time.Second)
+	database, err := Open(filepath.Join(t.TempDir(), "native-reset-fts.db"), defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}
@@ -602,7 +603,7 @@ COMMIT;`); err != nil {
 // TestNativeDatabaseCloseRace verifies concurrent close and query calls remain serialized and panic-free.
 // TestNativeDatabaseCloseRace 验证并发关闭与查询保持串行且不会触发 panic。
 func TestNativeDatabaseCloseRace(t *testing.T) {
-	database, err := Open(filepath.Join(t.TempDir(), "native-close-race.db"), time.Second)
+	database, err := Open(filepath.Join(t.TempDir(), "native-close-race.db"), defaultNativeTimeout)
 	if err != nil {
 		t.Fatalf("open native sqlite database: %v", err)
 	}

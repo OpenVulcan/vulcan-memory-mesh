@@ -5,7 +5,8 @@ set -euo pipefail
 
 ACTION="${1:-build}"
 if [[ $# -gt 0 ]]; then shift; fi
-FORWARD_ARGS=("$@")
+# Remaining positional parameters are forwarded directly; Bash 3.2 treats an empty array expansion as unset under nounset.
+# 余下位置参数直接透传；Bash 3.2 在 nounset 模式下会把空数组展开视为未定义。
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -21,6 +22,7 @@ TESTER_EXE_PATH="$BIN_DIR/vmm-pii-tester"
 THIRD_PARTY_DEPS_DIR="$ROOT_DIR/third_party/deps"
 NATIVE_DEPS_ROOT="$THIRD_PARTY_DEPS_DIR/native_lancedb"
 NATIVE_VALIDATOR_SCRIPT="$SCRIPT_DIR/validate_native_artifacts.sh"
+HOST_DEPS_CHECKSUM_MANIFEST="$SCRIPT_DIR/host_deps_sha256.tsv"
 
 # Native support paths are a fixed allowlist copied beside the native library.
 # 原生支持路径使用固定白名单并复制到动态库旁。
@@ -128,28 +130,119 @@ native_library_name() {
     case "$(uname -s)" in Linux) printf '%s\n' libvmm_lancedb_native.so ;; Darwin) printf '%s\n' libvmm_lancedb_native.dylib ;; *) echo "unsupported Unix platform" >&2; return 1 ;; esac
 }
 
-# verified_host_dependency checks an installer marker before a legacy file enters output/libs.
-# verified_host_dependency 在 legacy 文件进入 output/libs 前校验安装标记。
+# pinned_host_archive_hash resolves one exact archive digest from the checked-in manifest.
+# pinned_host_archive_hash 从仓库内固定清单解析唯一压缩包摘要。
+pinned_host_archive_hash() {
+    local repo="$1" tag="$2" asset_name="$3" value
+    [[ -f "$HOST_DEPS_CHECKSUM_MANIFEST" && ! -L "$HOST_DEPS_CHECKSUM_MANIFEST" ]] || {
+        echo "missing host dependency checksum manifest: $HOST_DEPS_CHECKSUM_MANIFEST" >&2
+        return 1
+    }
+    value="$(awk -F '\t' -v expected_repo="$repo" -v expected_tag="$tag" -v expected_asset="$asset_name" '
+        BEGIN { total = 0; matches = 0; failed = 0; value = "" }
+        /^#/ || NF == 0 { next }
+        NF != 4 || length($1) == 0 || length($2) == 0 || length($3) == 0 || length($4) != 64 || $4 !~ /^[0-9A-Fa-f]+$/ {
+            failed = 1
+            next
+        }
+        { key = $1 SUBSEP $2 SUBSEP $3; if (++seen[key] != 1) failed = 1; total++ }
+        $1 == expected_repo && $2 == expected_tag && $3 == expected_asset {
+            matches++
+            value = tolower($4)
+        }
+        END {
+            if (failed || total != 15 || matches != 1 || length(value) != 64 || value !~ /^[0-9a-f]+$/) { exit 1 }
+            print value
+        }
+    ' "$HOST_DEPS_CHECKSUM_MANIFEST")" || {
+        echo "missing or duplicate pinned SHA256 for $repo $tag $asset_name" >&2
+        return 1
+    }
+    printf '%s\n' "$value"
+}
+
+# host_dependency_release_info maps one installed artifact to its immutable official archive.
+# host_dependency_release_info 将一个已安装产物映射到不可变的官方压缩包。
+host_dependency_release_info() {
+    local kind="$1" target="$2"
+    case "$kind" in
+        sqlite) printf '%s|%s|%s\n' OpenVulcan/vldb-sqlite v0.1.7 "vldb-sqlite-lib-v0.1.7-${target}.tar.gz" ;;
+        lancedb) printf '%s|%s|%s\n' OpenVulcan/vldb-lancedb v0.1.5 "vldb-lancedb-lib-v0.1.5-${target}.tar.gz" ;;
+        controller) printf '%s|%s|%s\n' OpenVulcan/vldb-controller v0.2.4 "vldb-controller-v0.2.4-${target}.tar.gz" ;;
+        *) echo "unknown dependency kind: $kind" >&2; return 1 ;;
+    esac
+}
+
+# verified_host_dependency revalidates the official archive and extracted artifact before packaging.
+# verified_host_dependency 在打包前重新校验官方压缩包及其解压产物。
 verified_host_dependency() {
-    local kind="$1" file_name="$2" source_path="$THIRD_PARTY_DEPS_DIR/$file_name" marker_dir marker_count marker expected actual
-    [[ -f "$source_path" ]] || { echo "missing host dependency: $source_path; run scripts/install_host_deps.sh first" >&2; return 1; }
+    local kind="$1" file_name="$2" source_path marker_dir marker_count marker
+    source_path="$THIRD_PARTY_DEPS_DIR/$file_name"
+    [[ -f "$source_path" && ! -L "$source_path" ]] || { echo "missing or unsafe host dependency: $source_path; run scripts/install_host_deps.sh first" >&2; return 1; }
     case "$kind" in sqlite) marker_dir="$ROOT_DIR/third_party/vldb_sqlite" ;; lancedb) marker_dir="$ROOT_DIR/third_party/vldb_lancedb" ;; controller) marker_dir="$ROOT_DIR/third_party/vldb_controller" ;; *) echo "unknown dependency kind: $kind" >&2; return 1 ;; esac
+    [[ -d "$marker_dir" && ! -L "$marker_dir" ]] || { echo "host dependency cache must be a real directory: $marker_dir" >&2; return 1; }
+
+    local target release_info repo tag archive_name archive_path expected_archive_hash actual_archive_hash
+    target="$(native_target)"
+    release_info="$(host_dependency_release_info "$kind" "$target")"
+    IFS='|' read -r repo tag archive_name <<< "$release_info"
+    archive_path="$marker_dir/$archive_name"
+    [[ -f "$archive_path" && ! -L "$archive_path" ]] || { echo "missing trusted host dependency archive: $archive_path; rerun scripts/install_host_deps.sh" >&2; return 1; }
+    expected_archive_hash="$(pinned_host_archive_hash "$repo" "$tag" "$archive_name")" || return 1
+    actual_archive_hash="$(sha256_file "$archive_path")"
+    [[ "$actual_archive_hash" == "$expected_archive_hash" ]] || { echo "host dependency archive checksum mismatch: $archive_path" >&2; return 1; }
+
     local markers=()
     while IFS= read -r marker_path; do markers+=("$marker_path"); done < <(find "$marker_dir" -maxdepth 1 -type f -name '.installed-*' -print 2>/dev/null | sort)
     marker_count="${#markers[@]}"
     [[ "$marker_count" -eq 1 ]] || { echo "expected exactly one installed marker for $kind under $marker_dir" >&2; return 1; }
     marker="${markers[0]}"
     [[ ! -L "$marker" ]] || { echo "host dependency marker must not be a symlink: $marker" >&2; return 1; }
-    expected="$(tr -d '[:space:]' < "$marker" | tr '[:upper:]' '[:lower:]')"
-    actual="$(sha256_file "$source_path")"
-    [[ -n "$expected" && "$expected" == "$actual" ]] || { echo "host dependency checksum mismatch: $source_path" >&2; return 1; }
+    [[ "$(basename "$marker")" == ".installed-${tag}-${target}" ]] || { echo "host dependency marker identity mismatch: $marker" >&2; return 1; }
+    [[ "$(wc -l < "$marker" | tr -d '[:space:]')" == 2 ]] || { echo "host dependency marker must contain exactly two lines: $marker" >&2; return 1; }
+    local marker_archive_hash marker_installed_hash
+    marker_archive_hash="$(sed -n '1p' "$marker" | tr -d '\r')"
+    marker_installed_hash="$(sed -n '2p' "$marker" | tr -d '\r')"
+    [[ "$marker_archive_hash" =~ ^[0-9a-f]{64}$ && "$marker_installed_hash" =~ ^[0-9a-f]{64}$ ]] || { echo "host dependency marker must contain two lowercase SHA256 values: $marker" >&2; return 1; }
+    [[ "$marker_archive_hash" == "$expected_archive_hash" ]] || { echo "host dependency marker archive checksum mismatch: $marker" >&2; return 1; }
+
+    # Re-extract the fixed archive so a jointly forged marker and installed file cannot pass the package gate.
+    # 重新解压固定压缩包，防止伪造 marker 与已安装文件共同绕过打包校验。
+    local verify_dir trusted_path trusted_installed_hash actual_installed_hash
+    verify_dir="$(mktemp -d "${TMPDIR:-/tmp}/vmm-host-verify.XXXXXX")"
+    if ! tar -xzf "$archive_path" -C "$verify_dir"; then
+        rm -rf "$verify_dir"
+        echo "failed to extract trusted host dependency archive: $archive_path" >&2
+        return 1
+    fi
+    local trusted_paths=()
+    while IFS= read -r trusted_candidate; do trusted_paths+=("$trusted_candidate"); done < <(find "$verify_dir" -type f -name "$file_name" -print 2>/dev/null)
+    if [[ "${#trusted_paths[@]}" -ne 1 ]]; then
+        rm -rf "$verify_dir"
+        echo "trusted host dependency artifact identity mismatch in $archive_path: $file_name" >&2
+        return 1
+    fi
+    trusted_path="${trusted_paths[0]}"
+    if ! trusted_installed_hash="$(sha256_file "$trusted_path")"; then
+        rm -rf "$verify_dir"
+        return 1
+    fi
+    if ! actual_installed_hash="$(sha256_file "$source_path")"; then
+        rm -rf "$verify_dir"
+        return 1
+    fi
+    rm -rf "$verify_dir"
+    [[ "$actual_installed_hash" == "$trusted_installed_hash" ]] || { echo "host dependency artifact differs from trusted archive: $source_path" >&2; return 1; }
+    [[ "$marker_installed_hash" == "$actual_installed_hash" && "$marker_installed_hash" == "$trusted_installed_hash" ]] || { echo "host dependency marker installed checksum mismatch: $marker" >&2; return 1; }
     printf '%s\n' "$source_path"
 }
 
 # resolve_native_artifact follows current.json exactly and validates its manifest and library.
 # resolve_native_artifact 严格读取 current.json，并校验其清单和动态库。
 resolve_native_artifact() {
-    local target="$1" target_root="$NATIVE_DEPS_ROOT/$target" current_path="$NATIVE_DEPS_ROOT/$target/current.json"
+    local target="$1" target_root current_path
+    target_root="$NATIVE_DEPS_ROOT/$target"
+    current_path="$target_root/current.json"
     [[ -d "$target_root" && ! -L "$target_root" ]] || { echo "native dependency target directory must be a real directory: $target_root" >&2; return 1; }
     [[ -f "$current_path" ]] || { echo "missing native dependency selection: $current_path; run scripts/build_native_deps.sh first" >&2; return 1; }
     [[ ! -L "$current_path" ]] || { echo "native current.json must not be a symlink: $current_path" >&2; return 1; }
@@ -395,9 +488,11 @@ do_build() {
     mkdir -p "$BIN_DIR"
     go build "${release_args[@]}" -o "$EXE_PATH" "$ROOT_DIR/cmd/vmm-local"
     go build "${release_args[@]}" -o "$MIGRATE_EXE_PATH" "$ROOT_DIR/cmd/vmm-migrate"
-    local tester_args=()
-    if [[ "$build_profile" == release ]]; then tester_args=(-trimpath -ldflags "-s -w"); fi
-    go build "${tester_args[@]}" -o "$TESTER_EXE_PATH" "$ROOT_DIR/cmd/vmm-pii-tester"
+    if [[ "$build_profile" == release ]]; then
+        go build -trimpath -ldflags "-s -w" -o "$TESTER_EXE_PATH" "$ROOT_DIR/cmd/vmm-pii-tester"
+    else
+        go build -o "$TESTER_EXE_PATH" "$ROOT_DIR/cmd/vmm-pii-tester"
+    fi
     sync_configs
     sync_host_dependencies "$storage_profile"
     IFS='|' read -r _ _ controller_binary <<< "$(resolve_host_artifacts)"
@@ -425,16 +520,16 @@ do_clean() {
 # do_run 从 output/bin 启动打包程序，确保相对路径稳定。
 do_run() {
     [[ -x "$EXE_PATH" ]] || do_build standard "$(resolve_storage_profile)"
-    ( cd "$BIN_DIR" && "$EXE_PATH" "${FORWARD_ARGS[@]}" )
+    ( cd "$BIN_DIR" && "$EXE_PATH" "$@" )
 }
 
 case "$ACTION" in
     build)
-        BUILD_PROFILE="$(resolve_build_profile "${FORWARD_ARGS[@]}")"
+        BUILD_PROFILE="$(resolve_build_profile "$@")"
         STORAGE_PROFILE="$(resolve_storage_profile)"
         do_build "$BUILD_PROFILE" "$STORAGE_PROFILE"
         ;;
-    run) do_run ;;
+    run) do_run "$@" ;;
     clean) do_clean ;;
     *) echo "Usage: $0 {build [release]|run|clean}" >&2; exit 1 ;;
 esac

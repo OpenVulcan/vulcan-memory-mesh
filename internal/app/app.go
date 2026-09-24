@@ -49,7 +49,7 @@ func NewLocal(cfg config.Config, prompts appports.PromptSource, layout config.Pr
 func newApplication(cfg config.Config, prompts appports.PromptSource, layout config.PromptLayout) (*Application, error) {
 	// Initialize shared runtime utilities such as logging and ID generation first.
 	// 先初始化日志和 ID 生成器等共享运行时能力。
-	logDir, err := resolveRuntimeLogDir(layout)
+	logDir, err := ResolveRuntimeLogDir(cfg, layout)
 	if err != nil {
 		return nil, err
 	}

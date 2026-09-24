@@ -104,7 +104,13 @@ func TestExportLegacySQLiteSnapshotPreservesSourceAndOrdinaryRows(t *testing.T) 
 
 	before := readOrdinarySQLiteSnapshot(t, layout.SQLiteDatabase)
 	assertLegacyFTSSearchStillWorks(t, libraryPath, layout.SQLiteDatabase)
-	destination := filepath.Join(t.TempDir(), "snapshot.db")
+	// The real exporter requires a private destination; TempDir alone follows the host umask.
+	// 真实导出器要求私有目标目录；单独使用 TempDir 会沿用宿主的 umask。
+	destinationRoot := filepath.Join(t.TempDir(), "private")
+	if err := os.Mkdir(destinationRoot, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	destination := filepath.Join(destinationRoot, "snapshot.db")
 	cfg := config.DefaultBase()
 	cfg.Storage.Mode = "split"
 	cfg.SQLite.Timeout.Duration = 30 * time.Second

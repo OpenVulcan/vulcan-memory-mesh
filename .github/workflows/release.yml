@@ -1,11 +1,17 @@
-# Build an existing version tag on its native architectures and publish only a complete release.
-# 在对应原生架构构建已有版本标签，仅发布五个平台齐全的发行版本。
+# Build an existing version tag on native architectures and leave the verified five-platform release as a draft.
+# 在对应原生架构构建已有版本标签，并将验证完整的五平台发行版本保留为草稿。
 name: Tagged release
 run-name: Release ${{ inputs.tag }}
 
 on:
+  push:
+    branches: [codex/github-release-signing]
   workflow_dispatch:
     inputs:
+      verify_only:
+        description: '只构建验证当前工作流提交，不创建标签或发行版本'
+        type: boolean
+        default: true
       tag:
         description: '已有版本标签，必须与该提交的 VERSION 一致，例如 v0.1.0'
         required: true
@@ -26,6 +32,7 @@ jobs:
     outputs:
       commit: ${{ steps.tag.outputs.commit }}
       tag: ${{ steps.tag.outputs.tag }}
+      verify_only: ${{ steps.tag.outputs.verify_only }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -36,9 +43,21 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
+          VERIFY_ONLY: ${{ github.ref == 'refs/heads/codex/github-release-signing' || inputs.verify_only == true }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "verify_only=$VERIFY_ONLY" >> "$GITHUB_OUTPUT"
+          # Verification uses VERSION and the workflow commit without consulting or changing public tags.
+          # 验证模式使用 VERSION 与工作流提交，不读取或修改公开版本标签。
+          if [[ "$VERIFY_ONLY" == true ]]; then
+            RELEASE_TAG="$(tr -d '\r\n' < VERSION)"
+            [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]]
+            echo "commit=$WORKFLOW_COMMIT" >> "$GITHUB_OUTPUT"
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || { echo 'Invalid version tag'; exit 1; }
           commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
           version="$(git show "$commit:VERSION" | tr -d '\r\n')"
@@ -90,7 +109,9 @@ jobs:
             goarch: arm64
             library: libvmm_lancedb_native.dylib
     env:
-      VMM_BUILD_STORAGE_PROFILE: native
+      # Build one complete archive so the installer can choose native, split, controller, or combined PostgreSQL later.
+      # 构建包含全部依赖的完整压缩包，使安装器可以在下载后选择 native、split、controller 或 combined PostgreSQL。
+      VMM_BUILD_STORAGE_PROFILE: all
       CGO_ENABLED: '0'
       CARGO_BUILD_JOBS: '2'
       CARGO_INCREMENTAL: '0'
@@ -164,7 +185,7 @@ jobs:
         id: native-cache
         with:
           path: third_party/deps/native_lancedb
-          key: native-release-v1-${{ matrix.target }}-${{ hashFiles('native/lancedb/**', 'scripts/build_native_deps.*', 'scripts/validate_native_artifacts.*') }}
+          key: all-release-v1-${{ matrix.target }}-${{ hashFiles('native/lancedb/**', 'scripts/build_native_deps.*', 'scripts/validate_native_artifacts.*') }}
       - name: Build native dependency on Unix
         if: runner.os != 'Windows' && steps.native-cache.outputs.cache-hit != 'true'
         shell: bash
@@ -178,6 +199,36 @@ jobs:
         with:
           path: third_party/deps/native_lancedb
           key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        id: host-cache
+        with:
+          path: |
+            third_party/deps/*vldb_sqlite.*
+            third_party/deps/*vldb_lancedb.*
+            third_party/deps/vldb-controller*
+            third_party/vldb_sqlite
+            third_party/vldb_lancedb
+            third_party/vldb_controller
+          key: host-release-v2-${{ matrix.target }}-${{ hashFiles('scripts/install_host_deps.sh', 'scripts/install_host_deps.ps1', 'scripts/host_deps_sha256.tsv') }}
+      - name: Install host storage dependencies on Unix
+        if: runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/install_host_deps.sh
+      - name: Install host storage dependencies on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./make.ps1 deps host
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: steps.host-cache.outputs.cache-hit != 'true'
+        with:
+          path: |
+            third_party/deps/*vldb_sqlite.*
+            third_party/deps/*vldb_lancedb.*
+            third_party/deps/vldb-controller*
+            third_party/vldb_sqlite
+            third_party/vldb_lancedb
+            third_party/vldb_controller
+          key: ${{ steps.host-cache.outputs.cache-primary-key }}
       - name: Build formal Unix package
         if: runner.os != 'Windows'
         shell: bash
@@ -191,16 +242,116 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s scripts -p test_release.py -v
+          python -m unittest scripts.test_release_gpg -v
           test -f "$VMM_NATIVE_LANCEDB_LIBRARY"
-          go test ./... -count=1 -timeout=20m
+          VMM_NATIVE_PACKAGED_ROOT="$GITHUB_WORKSPACE/output" VMM_PACKAGED_STORAGE_PROFILE=all go test ./... -count=1 -timeout=20m
           go vet ./...
           # Execute the required integration tests separately so missing dependencies cannot pass via skips.
           # 单独执行强制集成验收，缺少依赖导致的跳过不能被误记为通过。
-          go test ./internal/platform/ffi/nativelance ./internal/app -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' -count=1 -json > "$RUNNER_TEMP/native-acceptance.jsonl"
+          VMM_NATIVE_PACKAGED_ROOT="$GITHUB_WORKSPACE/output" VMM_PACKAGED_STORAGE_PROFILE=all \
+            go test ./internal/platform/ffi/nativelance ./internal/app -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' -count=1 -json > "$RUNNER_TEMP/native-acceptance.jsonl"
           python scripts/release.py check-tests "$RUNNER_TEMP/native-acceptance.jsonl"
+      - name: Install pinned SimplySign Desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/sign_release.ps1 -Phase Install -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence"
+      - name: Sign and verify Windows binaries with Certum
+        if: runner.os == 'Windows'
+        shell: pwsh
+        env:
+          CERTUM_TOTP_EMAIL: ${{ secrets.CERTUM_TOTP_EMAIL }}
+          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
+        run: |
+          $targets = @(
+            'output/bin/vmm-local.exe', 'output/bin/vmm-migrate.exe',
+            'output/bin/vmm-pii-tester.exe', 'output/bin/vldb-controller.exe',
+            'output/libs/vmm_lancedb_native.dll', 'output/libs/vldb_sqlite.dll',
+            'output/libs/vldb_lancedb.dll'
+          )
+          ./scripts/sign_release.ps1 -Phase Sign -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence" -Files $targets
+      - name: Refresh signed native manifest digest
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python scripts/release.py refresh-native-manifest --platform "$RELEASE_PLATFORM"
       - name: Create and verify release archive
         shell: bash
         run: python scripts/release.py package --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT" --platform "$RELEASE_PLATFORM"
+      - name: Write Windows Authenticode attestation
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $targets = @(
+            @{ Relative = 'bin/vmm-local.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-local.exe') },
+            @{ Relative = 'bin/vmm-migrate.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-migrate.exe') },
+            @{ Relative = 'bin/vmm-pii-tester.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-pii-tester.exe') },
+            @{ Relative = 'bin/vldb-controller.exe'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vldb-controller.exe') },
+            @{ Relative = 'libs/vmm_lancedb_native.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vmm_lancedb_native.dll') },
+            @{ Relative = 'libs/vldb_sqlite.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_sqlite.dll') },
+            @{ Relative = 'libs/vldb_lancedb.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_lancedb.dll') }
+          )
+          $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+          $signTool = Get-ChildItem $sdk -Directory | Where-Object Name -match '^\d+\.\d+\.\d+\.\d+$' |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64/signtool.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $signTool) { throw 'Windows SDK SignTool missing' }
+          $policy = Get-Content scripts/signing-policy.json -Raw -Encoding utf8 | ConvertFrom-Json
+          $expectedSubject = $policy.certificate_subject
+          $expectedIssuer = $policy.certificate_issuer
+          $expectedThumbprint = $policy.certificate_thumbprint
+          $attestedSubject = $null
+          $attestedIssuer = $null
+          $attestedThumbprint = $null
+          $files = foreach ($target in $targets) {
+            if (-not (Test-Path -LiteralPath $target.Absolute -PathType Leaf)) { throw "Missing packaged Windows binary: $($target.Relative)" }
+            $verifyOutput = & $signTool verify /pa /all /tw $target.Absolute 2>&1
+            if ($LASTEXITCODE -ne 0) { throw "Packaged Authenticode verification failed: $($target.Relative)" }
+            $signature = Get-AuthenticodeSignature -LiteralPath $target.Absolute
+            if ($signature.Status -ne 'Valid' -or $null -eq $signature.SignerCertificate -or $null -eq $signature.TimeStamperCertificate) { throw "Unsigned Windows binary in attestation: $($target.Relative)" }
+            $fileSubject = [string]$signature.SignerCertificate.Subject
+            $fileIssuer = [string]$signature.SignerCertificate.Issuer
+            $fileThumbprint = ($signature.SignerCertificate.Thumbprint -replace '\s', '').ToUpperInvariant()
+            if ($fileSubject -ne $expectedSubject) { throw "Packaged Authenticode subject mismatch: $($target.Relative)" }
+            if ($fileIssuer -ne $expectedIssuer) { throw "Packaged Authenticode issuer mismatch: $($target.Relative)" }
+            if ($fileThumbprint -ne $expectedThumbprint) { throw "Packaged Authenticode thumbprint mismatch: $($target.Relative)" }
+            if ($null -eq $attestedSubject) {
+              $attestedSubject = $fileSubject
+              $attestedIssuer = $fileIssuer
+              $attestedThumbprint = $fileThumbprint
+            } elseif ($fileSubject -ne $attestedSubject -or $fileIssuer -ne $attestedIssuer -or $fileThumbprint -ne $attestedThumbprint) {
+              throw "Packaged Authenticode signer identity changed between files: $($target.Relative)"
+            }
+            $hash = (Get-FileHash -LiteralPath $target.Absolute -Algorithm SHA256).Hash.ToLowerInvariant()
+            [ordered]@{
+              path = $target.Relative
+              bytes = (Get-Item -LiteralPath $target.Absolute).Length
+              sha256 = $hash
+              status = 'Valid'
+            }
+          }
+          $archiveName = 'vulcan-memory-mesh-{0}-windows-x64.zip' -f $env:RELEASE_TAG
+          $archivePath = Join-Path $env:GITHUB_WORKSPACE (Join-Path 'dist' $archiveName)
+          if (-not (Test-Path -LiteralPath $archivePath -PathType Leaf)) { throw "Missing packaged Windows archive: $archivePath" }
+          $attestation = [ordered]@{
+            schema_version = 1
+            platform = 'windows-x64'
+            archive = $archiveName
+            archive_sha256 = (Get-FileHash -LiteralPath $archivePath -Algorithm SHA256).Hash.ToLowerInvariant()
+            certificate = [ordered]@{
+              subject = $attestedSubject
+              issuer = $attestedIssuer
+              thumbprint = $attestedThumbprint
+              chain_status = 'Valid'
+              timestamp_status = 'Valid'
+            }
+            files = @($files)
+          }
+          $attestationPath = Join-Path $env:GITHUB_WORKSPACE 'dist/windows-authenticode.json'
+          $json = $attestation | ConvertTo-Json -Depth 6
+          [IO.File]::WriteAllText($attestationPath, $json + [Environment]::NewLine, [Text.UTF8Encoding]::new($false))
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.platform }}
@@ -209,8 +360,8 @@ jobs:
           compression-level: 0
           retention-days: 7
 
-  publish:
-    name: Publish complete release
+  draft:
+    name: Verify signed release and optionally create draft
     needs: [resolve, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -228,11 +379,48 @@ jobs:
       - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
         with:
           python-version: '3.12'
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version: '1.27.0'
+          cache: false
       - uses: actions/download-artifact@634f93cb2916e3fdff6788551b99b062d0335ce0 # v5
         with:
           pattern: release-*
           path: dist
           merge-multiple: true
-      - name: Verify five-platform set and publish
+      - name: Sign final Linux archives with the pinned OpenPGP key
         shell: bash
-        run: python scripts/release.py publish --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: python scripts/release_gpg.py sign "dist/vulcan-memory-mesh-$RELEASE_TAG-linux-x64.tar.gz" "dist/vulcan-memory-mesh-$RELEASE_TAG-linux-arm64.tar.gz"
+
+      - name: Create and verify signed VMM manifest
+        shell: bash
+        env:
+          VMM_RELEASE_ED25519_PRIVATE_KEY: ${{ secrets.VMM_RELEASE_ED25519_PRIVATE_KEY }}
+          VMM_RELEASE_ED25519_KEY_ID: ${{ secrets.VMM_RELEASE_ED25519_KEY_ID }}
+          VMM_RELEASE_ED25519_PUBLIC_KEY: h2906GgOkZSmkYGWy3tV6/sH0+zyCcnhTZKjKx06cpM=
+        run: |
+          set -euo pipefail
+          [[ "$VMM_RELEASE_ED25519_KEY_ID" == "vmm-2026-09-23-01" ]] || {
+            echo 'VMM_RELEASE_ED25519_KEY_ID does not match the committed VMM trust metadata.' >&2
+            exit 1
+          }
+          go run ./scripts/sign_manifest.go manifest --dist "$GITHUB_WORKSPACE/dist" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+          go run ./scripts/sign_manifest.go verify --manifest "$GITHUB_WORKSPACE/dist/manifest.json" --signature "$GITHUB_WORKSPACE/dist/manifest.sig" --public-key-env VMM_RELEASE_ED25519_PUBLIC_KEY
+      - name: Verify the complete signed five-platform set
+        shell: bash
+        run: python scripts/release.py verify --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+      - name: Upload verified production assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vmm-release-verified
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
+      - name: Verify five-platform set and create draft
+        if: needs.resolve.outputs.verify_only != 'true'
+        shell: bash
+        run: python scripts/release.py draft --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"

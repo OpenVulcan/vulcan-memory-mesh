@@ -148,6 +148,24 @@ func TestPromptManagerPrefersSelectedUserBundle(t *testing.T) {
 	}
 }
 
+// TestValidatePromptBundleMatchesStartupCompleteness verifies the standalone validator uses the same selection rules as runtime startup.
+// TestValidatePromptBundleMatchesStartupCompleteness 验证独立校验器与运行时启动使用相同的提示词包选择和完整性规则。
+func TestValidatePromptBundleMatchesStartupCompleteness(t *testing.T) {
+	systemDir := t.TempDir()
+	userDir := t.TempDir()
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_en"), "system-default-en")
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_cn"), "system-zh")
+	writeRequiredScenes(t, filepath.Join(userDir, "prompts", "default_cn"), "user-zh")
+
+	if err := ValidatePromptBundle(systemDir, userDir, "zh-CN"); err != nil {
+		t.Fatalf("validate prompt bundle: %v", err)
+	}
+
+	if err := ValidatePromptBundle(systemDir, filepath.Join(t.TempDir(), "missing-user"), "zh-CN"); err != nil {
+		t.Fatalf("validate system fallback bundle: %v", err)
+	}
+}
+
 // writeRequiredScenes creates one complete prompt bundle for manager tests.
 // writeRequiredScenes 用于为 manager 测试创建一套完整提示词包。
 func writeRequiredScenes(t *testing.T, dir, prefix string) {

@@ -1,0 +1,158 @@
+# Check VMM runtime and service code on native hosted operating systems.
+# 在原生托管操作系统检查 VMM 运行时与服务代码。
+name: VMM CI
+
+on:
+  push:
+    branches:
+      - main
+      - codex/**
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Test ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2025
+            target: x86_64-pc-windows-msvc
+            library: vmm_lancedb_native.dll
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            library: libvmm_lancedb_native.so
+          - os: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-gnu
+            library: libvmm_lancedb_native.so
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            library: libvmm_lancedb_native.dylib
+          - os: macos-15
+            target: aarch64-apple-darwin
+            library: libvmm_lancedb_native.dylib
+    env:
+      # Resolve optional packaged provider placeholders without using real credentials or external services.
+      # 使用不可达的本地测试值解析可选供应商占位符，不使用真实凭据或外部服务。
+      BAILIAN_API_KEY: ci-test-placeholder
+      BAILIAN_BASE_URL: http://127.0.0.1:1/v1
+      BAILIAN_RERANK_URL: http://127.0.0.1:1/rerank
+      VMM_POSTGRES_DSN: postgres://ci:ci@127.0.0.1:1/ci?sslmode=disable
+      VMM_BUILD_STORAGE_PROFILE: all
+      NATIVE_TARGET: ${{ matrix.target }}
+      CGO_ENABLED: '0'
+      CARGO_BUILD_JOBS: '2'
+      CARGO_INCREMENTAL: '0'
+      CARGO_PROFILE_RELEASE_DEBUG: '0'
+      CARGO_PROFILE_RELEASE_STRIP: debuginfo
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+      - name: Go tests
+        run: go test ./...
+      - name: Go vet
+        run: go vet ./...
+      - name: Release contract tests
+        if: runner.os == 'Linux'
+        run: python3 -m unittest scripts/test_release.py scripts/test_install_host_deps.py -v
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        if: github.event_name == 'pull_request'
+        with:
+          python-version: '3.12'
+      - uses: actions/cache/restore@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: github.event_name == 'pull_request'
+        id: native-cache
+        with:
+          path: third_party/deps/native_lancedb
+          key: all-release-v1-${{ matrix.target }}-${{ hashFiles('native/lancedb/**', 'scripts/build_native_deps.*', 'scripts/validate_native_artifacts.*') }}
+      - name: Prepare Linux native toolchain
+        if: github.event_name == 'pull_request' && runner.os == 'Linux' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y protobuf-compiler clang lld cmake pkg-config libssl-dev
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+          echo 'RUSTFLAGS=-C link-arg=-fuse-ld=lld' >> "$GITHUB_ENV"
+      - name: Prepare macOS native toolchain
+        if: github.event_name == 'pull_request' && runner.os == 'macOS' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          brew install protobuf bash
+          echo "PROTOC=$(command -v protoc)" >> "$GITHUB_ENV"
+          echo "$(brew --prefix bash)/bin" >> "$GITHUB_PATH"
+      - name: Prepare Windows native toolchain
+        if: github.event_name == 'pull_request' && runner.os == 'Windows' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: |
+          choco install protoc --no-progress -y
+          if ($LASTEXITCODE -ne 0) { throw 'protoc installation failed' }
+          "PROTOC=$((Get-Command protoc).Source)" >> $env:GITHUB_ENV
+      - name: Select locked Rust toolchain
+        if: github.event_name == 'pull_request' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          toolchain="$(python -c 'import tomllib; print(tomllib.load(open("native/lancedb/rust-toolchain.toml", "rb"))["toolchain"]["channel"])')"
+          rustup toolchain install "$toolchain" --profile minimal
+          rustup override set "$toolchain"
+          [[ "$(rustc -vV | sed -n 's/^host: //p')" == "$NATIVE_TARGET" ]]
+      - name: Build native dependency on Unix
+        if: github.event_name == 'pull_request' && runner.os != 'Windows' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: bash scripts/build_native_deps.sh --target "$NATIVE_TARGET"
+      - name: Build native dependency on Windows
+        if: github.event_name == 'pull_request' && runner.os == 'Windows' && steps.native-cache.outputs.cache-hit != 'true'
+        shell: pwsh
+        run: ./scripts/build_native_deps.ps1 -Target $env:NATIVE_TARGET
+      - uses: actions/cache/save@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
+        if: github.event_name == 'pull_request' && steps.native-cache.outputs.cache-hit != 'true'
+        with:
+          path: third_party/deps/native_lancedb
+          key: ${{ steps.native-cache.outputs.cache-primary-key }}
+      - name: Install verified host storage dependencies on Unix
+        if: github.event_name == 'pull_request' && runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/install_host_deps.sh
+      - name: Install verified host storage dependencies on Windows
+        if: github.event_name == 'pull_request' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./make.ps1 deps host
+      - name: Build standard VMM layout on Unix
+        if: github.event_name == 'pull_request' && runner.os != 'Windows'
+        shell: bash
+        run: bash scripts/vmm.sh build release
+      - name: Build standard VMM layout on Windows
+        if: github.event_name == 'pull_request' && runner.os == 'Windows'
+        shell: pwsh
+        run: ./make.ps1 build release
+      - name: Exercise packaged native and legacy storage paths
+        if: github.event_name == 'pull_request'
+        shell: bash
+        env:
+          VMM_NATIVE_PACKAGED_ROOT: ${{ github.workspace }}/output
+          VMM_NATIVE_LANCEDB_LIBRARY: ${{ github.workspace }}/output/libs/${{ matrix.library }}
+          VMM_PACKAGED_STORAGE_PROFILE: all
+        run: |
+          set -euo pipefail
+          # Rerun all tests after installing real libraries; the early unit pass may skip dependency-backed cases.
+          # 安装真实动态库后重新运行全量测试；前面的单元测试可能跳过需要这些依赖的用例。
+          go test ./... -count=1 -timeout=20m
+          if ! go test ./internal/platform/ffi/nativelance ./internal/app \
+            -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' \
+            -count=1 -json -timeout=20m > "$RUNNER_TEMP/native-acceptance.jsonl"; then
+            cat "$RUNNER_TEMP/native-acceptance.jsonl"
+            exit 1
+          fi
+          python scripts/release.py check-tests "$RUNNER_TEMP/native-acceptance.jsonl"
+      - name: Exercise the native service manager and gRPC health path
+        if: github.event_name == 'pull_request'
+        run: python scripts/service_smoke.py

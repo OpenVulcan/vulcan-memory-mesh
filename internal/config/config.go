@@ -198,8 +198,11 @@ type GRPCRequestTimeout struct {
 // LoggingConfig holds the structured logging knobs shared by the local runtime.
 // LoggingConfig 用于保存本地运行时共享的结构化日志配置项。
 type LoggingConfig struct {
-	Level                string `json:"level"`
-	Format               string `json:"format"`
+	Level  string `json:"level"`
+	Format string `json:"format"`
+	// Directory selects an explicit writable log root for a service account; empty keeps the legacy package-sibling path.
+	// Directory 为服务账户选择可写的显式日志根目录；留空时保持旧版包目录同级路径。
+	Directory            string `json:"directory,omitempty"`
 	DebugRPCPayloads     bool   `json:"debug_rpc_payloads"`
 	LLMOutputEnabled     bool   `json:"llm_output_enabled"`
 	ProtectPayloads      bool   `json:"protect_payloads"`
@@ -226,6 +229,9 @@ type NoiseConfig struct {
 type StorageConfig struct {
 	Mode             string `json:"mode"`
 	CombinedProvider string `json:"combined_provider"`
+	// LocalDataRoot selects the physical root for split/controller SQLite and LanceDB data.
+	// LocalDataRoot 用于选择 split/controller SQLite 与 LanceDB 数据的物理根目录。
+	LocalDataRoot string `json:"local_data_root,omitempty"`
 }
 
 // SQLiteConfig holds shared and mode-specific SQLite runtime options for the relational backend.

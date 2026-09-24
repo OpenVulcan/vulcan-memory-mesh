@@ -10,6 +10,7 @@ import (
 	"net"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -44,6 +45,7 @@ var supportedEnvOverrideValuePaths = map[string][]string{
 	"VMM_MANAGEMENT_SHUTDOWN_TIMEOUT":                   {"management.shutdown_timeout"},
 	"VMM_LOG_LEVEL":                                     {"logging.level"},
 	"VMM_LOG_FORMAT":                                    {"logging.format"},
+	"VMM_LOG_DIRECTORY":                                 {"logging.directory"},
 	"VMM_LOG_DEBUG_RPC_PAYLOADS":                        {"logging.debug_rpc_payloads"},
 	"VMM_LOG_LLM_OUTPUT_ENABLED":                        {"logging.llm_output_enabled"},
 	"VMM_LOG_PROTECT_PAYLOADS":                          {"logging.protect_payloads"},
@@ -56,6 +58,7 @@ var supportedEnvOverrideValuePaths = map[string][]string{
 	"VMM_PROMPTS_PROMPT_LANGUAGE":                       {"prompts.prompt_language"},
 	"VMM_STORAGE_MODE":                                  {"storage.mode"},
 	"VMM_STORAGE_COMBINED_PROVIDER":                     {"storage.combined_provider"},
+	"VMM_STORAGE_LOCAL_DATA_ROOT":                       {"storage.local_data_root"},
 	"VMM_SQLITE_ADDRESS":                                {"sqlite.address"},
 	"VMM_SQLITE_TIMEOUT":                                {"sqlite.timeout"},
 	"VMM_SQLITE_TOKENIZER_MODE":                         {"sqlite.tokenizer_mode"},
@@ -197,6 +200,14 @@ func (c Config) Validate() error {
 	default:
 		return errors.New("storage.mode must be one of split, controller, combined, or native")
 	}
+	if localDataRoot := strings.TrimSpace(c.Storage.LocalDataRoot); localDataRoot != "" {
+		if storageMode != "split" && storageMode != "controller" {
+			return errors.New("storage.local_data_root is only supported when storage.mode is split or controller")
+		}
+		if err := validateLocalDataRoot(localDataRoot); err != nil {
+			return err
+		}
+	}
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
 	}
@@ -220,6 +231,13 @@ func (c Config) Validate() error {
 	case "text", "json":
 	default:
 		return errors.New("logging.format must be either text or json")
+	}
+	if directory := c.Logging.Directory; directory != "" {
+		// An explicit log root cannot resolve against the service process working directory.
+		// 显式日志根不能依赖服务进程的工作目录解析。
+		if directory != strings.TrimSpace(directory) || strings.ContainsAny(directory, "\x00\r\n\t") || !filepath.IsAbs(directory) {
+			return errors.New("logging.directory must be an absolute path without surrounding whitespace or control characters")
+		}
 	}
 	if c.Logging.ProtectPayloads {
 		if _, err := validatePayloadEncryptionKey(c.Logging.PayloadEncryptionKey); err != nil {
@@ -550,6 +568,21 @@ func validateNativePath(name, raw string, required bool) error {
 	return nil
 }
 
+// validateLocalDataRoot accepts only an absolute, printable root because the application resolves it as a physical split/controller database boundary.
+// validateLocalDataRoot 只接受绝对且可打印的根路径，因为应用层会将它解析为 split/controller 数据库的物理边界。
+func validateLocalDataRoot(raw string) error {
+	value := strings.TrimSpace(raw)
+	for _, r := range value {
+		if r < 0x20 || r == 0x7f {
+			return errors.New("storage.local_data_root contains an invalid control character")
+		}
+	}
+	if !filepath.IsAbs(value) {
+		return errors.New("storage.local_data_root must be an absolute path")
+	}
+	return nil
+}
+
 // validateRemovedAIEnvOverrides rejects deprecated AI environment variables only when the current config explicitly references those placeholders.
 // validateRemovedAIEnvOverrides 用于仅在当前配置显式引用对应占位符时，拒绝已废弃的 AI 环境变量，避免运行时把已移除的单路由语义静默混入新的配置契约。
 func validateRemovedAIEnvOverrides(referencedEnvKeys map[string]struct{}) error {
@@ -722,6 +755,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setDuration("VMM_MANAGEMENT_SHUTDOWN_TIMEOUT", &cfg.Management.ShutdownTimeout)
 	setString("VMM_LOG_LEVEL", &cfg.Logging.Level)
 	setString("VMM_LOG_FORMAT", &cfg.Logging.Format)
+	setString("VMM_LOG_DIRECTORY", &cfg.Logging.Directory)
 	setBool("VMM_LOG_DEBUG_RPC_PAYLOADS", &cfg.Logging.DebugRPCPayloads)
 	setBool("VMM_LOG_LLM_OUTPUT_ENABLED", &cfg.Logging.LLMOutputEnabled)
 	setBool("VMM_LOG_PROTECT_PAYLOADS", &cfg.Logging.ProtectPayloads)
@@ -734,6 +768,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setString("VMM_PROMPTS_PROMPT_LANGUAGE", &cfg.Prompts.PromptLanguage)
 	setString("VMM_STORAGE_MODE", &cfg.Storage.Mode)
 	setString("VMM_STORAGE_COMBINED_PROVIDER", &cfg.Storage.CombinedProvider)
+	setString("VMM_STORAGE_LOCAL_DATA_ROOT", &cfg.Storage.LocalDataRoot)
 	setString("VMM_SQLITE_ADDRESS", &cfg.SQLite.Address)
 	setDuration("VMM_SQLITE_TIMEOUT", &cfg.SQLite.Timeout)
 	setString("VMM_SQLITE_TOKENIZER_MODE", &cfg.SQLite.TokenizerMode)

@@ -173,7 +173,7 @@ func buildControllerStorageDependencies(cfg config.Config, promptLayout config.P
 // buildControllerStorageDependenciesWithVectorInit lets maintenance flows defer destructive-table initialization while retaining one shared controller owner.
 // buildControllerStorageDependenciesWithVectorInit 允许维护流程延迟破坏性表初始化，同时保持单一共享 controller 所有者。
 func buildControllerStorageDependenciesWithVectorInit(cfg config.Config, promptLayout config.PromptLayout, ensureVectorTable bool, requireExclusiveSpace bool) (storageDependencies, error) {
-	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	layout, err := resolveLocalStorageLayoutForConfig(cfg, promptLayout)
 	if err != nil {
 		return storageDependencies{}, err
 	}
@@ -314,7 +314,7 @@ func buildVectorForLayout(cfg config.Config, promptLayout config.PromptLayout) (
 	if cfg.StorageMode() == "native" {
 		return nil, fmt.Errorf("native vector storage requires shared runtime ownership")
 	}
-	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	layout, err := resolveLocalStorageLayoutForConfig(cfg, promptLayout)
 	if err != nil {
 		return nil, err
 	}
@@ -338,7 +338,7 @@ func buildRelationalForLayout(cfg config.Config, promptLayout config.PromptLayou
 	if cfg.StorageMode() == "native" {
 		return nil, fmt.Errorf("native relational storage requires shared runtime ownership")
 	}
-	layout, err := resolveLocalStorageLayoutForPromptLayout(promptLayout)
+	layout, err := resolveLocalStorageLayoutForConfig(cfg, promptLayout)
 	if err != nil {
 		return nil, err
 	}

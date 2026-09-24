@@ -6,9 +6,14 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"path/filepath"
+	"strings"
+	"syscall"
 	"time"
 
+	"golang.org/x/sys/windows"
 	"golang.org/x/sys/windows/svc"
 	"golang.org/x/sys/windows/svc/mgr"
 )
@@ -143,6 +148,9 @@ func runServiceRuntime(name string, run func(context.Context, func()) error) err
 // applyServiceCommand maps portable service lifecycle actions onto Windows SCM operations.
 // applyServiceCommand 用于把跨平台服务生命周期动作映射到 Windows SCM 操作。
 func applyServiceCommand(command serviceCommand, exePath string, _ string) error {
+	if command.user != "" {
+		return fmt.Errorf("-user is supported only on Linux and macOS service installations")
+	}
 	manager, err := mgr.Connect()
 	if err != nil {
 		return fmt.Errorf("connect windows service manager: %w", err)
@@ -151,37 +159,76 @@ func applyServiceCommand(command serviceCommand, exePath string, _ string) error
 
 	switch command.action {
 	case "install":
-		service, err := manager.CreateService(command.name, exePath, mgr.Config{
+		startType := uint32(mgr.StartManual)
+		if command.autoStart {
+			startType = mgr.StartAutomatic
+		}
+		service, err := manager.OpenService(command.name)
+		if err == nil {
+			defer service.Close()
+			config, configErr := service.Config()
+			if configErr != nil {
+				return fmt.Errorf("query existing windows service %q configuration: %w", command.name, configErr)
+			}
+			if err := validateWindowsServiceConfig(config, command.name, exePath); err != nil {
+				return fmt.Errorf("refusing to replace non-VMM windows service %q: %w", command.name, err)
+			}
+			config.BinaryPathName = windowsServiceCommandLine(exePath, command)
+			config.DisplayName = command.name
+			config.Description = serviceDescription
+			config.StartType = startType
+			if err := service.UpdateConfig(config); err != nil {
+				return fmt.Errorf("update windows service %q: %w", command.name, err)
+			}
+			fmt.Printf("updated windows service %q auto_start=%s start_type=%s\n", command.name, windowsServiceAutoStartName(startType), windowsServiceStartTypeName(startType))
+			return nil
+		}
+		if !errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			return fmt.Errorf("inspect existing windows service %q: %w", command.name, err)
+		}
+		service, err = manager.CreateService(command.name, exePath, mgr.Config{
 			DisplayName: command.name,
 			Description: serviceDescription,
-			StartType:   mgr.StartAutomatic,
-		}, "service", "run", command.name)
+			StartType:   startType,
+		}, windowsServiceArguments(command)...)
 		if err != nil {
 			return fmt.Errorf("install windows service %q: %w", command.name, err)
 		}
 		defer service.Close()
-		fmt.Printf("installed windows service %q\n", command.name)
+		fmt.Printf("installed windows service %q auto_start=%s start_type=%s\n", command.name, windowsServiceAutoStartName(startType), windowsServiceStartTypeName(startType))
 		return nil
 	case "uninstall":
-		service, err := openWindowsService(manager, command.name)
+		service, err := openWindowsService(manager, command.name, exePath)
+		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			fmt.Print("state=not-installed\nauto_start=false\n")
+			return nil
+		}
 		if err != nil {
 			return err
 		}
 		defer service.Close()
-		_ = stopWindowsService(service)
+		if err := stopWindowsService(service); err != nil {
+			return fmt.Errorf("stop windows service %q before uninstall: %w", command.name, err)
+		}
 		if err := service.Delete(); err != nil {
 			return fmt.Errorf("uninstall windows service %q: %w", command.name, err)
 		}
 		fmt.Printf("uninstalled windows service %q\n", command.name)
 		return nil
 	case "start":
-		service, err := openWindowsService(manager, command.name)
+		service, err := openWindowsService(manager, command.name, exePath)
 		if err != nil {
 			return err
 		}
 		defer service.Close()
-		if err := service.Start(); err != nil {
-			return fmt.Errorf("start windows service %q: %w", command.name, err)
+		status, err := service.Query()
+		if err != nil {
+			return fmt.Errorf("query windows service %q before start: %w", command.name, err)
+		}
+		if status.State != svc.Running {
+			if err := service.Start(); err != nil {
+				return fmt.Errorf("start windows service %q: %w", command.name, err)
+			}
 		}
 		if err := waitWindowsServiceRunning(service); err != nil {
 			return err
@@ -189,7 +236,7 @@ func applyServiceCommand(command serviceCommand, exePath string, _ string) error
 		fmt.Printf("started windows service %q\n", command.name)
 		return nil
 	case "stop":
-		service, err := openWindowsService(manager, command.name)
+		service, err := openWindowsService(manager, command.name, exePath)
 		if err != nil {
 			return err
 		}
@@ -199,8 +246,51 @@ func applyServiceCommand(command serviceCommand, exePath string, _ string) error
 		}
 		fmt.Printf("stopped windows service %q\n", command.name)
 		return nil
+	case "restart":
+		service, err := openWindowsService(manager, command.name, exePath)
+		if err != nil {
+			return err
+		}
+		defer service.Close()
+		if err := stopWindowsService(service); err != nil {
+			return err
+		}
+		if err := service.Start(); err != nil {
+			return fmt.Errorf("restart windows service %q: %w", command.name, err)
+		}
+		if err := waitWindowsServiceRunning(service); err != nil {
+			return err
+		}
+		fmt.Printf("restarted windows service %q\n", command.name)
+		return nil
+	case "enable", "disable":
+		service, err := openWindowsService(manager, command.name, exePath)
+		if err != nil {
+			return err
+		}
+		defer service.Close()
+		config, err := service.Config()
+		if err != nil {
+			return fmt.Errorf("query windows service %q configuration: %w", command.name, err)
+		}
+		if command.action == "enable" {
+			config.StartType = mgr.StartAutomatic
+		} else {
+			// Manual start keeps an explicitly disabled service available for operator-controlled starts.
+			// 手动启动会保留服务的人工启动能力，不会把服务锁定为不可启动。
+			config.StartType = mgr.StartManual
+		}
+		if err := service.UpdateConfig(config); err != nil {
+			return fmt.Errorf("set windows service %q start type: %w", command.name, err)
+		}
+		fmt.Printf("service %q auto_start=%s start_type=%s\n", command.name, windowsServiceAutoStartName(config.StartType), windowsServiceStartTypeName(config.StartType))
+		return nil
 	case "status":
-		service, err := openWindowsService(manager, command.name)
+		service, err := openWindowsService(manager, command.name, exePath)
+		if errors.Is(err, windows.ERROR_SERVICE_DOES_NOT_EXIST) {
+			fmt.Print("state=not-installed\nauto_start=false\n")
+			return nil
+		}
 		if err != nil {
 			return err
 		}
@@ -209,19 +299,95 @@ func applyServiceCommand(command serviceCommand, exePath string, _ string) error
 		if err != nil {
 			return fmt.Errorf("query windows service %q: %w", command.name, err)
 		}
-		fmt.Printf("%s\n", windowsServiceStateName(status.State))
+		config, err := service.Config()
+		if err != nil {
+			return fmt.Errorf("query windows service %q configuration: %w", command.name, err)
+		}
+		fmt.Print(renderWindowsServiceStatus(status.State, config.StartType))
 		return nil
 	default:
 		return fmt.Errorf("unsupported service action %q", command.action)
 	}
 }
 
+// windowsServiceArguments builds the argument vector SCM stores with the service executable, preserving config paths as separate escaped arguments.
+// windowsServiceArguments 用于构建 SCM 随服务可执行文件保存的参数向量，把配置路径保持为独立参数并交给原生转义。
+func windowsServiceArguments(command serviceCommand) []string {
+	arguments := []string{"service", "run", command.name}
+	if command.configPath != "" {
+		arguments = append(arguments, "-config", command.configPath)
+	}
+	return arguments
+}
+
+// windowsServiceCommandLine reproduces the exact command line stored by SCM for a generated VMM service.
+// windowsServiceCommandLine 用于复现 SCM 为生成的 VMM 服务保存的精确命令行。
+func windowsServiceCommandLine(exePath string, command serviceCommand) string {
+	arguments := append([]string{exePath}, windowsServiceArguments(command)...)
+	quoted := make([]string, 0, len(arguments))
+	for _, argument := range arguments {
+		quoted = append(quoted, syscall.EscapeArg(argument))
+	}
+	return strings.Join(quoted, " ")
+}
+
+// validateWindowsServiceConfig accepts only the generated executable, arguments, service type, and identity metadata.
+// validateWindowsServiceConfig 只接受生成的可执行文件、参数、服务类型和身份元数据。
+func validateWindowsServiceConfig(config mgr.Config, name string, exePath string) error {
+	if config.ServiceType != windows.SERVICE_WIN32_OWN_PROCESS {
+		return fmt.Errorf("service type mismatch")
+	}
+	if config.DisplayName != name {
+		return fmt.Errorf("display name mismatch")
+	}
+	if config.Description != serviceDescription {
+		return fmt.Errorf("description mismatch")
+	}
+	arguments, err := windows.DecomposeCommandLine(config.BinaryPathName)
+	if err != nil {
+		return fmt.Errorf("decode binary path: %w", err)
+	}
+	if len(arguments) != 4 && len(arguments) != 6 {
+		return fmt.Errorf("unexpected service argument count %d", len(arguments))
+	}
+	if !strings.EqualFold(filepath.Clean(arguments[0]), filepath.Clean(exePath)) {
+		return fmt.Errorf("executable mismatch")
+	}
+	if arguments[1] != "service" || arguments[2] != "run" || arguments[3] != name {
+		return fmt.Errorf("service arguments mismatch")
+	}
+	if len(arguments) == 6 {
+		if arguments[4] != "-config" {
+			return fmt.Errorf("config flag mismatch")
+		}
+		if _, err := validateServiceConfigPath(arguments[5]); err != nil {
+			return fmt.Errorf("invalid persisted config path: %w", err)
+		}
+	}
+	return nil
+}
+
+// renderWindowsServiceStatus emits one key-value field per line for strict manager parsing.
+// renderWindowsServiceStatus 按每行一个键值对输出，满足管理器的严格解析契约。
+func renderWindowsServiceStatus(state svc.State, startType uint32) string {
+	return fmt.Sprintf("state=%s\nauto_start=%s\nstart_type=%s\n", windowsServiceStateName(state), windowsServiceAutoStartName(startType), windowsServiceStartTypeName(startType))
+}
+
 // openWindowsService opens an existing service and wraps the platform error with the requested service name.
 // openWindowsService 用于打开一个已存在服务，并用请求的服务名包装平台错误。
-func openWindowsService(manager *mgr.Mgr, name string) (*mgr.Service, error) {
+func openWindowsService(manager *mgr.Mgr, name string, exePath string) (*mgr.Service, error) {
 	service, err := manager.OpenService(name)
 	if err != nil {
 		return nil, fmt.Errorf("open windows service %q: %w", name, err)
+	}
+	config, err := service.Config()
+	if err != nil {
+		service.Close()
+		return nil, fmt.Errorf("query windows service %q configuration: %w", name, err)
+	}
+	if err := validateWindowsServiceConfig(config, name, exePath); err != nil {
+		service.Close()
+		return nil, fmt.Errorf("refusing to operate on non-VMM windows service %q: %w", name, err)
 	}
 	return service, nil
 }
@@ -340,5 +506,29 @@ func windowsServiceStateName(state svc.State) string {
 		return "paused"
 	default:
 		return fmt.Sprintf("unknown-%d", state)
+	}
+}
+
+// windowsServiceAutoStartName renders the SCM start policy as a stable manager-facing value.
+// windowsServiceAutoStartName 用于把 SCM 启动策略渲染成稳定的管理器状态值。
+func windowsServiceAutoStartName(startType uint32) string {
+	if startType == mgr.StartAutomatic {
+		return "enabled"
+	}
+	return "disabled"
+}
+
+// windowsServiceStartTypeName preserves the distinction between manual and disabled native SCM policies.
+// windowsServiceStartTypeName 用于保留手动与禁用这两种原生 SCM 策略的区别。
+func windowsServiceStartTypeName(startType uint32) string {
+	switch startType {
+	case mgr.StartAutomatic:
+		return "automatic"
+	case mgr.StartManual:
+		return "manual"
+	case mgr.StartDisabled:
+		return "disabled"
+	default:
+		return fmt.Sprintf("unknown-%d", startType)
 	}
 }

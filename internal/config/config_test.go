@@ -183,6 +183,70 @@ func TestConfigValidateAcceptsControllerMode(t *testing.T) {
 	}
 }
 
+// TestConfigValidateAcceptsExplicitSplitDataRoot verifies the installer-facing root is accepted for both local split topologies.
+// TestConfigValidateAcceptsExplicitSplitDataRoot 用于验证安装器使用的本地数据根目录可用于 split 与 controller 两种本地拓扑。
+func TestConfigValidateAcceptsExplicitSplitDataRoot(t *testing.T) {
+	for _, mode := range []string{"split", "controller"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := newValidConfigForTest()
+			cfg.Storage.Mode = mode
+			cfg.Storage.LocalDataRoot = "  " + filepath.Join(t.TempDir(), "vmm-data") + "  "
+			cfg.Normalize()
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("validate explicit local data root: %v", err)
+			}
+			if !filepath.IsAbs(cfg.Storage.LocalDataRoot) {
+				t.Fatalf("local data root is not absolute: %q", cfg.Storage.LocalDataRoot)
+			}
+		})
+	}
+}
+
+// TestConfigValidateRejectsExplicitDataRootOutsideLegacyModes prevents native and combined configurations from silently ignoring the new field.
+// TestConfigValidateRejectsExplicitDataRootOutsideLegacyModes 用于防止 native 与 combined 配置静默忽略新字段。
+func TestConfigValidateRejectsExplicitDataRootOutsideLegacyModes(t *testing.T) {
+	for _, mode := range []string{"native", "combined"} {
+		t.Run(mode, func(t *testing.T) {
+			cfg := newValidConfigForTest()
+			cfg.Storage.Mode = mode
+			cfg.Storage.LocalDataRoot = filepath.Join(t.TempDir(), "vmm-data")
+			cfg.Normalize()
+			if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "storage.local_data_root is only supported") {
+				t.Fatalf("expected mode boundary error, got %v", err)
+			}
+		})
+	}
+}
+
+// TestConfigValidateRejectsRelativeLocalDataRoot keeps runtime root resolution deterministic across service working directories.
+// TestConfigValidateRejectsRelativeLocalDataRoot 用于保证服务工作目录变化时数据根解析不会产生歧义。
+func TestConfigValidateRejectsRelativeLocalDataRoot(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Storage.LocalDataRoot = "database/vmm"
+	cfg.Normalize()
+	if err := cfg.Validate(); err == nil || err.Error() != "storage.local_data_root must be an absolute path" {
+		t.Fatalf("expected absolute path error, got %v", err)
+	}
+}
+
+// TestConfigValidateLoggingDirectoryKeepsLegacyDefaultAndRequiresAbsoluteOverride verifies service logs can move without changing old configurations.
+// TestConfigValidateLoggingDirectoryKeepsLegacyDefaultAndRequiresAbsoluteOverride 验证服务日志可以迁出程序包，同时旧配置保持兼容。
+func TestConfigValidateLoggingDirectoryKeepsLegacyDefaultAndRequiresAbsoluteOverride(t *testing.T) {
+	cfg := newValidConfigForTest()
+	cfg.Normalize()
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("legacy logging default: %v", err)
+	}
+	cfg.Logging.Directory = filepath.Join(t.TempDir(), "logs")
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("absolute logging.directory: %v", err)
+	}
+	cfg.Logging.Directory = "relative/logs"
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("relative logging.directory unexpectedly accepted")
+	}
+}
+
 // TestConfigValidateAcceptsNativeMode verifies native storage uses its own paths and tokenizer while keeping shared vector fields active.
 // TestConfigValidateAcceptsNativeMode 用于验证原生存储使用独立路径和分词器，同时继续使用共用向量字段。
 func TestConfigValidateAcceptsNativeMode(t *testing.T) {
@@ -298,6 +362,22 @@ func TestApplyEnvOverridesSetsNativeStorageFields(t *testing.T) {
 	}
 	if got, want := cfg.LanceDB.Native.LibraryPath, "custom/native.dll"; got != want {
 		t.Fatalf("lancedb native library path = %q, want %q", got, want)
+	}
+}
+
+// TestApplyEnvOverridesSetsLocalDataRoot verifies explicit storage root overrides require the same opt-in placeholder mechanism as other VMM settings.
+// TestApplyEnvOverridesSetsLocalDataRoot 用于验证本地数据根环境变量遵循现有的显式占位符覆盖机制。
+func TestApplyEnvOverridesSetsLocalDataRoot(t *testing.T) {
+	keys := map[string]struct{}{"VMM_STORAGE_LOCAL_DATA_ROOT": {}}
+	root := filepath.Join(t.TempDir(), "vmm-data")
+	t.Setenv("VMM_STORAGE_LOCAL_DATA_ROOT", root)
+	cfg := newValidConfigForTest()
+	if failures := applyEnvOverrides(&cfg, keys); len(failures) != 0 {
+		t.Fatalf("applyEnvOverrides() failures = %#v", failures)
+	}
+	cfg.Normalize()
+	if got := cfg.Storage.LocalDataRoot; got != root {
+		t.Fatalf("local data root = %q, want %q", got, root)
 	}
 }
 

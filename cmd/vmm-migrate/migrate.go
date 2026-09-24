@@ -70,7 +70,7 @@ func runSplitToCombinedMigration(ctx context.Context, cfg config.Config) error {
 	if err != nil {
 		return err
 	}
-	localLayout, err := app.ResolveLocalStorageLayout()
+	localLayout, err := app.ResolveLocalStorageLayoutForConfig(cfg, config.PromptLayout{})
 	if err != nil {
 		return err
 	}
