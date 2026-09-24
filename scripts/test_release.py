@@ -187,6 +187,8 @@ class ReleaseGateTests(unittest.TestCase):
             for platform in ("linux-x64", "linux-arm64"):
                 (dist / f"vulcan-memory-mesh-{tag}-{platform}.tar.gz.asc").write_bytes(b"test signature")
             with patch.object(release, "verify_external_manifest_signature"), patch.object(release, "verify_gpg_assets"):
+                # Obsolete PFX metadata cannot replace the committed publisher identity.
+                # 旧 PFX 元数据环境变量不能替代仓库固定的发布者身份。
                 with patch.dict(
                     "os.environ",
                     {
@@ -196,6 +198,14 @@ class ReleaseGateTests(unittest.TestCase):
                     },
                 ):
                     self.assertEqual(len(release.verify_assets(dist, tag, commit)), 16)
+                proof_path = dist / release.WINDOWS_ATTESTATION_NAME
+                original_proof = proof_path.read_bytes()
+                proof = json.loads(original_proof)
+                proof["certificate"]["thumbprint"] = "A" * 40
+                proof_path.write_text(json.dumps(proof), encoding="utf-8")
+                with self.assertRaisesRegex(ValueError, "thumbprint"):
+                    release.verify_assets(dist, tag, commit)
+                proof_path.write_bytes(original_proof)
                 foreign = dist / "unrelated.txt"
                 foreign.write_text("unrelated", encoding="utf-8")
                 with patch.dict(

@@ -36,4 +36,13 @@ Linux 的 `.asc` 是 OpenPGP 文件签名，不表示已经签署 APT 仓库、R
 
 ## 验证记录
 
-正式产品验证结果待本次运行结束后登记。早期凭据与独立测试程序验证见 [签名冒烟测试](github-signing-smoke_CN.md)。
+VMMM 正式产品验证已通过：[发行工作流 35986546656](https://github.com/OpenVulcan/vulcan-memory-mesh-manager/actions/runs/35986546656)，源码提交 `62749422077b5e574c89a794747ead3d58bc7cd4`。五个平台构建、实际 Windows 云签名、独立 Windows 任务复验、两份 Linux GPG 签名、Ed25519 清单和引导脚本生成全部通过，最终包含十一项资产。下载后的本机 Authenticode、时间戳、两个 GPG 签名、Ed25519 清单及全部文件摘要复验通过，实际 Windows 程序可执行并返回版本 `v0.1.0`。
+
+- Windows 程序摘要：`50c6f4ddebcb3f4f2ebc969a2273181ddc9f8fffbb697775d6440402238c2307`。
+- Linux x64 摘要：`a7255fdb6f5f8fcc00519afd0efebfbd1d51b1fd33e41cc752d04550b556b5f8`。
+- Linux ARM64 摘要：`a8999413d77700e1559cbd7e297b1f896333f4eac38b9acd0cfe1fc408f2512c`。
+- 同提交五平台持续集成：[35986546482](https://github.com/OpenVulcan/vulcan-memory-mesh-manager/actions/runs/35986546482)，包括真实临时 GPG 密钥的缺签名、篡改和错误身份拒绝测试。
+
+首轮 VMMM 实测暴露原有版本检查步骤的 Bash 内嵌文本缩进和缺少条件结束标记问题，已修复并增加真实脚本语法回归。不能把首次失败的运行当成签名成功证据。
+
+VMM 正式产品完整验证正在运行：[35986388344](https://github.com/OpenVulcan/vulcan-memory-mesh/actions/runs/35986388344)。同提交五平台普通持续集成 [35986388353](https://github.com/OpenVulcan/vulcan-memory-mesh/actions/runs/35986388353) 已通过；完整原生发行验收待运行结束后登记。早期凭据与独立测试程序验证见 [签名冒烟测试](github-signing-smoke_CN.md)。

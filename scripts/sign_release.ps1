@@ -1,5 +1,5 @@
-# Test SimplySign on a disposable Windows runner, using only a harmless CI fixture.
-# 在一次性 Windows Runner 上使用无副作用的 CI 测试程序验证 SimplySign。
+# Sign and verify production files with the pinned Certum cloud identity.
+# 使用固定的 Certum 云证书身份签名和验证正式产品文件。
 param(
     [Parameter(Mandatory)][ValidateSet('Install', 'Sign', 'Verify')][string]$Phase,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
@@ -183,4 +183,3 @@ try {
         $client.Dispose()
     }
 }
-
