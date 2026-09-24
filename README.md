@@ -1,6 +1,6 @@
 # VMM OSS Local (Go)
 
-当前已发布版本：**v0.1.0**，其发行包仅包含 native 存储依赖。后续全模式发行流程支持手动选择 Git 标签构建 Windows x64、Linux x64/ARM64、macOS Intel/ARM64 完整包；每个平台新包都包含 native、split、controller 依赖及 combined PostgreSQL 模式所需的 VMM 代码。新流程已接入 Certum Windows 云签名与 Linux GPG 签名，默认只验证实际产物，发行模式仍创建并回验草稿。新包必须重新构建、验签并公开发布后才能由独立安装器提供全部存储选项，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。
+本次发行版本：**v0.1.1**。Windows x64、Linux x64/ARM64、macOS Intel/ARM64 的完整包均包含 native、split、controller 依赖及 combined PostgreSQL 模式所需的 VMM 代码。正式流水使用 Certum Windows 云签名与 Linux GPG 签名，先创建并回验草稿，再公开发行。旧版 `v0.1.0` 仅包含 native 依赖，保持原标签与资产不变。使用独立安装器时请选择 `v0.1.1` 或后续完整包，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。
 
 VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务链：
 

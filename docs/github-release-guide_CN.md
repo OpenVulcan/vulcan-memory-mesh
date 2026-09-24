@@ -1,10 +1,10 @@
 # GitHub 手动标签发行
 
-当前版本为 `v0.1.0`。根目录 `VERSION` 是正式构建版本来源，`vmm-local -version-json` 和 `vmm-migrate -version-json` 输出相同版本及源码提交。
+当前版本为 `v0.1.1`。根目录 `VERSION` 是正式构建版本来源，`vmm-local -version-json` 和 `vmm-migrate -version-json` 输出相同版本及源码提交。
 
 ## 触发方式
 
-1. 将待发布修改提交到 `main`，更新 `VERSION`，例如 `v0.1.0`。
+1. 将待发布修改提交到 `main`，更新 `VERSION`，例如 `v0.1.1`。
 2. 为该提交创建并推送同名标签。标签必须属于 `main` 历史。
 3. 在 GitHub 的 **Actions → Tagged release → Run workflow** 中选择 `main`，填写已有标签，取消 `verify_only`。
 4. 等待五个构建任务与最终签名验证全部成功。在 Releases 的草稿中检查发行包，再按发行审批公开。
@@ -12,10 +12,10 @@
 也可以使用 GitHub CLI：
 
 ```powershell
-git tag -a v0.1.0 -m "发布零点一初始版本"
+git tag -a v0.1.1 -m "发布完整存储依赖与签名版本"
 git push origin main
-git push origin v0.1.0
-gh workflow run release.yml --ref main -f tag=v0.1.0 -f verify_only=false
+git push origin v0.1.1
+gh workflow run release.yml --ref main -f tag=v0.1.1 -f verify_only=false
 ```
 
 推送标签不会自动发行，必须手动触发。工作流先解析标签对应的完整提交，并要求该提交的 `VERSION` 与标签一致；构建阶段固定使用解析后的提交。发布前再次校验远程标签，防止编译过程中被移动。
@@ -37,7 +37,7 @@ gh workflow run release.yml --ref main -f tag=v0.1.0 -f verify_only=false
 ## 包内容与运行
 
 ```text
-vulcan-memory-mesh-v0.1.0-<平台>/
+vulcan-memory-mesh-v0.1.1-<平台>/
   bin/vmm-local[.exe]
   bin/vmm-migrate[.exe]
   bin/vmm-pii-tester[.exe]
