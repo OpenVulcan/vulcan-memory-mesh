@@ -165,9 +165,9 @@ class ReleaseGateTests(unittest.TestCase):
                         "archive": windows_archive.name,
                         "archive_sha256": release.digest(windows_archive),
                         "certificate": {
-                            "subject": "CN=VMM Test Certum",
-                            "issuer": "CN=VMM Test Certum Issuer",
-                            "thumbprint": "A" * 40,
+                            "subject": release.SIGNING_POLICY["certificate_subject"],
+                            "issuer": release.SIGNING_POLICY["certificate_issuer"],
+                            "thumbprint": release.SIGNING_POLICY["certificate_thumbprint"],
                             "chain_status": "Valid",
                             "timestamp_status": "Valid",
                         },
@@ -184,7 +184,9 @@ class ReleaseGateTests(unittest.TestCase):
                 ) + "\n",
                 encoding="utf-8",
             )
-            with patch.object(release, "verify_external_manifest_signature"):
+            for platform in ("linux-x64", "linux-arm64"):
+                (dist / f"vulcan-memory-mesh-{tag}-{platform}.tar.gz.asc").write_bytes(b"test signature")
+            with patch.object(release, "verify_external_manifest_signature"), patch.object(release, "verify_gpg_assets"):
                 with patch.dict(
                     "os.environ",
                     {
@@ -193,7 +195,7 @@ class ReleaseGateTests(unittest.TestCase):
                         "VMM_CERTUM_THUMBPRINT": "A" * 40,
                     },
                 ):
-                    self.assertEqual(len(release.verify_assets(dist, tag, commit)), 14)
+                    self.assertEqual(len(release.verify_assets(dist, tag, commit)), 16)
                 foreign = dist / "unrelated.txt"
                 foreign.write_text("unrelated", encoding="utf-8")
                 with patch.dict(

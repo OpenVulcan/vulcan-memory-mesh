@@ -16,6 +16,13 @@ import tarfile
 import tempfile
 import zipfile
 
+# Both direct CLI execution and package-based unit tests use the same GPG verifier.
+# 直接命令行执行与包形式单元测试共用相同的 GPG 验证器。
+if __package__:
+    from .release_gpg import process_assets as verify_gpg_assets, POLICY as SIGNING_POLICY
+else:
+    from release_gpg import process_assets as verify_gpg_assets, POLICY as SIGNING_POLICY
+
 
 # The release matrix is a closed set shared with the workflow's platform names.
 # 发行矩阵使用与工作流平台名称一致的封闭集合。
@@ -552,11 +559,9 @@ def verify_windows_authenticode(dist, tag, archives):
     if attestation["archive_sha256"] != digest(expected_archive):
         raise ValueError("Windows Authenticode attestation archive SHA-256 mismatch")
 
-    expected_subject = os.environ.get("VMM_CERTUM_SUBJECT", "")
-    expected_issuer = os.environ.get("VMM_CERTUM_ISSUER", "")
-    expected_thumbprint = re.sub(r"\s", "", os.environ.get("VMM_CERTUM_THUMBPRINT", "")).upper()
-    if not expected_subject or not expected_issuer or not re.fullmatch(r"[0-9A-F]{40}", expected_thumbprint):
-        raise ValueError("VMM_CERTUM_SUBJECT, VMM_CERTUM_ISSUER, and VMM_CERTUM_THUMBPRINT are required")
+    expected_subject = SIGNING_POLICY["certificate_subject"]
+    expected_issuer = SIGNING_POLICY["certificate_issuer"]
+    expected_thumbprint = SIGNING_POLICY["certificate_thumbprint"]
 
     certificate = attestation["certificate"]
     if not isinstance(certificate, dict) or set(certificate) != {
@@ -662,6 +667,14 @@ def verify_assets(dist, tag, commit):
     windows_attestation = verify_windows_authenticode(dist, tag, archives)
     assets.append(windows_attestation)
     checksums.append(f"{digest(windows_attestation)}  {windows_attestation.name}")
+    # Linux signatures cover final compressed bytes, after all packaging has finished.
+    # Linux 签名覆盖全部打包结束后的最终压缩文件字节。
+    linux_archives = [path for path in archives if "-linux-" in path.name]
+    verify_gpg_assets(linux_archives)
+    for archive in linux_archives:
+        signature = Path(str(archive) + ".asc")
+        assets.append(signature)
+        checksums.append(f"{digest(signature)}  {signature.name}")
     expected_names = {path.name for path in assets} | {"SHA256SUMS"}
     if any(path.name not in expected_names for path in dist.iterdir()):
         raise ValueError("Unexpected files in the release asset directory")
@@ -726,7 +739,7 @@ def main():
     """
     parser = argparse.ArgumentParser(description=__doc__)
     subcommands = parser.add_subparsers(dest="command", required=True)
-    for command in ("package", "draft"):
+    for command in ("package", "draft", "verify"):
         sub = subcommands.add_parser(command)
         sub.add_argument("--tag", required=True)
         sub.add_argument("--commit", required=True)
@@ -743,6 +756,8 @@ def main():
     elif args.command == "refresh-native-manifest":
         root = Path(__file__).resolve().parent.parent
         print(refresh_signed_native_manifest(root / "output", args.platform))
+    elif args.command == "verify":
+        verify_assets(Path(__file__).resolve().parent.parent / "dist", args.tag, args.commit)
     else:
         create_draft(args.tag, args.commit)
 

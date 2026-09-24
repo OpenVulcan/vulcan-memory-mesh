@@ -4,8 +4,14 @@ name: Tagged release
 run-name: Release ${{ inputs.tag }}
 
 on:
+  push:
+    branches: [codex/github-release-signing]
   workflow_dispatch:
     inputs:
+      verify_only:
+        description: '只构建验证当前工作流提交，不创建标签或发行版本'
+        type: boolean
+        default: true
       tag:
         description: '已有版本标签，必须与该提交的 VERSION 一致，例如 v0.1.0'
         required: true
@@ -26,6 +32,7 @@ jobs:
     outputs:
       commit: ${{ steps.tag.outputs.commit }}
       tag: ${{ steps.tag.outputs.tag }}
+      verify_only: ${{ steps.tag.outputs.verify_only }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -36,9 +43,21 @@ jobs:
         env:
           RELEASE_TAG: ${{ inputs.tag }}
           GH_TOKEN: ${{ github.token }}
+          VERIFY_ONLY: ${{ github.ref == 'refs/heads/codex/github-release-signing' || inputs.verify_only == true }}
+          WORKFLOW_COMMIT: ${{ github.sha }}
         shell: bash
         run: |
           set -euo pipefail
+          echo "verify_only=$VERIFY_ONLY" >> "$GITHUB_OUTPUT"
+          # Verification uses VERSION and the workflow commit without consulting or changing public tags.
+          # 验证模式使用 VERSION 与工作流提交，不读取或修改公开版本标签。
+          if [[ "$VERIFY_ONLY" == true ]]; then
+            RELEASE_TAG="$(tr -d '\r\n' < VERSION)"
+            [[ "$RELEASE_TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]
+            echo "commit=$WORKFLOW_COMMIT" >> "$GITHUB_OUTPUT"
+            echo "tag=$RELEASE_TAG" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-[0-9A-Za-z]+([.-][0-9A-Za-z]+)*)?$ ]] || { echo 'Invalid version tag'; exit 1; }
           commit="$(git rev-parse --verify "refs/tags/$RELEASE_TAG^{commit}")"
           version="$(git show "$commit:VERSION" | tr -d '\r\n')"
@@ -223,6 +242,7 @@ jobs:
         run: |
           set -euo pipefail
           python -m unittest discover -s scripts -p test_release.py -v
+          python -m unittest scripts.test_release_gpg -v
           test -f "$VMM_NATIVE_LANCEDB_LIBRARY"
           VMM_NATIVE_PACKAGED_ROOT="$GITHUB_WORKSPACE/output" VMM_PACKAGED_STORAGE_PROFILE=all go test ./... -count=1 -timeout=20m
           go vet ./...
@@ -231,62 +251,24 @@ jobs:
           VMM_NATIVE_PACKAGED_ROOT="$GITHUB_WORKSPACE/output" VMM_PACKAGED_STORAGE_PROFILE=all \
             go test ./internal/platform/ffi/nativelance ./internal/app -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' -count=1 -json > "$RUNNER_TEMP/native-acceptance.jsonl"
           python scripts/release.py check-tests "$RUNNER_TEMP/native-acceptance.jsonl"
+      - name: Install pinned SimplySign Desktop
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: ./scripts/sign_release.ps1 -Phase Install -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence"
       - name: Sign and verify Windows binaries with Certum
         if: runner.os == 'Windows'
         shell: pwsh
         env:
-          VMM_CERTUM_PFX_BASE64: ${{ secrets.VMM_CERTUM_PFX_BASE64 }}
-          VMM_CERTUM_PFX_PASSWORD: ${{ secrets.VMM_CERTUM_PFX_PASSWORD }}
-          VMM_CERTUM_SUBJECT: ${{ secrets.VMM_CERTUM_SUBJECT }}
-          VMM_CERTUM_ISSUER: ${{ secrets.VMM_CERTUM_ISSUER }}
-          VMM_CERTUM_THUMBPRINT: ${{ secrets.VMM_CERTUM_THUMBPRINT }}
-          VMM_CERTUM_TIMESTAMP_URL: ${{ secrets.VMM_CERTUM_TIMESTAMP_URL }}
+          CERTUM_TOTP_EMAIL: ${{ secrets.CERTUM_TOTP_EMAIL }}
+          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
         run: |
-          $ErrorActionPreference = 'Stop'
-          $required = @(
-            'VMM_CERTUM_PFX_BASE64',
-            'VMM_CERTUM_PFX_PASSWORD',
-            'VMM_CERTUM_SUBJECT',
-            'VMM_CERTUM_ISSUER',
-            'VMM_CERTUM_THUMBPRINT',
-            'VMM_CERTUM_TIMESTAMP_URL'
-          )
-          foreach ($name in $required) {
-            if ([string]::IsNullOrWhiteSpace([Environment]::GetEnvironmentVariable($name))) {
-              throw "$name is required; Certum signing is not configured"
-            }
-          }
-          $expectedThumbprint = ($env:VMM_CERTUM_THUMBPRINT -replace '\s', '').ToUpperInvariant()
-          if ($expectedThumbprint -notmatch '^[0-9A-F]{40}$') { throw 'VMM_CERTUM_THUMBPRINT must be 40 hexadecimal characters' }
-          $pfxPath = Join-Path $env:RUNNER_TEMP 'vmm-certum-signing.pfx'
           $targets = @(
-            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-local.exe'),
-            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-migrate.exe'),
-            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vmm-pii-tester.exe'),
-            (Join-Path $env:GITHUB_WORKSPACE 'output/bin/vldb-controller.exe'),
-            (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vmm_lancedb_native.dll'),
-            (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_sqlite.dll'),
-            (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_lancedb.dll')
+            'output/bin/vmm-local.exe', 'output/bin/vmm-migrate.exe',
+            'output/bin/vmm-pii-tester.exe', 'output/bin/vldb-controller.exe',
+            'output/libs/vmm_lancedb_native.dll', 'output/libs/vldb_sqlite.dll',
+            'output/libs/vldb_lancedb.dll'
           )
-          try {
-            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:VMM_CERTUM_PFX_BASE64))
-            $signTool = (Get-Command signtool.exe -ErrorAction Stop).Source
-            foreach ($target in $targets) {
-              if (-not (Test-Path -LiteralPath $target -PathType Leaf)) { throw "Missing Windows binary: $target" }
-              & $signTool sign /fd SHA256 /f $pfxPath /p $env:VMM_CERTUM_PFX_PASSWORD /tr $env:VMM_CERTUM_TIMESTAMP_URL /td SHA256 $target
-              if ($LASTEXITCODE -ne 0) { throw "Certum signing failed: $target" }
-              & $signTool verify /pa /all /tw $target
-              if ($LASTEXITCODE -ne 0) { throw "Authenticode verification failed: $target" }
-              $signature = Get-AuthenticodeSignature -LiteralPath $target
-              if ($signature.Status -ne 'Valid') { throw "Authenticode status is not Valid: $target ($($signature.Status))" }
-              if ($signature.SignerCertificate.Subject -ne $env:VMM_CERTUM_SUBJECT) { throw "Unexpected Authenticode subject: $target" }
-              if ($signature.SignerCertificate.Issuer -ne $env:VMM_CERTUM_ISSUER) { throw "Unexpected Authenticode issuer: $target" }
-              if (($signature.SignerCertificate.Thumbprint -replace '\s', '').ToUpperInvariant() -ne $expectedThumbprint) { throw "Unexpected Authenticode thumbprint: $target" }
-              if ($null -eq $signature.TimeStamperCertificate) { throw "Authenticode timestamp is missing: $target" }
-            }
-          } finally {
-            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
-          }
+          ./scripts/sign_release.ps1 -Phase Sign -EvidenceDirectory "$env:RUNNER_TEMP/certum-evidence" -Files $targets
       - name: Refresh signed native manifest digest
         if: runner.os == 'Windows'
         shell: bash
@@ -299,10 +281,6 @@ jobs:
       - name: Write Windows Authenticode attestation
         if: runner.os == 'Windows'
         shell: pwsh
-        env:
-          VMM_CERTUM_SUBJECT: ${{ secrets.VMM_CERTUM_SUBJECT }}
-          VMM_CERTUM_ISSUER: ${{ secrets.VMM_CERTUM_ISSUER }}
-          VMM_CERTUM_THUMBPRINT: ${{ secrets.VMM_CERTUM_THUMBPRINT }}
         run: |
           $ErrorActionPreference = 'Stop'
           $targets = @(
@@ -314,10 +292,16 @@ jobs:
             @{ Relative = 'libs/vldb_sqlite.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_sqlite.dll') },
             @{ Relative = 'libs/vldb_lancedb.dll'; Absolute = (Join-Path $env:GITHUB_WORKSPACE 'output/libs/vldb_lancedb.dll') }
           )
-          $signTool = (Get-Command signtool.exe -ErrorAction Stop).Source
-          $expectedSubject = $env:VMM_CERTUM_SUBJECT
-          $expectedIssuer = $env:VMM_CERTUM_ISSUER
-          $expectedThumbprint = ($env:VMM_CERTUM_THUMBPRINT -replace '\s', '').ToUpperInvariant()
+          $sdk = Join-Path ${env:ProgramFiles(x86)} 'Windows Kits/10/bin'
+          $signTool = Get-ChildItem $sdk -Directory | Where-Object Name -match '^\d+\.\d+\.\d+\.\d+$' |
+            Sort-Object { [version]$_.Name } -Descending |
+            ForEach-Object { Join-Path $_.FullName 'x64/signtool.exe' } |
+            Where-Object { Test-Path -LiteralPath $_ } | Select-Object -First 1
+          if (-not $signTool) { throw 'Windows SDK SignTool missing' }
+          $policy = Get-Content scripts/signing-policy.json -Raw -Encoding utf8 | ConvertFrom-Json
+          $expectedSubject = $policy.certificate_subject
+          $expectedIssuer = $policy.certificate_issuer
+          $expectedThumbprint = $policy.certificate_thumbprint
           $attestedSubject = $null
           $attestedIssuer = $null
           $attestedThumbprint = $null
@@ -377,7 +361,7 @@ jobs:
           retention-days: 7
 
   draft:
-    name: Create verified draft release
+    name: Verify signed release and optionally create draft
     needs: [resolve, build]
     runs-on: ubuntu-24.04
     permissions:
@@ -387,9 +371,6 @@ jobs:
       GH_REPO: ${{ github.repository }}
       RELEASE_TAG: ${{ needs.resolve.outputs.tag }}
       RELEASE_COMMIT: ${{ needs.resolve.outputs.commit }}
-      VMM_CERTUM_SUBJECT: ${{ secrets.VMM_CERTUM_SUBJECT }}
-      VMM_CERTUM_ISSUER: ${{ secrets.VMM_CERTUM_ISSUER }}
-      VMM_CERTUM_THUMBPRINT: ${{ secrets.VMM_CERTUM_THUMBPRINT }}
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
@@ -407,6 +388,13 @@ jobs:
           pattern: release-*
           path: dist
           merge-multiple: true
+      - name: Sign final Linux archives with the pinned OpenPGP key
+        shell: bash
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: python scripts/release_gpg.py sign "dist/vulcan-memory-mesh-$RELEASE_TAG-linux-x64.tar.gz" "dist/vulcan-memory-mesh-$RELEASE_TAG-linux-arm64.tar.gz"
+
       - name: Create and verify signed VMM manifest
         shell: bash
         env:
@@ -421,6 +409,18 @@ jobs:
           }
           go run ./scripts/sign_manifest.go manifest --dist "$GITHUB_WORKSPACE/dist" --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
           go run ./scripts/sign_manifest.go verify --manifest "$GITHUB_WORKSPACE/dist/manifest.json" --signature "$GITHUB_WORKSPACE/dist/manifest.sig" --public-key-env VMM_RELEASE_ED25519_PUBLIC_KEY
+      - name: Verify the complete signed five-platform set
+        shell: bash
+        run: python scripts/release.py verify --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"
+      - name: Upload verified production assets
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: vmm-release-verified
+          path: dist/*
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 7
       - name: Verify five-platform set and create draft
+        if: needs.resolve.outputs.verify_only != 'true'
         shell: bash
         run: python scripts/release.py draft --tag "$RELEASE_TAG" --commit "$RELEASE_COMMIT"

@@ -6,8 +6,8 @@
 
 1. 将待发布修改提交到 `main`，更新 `VERSION`，例如 `v0.1.0`。
 2. 为该提交创建并推送同名标签。标签必须属于 `main` 历史。
-3. 在 GitHub 的 **Actions → Tagged release → Run workflow** 中选择 `main`，填写已有标签。
-4. 等待五个构建任务与最终发布任务全部成功。在 Releases 下载发行包。
+3. 在 GitHub 的 **Actions → Tagged release → Run workflow** 中选择 `main`，填写已有标签，取消 `verify_only`。
+4. 等待五个构建任务与最终签名验证全部成功。在 Releases 的草稿中检查发行包，再按发行审批公开。
 
 也可以使用 GitHub CLI：
 
@@ -15,10 +15,12 @@
 git tag -a v0.1.0 -m "发布零点一初始版本"
 git push origin main
 git push origin v0.1.0
-gh workflow run release.yml --ref main -f tag=v0.1.0
+gh workflow run release.yml --ref main -f tag=v0.1.0 -f verify_only=false
 ```
 
 推送标签不会自动发行，必须手动触发。工作流先解析标签对应的完整提交，并要求该提交的 `VERSION` 与标签一致；构建阶段固定使用解析后的提交。发布前再次校验远程标签，防止编译过程中被移动。
+
+默认 `verify_only=true` 用当前工作流提交及其 `VERSION` 执行相同构建、真实签名和验签，将最终产物保存为 `vmm-release-verified` Actions artifact，不创建或覆盖标签、草稿或公开 Release。`codex/github-release-signing` 分支推送也只进入此模式。已公开的 `v0.1.0` 不可重复发行。
 
 ## 发行平台
 
@@ -71,7 +73,7 @@ vulcan-memory-mesh-v0.1.0-<平台>/
 - `all` 发行构建还会安装并校验固定版本的 `vldb_sqlite`、`vldb_lancedb` 与 `vldb-controller` 宿主依赖；这些文件必须和 native manifest 一起通过平台级 staging 校验。
 - 原生库缓存按平台、原生源码和制备脚本摘要隔离。缓存恢复后仍执行正式清单校验；日常 Go 构建不会自动编译 Rust。
 - 五个平台全部完成后才进入草稿创建任务。上传草稿后重新下载并核对所有文件的 SHA-256；当前工作流不会转为公开 Release。
-- Release 附带五个压缩包、五份外部平台清单、`manifest.json`、`manifest.sig`、`windows-authenticode.json` 及 `SHA256SUMS`。清单记录各文件摘要与 Windows Authenticode 证明。
+- Release 附带五个压缩包、五份外部平台清单、两份 Linux `.tar.gz.asc` 签名、`manifest.json`、`manifest.sig`、`windows-authenticode.json` 及 `SHA256SUMS`，共十六项资产。
 - 已公开发布的同名版本拒绝覆盖。上传中断时保留草稿，可重新运行同一版本。若首次构建因源码或测试问题失败且尚未公开发布，先等待旧任务结束并提交修复，再以限定旧标签对象的 `--force-with-lease` 更新该标签，随后重新手动触发工作流；已发布标签不应移动。草稿创建命令为 `python scripts/release.py draft`。
 - 普通测试中需要真实云凭据或旧 VLDB 产物的测试可能跳过；四项强制原生验收明确拒绝跳过，缺库不得视为成功。
 
@@ -92,18 +94,18 @@ VMM 的公开信任根位于 [docs/release-public-keys.md](release-public-keys.m
 - `VMM_RELEASE_ED25519_PRIVATE_KEY`
 - `VMM_RELEASE_ED25519_KEY_ID`
 
-Windows Certum 签名使用以下独立 Secrets：
+Windows Certum 与 Linux GPG 使用以下组织 Secrets：
 
-- `VMM_CERTUM_PFX_BASE64`
-- `VMM_CERTUM_PFX_PASSWORD`
-- `VMM_CERTUM_SUBJECT`
-- `VMM_CERTUM_ISSUER`
-- `VMM_CERTUM_THUMBPRINT`
-- `VMM_CERTUM_TIMESTAMP_URL`
+- `CERTUM_TOTP_EMAIL`
+- `CERTUM_TOTP_SECRET`
+- `GPG_PRIVATE_KEY`
+- `GPG_PASSPHRASE`：仅加密的 GPG 私钥需要。
 
-发布工作流会先用 Certum PFX 和时间戳服务签名 Windows 的 `vmm-local.exe`、`vmm-migrate.exe`、`vmm-pii-tester.exe`、`vldb-controller.exe`、`vmm_lancedb_native.dll`、`vldb_sqlite.dll` 和 `vldb_lancedb.dll`，再用 `signtool verify` 和 PowerShell Authenticode 校验主体、证书链、指纹与时间戳。签名会改变原生 DLL 字节，工作流随后只刷新 `libs/manifest.json` 的 `library_sha256`，保留其余原生身份字段，再重新验收并打包。缺少 Certum PFX、密码、证书身份或时间戳服务时，Windows 构建直接失败；缺少或篡改 `windows-authenticode.json`、压缩包摘要或签名清单时，发布任务也会失败。工作流不会通过布尔环境变量绕过真实签名。
+发布工作流在临时 Windows Runner 安装固定哈希和签发者的 SimplySign Desktop，通过邮箱和 SHA-256、30 秒、6 位动态口令登录云证书，签名 `vmm-local.exe`、`vmm-migrate.exe`、`vmm-pii-tester.exe`、`vldb-controller.exe`、`vmm_lancedb_native.dll`、`vldb_sqlite.dll` 和 `vldb_lancedb.dll`。SignTool 和 PowerShell 必须同时确认可信签名、固定证书身份和 RFC 3161 时间戳。证书公开身份固定在 `scripts/signing-policy.json`，不再使用 PFX Secrets。原生 DLL 签名后只刷新 `libs/manifest.json` 的 `library_sha256`，保留其余身份字段，再重新验收并打包。
 
-通过校验后，发行任务只创建 GitHub Draft Release，上传全部资产，重新下载并逐文件核对摘要，最后再次确认仍是草稿。Certum 证书仍在办理；公开发行需要在证书到位后另行完成签名验收及工作流调整。管理器在安装前还会使用内置 VMM 公钥验证 `manifest.sig`。
+两份最终 Linux 压缩包使用 GPG 生成分离式 `.asc` 签名，然后用隔离的纯公钥密钥环复验。公开信任根为 `docs/release-gpg-public.asc`，主指纹固定在 `scripts/signing-policy.json`。缺少凭据、错误证书或 GPG 密钥、无时间戳、缺签名或产物篡改都会阻止发行。macOS 不进行平台代码签名；五个平台仍全部受 Ed25519 发行清单保护。
+
+真实发行模式通过校验后只创建 GitHub Draft Release，上传全部资产，重新下载并逐文件核对摘要，最后再次确认仍是草稿。Certum 证书已到位并接入云签名；公开 Release 仍是单独的发行操作。管理器安装前继续使用内置 VMM 公钥验证 `manifest.sig`。完整运行说明见 [正式发行签名](release-signing_CN.md)。
 
 ### 宿主 VLDB 依赖的固定摘要
 
