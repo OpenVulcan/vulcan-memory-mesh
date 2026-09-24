@@ -17,7 +17,7 @@
 | Secret | 用途 |
 | --- | --- |
 | `CERTUM_TOTP_EMAIL` | SimplySign 登录邮箱 |
-| `CERTUM_TOTP_SECRET` | 原始 Base32 TOTP 种子，采用 SHA-1、30 秒、6 位标准参数 |
+| `CERTUM_TOTP_SECRET` | 原始 Base32 TOTP 种子，采用 CodeSignAuto 查证的 SHA-256、30 秒、6 位参数 |
 | `GPG_PRIVATE_KEY` | ASCII 装甲格式的 OpenPGP 私钥，必须恰好包含一个可签名的主密钥 |
 | `GPG_PASSPHRASE` | 可选；私钥有口令时必须配置 |
 
@@ -35,6 +35,7 @@
 - MSI 目录表确认客户端安装在 `%ProgramFiles%\Certum\SimplySign Desktop\SimplySignDesktop.exe`。
 - 自动登录参数依据 CodeSignAuto 的 `SimplySignController.StartLoginAsync`，固定参考提交 `f312d76e4edbf5c3328a0fa01db9533de84c92ce`：<https://github.com/zhuxbo/CodeSignAuto/blob/f312d76e4edbf5c3328a0fa01db9533de84c92ce/src/CodeSignAuto.Agent/SimplySign/SimplySignController.cs>。
 - `/autologin 邮箱 OTP` 是已查证的第三方调用方式；本测试用于确认它能否在 GitHub 临时 Runner 上工作，不将其描述为 Certum 官方无人值守 API。
+- OTP 算法依据同一固定提交中的 `OtpauthProfile` 和 `TotpGenerator`：它们明确要求 SHA-256、30 秒、6 位；不能套用常见的 SHA-1 默认值。
 
 每次只尝试一次登录。必须发现恰好一张有效且关联私钥的 Certum 代码签名证书，才使用其确切指纹调用 SignTool。签名限时执行；如果客户端要求额外的 PIN 或交互，测试会失败而不会记录为通过。
 
@@ -52,4 +53,10 @@
 
 本地已通过：RFC 6238 六组标准测试向量、非法种子拒绝、Python 语法、PowerShell 语法、工作流权限和事件结构检查、Windows 测试程序构建、PE 节篡改生成。
 
-远程运行结果将在实测后补充。
+首轮 VMMM 测试：<https://github.com/OpenVulcan/vulcan-memory-mesh-manager/actions/runs/35983290135>。
+
+- Linux GPG 导入、签名、独立公钥验签、篡改拒绝均通过；下载产物后在本机再次独立验签通过。
+- Windows 两个 Secret 可读取，官方 MSI 验签与安装通过，Runner 具有会话 2 且支持交互；登录阶段未发现证书，未进入签名。
+- 审查定位测试脚本错误使用 SHA-1，已依据源码修正为 SHA-256，并增加登录前关闭客户端和退出码诊断。该失败属于测试实现错误，不能作为托管 Runner 不支持 SimplySign 的证据。
+
+修正后的远程结果将在实测后补充。

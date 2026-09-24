@@ -17,27 +17,27 @@ import time
 
 
 def totp(seed: str, timestamp: int, digits: int = 6) -> str:
-    """Return an RFC 6238 SHA-1 code for a raw Base32 seed and Unix time.
-    根据原始 Base32 种子和 Unix 时间返回 RFC 6238 SHA-1 动态码。
+    """Return the SimplySign SHA-256 TOTP for a raw Base32 seed and Unix time.
+    根据原始 Base32 种子和 Unix 时间返回 SimplySign 使用的 SHA-256 动态码。
     """
     canonical = seed.strip().upper().rstrip("=")
     if not re.fullmatch(r"[A-Z2-7]{16,128}", canonical):
         raise ValueError("totp_seed_must_be_raw_base32")
     key = base64.b32decode(canonical + "=" * (-len(canonical) % 8))
-    digest = hmac.new(key, struct.pack(">Q", timestamp // 30), hashlib.sha1).digest()
+    digest = hmac.new(key, struct.pack(">Q", timestamp // 30), hashlib.sha256).digest()
     offset = digest[-1] & 15
     number = struct.unpack(">I", digest[offset:offset + 4])[0] & 0x7FFFFFFF
     return str(number % (10 ** digits)).zfill(digits)
 
 
 def self_test() -> None:
-    """Check RFC 6238 published SHA-1 vectors before using a real account.
-    使用真实账户前，校验 RFC 6238 公布的 SHA-1 测试向量。
+    """Check RFC 6238 SHA-256 vectors against the algorithm used by CodeSignAuto.
+    校验 RFC 6238 SHA-256 向量，与 CodeSignAuto 实际使用的算法保持一致。
     """
-    seed = base64.b32encode(b"12345678901234567890").decode("ascii")
-    vectors = [(59, "94287082"), (1111111109, "07081804"),
-               (1111111111, "14050471"), (1234567890, "89005924"),
-               (2000000000, "69279037"), (20000000000, "65353130")]
+    seed = base64.b32encode(b"12345678901234567890123456789012").decode("ascii")
+    vectors = [(59, "46119246"), (1111111109, "68084774"),
+               (1111111111, "67062674"), (1234567890, "91819424"),
+               (2000000000, "90698825"), (20000000000, "77737706")]
     for timestamp, expected in vectors:
         if totp(seed, timestamp, 8) != expected:
             raise RuntimeError("rfc6238_vector_failed")

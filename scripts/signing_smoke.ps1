@@ -72,6 +72,17 @@ if ($Phase -eq 'Install') {
         -not (Test-Path -LiteralPath "$env:WINDIR\System32\SimplySignPKCS.dll" -PathType Leaf)) {
         throw 'simplysign_installed_files_missing'
     }
+    # Match CodeSignAuto's close-before-login sequence without passing credentials to this process.
+    # 按 CodeSignAuto 的顺序在登录前关闭客户端，此时进程不接收凭据。
+    $closed = Invoke-BoundedTool -Executable $desktop -Arguments @('/close') -TimeoutSeconds 15
+    $closeDeadline = [DateTime]::UtcNow.AddSeconds(15)
+    do {
+        $existing = @(Get-Process -Name SimplySignDesktop -ErrorAction SilentlyContinue |
+            Where-Object SessionId -eq ([System.Diagnostics.Process]::GetCurrentProcess().SessionId))
+        if ($existing.Count -eq 0) { break }
+        Start-Sleep -Seconds 1
+    } while ([DateTime]::UtcNow -lt $closeDeadline)
+    if ($existing.Count -ne 0) { throw 'simplysign_close_before_login_failed' }
     [pscustomobject]@{
         installerSha256 = $installerSha256
         installerSigner = $installerSigner
@@ -90,6 +101,9 @@ $report = [ordered]@{
     stage = 'credentials'
     sessionId = [System.Diagnostics.Process]::GetCurrentProcess().SessionId
     userInteractive = [Environment]::UserInteractive
+    totpAlgorithm = 'SHA256'
+    totpDigits = 6
+    totpPeriodSeconds = 30
 }
 $client = $null
 $email = $env:CERTUM_TOTP_EMAIL
@@ -136,6 +150,9 @@ try {
     } while ([DateTime]::UtcNow -lt $deadline)
     $report.eligibleCertificates = $certificates.Count
     $report.clientExited = $client.HasExited
+    if ($client.HasExited) { $report.clientExitCode = $client.ExitCode }
+    $report.runningClientCount = @(Get-Process -Name SimplySignDesktop -ErrorAction SilentlyContinue).Count
+    $report.certumCertificatesInStore = @(Get-ChildItem Cert:\CurrentUser\My | Where-Object Issuer -match 'Certum').Count
     if ($certificates.Count -ne 1) { throw 'exactly_one_ready_certum_certificate_required' }
     $certificate = $certificates[0]
     $report.certificateThumbprint = $certificate.Thumbprint
