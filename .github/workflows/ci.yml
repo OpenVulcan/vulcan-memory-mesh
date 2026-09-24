@@ -143,6 +143,9 @@ jobs:
           VMM_PACKAGED_STORAGE_PROFILE: all
         run: |
           set -euo pipefail
+          # Rerun all tests after installing real libraries; the early unit pass may skip dependency-backed cases.
+          # 安装真实动态库后重新运行全量测试；前面的单元测试可能跳过需要这些依赖的用例。
+          go test ./... -count=1 -timeout=20m
           if ! go test ./internal/platform/ffi/nativelance ./internal/app \
             -run '^(TestNativeLibraryABIAndErrorBoundary|TestNativeLibraryRoundTrip|TestNativeLibraryPendingSchemaRecovery|TestPackagedNativeRuntimeUsesIsolatedNativeArtifacts)$' \
             -count=1 -json -timeout=20m > "$RUNNER_TEMP/native-acceptance.jsonl"; then
