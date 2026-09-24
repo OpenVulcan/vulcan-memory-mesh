@@ -19,6 +19,8 @@ PUBLIC_KEY = Path(__file__).resolve().parents[1] / "docs/release-gpg-public.asc"
 def gpg(home, *arguments, stdin=None):
     """Run bounded, non-interactive GnuPG and keep native diagnostics out of CI logs.
     限时、非交互运行 GnuPG，避免原生日志泄露凭据。
+    home selects the isolated keyring, arguments selects the operation, and stdin supplies optional secret bytes; returns stdout bytes.
+    home 指定隔离密钥环，arguments 指定操作，stdin 传入可选机密字节；返回标准输出字节。
     """
     result = subprocess.run(["gpg", "--homedir", str(home), "--batch", "--no-tty", *arguments],
                             input=stdin, capture_output=True, timeout=120)
@@ -30,6 +32,8 @@ def gpg(home, *arguments, stdin=None):
 def check_signature(home, asset):
     """Verify one detached signature and require the pinned primary signing identity.
     验证一份分离式签名，并要求签名主密钥身份与固定指纹一致。
+    home is a prepared keyring and asset is the signed file; returns None or raises ValueError on missing or invalid proof.
+    home 是已准备的密钥环，asset 是被签名文件；通过时返回空值，证明缺失或无效时抛出 ValueError。
     """
     signature = Path(str(asset) + ".asc")
     if signature.is_symlink() or not signature.is_file():
@@ -43,7 +47,11 @@ def check_signature(home, asset):
 def process_assets(assets, sign=False):
     """Sign or verify explicit final assets; private material exists only in an isolated temporary keyring.
     签名或验证明确指定的最终资产；私钥仅存在于隔离的临时密钥环。
+    assets names exact final files; sign enables private-key signing. Returns None only after all signatures verify.
+    assets 指定精确的最终文件，sign 启用私钥签名；仅在全部签名验证成功后返回空值。
     """
+    # Native children must never inherit signing secrets from the environment.
+    # 原生子进程不得从环境变量继承签名机密。
     private_key = os.environ.pop("GPG_PRIVATE_KEY", "")
     passphrase = os.environ.pop("GPG_PASSPHRASE", "")
     if any(Path(asset).is_symlink() for asset in assets):
@@ -87,6 +95,8 @@ def process_assets(assets, sign=False):
 def main():
     """Accept a closed operation name and explicit asset paths from the release workflow.
     从发行工作流接收封闭操作名和明确的资产路径。
+    Parses process arguments without function parameters; successful completion returns None.
+    无函数参数，从进程参数解析操作；成功结束时返回空值。
     """
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("operation", choices=("sign", "verify"))

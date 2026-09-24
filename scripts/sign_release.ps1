@@ -1,5 +1,7 @@
 # Sign and verify production files with the pinned Certum cloud identity.
 # 使用固定的 Certum 云证书身份签名和验证正式产品文件。
+# Release tooling accepts Install, Sign, or Verify; EvidenceDirectory holds public installation evidence and Files names exact product paths.
+# 发行工具接收安装、签名或验签阶段；EvidenceDirectory 保存公开安装证据，Files 指定精确产品路径。
 param(
     [Parameter(Mandatory)][ValidateSet('Install', 'Sign', 'Verify')][string]$Phase,
     [Parameter(Mandatory)][string]$EvidenceDirectory,
@@ -11,6 +13,8 @@ $ErrorActionPreference = 'Stop'
 
 # Invoke a native tool with bounded execution; captured output is never logged automatically.
 # 限时运行原生工具，捕获的输出绝不自动写入日志。
+# Executable and Arguments define a shell-free invocation; TimeoutSeconds limits execution. Returns exit code and captured streams.
+# Executable 与 Arguments 定义不经过命令解释器的调用；TimeoutSeconds 限制执行时间。返回退出码和捕获的输出流。
 function Invoke-BoundedTool {
     param([string]$Executable, [string[]]$Arguments, [int]$TimeoutSeconds = 120)
     $start = [System.Diagnostics.ProcessStartInfo]::new($Executable)
@@ -35,8 +39,8 @@ function Invoke-BoundedTool {
     }
 }
 
-# Select only currently valid Certum code-signing certificates backed by an available key.
-# 仅选取当前有效且已关联可用私钥的 Certum 代码签名证书。
+# Return valid Certum code-signing candidates from CurrentUser/My that have an associated private key; accepts no parameters.
+# 返回当前用户个人存储中有效且关联私钥的 Certum 代码签名候选证书；不接收参数。
 function Get-CertumSigningCertificates {
     $now = Get-Date
     return @(Get-ChildItem Cert:\CurrentUser\My | Where-Object {
