@@ -1,0 +1,102 @@
+# Verify organization signing credentials on disposable runners without publishing a release.
+# 在一次性 Runner 上验证组织签名凭据，不发布发行版本。
+name: Signing credential smoke test
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [codex/github-signing-smoke]
+    paths:
+      - .github/workflows/signing-smoke.yml
+      - scripts/signing_smoke.py
+      - scripts/signing_smoke.ps1
+      - scripts/signing_probe/**
+
+permissions:
+  contents: read
+
+jobs:
+  linux-gpg:
+    name: Linux GPG signing and verification
+    if: github.repository_owner == 'OpenVulcan'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Build harmless Linux fixture and verify OTP implementation
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 scripts/signing_smoke.py self-test
+          mkdir -p "$RUNNER_TEMP/signing-evidence"
+          go build -trimpath -o "$RUNNER_TEMP/signing-evidence/probe" ./scripts/signing_probe
+          "$RUNNER_TEMP/signing-evidence/probe"
+      - name: Sign and verify with an isolated GPG keyring
+        env:
+          GPG_PRIVATE_KEY: ${{ secrets.GPG_PRIVATE_KEY }}
+          GPG_PASSPHRASE: ${{ secrets.GPG_PASSPHRASE }}
+        run: python3 scripts/signing_smoke.py gpg "$RUNNER_TEMP/signing-evidence/probe" "$RUNNER_TEMP/signing-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: linux-signing-evidence
+          path: ${{ runner.temp }}/signing-evidence/*
+          if-no-files-found: error
+          retention-days: 7
+
+  windows-authenticode:
+    name: Windows SimplySign signing and verification
+    if: github.repository_owner == 'OpenVulcan'
+    runs-on: windows-2025
+    timeout-minutes: 15
+    concurrency:
+      group: certum-signing-smoke
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6
+        with:
+          go-version-file: go.mod
+          cache: false
+      - name: Check credential availability without revealing values
+        shell: pwsh
+        env:
+          CERTUM_TOTP_EMAIL: ${{ secrets.CERTUM_TOTP_EMAIL }}
+          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
+        run: |
+          if ([string]::IsNullOrWhiteSpace($env:CERTUM_TOTP_EMAIL)) { throw 'CERTUM_TOTP_EMAIL is unavailable to this repository' }
+          if ([string]::IsNullOrWhiteSpace($env:CERTUM_TOTP_SECRET)) { throw 'CERTUM_TOTP_SECRET is unavailable to this repository' }
+          Write-Output 'Both Certum credentials are available'
+      - name: Build harmless Windows fixture and verify OTP implementation
+        shell: pwsh
+        run: |
+          python scripts/signing_smoke.py self-test
+          if ($LASTEXITCODE -ne 0) { throw 'OTP implementation checks failed' }
+          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP/signing-evidence" -Force | Out-Null
+          go build -trimpath -o "$env:RUNNER_TEMP/signing-evidence/probe.exe" ./scripts/signing_probe
+          if ($LASTEXITCODE -ne 0) { throw 'Fixture build failed' }
+          & "$env:RUNNER_TEMP/signing-evidence/probe.exe"
+      - name: Install and verify pinned official SimplySign Desktop
+        shell: pwsh
+        run: ./scripts/signing_smoke.ps1 -Phase Install -EvidenceDirectory "$env:RUNNER_TEMP/signing-evidence"
+      - name: Log in once and verify Authenticode with a timestamp
+        shell: pwsh
+        env:
+          CERTUM_TOTP_EMAIL: ${{ secrets.CERTUM_TOTP_EMAIL }}
+          CERTUM_TOTP_SECRET: ${{ secrets.CERTUM_TOTP_SECRET }}
+        run: ./scripts/signing_smoke.ps1 -Phase Sign -EvidenceDirectory "$env:RUNNER_TEMP/signing-evidence"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: windows-signing-evidence
+          path: ${{ runner.temp }}/signing-evidence/*
+          if-no-files-found: warn
+          retention-days: 7
