@@ -293,6 +293,12 @@
   - `created_datetime`
 - 当 `context_items[].memory_id > 0` 时，客户端可继续调用 `DeleteMemories` 移除误召回或无用的具体记忆条目
 - 当 `context_items[].turn_id > 0` 时，客户端可继续调用 `GetTurnDetails`
+- `PreCheckResponse.recall_outcome` 说明本次召回如何结束，服务端从不返回 `UNSPECIFIED`，客户端收到该值应视为旧版服务并拒绝：
+  - `NOT_SEARCHED`：判定无需记忆或该 session 不允许使用记忆，未执行检索
+  - `MATCHED`：已检索并组装了待注入记忆
+  - `NO_MATCH`：已检索，但没有候选通过阈值或审核
+  - `FAILED`：意图分析、检索或审核失败，无法判断是否存在相关记忆
+- `PreCheckResponse.recall_queries[]` 是实际执行的检索词；`NOT_SEARCHED` 及意图分析失败时为空
 - 同时更新 `last_compacted_timestamp`
 - 如果当前 session 没有 turn，允许返回成功但不更新 compact 边界
 - 如果重复 compact 到同一最新 turn，会保持幂等
@@ -541,6 +547,7 @@
 - `user_id`
 - `queries[]`
 - `top_k`
+- `min_score`（可选）
 
 其中：
 
@@ -554,6 +561,10 @@
   - 单条 query 期望返回的命中上限
   - 省略或传 `0` 时默认返回 `8` 条
   - transport 与实现层共享上限 `32`，超过该值时会按 `32` 继续执行
+- `min_score`
+  - 相关度下限，取值 `[0, 1]`，越界或 NaN 返回 `InvalidArgument`，不做钳制
+  - 每个命中按 `PreCheck` 审核候选的同一评分（rerank 命中取排名归一下限）与之比较，低于下限的命中不返回
+  - 省略时使用 `memory_pipeline.min_similarity_score`（默认 `0.75`），与 `PreCheck` 召回阈值一致
 
 请求示例：
 
@@ -598,6 +609,8 @@
 - 原样回显每条 query 的：
   - `query_index`
   - `query`
+- 每组返回 `below_threshold_count`，即因低于 `min_score` 被略去的命中数
+- 响应 `min_score` 回显实际应用的下限，便于调用方说明被略去的命中
 
 返回命中字段：
 

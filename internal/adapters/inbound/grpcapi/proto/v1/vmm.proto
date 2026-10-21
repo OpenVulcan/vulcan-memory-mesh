@@ -367,6 +367,9 @@ message SearchMemoryEventsRequest {
   uint64 project_id = 2;
   repeated string queries = 3;
   uint32 top_k = 4;
+  // min_score is the reviewer-facing relevance floor in [0, 1]; absent means the service's PreCheck recall threshold.
+  // min_score 是面向审核的相关度下限，取值 [0, 1]；缺省表示使用服务自身的 PreCheck 召回阈值。
+  optional double min_score = 5;
 }
 
 // MemorySearchHit transports one AI-facing memory hit with the optional source turn id kept for later turn-detail lookup.
@@ -386,6 +389,9 @@ message MemorySearchGroupResult {
   uint32 query_index = 1;
   string query = 2;
   repeated MemorySearchHit hits = 3;
+  // below_threshold_count counts ranked hits dropped because their reviewer-facing score fell below min_score.
+  // below_threshold_count 统计因面向审核的评分低于 min_score 而被略去的已排名命中数。
+  uint32 below_threshold_count = 4;
 }
 
 // SearchMemoryEventsResponse returns all grouped memory-search results plus trace metadata.
@@ -393,6 +399,9 @@ message MemorySearchGroupResult {
 message SearchMemoryEventsResponse {
   repeated MemorySearchGroupResult results = 1;
   string trace_id = 2;
+  // min_score echoes the threshold actually applied, so callers can state it when hits were omitted.
+  // min_score 回显实际应用的阈值，便于调用方在命中被略去时说明。
+  double min_score = 3;
 }
 
 // GetTurnDetailsRequest carries one or more turn ids whose structured dialogue fields should be loaded for AI-side inspection.
@@ -534,6 +543,24 @@ enum SessionMemoryStatus {
   SESSION_MEMORY_STATUS_FORGOTTEN = 4;
 }
 
+// PreCheckRecallOutcome states how pre-check recall ended so callers can tell "not searched" from "searched, nothing found".
+// PreCheckRecallOutcome 用于说明 pre-check 召回如何结束，使调用方能区分“未检索”与“已检索但未找到”。
+enum PreCheckRecallOutcome {
+  PRE_CHECK_RECALL_OUTCOME_UNSPECIFIED = 0;
+  // NOT_SEARCHED means memory was not needed or not allowed, so nothing was searched.
+  // NOT_SEARCHED 表示无需或不允许使用记忆，因此未执行检索。
+  PRE_CHECK_RECALL_OUTCOME_NOT_SEARCHED = 1;
+  // MATCHED means the search ran and at least one memory was selected for injection.
+  // MATCHED 表示检索已执行，且至少选中一条待注入记忆。
+  PRE_CHECK_RECALL_OUTCOME_MATCHED = 2;
+  // NO_MATCH means the search ran but no candidate passed the threshold or review.
+  // NO_MATCH 表示检索已执行，但没有候选通过阈值或审核。
+  PRE_CHECK_RECALL_OUTCOME_NO_MATCH = 3;
+  // FAILED means intent analysis, search or review failed, so the absence of memories is unknown.
+  // FAILED 表示意图分析、检索或审核失败，因此无法判断是否存在相关记忆。
+  PRE_CHECK_RECALL_OUTCOME_FAILED = 4;
+}
+
 // PreCheckResponse returns the injection decision and assembled context payload.
 // PreCheckResponse 用于返回注入决策和组装后的上下文载荷。
 message PreCheckResponse {
@@ -542,6 +569,10 @@ message PreCheckResponse {
   bool degraded = 3;
   string trace_id = 4;
   SessionMemoryStatus session_memory_status = 5;
+  PreCheckRecallOutcome recall_outcome = 6;
+  // recall_queries lists the search queries actually run; empty when nothing was searched.
+  // recall_queries 列出实际执行的检索词；未检索时为空。
+  repeated string recall_queries = 7;
 }
 
 // PostActionTimelineItem carries one middle timeline node from the text-only contract.

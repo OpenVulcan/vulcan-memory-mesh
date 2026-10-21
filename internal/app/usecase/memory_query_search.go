@@ -188,11 +188,15 @@ func (u *MemoryUseCase) Search(ctx context.Context, cmd MemoryQueryCommand) (Mem
 			HardDedupeHits: cloneMemoryQueryHits(cachedHardDedupeHits[keys[idx]]),
 		})
 	}
-	return MemoryQueryResult{
+	result := MemoryQueryResult{
 		UserTarget:    userTarget,
 		ProjectTarget: projectTarget,
 		Results:       results,
-	}, nil
+	}
+	if cmd.ApplyReviewThreshold {
+		u.applySearchReviewThreshold(&result, cmd.MinScore)
+	}
+	return result, nil
 }
 
 // configuredHardDedupePoolTopK returns the configured reviewer-front hard-dedupe window after clamping it into the shared search top-k bounds and keeping it no smaller than the reviewer-visible top-k.
@@ -264,7 +268,7 @@ func validateMemoryQueryCommand(cmd MemoryQueryCommand) error {
 	if normalizeConfigToken(cmd.ScopeOverride) == memoryReplaceScopeSession && cmd.SessionID == 0 {
 		return logicdomain.ValidationError{Field: "session_id", Message: "must be > 0 when scope_override=session"}
 	}
-	return nil
+	return validateMemorySearchMinScore(cmd.MinScore)
 }
 
 func normalizeMemoryQueries(queries []string) ([]MemoryQueryItem, error) {

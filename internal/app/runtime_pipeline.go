@@ -76,6 +76,7 @@ func composeRuntimeUseCases(cfg config.Config, prompts appports.PromptSource, id
 	)
 	memory.ConfigureRerank(ai.Reranker, cfg.Rerank.TopN)
 	memory.ConfigureHardDedupePoolTopK(hardDedupePoolTopKOrDefault(cfg))
+	memory.ConfigureSearchReviewThreshold(minSimilarityOrDefault(cfg))
 	memory.ConfigureMemoryReplace(
 		candidateReviewer,
 		cfg.PreCheck.TopK,

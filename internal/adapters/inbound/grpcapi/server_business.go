@@ -90,7 +90,26 @@ func (s *Server) PreCheck(ctx context.Context, req *vmmv1.PreCheckRequest) (*vmm
 		Degraded:            result.Degraded,
 		TraceId:             trace.IDFromContext(ctx),
 		SessionMemoryStatus: toProtoSessionMemoryStatus(session.MemoryStatus),
+		RecallOutcome:       toProtoPreCheckRecallOutcome(result.RecallOutcome),
+		RecallQueries:       result.RecallQueries,
 	}, nil
+}
+
+// toProtoPreCheckRecallOutcome maps the use-case recall outcome one-to-one; an unset value stays unspecified so clients reject it.
+// toProtoPreCheckRecallOutcome 用于一一映射用例召回结果；未设置的值保持 unspecified，由客户端拒绝。
+func toProtoPreCheckRecallOutcome(outcome usecase.PreCheckRecallOutcome) vmmv1.PreCheckRecallOutcome {
+	switch outcome {
+	case usecase.PreCheckRecallNotSearched:
+		return vmmv1.PreCheckRecallOutcome_PRE_CHECK_RECALL_OUTCOME_NOT_SEARCHED
+	case usecase.PreCheckRecallMatched:
+		return vmmv1.PreCheckRecallOutcome_PRE_CHECK_RECALL_OUTCOME_MATCHED
+	case usecase.PreCheckRecallNoMatch:
+		return vmmv1.PreCheckRecallOutcome_PRE_CHECK_RECALL_OUTCOME_NO_MATCH
+	case usecase.PreCheckRecallFailed:
+		return vmmv1.PreCheckRecallOutcome_PRE_CHECK_RECALL_OUTCOME_FAILED
+	default:
+		return vmmv1.PreCheckRecallOutcome_PRE_CHECK_RECALL_OUTCOME_UNSPECIFIED
+	}
 }
 
 // logPreCheckReceipt writes one accepted pre-check request snapshot into the runtime logger, including both raw and effective recall modes for contract debugging.

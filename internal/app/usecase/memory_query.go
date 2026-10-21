@@ -76,6 +76,10 @@ type MemoryQueryCommand struct {
 	BoundarySessionID    uint64
 	BoundaryMaxTurnID    uint64
 	ExcludeBoundaryTurn  bool
+	// ApplyReviewThreshold drops hits whose pre-check review score falls below MinScore, or below the configured pre-check threshold when MinScore is nil.
+	// ApplyReviewThreshold 用于剔除 pre-check 审核评分低于 MinScore 的命中；MinScore 为空时使用已配置的 pre-check 阈值。
+	ApplyReviewThreshold bool
+	MinScore             *float64
 }
 
 // MemoryQueryItem stores one normalized query string before embedding and vector search begin.
@@ -124,6 +128,9 @@ type MemoryQueryGroupResult struct {
 	QueryVector    []float32
 	Hits           []MemoryQueryHit
 	HardDedupeHits []MemoryQueryHit
+	// BelowThresholdCount counts hits dropped by the review threshold.
+	// BelowThresholdCount 统计被审核阈值剔除的命中数。
+	BelowThresholdCount int
 }
 
 // MemoryQueryResult returns the resolved user/project targets plus all grouped recall results after fusion, rerank, and optional diversity control.
@@ -132,6 +139,9 @@ type MemoryQueryResult struct {
 	UserTarget    logicdomain.ProfileTargetRef
 	ProjectTarget logicdomain.ProfileTargetRef
 	Results       []MemoryQueryGroupResult
+	// MinScore is the review threshold actually applied; zero when no threshold was requested.
+	// MinScore 是实际应用的审核阈值；未请求阈值时为零。
+	MinScore float64
 }
 
 // TurnDetailCommand carries one list of turn ids whose dehydrated payload should be loaded back from relational storage.
@@ -273,6 +283,7 @@ type MemoryUseCase struct {
 	vector                                 appports.VectorStore
 	logger                                 *logx.Logger
 	piiScrubber                            PIIScrubber
+	searchReviewThreshold                  float64
 }
 
 // NewMemoryUseCase wires profile resolution, relational memory, embedding, and vector stores with conservative search defaults.
@@ -302,6 +313,7 @@ func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemorySt
 		rerankTopN:                             defaultMemorySearchTopK,
 		vector:                                 vector,
 		logger:                                 logger,
+		searchReviewThreshold:                  defaultPreCheckSimilarity,
 	}
 }
 

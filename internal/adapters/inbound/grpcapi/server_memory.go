@@ -27,10 +27,12 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 	ctx, cancel := withTimeout(ctx, s.workspaceTimeout)
 	defer cancel()
 	result, err := s.memory.Search(ctx, usecase.MemoryQueryCommand{
-		UserID:    req.GetUserId(),
-		ProjectID: req.GetProjectId(),
-		Queries:   req.GetQueries(),
-		TopK:      int(req.GetTopK()),
+		UserID:               req.GetUserId(),
+		ProjectID:            req.GetProjectId(),
+		Queries:              req.GetQueries(),
+		TopK:                 int(req.GetTopK()),
+		ApplyReviewThreshold: true,
+		MinScore:             req.MinScore,
 	})
 	if err != nil {
 		return nil, toStatus(describeError(err))
@@ -49,14 +51,16 @@ func (s *Server) SearchMemoryEvents(ctx context.Context, req *vmmv1.SearchMemory
 			})
 		}
 		groups = append(groups, &vmmv1.MemorySearchGroupResult{
-			QueryIndex: uint32(group.QueryIndex),
-			Query:      group.Query,
-			Hits:       hits,
+			QueryIndex:          uint32(group.QueryIndex),
+			Query:               group.Query,
+			Hits:                hits,
+			BelowThresholdCount: uint32(group.BelowThresholdCount),
 		})
 	}
 	return &vmmv1.SearchMemoryEventsResponse{
-		Results: groups,
-		TraceId: trace.IDFromContext(ctx),
+		Results:  groups,
+		TraceId:  trace.IDFromContext(ctx),
+		MinScore: result.MinScore,
 	}, nil
 }
 

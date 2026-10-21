@@ -68,6 +68,39 @@ type PreCheckResult struct {
 	ContextItems []logicdomain.ContextItem
 	Degraded     bool
 	TraceID      string
+	// RecallOutcome states how recall ended; the zero value is never returned by Execute.
+	// RecallOutcome 说明召回如何结束；Execute 从不返回零值。
+	RecallOutcome PreCheckRecallOutcome
+	// RecallQueries are the search queries recall actually ran.
+	// RecallQueries 是召回实际执行的检索词。
+	RecallQueries []string
+}
+
+// PreCheckRecallOutcome lets callers tell "not searched" from "searched, nothing found" and from a failed search.
+// PreCheckRecallOutcome 让调用方区分“未检索”“已检索但未找到”与“检索失败”。
+type PreCheckRecallOutcome int32
+
+const (
+	// PreCheckRecallNotSearched means memory was judged unnecessary or is unavailable for the session.
+	// PreCheckRecallNotSearched 表示判定无需记忆，或该 session 不可使用记忆。
+	PreCheckRecallNotSearched PreCheckRecallOutcome = iota + 1
+	// PreCheckRecallMatched means adopted memories were assembled for injection.
+	// PreCheckRecallMatched 表示已组装被采纳的记忆用于注入。
+	PreCheckRecallMatched
+	// PreCheckRecallNoMatch means recall ran and nothing relevant was adopted.
+	// PreCheckRecallNoMatch 表示召回已执行但未采纳任何相关记忆。
+	PreCheckRecallNoMatch
+	// PreCheckRecallFailed means a recall stage failed, so relevant memory may still exist.
+	// PreCheckRecallFailed 表示某个召回阶段失败，相关记忆仍可能存在。
+	PreCheckRecallFailed
+)
+
+// withRecall stamps how recall ended onto one finalized result.
+// withRecall 用于把召回结束方式写入一份已完成的结果。
+func withRecall(result PreCheckResult, outcome PreCheckRecallOutcome, queries []string) PreCheckResult {
+	result.RecallOutcome = outcome
+	result.RecallQueries = queries
+	return result
 }
 
 // PreCheckExecutor is the interface consumed by the gRPC adapter to trigger the pre-check workflow.
@@ -207,8 +240,9 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	}
 	if !cmd.Session.MemoryStatus.AllowsRuntimeMemory() {
 		return PreCheckResult{
-			ShouldInject: false,
-			TraceID:      trace.IDFromContext(ctx),
+			ShouldInject:  false,
+			TraceID:       trace.IDFromContext(ctx),
+			RecallOutcome: PreCheckRecallNotSearched,
 		}, nil
 	}
 	cmd.UserContent = scrubPIIText(u.piiScrubber, cmd.UserContent)
@@ -240,7 +274,8 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if err != nil {
 		degraded = true
 		u.logPreCheckWarn("pre-check intent degraded", traceID, cmd.Session, cmd.UserContent, err)
-		return u.finalizePreCheck(ctx, traceID, nil, degraded)
+		result, finalizeErr := u.finalizePreCheck(ctx, traceID, nil, degraded)
+		return withRecall(result, PreCheckRecallFailed, nil), finalizeErr
 	}
 	// Normalize the stage-one output locally so vague deictic queries do not over-trigger long-term retrieval when recent turns already explain the request.
 	// 在本地归一第一层输出，避免最近 turn 已经足够解释请求时，模糊指代 query 仍过度触发长期检索。
@@ -257,8 +292,12 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if !intent.NeedMemory {
 		result, finalizeErr := u.finalizePreCheck(ctx, traceID, nil, degraded)
 		u.logPreCheckFinal(traceID, cmd.Session, result)
-		return result, finalizeErr
+		return withRecall(result, PreCheckRecallNotSearched, nil), finalizeErr
 	}
+	// recallQueries are exactly the queries searchMemoryCandidates runs, disclosed with every searched outcome.
+	// recallQueries 正是 searchMemoryCandidates 执行的检索词，随每个已检索结果一并披露。
+	recallQueries := buildPreCheckMemoryQueries(intent, cmd.UserContent)
+	recallFailed := false
 
 	// Recall unified memory using the search sentences returned by stage one, then number the final deduplicated candidate list for stage two.
 	// 使用第一层返回的检索语句召回统一记忆，并给最终去重后的候选列表编号，交给第二层评审。
@@ -267,6 +306,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		degraded = true
 		u.logPreCheckWarn("pre-check memory recall degraded", traceID, cmd.Session, cmd.UserContent, err)
 		candidates = nil
+		recallFailed = true
 	} else {
 		u.logPreCheckStage("pre-check memory candidates recalled", traceID, cmd.Session, []any{
 			"candidate_count", len(candidates),
@@ -279,7 +319,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if len(candidates) == 0 {
 		result, finalizeErr := u.finalizePreCheck(ctx, traceID, nil, degraded)
 		u.logPreCheckFinal(traceID, cmd.Session, result)
-		return result, finalizeErr
+		return withRecall(result, unmatchedRecallOutcome(recallFailed), recallQueries), finalizeErr
 	}
 
 	// Let the second-stage reviewer choose candidate numbers in priority order, then map them back to memory ids for lifecycle write-back and final injection.
@@ -289,6 +329,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 		degraded = true
 		u.logPreCheckWarn("pre-check memory adoption degraded", traceID, cmd.Session, cmd.UserContent, err)
 		selectedCandidates = nil
+		recallFailed = true
 	} else {
 		selectedIDs := make([]uint64, 0, len(selectedCandidates))
 		for _, candidate := range selectedCandidates {
@@ -306,7 +347,7 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	if len(selectedCandidates) == 0 {
 		result, finalizeErr := u.finalizePreCheck(ctx, traceID, nil, degraded)
 		u.logPreCheckFinal(traceID, cmd.Session, result)
-		return result, finalizeErr
+		return withRecall(result, unmatchedRecallOutcome(recallFailed), recallQueries), finalizeErr
 	}
 
 	// Write back lifecycle updates only for adopted memories so recall alone never refreshes expiry or weight.
@@ -327,7 +368,22 @@ func (u *PreCheckUseCase) Execute(ctx context.Context, cmd PreCheckCommand) (Pre
 	}
 	result, finalizeErr := u.finalizePreCheck(ctx, traceID, selectedCandidates, degraded)
 	u.logPreCheckFinal(traceID, cmd.Session, result)
-	return result, finalizeErr
+	// Adopted memories that render to nothing inject nothing, which reads as no match.
+	// 被采纳但渲染为空的记忆不注入任何内容，即视为未命中。
+	outcome := PreCheckRecallNoMatch
+	if result.ShouldInject && len(result.ContextItems) > 0 {
+		outcome = PreCheckRecallMatched
+	}
+	return withRecall(result, outcome, recallQueries), finalizeErr
+}
+
+// unmatchedRecallOutcome distinguishes a recall that found nothing from one whose search or review failed.
+// unmatchedRecallOutcome 用于区分未找到内容的召回与检索或评审失败的召回。
+func unmatchedRecallOutcome(failed bool) PreCheckRecallOutcome {
+	if failed {
+		return PreCheckRecallFailed
+	}
+	return PreCheckRecallNoMatch
 }
 
 // extractIntent runs the first-stage intent extractor under the configured inner timeout budget.
