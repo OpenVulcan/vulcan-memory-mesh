@@ -145,10 +145,10 @@ func resolveLLMRouteWeight(value *int, fallback int) int {
 // normalizeKeyFailoverPolicyValue 用于规范化内存态 API Key 轮换策略，让默认值、环境变量覆盖和运行时装配始终比较同一份稳定 token。
 func normalizeKeyFailoverPolicyValue(policy string) string {
 	switch strings.ToLower(strings.TrimSpace(policy)) {
-	case "round_robin":
-		return "round_robin"
-	default:
+	case "":
 		return "ordered_failover"
+	default:
+		return strings.ToLower(strings.TrimSpace(policy))
 	}
 }
 
@@ -274,7 +274,7 @@ func normalizeRerankRouteConfig(route RerankRouteConfig) RerankRouteConfig {
 	if route.Model == "" {
 		route.Model = rerankProviderDefaultModel(route.Provider)
 	}
-	if route.Timeout.Duration <= 0 {
+	if route.Timeout.Duration == 0 {
 		route.Timeout = Duration{8 * time.Second}
 	}
 	route.KeyFailover.Policy = strings.TrimSpace(route.KeyFailover.Policy)
@@ -397,6 +397,9 @@ func validateLLMRouteConfigs(routes []LLMRouteConfig) error {
 			return fmt.Errorf("%s.api_keys or %s.nodes is required", label, label)
 		}
 		if err := validateAIRoutingNodes(label, route.Nodes); err != nil {
+			return err
+		}
+		if err := validateKeyFailoverConfig(label+".key_failover", route.KeyFailover); err != nil {
 			return err
 		}
 		if err := validateLLMRouteWeightConfig(label, route.Weights); err != nil {
@@ -580,6 +583,23 @@ func validateRerankRouteConfigs(routes []RerankRouteConfig) error {
 		if route.Timeout.Duration <= 0 {
 			return fmt.Errorf("%s.timeout must be > 0", label)
 		}
+		if err := validateKeyFailoverConfig(label+".key_failover", route.KeyFailover); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateKeyFailoverConfig rejects invalid policy names and negative cooldowns; zero denotes the optional route default.
+// validateKeyFailoverConfig 拒绝非法策略名及负冷却时长；零表示可选路由默认值。
+func validateKeyFailoverConfig(label string, cfg KeyFailoverConfig) error {
+	switch normalizeKeyFailoverPolicyValue(cfg.Policy) {
+	case "ordered_failover", "round_robin":
+	default:
+		return fmt.Errorf("%s.policy must be ordered_failover or round_robin", label)
+	}
+	if cfg.RateLimitCooldown.Duration < 0 || cfg.QuotaCooldown.Duration < 0 || cfg.AuthCooldown.Duration < 0 {
+		return fmt.Errorf("%s cooldowns must be >= 0", label)
 	}
 	return nil
 }
@@ -628,18 +648,15 @@ func rerankProviderDefaultModel(provider string) string {
 // normalizeKeyFailoverConfig fills safe in-memory cooldown defaults for one fixed-model API-key pool.
 // normalizeKeyFailoverConfig 用于为单个固定模型的 API Key 池补齐安全的内存态冷却默认值。
 func normalizeKeyFailoverConfig(cfg *KeyFailoverConfig) {
-	if cfg == nil {
-		return
-	}
 	defaults := defaultKeyFailoverConfig()
 	cfg.Policy = normalizeKeyFailoverPolicyValue(cfg.Policy)
-	if cfg.RateLimitCooldown.Duration <= 0 {
+	if cfg.RateLimitCooldown.Duration == 0 {
 		cfg.RateLimitCooldown = defaults.RateLimitCooldown
 	}
-	if cfg.QuotaCooldown.Duration <= 0 {
+	if cfg.QuotaCooldown.Duration == 0 {
 		cfg.QuotaCooldown = defaults.QuotaCooldown
 	}
-	if cfg.AuthCooldown.Duration <= 0 {
+	if cfg.AuthCooldown.Duration == 0 {
 		cfg.AuthCooldown = defaults.AuthCooldown
 	}
 }

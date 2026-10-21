@@ -219,6 +219,7 @@ message PostActionTimelineItem {
         - `admission`
         - `admission_reason`
     - 当前 turn 的 `profile_nodes[]`
+      - `profile_type` 必须显式给出合法整数 `0..3`；其中 `0` 是合法 user 类型。缺失、`null` 或越界值会产生带字段原因的 `InvalidLLMOutputError`，不能被当作 user 类型继续写入
       - 每条 `profile_nodes[]` 也会明确给出：
         - `evidence_source`
         - `admission`

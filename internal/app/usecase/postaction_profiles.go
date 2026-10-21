@@ -360,11 +360,12 @@ func computeProfileExpiry(base time.Time, level, refreshWeight int) time.Time {
 	default:
 		return base.Add(14 * 24 * time.Hour)
 	}
-	ttl := cfg.Base + (time.Duration(refreshWeight) * cfg.Step)
-	if cfg.Max > 0 && ttl > cfg.Max {
-		ttl = cfg.Max
+	// Compare the weight before multiplication so long replacement histories cannot overflow past the lifetime cap.
+	// 乘法前比较权重，避免长替换历史溢出并绕过生命周期上限。
+	if refreshWeight > int((cfg.Max-cfg.Base)/cfg.Step) {
+		return base.Add(cfg.Max)
 	}
-	return base.Add(ttl)
+	return base.Add(cfg.Base + time.Duration(refreshWeight)*cfg.Step)
 }
 
 // profileBaseTime prefers the original turn timestamp when deriving profile dates and expirations so profile nodes stay anchored to the dialogue timeline.

@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/url"
 	"os"
@@ -211,6 +212,15 @@ func (c Config) Validate() error {
 	if c.GRPC.MaxReceiveMessageBytes <= 0 {
 		return errors.New("grpc.max_receive_message_bytes must be > 0")
 	}
+	if c.GRPC.RequestTimeout.Workspace.Duration <= 0 {
+		return errors.New("grpc.request_timeout.workspace must be > 0")
+	}
+	if c.GRPC.ShutdownTimeout.Duration <= 0 {
+		return errors.New("grpc.shutdown_timeout must be > 0")
+	}
+	if c.GRPC.Keepalive.MaxConnectionIdle.Duration < 0 || c.GRPC.Keepalive.MaxConnectionAge.Duration < 0 || c.GRPC.Keepalive.MaxConnectionAgeGrace.Duration < 0 {
+		return errors.New("grpc.keepalive connection idle, age and grace durations must be >= 0")
+	}
 	if c.GRPC.Keepalive.Enabled {
 		if c.GRPC.Keepalive.Time.Duration <= 0 {
 			return errors.New("grpc.keepalive.time must be > 0 when grpc.keepalive.enabled is true")
@@ -246,6 +256,9 @@ func (c Config) Validate() error {
 	}
 	if c.PreCheck.TopK <= 0 {
 		return errors.New("precheck.top_k must be > 0")
+	}
+	if c.PreCheck.IntentTimeout.Duration <= 0 {
+		return errors.New("pre_check.intent_timeout must be > 0")
 	}
 	if scope := strings.TrimSpace(c.PreCheck.SearchScope); scope != "" && !isSupportedPreCheckSearchScopeValue(scope) {
 		return errors.New("pre_check.search_scope must be one of team, space, or project")
@@ -320,6 +333,12 @@ func (c Config) Validate() error {
 		return errors.New("embedding.provider must be one of openai, openai_native, openai_go, google_ai_studio, or openrouter")
 	}
 	if storageMode != "combined" {
+		if c.SQLite.Timeout.Duration <= 0 {
+			return errors.New("sqlite.timeout must be > 0")
+		}
+		if c.LanceDB.Timeout.Duration <= 0 {
+			return errors.New("lancedb.timeout must be > 0")
+		}
 		if strings.TrimSpace(c.LanceDB.TableName) == "" {
 			return errors.New("lancedb.table_name is required")
 		}
@@ -469,6 +488,9 @@ func (c Config) Validate() error {
 		return errors.New("embedding.api_keys is required")
 	}
 	if err := validateAIRoutingNodes("embedding", embeddingNodes); err != nil {
+		return err
+	}
+	if err := validateKeyFailoverConfig("embedding.key_failover", c.Embedding.KeyFailover); err != nil {
 		return err
 	}
 	if strings.TrimSpace(c.Embedding.Model) == "" {
@@ -686,7 +708,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 			return
 		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			if n, err := strconv.ParseFloat(v, 64); err == nil {
+			if n, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) {
 				*target = n
 			} else {
 				parseFailures = append(parseFailures, k)
@@ -698,7 +720,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 			return
 		}
 		if v := strings.TrimSpace(os.Getenv(k)); v != "" {
-			if n, err := strconv.ParseFloat(v, 64); err == nil {
+			if n, err := strconv.ParseFloat(v, 64); err == nil && !math.IsNaN(n) && !math.IsInf(n, 0) {
 				*target = float64Ptr(n)
 			} else {
 				parseFailures = append(parseFailures, k)
@@ -839,17 +861,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_IDLE_TIMEOUT", &cfg.PostAction.SessionAnalysisIdleTimeout)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_HISTORY_TURNS", &cfg.PostAction.SessionAnalysisHistoryTurns)
 	setInt("VMM_POST_ACTION_SESSION_ANALYSIS_MAX_INPUT_TOKENS", &cfg.PostAction.SessionAnalysisMaxInputTokens)
-	if envOverrideAllowed(referencedEnvKeys, "VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT") && strings.TrimSpace(os.Getenv("VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT")) != "" {
-		// The explicit marker prevents a parsed zero duration from being silently replaced during normalization.
-		// 显式标记用于防止已解析的零时长在归一化时被静默替换。
-		cfg.PostAction.sessionAnalysisTimeoutSet = true
-	}
 	setDuration("VMM_POST_ACTION_SESSION_ANALYSIS_TIMEOUT", &cfg.PostAction.SessionAnalysisTimeout)
-	if envOverrideAllowed(referencedEnvKeys, "VMM_POST_ACTION_FAILURE_PASS_THRESHOLD") && strings.TrimSpace(os.Getenv("VMM_POST_ACTION_FAILURE_PASS_THRESHOLD")) != "" {
-		// The explicit marker preserves invalid zero or negative thresholds for fail-closed validation.
-		// 显式标记用于保留无效的零值或负数阈值，以便执行封闭校验。
-		cfg.PostAction.failurePassThresholdSet = true
-	}
 	setInt("VMM_POST_ACTION_FAILURE_PASS_THRESHOLD", &cfg.PostAction.FailurePassThreshold)
 	setInt("VMM_POST_ACTION_MAX_QUEUE_WORKERS", &cfg.PostAction.MaxQueueWorkers)
 	setString("VMM_MEMORY_REPLACE_SCOPE", &cfg.MemoryReplaceScope)
@@ -869,16 +881,7 @@ func applyEnvOverrides(cfg *Config, referencedEnvKeys map[string]struct{}) []str
 	setOptionalFloat("VMM_MEMORY_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.MinSimilarityScore)
 	setOptionalFloat("VMM_MEMORY_REPLACE_MIN_SIMILARITY_SCORE", &cfg.MemoryPipeline.ReplaceMinSimilarityScore)
 	setOptionalFloat("VMM_MEMORY_HARD_DEDUPE_COSINE_THRESHOLD", &cfg.MemoryPipeline.HardDedupeCosineThreshold)
-	if envOverrideAllowed(referencedEnvKeys, "VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K") {
-		if v := strings.TrimSpace(os.Getenv("VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K")); v != "" {
-			if n, err := strconv.Atoi(v); err == nil {
-				cfg.MemoryPipeline.HardDedupePoolTopK = n
-				cfg.MemoryPipeline.hardDedupePoolTopKSet = true
-			} else {
-				parseFailures = append(parseFailures, "VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K")
-			}
-		}
-	}
+	setInt("VMM_MEMORY_HARD_DEDUPE_POOL_TOP_K", &cfg.MemoryPipeline.HardDedupePoolTopK)
 	setBool("VMM_MEMORY_HYBRID_ENABLED", &cfg.MemoryPipeline.HybridEnabled)
 	setInt("VMM_MEMORY_LEXICAL_TOP_K", &cfg.MemoryPipeline.LexicalTopK)
 	setInt("VMM_MEMORY_RRF_K", &cfg.MemoryPipeline.RRFK)

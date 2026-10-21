@@ -473,11 +473,6 @@ func (u *MemoryUseCase) prepareDirectWriteCreateVectors(ctx context.Context, ses
 // persistDirectWriteMemory writes one accepted direct-write item using a precomputed embedding vector, then persists the unified memory row together with any same-scope replacements.
 // persistDirectWriteMemory 用于使用预先生成好的 embedding 向量写入一条已接纳的主动记忆，并连同同作用域替代结果一起持久化统一记忆行。
 func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session logicdomain.SessionRef, item WriteMemoryItem, dedupeHash string, supersedeMemoryIDs []uint64, now time.Time, vectorPayload []float32) (WriteMemoryResultItem, error) {
-	applier, canApplyDirectWrite := u.memories.(directMemoryWriteApplier)
-	if len(supersedeMemoryIDs) > 0 && !canApplyDirectWrite {
-		return WriteMemoryResultItem{}, fmt.Errorf("memory store does not support atomic direct-memory replacement writes")
-	}
-
 	if len(vectorPayload) == 0 {
 		return WriteMemoryResultItem{}, fmt.Errorf("direct memory vector payload is required")
 	}
@@ -531,31 +526,19 @@ func (u *MemoryUseCase) persistDirectWriteMemory(ctx context.Context, session lo
 		UpdatedAt:       now,
 	}
 
-	var created logicdomain.MemoryNodeRecord
-	var supersededVectorIDs []string
-	if canApplyDirectWrite {
-		applyResult, err := applier.ApplyDirectMemoryWrite(ctx, session, memoryRecord, supersedeMemoryIDs)
-		if err != nil {
-			if !logicdomain.IsFreshVectorReferenceUncertain(err) {
-				u.rollbackDirectWriteVector(vectorID, session.SessionID)
-			} else if u.logger != nil {
-				u.logger.Warn("direct memory relational outcome uncertain; keeping fresh vector for possible durable memory row", "session_id", session.SessionID, "vector_id", vectorID, "err", err)
-			}
-			return WriteMemoryResultItem{}, err
+	// Let the store coordinate insertion and retirement; retain the vector when a partial or uncertain write may already reference it.
+	// 由存储协调插入与退役；部分写入或提交不明可能已引用新向量时，保留该向量。
+	applyResult, err := u.memories.ApplyDirectMemoryWrite(ctx, session, memoryRecord, supersedeMemoryIDs)
+	if err != nil {
+		if !logicdomain.IsFreshVectorReferenceUncertain(err) {
+			u.rollbackDirectWriteVector(vectorID, session.SessionID)
+		} else if u.logger != nil {
+			u.logger.Warn("direct memory relational outcome uncertain; keeping fresh vector for possible durable memory row", "session_id", session.SessionID, "vector_id", vectorID, "err", err)
 		}
-		created = applyResult.InsertedMemoryNode
-		supersededVectorIDs = normalizeVectorGCIDs(applyResult.SupersededVectorIDs)
-	} else {
-		created, err = u.memories.CreateDirectMemoryNode(ctx, session, memoryRecord)
-		if err != nil {
-			if !logicdomain.IsFreshVectorReferenceUncertain(err) {
-				u.rollbackDirectWriteVector(vectorID, session.SessionID)
-			} else if u.logger != nil {
-				u.logger.Warn("direct memory fallback outcome uncertain; keeping fresh vector for possible durable memory row", "session_id", session.SessionID, "vector_id", vectorID, "err", err)
-			}
-			return WriteMemoryResultItem{}, err
-		}
+		return WriteMemoryResultItem{}, err
 	}
+	created := applyResult.InsertedMemoryNode
+	supersededVectorIDs := normalizeVectorGCIDs(applyResult.SupersededVectorIDs)
 	if len(supersededVectorIDs) > 0 {
 		cleanupCtx, cleanupCancel := newPostCommitVectorCleanupContext()
 		defer cleanupCancel()

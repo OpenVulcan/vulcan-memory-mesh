@@ -5,6 +5,7 @@ package config
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"time"
 )
 
@@ -107,6 +108,11 @@ func (d *Duration) UnmarshalJSON(data []byte) error {
 	var ms int64
 	if err := json.Unmarshal(data, &ms); err != nil {
 		return err
+	}
+	// Check before multiplication so explicit milliseconds cannot wrap into an unrelated valid timeout.
+	// 乘法前检查范围，避免显式毫秒值回绕成另一个看似有效的超时。
+	if ms > math.MaxInt64/int64(time.Millisecond) || ms < math.MinInt64/int64(time.Millisecond) {
+		return fmt.Errorf("millisecond duration %d exceeds time.Duration range", ms)
 	}
 	d.Duration = time.Duration(ms) * time.Millisecond
 	return nil
@@ -510,55 +516,6 @@ type PostActionConfig struct {
 	// FailurePassThreshold 是终止一条 turn 后续重试的持久化连续失败次数。
 	FailurePassThreshold int `json:"failure_pass_threshold"`
 	MaxQueueWorkers      int `json:"max_queue_workers,omitempty"`
-
-	// sessionAnalysisTimeoutSet records whether a config layer explicitly supplied the deadline.
-	// sessionAnalysisTimeoutSet 用于记录配置层是否显式提供了分析截止时间。
-	sessionAnalysisTimeoutSet bool `json:"-"`
-	// failurePassThresholdSet records whether a config layer explicitly supplied the failure threshold.
-	// failurePassThresholdSet 用于记录配置层是否显式提供了失败阈值。
-	failurePassThresholdSet bool `json:"-"`
-}
-
-// UnmarshalJSON preserves layered PostAction defaults while retaining explicit invalid reliability values for fail-closed validation.
-// UnmarshalJSON 用于保留分层 PostAction 默认值，同时保留显式无效可靠性配置以执行封闭校验。
-func (c *PostActionConfig) UnmarshalJSON(data []byte) error {
-	if c == nil {
-		return nil
-	}
-	type postActionConfigAlias PostActionConfig
-	rawFields := map[string]json.RawMessage{}
-	if err := json.Unmarshal(data, &rawFields); err != nil {
-		return err
-	}
-	// Custom nested decoding must retain the same unknown-field rejection as the outer strict decoder.
-	// 自定义嵌套解码必须保持与外层严格解码器相同的未知字段拒绝行为。
-	for field := range rawFields {
-		switch field {
-		case "input_mode",
-			"session_analysis_turn_threshold",
-			"session_analysis_token_threshold",
-			"session_analysis_idle_timeout",
-			"session_analysis_history_turns",
-			"session_analysis_max_input_tokens",
-			"session_analysis_timeout",
-			"failure_pass_threshold",
-			"max_queue_workers":
-		default:
-			return fmt.Errorf("json: unknown field %q", field)
-		}
-	}
-	next := postActionConfigAlias(*c)
-	if err := json.Unmarshal(data, &next); err != nil {
-		return err
-	}
-	*c = PostActionConfig(next)
-	if _, ok := rawFields["session_analysis_timeout"]; ok {
-		c.sessionAnalysisTimeoutSet = true
-	}
-	if _, ok := rawFields["failure_pass_threshold"]; ok {
-		c.failurePassThresholdSet = true
-	}
-	return nil
 }
 
 // RetentionConfig keeps the cold-data governance knobs for recycle scanning, turn hot-window buffering, and trash retention.
@@ -602,54 +559,6 @@ type MemoryPipelineConfig struct {
 	WeibullMinMultiplier      float64  `json:"weibull_min_multiplier,omitempty"`
 	WeibullReinforceWeight    float64  `json:"weibull_reinforce_weight,omitempty"`
 	WeibullCrossSessionBoost  float64  `json:"weibull_cross_session_boost,omitempty"`
-
-	hardDedupePoolTopKSet bool `json:"-"`
-}
-
-// UnmarshalJSON keeps layered config merges working while tracking whether hard_dedupe_pool_top_k was explicitly provided, so Normalize can distinguish "missing" from "present but invalid".
-// UnmarshalJSON 用于在保持分层配置合并语义的同时，追踪 hard_dedupe_pool_top_k 是否被显式提供，让 Normalize 能区分“缺省未配置”和“显式给了非法值”。
-func (c *MemoryPipelineConfig) UnmarshalJSON(data []byte) error {
-	if c == nil {
-		return nil
-	}
-	type memoryPipelineConfigAlias MemoryPipelineConfig
-	rawFields := map[string]json.RawMessage{}
-	if err := json.Unmarshal(data, &rawFields); err != nil {
-		return err
-	}
-	// Reject unknown fields here because the custom unmarshaller bypasses json.Decoder.DisallowUnknownFields for this nested object.
-	// 这里显式拒绝未知字段，因为自定义反序列化会绕过 json.Decoder.DisallowUnknownFields 对该嵌套对象的检查。
-	for field := range rawFields {
-		switch field {
-		case "max_search_keywords",
-			"min_similarity_score",
-			"replace_min_similarity_score",
-			"hard_dedupe_cosine_threshold",
-			"hard_dedupe_pool_top_k",
-			"hybrid_enabled",
-			"lexical_top_k",
-			"rrf_k",
-			"mmr_enabled",
-			"mmr_lambda",
-			"weibull_enabled",
-			"weibull_shape",
-			"weibull_scale_hours",
-			"weibull_min_multiplier",
-			"weibull_reinforce_weight",
-			"weibull_cross_session_boost":
-		default:
-			return fmt.Errorf("json: unknown field %q", field)
-		}
-	}
-	next := memoryPipelineConfigAlias(*c)
-	if err := json.Unmarshal(data, &next); err != nil {
-		return err
-	}
-	*c = MemoryPipelineConfig(next)
-	if _, ok := rawFields["hard_dedupe_pool_top_k"]; ok {
-		c.hardDedupePoolTopKSet = true
-	}
-	return nil
 }
 
 // DefaultBase returns the baked-in fallback defaults that mirror the shipped base.yaml template.

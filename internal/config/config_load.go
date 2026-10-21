@@ -67,8 +67,8 @@ func loadConfigPaths(paths []string, fallback Config, trace *configSourceTrace) 
 		if err != nil {
 			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("parse config layer %q: %w", path, err))
 		}
-		if err := applyLayeredAIKeyOverrideReset(&cfg, expandedBytes); err != nil {
-			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("apply AI key override reset in config layer %q: %w", path, err))
+		if err := applyLayeredAIOverrideReset(&cfg, expandedBytes); err != nil {
+			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("apply AI override reset in config layer %q: %w", path, err))
 		}
 		if err := unmarshalStrictConfigLayer(expandedBytes, &cfg); err != nil {
 			return Config{}, WrapConfigLoadError(ConfigLoadStageParse, fmt.Errorf("unmarshal config layer %q: %w", path, err))
@@ -237,9 +237,9 @@ type envReference struct {
 	ValuePath  string
 }
 
-// applyLayeredAIKeyOverrideReset validates removed AI config modes early and clears stale lower-priority embedding key shapes before one higher-priority config layer is unmarshaled.
-// applyLayeredAIKeyOverrideReset 用于在反序列化更高优先级配置层前，提前拒绝已移除的 AI 配置模式，并清理 embedding 的低优先级残留 key 形态。
-func applyLayeredAIKeyOverrideReset(cfg *Config, body []byte) error {
+// applyLayeredAIOverrideReset validates one JSON layer and clears replaced AI routes or embedding key shapes before typed decoding; malformed sections return an error.
+// applyLayeredAIOverrideReset 在类型解码前校验一层 JSON 并清除被替换的 AI 路由或 embedding 密钥形态；结构非法时返回错误。
+func applyLayeredAIOverrideReset(cfg *Config, body []byte) error {
 	if cfg == nil || len(body) == 0 {
 		return nil
 	}
@@ -250,18 +250,39 @@ func applyLayeredAIKeyOverrideReset(cfg *Config, body []byte) error {
 	if err := rejectRemovedAIConfigModes(root); err != nil {
 		return err
 	}
+	// Routes are self-contained replacement arrays; reusing old slice elements would retain credentials and provider-specific fields.
+	// 路由数组以自包含条目整体替换；复用旧切片元素会残留凭据及供应商专属字段。
+	llmFields, err := parseSectionFields(root["llm"])
+	if err != nil {
+		return fmt.Errorf("parse llm fields: %w", err)
+	}
+	rerankFields, err := parseSectionFields(root["rerank"])
+	if err != nil {
+		return fmt.Errorf("parse rerank fields: %w", err)
+	}
+	if _, present := llmFields["routes"]; present {
+		cfg.LLM.Routes = nil
+	}
+	if _, present := rerankFields["routes"]; present {
+		cfg.Rerank.Routes = nil
+	}
 	if err := resetAIKeyFieldPair(root["embedding"], &cfg.Embedding.APIKeys, &cfg.Embedding.Nodes); err != nil {
 		return fmt.Errorf("parse embedding key fields: %w", err)
 	}
 	return nil
 }
 
-// resetAIKeyFieldPair keeps layered config precedence stable by clearing the opposite field only when the current layer chooses exactly one embedding key shape.
-// resetAIKeyFieldPair 用于在当前配置层只选择一种 embedding key 写法时清空另一种写法，从而保持分层配置覆盖优先级稳定。
+// resetAIKeyFieldPair replaces explicit embedding node arrays and clears the opposite key shape when exactly one is selected; malformed section data returns an error.
+// resetAIKeyFieldPair 替换显式 embedding 节点数组，仅选择一种密钥写法时清空另一种；配置段格式错误时返回错误。
 func resetAIKeyFieldPair(sectionBody []byte, many *[]string, nodes *[]AIRoutingNodeConfig) error {
 	presence, err := detectAIKeyFieldPresence(sectionBody)
 	if err != nil {
 		return err
+	}
+	// Node arrays replace the prior pool; clearing the slice prevents missing keys and limits from inheriting by position.
+	// 节点数组替换旧池；先清空切片，防止缺失的密钥和限额按位置继承。
+	if presence.HasNodes && nodes != nil {
+		*nodes = nil
 	}
 	switch {
 	case presence.HasNodes && !presence.HasAPIKeys:

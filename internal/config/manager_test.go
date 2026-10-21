@@ -26,6 +26,59 @@ func TestNewPromptManagerFailsWhenSystemDefaultEnglishBundleIsIncomplete(t *test
 	}
 }
 
+// TestPromptManagerPinsValidatedBundle rejects a broken user scene without reading the system copy.
+// TestPromptManagerPinsValidatedBundle 在用户场景损坏时明确失败，不读取系统副本。
+func TestPromptManagerPinsValidatedBundle(t *testing.T) {
+	systemDir, userDir := t.TempDir(), t.TempDir()
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_en"), "system")
+	userBundle := filepath.Join(userDir, "prompts", "default_en")
+	writeRequiredScenes(t, userBundle, "user")
+	manager, err := NewPromptManager(systemDir, userDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	scene := filepath.Join(userBundle, RequiredScenes[0])
+	if err := os.Remove(scene); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.GetPrompt(RequiredScenes[0], ""); err == nil || !strings.Contains(err.Error(), userBundle) {
+		t.Fatalf("removed user scene must fail with its path: %v", err)
+	}
+	if err := os.Mkdir(scene, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := manager.GetPrompt(RequiredScenes[0], ""); err == nil {
+		t.Fatal("directory replacing scene must fail")
+	}
+}
+
+// TestPromptManagerKeepsSystemSelection ignores a user bundle created after startup until the next manager is constructed.
+// TestPromptManagerKeepsSystemSelection 验证启动后新增的用户包需重新构造管理器才会生效。
+func TestPromptManagerKeepsSystemSelection(t *testing.T) {
+	systemDir, userDir := t.TempDir(), t.TempDir()
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_en"), "system")
+	manager, err := NewPromptManager(systemDir, userDir, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeRequiredScenes(t, filepath.Join(userDir, "prompts", "default_en"), "user")
+	body, err := manager.GetPrompt(RequiredScenes[0], "")
+	if err != nil || body != "system:"+RequiredScenes[0] {
+		t.Fatalf("selected system bundle changed: body=%q err=%v", body, err)
+	}
+}
+
+// TestPromptManagerRejectsNonDirectoryUserBundle refuses a malformed override instead of silently choosing the system bundle.
+// TestPromptManagerRejectsNonDirectoryUserBundle 拒绝错误的用户覆盖路径，避免静默选用系统包。
+func TestPromptManagerRejectsNonDirectoryUserBundle(t *testing.T) {
+	systemDir, userDir := t.TempDir(), t.TempDir()
+	writeRequiredScenes(t, filepath.Join(systemDir, "prompts", "default_en"), "system")
+	writeScene(t, filepath.Join(userDir, "prompts"), "default_en", "not a directory")
+	if _, err := NewPromptManager(systemDir, userDir, ""); err == nil || !strings.Contains(err.Error(), "not a directory") {
+		t.Fatalf("expected override directory error, got %v", err)
+	}
+}
+
 // TestNewPromptManagerUsesSelectedCustomBundleWithoutDefaultEnglish verifies startup no longer requires default_en when config explicitly selects another complete prompt bundle.
 // TestNewPromptManagerUsesSelectedCustomBundleWithoutDefaultEnglish 用于验证当配置显式选择其他完整提示词包时，启动不再强制要求 default_en 存在。
 func TestNewPromptManagerUsesSelectedCustomBundleWithoutDefaultEnglish(t *testing.T) {

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -376,7 +377,7 @@ func classifyDashScopeError(err error, options Options, now time.Time) failureDe
 	if errors.As(err, &apiErr) {
 		return classifyStructuredRerankAPIError(apiErr.StatusCode, apiErr.Headers, apiErr.Error()+" "+apiErr.Body, options, now)
 	}
-	return classifyTextRerankAPIError(err, options)
+	return failureDecision{Class: errorClassUnknown}
 }
 
 // classifySiliconFlowError maps one SiliconFlow rerank error into the same key-failover decision contract used by the other outbound adapters.
@@ -392,7 +393,7 @@ func classifySiliconFlowError(err error, options Options, now time.Time) failure
 	if errors.As(err, &apiErr) {
 		return classifyStructuredRerankAPIError(apiErr.StatusCode, apiErr.Headers, apiErr.Error()+" "+apiErr.Body, options, now)
 	}
-	return classifyTextRerankAPIError(err, options)
+	return failureDecision{Class: errorClassUnknown}
 }
 
 // chooseCooldown prefers provider Retry-After hints when enabled and otherwise falls back to one static configured duration.
@@ -422,24 +423,24 @@ func chooseCooldownFromGoogleError(apiErr *genai.APIError, now time.Time, respec
 	if !respectRetryAfter || apiErr == nil {
 		return fallback
 	}
-	// Try to find Retry-After or Retry-After-Ms in the error details.
-	// 尝试在错误详情中查找 Retry-After 或 Retry-After-Ms。
+	// Validate numeric retry hints before they enter the shared key scheduler.
+	// 数值重试提示进入共享密钥调度器前先校验其范围。
 	for _, detail := range apiErr.Details {
-		if ms, found := detail["retry_after_ms"]; found {
-			if msVal, ok := ms.(float64); ok && msVal > 0 {
-				return time.Duration(msVal) * time.Millisecond
+		if ms, ok := detail["retry_after_ms"].(float64); ok {
+			if duration, valid := positiveRetryDuration(ms, time.Millisecond); valid {
+				return duration
 			}
 		}
-		if seconds, found := detail["retry_after"]; found {
-			if secVal, ok := seconds.(float64); ok && secVal > 0 {
-				return time.Duration(secVal * float64(time.Second))
+		if seconds, ok := detail["retry_after"].(float64); ok {
+			if duration, valid := positiveRetryDuration(seconds, time.Second); valid {
+				return duration
 			}
 		}
 	}
-	// Also check the message string for embedded retry hints.
-	// 同时检查消息字符串中是否嵌入了重试提示。
+	// Preserve the existing provider-message hint contract after structured hints are exhausted.
+	// 结构化提示均未生效时，保留既有供应商消息中的重试提示契约。
 	if header := parseRetryAfterFromText(apiErr.Message); header != nil {
-		if duration, ok := retryAfterDuration(header, now); ok && duration > 0 {
+		if duration, ok := retryAfterDuration(header, now); ok {
 			return duration
 		}
 	}
@@ -476,18 +477,34 @@ func retryAfterDuration(header http.Header, now time.Time) (time.Duration, bool)
 	if header == nil {
 		return 0, false
 	}
+	// Validate the represented duration before conversion; overflow must not turn a provider cooldown into an immediate retry.
+	// 转换前校验可表示的时长，避免溢出将供应商冷却时间变成立即重试。
 	if raw := strings.TrimSpace(header.Get("Retry-After-Ms")); raw != "" {
-		if ms, err := strconv.Atoi(raw); err == nil && ms > 0 {
+		if ms, err := strconv.ParseInt(raw, 10, 64); err == nil && ms > 0 && ms <= math.MaxInt64/int64(time.Millisecond) {
 			return time.Duration(ms) * time.Millisecond, true
 		}
 	}
 	if raw := strings.TrimSpace(header.Get("Retry-After")); raw != "" {
-		if seconds, err := strconv.ParseFloat(raw, 64); err == nil && seconds > 0 {
-			return time.Duration(seconds * float64(time.Second)), true
+		if seconds, err := strconv.ParseFloat(raw, 64); err == nil {
+			if duration, valid := positiveRetryDuration(seconds, time.Second); valid {
+				return duration, true
+			}
 		}
 		if deadline, err := http.ParseTime(raw); err == nil && deadline.After(now) {
 			return deadline.Sub(now), true
 		}
+	}
+	return 0, false
+}
+
+// positiveRetryDuration converts a provider numeric hint in the supplied unit; false means it cannot represent a positive cooldown without overflow or truncation to zero.
+// positiveRetryDuration 按给定单位转换供应商数值提示；无法表示正冷却时长、发生溢出或截断为零时返回 false。
+func positiveRetryDuration(value float64, unit time.Duration) (time.Duration, bool) {
+	// The floating-point upper bound rounds to 2^63, so equality is already outside time.Duration; comparisons also exclude NaN and infinities.
+	// 浮点上界会舍入到 2^63，因此等于边界也已越界；比较同时排除 NaN 和无穷大。
+	nanos := value * float64(unit)
+	if nanos >= 1 && nanos < float64(math.MaxInt64) {
+		return time.Duration(nanos), true
 	}
 	return 0, false
 }
@@ -526,41 +543,6 @@ func classifyStructuredRerankAPIError(statusCode int, headers http.Header, messa
 	return failureDecision{Class: errorClassUnknown}
 }
 
-// classifyTextRerankAPIError falls back to parsing status hints from one plain rerank error string when the adapter could not preserve a structured API error.
-// classifyTextRerankAPIError 用于在适配器无法保留结构化 API 错误时，从普通 rerank 错误字符串里回退解析状态码提示。
-func classifyTextRerankAPIError(err error, options Options) failureDecision {
-	message := strings.ToLower(strings.TrimSpace(err.Error()))
-	status := parseStatusCodeFromText(message)
-	switch status {
-	case http.StatusBadRequest:
-		return failureDecision{Class: errorClassInvalidRequest}
-	case http.StatusUnauthorized, http.StatusForbidden:
-		return failureDecision{
-			Class:     errorClassAuth,
-			SwitchKey: true,
-			Cooldown:  options.AuthCooldown,
-		}
-	case http.StatusTooManyRequests:
-		if containsAny(message, "insufficient_quota", "quota", "balance", "insufficient balance", "insufficient_balance") {
-			return failureDecision{
-				Class:     errorClassQuota,
-				SwitchKey: true,
-				Cooldown:  options.QuotaCooldown,
-			}
-		}
-		return failureDecision{
-			Class:     errorClassRateLimit,
-			SwitchKey: true,
-			Cooldown:  options.RateLimitCooldown,
-		}
-	default:
-		if status == http.StatusRequestTimeout || status == http.StatusConflict || status >= http.StatusInternalServerError {
-			return failureDecision{Class: errorClassPublicFault}
-		}
-	}
-	return failureDecision{Class: errorClassUnknown}
-}
-
 // containsAny reports whether the lowercase haystack includes any lowercase marker.
 // containsAny 用于判断已经转为小写的原文中是否包含任意一个同样为小写的标记。
 func containsAny(haystack string, markers ...string) bool {
@@ -590,29 +572,6 @@ func isNetworkError(err error) bool {
 		return true
 	}
 	return false
-}
-
-// parseStatusCodeFromText extracts the first HTTP status code from the DashScope adapter error text.
-// parseStatusCodeFromText 用于从 DashScope 适配器错误文本中提取第一个 HTTP 状态码。
-func parseStatusCodeFromText(message string) int {
-	const marker = "status "
-	index := strings.Index(message, marker)
-	if index < 0 {
-		return 0
-	}
-	start := index + len(marker)
-	end := start
-	for end < len(message) && message[end] >= '0' && message[end] <= '9' {
-		end++
-	}
-	if end == start {
-		return 0
-	}
-	status, err := strconv.Atoi(message[start:end])
-	if err != nil {
-		return 0
-	}
-	return status
 }
 
 // isEmbeddingInputTooLargeError reports whether one provider failure indicates the current embedding payload is too large and should be retried with smaller chunks or one isolated single text.

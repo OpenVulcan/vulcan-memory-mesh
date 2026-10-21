@@ -4,7 +4,6 @@ package ai_key_failover
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -499,7 +498,7 @@ func TestRerankerClientRerankSwitchesKeyOnQuota(t *testing.T) {
 		t.Fatalf("new rerank failover client: %v", err)
 	}
 	fakes := map[string]*stubRerankerClient{
-		"key-a": {err: errors.New("dashscope rerank status 429: insufficient_quota")},
+		"key-a": {err: &dashscope_rerank.APIError{StatusCode: http.StatusTooManyRequests, Body: "insufficient_quota"}},
 		"key-b": {results: []appports.RerankerResult{{ID: "1", Score: 0.9}}},
 	}
 	client.factory = func(apiKey string) appports.RerankerClient { return fakes[apiKey] }

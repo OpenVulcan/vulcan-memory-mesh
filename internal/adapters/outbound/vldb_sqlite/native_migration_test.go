@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,12 +17,12 @@ import (
 // TestNativeMigrationVectorDecodeRejectsCorruptValues 确保损坏值不会静默转成零向量。
 func TestNativeMigrationVectorDecodeRejectsCorruptValues(t *testing.T) {
 	for _, raw := range []string{`[null,1]`, `["1",2]`, `[1e100]`, `{}`, `[NaN]`, `broken`} {
-		if _, err := decodeNativeMigrationVector(raw); err == nil {
+		if _, err := decodeFloat32Slice(raw); err == nil {
 			t.Fatalf("accepted corrupt vector %s", raw)
 		}
 	}
 	for _, raw := range []string{"", "null", "[]"} {
-		vector, err := decodeNativeMigrationVector(raw)
+		vector, err := decodeFloat32Slice(raw)
 		if err != nil || len(vector) != 0 {
 			t.Fatalf("absent vector %q: %v, %v", raw, vector, err)
 		}
@@ -51,6 +52,11 @@ VALUES (?,0,0,0,0,?,?,'[1,2]',1,'中文原文','完整详情',?,1,0,1,1)`, int64
 	}
 	if err := store.exec(ctx, "UPDATE vmm_memory_nodes SET vector_json='[null,2]'"); err != nil {
 		t.Fatal(err)
+	}
+	// Online lookup must reject the same corruption as migration, retaining the memory and vector identifiers.
+	// 在线查询必须与迁移一样拒绝损坏数据，并保留记忆和向量标识。
+	if _, err := store.LoadMemoryNodesByIDs(ctx, []uint64{9007199254740993}); err == nil || !strings.Contains(err.Error(), "9007199254740993") || !strings.Contains(err.Error(), "retired-vector") {
+		t.Fatalf("expected identifiable vector corruption from online lookup, got %v", err)
 	}
 	if err := store.WalkNativeMigrationMemories(ctx, func(logicdomain.MemoryRecord) error { t.Fatal("corrupt vector reached callback"); return nil }); err == nil {
 		t.Fatal("corrupt vector was ignored")

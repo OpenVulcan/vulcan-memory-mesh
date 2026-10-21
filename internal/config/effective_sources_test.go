@@ -18,7 +18,7 @@ func TestEffectiveSourcesFollowActualMerges(t *testing.T) {
 	trace.observe(cfg, ConfigValueSource{Kind: "initial"}, nil)
 	apply := func(file, body string) {
 		t.Helper()
-		if err := applyLayeredAIKeyOverrideReset(&cfg, []byte(body)); err != nil {
+		if err := applyLayeredAIOverrideReset(&cfg, []byte(body)); err != nil {
 			t.Fatal(err)
 		}
 		if err := unmarshalStrictConfigLayer([]byte(body), &cfg); err != nil {

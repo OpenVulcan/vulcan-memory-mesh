@@ -275,12 +275,6 @@ type MemoryUseCase struct {
 	piiScrubber                            PIIScrubber
 }
 
-// directMemoryWriteApplier is the optional store fast path that atomically inserts one direct-write memory row and retires any replaced old rows in the same SQL transaction.
-// directMemoryWriteApplier 用于描述一个可选的存储快路径，在同一 SQL 事务里原子写入主动记忆，并退役它替代的旧记忆行。
-type directMemoryWriteApplier interface {
-	ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error)
-}
-
 // NewMemoryUseCase wires profile resolution, relational memory, embedding, and vector stores with conservative search defaults.
 // NewMemoryUseCase 用于装配画像解析、关系记忆、向量生成和向量存储，并设置保守的检索默认值。
 func NewMemoryUseCase(profiles appports.ProfileStore, memories appports.MemoryStore, embedding appports.EmbeddingClient, vector appports.VectorStore, logger *logx.Logger) *MemoryUseCase {

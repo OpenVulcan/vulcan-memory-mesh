@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	logicdomain "github.com/openvulcan/vmm/internal/logic/domain"
@@ -57,14 +56,10 @@ func (s *Store) WalkNativeMigrationMemories(ctx context.Context, visit func(logi
 			return fmt.Errorf("read native migration memory page: %w", err)
 		}
 		for _, row := range rows {
-			vector, err := decodeNativeMigrationVector(row.VectorJSON)
+			node, err := row.toMemoryNodeRecord()
 			if err != nil {
 				return fmt.Errorf("memory %d vector %q: %w", row.ID, row.VectorID, err)
 			}
-			// Preserve the existing scope, lifecycle and metadata mapping after strict durable-vector decoding.
-			// 严格解析已保存向量后，保留既有范围、生命周期与元数据映射。
-			node := row.toMemoryNodeRecord()
-			node.Vector = vector
 			if err := visit(memoryRecordFromNode(node)); err != nil {
 				return err
 			}
@@ -140,14 +135,10 @@ LIMIT ?`
 			return fmt.Errorf("read native migration restorable trash page: %w", err)
 		}
 		for _, row := range rows {
-			vector, err := decodeNativeMigrationVector(row.VectorJSON)
+			node, err := row.toMemoryNodeRecord()
 			if err != nil {
 				return fmt.Errorf("trash memory batch %d id %d vector %q: %w", row.BatchID, row.ID, row.VectorID, err)
 			}
-			// Preserve the same lifecycle, scope and metadata mapping as live durable memories after strict vector decoding.
-			// 严格解析向量后，沿用长期记忆行的生命周期、范围和元数据映射。
-			node := row.toMemoryNodeRecord()
-			node.Vector = vector
 			if err := visit(NativeRestorableTrashMemory{
 				BatchID:  row.BatchID,
 				MemoryID: row.ID,
@@ -188,27 +179,4 @@ WHERE batch_id = ? AND id = ?
 		return fmt.Errorf("update native restorable trash vector batch %d id %d: %w", batchID, memoryID, err)
 	}
 	return nil
-}
-
-// decodeNativeMigrationVector distinguishes intentionally absent vectors from malformed stored JSON.
-// decodeNativeMigrationVector 区分明确缺失的向量与格式损坏的已保存 JSON，不把解析错误隐藏为空向量。
-func decodeNativeMigrationVector(raw string) ([]float32, error) {
-	raw = strings.TrimSpace(raw)
-	if raw == "" || raw == "null" {
-		return nil, nil
-	}
-	var elements []json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &elements); err != nil {
-		return nil, fmt.Errorf("invalid durable vector JSON: %w", err)
-	}
-	vector := make([]float32, len(elements))
-	for i, element := range elements {
-		if strings.TrimSpace(string(element)) == "null" {
-			return nil, fmt.Errorf("durable vector element %d is null", i)
-		}
-		if err := json.Unmarshal(element, &vector[i]); err != nil {
-			return nil, fmt.Errorf("invalid durable vector element %d: %w", i, err)
-		}
-	}
-	return vector, nil
 }

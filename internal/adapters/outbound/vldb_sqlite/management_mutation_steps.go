@@ -286,6 +286,16 @@ FROM vmm_memory_nodes_trash WHERE batch_id = ?
 	if err != nil {
 		return fmt.Errorf("query sqlite restore memory rows: %w", err)
 	}
+	// Decode the complete snapshot before restoring rows so corruption cannot leave a partially restored batch.
+	// 恢复行之前解码完整快照，避免损坏向量导致批次恢复到一半才失败。
+	records := make([]logicdomain.MemoryNodeRecord, 0, len(memoryRows))
+	for _, row := range memoryRows {
+		record, err := row.toMemoryNodeRecord()
+		if err != nil {
+			return err
+		}
+		records = append(records, record)
+	}
 	statements := []string{
 		`UPDATE vmm_sessions SET user_id = (SELECT user_id FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), team_id = (SELECT team_id FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), space_id = (SELECT space_id FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), project_id = (SELECT project_id FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), turn_count = (SELECT turn_count FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), last_summarized_id = (SELECT last_summarized_id FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), last_compacted_turn_id = (SELECT last_compacted_turn_id FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), summarize_content = (SELECT summarize_content FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), summarize_budget = (SELECT summarize_budget FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), last_extract_observed_timestamp = (SELECT last_extract_observed_timestamp FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), last_extract_completed_timestamp = (SELECT last_extract_completed_timestamp FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), last_compacted_timestamp = (SELECT last_compacted_timestamp FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), created_timestamp = (SELECT created_timestamp FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id), updated_timestamp = (SELECT updated_timestamp FROM vmm_sessions_trash WHERE batch_id = ? AND id = vmm_sessions.id) WHERE id IN (SELECT id FROM vmm_sessions_trash WHERE batch_id = ?)`,
 		`INSERT INTO vmm_turn_records SELECT id, session_id, project_id, dehydrated_content, dehydrated_budget, extracted_status, details, details_budget, created_timestamp, updated_timestamp FROM vmm_turn_records_trash WHERE batch_id = ?`,
@@ -313,10 +323,6 @@ WHERE session_id IN (SELECT id FROM vmm_sessions_trash WHERE batch_id = ?)
 		return fmt.Errorf("reactivate sqlite restored session states: %w", err)
 	}
 	if s.database != nil && len(memoryRows) > 0 {
-		records := make([]logicdomain.MemoryNodeRecord, 0, len(memoryRows))
-		for _, row := range memoryRows {
-			records = append(records, row.toMemoryNodeRecord())
-		}
 		if err := s.syncMemoryFTSAfterWrite(ctx, records, nil); err != nil {
 			return fmt.Errorf("sync sqlite FTS after management restore: %w", err)
 		}

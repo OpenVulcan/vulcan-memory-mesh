@@ -53,7 +53,7 @@ func TestProviderCommandUsesLoadedCandidate(t *testing.T) {
 	defer server.Close()
 	root, binary := writeConfigCommandFixture(t)
 	userFile := filepath.Join(t.TempDir(), "config.yaml")
-	writeTestFile(t, userFile, fmt.Sprintf("llm:\n  routes:\n    - provider: openai\n      endpoint: %q\n      model: candidate-model\n      api_keys: [candidate-probe-key]\n", server.URL+"/v1"))
+	writeTestFile(t, userFile, fmt.Sprintf("llm:\n  routes:\n    - provider: openai\n      endpoint: %q\n      model: candidate-model\n      api_keys: [candidate-probe-key]\n      params: {reasoning_effort: none}\n", server.URL+"/v1"))
 	command, _, err := parseConfigCommand([]string{"config", "test-provider", "--config", userFile, "--purpose", "llm", "--allow-network", "--json"})
 	if err != nil {
 		t.Fatal(err)

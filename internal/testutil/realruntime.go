@@ -106,7 +106,7 @@ func loadRealRuntimeFixture() (*RealRuntimeFixture, error) {
 		return nil, err
 	}
 	defer cleanupEnvFallback()
-	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultBase())
 	if err != nil {
 		return nil, err
 	}

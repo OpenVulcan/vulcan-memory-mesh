@@ -23,7 +23,7 @@ func runProviderConfig(command configCommand, exePath, cwd string, output, error
 	layout, err := config.ResolvePromptLayout(exePath, cwd, command.configPath)
 	if err == nil {
 		var cfg config.Config
-		cfg, err = config.LoadPaths(layout.ConfigPaths(), config.Config{})
+		cfg, err = config.LoadPaths(layout.ConfigPaths(), config.DefaultBase())
 		if err == nil {
 			result = app.ProbeProvider(context.Background(), cfg, command.purpose, command.route)
 		}

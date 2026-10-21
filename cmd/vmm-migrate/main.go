@@ -185,7 +185,7 @@ func loadMaintenanceRuntimeConfiguration(argv0, cfgPath string) (maintenanceRunt
 	if err != nil {
 		return maintenanceRuntimeConfiguration{}, fmt.Errorf("resolve config layout: %w", err)
 	}
-	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultBase())
 	if err != nil {
 		return maintenanceRuntimeConfiguration{}, fmt.Errorf("load config: %w", err)
 	}

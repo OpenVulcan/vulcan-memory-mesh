@@ -155,7 +155,7 @@ func validateRuntimeConfig(exePath, cwd, configPath string) configValidationResu
 	if err != nil {
 		return invalidConfigResultForStage(configDiagnosticLayout)
 	}
-	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultBase())
 	if err != nil {
 		return invalidConfigResult(err)
 	}

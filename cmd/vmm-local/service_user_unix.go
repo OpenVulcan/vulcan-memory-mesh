@@ -30,7 +30,7 @@ func validateServiceAccountStorage(exePath string, configPath string, account se
 	if err != nil {
 		return fmt.Errorf("resolve service configuration layout: %w", err)
 	}
-	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultBase())
 	if err != nil {
 		return fmt.Errorf("load service configuration for storage ownership: %w", err)
 	}

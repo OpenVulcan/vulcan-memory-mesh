@@ -166,7 +166,7 @@ func probeHealth(exePath, cwd, configPath string) healthResult {
 	if err != nil {
 		return finish(healthConfigurationResult("configuration_layout"))
 	}
-	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultBase())
 	if err != nil {
 		return finish(healthConfigurationResult(healthConfigErrorCode(err)))
 	}

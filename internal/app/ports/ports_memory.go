@@ -59,7 +59,9 @@ type MemoryStore interface {
 	LoadMemoryNodesByVectorIDs(ctx context.Context, vectorIDs []string) ([]logicdomain.MemoryNodeRecord, error)
 	SearchLexicalMemory(ctx context.Context, query string, topK int, filter logicdomain.SearchFilter) ([]logicdomain.MemoryLexicalHit, error)
 	FindRecentActiveMemoryByDedupe(ctx context.Context, session logicdomain.SessionRef, sourceKind, scopeLevel int, dedupeHash string, notBefore time.Time) (logicdomain.MemoryNodeRecord, bool, error)
-	CreateDirectMemoryNode(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord) (logicdomain.MemoryNodeRecord, error)
+	// ApplyDirectMemoryWrite inserts the session memory and retires supersededMemoryIDs; success returns both results, while partial or uncertain writes must report OutcomeUncertainError and whether the fresh vector may be referenced.
+	// ApplyDirectMemoryWrite 插入会话记忆并退役 supersededMemoryIDs；成功返回两部分结果，部分写入或提交不明必须返回 OutcomeUncertainError 并标明新向量是否可能已被引用。
+	ApplyDirectMemoryWrite(ctx context.Context, session logicdomain.SessionRef, record logicdomain.MemoryNodeRecord, supersededMemoryIDs []uint64) (logicdomain.DirectMemoryWriteApplyResult, error)
 	DeleteMemoryNodes(ctx context.Context, memoryIDs []uint64, filter logicdomain.SearchFilter, deletedAt time.Time, reason string) (logicdomain.MemoryDeleteResult, error)
 }
 

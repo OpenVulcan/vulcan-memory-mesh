@@ -4,7 +4,6 @@ package config
 
 import (
 	"strings"
-	"time"
 )
 
 // normalizePreCheckSearchScopeValue canonicalizes the pre-check search-scope enum so config defaults, env overrides, and validation all compare the same token.
@@ -184,150 +183,22 @@ func normalizeSQLiteNativeTokenizerValue(tokenizer string) string {
 	}
 }
 
-// Normalize backfills safe defaults and canonicalizes all runtime-facing config values
-// so validation, startup, and adapter selection all observe one stable normalized view.
-// Normalize 用于补齐安全默认值并规范化所有面向运行时的配置值，
-// 让校验、启动和适配器选择都基于同一份稳定归一化后的视图。
+// Normalize canonicalizes runtime strings and optional fields while preserving numeric values for validation; start configurations with DefaultBase.
+// Normalize 规范化运行时字符串与可选字段，并保留数值供校验；配置应从 DefaultBase 初始化。
 func (c *Config) Normalize() {
 	// Canonicalize runtime-facing string fields first so validation, startup, and adapter selection all observe the same trimmed values.
 	// 先规范化面向运行时的字符串字段，让校验、启动和适配器选择都看到同一份裁剪后的值。
 	c.normalizeRuntimeStrings()
 
-	// Backfill safe defaults for gRPC timeouts and shutdown behavior.
-	// 为 gRPC 超时和关闭行为补齐安全默认值。
-	if c.GRPC.RequestTimeout.PreCheck.Duration <= 0 {
-		c.GRPC.RequestTimeout.PreCheck = Duration{8 * time.Second}
-	}
-	if c.GRPC.RequestTimeout.Workspace.Duration <= 0 {
-		c.GRPC.RequestTimeout.Workspace = Duration{15 * time.Second}
-	}
-	if c.GRPC.MaxReceiveMessageBytes <= 0 {
-		c.GRPC.MaxReceiveMessageBytes = 1 << 20
-	}
-	if c.GRPC.RequestTimeout.PostAction.Duration <= 0 {
-		c.GRPC.RequestTimeout.PostAction = Duration{8 * time.Second}
-	}
-	if c.GRPC.ShutdownTimeout.Duration <= 0 {
-		c.GRPC.ShutdownTimeout = Duration{10 * time.Second}
-	}
-	if c.GRPC.Keepalive.Time.Duration <= 0 {
-		c.GRPC.Keepalive.Time = Duration{30 * time.Second}
-	}
-	if c.GRPC.Keepalive.Timeout.Duration <= 0 {
-		c.GRPC.Keepalive.Timeout = Duration{10 * time.Second}
-	}
-	if c.GRPC.Keepalive.MaxConnectionIdle.Duration < 0 {
-		c.GRPC.Keepalive.MaxConnectionIdle = Duration{}
-	}
-	if c.GRPC.Keepalive.MaxConnectionAge.Duration < 0 {
-		c.GRPC.Keepalive.MaxConnectionAge = Duration{}
-	}
-	if c.GRPC.Keepalive.MaxConnectionAgeGrace.Duration < 0 {
-		c.GRPC.Keepalive.MaxConnectionAgeGrace = Duration{}
-	}
-	if c.GRPC.Keepalive.MinPingInterval.Duration <= 0 {
-		c.GRPC.Keepalive.MinPingInterval = Duration{20 * time.Second}
-	}
-	if c.Management.MaxRequestBodyBytes <= 0 {
-		c.Management.MaxRequestBodyBytes = 1 << 20
-	}
-	if c.Management.DefaultPageSize <= 0 {
-		c.Management.DefaultPageSize = 30
-	}
-	if c.Management.MaxPageSize <= 0 {
-		c.Management.MaxPageSize = 100
-	}
-	if c.Management.DefaultPageSize > c.Management.MaxPageSize {
-		c.Management.DefaultPageSize = c.Management.MaxPageSize
-	}
-	if c.Management.ReadHeaderTimeout.Duration <= 0 {
-		c.Management.ReadHeaderTimeout = Duration{5 * time.Second}
-	}
-	if c.Management.RequestTimeout.Duration <= 0 {
-		c.Management.RequestTimeout = Duration{30 * time.Second}
-	}
-	if c.Management.IdleTimeout.Duration <= 0 {
-		c.Management.IdleTimeout = Duration{60 * time.Second}
-	}
-	if c.Management.ShutdownTimeout.Duration <= 0 {
-		c.Management.ShutdownTimeout = Duration{10 * time.Second}
-	}
-	if c.PreCheck.IntentTimeout.Duration <= 0 {
-		c.PreCheck.IntentTimeout = Duration{5 * time.Second}
-	}
-	if c.PreCheck.TopK <= 0 {
-		c.PreCheck.TopK = 5
-	}
+	// Numeric defaults come from DefaultBase before layers are decoded; explicit values remain available to validation.
+	// 数值默认值在解码配置层前由 DefaultBase 提供，显式值保留给校验阶段。
 	c.PreCheck.SearchScope = normalizePreCheckSearchScopeValue(c.PreCheck.SearchScope)
-	if c.PostAction.SessionAnalysisTurnThreshold <= 0 {
-		c.PostAction.SessionAnalysisTurnThreshold = 2
-	}
-	if c.PostAction.SessionAnalysisTokenThreshold <= 0 {
-		c.PostAction.SessionAnalysisTokenThreshold = 12000
-	}
-	if c.PostAction.SessionAnalysisIdleTimeout.Duration <= 0 {
-		c.PostAction.SessionAnalysisIdleTimeout = Duration{15 * time.Minute}
-	}
-	if c.PostAction.SessionAnalysisHistoryTurns <= 0 {
-		c.PostAction.SessionAnalysisHistoryTurns = 3
-	}
-	if c.PostAction.SessionAnalysisMaxInputTokens <= 0 {
-		c.PostAction.SessionAnalysisMaxInputTokens = 6000
-	}
-	if !c.PostAction.sessionAnalysisTimeoutSet && c.PostAction.SessionAnalysisTimeout.Duration <= 0 {
-		c.PostAction.SessionAnalysisTimeout = Duration{3 * time.Minute}
-	}
-	if !c.PostAction.failurePassThresholdSet && c.PostAction.FailurePassThreshold <= 0 {
-		c.PostAction.FailurePassThreshold = 5
-	}
 	c.MemoryReplaceScope = normalizeMemoryReplaceScopeValue(c.MemoryReplaceScope)
-	if c.Retention.RecycleScanInterval.Duration <= 0 {
-		c.Retention.RecycleScanInterval = Duration{30 * time.Minute}
-	}
-	if c.Retention.TurnKeepExtraTurns < 0 {
-		c.Retention.TurnKeepExtraTurns = 5
-	}
-	if c.Retention.SessionIdleRecycleAfter.Duration <= 0 {
-		c.Retention.SessionIdleRecycleAfter = Duration{360 * time.Hour}
-	}
-	if c.Retention.TrashRetention.Duration <= 0 {
-		c.Retention.TrashRetention = Duration{720 * time.Hour}
-	}
 	c.Retention.ProtectPriorityFloor = normalizeRetentionPriorityFloorValue(c.Retention.ProtectPriorityFloor)
 	c.Retention.ProtectMemoryLevelFloor = normalizeRetentionMemoryLevelFloorValue(c.Retention.ProtectMemoryLevelFloor)
 
-	// Clamp memory pipeline knobs to keep recall fan-out predictable.
-	// 对记忆流水线参数做钳制，保持召回扇出可控。
-	if c.MemoryPipeline.MaxSearchKeywords <= 0 {
-		c.MemoryPipeline.MaxSearchKeywords = 5
-	}
-	if c.MemoryPipeline.MaxSearchKeywords > 10 {
-		c.MemoryPipeline.MaxSearchKeywords = 10
-	}
-	if c.MemoryPipeline.LexicalTopK <= 0 {
-		c.MemoryPipeline.LexicalTopK = 8
-	}
-	if c.MemoryPipeline.RRFK <= 0 {
-		c.MemoryPipeline.RRFK = 60
-	}
-	if c.MemoryPipeline.MMRLambda <= 0 || c.MemoryPipeline.MMRLambda > 1 {
-		c.MemoryPipeline.MMRLambda = 0.75
-	}
-	if c.MemoryPipeline.WeibullShape <= 0 {
-		c.MemoryPipeline.WeibullShape = 1.35
-	}
-	if c.MemoryPipeline.WeibullScaleHours <= 0 {
-		c.MemoryPipeline.WeibullScaleHours = 2160
-	}
-	if c.MemoryPipeline.WeibullMinMultiplier < 0 || c.MemoryPipeline.WeibullMinMultiplier > 1 {
-		c.MemoryPipeline.WeibullMinMultiplier = 0.4
-	}
-	if c.MemoryPipeline.WeibullReinforceWeight < 0 {
-		c.MemoryPipeline.WeibullReinforceWeight = 0.18
-	}
-	if c.MemoryPipeline.WeibullCrossSessionBoost < 0 {
-		c.MemoryPipeline.WeibullCrossSessionBoost = 0.12
-	}
+	// Pointer-backed optional thresholds retain their documented absent-value defaults.
+	// 指针表示的可选阈值保留契约规定的缺省默认值。
 	if c.MemoryPipeline.MinSimilarityScore == nil {
 		if c.PreCheck.SimilarityThreshold > 0 {
 			c.MemoryPipeline.MinSimilarityScore = float64Ptr(c.PreCheck.SimilarityThreshold)
@@ -341,26 +212,11 @@ func (c *Config) Normalize() {
 	if c.MemoryPipeline.HardDedupeCosineThreshold == nil {
 		c.MemoryPipeline.HardDedupeCosineThreshold = float64Ptr(defaultMemoryHardDedupeCosineThreshold)
 	}
-	if !c.MemoryPipeline.hardDedupePoolTopKSet && c.MemoryPipeline.HardDedupePoolTopK <= 0 {
-		c.MemoryPipeline.HardDedupePoolTopK = defaultMemoryHardDedupePoolTopK
-	}
 	c.Prompts.PromptLanguage = normalizePromptBundleName(c.Prompts.PromptLanguage)
 	c.LLM.Routes = normalizeLLMRouteConfigs(c.LLM.Routes)
-	if c.Embedding.Dimension <= 0 && isOpenAIProvider(c.Embedding.Provider) {
-		c.Embedding.Dimension = 1024
-	}
-	if c.Embedding.MaxBatchSize == 0 {
-		c.Embedding.MaxBatchSize = defaultEmbeddingMaxBatchSize
-	}
-	if c.MaintenanceTool.VectorRebuildBatchSize == 0 {
-		c.MaintenanceTool.VectorRebuildBatchSize = defaultMaintenanceToolVectorRebuildBatchSize
-	}
 	c.Embedding.APIKeys = normalizeAPIKeys(c.Embedding.APIKeys)
 	c.Embedding.Nodes = normalizeAIRoutingNodes(c.Embedding.APIKeys, c.Embedding.RPM, c.Embedding.TPM, c.Embedding.RPD, c.Embedding.Nodes)
 	normalizeKeyFailoverConfig(&c.Embedding.KeyFailover)
-	if c.Rerank.TopN <= 0 {
-		c.Rerank.TopN = 8
-	}
 	c.Rerank.Routes = normalizeRerankRouteConfigs(c.Rerank.Routes)
 	if strings.TrimSpace(c.Logging.Level) == "" {
 		c.Logging.Level = "info"
@@ -374,22 +230,13 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Noise.DefaultLanguage) == "" {
 		c.Noise.DefaultLanguage = c.PII.DefaultLanguage
 	}
-	if c.Noise.SemanticThreshold <= 0 {
-		c.Noise.SemanticThreshold = 0.88
-	}
 	c.Storage.Mode = normalizeStorageModeValue(c.Storage.Mode)
 	c.Storage.CombinedProvider = normalizeCombinedProviderValue(c.Storage.CombinedProvider)
-	if c.SQLite.Timeout.Duration <= 0 {
-		c.SQLite.Timeout = Duration{5 * time.Second}
-	}
 	c.SQLite.TokenizerMode = normalizeSQLiteTokenizerModeValue(c.SQLite.TokenizerMode)
 	if strings.TrimSpace(c.SQLite.Native.Path) == "" {
 		c.SQLite.Native.Path = defaultSQLiteNativePath
 	}
 	c.SQLite.Native.Tokenizer = normalizeSQLiteNativeTokenizerValue(c.SQLite.Native.Tokenizer)
-	if c.LanceDB.Timeout.Duration <= 0 {
-		c.LanceDB.Timeout = Duration{5 * time.Second}
-	}
 	if strings.TrimSpace(c.LanceDB.TableName) == "" {
 		c.LanceDB.TableName = "vmm_memory_vectors"
 	}
@@ -405,30 +252,6 @@ func (c *Config) Normalize() {
 	if strings.TrimSpace(c.Controller.ProcessMode) == "" {
 		c.Controller.ProcessMode = "managed"
 	}
-	if c.Controller.MinimumUptime.Duration <= 0 {
-		c.Controller.MinimumUptime = Duration{5 * time.Minute}
-	}
-	if c.Controller.IdleTimeout.Duration <= 0 {
-		c.Controller.IdleTimeout = Duration{15 * time.Minute}
-	}
-	if c.Controller.LeaseTTL.Duration <= 0 {
-		c.Controller.LeaseTTL = Duration{2 * time.Minute}
-	}
-	if c.Controller.ConnectTimeout.Duration <= 0 {
-		c.Controller.ConnectTimeout = Duration{5 * time.Second}
-	}
-	if c.Controller.StartupTimeout.Duration <= 0 {
-		c.Controller.StartupTimeout = Duration{15 * time.Second}
-	}
-	if c.Controller.StartupRetryInterval.Duration <= 0 {
-		c.Controller.StartupRetryInterval = Duration{250 * time.Millisecond}
-	}
-	if c.Controller.LeaseRenewInterval.Duration <= 0 {
-		c.Controller.LeaseRenewInterval = Duration{30 * time.Second}
-	}
-	if c.Controller.RequestTimeout.Duration <= 0 {
-		c.Controller.RequestTimeout = Duration{30 * time.Second}
-	}
 	if strings.TrimSpace(c.Controller.SpaceID) == "" {
 		c.Controller.SpaceID = "vmm-local-default"
 	}
@@ -439,38 +262,8 @@ func (c *Config) Normalize() {
 		c.Postgres.Schema = "public"
 	}
 	c.Postgres.Flavor = normalizePostgresFlavorValue(c.Postgres.Flavor)
-	if c.Postgres.QueryTimeout.Duration <= 0 {
-		c.Postgres.QueryTimeout = Duration{5 * time.Second}
-	}
-	if c.Postgres.ConnectTimeout.Duration <= 0 {
-		c.Postgres.ConnectTimeout = Duration{5 * time.Second}
-	}
-	if c.Postgres.MaxOpenConns <= 0 {
-		c.Postgres.MaxOpenConns = 10
-	}
-	if c.Postgres.MinIdleConns < 0 {
-		c.Postgres.MinIdleConns = 1
-	}
 	if strings.TrimSpace(c.Postgres.BM25IndexName) == "" {
 		c.Postgres.BM25IndexName = "vmm_memory_nodes_bm25_idx"
-	}
-	if c.Postgres.TRGMSimilarityThreshold <= 0 {
-		c.Postgres.TRGMSimilarityThreshold = 0.2
-	}
-	if c.Postgres.VectorLists <= 0 {
-		c.Postgres.VectorLists = 100
-	}
-	if c.Postgres.VectorProbes <= 0 {
-		c.Postgres.VectorProbes = 10
-	}
-	if c.Postgres.MigrationBatchSize <= 0 {
-		c.Postgres.MigrationBatchSize = 500
-	}
-	if c.MaintenanceTool.Postgres.ReadTimeout.Duration <= 0 {
-		c.MaintenanceTool.Postgres.ReadTimeout = Duration{defaultMaintenanceToolPostgresReadTimeout}
-	}
-	if c.MaintenanceTool.Postgres.WriteTimeout.Duration <= 0 {
-		c.MaintenanceTool.Postgres.WriteTimeout = Duration{defaultMaintenanceToolPostgresWriteTimeout}
 	}
 	if strings.TrimSpace(c.Vector.Provider) == "" {
 		c.Vector.Provider = "lancedb"

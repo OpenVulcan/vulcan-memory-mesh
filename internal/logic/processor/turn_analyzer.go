@@ -167,8 +167,11 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 	profileSeen := map[string]struct{}{}
 	for _, node := range payload.ProfileNodes {
 		node.Content = strings.TrimSpace(node.Content)
-		if !logicdomain.ValidProfileType(node.ProfileType) {
-			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile_type %d", node.ProfileType), Raw: raw}
+		if node.ProfileType == nil {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "profile_type is required", Raw: raw}
+		}
+		if !logicdomain.ValidProfileType(*node.ProfileType) {
+			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile_type %d", *node.ProfileType), Raw: raw}
 		}
 		if node.Content == "" {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: "profile node content is required", Raw: raw}
@@ -188,13 +191,13 @@ func parseTurnAnalysisResponse(raw string) (logicdomain.TurnAnalysis, error) {
 		if !logicdomain.ValidTurnAnalysisAdmissionReasonForAdmission(admission, admissionReason) {
 			return logicdomain.TurnAnalysis{}, logicdomain.InvalidLLMOutputError{Scene: "postaction_l1_main", Message: fmt.Sprintf("invalid profile admission_reason %q for admission %q", *node.AdmissionReason, node.Admission), Raw: raw}
 		}
-		key := fmt.Sprintf("%d|%s", node.ProfileType, node.Content)
+		key := fmt.Sprintf("%d|%s", *node.ProfileType, node.Content)
 		if _, ok := profileSeen[key]; ok {
 			continue
 		}
 		profileSeen[key] = struct{}{}
 		analysis.ProfileNodes = append(analysis.ProfileNodes, logicdomain.ProfileNodeCandidate{
-			ProfileType:     node.ProfileType,
+			ProfileType:     *node.ProfileType,
 			Content:         node.Content,
 			EvidenceSource:  evidenceSource,
 			Admission:       admission,

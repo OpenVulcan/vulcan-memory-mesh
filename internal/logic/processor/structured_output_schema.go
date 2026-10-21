@@ -48,7 +48,9 @@ type turnAnalysisMemoryNodePayload struct {
 // turnAnalysisProfileNodePayload is one profile candidate decoded from a turn-analysis response.
 // turnAnalysisProfileNodePayload 是从逐轮分析响应中解码的一条画像候选。
 type turnAnalysisProfileNodePayload struct {
-	ProfileType     int     `json:"profile_type"`
+	// Preserve presence because zero is the valid user profile type.
+	// 保留字段存在性，因为零是合法的用户画像类型。
+	ProfileType     *int    `json:"profile_type"`
 	Content         string  `json:"content"`
 	EvidenceSource  string  `json:"evidence_source"`
 	Admission       string  `json:"admission"`

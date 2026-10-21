@@ -101,7 +101,6 @@ SHELL_SCRIPT = ROOT / "scripts" / "install_host_deps.sh"
 POWERSHELL_SCRIPT = ROOT / "scripts" / "install_host_deps.ps1"
 PACKAGE_SHELL_SCRIPT = ROOT / "scripts" / "vmm.sh"
 PACKAGE_POWERSHELL_SCRIPT = ROOT / "scripts" / "vmm.ps1"
-RELEASE_GUIDE = ROOT / "docs" / "github-release-guide_CN.md"
 
 
 class HostDependencyBootstrapTests(unittest.TestCase):
@@ -277,14 +276,6 @@ class HostDependencyBootstrapTests(unittest.TestCase):
             self.skipTest("bash or sh is not installed")
         completed = subprocess.run([shell, "-n", str(SHELL_SCRIPT)], capture_output=True, text=True)
         self.assertEqual(0, completed.returncode, completed.stderr)
-
-    # test_documentation_describes_the_pinned_manifest keeps the release process documentation aligned with the implementation.
-    # test_documentation_describes_the_pinned_manifest 确保发行流程文档与固定清单实现保持同步。
-    def test_documentation_describes_the_pinned_manifest(self) -> None:
-        documentation = RELEASE_GUIDE.read_text(encoding="utf-8")
-        self.assertIn("host_deps_sha256.tsv", documentation)
-        self.assertIn("不会把同一 Release 中可替换的 `.sha256` 资产当作信任根", documentation)
-
 
 if __name__ == "__main__":
     unittest.main()

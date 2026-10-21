@@ -361,8 +361,7 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 		metadata := map[string]string{}
 		if strings.TrimSpace(row.MetadataJSON) != "" {
 			if err := json.Unmarshal([]byte(row.MetadataJSON), &metadata); err != nil {
-				// Keep the hit usable even when metadata decoding fails.
-				// 即使元数据解码失败，也保留命中结果可用性。
+				return nil, fmt.Errorf("decode lancedb row %q metadata_json: %w", row.ID, err)
 			}
 		}
 		// Records with absent metadata are stored as JSON null; decoding null clears the map and must precede origin annotation.
@@ -373,14 +372,10 @@ func (s *Store) Search(ctx context.Context, vector []float32, topK int, filter l
 		// Stamp the search-origin at the adapter boundary because every LanceDB hit is produced by the split vector-search path.
 		// 在适配器边界写入检索来源，因为每条 LanceDB 命中都来自分离式向量检索路径。
 		metadata["origin"] = "vector_search"
-		distance := row.Distance
-		if distance == 0 {
-			distance = row.Score
-		}
 		hits = append(hits, logicdomain.MemoryHit{
 			ID:    row.ID,
 			Text:  row.Content,
-			Score: distanceToScore(distance),
+			Score: distanceToScore(row.Distance),
 			Filter: logicdomain.SearchFilter{
 				TeamID:              row.TeamID,
 				SpaceID:             row.SpaceID,
@@ -712,9 +707,6 @@ func quoteLanceString(raw string) string {
 // distanceToScore converts the lower-is-better distance metric into the higher-is-better score expected upstream.
 // distanceToScore 用于把“越小越好”的距离值转换成上游期望的“越大越好”分数。
 func distanceToScore(distance float64) float64 {
-	if distance <= 0 {
-		return 1
-	}
 	return 1 / (1 + distance)
 }
 
@@ -752,7 +744,6 @@ type searchRow struct {
 	MetadataJSON string    `json:"metadata_json"`
 	CreatedAt    time.Time `json:"created_at"`
 	Distance     float64   `json:"_distance"`
-	Score        float64   `json:"score"`
 }
 
 // UnmarshalJSON normalizes numeric/string mixed LanceDB fields into one stable searchRow shape.
@@ -790,13 +781,9 @@ func (r *searchRow) UnmarshalJSON(data []byte) error {
 	if err != nil {
 		return fmt.Errorf("decode source_turn_id: %w", err)
 	}
-	distance, err := asFloat64(raw.Distance)
+	distance, err := decodeSearchDistance(raw.Distance)
 	if err != nil {
 		return fmt.Errorf("decode _distance: %w", err)
-	}
-	score, err := asFloat64(raw.Score)
-	if err != nil {
-		return fmt.Errorf("decode score: %w", err)
 	}
 	createdAt := time.Time{}
 	if raw.CreatedAt != nil {
@@ -818,7 +805,6 @@ func (r *searchRow) UnmarshalJSON(data []byte) error {
 		MetadataJSON: strings.TrimSpace(raw.MetadataJSON),
 		CreatedAt:    createdAt,
 		Distance:     distance,
-		Score:        score,
 	}
 	return nil
 }
@@ -837,7 +823,6 @@ type rawSearchRow struct {
 	MetadataJSON string `json:"metadata_json"`
 	CreatedAt    any    `json:"created_at"`
 	Distance     any    `json:"_distance"`
-	Score        any    `json:"score"`
 }
 
 // asUint64 converts one JSON scalar into uint64 while preserving clear error messages for malformed LanceDB rows.
@@ -880,22 +865,26 @@ func asString(value any) string {
 	}
 }
 
-// asFloat64 converts one JSON scalar into float64.
-// asFloat64 用于把一个 JSON 标量转换成 float64。
-func asFloat64(value any) (float64, error) {
+// decodeSearchDistance requires a finite non-negative LanceDB distance, preserving valid exact matches at zero.
+// decodeSearchDistance 要求 LanceDB 距离为有限非负值，并保留零距离的精确匹配。
+func decodeSearchDistance(value any) (float64, error) {
+	// Both JSON numbers and numeric strings are supported by the engine row representation.
+	// 引擎行表示支持 JSON 数字和数字字符串两种形式。
+	var distance float64
+	var err error
 	switch typed := value.(type) {
-	case nil:
-		return 0, nil
-	case float64:
-		return typed, nil
 	case json.Number:
-		return typed.Float64()
+		distance, err = typed.Float64()
 	case string:
-		if strings.TrimSpace(typed) == "" {
-			return 0, nil
-		}
-		return strconv.ParseFloat(strings.TrimSpace(typed), 64)
+		distance, err = strconv.ParseFloat(strings.TrimSpace(typed), 64)
 	default:
-		return 0, fmt.Errorf("unsupported float64 value type %T", value)
+		return 0, fmt.Errorf("required numeric distance, got %T", value)
 	}
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(distance) || math.IsInf(distance, 0) || distance < 0 {
+		return 0, fmt.Errorf("distance must be finite and non-negative, got %v", distance)
+	}
+	return distance, nil
 }

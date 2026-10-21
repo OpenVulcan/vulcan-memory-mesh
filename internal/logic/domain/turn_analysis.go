@@ -231,12 +231,6 @@ const (
 )
 
 const (
-	// ProfileStatusMerged keeps backward compatibility with older code paths that still refer to the previous "merged" name.
-	// ProfileStatusMerged 用于兼容仍然沿用旧“merged”命名的代码路径，它等价于当前的 active 状态。
-	ProfileStatusMerged = ProfileStatusActive
-)
-
-const (
 	// ProfileSourceKindTurnExtract marks nodes extracted from post-action turn analysis.
 	// ProfileSourceKindTurnExtract 用于表示画像节点来源于 post-action 的 turn 提炼流程。
 	ProfileSourceKindTurnExtract = 0

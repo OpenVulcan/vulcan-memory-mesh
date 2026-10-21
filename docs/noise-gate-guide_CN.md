@@ -282,3 +282,4 @@ noise:
 - 当前 `timeline > 0` 的复杂流程直接跳过噪声门
 - 当前 `PostAction` 没有单独传语言，因此默认使用 `noise.default_language`
 - 当前语义判定失败时会降级为 regex-only，而不是阻断整个请求
+- SQLite 语义缓存读取会严格解码向量；损坏 JSON、空元素、非数值或溢出会返回带类别与短语的错误。NoiseGate 记录该错误并按既有策略重新计算 embedding，不把坏缓存伪装成正常空向量。规则文件的用户层优先、系统层兜底顺序保持不变。

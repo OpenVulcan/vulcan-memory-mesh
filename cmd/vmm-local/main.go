@@ -159,7 +159,7 @@ func runRuntime(ctx context.Context, exePath string, wd string, cfgPath string, 
 
 	// Load the merged configuration layers before composing the normal runtime.
 	// 先加载合并后的配置层，再装配正常运行时。
-	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.Config{})
+	cfg, err := config.LoadPaths(layout.ConfigPaths(), config.DefaultBase())
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}

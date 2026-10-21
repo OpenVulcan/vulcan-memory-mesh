@@ -4,6 +4,9 @@ package vldb_sqlite
 
 import (
 	"context"
+	"fmt"
+	"slices"
+	"testing"
 
 	"github.com/openvulcan/vmm/internal/platform/ffi/sqliteffi"
 )
@@ -14,6 +17,44 @@ type fakeExecuteRequest struct {
 	SQL        string
 	Params     []sqliteffi.SQLValue
 	ParamsJSON string
+}
+
+// expectSQLiteFTSUpserts accepts only the declared document ids and verifies every expected write occurred.
+// expectSQLiteFTSUpserts 仅接受声明的文档标识，并验证全部预期写入均已发生。
+func expectSQLiteFTSUpserts(t *testing.T, fake *fakeSQLiteDatabase, ids ...string) {
+	t.Helper()
+	var seen []string
+	fake.upsertFtsDocumentFunc = func(_ string, _ sqliteffi.TokenizerMode, id, _, _, _ string) (sqliteffi.FtsMutationResult, error) {
+		if !slices.Contains(ids, id) {
+			t.Fatalf("unexpected FTS upsert id %q; expected %v", id, ids)
+		}
+		seen = append(seen, id)
+		return sqliteffi.FtsMutationResult{Success: true, AffectedRows: 1}, nil
+	}
+	t.Cleanup(func() {
+		if !slices.Equal(seen, ids) {
+			t.Errorf("FTS upsert ids = %v, want %v", seen, ids)
+		}
+	})
+}
+
+// expectSQLiteFTSDeletes accepts only the declared document deletions and verifies their order.
+// expectSQLiteFTSDeletes 仅接受声明的文档删除，并验证其顺序。
+func expectSQLiteFTSDeletes(t *testing.T, fake *fakeSQLiteDatabase, ids ...string) {
+	t.Helper()
+	var seen []string
+	fake.deleteFtsDocumentFunc = func(_ string, id string) (sqliteffi.FtsMutationResult, error) {
+		if !slices.Contains(ids, id) {
+			t.Fatalf("unexpected FTS delete id %q; expected %v", id, ids)
+		}
+		seen = append(seen, id)
+		return sqliteffi.FtsMutationResult{Success: true, AffectedRows: 1}, nil
+	}
+	t.Cleanup(func() {
+		if !slices.Equal(seen, ids) {
+			t.Errorf("FTS delete ids = %v, want %v", seen, ids)
+		}
+	})
 }
 
 // GetSql returns the recorded SQL text.
@@ -152,7 +193,7 @@ type fakeSQLiteDatabase struct {
 // ExecuteScript 用于记录或转发一次 ExecuteScript 请求。
 func (f *fakeSQLiteDatabase) ExecuteScript(ctx context.Context, sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.ExecuteResult, error) {
 	if f == nil || f.executeScriptFunc == nil {
-		return sqliteffi.ExecuteResult{Success: true}, nil
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("unexpected ExecuteScript: %s", sql)
 	}
 	response, err := f.executeScriptFunc(ctx, &fakeExecuteRequest{
 		SQL:        sql,
@@ -178,7 +219,7 @@ func (f *fakeSQLiteDatabase) ExecuteScript(ctx context.Context, sql string, para
 // ExecuteBatch 用于记录或转发一次 ExecuteBatch 请求。
 func (f *fakeSQLiteDatabase) ExecuteBatch(ctx context.Context, sql string, items [][]sqliteffi.SQLValue) (sqliteffi.ExecuteResult, error) {
 	if f == nil || f.executeBatchFunc == nil {
-		return sqliteffi.ExecuteResult{Success: true}, nil
+		return sqliteffi.ExecuteResult{}, fmt.Errorf("unexpected ExecuteBatch: %s", sql)
 	}
 	recordedItems := make([]fakeExecuteBatchItem, 0, len(items))
 	for _, item := range items {
@@ -207,7 +248,7 @@ func (f *fakeSQLiteDatabase) ExecuteBatch(ctx context.Context, sql string, items
 // QueryJSON 用于记录或转发一次 QueryJSON 请求。
 func (f *fakeSQLiteDatabase) QueryJSON(ctx context.Context, sql string, params []sqliteffi.SQLValue, paramsJSON string) (sqliteffi.QueryJSONResult, error) {
 	if f == nil || f.queryJSONFunc == nil {
-		return sqliteffi.QueryJSONResult{JSONData: "[]"}, nil
+		return sqliteffi.QueryJSONResult{}, fmt.Errorf("unexpected QueryJSON: %s", sql)
 	}
 	response, err := f.queryJSONFunc(ctx, &fakeQueryRequest{
 		SQL:        sql,
@@ -230,7 +271,7 @@ func (f *fakeSQLiteDatabase) QueryJSON(ctx context.Context, sql string, params [
 // EnsureFtsIndex 用于记录或转发一次 FTS ensure 请求。
 func (f *fakeSQLiteDatabase) EnsureFtsIndex(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.EnsureFtsIndexResult, error) {
 	if f == nil || f.ensureFtsIndexFunc == nil {
-		return sqliteffi.EnsureFtsIndexResult{Success: true, TokenizerMode: mode}, nil
+		return sqliteffi.EnsureFtsIndexResult{}, fmt.Errorf("unexpected EnsureFtsIndex: %s", indexName)
 	}
 	return f.ensureFtsIndexFunc(indexName, mode)
 }
@@ -239,7 +280,7 @@ func (f *fakeSQLiteDatabase) EnsureFtsIndex(ctx context.Context, indexName strin
 // RebuildFtsIndex 用于记录或转发一次 FTS rebuild 请求。
 func (f *fakeSQLiteDatabase) RebuildFtsIndex(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode) (sqliteffi.RebuildFtsIndexResult, error) {
 	if f == nil || f.rebuildFtsIndexFunc == nil {
-		return sqliteffi.RebuildFtsIndexResult{Success: true, TokenizerMode: mode}, nil
+		return sqliteffi.RebuildFtsIndexResult{}, fmt.Errorf("unexpected RebuildFtsIndex: %s", indexName)
 	}
 	return f.rebuildFtsIndexFunc(indexName, mode)
 }
@@ -248,7 +289,7 @@ func (f *fakeSQLiteDatabase) RebuildFtsIndex(ctx context.Context, indexName stri
 // UpsertFtsDocument 用于记录或转发一次 FTS upsert 请求。
 func (f *fakeSQLiteDatabase) UpsertFtsDocument(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode, id string, filePath string, title string, content string) (sqliteffi.FtsMutationResult, error) {
 	if f == nil || f.upsertFtsDocumentFunc == nil {
-		return sqliteffi.FtsMutationResult{Success: true, AffectedRows: 1}, nil
+		return sqliteffi.FtsMutationResult{}, fmt.Errorf("unexpected UpsertFtsDocument: %s/%s", indexName, id)
 	}
 	return f.upsertFtsDocumentFunc(indexName, mode, id, filePath, title, content)
 }
@@ -257,7 +298,7 @@ func (f *fakeSQLiteDatabase) UpsertFtsDocument(ctx context.Context, indexName st
 // DeleteFtsDocument 用于记录或转发一次 FTS delete 请求。
 func (f *fakeSQLiteDatabase) DeleteFtsDocument(ctx context.Context, indexName string, id string) (sqliteffi.FtsMutationResult, error) {
 	if f == nil || f.deleteFtsDocumentFunc == nil {
-		return sqliteffi.FtsMutationResult{Success: true, AffectedRows: 1}, nil
+		return sqliteffi.FtsMutationResult{}, fmt.Errorf("unexpected DeleteFtsDocument: %s/%s", indexName, id)
 	}
 	return f.deleteFtsDocumentFunc(indexName, id)
 }
@@ -266,7 +307,7 @@ func (f *fakeSQLiteDatabase) DeleteFtsDocument(ctx context.Context, indexName st
 // SearchFts 用于记录或转发一次 FTS search 请求。
 func (f *fakeSQLiteDatabase) SearchFts(ctx context.Context, indexName string, mode sqliteffi.TokenizerMode, query string, limit uint32, offset uint32) (sqliteffi.SearchResult, error) {
 	if f == nil || f.searchFtsFunc == nil {
-		return sqliteffi.SearchResult{}, nil
+		return sqliteffi.SearchResult{}, fmt.Errorf("unexpected SearchFts: %s", indexName)
 	}
 	return f.searchFtsFunc(indexName, mode, query, limit, offset)
 }

@@ -5,7 +5,6 @@ package vldb_postgres
 import (
 	"crypto/rand"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"sort"
 	"strconv"
@@ -232,19 +231,6 @@ func parsePGVectorText(raw string) []float32 {
 			return []float32{}
 		}
 		out = append(out, float32(number))
-	}
-	return out
-}
-
-// decodeStringMap restores one metadata map from JSON while tolerating malformed payloads.
-// decodeStringMap 用于从 JSON 还原元数据 map，并容忍损坏的载荷。
-func decodeStringMap(raw string) map[string]string {
-	if strings.TrimSpace(raw) == "" {
-		return map[string]string{}
-	}
-	var out map[string]string
-	if err := json.Unmarshal([]byte(raw), &out); err != nil {
-		return map[string]string{}
 	}
 	return out
 }

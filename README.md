@@ -2,7 +2,7 @@
 
 本次发行版本：**v0.1.1**。Windows x64、Linux x64/ARM64、macOS Intel/ARM64 的完整包均包含 native、split、controller 依赖及 combined PostgreSQL 模式所需的 VMM 代码。正式流水使用 Certum Windows 云签名与 Linux GPG 签名，先创建并回验草稿，再公开发行。旧版 `v0.1.0` 仅包含 native 依赖，保持原标签与资产不变。使用独立安装器时请选择 `v0.1.1` 或后续完整包，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。
 
-VulcanMemoryMesh 当前主线只保留本地版、gRPC 版和三条核心业务链：
+VulcanMemoryMesh 当前主线是 OSS 本地运行时，以 gRPC 提供三条核心业务链，并可按配置启用人工管理 HTTP 服务：
 
 - `PreCheck`
 - `ChatCompact`
@@ -126,9 +126,11 @@ vmm-local service enable VulcanMemoryMesh
 
 ### 入站协议
 
-当前只暴露 gRPC：
+业务接口通过 gRPC 暴露：
 
 - 服务：`vmm.v1.VMMService`
+
+`management.enabled=true` 时还会启动独立的人工管理 HTTP 服务；默认关闭。管理接口采用令牌认证、请求体限制与作用域校验，接口契约见 [管理 OpenAPI](docs/openapi/vmm-management-v1.yaml)。
 
 当前主线方法：
 
@@ -202,7 +204,7 @@ vmm-local service enable VulcanMemoryMesh
 
 运行时已经移除：
 
-- HTTP 服务
+- 旧业务 HTTP 服务（当前可选的人工管理 HTTP 服务仍受支持）
 - 应用内 TLS
 - 旧历史兼容 provider 回退路径
 - 内存关系库存根 / 内存向量库存根回退
@@ -715,7 +717,9 @@ vmm-local service status [service-name]
 - `configs/bailian.config.example.yaml` 保留了此前的百炼 LLM、embedding、rerank 覆盖示例。
 - 必填运行字段中的 `${ENV_NAME}` 占位符如果缺失或为空，会在展开前直接报出变量名与配置路径，避免被归一化为空节点后产生误导性的路由错误。
 - 类型化的 `${VMM_...}` 覆盖值如果无法解析为目标字段所需的整数、浮点数、布尔值或时长，会在配置加载阶段直接失败，不会静默回退到文件值或默认值。
+- 配置先以 `DefaultBase` 初始化，再合并各层；缺省字段继承默认值，显式设置的非法数值（负超时、非正 worker 数、超范围比例等）直接报错，不再被归一化改回默认值。允许关闭某项能力的零值仍有效；动态 rerank 路由超时和 key cooldown 的零值按既有契约使用默认值，负值则拒绝。
 - 未知配置字段会在配置加载阶段直接失败；顶层 `x-*` 仅作为 YAML 锚点辅助块被剥离，不进入运行时配置，也不会参与环境变量覆盖白名单。
+- 数值时长以毫秒解释，超出 `time.Duration` 可表示范围时直接拒绝，避免乘法溢出。`llm.routes` 与 `rerank.routes` 在每层显式出现时整体替换，每条路由必须自包含；未声明的端点、密钥、节点和参数不会按数组位置继承旧路由。`embedding.nodes` 同样整体替换，每个节点必须提供自己的密钥，未声明的节点配额不会继承旧节点。
 - 旧的 `-vulcan-managed-config` 托管参数已退役；`vmm-local` 与 `vmm-migrate` 都会明确拒绝它，请使用独立分层配置和 `-config` 覆盖根目录。
 
 ### 维护工具
@@ -845,8 +849,11 @@ native 迁移必须离线执行，并写入新的空目标目录。先停止 `vm
     - 中文：`default_cn` / `zh` / `zh-cn` / `cn` / `chinese` / `zh_hans`
   - 也可以直接填写 `configs/prompts/` 下的其他目录名，例如自定义的 `custom-bundle`
 - 服务端启动时会严格校验当前选中的提示词目录：
+  - 用户层存在所选包时使用完整用户包；只有该包不存在时才选择系统包
   - 如果目录不存在，启动会直接失败
   - 如果目录下缺少任一必需提示词文件，启动也会直接失败
+  - 用户包不可访问或路径不是目录时直接报错，不切换到系统包
+  - 运行时固定已选包目录；文件被删除、变成目录或读取失败时，返回包含包路径与场景的错误。运行中新增另一层覆盖包不会切换来源，需重启生效
 - 当前必需主提示词文件固定为：
   - `precheck_l1_main.md`
   - `precheck_l2_main.md`

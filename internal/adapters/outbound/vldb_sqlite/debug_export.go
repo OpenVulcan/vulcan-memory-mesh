@@ -198,6 +198,10 @@ LIMIT ?
 		ProfileInstructions: make([]logicdomain.ProfileInstructionRecord, 0, len(profileInstructions)),
 	}
 	for _, row := range noiseRows {
+		vector, err := decodeFloat32Slice(row.VectorJSON)
+		if err != nil {
+			return storagemigrate.Snapshot{}, fmt.Errorf("export noise embedding %q/%q vector_json: %w", row.CategoryName, row.Phrase, err)
+		}
 		updatedAt, _ := time.Parse(time.RFC3339Nano, strings.TrimSpace(row.UpdatedAt))
 		snapshot.NoiseEmbeddings = append(snapshot.NoiseEmbeddings, logicdomain.NoiseEmbeddingCacheEntry{
 			Scope:        strings.TrimSpace(row.Scope),
@@ -207,7 +211,7 @@ LIMIT ?
 			Model:        strings.TrimSpace(row.Model),
 			Dimension:    row.Dimension,
 			RulesHash:    strings.TrimSpace(row.RulesHash),
-			Vector:       decodeFloat32Slice(row.VectorJSON),
+			Vector:       vector,
 			UpdatedAt:    updatedAt.UTC(),
 		})
 	}
@@ -230,7 +234,11 @@ LIMIT ?
 		snapshot.Turns = append(snapshot.Turns, row.toDomain())
 	}
 	for _, row := range memoryNodes {
-		snapshot.MemoryNodes = append(snapshot.MemoryNodes, row.toMemoryNodeRecord())
+		record, err := row.toMemoryNodeRecord()
+		if err != nil {
+			return storagemigrate.Snapshot{}, err
+		}
+		snapshot.MemoryNodes = append(snapshot.MemoryNodes, record)
 	}
 	for _, row := range memoryEdges {
 		snapshot.MemoryContextEdges = append(snapshot.MemoryContextEdges, row.toDomain())

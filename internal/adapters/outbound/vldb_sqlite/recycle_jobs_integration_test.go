@@ -390,7 +390,7 @@ INSERT INTO vmm_turn_records (
 		}
 	}
 
-	statement := parameterizedMemoryNodeInsertStatement(logicdomain.MemoryNodeRecord{
+	statement, err := parameterizedMemoryNodeInsertStatement(logicdomain.MemoryNodeRecord{
 		ID:              9101,
 		TeamID:          session.TeamID,
 		SpaceID:         session.SpaceID,
@@ -411,6 +411,9 @@ INSERT INTO vmm_turn_records (
 		CreatedAt:       now.Add(-time.Hour),
 		UpdatedAt:       now.Add(-time.Hour),
 	})
+	if err != nil {
+		t.Fatal(err)
+	}
 	if err := store.exec(ctx, statement.SQL, statement.Params...); err != nil {
 		t.Fatalf("insert real sqlite cold-turn memory reference: %v", err)
 	}
@@ -504,7 +507,7 @@ INSERT INTO vmm_turn_records (
 		{ID: 9002, SourceTurnID: 8002, VectorID: "vec-idle-real-9002", ExpiresAt: idleBefore.Add(-time.Minute)},
 		{ID: 9003, SourceTurnID: 8003, VectorID: "vec-idle-real-active-9003", ExpiresAt: now.Add(time.Hour)},
 	} {
-		statement := parameterizedMemoryNodeInsertStatement(logicdomain.MemoryNodeRecord{
+		statement, err := parameterizedMemoryNodeInsertStatement(logicdomain.MemoryNodeRecord{
 			ID:              memory.ID,
 			TeamID:          session.TeamID,
 			SpaceID:         session.SpaceID,
@@ -526,6 +529,9 @@ INSERT INTO vmm_turn_records (
 			CreatedAt:       idleBefore.Add(-time.Hour),
 			UpdatedAt:       idleBefore.Add(-time.Hour),
 		})
+		if err != nil {
+			t.Fatal(err)
+		}
 		if err := store.exec(ctx, statement.SQL, statement.Params...); err != nil {
 			t.Fatalf("insert real sqlite idle memory %d: %v", memory.ID, err)
 		}
