@@ -1,6 +1,6 @@
 # VMM OSS Local (Go)
 
-本次发行版本：**v0.1.1**。Windows x64、Linux x64/ARM64、macOS Intel/ARM64 的完整包均包含 native、split、controller 依赖及 combined PostgreSQL 模式所需的 VMM 代码。正式流水使用 Certum Windows 云签名与 Linux GPG 签名，先创建并回验草稿，再公开发行。旧版 `v0.1.0` 仅包含 native 依赖，保持原标签与资产不变。使用独立安装器时请选择 `v0.1.1` 或后续完整包，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。
+本次发行版本：**v0.1.2**。Windows x64、Linux x64/ARM64、macOS Intel/ARM64 的完整包均包含 native、split、controller 依赖及 combined PostgreSQL 模式所需的 VMM 代码。正式流水使用 Certum Windows 云签名与 Linux GPG 签名，先创建并回验草稿，再公开发行。旧版 `v0.1.0` 仅包含 native 依赖，保持原标签与资产不变。使用独立安装器时请选择 `v0.1.1` 或后续完整包，详见 [GitHub 发行说明](docs/github-release-guide_CN.md)。
 
 VulcanMemoryMesh 当前主线是 OSS 本地运行时，以 gRPC 提供三条核心业务链，并可按配置启用人工管理 HTTP 服务：
 
